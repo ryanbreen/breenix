@@ -1,0 +1,964 @@
+aa6097b1edfa272d071e8c93af9881b728aa3792
+[GATE_SUITE:stem=aarch64_testing_profile_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=block_request_lifetime_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=blocking_fd_eagain_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=capture_bxcap_schema_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=capture_path_lock_free_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=context_restore_structure:attempt=1:timeout_s=300:wall_s=300:exit=124]
+[GATE_SUITE_TIMEOUT:stem=context_restore_structure:wall_s=300:host_load= 04:03:10 up 26 days, 10:18,  0 user,  load average: 16.15, 14.09, 8.70]
+[GATE_SUITE:stem=context_restore_structure:attempt=2:timeout_s=600:wall_s=291:exit=0]
+[GATE_SUITE:stem=coreproof_component_h_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=coreproof_coverage_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=coreproof_mutation_register_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=coreproof_sites_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=critical_path_logging_census_structure:attempt=1:timeout_s=300:wall_s=8:exit=0]
+[GATE_SUITE:stem=ctx_diag_ring_sample_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=degenerate_transfer_fd_validation_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=dispatch_fact_census_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=dispatch_path_lock_free_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dispatch_strand_census_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=dma_and_log_sink_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=entry_point_df_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=exec_lock_order_structure:attempt=1:timeout_s=300:wall_s=14:exit=0]
+[GATE_SUITE:stem=exit_tally_structure:attempt=1:timeout_s=300:wall_s=5:exit=0]
+[GATE_SUITE:stem=ext2_disk_size_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=ext2_lock_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=fcntl_pm_contention_gate_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=fork_lock_order_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=gate_boot_facts_pipefail_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=gate_boot_facts_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=gate_capture_drain_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=gate_qmp_backstop_structure:attempt=1:timeout_s=300:wall_s=11:exit=0]
+[GATE_SUITE:stem=gate_structure_preflight_wiring_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=green_program_envelope_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=launcher_smoke_xhci_evidence_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=lockup_capture_guard_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=loopback_pump_structure:attempt=1:timeout_s=300:wall_s=24:exit=0]
+[GATE_SUITE:stem=masked_binary_load_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=mmap_floor_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=net_lock_structure:attempt=1:timeout_s=300:wall_s=25:exit=0]
+[GATE_SUITE:stem=parallels_capture_structure:attempt=1:timeout_s=300:wall_s=21:exit=0]
+[GATE_SUITE:stem=parallels_kill_by_name_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=pipe_fifo_blocking_structure:attempt=1:timeout_s=300:wall_s=9:exit=0]
+[GATE_SUITE:stem=poll_tcp_gate_wiring_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=preempt_bracket_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=qemu_host_lock_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=qemu_kill_by_name_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=ring_span_report_site_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=ring_span_unfiltered_report_site_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=run_inspector_import_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=serial_line_atomicity_structure:attempt=1:timeout_s=300:wall_s=9:exit=0]
+[GATE_SUITE:stem=signal_eintr_predicate_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=strand_handoff_structure:attempt=1:timeout_s=300:wall_s=14:exit=0]
+[GATE_SUITE:stem=structure_preflight_parallel_structure:attempt=1:timeout_s=300:wall_s=19:exit=0]
+[GATE_SUITE:stem=syscall_return_register_structure:attempt=1:timeout_s=300:wall_s=6:exit=0]
+[GATE_SUITE:stem=teardown_rustfmt_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=teardown_structure:attempt=1:timeout_s=300:wall_s=154:exit=0]
+[GATE_SUITE:stem=terminal_edge_capture_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=timer_wake_dispatch_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=trace_ring_depth_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=tracing_provider_gate_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ttbr0_shadow_reconciliation_structure:attempt=1:timeout_s=300:wall_s=139:exit=0]
+[GATE_SUITE:stem=tty_irq_fg_structure:attempt=1:timeout_s=300:wall_s=8:exit=0]
+[GATE_SUITE:stem=tty_irq_pm_structure:attempt=1:timeout_s=300:wall_s=7:exit=0]
+[GATE_SUITE:stem=tty_oracle_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=udp_ports_lock_irq_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=udp_socket_lock_irq_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=x86_boot_tests_profile_structure:attempt=1:timeout_s=300:wall_s=5:exit=0]
+[GATE_SUITE:stem=x86_smp_enum_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=xhci_wait_irq_order_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_PREFLIGHT:structure_suites=66/66:critical_path_lines=260:pinned=120]
+  RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
+   Compiling kernel v0.1.0 (/root/breenix-t963/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-t963)
+    Finished `release` profile [optimized] target(s) in 55.62s
+Guard: x86 kernel-thread dispatch allocation check (#791)
+  ELF:      /root/breenix-t963/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  sha256:   a85ebe7903e6fb6e5c5193d13c80dc0f6f324bcada7439d81c46d01ad721415e
+  objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
+  readelf:  readelf
+  function: setup_kernel_thread_return (its own body and its closures)
+  symbols in scope: 3
+  call targets resolved: 14
+[0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
+   Compiling kernel v0.1.0 (/root/breenix-t963/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-t963)
+    Finished `release` profile [optimized] target(s) in 16.77s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-t963/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.94s
+     Running `target/debug/xtask create-test-disk`
+Creating test disk image...
+  Including std test: hello_std_real (227240 bytes)
+  Found 152 test binaries
+  Added: access_test (178040 bytes, sectors 128-475)
+  Added: alarm_test (182856 bytes, sectors 476-833)
+  Added: argv_test (184440 bytes, sectors 834-1194)
+  Added: bcheck (299240 bytes, sectors 1195-1779)
+  Added: bfontpicker (346248 bytes, sectors 1780-2456)
+  Added: biconkit (248144 bytes, sectors 2457-2941)
+  Added: blauncher (325360 bytes, sectors 2942-3577)
+  Added: bless (185728 bytes, sectors 3578-3940)
+  Added: block_eintr_oracle (190104 bytes, sectors 3941-4312)
+  Added: blocking_recv_test (184112 bytes, sectors 4313-4672)
+  Added: blog (331088 bytes, sectors 4673-5319)
+  Added: blogd (182056 bytes, sectors 5320-5675)
+  Added: bounce (275128 bytes, sectors 5676-6213)
+  Added: brk_test (182576 bytes, sectors 6214-6570)
+  Added: bsh (579336 bytes, sectors 6571-7702)
+  Added: bssh (322608 bytes, sectors 7703-8333)
+  Added: bsshd (314384 bytes, sectors 8334-8948)
+  Added: bterm (338608 bytes, sectors 8949-9610)
+  Added: btop (184272 bytes, sectors 9611-9970)
+  Added: btrace (199024 bytes, sectors 9971-10359)
+  Added: burl (483464 bytes, sectors 10360-11304)
+  Added: bwm (331384 bytes, sectors 11305-11952)
+  Added: cat_test (183328 bytes, sectors 11953-12311)
+  Added: clock_gettime_test (184648 bytes, sectors 12312-12672)
+  Added: cloexec_test (192688 bytes, sectors 12673-13049)
+  Added: clonevm_exec_test (184744 bytes, sectors 13050-13410)
+  Added: concurrent_recv_stress (189040 bytes, sectors 13411-13780)
+  Added: confetti (189336 bytes, sectors 13781-14150)
+  Added: counter (177728 bytes, sectors 14151-14498)
+  Added: cow_cleanup_test (182632 bytes, sectors 14499-14855)
+  Added: cow_oom_test (182600 bytes, sectors 14856-15212)
+  Added: cow_readonly_test (187136 bytes, sectors 15213-15578)
+  Added: cow_signal_test (188408 bytes, sectors 15579-15946)
+  Added: cow_sole_owner_test (187096 bytes, sectors 15947-16312)
+  Added: cow_stress_test (187192 bytes, sectors 16313-16678)
+  Added: cp_mv_argv_test (182896 bytes, sectors 16679-17036)
+  Added: ctrl_c_test (188080 bytes, sectors 17037-17404)
+  Added: cwd_test (182712 bytes, sectors 17405-17761)
+  Added: demo (189800 bytes, sectors 17762-18132)
+  Added: devfs_test (182536 bytes, sectors 18133-18489)
+  Added: df_preempt_oracle (187728 bytes, sectors 18490-18856)
+  Added: dns_test (195336 bytes, sectors 18857-19238)
+  Added: dup_test (189248 bytes, sectors 19239-19608)
+  Added: echo_argv_test (182560 bytes, sectors 19609-19965)
+  Added: epoll_test (182928 bytes, sectors 19966-20323)
+  Added: exec_argv_test (178296 bytes, sectors 20324-20672)
+  Added: exec_from_ext2_test (188168 bytes, sectors 20673-21040)
+  Added: exec_smoke (178152 bytes, sectors 21041-21388)
+  Added: exec_smoke_target (185144 bytes, sectors 21389-21750)
+  Added: exec_stack_argv_test (183528 bytes, sectors 21751-22109)
+  Added: false_test (182656 bytes, sectors 22110-22466)
+  Added: fart (191800 bytes, sectors 22467-22841)
+  Added: fbinfo_test (187664 bytes, sectors 22842-23208)
+  Added: fcntl_test (188840 bytes, sectors 23209-23577)
+  Added: fifo_test (198544 bytes, sectors 23578-23965)
+  Added: file_read_test (182496 bytes, sectors 23966-24322)
+  Added: fork_memory_test (188760 bytes, sectors 24323-24691)
+  Added: fork_pending_signal_test (187832 bytes, sectors 24692-25058)
+  Added: fork_smoke (187704 bytes, sectors 25059-25425)
+  Added: fork_state_test (189272 bytes, sectors 25426-25795)
+  Added: fork_test (188184 bytes, sectors 25796-26163)
+  Added: fs_block_alloc_test (188712 bytes, sectors 26164-26532)
+  Added: fs_directory_test (183248 bytes, sectors 26533-26890)
+  Added: fs_large_file_test (182704 bytes, sectors 26891-27247)
+  Added: fs_link_test (182896 bytes, sectors 27248-27605)
+  Added: fs_rename_test (182800 bytes, sectors 27606-27963)
+  Added: fs_write_test (182984 bytes, sectors 27964-28321)
+  Added: futex_handoff_oracle (178920 bytes, sectors 28322-28671)
+  Added: getdents_test (184080 bytes, sectors 28672-29031)
+  Added: guskit (391480 bytes, sectors 29032-29796)
+  Added: head_test (183152 bytes, sectors 29797-30154)
+  Added: heartbeat (189200 bytes, sectors 30155-30524)
+  Added: hello_std_real (227240 bytes, sectors 30525-30968)
+  Added: hello_time (177720 bytes, sectors 30969-31316)
+  Added: hello_world (227240 bytes, sectors 31317-31760)
+  Added: http_fetch_test (464528 bytes, sectors 31761-32668)
+  Added: http_test (468680 bytes, sectors 32669-33584)
+  Added: init (187584 bytes, sectors 33585-33951)
+  Added: init_shell (262616 bytes, sectors 33952-34464)
+  Added: itimer_test (183296 bytes, sectors 34465-34822)
+  Added: job_control_test (187744 bytes, sectors 34823-35189)
+  Added: job_table_test (192328 bytes, sectors 35190-35565)
+  Added: kill_process_group_test (188576 bytes, sectors 35566-35934)
+  Added: loopback_wake_test (190536 bytes, sectors 35935-36307)
+  Added: ls_test (183384 bytes, sectors 36308-36666)
+  Added: lseek_test (182608 bytes, sectors 36667-37023)
+  Added: mkdir_argv_test (182768 bytes, sectors 37024-37380)
+  Added: net_test (191680 bytes, sectors 37381-37755)
+  Added: nonblock_eagain_test (179704 bytes, sectors 37756-38106)
+  Added: nonblock_test (188840 bytes, sectors 38107-38475)
+  Added: particles (194032 bytes, sectors 38476-38854)
+  Added: pause_test (188456 bytes, sectors 38855-39223)
+  Added: pipe2_test (189016 bytes, sectors 39224-39593)
+  Added: pipe_concurrent_test (188816 bytes, sectors 39594-39962)
+  Added: pipe_fifo_blocking_oracle (211560 bytes, sectors 39963-40376)
+  Added: pipe_fifo_blocking_supervisor (178136 bytes, sectors 40377-40724)
+  Added: pipe_fork_test (188920 bytes, sectors 40725-41093)
+  Added: pipe_refcount_test (200040 bytes, sectors 41094-41484)
+  Added: pipe_test (188336 bytes, sectors 41485-41852)
+  Added: pipeline_test (191680 bytes, sectors 41853-42227)
+  Added: poll_tcp_oracle (207264 bytes, sectors 42228-42632)
+  Added: poll_test (189120 bytes, sectors 42633-43002)
+  Added: pty_test (183104 bytes, sectors 43003-43360)
+  Added: rectangles (197184 bytes, sectors 43361-43746)
+  Added: register_init_test (177192 bytes, sectors 43747-44093)
+  Added: resolution (187024 bytes, sectors 44094-44459)
+  Added: rm_argv_test (182576 bytes, sectors 44460-44816)
+  Added: select_test (189008 bytes, sectors 44817-45186)
+  Added: session_test (188064 bytes, sectors 45187-45554)
+  Added: shell_pipe_test (183224 bytes, sectors 45555-45912)
+  Added: sigaltstack_test (189096 bytes, sectors 45913-46282)
+  Added: sigchld_job_test (187616 bytes, sectors 46283-46649)
+  Added: sigchld_test (182528 bytes, sectors 46650-47006)
+  Added: sigkill_teardown_test (206816 bytes, sectors 47007-47410)
+  Added: signal_exec_check (177976 bytes, sectors 47411-47758)
+  Added: signal_exec_test (188816 bytes, sectors 47759-48127)
+  Added: signal_fork_test (188256 bytes, sectors 48128-48495)
+  Added: signal_handler_test (187992 bytes, sectors 48496-48863)
+  Added: signal_regs_test (188304 bytes, sectors 48864-49231)
+  Added: signal_return_test (188408 bytes, sectors 49232-49599)
+  Added: signal_test (187960 bytes, sectors 49600-49967)
+  Added: sigsuspend_test (188960 bytes, sectors 49968-50337)
+  Added: simple_exit (170656 bytes, sectors 50338-50671)
+  Added: simple_exit0 (170656 bytes, sectors 50672-51005)
+  Added: sleep_debug_test (188688 bytes, sectors 51006-51374)
+  Added: spawn_smoke_target (170672 bytes, sectors 51375-51708)
+  Added: spinner (177728 bytes, sectors 51709-52056)
+  Added: stdin_test (182376 bytes, sectors 52057-52413)
+  Added: syscall_diagnostic_test (170928 bytes, sectors 52414-52747)
+  Added: syscall_enosys (177624 bytes, sectors 52748-53094)
+  Added: tail_test (183152 bytes, sectors 53095-53452)
+  Added: tcp_blocking_test (203528 bytes, sectors 53453-53850)
+  Added: tcp_client_test (187712 bytes, sectors 53851-54217)
+  Added: tcp_cloexec_exec_test (189544 bytes, sectors 54218-54588)
+  Added: tcp_dup_listener_test (188928 bytes, sectors 54589-54957)
+  Added: tcp_socket_test (202384 bytes, sectors 54958-55353)
+  Added: telnetd (184168 bytes, sectors 55354-55713)
+  Added: test_mmap (182320 bytes, sectors 55714-56070)
+  Added: timer_test (182240 bytes, sectors 56071-56426)
+  Added: tones (184312 bytes, sectors 56427-56786)
+  Added: true_test (182648 bytes, sectors 56787-57143)
+  Added: tty_oracle (218504 bytes, sectors 57144-57570)
+  Added: tty_test (188184 bytes, sectors 57571-57938)
+  Added: udp_socket_test (193488 bytes, sectors 57939-58316)
+  Added: unix_named_socket_test (195432 bytes, sectors 58317-58698)
+  Added: unix_socket_test (205408 bytes, sectors 58699-59100)
+  Added: wait_stress (195664 bytes, sectors 59101-59483)
+  Added: waitpid_test (188240 bytes, sectors 59484-59851)
+  Added: wc_test (183720 bytes, sectors 59852-60210)
+  Added: which_test (183048 bytes, sectors 60211-60568)
+  Added: wnohang_timing_test (182632 bytes, sectors 60569-60925)
+  Added: xhci_counters (183208 bytes, sectors 60926-61283)
+
+Test disk created: target/test_binaries.img
+  Binaries: 152
+  Data size: 31276160 bytes (29.83 MB)
+  Disk size: 61284 sectors (29.92 MB)
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix-t963/target/ext2.img
+  Size: 256MB
+  Payload: 46MB (userspace binaries + fonts)
+  Minimum image size for this payload: 70MB (incl. ext2 overhead + headroom)
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 47 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 101 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 11088
+drwxr-xr-x  2 root root   4096 Sep  8 04:09 .
+drwxr-xr-x 12 root root   4096 Sep  8 04:09 ..
+-rwxr-xr-x  1 root root 299240 Sep  8 04:09 bcheck
+-rwxr-xr-x  1 root root 346248 Sep  8 04:09 bfontpicker
+-rwxr-xr-x  1 root root 248144 Sep  8 04:09 biconkit
+-rwxr-xr-x  1 root root 325360 Sep  8 04:09 blauncher
+-rwxr-xr-x  1 root root 185728 Sep  8 04:09 bless
+-rwxr-xr-x  1 root root 190104 Sep  8 04:09 block_eintr_oracle
+-rwxr-xr-x  1 root root 331088 Sep  8 04:09 blog
+-rwxr-xr-x  1 root root 275128 Sep  8 04:09 bounce
+-rwxr-xr-x  1 root root 579336 Sep  8 04:09 bsh
+-rwxr-xr-x  1 root root 322608 Sep  8 04:09 bssh
+-rwxr-xr-x  1 root root 314384 Sep  8 04:09 bsshd
+-rwxr-xr-x  1 root root 338608 Sep  8 04:09 bterm
+-rwxr-xr-x  1 root root 184272 Sep  8 04:09 btop
+-rwxr-xr-x  1 root root 199024 Sep  8 04:09 btrace
+-rwxr-xr-x  1 root root 483464 Sep  8 04:09 burl
+-rwxr-xr-x  1 root root 331384 Sep  8 04:09 bwm
+-rwxr-xr-x  1 root root 189040 Sep  8 04:09 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189336 Sep  8 04:09 confetti
+-rwxr-xr-x  1 root root 177728 Sep  8 04:09 counter
+-rwxr-xr-x  1 root root 189800 Sep  8 04:09 demo
+-rwxr-xr-x  1 root root 187728 Sep  8 04:09 df_preempt_oracle
+-rwxr-xr-x  1 root root 178152 Sep  8 04:09 exec_smoke
+-rwxr-xr-x  1 root root 185144 Sep  8 04:09 exec_smoke_target
+-rwxr-xr-x  1 root root 191800 Sep  8 04:09 fart
+-rwxr-xr-x  1 root root 187704 Sep  8 04:09 fork_smoke
+-rwxr-xr-x  1 root root 178920 Sep  8 04:09 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391480 Sep  8 04:09 guskit
+-rwxr-xr-x  1 root root 189200 Sep  8 04:09 heartbeat
+-rwxr-xr-x  1 root root 177720 Sep  8 04:09 hello_time
+-rwxr-xr-x  1 root root 227240 Sep  8 04:09 hello_world
+-rwxr-xr-x  1 root root 262616 Sep  8 04:09 init_shell
+-rwxr-xr-x  1 root root 194032 Sep  8 04:09 particles
+-rwxr-xr-x  1 root root 211560 Sep  8 04:09 pipe_fifo_blocking_oracle
+-rwxr-xr-x  1 root root 178136 Sep  8 04:09 pipe_fifo_blocking_supervisor
+-rwxr-xr-x  1 root root 207264 Sep  8 04:09 poll_tcp_oracle
+-rwxr-xr-x  1 root root 197184 Sep  8 04:09 rectangles
+-rwxr-xr-x  1 root root 187024 Sep  8 04:09 resolution
+-rwxr-xr-x  1 root root 177976 Sep  8 04:09 signal_exec_check
+-rwxr-xr-x  1 root root 170656 Sep  8 04:09 simple_exit
+-rwxr-xr-x  1 root root 170656 Sep  8 04:09 simple_exit0
+-rwxr-xr-x  1 root root 170672 Sep  8 04:09 spawn_smoke_target
+-rwxr-xr-x  1 root root 177728 Sep  8 04:09 spinner
+-rwxr-xr-x  1 root root 177624 Sep  8 04:09 syscall_enosys
+-rwxr-xr-x  1 root root 184312 Sep  8 04:09 tones
+-rwxr-xr-x  1 root root 218504 Sep  8 04:09 tty_oracle
+-rwxr-xr-x  1 root root 195664 Sep  8 04:09 wait_stress
+-rwxr-xr-x  1 root root 183208 Sep  8 04:09 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19568
+drwxr-xr-x 2 root root   4096 Sep  8 04:09 .
+drwxr-xr-x 3 root root   4096 Sep  8 04:09 ..
+-rwxr-xr-x 1 root root 178040 Sep  8 04:09 access_test
+-rwxr-xr-x 1 root root 182856 Sep  8 04:09 alarm_test
+-rwxr-xr-x 1 root root 184440 Sep  8 04:09 argv_test
+-rwxr-xr-x 1 root root 184112 Sep  8 04:09 blocking_recv_test
+-rwxr-xr-x 1 root root 182576 Sep  8 04:09 brk_test
+-rwxr-xr-x 1 root root 183328 Sep  8 04:09 cat_test
+-rwxr-xr-x 1 root root 184648 Sep  8 04:09 clock_gettime_test
+-rwxr-xr-x 1 root root 192688 Sep  8 04:09 cloexec_test
+-rwxr-xr-x 1 root root 184744 Sep  8 04:09 clonevm_exec_test
+-rwxr-xr-x 1 root root 182632 Sep  8 04:09 cow_cleanup_test
+-rwxr-xr-x 1 root root 182600 Sep  8 04:09 cow_oom_test
+-rwxr-xr-x 1 root root 187136 Sep  8 04:09 cow_readonly_test
+-rwxr-xr-x 1 root root 188408 Sep  8 04:09 cow_signal_test
+-rwxr-xr-x 1 root root 187096 Sep  8 04:09 cow_sole_owner_test
+-rwxr-xr-x 1 root root 187192 Sep  8 04:09 cow_stress_test
+-rwxr-xr-x 1 root root 182896 Sep  8 04:09 cp_mv_argv_test
+-rwxr-xr-x 1 root root 188080 Sep  8 04:09 ctrl_c_test
+-rwxr-xr-x 1 root root 182712 Sep  8 04:09 cwd_test
+-rwxr-xr-x 1 root root 182536 Sep  8 04:09 devfs_test
+-rwxr-xr-x 1 root root 195336 Sep  8 04:09 dns_test
+-rwxr-xr-x 1 root root 189248 Sep  8 04:09 dup_test
+-rwxr-xr-x 1 root root 182560 Sep  8 04:09 echo_argv_test
+-rwxr-xr-x 1 root root 182928 Sep  8 04:09 epoll_test
+-rwxr-xr-x 1 root root 178296 Sep  8 04:09 exec_argv_test
+-rwxr-xr-x 1 root root 188168 Sep  8 04:09 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183528 Sep  8 04:09 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182656 Sep  8 04:09 false_test
+-rwxr-xr-x 1 root root 187664 Sep  8 04:09 fbinfo_test
+-rwxr-xr-x 1 root root 188840 Sep  8 04:09 fcntl_test
+-rwxr-xr-x 1 root root 198544 Sep  8 04:09 fifo_test
+-rwxr-xr-x 1 root root 182496 Sep  8 04:09 file_read_test
+-rwxr-xr-x 1 root root 188760 Sep  8 04:09 fork_memory_test
+-rwxr-xr-x 1 root root 187832 Sep  8 04:09 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189272 Sep  8 04:09 fork_state_test
+-rwxr-xr-x 1 root root 188184 Sep  8 04:09 fork_test
+-rwxr-xr-x 1 root root 188712 Sep  8 04:09 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183248 Sep  8 04:09 fs_directory_test
+-rwxr-xr-x 1 root root 182704 Sep  8 04:09 fs_large_file_test
+-rwxr-xr-x 1 root root 182896 Sep  8 04:09 fs_link_test
+-rwxr-xr-x 1 root root 182800 Sep  8 04:09 fs_rename_test
+-rwxr-xr-x 1 root root 182984 Sep  8 04:09 fs_write_test
+-rwxr-xr-x 1 root root 184080 Sep  8 04:09 getdents_test
+-rwxr-xr-x 1 root root 183152 Sep  8 04:09 head_test
+-rwxr-xr-x 1 root root 464528 Sep  8 04:09 http_fetch_test
+-rwxr-xr-x 1 root root 468680 Sep  8 04:09 http_test
+-rwxr-xr-x 1 root root 183296 Sep  8 04:09 itimer_test
+-rwxr-xr-x 1 root root 187744 Sep  8 04:09 job_control_test
+-rwxr-xr-x 1 root root 192328 Sep  8 04:09 job_table_test
+-rwxr-xr-x 1 root root 188576 Sep  8 04:09 kill_process_group_test
+-rwxr-xr-x 1 root root 190536 Sep  8 04:09 loopback_wake_test
+-rwxr-xr-x 1 root root 183384 Sep  8 04:09 ls_test
+-rwxr-xr-x 1 root root 182608 Sep  8 04:09 lseek_test
+-rwxr-xr-x 1 root root 182768 Sep  8 04:09 mkdir_argv_test
+-rwxr-xr-x 1 root root 191680 Sep  8 04:09 net_test
+-rwxr-xr-x 1 root root 179704 Sep  8 04:09 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188840 Sep  8 04:09 nonblock_test
+-rwxr-xr-x 1 root root 188456 Sep  8 04:09 pause_test
+-rwxr-xr-x 1 root root 189016 Sep  8 04:09 pipe2_test
+-rwxr-xr-x 1 root root 188816 Sep  8 04:09 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188920 Sep  8 04:09 pipe_fork_test
+-rwxr-xr-x 1 root root 200040 Sep  8 04:09 pipe_refcount_test
+-rwxr-xr-x 1 root root 188336 Sep  8 04:09 pipe_test
+-rwxr-xr-x 1 root root 191680 Sep  8 04:09 pipeline_test
+-rwxr-xr-x 1 root root 189120 Sep  8 04:09 poll_test
+-rwxr-xr-x 1 root root 183104 Sep  8 04:09 pty_test
+-rwxr-xr-x 1 root root 177192 Sep  8 04:09 register_init_test
+-rwxr-xr-x 1 root root 182576 Sep  8 04:09 rm_argv_test
+-rwxr-xr-x 1 root root 189008 Sep  8 04:09 select_test
+-rwxr-xr-x 1 root root 188064 Sep  8 04:09 session_test
+-rwxr-xr-x 1 root root 183224 Sep  8 04:09 shell_pipe_test
+-rwxr-xr-x 1 root root 189096 Sep  8 04:09 sigaltstack_test
+-rwxr-xr-x 1 root root 187616 Sep  8 04:09 sigchld_job_test
+-rwxr-xr-x 1 root root 182528 Sep  8 04:09 sigchld_test
+-rwxr-xr-x 1 root root 206816 Sep  8 04:09 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188816 Sep  8 04:09 signal_exec_test
+-rwxr-xr-x 1 root root 188256 Sep  8 04:09 signal_fork_test
+-rwxr-xr-x 1 root root 187992 Sep  8 04:09 signal_handler_test
+-rwxr-xr-x 1 root root 188304 Sep  8 04:09 signal_regs_test
+-rwxr-xr-x 1 root root 188408 Sep  8 04:09 signal_return_test
+-rwxr-xr-x 1 root root 187960 Sep  8 04:09 signal_test
+-rwxr-xr-x 1 root root 188960 Sep  8 04:09 sigsuspend_test
+-rwxr-xr-x 1 root root 188688 Sep  8 04:09 sleep_debug_test
+-rwxr-xr-x 1 root root 182376 Sep  8 04:09 stdin_test
+-rwxr-xr-x 1 root root 170928 Sep  8 04:09 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183152 Sep  8 04:09 tail_test
+-rwxr-xr-x 1 root root 203528 Sep  8 04:09 tcp_blocking_test
+-rwxr-xr-x 1 root root 187712 Sep  8 04:09 tcp_client_test
+-rwxr-xr-x 1 root root 189544 Sep  8 04:09 tcp_cloexec_exec_test
+-rwxr-xr-x 1 root root 188928 Sep  8 04:09 tcp_dup_listener_test
+-rwxr-xr-x 1 root root 202384 Sep  8 04:09 tcp_socket_test
+-rwxr-xr-x 1 root root 182320 Sep  8 04:09 test_mmap
+-rwxr-xr-x 1 root root 182240 Sep  8 04:09 timer_test
+-rwxr-xr-x 1 root root 182648 Sep  8 04:09 true_test
+-rwxr-xr-x 1 root root 188184 Sep  8 04:09 tty_test
+-rwxr-xr-x 1 root root 193488 Sep  8 04:09 udp_socket_test
+-rwxr-xr-x 1 root root 195432 Sep  8 04:09 unix_named_socket_test
+-rwxr-xr-x 1 root root 205408 Sep  8 04:09 unix_socket_test
+-rwxr-xr-x 1 root root 188240 Sep  8 04:09 waitpid_test
+-rwxr-xr-x 1 root root 183720 Sep  8 04:09 wc_test
+-rwxr-xr-x 1 root root 183048 Sep  8 04:09 which_test
+-rwxr-xr-x 1 root root 182632 Sep  8 04:09 wnohang_timing_test
+-rw-r--r-- 1 root root 111 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/lines.txt
+-rw-r--r-- 1 root root 0 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/empty.txt
+-rwxr-xr-x 1 root root 184168 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/sbin/telnetd
+-rwxr-xr-x 1 root root 187584 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/sbin/init
+-rwxr-xr-x 1 root root 182056 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/sbin/blogd
+-rw-r--r-- 1 root root 26 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/etc/group
+-rw-r--r-- 1 root root 367 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/etc/bshrc
+-rw-r--r-- 1 root root 445 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/etc/fonts.conf
+-rw-r--r-- 1 root root 83 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/etc/passwd
+-rw-r--r-- 1 root root 679 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/etc/init.js
+-rw-r--r-- 1 root root 349 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/etc/hotkeys.conf
+-rw-r--r-- 1 root root 19 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/trunctest.txt
+-rw-r--r-- 1 root root 309408 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 282844 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 273900 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 20 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 17 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/hello.txt
+-rw-r--r-- 1 root root 20 Sep  8 04:09 /root/breenix-t963-tmp/tmp.N9Tq0WzZKo/test/nested.txt
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix-t963/target/ext2.img
+  /root/breenix-t963/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (30s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (60s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (90s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (120s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (150s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (180s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (210s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (240s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (270s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (300s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (330s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (360s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (390s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (420s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (450s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (480s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (510s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (540s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (570s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (600s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (630s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (660s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (690s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (720s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (750s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (780s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (810s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (840s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (870s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (900s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (930s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (960s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (990s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1020s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1050s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1080s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1110s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1140s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1170s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1200s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1230s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1260s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1290s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1320s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1350s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1380s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1410s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1440s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (1470s elapsed, host qemu-system-x86_64 count=0)...
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788842092590-1788843097084:qemu_at_start=0:load_at_start=0.70:qemu_at_end=0:load_at_end=1.76:qemu_cpu_s=585.00:guest_uptime_ms=NA:ended_by=poll_exhausted]
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+  PCI function facts (PCI_FN_TOTAL 9):
+    PCI_FN 00:00.0 8086:1237 class=06/00 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.0 8086:7000 class=06/01 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.1 8086:7010 class=01/01 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.3 8086:7113 class=06/80 bar0=0x0/0x0 irq=0x0a
+    PCI_FN 00:02.0 1234:1111 class=03/00 bar0=0x80000000/0x1000000 irq=0xff
+    PCI_FN 00:03.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0b
+    PCI_FN 00:04.0 1af4:1001 class=01/00 bar0=0xc100/0x80 irq=0x0b
+    PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0a
+    PCI_FN 00:06.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
+x86 frame-custody gate run 1: FAIL (set -e abort at docker/qemu/run-x86-boot-tests.sh:1070, exit 1)
+  failing command: test "$passed" = true
+[CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=300]
+[CAPTURE_DRAIN_EVENTS:last_events=none]
+--- serial tail (last 200 lines per file, /root/breenix-t963-tmp/breenix_x86_boot_tests_1) ---
+==> /root/breenix-t963-tmp/breenix_x86_boot_tests_1/serial_kernel.txt <==
+[DISPATCH_STRAND_CENSUS:seq=665:tick=114298:ms=803564:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=666:tick=114499:ms=804569:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=667:tick=114700:ms=805574:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+[DISPATCH_STRAND_CENSUS:seq=668:tick=114901:ms=806578:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=669:tick=115102:ms=807583:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=670:tick=115303:ms=808587:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=671:tick=115504:ms=809592:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=672:tick=115705:ms=810597:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=673:tick=115906:ms=811601:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=674:tick=116107:ms=812606:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=675:tick=116308:ms=813610:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=676:tick=116509:ms=814615:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=677:tick=116710:ms=815620:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=678:tick=116911:ms=816624:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=679:tick=117105:ms=817629:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=680:tick=117306:ms=818633:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=681:tick=117507:ms=819638:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=682:tick=117708:ms=820642:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=683:tick=117909:ms=821647:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=684:tick=118110:ms=822651:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=685:tick=118311:ms=823656:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=686:tick=118512:ms=824660:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=687:tick=118713:ms=825665:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=688:tick=118914:ms=826670:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=689:tick=119115:ms=827674:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=690:tick=119316:ms=828679:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=691:tick=119517:ms=829684:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+[DISPATCH_STRAND_CENSUS:seq=692:tick=119718:ms=830688:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=693:tick=119919:ms=831693:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=694:tick=120120:ms=832697:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=695:tick=120321:ms=833702:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=696:tick=120522:ms=834707:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=697:tick=120723:ms=835711:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=698:tick=120924:ms=836716:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=699:tick=121125:ms=837721:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=700:tick=121326:ms=838725:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=701:tick=121527:ms=839730:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=702:tick=121728:ms=840734:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=703:tick=121929:ms=841739:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=704:tick=122130:ms=842744:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=705:tick=122331:ms=843748:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=706:tick=122532:ms=844753:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=707:tick=122733:ms=845757:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=708:tick=122934:ms=846762:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=709:tick=123132:ms=847767:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=710:tick=123333:ms=848772:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=711:tick=123534:ms=849776:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=712:tick=123735:ms=850783:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=713:tick=123936:ms=851785:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=714:tick=124137:ms=852789:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=715:tick=124338:ms=853795:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+[DISPATCH_STRAND_CENSUS:seq=716:tick=124530:ms=854799:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=717:tick=124731:ms=855804:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=718:tick=124932:ms=856808:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=719:tick=125133:ms=857814:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=720:tick=125334:ms=858816:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=721:tick=125535:ms=859822:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=722:tick=125736:ms=860827:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=723:tick=125937:ms=861832:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=724:tick=126138:ms=862836:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=725:tick=126339:ms=863841:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=726:tick=126540:ms=864845:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=727:tick=126741:ms=865850:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=728:tick=126940:ms=866854:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=729:tick=127140:ms=867859:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=730:tick=127341:ms=868863:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=731:tick=127542:ms=869868:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=732:tick=127743:ms=870873:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=733:tick=127944:ms=871877:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=734:tick=128145:ms=872882:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=735:tick=128345:ms=873886:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=736:tick=128546:ms=874893:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=737:tick=128747:ms=875895:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=738:tick=128948:ms=876899:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+[DISPATCH_STRAND_CENSUS:seq=739:tick=129149:ms=877905:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=740:tick=129350:ms=878909:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=741:tick=129551:ms=879913:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=742:tick=129752:ms=880919:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=743:tick=129953:ms=881923:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=744:tick=130154:ms=882928:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=745:tick=130351:ms=883933:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=746:tick=130552:ms=884938:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=747:tick=130753:ms=885944:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=748:tick=130954:ms=886946:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=749:tick=131155:ms=887951:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=750:tick=131356:ms=888955:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=751:tick=131557:ms=889960:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=752:tick=131746:ms=890965:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=753:tick=131944:ms=891968:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=754:tick=132145:ms=892973:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=755:tick=132346:ms=893978:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=756:tick=132547:ms=894983:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=757:tick=132748:ms=895987:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=758:tick=132949:ms=896992:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=759:tick=133150:ms=897997:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=760:tick=133351:ms=899000:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=761:tick=133552:ms=900006:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=762:tick=133753:ms=901011:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+Next thread from queue: 1, cpu: 0
+Switching from thread 4 to thread 1
+[DISPATCH_STRAND_CENSUS:seq=763:tick=133954:ms=902015:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=764:tick=134150:ms=903020:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=765:tick=134351:ms=904023:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=766:tick=134552:ms=905028:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=767:tick=134753:ms=906034:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=768:tick=134949:ms=907039:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=769:tick=135150:ms=908043:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=770:tick=135341:ms=909047:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=771:tick=135542:ms=910052:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=772:tick=135743:ms=911057:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=773:tick=135941:ms=912060:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=774:tick=136142:ms=913066:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=775:tick=136343:ms=914070:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=776:tick=136544:ms=915075:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=777:tick=136745:ms=916080:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=778:tick=136946:ms=917084:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=779:tick=137147:ms=918089:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=780:tick=137348:ms=919093:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=781:tick=137549:ms=920098:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=782:tick=137745:ms=921103:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=783:tick=137946:ms=922107:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=784:tick=138147:ms=923112:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=785:tick=138348:ms=924116:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=786:tick=138549:ms=925120:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+[DISPATCH_STRAND_CENSUS:seq=787:tick=138750:ms=926126:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=788:tick=138951:ms=927130:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=789:tick=139152:ms=928135:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=790:tick=139353:ms=929140:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=791:tick=139554:ms=930144:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=792:tick=139755:ms=931149:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=793:tick=139956:ms=932153:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=794:tick=140157:ms=933158:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=795:tick=140358:ms=934162:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=796:tick=140559:ms=935167:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=797:tick=140760:ms=936170:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=798:tick=140961:ms=937176:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=799:tick=141162:ms=938181:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=800:tick=141360:ms=939185:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=801:tick=141542:ms=940190:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=802:tick=141743:ms=941195:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=803:tick=141944:ms=942199:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=804:tick=142099:ms=943219:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=805:tick=142102:ms=944321:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=806:tick=142299:ms=945303:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=807:tick=142499:ms=946303:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=808:tick=142678:ms=947306:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=809:tick=142879:ms=948312:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=810:tick=143080:ms=949316:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=811:tick=143281:ms=950320:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=812:tick=143434:ms=951325:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+[DISPATCH_STRAND_CENSUS:seq=813:tick=143635:ms=952331:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=814:tick=143836:ms=953336:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=815:tick=143878:ms=954585:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=816:tick=144039:ms=955389:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=817:tick=144240:ms=956394:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=818:tick=144425:ms=957648:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=819:tick=144626:ms=958653:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=820:tick=144800:ms=959703:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=821:tick=144817:ms=960666:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=822:tick=145018:ms=961672:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=823:tick=145219:ms=962676:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=824:tick=145408:ms=963681:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=825:tick=145609:ms=964685:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=826:tick=145810:ms=965690:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=827:tick=146011:ms=966695:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=828:tick=146212:ms=967700:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=829:tick=146360:ms=968717:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=830:tick=146433:ms=969719:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=831:tick=146634:ms=970723:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=832:tick=146835:ms=971730:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=833:tick=147036:ms=972733:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=834:tick=147198:ms=973739:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=835:tick=147399:ms=974742:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=836:tick=147600:ms=975748:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=837:tick=147800:ms=976751:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=838:tick=148001:ms=977756:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=839:tick=148173:ms=978789:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+[DISPATCH_STRAND_CENSUS:seq=840:tick=148366:ms=979758:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=841:tick=148567:ms=980764:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=842:tick=148768:ms=981769:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=843:tick=148969:ms=982772:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=844:tick=149170:ms=983778:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=845:tick=149368:ms=984784:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=846:tick=149569:ms=985787:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=847:tick=149770:ms=986792:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+[DISPATCH_STRAND_CENSUS:seq=848:tick=149971:ms=987797:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
+
+==> /root/breenix-t963-tmp/breenix_x86_boot_tests_1/serial_user.txt <==
+[TEST:userspace:loopback_recv_wake:START]
+<S>[SW]<K>[SW]<T><U><R>[COW FAULT #1] addr=0x7fffff0f1e88 cr3=0x5722000
+[SW]<T><U>CLONEVM_EXEC_TEST: start
+<S>[SW]<T><U><S>[SW]<T><U>[DF_PREEMPT] start: entering DF=1 windows, no fork, no sleep
+[DF_PREEMPT] window 1 begin iterations=10000000
+[DF_PREEMPT] window 1 end elapsed_ms=33 rflags_before_cld=0x646 rflags_after_cld=0x246
+<S>[SW]<K>[SW]<T><U><R>UDP: Loopback packet sent, bytes=7
+UDP Socket Test: Attempting to receive packet...
+UDP: Received packet! bytes=7
+UDP: RX data matches TX data - SUCCESS!
+UDP Ephemeral Port Test: Starting...
+UDP: Ephemeral socket created fd=5
+UDP_EPHEMERAL_TEST: port 0 bind OK
+UDP EADDRINUSE Test: Starting...
+UDP: First socket bound to port 54324
+UDP_EADDRINUSE_TEST: conflict detected OK
+UDP EAGAIN Test: Starting...
+UDP: EAGAIN test socket bound to port 54325
+UDP_EAGAIN_TEST: empty queue OK
+UDP Multiple Packets Test: Starting...
+UDP: Multi-packet RX socket bound to port 54326
+UDP: Multi-packet TX socket bound to port 54327
+UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 1, bytes=4
+UDP: Delivered packet to socket on port 54326
+<S>[SW]<T><U><R>TCP_TEST: shutdown OK
+TCP_TEST: shutdown_unconnected OK
+TCP_TEST: eaddrinuse OK
+TCP_TEST: listen_unbound OK
+TCP_TEST: accept_nonlisten OK
+TCP_DATA_TEST: starting
+TCP_DATA_TEST: server listening on 8082
+TCP_DATA_TEST: client connected
+TCP_DATA_TEST: send OK
+TCP_DATA_TEST: accept OK
+TCP_DATA_TEST: recv OK
+TCP_DATA_TEST: data verified
+TCP_SHUTDOWN_WRITE_TEST: starting
+<S>[SW]<T><U><R>  PASS: accepted a connection through the dup'd fd after the original closed
+<S>[SW]<T><U><R>[COW FAULT #2] addr=0x7fffff0bee78 cr3=0x5940000
+[COW FAULT #3] addr=0x40018058 cr3=0x5940000
+[COW FAULT #4] addr=0x7ffffdffe010 cr3=0x5940000
+
+[COW FAULT #5] addr=0x7ffffdfff010 cr3=0x5940000
+Step 4: parent waiting for child (pid=121)...
+[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'example.com' via 8.8.8.8: Timeout (2757ms)
+<S>[SW]<T><U><R>[COW FAULT #6] addr=0x7fffff0f1e88 cr3=0x5b94000
+<S>[SW]<K>[SW]<T><U><R>[COW FAULT #7] addr=0x7fffff0f1e88 cr3=0x559b000
+<S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child live
+CLONEVM_EXEC_TEST: SKIP live-sibling probe (no x86 guard, see #468)
+<S>[SW]<T><U><R>[SW]<T><U><R>[DF_PREEMPT] window 2 begin iterations=80000000
+<S>[SW]<T><B>[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=60:arm_delay_us=135:rescues=0:queue_residual=0:balance=0]
+[FUTEX_HANDOFF_ORACLE_DRIVER:s1=-11:s2=0:s3=-110]
+<S>[SW]<K>[SW]<T><U><R>UDP: Sent packet 2, bytes=4
+UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 3, bytes=4
+<S>[SW]<T><U><R><S>[SW]<T><U><R>
+Step 5: close the last fd; the listener must now actually retire...
+  PASS: port 9110 was free after the last fd closed (listener genuinely retired)
+
+=== All TCP dup'd-listener tests passed! ===
+TCP_DUP_LISTENER_TEST_PASSED
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'example.com' via 10.211.55.1: Timeout<S>[SW]<T><U><R>[COW FAULT #8] addr=0x7fffff0f1e88 cr3=0x5b94000
+<S>[SW]<K>[SW]<T><U><R>[COW FAULT #9] addr=0x7fffff0f1e88 cr3=0x588d000
+[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child exited
+[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>UDP: Received packet 1, bytes=4
+UDP: Received packet 2, bytes=4
+UDP: Received packet 3, bytes=4
+UDP_MULTIPACKET_TEST: 3 packets OK
+UDP Socket Test: All tests passed!
+<S>[SW]<T><U><R>TCP_SHUTDOWN_WRITE_TEST: EPIPE OK
+TCP_SHUT_RD_TEST: starting
+p00r0 <S>[SW]<T><B>[SW]<T><U><R>DNS Test: Starting
+DNS_TEST: resolving www.google.com...
+<S>[SW]<T><U><R> (987ms)
+<S>[SW]<T><U><R>[COW FAULT #10] addr=0x7fffff0f1e88 cr3=0x5b94000
+<S>[SW]<K>[SW]<T><U><R>[COW FAULT #11] addr=0x7fffff0f1e88 cr3=0x5da7000
+[SW]<T><B>[COW FAULT #12] addr=0x40017058 cr3=0x5722000
+[COW FAULT #13] addr=0x7ffffdffe010 cr3=0x5722000
+[COW FAULT #14] addr=0x7ffffdfff010 cr3=0x5722000
+LOOPBACK_WAKE_TEST: data latency_ms=1683 bytes=16
+LOOPBACK_WAKE_TEST: reader_stamps pid=122 w0=476239 acc=476219 pre=476219 data=477922 w0_to_pre=0 pre_to_data=1703 lat=1683
+[SW]<T><U><R>[COW FAULT #15] addr=0x40017058 cr3=0x559b000
+[COW FAULT #16] addr=0x7ffffdffe010 cr3=0x559b000
+[COW FAULT #17] addr=0x7ffffdfff010 cr3=0x559b000
+LOOPBACK_WAKE_TEST: peer_stamps pid=124 conn=476238 w0=476239 w1=477950 write_ms=1711
+[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SHUT_RD_TEST: EOF OK
+TCP_SHUT_WR_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49155
+[COW FAULT #18] addr=0x7fffff0f1e88 cr3=0x5b94000
+[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SHUT_WR_TEST: SHUT_WR write rejected OK
+TCP_SHUT_WR_TEST: server saw FIN OK
+TCP_BIDIR_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: google_resolve SKIP (network unavailable)
+DNS_TEST: resolving example.com...
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>LOOPBACK_WAKE_TEST: eof wait_ms=515 bytes=0
+LOOPBACK_WAKE_TEST: reader_eof_stamps ready=477930 eof=478445 eof_wait=515
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[DF_PREEMPT] window 2 end elapsed_ms=4619 rflags_before_cld=0x646 rflags_after_cld=0x246
+[DF_PREEMPT] window 3 begin iterations=80000000
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>UDP: Delivered packet to socket on port 49157
+[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BIDIR_TEST: server->client OK
+TCP_LARGE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'example.com' via 172.16.45.2<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: resolved ip=104.20.23.154
+<S>[SW]<T><U><R>: Timeout (2440ms)
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_LARGE_TEST: 256 bytes verified OK
+TCP_BACKLOG_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: example_resolve OK
+DNS_TEST: testing NXDOMAIN...
+<S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49158
+[dns] resolved 'example.com' via 10.0.2.3 -> 172.66.147.243 (185ms, total 8939ms)
+[http] DNS resolved 172.66.147.243 (8946ms)
+[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>UDP: Delivered packet to socket on port 49159
+<S>[SW]<T><B>[http] TCP connected (106ms)
+[SW]<T><U><R>p00r0 <S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: nxdomain OK (error=ServerError(3))
+DNS_TEST: testing empty hostname...
+DNS_TEST: empty_hostname OK
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BACKLOG_TEST: overflow rejected OK
+TCP_CONNREFUSED_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: testing long hostname...
+DNS_TEST: long_hostname OK
+DNS_TEST: testing txid variation...
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0ccf28
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x4000acef
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x202
+[DIAG:PAGEFAULT] RSP: 0x7fffff0ccf30
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x5aa7000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0ccf28 Error: 0x6 (P=0, W=1, U=1, I=0)
+F<S>[SW]<T><U><R>[DF_PREEMPT] window 3 end elapsed_ms=1289 rflags_before_cld=0x646 rflags_after_cld=0x246
+[DF_PREEMPT] window 4 begin iterations=80000000
+<S>[SW]<K>[SW]<T><U><R>TCP_CONNREFUSED_TEST: ECONNREFUSED OK
+TCP_MSS_TEST: starting
+<S>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><U><R>UDP: Delivered packet to socket on port 49160
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>UDP: Delivered packet to socket on port 49161
+<S>[SW]<T><U><R>p00r1 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_MSS_TEST: 2000 bytes (>MSS) verified OK
+TCP_MULTI_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: txid_varies OK
+DNS Test: All tests passed!
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[DF_PREEMPT] window 4 end elapsed_ms=1032 rflags_before_cld=0x646 rflags_after_cld=0x246
+[DF_PREEMPT] windows=4 long_windows=3 iterations=80000000
+[DF_PREEMPT] clock_stalled=0 budget_exhausted=0 spin_ceiling_hit=0
+[DF_PREEMPT] ticks_spanned=4619 df_after_cld=0 df_roundtrip=ok
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<K>[SW]<T><U><R>TCP_MULTI_TEST: 3 messages verified OK
+TCP_ADDR_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_ADDR_TEST: 10.x.x.x OK
+TCP_SIMUL_CLOSE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SIMUL_CLOSE_TEST: simultaneous close OK
+TCP_HALFCLOSE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>p00r1 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_HALFCLOSE_TEST: read after SHUT_WR OK
+TCP_FIRST_ACCEPT_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_FIRST_ACCEPT_TEST: accept OK
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP Socket Test: PASSED
+<S>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[EXEC_LOCK_ORDER:FIRST_COMMIT]
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>  PASS: child exec'd simple_exit0 and exited with code 0
+
+Step 5: close the parent's own listener fd...
+<S>[SW]<T><U><R>p00r1 <S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>  Parent's listener fd closed
+
+Step 6: rebind port 9112 -- must succeed if the listener was genuinely retired...
+  PASS: port 9112 was free after the parent's close -- the child's cloexec'd copy was genuinely released across exec()
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>
+=== All TCP FD_CLOEXEC exec() tests passed! ===
+TCP_CLOEXEC_EXEC_TEST_PASSED
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>p00r1 <S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>CLONEVM_EXEC_TEST: second stage
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R>[SW]<T><U><R>p00r0 <S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: post-exec rendezvous complete
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+<S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #19] addr=0x40017058 cr3=0x588d000
+LOOPBACK_WAKE_TEST: load_stamps max_gap_ms=318 samples=17394 spin_ms=10000
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<I>[SW]<K>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<K>[SW]<T><U><R><S>[SW]<I>p01r1 [SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><B>LOOPBACK_WAKE_TEST: watchdog_stamps target=500377 wake=500379 overrun_ms=2
+<S>[SW]<T><U><R><S>[SW]<T><B>[TEST:userspace:loopback_recv_wake:PASS]
+<S>[SW]<T><U><R><S>[SW]<I>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>HTTP_TEST: https_url OK (TLS attempted, failed as expected without network/certs)
+HTTP_TEST: testing error handling (invalid domain)...
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>UDP: Delivered packet to socket on port 49162
+[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 8.8.8.8: ServerError(3) (30ms)
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r1 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 10.211.55.1: Timeout (508ms)
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 172.16.45.2<S>[SW]<I>[SW]<T><U><R>: Timeout (507ms)
+UDP: Delivered packet to socket on port 49165
+[dns] 'this.domain.does.not.exist.invalid' via 10.0.2.3: ServerError(3) (8ms)
+[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 1075ms)
+HTTP_TEST: invalid_domain OK
+HTTP_TEST: testing HTTP fetch (example.com)...
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>UDP: Delivered packet to socket on port 49166
+<S>[SW]<I>[SW]<T><U><R>[dns] resolved 'example.com' via 8.8.8.8 -> 104.20.23.154 (26ms, total 32ms)
+[http] DNS resolved 104.20.23.154 (38ms)
+[SW]<I>[SW]<T><B>[http] TCP connected (32ms)
+[SW]<I>[SW]<T><B>[http] response received: 868 bytes (recv 65ms, total 145ms)
+HTTP_TEST: received 868 bytes, status=200
+HTTP_TEST: example_fetch OK (status 200, body contains HTML)
+HTTP Test: All tests passed!
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1]
+<S>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[KSTACK_QUIESCE_LEAK:baseline_outstanding=5:outstanding=20:leaked=0]
+[TOMBSTONE_QUIESCE:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1:pending=1:parked=0]
+[RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=3:injected=1:pend_epoch=0:pend_hw=0:pend_shadow=1:pend_selectable=0]
+[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>  preserved failing serial + capture reading: /root/breenix-t963-tmp/breenix_x86_boot_tests_failures/20260908T045137Z_1791239
+EXIT=1
