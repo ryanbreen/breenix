@@ -1,0 +1,10 @@
+{
+  "name": "shell-no-pty",
+  "revision": "aba3617a87f45ebda16c7ca460a9a72c1f3ca902",
+  "dirty": true,
+  "command": "timeout 15 ssh -vv -p 24430 -o UserKnownHostsFile=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/.tmp/known_hosts -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o PubkeyAcceptedAlgorithms=rsa-sha2-256 -i /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/.tmp/openssh-test-key -o StrictHostKeyChecking=yes -T root@127.0.0.1",
+  "stdin": "echo pipe-ok\nexit 3\n",
+  "exit": 3,
+  "expected": 3,
+  "seconds": 4.683
+}

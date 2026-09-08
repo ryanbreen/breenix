@@ -836,6 +836,11 @@ score_serial() {
         echo "Pin-guard oracle did not pass ($(grep -aE "$PIN_GUARD_ORACLE_PATTERN" "$serial_file" | tail -1))"
         return 1
     fi
+    if [ "$(tr -d '\r' < "$serial_file" | grep -Fxc '[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]')" -ne 1 ] ||
+        grep -aqF '[BSSH_PUBKEY_ORACLE:FAIL' "$serial_file"; then
+        echo "BSSH publickey oracle missing, duplicated, or failed"
+        return 1
+    fi
     return 0
 }
 

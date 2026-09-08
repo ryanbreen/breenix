@@ -1,0 +1,19 @@
+revision=80a885e0a0c29bcc25d31e96795b9a4d6a6a610d
+libs/libbreenix/src/ssh/transport.rs:333:                 if recipient != ch.local_id {
+libs/libbreenix/src/ssh/transport.rs:360:     pub fn finish(&mut self, status: i32) -> Result<(), SshError> {
+libs/libbreenix/src/ssh/auth.rs:155:                 && keys::verify_rsa_signature(key_blob, signature, &signed_data)
+userspace/programs/src/init.rs:654:         print!("[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]\n");
+userspace/programs/src/init.rs:657:             "[BSSH_PUBKEY_ORACLE:FAIL:right={}:wrong={}]\n",
+userspace/programs/src/bsshd.rs:114:         if let Err(e) = session.finish(status) {
+userspace/programs/src/bsshd.rs:223:             if let Err(e) = session.finish(shell_status) {
+tests/bssh_auth_close_structure.rs:10:     assert!(transport.contains("pub fn finish(&mut self, status: i32)"));
+tests/bssh_auth_close_structure.rs:13:     assert!(server.contains("session.finish(status)"));
+tests/bssh_auth_close_structure.rs:14:     assert!(server.contains("session.finish(shell_status)"));
+tests/bssh_auth_close_structure.rs:21:     assert!(auth.contains("keys::verify_rsa_signature(key_blob, signature, &signed_data)"));
+tests/bssh_auth_close_structure.rs:31:     assert!(init.contains("[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]"));
+tests/bssh_auth_close_structure.rs:32:     assert!(gate.contains("[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]"));
+tests/bssh_auth_close_structure.rs:33:     assert!(gate.contains("[BSSH_PUBKEY_ORACLE:FAIL"));
+tests/bssh_auth_close_structure.rs:41:     let marker = "[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]";
+tests/bssh_auth_close_structure.rs:54:             fixture.replace(marker, "[BSSH_PUBKEY_ORACLE:FAIL:right=0:wrong=0]"),
+docker/qemu/run-aarch64-boot-test-strict.sh:839:     if [ "$(tr -d '\r' < "$serial_file" | grep -Fxc '[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]')" -ne 1 ] ||
+docker/qemu/run-aarch64-boot-test-strict.sh:840:         grep -aqF '[BSSH_PUBKEY_ORACLE:FAIL' "$serial_file"; then

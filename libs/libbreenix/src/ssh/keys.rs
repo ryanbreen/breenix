@@ -502,8 +502,12 @@ pub fn verify_rsa_signature(pubkey_blob: &[u8], signature_blob: &[u8], data: &[u
         None => return false,
     };
 
+    if pos != signature_blob.len() {
+        return false;
+    }
+
     // Verify based on algorithm
-    if algo == b"rsa-sha2-256" || algo == b"ssh-rsa" {
+    if algo == b"rsa-sha2-256" {
         let hash = sha256(data);
         rsa_verify_pkcs1_sha256(&pubkey, raw_sig, &hash)
     } else if algo == b"rsa-sha2-512" {

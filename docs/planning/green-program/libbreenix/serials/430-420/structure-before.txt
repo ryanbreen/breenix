@@ -1,0 +1,35 @@
+revision=aba3617a87f45ebda16c7ca460a9a72c1f3ca902 plus newly added ratchets
+== compiling bssh_auth_close_structure ==
+== running bssh_auth_close_structure  ==
+
+running 3 tests
+test wrong_signer_reaches_signature_verification ... FAILED
+test termination_waits_for_peer_and_preserves_shell_status ... FAILED
+test oracle_requires_auth_refusal_and_strict_scorer_pins_it ... FAILED
+
+failures:
+
+---- wrong_signer_reaches_signature_verification stdout ----
+
+thread 'wrong_signer_reaches_signature_verification' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/tests/bssh_auth_close_structure.rs:18:5:
+assertion failed: auth.contains("wrong_identity.sign(data)")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- termination_waits_for_peer_and_preserves_shell_status stdout ----
+
+thread 'termination_waits_for_peer_and_preserves_shell_status' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/tests/bssh_auth_close_structure.rs:10:5:
+assertion failed: transport.contains("pub fn finish(&mut self, status: i32)")
+
+---- oracle_requires_auth_refusal_and_strict_scorer_pins_it stdout ----
+
+thread 'oracle_requires_auth_refusal_and_strict_scorer_pins_it' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/tests/bssh_auth_close_structure.rs:28:5:
+assertion failed: client.contains("std::process::exit(77)")
+
+
+failures:
+    oracle_requires_auth_refusal_and_strict_scorer_pins_it
+    termination_waits_for_peer_and_preserves_shell_status
+    wrong_signer_reaches_signature_verification
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
