@@ -1,0 +1,4 @@
+serial_kernel.txt:19941: [ERROR] kernel: KERNEL PANIC: panicked at kernel/src/clock_gettime_test.rs:77:5:
+serial_kernel.txt:19942: Elapsed time 4392079 ns too large - suggests PIT fallback, not TSC
+serial_user.txt:2790: KERNEL PANIC: panicked at kernel/src/clock_gettime_test.rs:77:5:
+serial_user.txt:2791: Elapsed time 4392079 ns too large - suggests PIT fallback, not TSC

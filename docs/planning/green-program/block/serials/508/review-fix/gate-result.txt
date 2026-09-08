@@ -1,0 +1,13 @@
+SOURCE_REVISION=c236b037d86e5d7e0cd04fc3c700d52f53a45bab
+Command: bash docker/qemu/run-x86-boot-tests.sh
+gate.log.gz (decoded line 2): LAUNCH_LOAD=0.91
+gate.log.gz (decoded line 247): [GATE_PREFLIGHT:structure_suites=70/70:critical_path_lines=244:pinned=105]
+gate.log.gz (decoded line 676): [GATE_BOOT_FACTS:boot=1:host_ms=1788876254272-1788877304962:qemu_at_start=0:load_at_start=2.89:qemu_at_end=0:load_at_end=1.28:qemu_cpu_s=1062.00:guest_uptime_ms=NA:ended_by=poll_exhausted]
+gate.log.gz (decoded line 689): x86 frame-custody gate run 1: FAIL (set -e abort at docker/qemu/run-x86-boot-tests.sh:1072, exit 1)
+gate.log.gz (decoded line 1098): REVIEW_GATE_EXIT=1
+serial_user.txt.gz (decoded line 125): [TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=42:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=526:window_ms=692:measured=1:PASS]
+serial_user.txt.gz (decoded line 2787): [TEST_EXEC_BLOCK_COMPLETE:x86:calls=64]
+serial_user.txt.gz (decoded line 2788): [BOOT_DISK_WAIT_ORACLE:x86:switched_away=0:tests_completed=1:PASS]
+serial_user.txt.gz (decoded line 2789): [BOOT_DISK_WAIT_TRACE:x86:switch_preempt=18446744073709551615]
+serial_user.txt.gz (decoded line 3523): ARGV_TEST_FAILED
+serial_user.txt.gz (decoded line 3569): EXT2_LOCK_SPIN_STALL lock=ROOT_EXT2_write elapsed_ns=521404760

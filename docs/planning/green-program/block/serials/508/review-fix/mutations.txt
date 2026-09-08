@@ -1,0 +1,9 @@
+V1-original-selected-counter: exit 101
+V1-ignore-rollback: exit 101
+V2-switch-serial: exit 101
+V2-admission-log: exit 101
+V2-admission-port: exit 101
+wait-busy-spin: exit 101
+admission-remove-count: exit 101
+final-marker-removed: exit 101
+8/8 mutants rejected; 4/4 source files restored

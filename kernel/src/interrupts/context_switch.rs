@@ -6,11 +6,10 @@
 
 #![cfg(target_arch = "x86_64")]
 
-use crate::task::process_context::{
-    is_kernel_code_selector, restore_userspace_context, save_userspace_context, RestoreError,
-    SavedRegisters,
-};
 use crate::task::dispatch_strand_census::{note_fact, DispatchLogFact};
+use crate::task::process_context::{
+    is_kernel_code_selector, restore_userspace_context, save_userspace_context, SavedRegisters,
+};
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
 use crate::tracing::providers::counters::{
@@ -20,129 +19,35 @@ use crate::tracing::providers::sched::{
     trace_ctx_switch, trace_dispatch_abandon, trace_dispatch_save, DispatchAbandonSite,
     DispatchSaveReason,
 };
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::structures::idt::InterruptStackFrame;
 use x86_64::VirtAddr;
 
 enum FirstUserspaceEntry {
     Installed,
-    Aborted(&'static str),
+    Aborted,
 }
 
 static FIRST_USERSPACE_ENTRY_ABORT_COUNT: AtomicU64 = AtomicU64::new(0);
-static FIRST_USERSPACE_ENTRY_ABORT_LOGGED: AtomicBool = AtomicBool::new(false);
 static USERSPACE_DISPATCH_NO_CR3_REFUSED: AtomicU64 = AtomicU64::new(0);
-static USERSPACE_DISPATCH_NO_CR3_LOGGED: AtomicBool = AtomicBool::new(false);
 static USERSPACE_DISPATCH_CREATING_REFUSED: AtomicU64 = AtomicU64::new(0);
-static USERSPACE_DISPATCH_CREATING_LOGGED: AtomicBool = AtomicBool::new(false);
-static DISPATCH_GUARD_UNAVAILABLE_STREAK: AtomicU64 = AtomicU64::new(0);
-static DISPATCH_GUARD_ESCALATION_LOGGED: AtomicBool = AtomicBool::new(false);
-const DISPATCH_GUARD_ESCALATION_THRESHOLD: u64 = 1024;
-
-/// Raw serial debug output - single character, no locks, no allocations.
-/// Use this for debugging context switch paths where any allocation/locking
-/// could perturb timing or cause deadlocks.
-#[inline(always)]
-pub fn raw_serial_char(c: u8) {
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port: Port<u8> = Port::new(0x3F8); // COM1 data port
-        port.write(c);
-    }
-}
-
-/// Raw serial string output - no locks, no allocations.
-/// Use for boot markers in context switch path where locking would deadlock.
-#[inline(always)]
-fn raw_serial_str(s: &str) {
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port: Port<u8> = Port::new(0x3F8);
-        for byte in s.bytes() {
-            port.write(byte);
-        }
-    }
-}
-
-/// Raw serial decimal output - no locks, no allocations.
-#[inline(always)]
-fn raw_serial_u64(mut value: u64) {
-    if value == 0 {
-        raw_serial_char(b'0');
-        return;
-    }
-
-    let mut digits = [0_u8; 20];
-    let mut index = digits.len();
-    while value != 0 {
-        index -= 1;
-        digits[index] = b'0' + (value % 10) as u8;
-        value /= 10;
-    }
-    while index < digits.len() {
-        raw_serial_char(digits[index]);
-        index += 1;
-    }
-}
 
 /// Third dispatch admission arm (tranche-2 P3). A row whose publication has not
 /// completed must never have CR3 armed for it. Cheap field read on a row the
 /// caller already holds; hot-path safe.
 #[inline]
-pub(crate) fn refuse_unpublished_dispatch(
-    process: &crate::process::process::Process,
-    thread_id: u64,
-    pid: u64,
-) -> bool {
+pub(crate) fn refuse_unpublished_dispatch(process: &crate::process::process::Process) -> bool {
     if !process.is_unpublished() {
         return false;
     }
     USERSPACE_DISPATCH_CREATING_REFUSED.fetch_add(1, Ordering::Relaxed);
-    if !USERSPACE_DISPATCH_CREATING_LOGGED.swap(true, Ordering::Relaxed) {
-        raw_serial_str("[PMGUARD] creating dispatch refused tid=");
-        raw_serial_u64(thread_id);
-        raw_serial_str(" pid=");
-        raw_serial_u64(pid);
-        raw_serial_str("\n");
-    }
+
     true
 }
 
 #[cfg(feature = "boot_tests")]
 pub fn userspace_dispatch_creating_refused() -> u64 {
     USERSPACE_DISPATCH_CREATING_REFUSED.load(Ordering::Relaxed)
-}
-
-#[inline(always)]
-fn note_dispatch_guard_available() {
-    DISPATCH_GUARD_UNAVAILABLE_STREAK.store(0, Ordering::Relaxed);
-}
-
-#[inline(always)]
-fn note_dispatch_guard_unavailable() {
-    let streak = DISPATCH_GUARD_UNAVAILABLE_STREAK
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
-    if streak >= DISPATCH_GUARD_ESCALATION_THRESHOLD
-        && !DISPATCH_GUARD_ESCALATION_LOGGED.swap(true, Ordering::Relaxed)
-    {
-        let (owner_cpu, owner_tid) = crate::process::process_manager_owner_snapshot().unwrap_or((
-            crate::process::PM_LOCK_OWNER_NONE,
-            crate::process::PM_LOCK_OWNER_NONE,
-        ));
-        let current_tid = crate::per_cpu::current_thread_id_lock_free()
-            .unwrap_or(crate::process::PM_LOCK_OWNER_TID_UNKNOWN);
-
-        raw_serial_str("[PMGUARD] dispatch refused streak=");
-        raw_serial_u64(streak);
-        raw_serial_str(" owner_cpu=");
-        raw_serial_u64(owner_cpu);
-        raw_serial_str(" owner_tid=");
-        raw_serial_u64(owner_tid);
-        raw_serial_str(" current_tid=");
-        raw_serial_u64(current_tid);
-        raw_serial_str("\n");
-    }
 }
 
 // REMOVED: NEXT_PAGE_TABLE is no longer needed since CR3 switching happens
@@ -331,12 +236,6 @@ pub extern "C" fn check_need_resched_and_switch(
         }
     }
 
-    // Count reschedule attempts (for diagnostics if needed)
-    static RESCHED_LOG_COUNTER: core::sync::atomic::AtomicU64 =
-        core::sync::atomic::AtomicU64::new(0);
-    let _count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    // Note: Debug logging removed from hot path - use GDB if debugging is needed
-
     // Both entry paths must resolve the process-manager dependency BEFORE committing
     // to a scheduling decision, and both must refuse identically when it is
     // unavailable. The kernel-entry path used to skip this check and pass `None`
@@ -346,12 +245,8 @@ pub extern "C" fn check_need_resched_and_switch(
     // lock-holding context - the only one that can release it - running.
     // try_lock only: blocking here would deadlock the interrupt path.
     let mut process_manager_guard = match crate::process::try_manager() {
-        Some(guard) => {
-            note_dispatch_guard_available();
-            guard
-        }
+        Some(guard) => guard,
         None => {
-            note_dispatch_guard_unavailable();
             scheduler::set_need_resched();
             return;
         }
@@ -359,15 +254,6 @@ pub extern "C" fn check_need_resched_and_switch(
 
     // Perform scheduling decision
     let schedule_result = scheduler::schedule();
-
-    // One-time boot stage marker (only fires once to satisfy boot-stages test)
-    // CRITICAL: Use raw serial to avoid deadlock in IRQ context
-    static SCHEDULE_MARKER_EMITTED: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
-    if !SCHEDULE_MARKER_EMITTED.load(core::sync::atomic::Ordering::Relaxed) {
-        SCHEDULE_MARKER_EMITTED.store(true, core::sync::atomic::Ordering::Relaxed);
-        raw_serial_str("[ INFO] scheduler::schedule() returned (boot marker)\n");
-    }
 
     if schedule_result.is_none() {
         // CRITICAL: Clear exception cleanup context even when no switch happens.
@@ -397,25 +283,6 @@ pub extern "C" fn check_need_resched_and_switch(
             return;
         }
 
-        // NOTE: No logging here - log statements in the context switch path
-        // cause deadlocks when the logger tries to acquire locks during a switch
-        // to a newly created kthread. Use raw_serial_char() for debugging only.
-
-        // Emit canonical ring3 marker on the FIRST entry to userspace (for CI)
-        // CRITICAL: Use raw serial output without locks to prevent deadlock in IRQ context
-        if from_userspace {
-            static mut EMITTED_RING3_MARKER: bool = false;
-            unsafe {
-                if !EMITTED_RING3_MARKER {
-                    EMITTED_RING3_MARKER = true;
-                    raw_serial_str("RING3_ENTER: CS=0x33\n");
-                    raw_serial_str(
-                        "[ OK ] RING3_SMOKE: userspace executed + syscall path verified\n",
-                    );
-                }
-            }
-        }
-
         // Save current thread's context if coming from userspace
         // CRITICAL: If save fails, we MUST NOT switch contexts!
         // Switching without saving would cause the process to return to stale RIP (entry point)
@@ -443,8 +310,6 @@ pub extern "C" fn check_need_resched_and_switch(
 
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
-            // Debug marker: saving userspace context (raw serial, no locks)
-            raw_serial_str("<S>");
             if !save_current_thread_context_with_guard(
                 old_thread_id,
                 saved_regs,
@@ -494,6 +359,9 @@ pub extern "C" fn check_need_resched_and_switch(
             );
         }
 
+        #[cfg(all(feature = "testing", not(feature = "interactive")))]
+        let outgoing_preempt = crate::per_cpu::preempt_count() as u64;
+
         // Switch to the new thread
         // Pass the process_manager_guard so we don't try to re-acquire the lock
         switch_to_thread(
@@ -503,6 +371,21 @@ pub extern "C" fn check_need_resched_and_switch(
             interrupt_frame,
             Some(process_manager_guard),
         );
+
+        // Observe the resolved dispatch, after TLS/first-entry rollback can
+        // restore the outgoing thread. Selection alone is not a departure.
+        #[cfg(all(feature = "testing", not(feature = "interactive")))]
+        {
+            use crate::boot::disk_wait_oracle::{BOOT_TID, SWITCHED_AWAY, SWITCH_PREEMPT};
+            if BOOT_TID.load(Ordering::Acquire) == old_thread_id {
+                if let Some(dispatched_tid) = crate::per_cpu::current_thread_id_lock_free() {
+                    if dispatched_tid != old_thread_id {
+                        SWITCH_PREEMPT.store(outgoing_preempt, Ordering::Relaxed);
+                        SWITCHED_AWAY.fetch_add(1, Ordering::Release);
+                    }
+                }
+            }
+        }
 
         // #772: record the resume frame this dispatch installed.
         //
@@ -545,13 +428,6 @@ pub extern "C" fn check_need_resched_and_switch(
         //
         // Linux clears this in schedule_tail() after context switch.
         crate::per_cpu::clear_preempt_active();
-
-        // Log userspace transition
-        if scheduler::with_thread_mut(new_thread_id, |t| t.privilege == ThreadPrivilege::User)
-            .unwrap_or(false)
-        {
-            log::trace!("Restored userspace context for thread {}", new_thread_id);
-        }
 
         // Reset the timer quantum for the new thread
         super::timer::reset_quantum();
@@ -629,17 +505,12 @@ fn save_current_thread_context_with_guard(
     save_reason: DispatchSaveReason,
 ) -> bool {
     if let Some(ref mut manager) = **manager_guard {
-        if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+        if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
             if let Some(ref mut thread) = process.main_thread {
                 save_userspace_context(thread, interrupt_frame, saved_regs);
                 // #772: recorded where the save actually happened, so the
                 // counter cannot outrun the saves.
                 note_dispatch_save(save_reason, thread_id, interrupt_frame);
-                log::trace!(
-                    "Saved context for process {} (thread {})",
-                    pid.as_u64(),
-                    thread_id
-                );
                 return true;
             } else {
                 note_fact(DispatchLogFact::SaveNoMainThread);
@@ -733,13 +604,6 @@ fn save_kthread_context(
         thread.context.rflags = interrupt_frame.cpu_flags.bits();
         thread.context.cs = interrupt_frame.code_segment.0 as u64;
         thread.context.ss = interrupt_frame.stack_segment.0 as u64;
-
-        log::trace!(
-            "KTHREAD_SAVE: thread {} RIP={:#x} RSP={:#x}",
-            thread_id,
-            thread.context.rip,
-            thread.context.rsp
-        );
     })
     .is_some();
 
@@ -795,8 +659,6 @@ fn switch_to_thread(
     interrupt_frame: &mut InterruptStackFrame,
     process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) {
-    // Debug marker: entering switch_to_thread (raw serial, no locks)
-    raw_serial_str("[SW]");
     // Update per-CPU current thread and TSS.RSP0
     scheduler::with_thread_mut(thread_id, |thread| {
         // Update per-CPU current thread pointer
@@ -807,11 +669,6 @@ fn switch_to_thread(
         // This is critical for interrupt/exception handling
         if let Some(kernel_stack_top) = thread.kernel_stack_top {
             crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
-            log::trace!(
-                "sched: switch to thread {} rsp0={:#x}",
-                thread_id,
-                kernel_stack_top
-            );
         }
     });
 
@@ -828,8 +685,6 @@ fn switch_to_thread(
             scheduler::set_need_resched();
             return;
         }
-        // Debug marker: TLS switch completed (raw serial, no locks)
-        raw_serial_str("<T>");
     }
 
     // Check if this is the idle thread
@@ -865,20 +720,13 @@ fn switch_to_thread(
 
         if has_saved_context {
             // Restore idle thread's saved context (like a kthread)
-            // Debug marker: idle with saved context (raw serial, no locks)
-            raw_serial_str("<1>");
-            log::trace!("Restoring idle thread's saved context");
             setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
         } else {
             // No saved context or was in idle_loop - go to idle loop
-            // Debug marker: switching to idle (raw serial, no locks)
-            raw_serial_str("<I>");
             setup_idle_return(interrupt_frame);
         }
     } else if is_kernel_thread {
         // Set up to return to kernel thread
-        // Debug marker: kernel thread (raw serial, no locks)
-        raw_serial_str("<K>");
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
     // The saved CS is the authoritative record of the ring where the context was
     // captured, even if a remote waker cleared blocked_in_syscall. Evaluate it
@@ -886,8 +734,6 @@ fn switch_to_thread(
     } else if blocked_in_syscall
         || saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref())
     {
-        // Debug marker: blocked in syscall (raw serial, no locks)
-        raw_serial_str("<B>");
         // CRITICAL: Thread was blocked inside a syscall (like pause() or waitpid()).
         // We need to check if there are pending signals. If so, deliver them using
         // the saved userspace context. Otherwise, resume at the kernel HLT loop.
@@ -908,8 +754,8 @@ fn switch_to_thread(
         let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
         if let Some(mut manager_guard) = guard_option {
             if let Some(ref mut manager) = *manager_guard {
-                if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-                    if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
+                if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    if refuse_unpublished_dispatch(process) {
                         crate::task::scheduler::set_need_resched();
                         setup_idle_return(interrupt_frame);
                         crate::task::scheduler::switch_to_idle();
@@ -924,13 +770,7 @@ fn switch_to_thread(
                         Some(cr3_value) => cr3_value,
                         None => {
                             USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
-                            if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
-                                raw_serial_str("[PMGUARD] no-cr3 dispatch refused tid=");
-                                raw_serial_u64(thread_id);
-                                raw_serial_str(" pid=");
-                                raw_serial_u64(pid.as_u64());
-                                raw_serial_str("\n");
-                            }
+
                             if let Some(ref mut thread) = process.main_thread {
                                 thread.set_terminated();
                             }
@@ -1077,7 +917,9 @@ fn switch_to_thread(
                                 scheduler::set_need_resched();
                                 setup_idle_return(interrupt_frame);
                                 scheduler::switch_to_idle();
-                                trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedBlocked);
+                                trace_dispatch_abandon(
+                                    DispatchAbandonSite::IdleSignalTerminatedBlocked,
+                                );
                                 unsafe {
                                     crate::memory::process_memory::switch_to_kernel_page_table();
                                 }
@@ -1175,8 +1017,6 @@ fn switch_to_thread(
         }
     } else {
         // Restore userspace thread context
-        // Debug marker: userspace restore path (raw serial, no locks)
-        raw_serial_str("<U>");
         // Pass the process_manager_guard to avoid double-lock
         restore_userspace_thread_context(
             thread_id,
@@ -1231,7 +1071,6 @@ pub(crate) fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
         // leaving the system stuck in the idle loop unable to switch to ready threads.
         crate::per_cpu::clear_preempt_active();
     }
-    log::trace!("Set up return to idle loop");
 }
 
 /// Set up interrupt frame to return to kernel thread
@@ -1318,8 +1157,6 @@ fn restore_userspace_thread_context(
     interrupt_frame: &mut InterruptStackFrame,
     process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) {
-    log::trace!("restore_userspace_thread_context: thread {}", thread_id);
-
     // Check if this thread has ever run before
     let has_started =
         scheduler::with_thread_mut(thread_id, |thread| thread.has_started).unwrap_or(false);
@@ -1335,20 +1172,13 @@ fn restore_userspace_thread_context(
             process_manager_guard,
         ) {
             FirstUserspaceEntry::Installed => {
-                log::info!("First run: thread {} entering userspace", thread_id);
                 scheduler::with_thread_mut(thread_id, |thread| {
                     thread.has_started = true;
                 });
             }
-            FirstUserspaceEntry::Aborted(reason) => {
+            FirstUserspaceEntry::Aborted => {
                 FIRST_USERSPACE_ENTRY_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
-                if !FIRST_USERSPACE_ENTRY_ABORT_LOGGED.swap(true, Ordering::Relaxed) {
-                    raw_serial_str("[PMGUARD] first-entry aborted tid=");
-                    raw_serial_u64(thread_id);
-                    raw_serial_str(" reason=");
-                    raw_serial_str(reason);
-                    raw_serial_str("\n");
-                }
+
                 scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
                 trace_dispatch_abandon(DispatchAbandonSite::RollbackFirstEntry);
                 scheduler::set_need_resched();
@@ -1358,7 +1188,6 @@ fn restore_userspace_thread_context(
     }
 
     // Thread has run before - do normal context restore
-    log::trace!("Resuming thread {}", thread_id);
 
     // CRITICAL: Use the passed-in guard if available, otherwise try to acquire one.
     // The guard is passed from check_need_resched_and_switch to avoid double-lock deadlock.
@@ -1370,9 +1199,9 @@ fn restore_userspace_thread_context(
 
     if let Some(mut manager_guard) = guard_option {
         if let Some(ref mut manager) = *manager_guard {
-            if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
                 // Get CR3 before borrowing main_thread mutably
-                if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
+                if refuse_unpublished_dispatch(process) {
                     crate::task::scheduler::set_need_resched();
                     setup_idle_return(interrupt_frame);
                     crate::task::scheduler::switch_to_idle();
@@ -1384,17 +1213,7 @@ fn restore_userspace_thread_context(
 
                 if let Some(ref mut thread) = process.main_thread {
                     if thread.privilege == ThreadPrivilege::User {
-                        // Debug marker: restoring userspace context (raw serial, no locks)
-                        raw_serial_str("<R>");
-                        if let Err(error) =
-                            restore_userspace_context(thread, interrupt_frame, saved_regs)
-                        {
-                            match error {
-                                RestoreError::NonCanonicalRip | RestoreError::NonCanonicalRsp => {
-                                    raw_serial_str("<BADADDR>")
-                                }
-                                RestoreError::KernelFrame => raw_serial_str("<KFRAME>"),
-                            }
+                        if restore_userspace_context(thread, interrupt_frame, saved_regs).is_err() {
                             // Corrupted process state. Terminate the process and switch to idle.
                             thread.set_terminated();
                             process.terminate(-11); // SIGSEGV equivalent
@@ -1429,13 +1248,7 @@ fn restore_userspace_thread_context(
                                 }
                             } else {
                                 USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
-                                if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
-                                    raw_serial_str("[PMGUARD] no-cr3 dispatch refused tid=");
-                                    raw_serial_u64(thread_id);
-                                    raw_serial_str(" pid=");
-                                    raw_serial_u64(pid.as_u64());
-                                    raw_serial_str("\n");
-                                }
+
                                 // With next_cr3 == 0, timer_entry.asm takes its fallback path
                                 // and restores the interrupted process's address space. Refuse
                                 // to finish this user-mode return with that wrong CR3 active.
@@ -1456,7 +1269,6 @@ fn restore_userspace_thread_context(
                             // Update TSS RSP0 for the new thread's kernel stack
                             if let Some(kernel_stack_top) = thread.kernel_stack_top {
                                 crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
-                                log::trace!("Set kernel stack: {:#x}", kernel_stack_top.as_u64());
                             } else {
                                 note_fact(DispatchLogFact::UserKernelStackMissing);
                             }
@@ -1505,7 +1317,9 @@ fn restore_userspace_thread_context(
                                         signal_termination_info = Some(notification);
                                         setup_idle_return(interrupt_frame);
                                         crate::task::scheduler::switch_to_idle();
-                                        trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedUser);
+                                        trace_dispatch_abandon(
+                                            DispatchAbandonSite::IdleSignalTerminatedUser,
+                                        );
                                         // Don't return here - fall through to handle notification
                                     }
                                     crate::signal::delivery::SignalDeliveryResult::Delivered => {
@@ -1515,7 +1329,9 @@ fn restore_userspace_thread_context(
                                             crate::task::scheduler::set_need_resched();
                                             setup_idle_return(interrupt_frame);
                                             crate::task::scheduler::switch_to_idle();
-                                            trace_dispatch_abandon(DispatchAbandonSite::IdleProcessTerminatedUser);
+                                            trace_dispatch_abandon(
+                                                DispatchAbandonSite::IdleProcessTerminatedUser,
+                                            );
                                         }
                                     }
                                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}
@@ -1533,12 +1349,6 @@ fn restore_userspace_thread_context(
                 crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
             }
         }
-    } else {
-        log::error!(
-            "CRITICAL: Could not acquire process manager lock to restore context for thread {}. \
-             Interrupt frame NOT modified - will return to previous thread instead!",
-            thread_id
-        );
     }
 }
 
@@ -1552,26 +1362,26 @@ fn setup_first_userspace_entry(
     // Phase 1: resolve every fallible dependency before touching the return frame.
     let mut manager_guard = match process_manager_guard.or_else(crate::process::try_manager) {
         Some(guard) if guard.is_some() => guard,
-        _ => return FirstUserspaceEntry::Aborted("process manager unavailable"),
+        _ => return FirstUserspaceEntry::Aborted,
     };
     let (_, process) = match manager_guard
         .as_mut()
         .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
     {
         Some(found) => found,
-        None => return FirstUserspaceEntry::Aborted("process lookup failed"),
+        None => return FirstUserspaceEntry::Aborted,
     };
     let cr3_value = match process.cr3_value() {
         Some(value) => value,
-        None => return FirstUserspaceEntry::Aborted("process CR3 unavailable"),
+        None => return FirstUserspaceEntry::Aborted,
     };
     let thread = match process.main_thread.as_ref() {
         Some(thread) => thread,
-        None => return FirstUserspaceEntry::Aborted("thread kernel stack unavailable"),
+        None => return FirstUserspaceEntry::Aborted,
     };
     let kernel_stack_top = match thread.kernel_stack_top {
         Some(stack_top) => stack_top,
-        None => return FirstUserspaceEntry::Aborted("thread kernel stack unavailable"),
+        None => return FirstUserspaceEntry::Aborted,
     };
     let entry_rip = thread.context.rip;
     let user_rsp = thread.context.rsp;
@@ -1634,14 +1444,6 @@ fn setup_first_userspace_entry(
             let flags_ptr =
                 &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
             *flags_ptr = 0x202; // Bit 1=1 (required), IF=1 (bit 9)
-
-            log::info!(
-                "RING3_ENTRY: RIP={:#x}, RSP={:#x}, CS={:#x}, SS={:#x}",
-                frame.instruction_pointer.as_u64(),
-                frame.stack_pointer.as_u64(),
-                frame.code_segment.0,
-                frame.stack_segment.0
-            );
         });
     }
 
@@ -1663,13 +1465,6 @@ fn setup_first_userspace_entry(
     saved_regs.r14 = 0;
     saved_regs.r15 = 0;
 
-    // DEBUG: Log that registers were zeroed for first entry
-    log::info!("FIRST_ENTRY t{}: zeroed all registers", thread_id);
-
-    log::info!(
-        "First userspace entry setup complete for thread {}",
-        thread_id
-    );
     FirstUserspaceEntry::Installed
 }
 
@@ -1745,7 +1540,9 @@ fn check_and_deliver_signals_for_current_thread(
                             crate::task::scheduler::set_need_resched();
                             setup_idle_return(interrupt_frame);
                             crate::task::scheduler::switch_to_idle();
-                            trace_dispatch_abandon(DispatchAbandonSite::IdleProcessTerminatedOnReturn);
+                            trace_dispatch_abandon(
+                                DispatchAbandonSite::IdleProcessTerminatedOnReturn,
+                            );
                         }
                     }
                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}

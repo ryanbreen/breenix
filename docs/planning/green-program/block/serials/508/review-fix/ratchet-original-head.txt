@@ -1,0 +1,30 @@
+== compiling boot_disk_wait_structure ==
+== running boot_disk_wait_structure  ==
+
+running 6 tests
+test boot_completion_preserves_brake_and_uses_atomic_check_halt ... ok
+test kernel_schedule_admission_checks_the_count_before_exceptions ... ok
+test departure_counter_observes_dispatch_result_after_rollback ... FAILED
+test switch_and_admission_have_no_text_output ... FAILED
+test oracle_measures_switches_and_final_test_block_return ... ok
+test scorer_rejects_mutation_missing_duplicate_and_unfinished_evidence ... ok
+
+failures:
+
+---- departure_counter_observes_dispatch_result_after_rollback stdout ----
+
+thread 'departure_counter_observes_dispatch_result_after_rollback' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/b508/wt/tests/boot_disk_wait_structure.rs:94:5:
+selected dispatch is not a completed departure
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- switch_and_admission_have_no_text_output stdout ----
+
+thread 'switch_and_admission_have_no_text_output' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/b508/wt/tests/boot_disk_wait_structure.rs:110:17:
+text output in switch/admission: pub fn raw_serial_char(c: u8) {
+
+
+failures:
+    departure_counter_observes_dispatch_result_after_rollback
+    switch_and_admission_have_no_text_output
+
+test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s

@@ -16,3 +16,10 @@ pub mod test_list;
 // of aarch64's own copy in main_aarch64.rs rather than a shared helper.
 #[cfg(target_arch = "x86_64")]
 pub mod init_image;
+
+#[cfg(all(
+    target_arch = "x86_64",
+    feature = "testing",
+    not(feature = "interactive")
+))]
+pub mod disk_wait_oracle;

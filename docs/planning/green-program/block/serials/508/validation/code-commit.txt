@@ -1,0 +1,13 @@
+Preserve idle boot continuation during disk completion waits
+
+Issue 508: retain the boot scheduling brake across an IRQ-driven HLT wait,
+and apply the kernel preempt-count guard before blocked-state admission.
+Count boot-window switch departures and require the final test_exec marker
+in the x86 scorer. The baseline oracle records an incomplete registration
+block despite the previous gate passing.
+
+Validation: 70 structure suites passed; x86 testing profile built without
+project diagnostics. Runtime and mutation validation are recorded separately.
+
+Co-authored-by: Ryan Breen <ryan@breen.io>
+Co-authored-by: Claude Code <noreply@anthropic.com>

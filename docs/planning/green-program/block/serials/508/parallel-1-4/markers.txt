@@ -1,0 +1,3 @@
+serial_kernel.txt:15170: [ INFO] kernel::test_exec: === MULTIPLE CONCURRENT PROCESSES TEST ===
+serial_kernel.txt:19829: [ INFO] kernel: === GRAPHICS TEST: FbInfo syscall ===
+serial_user.txt:2789: [TEST_EXEC_BLOCK_COMPLETE:x86:calls=64]

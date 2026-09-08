@@ -1,0 +1,6 @@
+baseline: project_compiler_diagnostics=0
+mutation-1: project_compiler_diagnostics=0
+parallel-1-1: project_compiler_diagnostics=0
+parallel-2-1: project_compiler_diagnostics=0
+prod-last: project_compiler_diagnostics=0
+repaired-boot: project_compiler_diagnostics=0

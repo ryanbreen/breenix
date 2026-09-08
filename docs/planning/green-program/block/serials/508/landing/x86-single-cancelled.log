@@ -1,0 +1,3 @@
+REVISION=6cff8cf8c43adeeccd8d6088a5c42af70091233e
+LAUNCH_LOAD_1M=5.40
+CANCELLED: required aarch64 gate failed; stopped x86 preflight before boot.

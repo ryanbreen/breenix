@@ -1,0 +1,36 @@
+== compiling boot_disk_wait_structure ==
+== running boot_disk_wait_structure  ==
+
+running 4 tests
+test kernel_schedule_admission_checks_the_count_before_exceptions ... FAILED
+test boot_completion_preserves_brake_and_uses_atomic_check_halt ... FAILED
+test oracle_measures_switches_and_final_test_block_return ... FAILED
+test scorer_rejects_mutation_missing_duplicate_and_unfinished_evidence ... ok
+
+failures:
+
+---- kernel_schedule_admission_checks_the_count_before_exceptions stdout ----
+
+thread 'kernel_schedule_admission_checks_the_count_before_exceptions' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/b508/wt/.tmp/508-ratchet-baseline/tests/boot_disk_wait_structure.rs:34:14:
+called `Option::unwrap()` on a `None` value
+
+---- boot_completion_preserves_brake_and_uses_atomic_check_halt stdout ----
+
+thread 'boot_completion_preserves_brake_and_uses_atomic_check_halt' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/b508/wt/.tmp/508-ratchet-baseline/tests/boot_disk_wait_structure.rs:12:10:
+idle completion wait missing
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- oracle_measures_switches_and_final_test_block_return stdout ----
+
+thread 'oracle_measures_switches_and_final_test_block_return' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/b508/wt/.tmp/508-ratchet-baseline/tests/boot_disk_wait_structure.rs:42:48:
+called `Option::unwrap()` on a `None` value
+
+
+failures:
+    boot_completion_preserves_brake_and_uses_atomic_check_halt
+    kernel_schedule_admission_checks_the_count_before_exceptions
+    oracle_measures_switches_and_final_test_block_return
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+RATCHET_ORIGINAL_HEAD_EXIT=101

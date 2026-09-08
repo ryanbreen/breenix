@@ -1,0 +1,5 @@
+serial_kernel.txt:15130: [ INFO] kernel::test_exec: === MULTIPLE CONCURRENT PROCESSES TEST ===
+serial_kernel.txt:17573: [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=110 nonzero=0 failed=[]
+serial_kernel.txt:17580: [ INFO] kernel::syscall::handlers: 🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁
+serial_user.txt:1089: [BOOT_DISK_WAIT_ORACLE:x86:switched_away=597:tests_completed=0:FAIL]
+serial_user.txt:1090: [BOOT_DISK_WAIT_TRACE:x86:switch_preempt=0]

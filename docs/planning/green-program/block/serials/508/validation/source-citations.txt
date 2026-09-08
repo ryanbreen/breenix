@@ -1,0 +1,28 @@
+SOURCE_REVISION=b346196295db73f9fe4b44c8f080e75217f27693
+kernel/src/main.rs:590: task::scheduler::init_with_current(init_task);
+kernel/src/task/scheduler.rs:5472: pub fn init_with_current(current_thread: Box<Thread>) {
+kernel/src/main.rs:1309: kernel::per_cpu::preempt_disable();
+kernel/src/main.rs:1843: test_exec::test_direct_execution();
+kernel/src/main.rs:2082: test_exec::test_fbinfo();
+kernel/src/drivers/virtio/block.rs:401: .wait_timeout_uninterruptible(token, timeout_ns);
+kernel/src/task/completion.rs:301: let in_syscall = syscall_sleep_path_available();
+kernel/src/task/completion.rs:342: crate::per_cpu::preempt_enable();
+kernel/src/interrupts/timer.rs:65: scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:178: if preempt_count_value > 0 && !from_userspace {
+kernel/src/interrupts/context_switch.rs:860: let userspace_started = crate::syscall::handler::is_ring3_confirmed();
+kernel/src/task/completion.rs:253: if crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid)
+kernel/src/task/completion.rs:147: fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns: u64) -> bool {
+kernel/src/drivers/virtio/block.rs:678: self.completion.complete(token);
+kernel/src/per_cpu.rs:1373: if !returning_to_userspace && current_preempt & 0x0fff_ffff != 0 {
+kernel/src/interrupts/context_switch.rs:402: use crate::boot::disk_wait_oracle::{BOOT_TID, SWITCHED_AWAY, SWITCH_PREEMPT};
+kernel/src/boot/disk_wait_oracle.rs:34: "[BOOT_DISK_WAIT_ORACLE:x86:switched_away={}:tests_completed={}:{}]",
+kernel/src/main.rs:2084: serial_println!("[TEST_EXEC_BLOCK_COMPLETE:x86:calls=64]");
+kernel/src/boot/disk_wait_oracle.rs:4: pub static BOOT_TID: AtomicU64 = AtomicU64::new(0);
+kernel/src/main.rs:1312: kernel::boot::disk_wait_oracle::begin();
+kernel/src/main.rs:2261: kernel::boot::disk_wait_oracle::finish();
+kernel/src/main.rs:2267: kernel::per_cpu::preempt_enable();
+kernel/src/boot/disk_wait_oracle.rs:27: pub fn report() {
+kernel/src/syscall/handlers.rs:254: crate::boot::disk_wait_oracle::report();
+scripts/score-boot-disk-wait.py:12: def score(text):
+scripts/x86-gate-verdict.sh:28: python3 "$SCRIPT_DIR/score-boot-disk-wait.py" "$@" || exit $?
+kernel/src/clock_gettime_test.rs:77: assert!(
