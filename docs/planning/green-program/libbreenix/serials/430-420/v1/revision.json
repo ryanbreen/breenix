@@ -1,0 +1,8 @@
+{
+  "base": "86a72af2874b8153351d1defc42ef3040e69e695",
+  "state": "uncommitted V-1 implementation and tests on base; mutations individually applied and restored",
+  "sha256": {
+    "libs/libbreenix/src/ssh/transport.rs": "a9ee4ee153826239ef50344dfd02c0f4a858fa5423fa3f83ba74a49836240400",
+    "tests/bssh_auth_close_structure.rs": "2924572f15115252e28f9ffc7a3ec95735e9775bff7d2b0156e6887202d93775"
+  }
+}

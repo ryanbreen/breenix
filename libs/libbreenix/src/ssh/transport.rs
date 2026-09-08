@@ -323,10 +323,18 @@ impl ServerSession {
                 Ok(None)
             }
             SSH_MSG_CHANNEL_CLOSE => {
-                if let Some(ref mut ch) = self.channel {
-                    ch.closed = true;
-                    channel::send_channel_close(&mut self.io, ch)?;
+                let mut pos = 1;
+                let recipient = SshBuf::get_u32(&msg, &mut pos)
+                    .ok_or(SshError::Protocol("bad channel close"))?;
+                if pos != msg.len() {
+                    return Err(SshError::Protocol("bad channel close length"));
                 }
+                let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+                if recipient != ch.local_id {
+                    return Err(SshError::ChannelNotFound);
+                }
+                ch.closed = true;
+                channel::send_channel_close(&mut self.io, ch)?;
                 Err(SshError::Disconnected)
             }
             SSH_MSG_DISCONNECT => Err(SshError::Disconnected),

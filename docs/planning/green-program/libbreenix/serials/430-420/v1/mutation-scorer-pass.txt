@@ -1,0 +1,37 @@
+Revision: 86a72af2874b8153351d1defc42ef3040e69e695 + V-1 working tree; see revision.json and mutations.json for mutation cases
+== compiling bssh_auth_close_structure ==
+== running bssh_auth_close_structure  ==
+
+running 5 tests
+test wrong_signer_reaches_signature_verification ... ok
+test termination_waits_for_peer_and_preserves_shell_status ... ok
+test oracle_requires_auth_refusal_and_strict_scorer_pins_it ... FAILED
+test close_recipient_validation_precedes_completion ... ok
+test scorer_rejects_missing_failed_and_duplicate_auth_evidence ... FAILED
+
+failures:
+
+---- oracle_requires_auth_refusal_and_strict_scorer_pins_it stdout ----
+
+thread 'oracle_requires_auth_refusal_and_strict_scorer_pins_it' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/tests/bssh_auth_close_structure.rs:32:5:
+assertion failed: gate.contains("[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- scorer_rejects_missing_failed_and_duplicate_auth_evidence stdout ----
+
+thread 'scorer_rejects_missing_failed_and_duplicate_auth_evidence' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/tests/bssh_auth_close_structure.rs:66:9:
+assertion `left == right` failed: valid: SCORE: FAIL - T2T3T4T5T6[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=3591008:dispatches=5:iterations=25:verdict=ok]
+BSSH publickey oracle missing, duplicated, or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/.tmp/bssh-score-35182/valid)
+
+  left: false
+ right: true
+
+
+failures:
+    oracle_requires_auth_refusal_and_strict_scorer_pins_it
+    scorer_rejects_missing_failed_and_duplicate_auth_evidence
+
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+
+exit: 101
