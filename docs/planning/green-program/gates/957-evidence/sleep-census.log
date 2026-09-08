@@ -1,0 +1,22 @@
+tests/teardown_structure.rs:5185:                "sleep 2",
+tests/gate_capture_drain_structure.rs:399:sleep() {{ release_writer; }}
+tests/structure_preflight_parallel_structure.rs:53:        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+tests/structure_preflight_parallel_structure.rs:56:            std::thread::sleep(std::time::Duration::from_millis(10));
+tests/structure_preflight_parallel_structure.rs:225:    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+tests/structure_preflight_parallel_structure.rs:228:        std::thread::sleep(std::time::Duration::from_millis(10));
+tests/structure_preflight_parallel_structure.rs:280:        "#[test] fn hangs() { loop { std::thread::sleep(std::time::Duration::from_millis(100)); } }").unwrap();
+tests/structure_preflight_parallel_structure.rs:287:    assert!(start.elapsed() < std::time::Duration::from_secs(20));
+tests/ext2_lock_structure.rs:15://!      `ext2_acquire_write`) are gated by `ext2_lock_can_sleep()` and keep
+tests/ext2_lock_structure.rs:17://!   2. `ext2_lock_can_sleep()`'s x86 arm never regains an
+tests/ext2_lock_structure.rs:44://!   8. `ext2_lock_can_sleep()`'s x86 arm checks `preempt_count() == 1`
+tests/ext2_lock_structure.rs:295:/// C1: a park-capable acquisition body must consult `ext2_lock_can_sleep()`
+tests/ext2_lock_structure.rs:300:        return Err("missing the ext2_lock_can_sleep() gate".to_string());
+tests/ext2_lock_structure.rs:308:/// B1/C3: `ext2_lock_can_sleep()`'s aarch64 arm must keep its
+tests/ext2_lock_structure.rs:670:    let regressed = "{ if ext2_lock_can_sleep() { park(); } unreachable!() }";
+tests/ext2_lock_structure.rs:683:fn ext2_lock_can_sleep() -> bool {
+tests/ext2_lock_structure.rs:703:fn ext2_lock_can_sleep() -> bool {
+tests/ext2_lock_structure.rs:779:    if ext2_lock_can_sleep() {
+tests/ext2_lock_structure.rs:824:fn ext2_lock_can_sleep() -> bool {
+tests/exec_lock_order_structure.rs:1377:        .find("libbreenix::time::nanosleep(&ts)")
+tests/gate_qmp_backstop_structure.rs:305:                std::thread::sleep(std::time::Duration::from_millis(20));
+tests/gate_qmp_backstop_structure.rs:361:            std::thread::sleep(std::time::Duration::from_millis(20));
