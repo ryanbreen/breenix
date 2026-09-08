@@ -1,0 +1,10 @@
+4394409fca3932296f3468914b5be325ce0d48a6
+ 12:04:19 up 26 days, 18:19,  0 user,  load average: 0.80, 1.10, 3.25
+   Compiling kernel v0.1.0 (<repo>/kernel)
+   Compiling breenix v0.1.0 (<repo>)
+    Finished `release` profile [optimized] target(s) in 18.25s
+BUILD_EXIT=0
+load_check= 12:04:37 up 26 days, 18:20,  0 user,  load average: 0.84, 1.09, 3.21
+Session starting (arch=x86_64)... waiting for GDB connection
+Session ready!
+{"success": true, "arch": "x86_64", "gdb_pid": 2889407, "qemu_pid": 2888788, "status": "connected", "symbols": "loaded at UNVERIFIED guessed base 0x10000000000 -- continue past the bootloader's boot-info print, then run 'resync-symbols' before trusting info symbol/backtrace", "symbols_verified": false, "sections": {".rodata": "0x82640", ".text": "0xc4960", ".data": "0x44c280", ".bss": "0x482a00"}, "serial_log_file": "<lane-tmp>/gdb-serial.log"}

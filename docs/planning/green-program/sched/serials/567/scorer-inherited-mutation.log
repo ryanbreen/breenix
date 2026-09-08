@@ -1,0 +1,6 @@
+python3 scripts/score-boot-resume.py docs/planning/green-program/sched/serials/567/inherited-oracle-first-serial.log
+boot resume scorer: PASS (32 cycles, zero mismatches, five loopback tests)
+exit=0
+python3 scripts/score-boot-resume.py docs/planning/green-program/sched/serials/567/inherited-flags-mutation-serial.log
+boot resume scorer: FAIL: expected one 32-cycle, zero-mismatch x86 resume result
+exit=1

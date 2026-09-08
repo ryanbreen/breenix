@@ -1,0 +1,25 @@
+ 13:47:02 up 26 days, 20:02,  0 user,  load average: 0.37, 0.91, 2.59
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (30s elapsed, host qemu-system-x86_64 count=0)...
+ed03fd9b9b406e8cce3e59723f35708ff0fa539a
+
+4c192dd3c2650943829f9ed6b109cb59d9dbf4a5bd84544e510a72a7ceaa5f8c  kernel/src/task/boot_resume_oracle.rs
+
+ 13:47:52 up 26 days, 20:03,  0 user,  load average: 0.16, 0.76, 2.45
+
+Session stopped (owned PIDs only)
+Session starting (arch=x86_64)... waiting for GDB connection
+Session ready!
+{"success": true, "arch": "x86_64", "gdb_pid": 3088421, "qemu_pid": 3088397, "status": "connected", "symbols": "loaded at UNVERIFIED guessed base 0x10000000000 -- continue past the bootloader's boot-info print, then run 'resync-symbols' before trusting info symbol/backtrace", "symbols_verified": false, "sections": {".rodata": "0x82730", ".text": "0xc4a00", ".data": "0x44ca80", ".bss": "0x483240"}, "serial_log_file": "<lane-tmp>/fresh-gdb-serial.log"}
+
+{"success": true, "command": "set language c", "output": "", "raw": "", "time_ms": 2}
+
+{"success": true, "command": "info address 'kernel::task::boot_resume_oracle::run'", "output": "No symbol \"'kernel::task::boot_resume_oracle::run'\" in current context.", "raw": "No symbol \"'kernel::task::boot_resume_oracle::run'\" in current context.", "time_ms": 346}
+
+Session stopped (owned PIDs only)
+
+Traceback (most recent call last):
+  File "<lane-tmp>/debug-controller.py", line 20, in <module>
+    a=int(re.search(r'0x[0-9a-f]+',r['output'])[0],16)
+          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^
+TypeError: 'NoneType' object is not subscriptable

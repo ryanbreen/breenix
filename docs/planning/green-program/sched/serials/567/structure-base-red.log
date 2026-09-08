@@ -1,0 +1,17 @@
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure x86_loopback_gates_are_direct_reachable ==
+
+running 1 test
+
+thread 'x86_loopback_gates_are_direct_reachable_and_have_one_marker_producer' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/k567/wt/tests/loopback_pump_structure.rs:2140:6:
+x86 loopback gates remain directly reachable and exactly marked: "missing boot resume oracle"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test x86_loopback_gates_are_direct_reachable_and_have_one_marker_producer ... FAILED
+
+failures:
+
+failures:
+    x86_loopback_gates_are_direct_reachable_and_have_one_marker_producer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 129 filtered out; finished in 0.00s
+

@@ -1,0 +1,13 @@
+ 13:43:36 up 26 days, 19:59,  0 user,  load average: 0.99, 1.62, 3.20
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+4394409fca3932296f3468914b5be325ce0d48a6
+
+4c192dd3c2650943829f9ed6b109cb59d9dbf4a5bd84544e510a72a7ceaa5f8c  kernel/src/task/boot_resume_oracle.rs
+
+ 13:43:37 up 26 days, 19:59,  0 user,  load average: 0.99, 1.62, 3.20
+
+Session stopped (owned PIDs only)
+Session starting (arch=x86_64)... waiting for GDB connection
+Session ready!
+{"success": true, "arch": "x86_64", "gdb_pid": 3087924, "qemu_pid": 3087901, "status": "connected", "symbols": "loaded at UNVERIFIED guessed base 0x10000000000 -- continue past the bootloader's boot-info print, then run 'resync-symbols' before trusting info symbol/backtrace", "symbols_verified": false, "sections": {".rodata": "0x82730", ".text": "0xc4a00", ".data": "0x44ca80", ".bss": "0x483240"}, "serial_log_file": "<lane-tmp>/fresh-gdb-serial.log"}
+

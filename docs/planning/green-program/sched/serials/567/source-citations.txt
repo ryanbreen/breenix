@@ -1,0 +1,16 @@
+revision=ed03fd9b9b406e8cce3e59723f35708ff0fa539a
+kernel/src/main.rs:559 let mut init_task = Box::new(task::thread::Thread::new(
+kernel/src/main.rs:578 per_cpu::set_current_thread(init_task_ptr);
+kernel/src/main.rs:478 let idle_kernel_stack = memory::kernel_stack::allocate_kernel_stack()
+kernel/src/main.rs:520 idle_kernel_stack_top.as_u64(),
+kernel/src/task/scheduler.rs:6365 pub fn yield_current() {
+kernel/src/interrupts/context_switch.rs:156 pub extern "C" fn check_need_resched_and_switch(
+kernel/src/interrupts/context_switch.rs:706 fn save_kthread_context(
+kernel/src/interrupts/context_switch.rs:845 // Check if idle thread has a saved context to restore
+kernel/src/interrupts/context_switch.rs:1265 let thread_info = scheduler::with_thread_mut(thread_id, |thread| thread.context.clone());
+kernel/src/task/process_context.rs:95 pub struct SavedRegisters {
+kernel/src/interrupts/timer_entry.asm:40 push rax
+kernel/src/interrupts/timer_entry.asm:378 iretq
+kernel/src/task/thread.rs:89 pub struct CpuContext {
+kernel/src/task/scheduler.rs:6651 pub fn requeue_refused_dispatch(thread_id: u64) {
+kernel/src/interrupts/timer_entry.asm:119 mov rdi, rsp              ; Pass pointer to saved registers

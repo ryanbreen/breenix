@@ -11,6 +11,13 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Issue 567: scheduling loopback gates are re-enabled on
+`sched/567-kthread-resume-context` after measured x86 pre-userspace resumes
+matched the saved register state, with a permanent register-witness guard.
+The [round record](green-program/sched/567-KTHREAD-RESUME-2026-09-08.md)
+records completed validation and separates those measurements from unresolved
+historical attribution. The later timer-latency overrun remains tracked in 981.
+
 Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
 https://v0-breenix-dashboard.vercel.app/).
