@@ -1,0 +1,6 @@
+SOURCE_REVISION=b346196295db73f9fe4b44c8f080e75217f27693
+parallel-2-1: final_markers=1 scorer_exit=0
+parallel-2-2: final_markers=1 scorer_exit=0
+parallel-2-3: final_markers=1 scorer_exit=0
+parallel-2-4: final_markers=1 scorer_exit=1
+parallel-2-5: final_markers=1 scorer_exit=0

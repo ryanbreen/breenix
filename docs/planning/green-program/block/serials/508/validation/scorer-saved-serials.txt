@@ -1,0 +1,5 @@
+baseline: python3 scripts/score-boot-disk-wait.py <decoded serial_user.txt> <decoded serial_kernel.txt> -> exit 1
+boot disk wait oracle: FAIL (requires exactly one completed, unswitched boot window)
+
+repaired-boot: python3 scripts/score-boot-disk-wait.py <decoded serial_user.txt> <decoded serial_kernel.txt> -> exit 0
+boot disk wait oracle: PASS (switched_away=0 tests_completed=1)

@@ -1,0 +1,5 @@
+serial_kernel.txt:15168: [ INFO] kernel::test_exec: === MULTIPLE CONCURRENT PROCESSES TEST ===
+serial_kernel.txt:19827: [ INFO] kernel: === GRAPHICS TEST: FbInfo syscall ===
+serial_user.txt:2789: [TEST_EXEC_BLOCK_COMPLETE:x86:calls=64]
+serial_user.txt:2790: [BOOT_DISK_WAIT_ORACLE:x86:switched_away=0:tests_completed=1:PASS]
+serial_user.txt:2791: [BOOT_DISK_WAIT_TRACE:x86:switch_preempt=18446744073709551615]

@@ -1,0 +1,3 @@
+claim-lint: clean (11 file(s) checked, changed hunks vs 4394409fca39).
+claim-lint: 136 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 3 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/block/serials/508/baseline/gate.log.gz, docs/planning/green-program/block/serials/508/baseline/serial_kernel.txt.gz, docs/planning/green-program/block/serials/508/baseline/serial_user.txt.gz
