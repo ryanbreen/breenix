@@ -1,0 +1,3 @@
+After production gate at 40e2925f32800702e3dfd42d31d0fe63760cf65c
+Lane-owned macOS QEMU processes: 0
+Read-only PID census; no name-based kill used.

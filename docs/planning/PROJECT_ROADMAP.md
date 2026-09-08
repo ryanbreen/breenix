@@ -11,12 +11,16 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
-Network issue #586 PR 3 adds capped guest-execution wake-budget extensions.
-Landing evidence and validation scope: [PR 3 landing](net/586-pr3/round-doc.md).
-
 Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
 https://v0-breenix-dashboard.vercel.app/).
+
+Issue 927: the x86 boot_tests-only fork helpers now run independently of the
+testing loader. PR 944's [round record](green-program/process/927-2026-09-07.md)
+records fresh integration gates: boot_tests-only, full x86 testing, production,
+and one pipe/FIFO oracle guest boot with 30 passing arms and a reaped status of 0.
+The initial oracle preflight failure and its capture-drain fixture repair are
+retained alongside the passing invocation. The aarch64 matrix remains separate.
 
 ## Recently Completed
 

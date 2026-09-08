@@ -1,0 +1,9 @@
+== compiling launcher_smoke_xhci_evidence_structure ==
+== running launcher_smoke_xhci_evidence_structure  ==
+
+running 2 tests
+test launcher_smoke_captures_raw_xhci_enum_trail ... ok
+test deliberately_broken_copy_reddens_the_rule ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

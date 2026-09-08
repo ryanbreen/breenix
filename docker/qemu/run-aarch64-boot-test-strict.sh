@@ -412,7 +412,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[LOOPBACK_WAKE_BUDGET:' '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[UDP_PORTS_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[UDP_PORTS_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi

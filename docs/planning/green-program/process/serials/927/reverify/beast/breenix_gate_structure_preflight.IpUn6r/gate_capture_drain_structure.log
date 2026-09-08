@@ -1,0 +1,28 @@
+== compiling gate_capture_drain_structure ==
+== running gate_capture_drain_structure  ==
+
+running 6 tests
+test moving_a_kill_above_its_drain_decision_reddens_the_check ... ok
+test every_guest_kill_site_is_preceded_by_a_drain_decision ... ok
+test converted_gates_exist_and_call_both_drain_functions ... ok
+test classify_pairs_a_begin_and_end_split_across_two_serial_files_by_seq ... ok
+test classify_distinguishes_complete_partial_and_absent_with_no_boot ... ok
+test drain_disabled_reads_partial_drain_enabled_reads_complete_same_race ... FAILED
+
+failures:
+
+---- drain_disabled_reads_partial_drain_enabled_reads_complete_same_race stdout ----
+
+thread 'drain_disabled_reads_partial_drain_enabled_reads_complete_same_race' panicked at /root/breenix-x927b/tests/gate_capture_drain_structure.rs:410:5:
+leg A (BREENIX_GATE_DRAIN_DISABLE=1) must read capture=partial -- it read:
+[CAPTURE_DRAIN:capture=complete:seq=3:edge=FAULT:cpu=0:records=3:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=CTX_SWITCH(7),CTX_SWITCH(8)]
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    drain_disabled_reads_partial_drain_enabled_reads_complete_same_race
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+

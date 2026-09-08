@@ -7888,7 +7888,7 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
         "if kstack_returns != pairing_child_pids.len() as u64 {",
         "pairing sentinel hierarchy cost changed between children",
     ] {
-        if !gate.contains(required) {
+        if !gate.split_whitespace().collect::<Vec<_>>().join(" ").contains(required) {
             return Err(());
         }
     }
@@ -9924,7 +9924,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "storm observer progress/exit stalled; a worker CPU (1/2/3) is unresponsive",
     ] {
         assert!(
-            gate.contains(required),
+            gate.split_whitespace().collect::<Vec<_>>().join(" ").contains(required),
             "missing exit-kick bound: {required}"
         );
     }
@@ -9956,13 +9956,13 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "progress_current.workers[target] > last_progress.workers[target]",
         "last_progress.workers[target] = progress_current.workers[target];",
         "last_advance[target] = now;",
-        "elapsed_ticks(last_advance[target], wait_start)",
+        "elapsed_ticks(last_advance[target], wait_start,)",
         "!target_complete(target, progress_current.workers[target])",
         "elapsed >= target_deadline",
         "stalled_target = Some(target);",
         "stalled_target.map(|i| workers[i].0)",
     ] {
-        assert!(worker_wait.contains(required), "missing per-worker window: {required}");
+        assert!(worker_wait.split_whitespace().collect::<String>().contains(&required.split_whitespace().collect::<String>()), "missing per-worker window: {required}");
     }
     assert!(!worker_wait.contains("advanced_from("));
     assert!(!worker_wait.contains("last_advance.fill("));
@@ -9995,7 +9995,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "final_progress[frozen] != 1", "final_progress[i] <= 2",
         "struct StormAbortGuard", "core::mem::drop(abort_guard);", "joined != 3",
     ] {
-        assert!(fixture.contains(required), "missing isolation fixture proof: {required}");
+        assert!(fixture.split_whitespace().collect::<Vec<_>>().join(" ").contains(required), "missing isolation fixture proof: {required}");
     }
     let strict = repo_text("docker/qemu/run-aarch64-boot-test-strict.sh");
     assert!(strict.contains("BREENIX_STRICT_TIMEOUT_SECONDS:-90"));
@@ -10034,7 +10034,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     // attribution. Mutation proof: reverting target_complete to
     // `|_, progress| progress != 0` must redden this test.
     assert!(
-        storm_union.contains("workers_ready_bits.load(Ordering::Acquire).count_ones() as u64"),
+        storm_union.split_whitespace().collect::<String>().contains("workers_ready_bits.load(Ordering::Acquire).count_ones()asu64"),
         "workers_ready's aggregate condition must read the shared readiness bitmask"
     );
     assert!(
@@ -10101,7 +10101,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "observer_progress",
     ] {
         assert!(
-            gate.contains(required),
+            gate.split_whitespace().collect::<Vec<_>>().join(" ").contains(required),
             "observer progress is not tied to a genuine state transition: {required}"
         );
     }
@@ -17770,4 +17770,60 @@ fn fix_pass_v8_worker_isolation_reports_budget_anchor_age() {
         .expect("scenario loop");
     assert!(anchor_offset < breadcrumb_offset);
     assert!(breadcrumb_offset < scenario_loop_offset);
+}
+
+
+/// Issue 947: read the windows actually used by both boot fixtures.
+#[test]
+fn exit_kick_fixture_summed_budget_under_ten_seconds() {
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let worker = function_body(&provider, "exit_kick_worker_window_isolation_test");
+    let anchor = function_body(&provider, "exit_kick_budget_anchor_isolation_test");
+    let w = |name| parse_u64_const(worker, name);
+    let a = |name| parse_u64_const(anchor, name);
+    let first = w("FIRST_PROGRESS_WINDOW_MILLISECONDS");
+    let quiet = w("NO_PROGRESS_WINDOW_MILLISECONDS");
+    let absolute = w("ABSOLUTE_WAIT_CEILING_MILLISECONDS");
+    let delay = a("FIXTURE_PRE_TEST_DELAY_MILLISECONDS");
+    let enclosing = a("FIXTURE_TEST_PHASE_BUDGET_MILLISECONDS");
+    let gate = a("FIXTURE_GATE_CEILING_MILLISECONDS");
+    let anchor_absolute = a("FIXTURE_ABSOLUTE_WAIT_CEILING_MILLISECONDS");
+    let anchor_first = a("FIXTURE_FIRST_PROGRESS_WINDOW_MILLISECONDS");
+    let anchor_quiet = a("FIXTURE_NO_PROGRESS_WINDOW_MILLISECONDS");
+    // One union control, three frozen workers, then C5's pre-delay, immediate
+    // inherited-anchor control, frozen treatment and advancing exhaustion.
+    // Include the healthy rendezvous allowance and progress-window slop;
+    // runtime breadcrumbs separately measure the total fixture elapsed time.
+    let summed_budget = absolute + 3 * (first + quiet) + first / 2
+        + delay + anchor_first + anchor_quiet + gate;
+    assert!(summed_budget < 10_000,
+        "per-boot fixture budget {summed_budget}ms must stay below 10000ms");
+    assert!(quiet < first && first < absolute);
+    assert!(absolute < w("GATE_CEILING_MILLISECONDS"));
+    assert!(anchor_quiet < anchor_first && anchor_first < gate);
+    assert!(gate < anchor_absolute && gate < enclosing && enclosing < delay);
+}
+
+/// Issue 947: pin five C4 and three C5 scenario entries.
+#[test]
+fn exit_kick_scaled_fixture_legs_remain_present() {
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let worker = function_body(&provider, "exit_kick_worker_window_isolation_test");
+    for leg in [
+        "(\"before_union_worker_1\", Some(0usize), true)",
+        "(\"after_worker_1\", Some(0), false)",
+        "(\"after_worker_2\", Some(1), false)",
+        "(\"after_worker_3\", Some(2), false)",
+        "(\"after_healthy\", None, false)",
+    ] {
+        assert!(worker.contains(leg), "missing C4 leg: {leg}");
+    }
+    let anchor = function_body(&provider, "exit_kick_budget_anchor_isolation_test");
+    for leg in [
+        "(\"inherited_kernel_entry_anchor\", \"inherited\", true, false)",
+        "(\"test_phase_entry_anchor\", \"test_phase\", false, false)",
+        "(\"gate_window_exhaustion\", \"test_phase\", false, true)",
+    ] {
+        assert!(anchor.contains(leg), "missing C5 leg: {leg}");
+    }
 }

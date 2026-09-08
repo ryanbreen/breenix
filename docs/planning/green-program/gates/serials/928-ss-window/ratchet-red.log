@@ -1,0 +1,18 @@
+Revision: 62924b4739870b344a78cd16cf4099c774ea48e9 + uncommitted capture-window/ratchet changes (45s mutation only in ratchet-red.log)
+== compiling gate_structure_preflight_wiring_structure ==
+== running gate_structure_preflight_wiring_structure service_sequence_capture_window_covers_strict ==
+
+running 1 test
+
+thread 'service_sequence_capture_window_covers_strict' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ss928/wt/tests/gate_structure_preflight_wiring_structure.rs:162:5:
+service-sequence capture 45s is shorter than strict 90s
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test service_sequence_capture_window_covers_strict ... FAILED
+
+failures:
+
+failures:
+    service_sequence_capture_window_covers_strict
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+

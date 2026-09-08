@@ -1,0 +1,26 @@
+== compiling udp_ports_lock_irq_structure ==
+== running udp_ports_lock_irq_structure  ==
+
+running 19 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test deliver_to_socket_still_locks_under_process_manager ... ok
+test bind_udp_uses_the_masked_primitive ... ok
+test bind_udp_uses_the_masked_primitive_rule_is_not_vacuous ... ok
+test handle_udp_contended_arm_has_no_logging ... ok
+test handle_udp_contended_arm_has_no_logging_rule_is_not_vacuous ... ok
+test handle_udp_uses_try_lookup_udp_not_lookup_udp ... ok
+test try_lookup_udp_counts_refusals ... ok
+test try_lookup_udp_uses_try_lock_not_blocking_lock ... ok
+test try_lookup_udp_counts_refusals_rule_is_not_vacuous ... ok
+test try_lookup_udp_uses_try_lock_not_blocking_lock_rule_is_not_vacuous ... ok
+test with_udp_ports_masked_documents_removal_allocator_work ... ok
+test unbind_udp_uses_the_masked_primitive ... ok
+test with_udp_ports_masked_documents_removal_allocator_work_rule_is_not_vacuous ... ok
+test unbind_udp_uses_the_masked_primitive_rule_is_not_vacuous ... ok
+test with_udp_ports_masked_masks_the_whole_hold ... ok
+test with_udp_ports_masked_masks_the_whole_hold_rule_is_not_vacuous ... ok
+test handle_udp_uses_try_lookup_udp_not_lookup_udp_rule_is_not_vacuous ... ok
+test green_control_all_rules_hold_at_head ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

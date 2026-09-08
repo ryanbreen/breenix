@@ -1,0 +1,11 @@
+docs/planning/green-program/tracing/947-FIXTURE-COST-2026-09-07.md:31: [universal-claim] All times below are milliseconds. `guest_uptime_ms` is the strict gate's observed guest uptime at scoring; it includes initialization and other work, so it is not an exact test-phase duration. Gate/worker entry ages come from their `budg...
+    -> unquantified absolute ('All') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+docs/planning/green-program/tracing/947-FIXTURE-COST-2026-09-07.md:39: [universal-claim] The before row is copied byte-for-byte from the committed C5 fix-pass `serials/522-c5-fixpass/strict-boot1-{serial,gate_boot_facts}.txt`. Its archive commit is `7207567b5d80bf578dce87479bad1f6285cf34c9`; the historical gate transcript do...
+    -> unquantified absolute ('none') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph (cited path `serials/522-c5-fixpass/strict-boot1-{serial,gate_boot_facts}.txt`, `serials/947/before-c5-{serial,gate_boot_facts}.txt` does not resolve, so it does not count as evidence)
+docs/planning/green-program/tracing/947-FIXTURE-COST-2026-09-07.md:78: [universal-claim] The cost mutation is rejected at the sum assertion (21,100 ms), before ordering assertions. Source hashes and the base revision plus working-diff status appear in each transcript. Every mutation was restored before the final structure run.
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+docs/planning/green-program/tracing/947-FIXTURE-COST-2026-09-07.md:95: [absolute-guarantee] - A 50-boot battery, hardware timing, or arbitrary-load latency guarantees.
+    -> 'guarantees' asserted with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 4 finding(s) across 30 file(s) [changed hunks vs 9f79cb71969f]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 180 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).

@@ -1,0 +1,11 @@
+== compiling trace_ring_depth_structure ==
+== running trace_ring_depth_structure  ==
+
+running 4 tests
+test tick_sample_constant_exists_and_is_named ... ok
+test the_ring_event_is_recorded_only_inside_the_sampling_guard ... ok
+test timer_tick_total_still_increments_unconditionally ... ok
+test tick_sample_guard_deletion_would_be_caught - should panic ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

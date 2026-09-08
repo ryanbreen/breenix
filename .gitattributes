@@ -179,3 +179,5 @@ docs/planning/green-program/sweeps/network-483-465-2026-09-07/round3/evidence/**
 
 # 586 PR 4 audit: retain the captured serial bytes used by marker-tally hashes.
 docs/planning/green-program/network/serials/586-pr4/audit/** -text
+# Preserve original serial and transcript bytes for the 813 PR B audit.
+docs/planning/green-program/ipc/serials/813-b/** -text

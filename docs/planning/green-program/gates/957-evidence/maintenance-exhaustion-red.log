@@ -1,0 +1,22 @@
+revision=a123f392560e3c404a4011b50a69ce0f3ea516e0; scope=mutation exhaustion: scripts/lib/python-with-pil.sh; replacement=a1055bab
+command=['bash', 'scripts/run-structure-tests.sh', 'parallels_capture_structure', 'pil_resolver_exhaustion_names_candidates_and_remediation']
+== compiling parallels_capture_structure ==
+== running parallels_capture_structure pil_resolver_exhaustion_names_candidates_and_remediation ==
+
+running 1 test
+
+thread 'pil_resolver_exhaustion_names_candidates_and_remediation' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957c/wt/tests/parallels_capture_structure.rs:633:13:
+missing candidate python3: ERROR: no Python with Pillow found; install Pillow or set BREENIX_PYTHON to an interpreter with Pillow
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test pil_resolver_exhaustion_names_candidates_and_remediation ... FAILED
+
+failures:
+
+failures:
+    pil_resolver_exhaustion_names_candidates_and_remediation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s
+
+
+exit=101; wall_seconds=0.135

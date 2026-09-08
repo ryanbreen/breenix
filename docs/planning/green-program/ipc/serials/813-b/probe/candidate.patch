@@ -1,0 +1,252 @@
+diff --git a/kernel/src/ipc/fd.rs b/kernel/src/ipc/fd.rs
+index 20c25899..d7beb107 100644
+--- a/kernel/src/ipc/fd.rs
++++ b/kernel/src/ipc/fd.rs
+@@ -699,7 +699,7 @@ impl Drop for FdTable {
+                     FdKind::UnixStream(socket) => {
+                         // Close the Unix socket endpoint
+                         let notifications = socket.lock().close();
+-                        notifications.deliver();
++                        notifications.deliver_deferred();
+                         log::debug!("FdTable::drop() - closed Unix stream socket fd {}", i);
+                     }
+                     FdKind::UnixSocket(socket) => {
+diff --git a/kernel/src/socket/unix.rs b/kernel/src/socket/unix.rs
+index f6efec23..82d3c981 100644
+--- a/kernel/src/socket/unix.rs
++++ b/kernel/src/socket/unix.rs
+@@ -32,6 +32,8 @@ pub struct UnixStreamPair {
+     closed_a: Mutex<bool>,
+     /// Endpoint B closed
+     closed_b: Mutex<bool>,
++    /// Intrusive owned close work; no allocation or fixed-capacity wake buffer.
++    pending_close: Mutex<PendingClose>,
+ }
+ 
+ impl UnixStreamPair {
+@@ -46,6 +48,10 @@ impl UnixStreamPair {
+             write_waiters_b: Arc::new(WaitQueueHead::new()),
+             closed_a: Mutex::new(false),
+             closed_b: Mutex::new(false),
++            pending_close: Mutex::new(PendingClose {
++                queued: false,
++                next: None,
++            }),
+         }
+     }
+ }
+@@ -204,41 +210,93 @@ impl UnixStreamSocket {
+             UnixEndpoint::B => *self.pair.closed_b.lock() = true,
+         }
+ 
+-        // Wake peer's waiters (they'll see EOF)
+-        let waiters = match self.endpoint {
+-            UnixEndpoint::A => &self.pair.waiters_b,
+-            UnixEndpoint::B => &self.pair.waiters_a,
+-        };
+-
+-        let waiter_ids: Vec<u64> = waiters.lock().clone();
+-        for thread_id in waiter_ids {
+-            crate::task::scheduler::with_scheduler(|sched| {
+-                sched.unblock(thread_id);
+-            });
++        UnixCloseNotifications {
++            pair: self.pair.clone(),
+         }
+-        let writers = match self.endpoint {
+-            UnixEndpoint::A => self.pair.write_waiters_b.clone(),
+-            UnixEndpoint::B => self.pair.write_waiters_a.clone(),
+-        };
+-        UnixCloseNotifications { writers }
+     }
+ }
+ 
+-/// Owned peer-writer notification; closed-flag and endpoint guards must drop
+-/// before delivery. Caller-owned PM uses the established deferred wake route.
++struct PendingClose {
++    queued: bool,
++    next: Option<Arc<UnixStreamPair>>,
++}
++
++// Queue lock precedes the embedded link lock. Neither is held while delivering
++// wakes, acquiring closed flags, or calling the scheduler. IRQ masking prevents
++// a same-CPU fault/termination publisher from interrupting a queue operation.
++static PENDING_CLOSES: Mutex<Option<Arc<UnixStreamPair>>> = Mutex::new(None);
++
++/// Both peer-reader EOF and peer-writer EPIPE notifications own the pair until
++/// delivery. Callers release the endpoint and PM guards first.
+ #[must_use = "deliver Unix close notifications after releasing object guards"]
+ pub struct UnixCloseNotifications {
+-    writers: Arc<WaitQueueHead>,
++    pair: Arc<UnixStreamPair>,
+ }
+ 
+ impl UnixCloseNotifications {
+     pub fn deliver(self) {
+-        self.writers.wake_up();
++        // FdTable destruction may run under PM or from fault cleanup.
++        if crate::process::process_manager_held_on_current_cpu() || crate::per_cpu::in_interrupt() {
++            self.deliver_deferred();
++            return;
++        }
++        let closed_a = *self.pair.closed_a.lock();
++        let closed_b = *self.pair.closed_b.lock();
++        for (closed, readers, writers) in [
++            (closed_a, &self.pair.waiters_b, &self.pair.write_waiters_b),
++            (closed_b, &self.pair.waiters_a, &self.pair.write_waiters_a),
++        ] {
++            if closed {
++                let ids = core::mem::take(&mut *readers.lock());
++                for tid in ids {
++                    crate::task::scheduler::with_scheduler(|sched| {
++                        sched.unblock(tid);
++                    });
++                }
++                writers.wake_up();
++            }
++        }
+     }
+ 
+-    /// Uses PR A's PM-context mechanism, including issue 936's residual caveat.
++    /// Retain the pair in an intrusive queue for the existing thread-context
++    /// reclamation boundary. Duplicate closes coalesce; no capacity can overflow.
+     pub fn deliver_deferred(self) {
+-        self.writers.wake_up_deferred();
++        crate::arch_without_interrupts(|| {
++            let mut head = PENDING_CLOSES.lock();
++            let mut pending = self.pair.pending_close.lock();
++            if !pending.queued {
++                pending.next = head.take();
++                pending.queued = true;
++                *head = Some(self.pair.clone());
++            }
++        });
++    }
++}
++
++/// Called from the existing PM-free reclamation entry on both architectures.
++/// A bounded pass leaves remaining pairs owned by the queue for the next pass.
++pub(crate) fn drain_close_notifications() {
++    if crate::process::process_manager_held_on_current_cpu()
++        || crate::per_cpu::in_interrupt()
++        || crate::tracing::providers::teardown::scheduler_scope_active()
++    {
++        return;
++    }
++    for _ in 0..64 {
++        let pair = crate::arch_without_interrupts(|| {
++            let mut head = PENDING_CLOSES.lock();
++            let pair = head.take()?;
++            {
++                let mut pending = pair.pending_close.lock();
++                *head = pending.next.take();
++                pending.queued = false;
++            }
++            Some(pair)
++        });
++        let Some(pair) = pair else {
++            break;
++        };
++        UnixCloseNotifications { pair }.deliver();
+     }
+ }
+ 
+diff --git a/kernel/src/task/process_task.rs b/kernel/src/task/process_task.rs
+index 605ef47d..1a9d9f74 100644
+--- a/kernel/src/task/process_task.rs
++++ b/kernel/src/task/process_task.rs
+@@ -1205,6 +1205,7 @@ pub fn reclaim_deferred_process_resources() {
+         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_CONTEXT_VIOLATIONS);
+         return;
+     }
++    crate::socket::unix::drain_close_notifications();
+     #[cfg(feature = "boot_tests")]
+     if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
+         return;
+diff --git a/tests/unix_stream_blocking_structure.rs b/tests/unix_stream_blocking_structure.rs
+index 79e3bac8..364a91ba 100644
+--- a/tests/unix_stream_blocking_structure.rs
++++ b/tests/unix_stream_blocking_structure.rs
+@@ -51,6 +51,27 @@ fn mode_drain_and_poll_mutations_are_rejected_singly() {
+         ));
+     }
+ }
++fn transmit_predicate_ok(unix: &str) -> bool {
++    let state_impl = unix.split("impl UnixWriteState<'_>").nth(1).unwrap_or("");
++    compact(&function(state_impl, "has_write_space"))
++        == "!*self.peer_closed&&self.buffer.len()<UNIX_SOCKET_BUFFER_SIZE"
++        && compact(&function(unix.split("impl UnixWriteState").next().unwrap(), "has_write_space"))
++            == "self.writer().state().has_write_space()"
++}
++
++#[test]
++fn transmit_predicate_and_single_mutations() {
++    let unix = read("kernel/src/socket/unix.rs");
++    assert!(transmit_predicate_ok(&unix));
++    for changed in [
++        unix.replace("!*self.peer_closed && self.buffer.len() < UNIX_SOCKET_BUFFER_SIZE", "!*self.peer_closed"),
++        unix.replace("self.buffer.len() < UNIX_SOCKET_BUFFER_SIZE", "self.buffer.len() <= UNIX_SOCKET_BUFFER_SIZE"),
++        unix.replace("self.writer().state().has_write_space()", "!self.peer_closed()"),
++    ] {
++        assert!(!transmit_predicate_ok(&changed));
++    }
++}
++
+ #[test]
+ fn guarded_state_defines_transmit_space_and_publication() {
+     let unix = read("kernel/src/socket/unix.rs");
+@@ -92,23 +113,46 @@ fn driver_and_gate_have_six_scored_legs() {
+ }
+ 
+ #[test]
+-fn close_returns_owned_peer_notifications_and_pm_consumers_defer() {
++fn close_notifications_leave_pm_without_the_isr_buffer() {
+     let unix = read("kernel/src/socket/unix.rs");
+     let close = compact(&function(&unix, "close"));
+-    assert!(close.contains("UnixEndpoint::A=>self.pair.write_waiters_b.clone()"));
+-    assert!(close.contains("UnixEndpoint::B=>self.pair.write_waiters_a.clone()"));
+-    assert!(close.contains("UnixCloseNotifications{writers}"));
+-    assert!(!close.contains("writers.wake_up"));
++    assert!(close.contains("UnixCloseNotifications{pair:self.pair.clone(),}"));
++    assert!(!close.contains("with_scheduler"));
++    assert!(!close.contains("wake_up"));
++    let deferred = compact(&function(&unix, "deliver_deferred"));
++    assert!(deferred.contains("PENDING_CLOSES.lock()"));
++    assert!(!deferred.contains("isr_unblock"));
++    assert!(!deferred.contains("wake_up_deferred"));
++    assert!(!deferred.contains("with_scheduler"));
++    assert!(!deferred.contains("Vec::"));
++    let drain = compact(&function(&unix, "drain_close_notifications"));
++    assert!(drain.contains("head.take()"));
++    assert!(drain.contains("next.take()"));
++    assert!(drain.contains("queued=false"));
++    assert!(drain.contains("UnixCloseNotifications{pair}.deliver()"));
+     let process = compact(&lex(&read("kernel/src/process/process.rs")));
+     assert_eq!(process.matches("FdKind::UnixStream(socket)=>{letnotifications=socket.lock().close();notifications.deliver_deferred();}").count(), 2);
++    let drop_fd = compact(&lex(&read("kernel/src/ipc/fd.rs")));
++    assert!(drop_fd
++        .contains("letnotifications=socket.lock().close();notifications.deliver_deferred();"));
++    let boundary = compact(&function(
++        &read("kernel/src/task/process_task.rs"),
++        "reclaim_deferred_process_resources",
++    ));
++    assert!(
++        boundary.find("process_manager_held_on_current_cpu()")
++            < boundary.find("drain_close_notifications()")
++    );
++    assert!(
++        boundary.find("scheduler_scope_active()") < boundary.find("drain_close_notifications()")
++    );
+     for path in [
+-        "kernel/src/ipc/fd.rs",
+         "kernel/src/task/process_task.rs",
+         "kernel/src/syscall/pipe.rs",
+     ] {
+-        let text = compact(&lex(&read(path)));
+         assert!(
+-            text.contains("letnotifications=socket.lock().close();notifications.deliver();"),
++            compact(&lex(&read(path)))
++                .contains("letnotifications=socket.lock().close();notifications.deliver();"),
+             "{path}"
+         );
+     }

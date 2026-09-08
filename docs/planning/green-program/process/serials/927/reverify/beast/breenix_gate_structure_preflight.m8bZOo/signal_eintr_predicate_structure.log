@@ -1,0 +1,10 @@
+== compiling signal_eintr_predicate_structure ==
+== running signal_eintr_predicate_structure  ==
+
+running 3 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test syscall_eintr_uses_disposition_aware_signal_predicate ... ok
+test eintr_validator_rejects_deliverable_signal_call ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

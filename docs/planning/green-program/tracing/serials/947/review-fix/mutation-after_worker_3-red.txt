@@ -1,0 +1,21 @@
+revision=54f33c141600fc464a1a52fdccf6575154d5083b + 947 working diff; mutation=after_worker_3; state=red
+source_sha256=6c7d4acb28decb25f86e79afa29cd8a3ffcbc55221e6d5f8296f7528c0b06307
+command=bash scripts/run-structure-tests.sh teardown_structure exit_kick_scaled_fixture_legs_remain_present
+== compiling teardown_structure ==
+== running teardown_structure exit_kick_scaled_fixture_legs_remain_present ==
+
+running 1 test
+
+thread 'exit_kick_scaled_fixture_legs_remain_present' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/tests/teardown_structure.rs:17819:9:
+missing C4 leg: ("after_worker_3", Some(2), false)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test exit_kick_scaled_fixture_legs_remain_present ... FAILED
+
+failures:
+
+failures:
+    exit_kick_scaled_fixture_legs_remain_present
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 104 filtered out; finished in 0.00s
+
+exit=101

@@ -2606,54 +2606,7 @@ fn sleep_current_thread_ms(duration_ms: u64) {
 const LOOPBACK_BACKSTOP_MS: u64 = 1_000 * crate::time::timer::MS_PER_TICK;
 
 /// The wake budget the loopback recv-wake tests give the reader, in ms.
-const LOOPBACK_WAKE_BUDGET_MS: u64 = guest_budget::POLICY.budget_ms;
-
-// Pure policy module: the host structure suite compiles this source verbatim.
-pub(super) mod guest_budget {
-    pub const HARD_CAP_MS: u64 = 200;
-
-    #[derive(Clone, Copy)]
-    pub struct ExtensionPolicy {
-        pub budget_ms: u64,
-        pub max_extension_ms: u64,
-    }
-
-    pub const POLICY: ExtensionPolicy = ExtensionPolicy {
-        budget_ms: 200,
-        max_extension_ms: HARD_CAP_MS,
-    };
-
-    pub fn extension_bound_ms(policy: ExtensionPolicy) -> u64 {
-        policy.budget_ms.saturating_add(policy.max_extension_ms.min(HARD_CAP_MS))
-    }
-
-    /// Counter elapsed time includes host descheduling. Context switches are
-    /// the independent evidence that the guest made progress. Percentages use
-    /// u128 arithmetic so large counter values cannot overflow the comparison.
-    pub fn grant_extension(
-        ctx_delta: u64,
-        elapsed_ctr_ms: u64,
-        extensions_ms: u64,
-        policy: ExtensionPolicy,
-    ) -> u64 {
-        let remaining = policy.max_extension_ms.min(HARD_CAP_MS)
-            .saturating_sub(extensions_ms);
-        let allocated = policy.budget_ms.saturating_add(extensions_ms);
-        let elapsed = u128::from(elapsed_ctr_ms) * 100;
-        let budget = u128::from(allocated);
-        if ctx_delta < 30 || allocated == 0 || elapsed < budget * 75 {
-            return 0;
-        }
-        let grant = if elapsed > budget * 90 { 100 } else { 50 };
-        grant.min(remaining)
-    }
-}
-
-fn loopback_window_starved(tick_ms: u64, ctr_ms: u64, ctx_delta: u64) -> bool {
-    ctx_delta < LOOPBACK_WAKE_CTX_FLOOR
-        || ctr_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_DEN)
-            > tick_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_NUM)
-}
+const LOOPBACK_WAKE_BUDGET_MS: u64 = 200;
 
 /// The fewest context switches a budget window must buy before the guest is
 /// credited with having executed.
@@ -3016,11 +2969,30 @@ fn run_loopback_recv_wake_test_inner(
         return TestResult::Fail("tcp_send failed in loopback wake test");
     }
 
-    // #586 PR3: each counter-clock sleep window is measured independently.
-    // Ticks advance on guest timer delivery; CNTVCT/TSC advances while the
-    // guest is descheduled. Context switches corroborate guest progress.
-    // The classifier uses the PR2 population's thresholds without changing
-    // any interrupt, dispatch or syscall instrumentation.
+    // #586 PR 2: bracket the budget with three clocks, so a boot that misses
+    // the wake can say where the time went instead of leaving the reader's
+    // state to carry the whole argument.
+    //
+    // `get_monotonic_time()` is the TICK clock -- `TICKS * MS_PER_TICK`, and
+    // `TICKS` only advances when this guest takes a timer interrupt.
+    // `monotonic_now_ns()` is the COUNTER clock -- CNTVCT_EL0 on aarch64, the
+    // TSC on x86_64 -- which advances with the host whether or not this guest
+    // is scheduled. `CTX_SWITCH_TOTAL.aggregate()` counts the context switches
+    // the guest actually performed across the window. A window in which the
+    // counter ran far ahead of the ticks, or in which the guest performed no
+    // switches, is the guest's own measurement of time it did not get.
+    //
+    // All three are reads of state that already exists. Nothing here writes to
+    // a dispatch, interrupt or syscall path, and no Tier-1 or Tier-2 file is
+    // touched.
+    // claim-lint:ok: "all three" is the 3 stamps taken below; the Tier
+    // statement is the 2-file diff of this branch -- this file and
+    // kernel/src/task/scheduler.rs, neither of which is in CLAUDE.md's Tier-1
+    // or Tier-2 tables. See #586 and
+    // docs/planning/green-program/network/586-PR2-2026-09-07.md.
+    let tick_before_ms = crate::time::get_monotonic_time();
+    let ctr_before_ns = monotonic_now_ns();
+    let ctx_before = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
     // Two point samples of the per-CPU idle flags, unioned below. This is not
     // a continuous observation of the window: it says a CPU was idle at one of
     // the two instants, never that one was idle throughout.
@@ -3038,44 +3010,11 @@ fn run_loopback_recv_wake_test_inner(
     let idle_before_sampled = idle_before_facts.is_some();
     let idle_before = idle_before_facts.map_or(0u32, |facts| facts.idle_cpu_bitmap);
 
-    let mut extensions = 0u64;
-    let mut window_ms = LOOPBACK_WAKE_BUDGET_MS;
-    let mut total_ctr_ms = 0u64;
-    let mut saw_starved = false;
-    let (elapsed_tick_ms, elapsed_ctr_ms, ctx_delta) = loop {
-        let tick_before_ms = crate::time::get_monotonic_time();
-        let ctr_before_ns = monotonic_now_ns();
-        let ctx_before = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
-        sleep_current_thread_ms(window_ms);
-        let tick_after_ms = crate::time::get_monotonic_time();
-        let ctr_after_ns = monotonic_now_ns();
-        let ctx_after = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
-        let tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
-        let ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
-        let switches = ctx_after.wrapping_sub(ctx_before);
-        let starved = loopback_window_starved(tick_ms, ctr_ms, switches);
-        total_ctr_ms = total_ctr_ms.saturating_add(ctr_ms);
-        let reader_pending = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst) == 0;
-        // Only an observed runnable reader qualifies. Missing scheduler facts
-        // cannot establish that the connection waiter was woken.
-        let reader_runnable = scheduler::with_scheduler(|sched| {
-            sched.get_thread(reader_tid).is_some_and(|thread| {
-                matches!(thread.state,
-                    crate::task::thread::ThreadState::Ready
-                    | crate::task::thread::ThreadState::Running)
-            })
-        }).unwrap_or(false);
-        saw_starved |= reader_pending && starved;
-        let grant_ms = guest_budget::grant_extension(
-            switches, total_ctr_ms, extensions, guest_budget::POLICY,
-        );
-        if reader_pending && reader_runnable && grant_ms > 0 {
-            extensions += grant_ms;
-            window_ms = grant_ms;
-            continue;
-        }
-        break (tick_ms, ctr_ms, switches);
-    };
+    sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS);
+
+    let tick_after_ms = crate::time::get_monotonic_time();
+    let ctr_after_ns = monotonic_now_ns();
+    let ctx_after = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
 
     let wake_ms = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst);
     let received = LOOPBACK_READER_BYTES.load(AtomicOrdering::SeqCst);
@@ -3183,6 +3122,9 @@ fn run_loopback_recv_wake_test_inner(
     // the two late failure paths.
     // The strand-census fields below use a separate post-window snapshot;
     // no stack-risk measurement justifies omitting this existing kthread API.
+    let elapsed_tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
+    let elapsed_ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
+    let ctx_delta = ctx_after.wrapping_sub(ctx_before);
     // Same collapse as `idle_before` above, on the deadline-side sample: a
     // `None` here means "unavailable", not "idle_cpu_bitmap of 0". A set bit
     // in the union can only be written by a sample that succeeded, so the
@@ -3198,16 +3140,14 @@ fn run_loopback_recv_wake_test_inner(
     // The guest is credited with having executed across the window when it
     // both performed context switches and kept its tick clock inside the
     // divergence ceiling of its counter clock.
-    let guest_executed = !loopback_window_starved(elapsed_tick_ms, elapsed_ctr_ms, ctx_delta);
+    let guest_executed = ctx_delta >= LOOPBACK_WAKE_CTX_FLOOR
+        && elapsed_ctr_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_DEN)
+            <= elapsed_tick_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_NUM);
 
-    // A recovered extension retains the starvation reason. The wake stamp and
-    // byte count below still determine Pass/Fail.
     // `verdict` names the BUDGET's outcome, not the test's. A boot that woke
     // inside the budget and then received the wrong byte count fails below
     // and still reads `verdict=ok`, because the budget was in fact met.
-    let verdict = if saw_starved && extensions > 0 {
-        "starved"
-    } else if wake_ms != 0 {
+    let verdict = if wake_ms != 0 {
         "ok"
     } else if matches!(reader_fact, ReaderFact::StillBlocked) {
         "wake"
@@ -3293,6 +3233,15 @@ fn run_loopback_recv_wake_test_inner(
         }
     }
 
+    // `extensions` is 0 on every line this PR can print: the budget is still
+    // one fixed window and nothing extends it. The field is here so PR 3's
+    // extension arithmetic lands in a grammar the green population already
+    // carries, and so a reader of these logs is never left guessing whether
+    // an absent field meant zero.
+    // claim-lint:ok: `extensions` is the literal 0 at the 1 of 1 call site of
+    // this format string, and 20 of 20 lines in the measured population read
+    // extensions=0 -- see
+    // docs/planning/green-program/network/586-PR2-2026-09-07.md and #586.
     struct CensusSlot(Option<u64>);
     impl core::fmt::Display for CensusSlot {
         fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -3304,16 +3253,14 @@ fn run_loopback_recv_wake_test_inner(
     }
     let emit_wake_budget = || {
         crate::serial_println!(
-            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:extension_cap_ms={}:extension_bound_ms={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:cpu_silence_ms={}:silence_cpu={}:woke_ms={}:verdict={}]",
+            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:cpu_silence_ms={}:silence_cpu={}:woke_ms={}:verdict={}]",
             arch_token,
             test_token,
             LOOPBACK_WAKE_BUDGET_MS,
             elapsed_tick_ms,
             elapsed_ctr_ms,
             ctx_delta,
-            extensions,
-            guest_budget::POLICY.max_extension_ms,
-            guest_budget::extension_bound_ms(guest_budget::POLICY),
+            0u64,
             reader_state_token,
             PlacementSlot::of(placement, |facts| facts.queued_cpu),
             PlacementSlot::of(placement, |facts| facts.queued_index),

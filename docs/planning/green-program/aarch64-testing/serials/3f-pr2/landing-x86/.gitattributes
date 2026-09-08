@@ -1,0 +1,2 @@
+serial_kernel.txt -text -diff
+serial_user.txt -text -diff

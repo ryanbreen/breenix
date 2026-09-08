@@ -1,0 +1,12 @@
+== compiling gate_boot_facts_pipefail_structure ==
+== running gate_boot_facts_pipefail_structure  ==
+
+running 5 tests
+test every_command_substitution_assignment_has_a_pipefail_fallback ... ok
+test has_true_fallback_requires_a_word_boundary_after_true ... ok
+test pipefail_fallback_census_is_not_vacuous ... ok
+test gate_boot_facts_lib_has_no_syntax_errors ... ok
+test gbf_helpers_survive_pipefail_with_a_nonexistent_pid_on_every_bash_here ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+

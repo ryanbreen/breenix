@@ -1,0 +1,5 @@
+revision=436313ed58543e121bf7959563597d2734d45893 + working tree resolver passed on stdin; lane=beast
+candidate=/usr/bin/python3
+10.2.0
+resolver_exit=0 selected=/usr/bin/python3
+exit=0

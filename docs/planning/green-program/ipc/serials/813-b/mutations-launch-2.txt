@@ -1,0 +1,33 @@
+START delete_read_wake
+END delete_read_wake rejected
+START swap_writer_queues
+END swap_writer_queues rejected
+START full_count
+END full_count rejected
+START construction_only
+END construction_only rejected
+START ignore_nonblock_sleep
+END ignore_nonblock_sleep timeout_after_oracle_start
+START poll_peer_only
+END poll_peer_only rejected
+START poll_receive_space
+END poll_receive_space rejected
+START reverse_transmit_direction
+END reverse_transmit_direction rejected
+START close_readers_only
+END close_readers_only rejected
+START close_wrong_writers
+END close_wrong_writers rejected
+START outer_lock_across_wait
+END outer_lock_across_wait timeout_after_oracle_start
+START ignore_interruption
+END ignore_interruption rejected
+START ignored_pending_interrupts
+END ignored_pending_interrupts rejected
+START leak_registration
+END leak_registration rejected
+START unrelated_waiter_list
+END unrelated_waiter_list rejected
+START stream_atomicity
+END stream_atomicity prerequisite_failure
+RESTORED

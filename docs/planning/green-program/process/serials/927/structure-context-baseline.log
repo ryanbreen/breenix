@@ -1,0 +1,21 @@
+REVISION=5c35eba20aa61eb4f5acb4ddb334381dffa0961c + context fork ratchet
+== compiling x86_boot_tests_profile_structure ==
+== running x86_boot_tests_profile_structure context_fork_is_profile_independent ==
+
+running 1 test
+
+thread 'context_fork_is_profile_independent' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/x927a/structure-927a/tests/x86_boot_tests_profile_structure.rs:101:5:
+assertion `left == right` failed
+  left: Err("context fork is feature gated")
+ right: Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test context_fork_is_profile_independent ... FAILED
+
+failures:
+
+failures:
+    context_fork_is_profile_independent
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+EXIT=101

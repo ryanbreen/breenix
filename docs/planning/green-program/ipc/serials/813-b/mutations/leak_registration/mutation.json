@@ -1,0 +1,7 @@
+{
+  "name": "leak_registration",
+  "arm": "signal",
+  "path": "kernel/src/syscall/blocking_io.rs",
+  "before": "queue.take_waiter(tid);\n    queue.finish_wait_for(tid);",
+  "after": "if !interrupted { queue.take_waiter(tid); queue.finish_wait_for(tid); }"
+}

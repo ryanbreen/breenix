@@ -1,0 +1,7 @@
+{
+  "name": "poll_peer_only",
+  "arm": "poll",
+  "path": "kernel/src/socket/unix.rs",
+  "before": "self.writer().state().has_write_space()",
+  "after": "!self.peer_closed()"
+}

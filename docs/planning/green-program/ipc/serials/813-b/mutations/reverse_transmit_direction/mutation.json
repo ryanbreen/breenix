@@ -1,0 +1,7 @@
+{
+  "name": "reverse_transmit_direction",
+  "arm": "poll",
+  "path": "kernel/src/socket/unix.rs",
+  "before": "UnixEndpoint::A => (&self.pair.buffer_a_to_b, &self.pair.closed_b),\n            UnixEndpoint::B => (&self.pair.buffer_b_to_a, &self.pair.closed_a),",
+  "after": "UnixEndpoint::A => (&self.pair.buffer_b_to_a, &self.pair.closed_b),\n            UnixEndpoint::B => (&self.pair.buffer_a_to_b, &self.pair.closed_a),"
+}

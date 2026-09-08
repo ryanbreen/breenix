@@ -1,0 +1,16 @@
+git rev-parse e42b4d04^{tree} 70aec756^{tree}
+0439e627f5d9f36a9c3d53cad3df4583ccdab893
+867432c6b43c7a4c9a7d434a85bd087417957e77
+treesEqual=false
+git diff --name-only e42b4d04 70aec756
+docs/planning/green-program/aarch64-testing/3F-PR2-2026-09-07.md
+docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/build-isolated-restored-input.txt
+docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/build-isolated.txt
+docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/cleanup-isolated-before.txt
+docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/isolated-artifact.txt
+docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/isolated-preflight.tar.gz
+docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/strict-boot.txt
+docs/planning/green-program/aarch64-testing/serials/3f-pr2-landing/aarch64-gate_boot_facts.txt
+docs/planning/green-program/aarch64-testing/serials/3f-pr2-landing/aarch64-preflight.tar.gz
+docs/planning/green-program/aarch64-testing/serials/3f-pr2-landing/aarch64-serial.txt
+docs/planning/green-program/aarch64-testing/serials/3f-pr2-landing/strict-aarch64.txt

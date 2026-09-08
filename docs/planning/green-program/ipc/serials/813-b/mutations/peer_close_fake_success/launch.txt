@@ -1,0 +1,5 @@
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+[UNIX_WRITE_START:aarch64:peer_close]
+F123456789SCUNIX_CHILD_FAIL:write=4097 expected=-32
+[UNIX_WRITE_ORACLE:aarch64:peer_close:verdict=FAIL:unexpected EOF]
+[UNIX_WRITE_RESULT:aarch64:status=1]

@@ -1,0 +1,8 @@
+rm /sbin/init
+write supervisor.elf /sbin/init
+set_inode_field /sbin/init mode 0100755
+rm /bin/unix_stream_blocking_oracle
+write worker.elf /bin/unix_stream_blocking_oracle
+set_inode_field /bin/unix_stream_blocking_oracle mode 0100755
+dump /sbin/init installed-supervisor.elf
+dump /bin/unix_stream_blocking_oracle installed-worker.elf

@@ -1,0 +1,87 @@
+tests/dispatch_strand_census_structure.rs:213:    // exists in the zero-feature production profile, and it sleeps on the
+tests/exec_lock_order_structure.rs:1376:    let sleep = target
+tests/exec_lock_order_structure.rs:1377:        .find("libbreenix::time::nanosleep(&ts)")
+tests/exec_lock_order_structure.rs:1378:        .ok_or_else(|| "exec smoke target does not sleep".to_owned())?;
+tests/exec_lock_order_structure.rs:1385:    if sleep >= ok_marker || yield_call >= ok_marker {
+tests/exec_lock_order_structure.rs:1386:        return Err("exec smoke target marker must follow its sleep and yield".to_owned());
+tests/ext2_lock_structure.rs:15://!      `ext2_acquire_write`) are gated by `ext2_lock_can_sleep()` and keep
+tests/ext2_lock_structure.rs:17://!   2. `ext2_lock_can_sleep()`'s x86 arm never regains an
+tests/ext2_lock_structure.rs:35://!      entire park loop (keeping its can-sleep gate and spin fallback)
+tests/ext2_lock_structure.rs:44://!   8. `ext2_lock_can_sleep()`'s x86 arm checks `preempt_count() == 1`
+tests/ext2_lock_structure.rs:295:/// C1: a park-capable acquisition body must consult `ext2_lock_can_sleep()`
+tests/ext2_lock_structure.rs:299:    if identifier_offsets(body, &mask, "ext2_lock_can_sleep").is_empty() {
+tests/ext2_lock_structure.rs:300:        return Err("missing the ext2_lock_can_sleep() gate".to_string());
+tests/ext2_lock_structure.rs:308:/// B1/C3: `ext2_lock_can_sleep()`'s aarch64 arm must keep its
+tests/ext2_lock_structure.rs:313:fn validate_can_sleep_arch_split(fn_body: &str) -> Result<(), String> {
+tests/ext2_lock_structure.rs:455:/// `ext2_lock_can_sleep`'s own doc comment in `mod.rs`) — `> 0`/`>= 1` would
+tests/ext2_lock_structure.rs:547:fn ext2_acquire_is_can_sleep_gated_with_a_spin_fallback() {
+tests/ext2_lock_structure.rs:554:fn ext2_acquire_write_is_can_sleep_gated_with_a_spin_fallback() {
+tests/ext2_lock_structure.rs:561:fn can_sleep_predicate_arch_split_is_correct() {
+tests/ext2_lock_structure.rs:563:    let body = function_body(&source, "ext2_lock_can_sleep");
+tests/ext2_lock_structure.rs:564:    validate_can_sleep_arch_split(body).unwrap();
+tests/ext2_lock_structure.rs:627:fn x86_can_sleep_preempt_count_check_is_exact_one() {
+tests/ext2_lock_structure.rs:629:    let body = function_body(&source, "ext2_lock_can_sleep");
+tests/ext2_lock_structure.rs:662:fn negative_missing_can_sleep_gate_is_rejected() {
+tests/ext2_lock_structure.rs:665:    assert!(err.contains("ext2_lock_can_sleep"), "unexpected message: {err}");
+tests/ext2_lock_structure.rs:670:    let regressed = "{ if ext2_lock_can_sleep() { park(); } unreachable!() }";
+tests/ext2_lock_structure.rs:683:fn ext2_lock_can_sleep() -> bool {
+tests/ext2_lock_structure.rs:696:    let err = validate_can_sleep_arch_split(mutated).unwrap_err();
+tests/ext2_lock_structure.rs:703:fn ext2_lock_can_sleep() -> bool {
+tests/ext2_lock_structure.rs:714:    let err = validate_can_sleep_arch_split(mutated).unwrap_err();
+tests/ext2_lock_structure.rs:772:    // while keeping the can-sleep gate and the spin fallback. Property 1
+tests/ext2_lock_structure.rs:779:    if ext2_lock_can_sleep() {
+tests/ext2_lock_structure.rs:824:fn ext2_lock_can_sleep() -> bool {
+tests/ext2_lock_structure.rs:857:    // (checked-wait usage, can-sleep gating, spin fallback) stays intact.
+tests/gate_capture_drain_structure.rs:399:sleep() {{ release_writer; }}
+tests/gate_qmp_backstop_structure.rs:305:                std::thread::sleep(std::time::Duration::from_millis(20));
+tests/gate_qmp_backstop_structure.rs:361:            std::thread::sleep(std::time::Duration::from_millis(20));
+tests/loopback_pump_structure.rs:1930:        .expect("generic unblock does not wake waitpid sleepers");
+tests/loopback_pump_structure.rs:4430:/// stamps straddles the sleep, and that no exit of the function returns
+tests/loopback_pump_structure.rs:4478:    let sleep = code_text_offset(body, "sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS)")
+tests/loopback_pump_structure.rs:4479:        .ok_or_else(|| "the wake budget is not spent in one named sleep".to_string())?;
+tests/loopback_pump_structure.rs:4489:        if before_at >= sleep || after_at <= sleep {
+tests/masked_binary_load_structure.rs:9://!     wait_timeout_inner` takes the syscall sleep path, blocks the caller
+tests/pipe_fifo_blocking_structure.rs:236:fn prepared_sleep_owns_no_guard_and_cleans_up_eintr() {
+tests/pipe_fifo_blocking_structure.rs:239:    let sleep: Vec<_> = defs
+tests/pipe_fifo_blocking_structure.rs:243:    assert_eq!(sleep.len(), 1, "one shared sleep lifecycle");
+tests/pipe_fifo_blocking_structure.rs:244:    let body = compact(&sleep[0].1.body);
+tests/pipe_fifo_blocking_structure.rs:247:        sleep[0].1.params.len(),
+tests/pipe_fifo_blocking_structure.rs:249:        "only queue and publication result may enter sleep"
+tests/pipe_fifo_blocking_structure.rs:265:    // sleep call, with no guard reacquired in the outer retry loop.
+tests/pipe_fifo_blocking_structure.rs:266:    fn check_scope(nodes: &[Node], sleeping: &str, held: bool, count: &mut usize) {
+tests/pipe_fifo_blocking_structure.rs:280:            if n.token() == sleeping && nodes.get(i + 1).and_then(|n| n.group('(')).is_some() {
+tests/pipe_fifo_blocking_structure.rs:281:                assert!(!local, "buffer lock crosses prepared sleep");
+tests/pipe_fifo_blocking_structure.rs:285:                check_scope(inner, sleeping, local, count);
+tests/pipe_fifo_blocking_structure.rs:290:    check_scope(adapter, sleep[0].0, false, &mut count);
+tests/strand_handoff_structure.rs:2020:    let sleeps = code_occurrences(driver, "strand_oracle::sleep_sample_period()");
+tests/strand_handoff_structure.rs:2023:    assert_eq!(sleeps.len(), 1, "the driver must have one post-resume throttle");
+tests/strand_handoff_structure.rs:2025:        publish[0] < schedules[0] && schedules[0] < sleeps[0],
+tests/strand_handoff_structure.rs:2786:        !code_occurrences(victim, "sleep_sample_period()").is_empty(),
+tests/structure_preflight_parallel_structure.rs:56:            std::thread::sleep(std::time::Duration::from_millis(10));
+tests/structure_preflight_parallel_structure.rs:228:        std::thread::sleep(std::time::Duration::from_millis(10));
+tests/structure_preflight_parallel_structure.rs:280:        "#[test] fn hangs() { loop { std::thread::sleep(std::time::Duration::from_millis(100)); } }").unwrap();
+tests/teardown_structure.rs:5185:                "sleep 2",
+tests/teardown_structure.rs:5726:fn sleeping_publication_names() -> [&'static str; 5] {
+tests/teardown_structure.rs:5736:fn validate_sleeping_preempt_discipline(
+tests/teardown_structure.rs:5740:    let sleeping_calls = census(&sources, |source, mask| {
+tests/teardown_structure.rs:5741:        sleeping_publication_names()
+tests/teardown_structure.rs:5746:    for ((path, item), _) in sleeping_calls {
+tests/teardown_structure.rs:5748:            .unwrap_or_else(|| panic!("missing sleeping function item {path} :: {item}"));
+tests/teardown_structure.rs:5750:        let publication_offsets: Vec<_> = sleeping_publication_names()
+tests/teardown_structure.rs:5774:                "{path} :: {item} must enable preemption before its first sleep loop and disable it after"
+tests/teardown_structure.rs:8305:    // comparison from enqueue/publication, reopening the check-to-sleep lost-wake window.
+tests/teardown_structure.rs:8320:    // This ratchet catches any newly discovered sleeping syscall that schedules while the
+tests/teardown_structure.rs:8322:    let mut sleeping_sources = rust_sources_below("kernel/src/syscall").clone();
+tests/teardown_structure.rs:8323:    sleeping_sources.push((
+tests/teardown_structure.rs:8327:    sleeping_sources.sort_by(|left, right| left.0.cmp(&right.0));
+tests/teardown_structure.rs:8330:        "sleeping syscall preempt discipline",
+tests/teardown_structure.rs:8331:        validate_sleeping_preempt_discipline(&sleeping_sources),
+tests/teardown_structure.rs:10562:    // sleeping-function census does not pass merely because a loop and publication call exist.
+tests/teardown_structure.rs:10571:    let mut broken_sleeping_sources = rust_sources_below("kernel/src/syscall").clone();
+tests/teardown_structure.rs:10572:    broken_sleeping_sources.push((
+tests/teardown_structure.rs:10576:    broken_sleeping_sources.sort_by(|left, right| left.0.cmp(&right.0));
+tests/teardown_structure.rs:10577:    let broken_sleeping_sources = broken_sleeping_sources
+tests/teardown_structure.rs:10591:        "sleeping preempt discipline",
+tests/teardown_structure.rs:10592:        validate_sleeping_preempt_discipline(&broken_sleeping_sources),
+tests/timer_wake_dispatch_structure.rs:6://! sleep deadline has already passed. It used to enqueue those at the
+tests/ttbr0_shadow_reconciliation_structure.rs:1744:// `syscall_entry.S` installs that word verbatim, so a `nanosleep` or EINTR

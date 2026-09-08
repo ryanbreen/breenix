@@ -1,0 +1,409 @@
+ORACLE_PREFLIGHT_RETRY: jobs=1 per_suite_timeout=600; no guest boot in the first attempt
+REVISION=c5b5d0dc026044005e025e549fc121779e5b165f
+COMMAND=bash docker/qemu/run-blocking-io-oracle-gate.sh --arch x86_64
+Artifacts: /root/breenix-927a-tmp/breenix_813_x86_64.MWnXFR
+[GATE_PREFLIGHT:structure_suites=65/65:critical_path_lines=260:pinned=120]
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: x86_64
+
+[1/3] Building libbreenix-libc (x86_64)...
+  Finished `release` profile [optimized] target(s) in 0.73s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (x86_64)...
+  Finished `release` profile [optimized] target(s) in 1.96s
+  Userspace build successful
+
+[3/3] Installing std binaries...
+  Installed hello_world.elf (227144 bytes)
+  Installed exec_smoke.elf (178056 bytes)
+  Installed exec_smoke_target.elf (185032 bytes)
+  Installed fork_smoke.elf (187608 bytes)
+  Installed block_eintr_oracle.elf (190008 bytes)
+  Installed poll_tcp_oracle.elf (207176 bytes)
+  Installed futex_handoff_oracle.elf (178824 bytes)
+  Installed tty_oracle.elf (218392 bytes)
+  Installed df_preempt_oracle.elf (187640 bytes)
+  Installed syscall_enosys.elf (177528 bytes)
+  Installed clock_gettime_test.elf (184552 bytes)
+  Installed file_read_test.elf (182400 bytes)
+  Installed lseek_test.elf (182512 bytes)
+  Installed fs_write_test.elf (182888 bytes)
+  Installed fs_rename_test.elf (182704 bytes)
+  Installed fs_large_file_test.elf (182608 bytes)
+  Installed fs_directory_test.elf (183152 bytes)
+  Installed fs_link_test.elf (182800 bytes)
+  Installed access_test.elf (177944 bytes)
+  Installed devfs_test.elf (182440 bytes)
+  Installed cwd_test.elf (182616 bytes)
+  Installed getdents_test.elf (183984 bytes)
+  Installed pipe_test.elf (188248 bytes)
+  Installed pipe2_test.elf (188920 bytes)
+  Installed pipe_fifo_blocking_oracle.elf (210152 bytes)
+  Installed pipe_fifo_blocking_supervisor.elf (178040 bytes)
+  Installed dup_test.elf (189152 bytes)
+  Installed fcntl_test.elf (188744 bytes)
+  Installed poll_test.elf (189024 bytes)
+  Installed select_test.elf (188912 bytes)
+  Installed epoll_test.elf (182832 bytes)
+  Installed nonblock_test.elf (188744 bytes)
+  Installed brk_test.elf (182480 bytes)
+  Installed signal_handler_test.elf (187896 bytes)
+  Installed signal_return_test.elf (188312 bytes)
+  Installed signal_regs_test.elf (188208 bytes)
+  Installed sigaltstack_test.elf (189000 bytes)
+  Installed sigsuspend_test.elf (188864 bytes)
+  Installed pause_test.elf (188360 bytes)
+  Installed tty_test.elf (188080 bytes)
+  Installed session_test.elf (187968 bytes)
+  Installed unix_socket_test.elf (205312 bytes)
+  Installed unix_named_socket_test.elf (195336 bytes)
+  Installed fifo_test.elf (198448 bytes)
+  Installed fork_test.elf (188088 bytes)
+  Installed fork_memory_test.elf (188664 bytes)
+  Installed fork_state_test.elf (189176 bytes)
+  Installed waitpid_test.elf (188144 bytes)
+  Installed exec_argv_test.elf (178200 bytes)
+  Installed cloexec_test.elf (192576 bytes)
+  Installed kill_process_group_test.elf (188480 bytes)
+  Installed sigchld_test.elf (182432 bytes)
+  Installed sigkill_teardown_test.elf (206712 bytes)
+  Installed sigchld_job_test.elf (187520 bytes)
+  Installed ctrl_c_test.elf (187984 bytes)
+  Installed job_control_test.elf (187648 bytes)
+  Installed signal_fork_test.elf (188160 bytes)
+  Installed signal_exec_test.elf (188720 bytes)
+  Installed wnohang_timing_test.elf (182536 bytes)
+  Installed fork_pending_signal_test.elf (187736 bytes)
+  Installed shell_pipe_test.elf (183128 bytes)
+  Installed pipeline_test.elf (191584 bytes)
+  Installed cow_cleanup_test.elf (182536 bytes)
+  Installed cow_sole_owner_test.elf (187000 bytes)
+  Installed cow_stress_test.elf (187096 bytes)
+  Installed cow_readonly_test.elf (187040 bytes)
+  Installed cow_signal_test.elf (188312 bytes)
+  Installed resolution.elf (186928 bytes)
+  Installed init_shell.elf (262648 bytes)
+  Installed argv_test.elf (184328 bytes)
+  Installed job_table_test.elf (192232 bytes)
+  Installed test_mmap.elf (182224 bytes)
+  Installed clonevm_exec_test.elf (184656 bytes)
+  Installed stdin_test.elf (182280 bytes)
+  Installed true_test.elf (182552 bytes)
+  Installed false_test.elf (182560 bytes)
+  Installed echo_argv_test.elf (182464 bytes)
+  Installed mkdir_argv_test.elf (182672 bytes)
+  Installed rm_argv_test.elf (182480 bytes)
+  Installed cp_mv_argv_test.elf (182800 bytes)
+  Installed nonblock_eagain_test.elf (179608 bytes)
+  Installed blocking_recv_test.elf (184016 bytes)
+  Installed tcp_client_test.elf (187616 bytes)
+  Installed wait_stress.elf (195552 bytes)
+  Installed simple_exit.elf (170576 bytes)
+  Installed simple_exit0.elf (170576 bytes)
+  Installed spawn_smoke_target.elf (170592 bytes)
+  Installed counter.elf (177632 bytes)
+  Installed spinner.elf (177632 bytes)
+  Installed hello_time.elf (177624 bytes)
+  Installed heartbeat.elf (189104 bytes)
+  Installed xhci_counters.elf (183112 bytes)
+  Installed fbinfo_test.elf (187568 bytes)
+  Installed demo.elf (189696 bytes)
+  Installed bounce.elf (275064 bytes)
+  Installed rectangles.elf (197088 bytes)
+  Installed particles.elf (193928 bytes)
+  Installed confetti.elf (189240 bytes)
+  Installed tones.elf (184216 bytes)
+  Installed fart.elf (191688 bytes)
+  Installed http_test.elf (468576 bytes)
+  Installed register_init_test.elf (177096 bytes)
+  Installed head_test.elf (183056 bytes)
+  Installed tail_test.elf (183056 bytes)
+  Installed wc_test.elf (183624 bytes)
+  Installed which_test.elf (182952 bytes)
+  Installed cat_test.elf (183240 bytes)
+  Installed ls_test.elf (183288 bytes)
+  Installed exec_stack_argv_test.elf (183432 bytes)
+  Installed exec_from_ext2_test.elf (188072 bytes)
+  Installed pipe_fork_test.elf (188824 bytes)
+  Installed pipe_concurrent_test.elf (188720 bytes)
+  Installed fs_block_alloc_test.elf (188616 bytes)
+  Installed cow_oom_test.elf (182504 bytes)
+  Installed signal_test.elf (187864 bytes)
+  Installed alarm_test.elf (182760 bytes)
+  Installed itimer_test.elf (183200 bytes)
+  Installed timer_test.elf (182144 bytes)
+  Installed sleep_debug_test.elf (188592 bytes)
+  Installed pipe_refcount_test.elf (199944 bytes)
+  Installed udp_socket_test.elf (193392 bytes)
+  Installed tcp_socket_test.elf (202288 bytes)
+  Installed tcp_dup_listener_test.elf (188832 bytes)
+  Installed tcp_cloexec_exec_test.elf (189448 bytes)
+  Installed tcp_blocking_test.elf (203432 bytes)
+  Installed concurrent_recv_stress.elf (188944 bytes)
+  Installed dns_test.elf (195240 bytes)
+  Installed net_test.elf (191584 bytes)
+  Installed http_fetch_test.elf (464416 bytes)
+  Installed loopback_wake_test.elf (190448 bytes)
+  Installed syscall_diagnostic_test.elf (170856 bytes)
+  Installed pty_test.elf (183008 bytes)
+  Installed signal_exec_check.elf (177880 bytes)
+  Installed bsh.elf (579464 bytes)
+  Installed bwm.elf (331464 bytes)
+  Installed btop.elf (184192 bytes)
+  Installed burl.elf (483336 bytes)
+  Installed init.elf (187488 bytes)
+  Installed telnetd.elf (184072 bytes)
+  Installed blogd.elf (181960 bytes)
+  Installed btrace.elf (198936 bytes)
+  Installed bless.elf (185624 bytes)
+  Installed bcheck.elf (299184 bytes)
+  Installed biconkit.elf (248088 bytes)
+  Installed guskit.elf (391464 bytes)
+  Installed bterm.elf (338560 bytes)
+  Installed blog.elf (331032 bytes)
+  Installed bfontpicker.elf (346184 bytes)
+  Installed blauncher.elf (325304 bytes)
+  Installed bsshd.elf (314256 bytes)
+  Installed bssh.elf (322504 bytes)
+
+========================================
+  STD BUILD COMPLETE (x86_64)
+  Installed: 151 binaries
+========================================
+   Compiling kernel v0.1.0 (/root/breenix-927a/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-927a)
+    Finished `release` profile [optimized] target(s) in 22.45s
+   Compiling kernel v0.1.0 (/root/breenix-927a/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-927a)
+    Finished `release` profile [optimized] target(s) in 14.88s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-927a/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+Traceback (most recent call last):
+  File "<stdin>", line 4, in <module>
+AssertionError: kernel crash
+blocking I/O oracle gate: FAIL at docker/qemu/run-blocking-io-oracle-gate.sh:201: python3 - "$ARCH" "$RUN_DIR" "${EXPECTED_ARMS[@]}" <<'PY'
+import pathlib, re, sys
+arch, directory, *arms = sys.argv[1:]
+text = '\n'.join(p.read_text(errors='replace') for p in pathlib.Path(directory).glob('*.txt'))
+assert not re.search(r'KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|DOUBLE FAULT|TRIPLE FAULT|soft lockup detected', text, re.I), 'kernel crash'
+results = re.findall(r'\[PIPE_WRITE_RESULT:([^\]]+)\]', text)
+assert results == [f'{arch}:status=0'], f'missing/duplicate/nonzero reaped result: {results}'
+assert ':verdict=FAIL' not in text, 'oracle arm failed'
+records = re.findall(r'\[PIPE_WRITE_ORACLE:([^\]]+)\]', text)
+for kind in ('pipe', 'fifo'):
+    for arm in arms:
+        prefix = f'{arch}:{kind}:{arm}:verdict=PASS:bytes='
+        matches = [r for r in records if r.startswith(prefix)]
+        assert matches, f'missing {kind}/{arm}'
+        for record in matches:
+            counts = re.fullmatch(re.escape(prefix) + r'(\d+):expected=(\d+)', record)
+            assert counts and counts[1] == counts[2], f'byte tally: {record}'
+summary = f'[PIPE_WRITE_SUMMARY:{arch}:passed={2 * len(arms)}:failed=0]'
+assert summary in text, 'missing complete arm tally'
+print(f'PASS: {arch}, {2 * len(arms)} arms, exact byte tallies and worker reaped')
+PY
+ (exit 1)
+PCI_FN 00:06.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0a
+PCI_FN_TOTAL 9
+[ INFO] scheduler::schedule() returned (boot marker)
+[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=22:ms=110:ticks_after=22:ticks_nonzero=1:in_range=1:PASS]
+[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:pm_held_during_entry=1:entry_us=19:adopted=1:adopted_pgrp=821:restored=1:PASS:local_hold]
+
+[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:fg_busy_probe=1:entry_us=1239:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:local_hold]
+[DISPATCH_FACT_ORACLE:x86:facts=10:legs=10:moved_by_one=10:moved_wrong=0:irqs_enabled_before=1:PASS]
+[TEST:process:retirement_fence_gate:START]
+[TEST:process:retirement_fence_gate:PASS]
+[TEST:process:reclaim_progress_gate:START]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:process:reclaim_progress_gate:PASS]
+[TEST:process:x86_retire_cohort:START]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:process:x86_retire_cohort:PASS]
+[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]
+[TEST:process:x86_exec_cohort:START]
+[SW]<K>[SW]<1>[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]
+[TEST:process:x86_exec_cohort:PASS]
+[TEST:process:exec_detach_oracle:START]
+manager.create_process: ENTRY - name='exec_detach_leader', elf_size=180
+manager.create_process: Generating PID
+manager.create_process: Generated PID 85
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x40000000
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40201000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff011000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 85
+manager.create_process: Adding PID 85 to ready queue
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]
+[TEST:process:exec_detach_oracle:PASS]
+[TEST:process:clone_admission_oracle:START]
+[PMGUARD] creating dispatch refused tid=173 pid=92
+[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]
+[TEST:process:clone_admission_oracle:PASS]
+[TEST:process:init_designation_oracle:START]
+manager.create_process: ENTRY - name='init_oracle_a1', elf_size=8
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ENTRY - name='init_oracle_a2', elf_size=120
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+[SW]<K>[SW]<1>[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
+[TEST:process:init_designation_oracle:PASS]
+[TEST:process:init_group_refusal_oracle:START]
+[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]
+[TEST:process:init_group_refusal_oracle:PASS]
+[TEST:process:kernel_stack_ownership_oracle:START]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[CREATION_LOCK_ORDER:INJECTED:PM_HELD]
+[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=0:foreign_returned=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=0:frame_used_bounded=1:live_checks=1082:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=1074:pub_sched_owned=1074:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=3:sched_pm_held_production=0:sched_pm_held_injected=1:reconciliation_diff=0:reconciliation_skew_bound=0:balance=0]
+[TEST:process:tombstone_join_oracle:START]
+[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]
+[TEST:timer:ring_span_report:START]
+[RING_SPAN:cpu=0:span_ms=2574:writes=31:dropped=0:ticks_total=200:tick_events=12]
+[TEST:timer:ring_span_report:PASS]
+[TEST:process:deferred_fault_ring_overflow_injection:START]
+[TEST:process:deferred_fault_ring_overflow_injection:PASS]
+[PT_ROOT_CUSTODY:no_proof=0:no_arch=1:terminated=1:undecided=3:mid_retire=1:retired=152]
+[TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1]
+[PIN_GUARD_ORACLE:x86_64:SKIP:reason=max_cpus_1_one_scheduling_cpu]
+[TEST:network:loopback_wake_loss_counters_are_zero:START]
+[TEST:network:loopback_wake_loss_counters_are_zero:PASS]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>p00r0 [SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=45:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=456:window_ms=512:measured=1:PASS]
+manager.create_process: ENTRY - name='init', elf_size=178040
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e484
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40016000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff026000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 1
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+BPBP_HANDLER_ENTRY!
+About to call preempt_disable from BP handler
+Called preempt_disable from BP handler
+BP from_userspace=false, CS=0x8
+BP handler: About to call preempt_enable
+BP handler: Called preempt_enable, exiting handler
+[SW]<T><U>RING3_ENTER: CS=0x33
+[ OK ] RING3_SMOKE: userspace executed + syscall path verified
+<S>[SW]<K>breenix> [SW]<T><U><R>RING3_SYSCALL: First syscall from userspace
+[ OK ] syscall path verified
+[STAGE:user:ADVANCE]
+[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]
+[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]
+[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]
+[UDP_LOCK_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]
+[UDP_PORTS_LOCK_ORACLE:x86:arm=none:reason=uniprocessor_no_udp_ports_contention_peer:online_cpus=1:SKIP]
+[SCHED_STRAND_ORACLE:x86:samples=2:checked=4:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=0:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=0:queued_on_nondispatching_cpu=0:worst_queued_nondispatch_ms=0:worst_cpu_scheduler_silence_ms=0:worst_silence_cpu=0]
+[TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1]
+[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
+[TESTS_COMPLETE:0/0]
+[BOOT_TESTS:PASS]
+<S>[SW]<K>[SW]<T><U><R>[COW FAULT #0] addr=0x7fffff025eb8 cr3=0x502b000
+[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><U><R>[COW FAULT #1] addr=0x7fffff025eb8 cr3=0x4efb000
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[EXEC_LOCK_ORDER:FIRST_COMMIT]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[COW FAULT #2] addr=0x7fffff00f8f8 cr3=0x4eb6000
+[SW]<K>[SW]<T><U><R>[COW FAULT #3] addr=0x7fffff00f8f8 cr3=0x4efa000
+<S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[COW FAULT #4] addr=0x4001c0d0 cr3=0x4efa000
+[PIPE_WRITE_ORACLE:x86_64:pipe:full_block:verdict=PASS:bytes=69632:expected=69632]
+[PIPE_WRITE_ORACLE:x86_64:pipe:full_block:verdict=PASS:bytes=69632:expected=69632]
+<S>[SW]<K>[SW]<T><U><R>[COW FAULT #5] addr=0x7fffff00f8f8 cr3=0x4eb6000
+[SW]<K>[SW]<T><U><R>[COW FAULT #6] addr=0x7fffff00f8f8 cr3=0x4efa000
+<S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[COW FAULT #7] addr=0x4001c058 cr3=0x4efa000
+[COW FAULT #8] addr=0x7ffffdfce010 cr3=0x4efa000
+[COW FAULT #9] addr=0x7ffffdfcf010 cr3=0x4efa000
+[PIPE_WRITE_ORACLE:x86_64:pipe:atomic4096:verdict=PASS:bytes=65537:expected=65537]
+[PIPE_WRITE_ORACLE:x86_64:pipe:atomic4096:verdict=PASS:bytes=65537:expected=65537]
+<S>[SW]<K>[SW]<T><U><R>[COW FAULT #10] addr=0x7fffff00f8f8 cr3=0x4e3b000
+[SW]<K>[SW]<T><U><R>[COW FAULT #11] addr=0x7fffff00f8f8 cr3=0x4efa000
+<S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #12] addr=0x4001c058 cr3=0x4efa000
+[COW FAULT #13] addr=0x7ffffdfce010 cr3=0x4efa000
+[COW FAULT #14] addr=0x7ffffdfcf010 cr3=0x4efa000
+[PIPE_WRITE_ORACLE:x86_64:pipe:atomic4095:verdict=PASS:bytes=65537:expected=65537]
+[PIPE_WRITE_ORACLE:x86_64:pipe:atomic4095:verdict=PASS:bytes=65537:expected=65537]
+<S>[SW]<K>[SW]<T><U><R>[COW FAULT #15] addr=0x7fffff00f8f8 cr3=0x4a7b000
+[SW]<K>[SW]<T><U><R>[COW FAULT #16] addr=0x7fffff00f8f8 cr3=0x4efa000
+<S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[COW FAULT #17] addr=0x4001c058 cr3=0x4efa000
+[COW FAULT #18] addr=0x7ffffdfce010 cr3=0x4efa000
+[COW FAULT #19] addr=0x7ffffdfcf010 cr3=0x4efa000
+[PIPE_WRITE_ORACLE:x86_64:pipe:large_block:verdict=PASS:bytes=69632:expected=69632]
+[PIPE_WRITE_ORACLE:x86_64:pipe:large_block:verdict=PASS:bytes=69632:expected=69632]
+[PIPE_WRITE_ORACLE:x86_64:pipe:nonblock_full:verdict=PASS:bytes=65536:expected=65536]
+[PIPE_WRITE_ORACLE:x86_64:pipe:nonblock_full:verdict=PASS:bytes=65536:expected=65536]
+<S>[SW]<K>[SW]<T><U><R>p00r0 [PIPE_WRITE_ORACLE:x86_64:pipe:nonblock_atomic:verdict=PASS:bytes=61441:expected=61441]
+[PIPE_WRITE_ORACLE:x86_64:pipe:nonblock_atomic:verdict=PASS:bytes=61441:expected=61441]
+<S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:pipe:nonblock_large:verdict=PASS:bytes=65536:expected=65536]
+[PIPE_WRITE_ORACLE:x86_64:pipe:nonblock_large:verdict=PASS:bytes=65536:expected=65536]
+<S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:pipe:poll:verdict=PASS:bytes=65537:expected=65537]
+[PIPE_WRITE_ORACLE:x86_64:pipe:poll:verdict=PASS:bytes=65537:expected=65537]
+<S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:pipe:last_reader:verdict=PASS:bytes=0:expected=0]
+[PIPE_WRITE_ORACLE:x86_64:pipe:last_reader:verdict=PASS:bytes=0:expected=0]
+<S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:pipe:duplicate_reader:verdict=PASS:bytes=0:expected=0]
+[PIPE_WRITE_ORACLE:x86_64:pipe:duplicate_reader:verdict=PASS:bytes=0:expected=0]
+<S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:pipe:signal_before:verdict=PASS:bytes=65537:expected=65537]
+[PIPE_WRITE_ORACLE:x86_64:pipe:signal_before:verdict=PASS:bytes=65537:expected=65537]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:pipe:signal_after:verdict=PASS:bytes=65536:expected=65536]
+[PIPE_WRITE_ORACLE:x86_64:pipe:signal_after:verdict=PASS:bytes=65536:expected=65536]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:pipe:ignored_signal:verdict=PASS:bytes=69632:expected=69632]
+[PIPE_WRITE_ORACLE:x86_64:pipe:ignored_signal:verdict=PASS:bytes=69632:expected=69632]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:full_block:verdict=PASS:bytes=69632:expected=69632]
+[PIPE_WRITE_ORACLE:x86_64:fifo:full_block:verdict=PASS:bytes=69632:expected=69632]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:atomic4096:verdict=PASS:bytes=65537:expected=65537]
+[PIPE_WRITE_ORACLE:x86_64:fifo:atomic4096:verdict=PASS:bytes=65537:expected=65537]
+<S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:atomic4095:verdict=PASS:bytes=65537:expected=65537]
+[PIPE_WRITE_ORACLE:x86_64:fifo:atomic4095:verdict=PASS:bytes=65537:expected=65537]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:large_block:verdict=PASS:bytes=69632:expected=69632]
+[PIPE_WRITE_ORACLE:x86_64:fifo:large_block:verdict=PASS:bytes=69632:expected=69632]
+<S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:nonblock_full:verdict=PASS:bytes=65536:expected=65536]
+[PIPE_WRITE_ORACLE:x86_64:fifo:nonblock_full:verdict=PASS:bytes=65536:expected=65536]
+[PIPE_WRITE_ORACLE:x86_64:fifo:nonblock_atomic:verdict=PASS:bytes=61441:expected=61441]
+[PIPE_WRITE_ORACLE:x86_64:fifo:nonblock_atomic:verdict=PASS:bytes=61441:expected=61441]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>p00r0 [SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:nonblock_large:verdict=PASS:bytes=65536:expected=65536]
+[PIPE_WRITE_ORACLE:x86_64:fifo:nonblock_large:verdict=PASS:bytes=65536:expected=65536]
+<S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:poll:verdict=PASS:bytes=65537:expected=65537]
+[PIPE_WRITE_ORACLE:x86_64:fifo:poll:verdict=PASS:bytes=65537:expected=65537]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:last_reader:verdict=PASS:bytes=0:expected=0]
+[PIPE_WRITE_ORACLE:x86_64:fifo:last_reader:verdict=PASS:bytes=0:expected=0]
+<S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:duplicate_reader:verdict=PASS:bytes=0:expected=0]
+[PIPE_WRITE_ORACLE:x86_64:fifo:duplicate_reader:verdict=PASS:bytes=0:expected=0]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:signal_before:verdict=PASS:bytes=65537:expected=65537]
+[PIPE_WRITE_ORACLE:x86_64:fifo:signal_before:verdict=PASS:bytes=65537:expected=65537]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:signal_after:verdict=PASS:bytes=65536:expected=65536]
+[PIPE_WRITE_ORACLE:x86_64:fifo:signal_after:verdict=PASS:bytes=65536:expected=65536]
+<S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>p00r0 [SW]<T><U><R><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>[PIPE_WRITE_ORACLE:x86_64:fifo:ignored_signal:verdict=PASS:bytes=69632:expected=69632]
+[PIPE_WRITE_ORACLE:x86_64:fifo:ignored_signal:verdict=PASS:bytes=69632:expected=69632]
+[PIPE_WRITE_SUMMARY:x86_64:passed=26:failed=0]
+[PIPE_WRITE_SUMMARY:x86_64:passed=26:failed=0]
+<S>[SW]<K>[SW]<T><B>[PIPE_WRITE_RESULT:x86_64:status=0]
+[SW]<K>[SW]<I>

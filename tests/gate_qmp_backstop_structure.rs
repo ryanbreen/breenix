@@ -252,7 +252,7 @@ while True:
                 assert request['arguments']['paging'] is False
                 if mode == 'hang':
                     while True:
-                        time.sleep(1)
+                        signal.pause()
                 target = request['arguments']['protocol']
                 assert target.startswith('file:')
                 pathlib.Path(target[5:]).write_bytes(b'fake core bytes')
@@ -459,7 +459,9 @@ fn missing_socket_and_hung_dump_are_partial_and_bounded() {
     if !qmp_tool_available() {
         eprintln!("missing_socket_and_hung_dump_are_partial_and_bounded: socat missing; asserting qmp_tool_missing for hang");
         assert!(
-            out.contains("capture=partial:reason=qmp_tool_missing:core=-:decoded_events=-:dump_ms="),
+            out.contains(
+                "capture=partial:reason=qmp_tool_missing:core=-:decoded_events=-:dump_ms="
+            ),
             "{out}"
         );
         assert!(elapsed.as_secs_f64() < 10.0, "timeout took {elapsed:?}");
@@ -605,7 +607,10 @@ fn gqb_alloc_socket_returns_a_path_a_real_af_unix_bind_accepts() {
         path.len()
     );
     let listener = std::os::unix::net::UnixListener::bind(&path).unwrap_or_else(|e| {
-        panic!("real AF_UNIX bind failed at {path} ({} bytes): {e}", path.len())
+        panic!(
+            "real AF_UNIX bind failed at {path} ({} bytes): {e}",
+            path.len()
+        )
     });
     drop(listener);
     let dir = Path::new(&path).parent().unwrap();

@@ -1,0 +1,7 @@
+{
+  "name": "positive_space_eagain",
+  "arm": "partial",
+  "path": "kernel/src/syscall/blocking_io.rs",
+  "before": "let count = state.copy(data);",
+  "after": "if data.len() == 4097 { return SyscallResult::Err(errno::EAGAIN as u64); }\n            let count = state.copy(data);"
+}

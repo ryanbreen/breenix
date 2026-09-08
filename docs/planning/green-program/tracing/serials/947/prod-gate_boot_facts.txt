@@ -1,0 +1,3 @@
+[GATE_BOOT_FACTS:boot=1:host_ms=1788814699576-1788814704720:qemu_at_start=0:load_at_start=7.55:qemu_at_end=1:load_at_end=7.43:qemu_cpu_s=9.41:guest_uptime_ms=4329:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]

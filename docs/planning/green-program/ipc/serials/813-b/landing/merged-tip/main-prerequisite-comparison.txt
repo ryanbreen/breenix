@@ -1,0 +1,6 @@
+Revision: 3f29bc7bf0d166ef75e5b7c84a1049250d195c29
+Main: 3a8a973b013dbbee09f17c660c0f310ecdf3640e
+docker/qemu/run-x86-boot-tests-only.sh: byte-identical to main
+kernel/src/process/manager.rs: byte-identical to main
+tests/x86_boot_tests_profile_structure.rs: byte-identical to main
+tests/gate_capture_drain_structure.rs: byte-identical to main

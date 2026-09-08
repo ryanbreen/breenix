@@ -1,0 +1,149 @@
+# 813 PR B: close-delivery scope blocker, 2026-09-07
+
+Status: blocked before a deliverable kernel change. Inspected implementation
+revision: `f1d448b544cf3e8b63183e357e15668f8391c571`, on
+`ipc/813-pr-b-unix-stream-write-waiters`. This revision includes PR 939 (A2).
+The commits in this round contain documentation and inspection evidence only.
+
+## Required boundary and current source
+
+The supplied `PLAN-813.md:44` requires either "safe thread-context extraction"
+or "stop and report the scope conflict" for the legacy close census. Supplied
+`PLAN-813.md:46` explicitly rejects `isr_unblock_for_io()` under PM as a safe
+shortcut and requires leaving the ISR buffer and dispatch paths unchanged.
+Those are plan requirements, not newly inferred kernel restrictions. The plan
+is the sibling scratchpad file at `scratchpad/astra/PLAN-813.md`, outside this
+checkout. Its requested Unix rules, matrix, PR-B scope, and gate sections were
+read against the current implementation.
+
+A2 settled the original writer-notification omission in 919, but expressly
+retained lock-order and saturation concerns in 936. See
+`docs/planning/green-program/ipc/813-A2-2026-09-07.md:127`.
+Issue 936 remains OPEN; its state and body are retained in
+`serials/813-b/issue-936-state.json`. This is not a claim that A2 failed to
+land or that the original notification omission remains.
+
+The inherited delivery route is `kernel/src/task/waitqueue.rs:182`, which
+calls `isr_unblock_for_io` at `kernel/src/task/waitqueue.rs:185`.
+`kernel/src/task/scheduler.rs:6426` handles a full buffer, and
+`kernel/src/task/scheduler.rs:6428` acquires the scheduler in thread context.
+The interrupt branch at `kernel/src/task/scheduler.rs:6435` can reject a wake.
+These are source observations; no saturation failure was reproduced here.
+
+Unix legacy termination closes endpoints at
+`kernel/src/process/process.rs:597` and
+`kernel/src/process/process.rs:679`. `Process::terminate` invokes that cleanup
+at `kernel/src/process/process.rs:474`. The four direct termination call sites
+are `kernel/src/interrupts/context_switch.rs:1400`,
+`kernel/src/process/manager.rs:1947`,
+`kernel/src/signal/delivery.rs:239`, and
+`kernel/src/signal/delivery.rs:274`. The adjacent comment at
+`kernel/src/signal/delivery.rs:242` is not a fifth call.
+
+Exec has an extracted-descriptor owner at `kernel/src/ipc/fd.rs:755`, delivered
+by its Drop at `kernel/src/ipc/fd.rs:759`. Normal exit has extracted cleanup
+with its Unix close at `kernel/src/task/process_task.rs:733`. Those mechanisms
+do not establish a PM-free notification boundary for the four legacy
+termination callers. FD-table Drop also closes Unix directly at
+`kernel/src/ipc/fd.rs:701`.
+
+Consequently, adding immediate writer wakes to the legacy Unix close paths would extend
+scheduler acquisition under PM; copying the inherited deferred route would
+extend the saturation limitation that the supplied plan explicitly rejects.
+No dispatch, interrupt, signal, Tier-1, or Tier-2 file was changed. A scope
+question was sent: may B inherit the disclosed 936 limitation, or must the
+PM-free boundary land first? No answer had arrived when this report was prepared.
+The stopping condition is the supplied plan's boundary requirement.
+
+## Re-derived Unix anchors
+
+These anchors were located in the implementation revision above; plan-time
+line numbers were not copied as proof. `serials/813-b/head-census.txt` retains
+the file-qualified source census.
+
+| Surface | Current source | Observation |
+|---|---|---|
+| Stream transfer | `kernel/src/socket/unix.rs:95` | Full-buffer blocking write still returns EAGAIN; positive space permits a partial count. |
+| Drain | `kernel/src/socket/unix.rs:152` | No dedicated writer queue wake exists. |
+| Close | `kernel/src/socket/unix.rs:230` | Existing peer-reader wake remains synchronous. |
+| Write snapshot | `kernel/src/syscall/handlers.rs:463` | Unix snapshot does not carry descriptor mode. |
+| Write adapter | `kernel/src/syscall/handlers.rs:515` | Calls write through the retained socket guard. |
+| F_SETFL | `kernel/src/syscall/handlers.rs:3985` | Changes descriptor status flags. |
+| Writable readiness | `kernel/src/ipc/poll.rs:277` | Tests peer-open without transmit capacity. |
+| Shared prepared wait | `kernel/src/syscall/blocking_io.rs:16` | A/A2 helper exists for reuse. |
+| Named connection | `kernel/src/syscall/socket.rs:1692` | Constructs the stream pair with false. |
+| Socketpair mode | `kernel/src/syscall/socket.rs:1904` | Construction flag is also installed in descriptor status at `kernel/src/syscall/socket.rs:1909`. |
+
+## Per-arm disposition
+
+No accepted-revision Unix oracle ran. The independent draft used fork before
+named endpoint creation and had six scored arms, but remained incomplete at
+close delivery and was reverted from the tracked implementation. Its source
+is retained locally under `.tmp/pr-b-draft/` for resumption; it is not a
+published implementation or acceptance artifact.
+
+| Matrix leg | Required evidence | This round |
+|---|---|---|
+| Backpressure A/B | Real endpoint writer witness; drain 4096; write 4097 returns 4096; compare wire bytes | Not run |
+| Mode | Descriptor F_SETFL and socketpair construction controls; clear flag reaches wait | Not run |
+| Poll A/B | Full transmit suppresses POLLOUT; drain restores it; preserve HUP | Not run |
+| Peer close A/B | Actual close after queued witness; EPIPE; cleanup; reap | Blocked on close boundary |
+| Signal | Caught EINTR, ignored control, empty queue, cleared blocked flag, recovery write | Not run |
+| Partial-space | Both modes return 4096 of 4097 with matching prefix | Not run |
+
+The 4096 stream boundary is a count control, not a pipe-style atomicity claim.
+No listed runtime mutation was executed. Draft in-memory structure mutations
+covered descriptor consultation, deleted/reversed drain wake, and peer-only or
+receive-based POLLOUT. They are preparatory results on a reverted draft, not
+proof of code at the published HEAD.
+
+## Checks and gate budget
+
+| Check | Result | Evidence |
+|---|---|---|
+| Draft Unix structure suite via scripts/run-structure-tests.sh | 7 tests passed on an uncommitted draft; subsequently reverted | serials/813-b/draft-unix-structure.log |
+| Draft ARM userspace build | Exit 0; no warning/error diagnostics; 153 ELFs installed locally | serials/813-b/draft-userspace-build.log |
+| Accepted structure suites | Not run: no accepted implementation candidate | Not produced |
+| ARM oracle, preflight enabled | Not run | Not produced |
+| ARM strict 3 | Not run | Not produced |
+| Beast x86 boot-tests | Not run | Not produced |
+| Production 1, last | Not run | Not produced |
+| x86 oracle | Not run: 927 is OPEN | serials/813-b/issue-927-state.json |
+
+QEMU boots were not started, so no lane-owned QEMU process required killing.
+No name-based cleanup was used. No preflight was bypassed. No fixtures were
+re-recorded. No hash manifest is retained. Draft checks name their base revision
+and explicitly disclose the uncommitted delta. The requested runtime gate budget is
+unspent; it must run on a completed candidate after the scope conflict resolves.
+
+## Claim lint and remaining work
+
+claim-lint: python3 scripts/claim-lint.py -> exit 1
+
+The first tree run reported eight prose findings; the revised text removes
+unquantified wording and uses explicit not-run dispositions. Issue 936 tracks the boundary
+and saturation concern; 813 remains open for adapter delivery, and 927 tracks
+the x86 oracle prerequisite. No issue was closed or message posted to others.
+
+Not claimed:
+
+- PR-B kernel repair, oracle delivery, accepted structure ratchets, or runtime mutation sensitivity.
+- Any ARM or x86 runtime pass in this round, or resolution of 927 or 936.
+- PM-free legacy termination delivery or lossless wake-buffer saturation.
+- Unix last-reference semantics under fork/dup-close, global descriptor flag sharing, or read-mode repair.
+- Stream atomicity, SIGPIPE generation, console repair, other socket families, or closure of 813.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/pr-b-docs-commit.txt -> exit 0
+
+The two issue-state JSON snapshots are skipped by the claim-lint extension
+filter. They retain the actual read-only GitHub responses. The source files
+cited above are unchanged by this documentation-only commit; the source census
+is checked again against the resulting HEAD before handoff.
+
+Evidence follow-up commit:
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/pr-b-evidence-commit.txt -> exit 0

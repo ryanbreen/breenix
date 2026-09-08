@@ -1,0 +1,4 @@
+REVISION=62988b29cf6e5800e7ef5c56c1aad630649569fd
+owned QEMU PIDs before cleanup=[]
+No process was killed by name; only lane-owned serial paths were matched.
+OWNED_QEMU_REMAINING=0

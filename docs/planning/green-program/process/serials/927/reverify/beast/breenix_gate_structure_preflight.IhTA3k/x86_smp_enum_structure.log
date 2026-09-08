@@ -1,0 +1,13 @@
+== compiling x86_smp_enum_structure ==
+== running x86_smp_enum_structure  ==
+
+running 6 tests
+test the_gate_pins_the_marker_on_three_smp_legs ... ok
+test the_madt_reader_allocates_nothing ... ok
+test every_walk_in_the_madt_reader_is_bounded_by_a_constant ... ok
+test the_x86_online_count_reads_the_enumeration_and_max_cpus_is_still_one ... ok
+test the_predicates_are_not_vacuous ... ok
+test the_enumeration_marker_has_exactly_one_emission_site ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+

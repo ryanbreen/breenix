@@ -83,28 +83,49 @@ fn query(fd: u64, arg: u64) -> Result<(), u64> {
             .fd_table
             .get(witness.target_fd as i32)
             .ok_or(errno::EBADF as u64)?;
-        let (buffer, kind) = match &own.kind {
-            FdKind::PipeWrite(buffer) => (buffer.clone(), 1),
-            FdKind::FifoWrite(_, buffer) => (buffer.clone(), 2),
-            _ => return Err(errno::EINVAL as u64),
-        };
-        let same = match &other.kind {
-            FdKind::PipeWrite(other) | FdKind::FifoWrite(_, other) => Arc::ptr_eq(&buffer, other),
-            _ => false,
-        };
-        if !same {
-            return Err(errno::EPERM as u64);
-        }
-        (buffer, kind)
+        (own.kind.clone(), other.kind.clone())
     };
-    witness.kind = kind;
-    witness.identity = Arc::as_ptr(&buffer) as u64;
-    {
-        let buffer = buffer.lock();
-        witness.queued = buffer.write_waiters.contains_waiter(witness.tid) as u64;
-        witness.occupancy = buffer.available() as u64;
-        witness.capacity = crate::ipc::pipe::PIPE_BUF_SIZE as u64;
-        witness.atomic_limit = crate::ipc::pipe::PIPE_BUF as u64;
+    match (buffer, kind) {
+        (FdKind::UnixStream(own), FdKind::UnixStream(other)) => {
+            let own_pair = own.lock().pair.clone();
+            let (other_pair, writer) = {
+                let socket = other.lock();
+                (socket.pair.clone(), socket.writer())
+            };
+            if !Arc::ptr_eq(&own_pair, &other_pair) {
+                return Err(errno::EPERM as u64);
+            }
+            witness.kind = 3;
+            witness.identity = Arc::as_ptr(&own_pair) as u64;
+            let (queued, occupancy, capacity) = writer.witness(witness.tid);
+            witness.queued = queued;
+            witness.occupancy = occupancy;
+            witness.capacity = capacity;
+            witness.atomic_limit = 0;
+        }
+        (own, other) => {
+            let (buffer, kind) = match own {
+                FdKind::PipeWrite(buffer) => (buffer, 1),
+                FdKind::FifoWrite(_, buffer) => (buffer, 2),
+                _ => return Err(errno::EINVAL as u64),
+            };
+            let same = match &other {
+                FdKind::PipeWrite(other) | FdKind::FifoWrite(_, other) => {
+                    Arc::ptr_eq(&buffer, other)
+                }
+                _ => false,
+            };
+            if !same {
+                return Err(errno::EPERM as u64);
+            }
+            witness.kind = kind;
+            witness.identity = Arc::as_ptr(&buffer) as u64;
+            let buffer = buffer.lock();
+            witness.queued = buffer.write_waiters.contains_waiter(witness.tid) as u64;
+            witness.occupancy = buffer.available() as u64;
+            witness.capacity = crate::ipc::pipe::PIPE_BUF_SIZE as u64;
+            witness.atomic_limit = crate::ipc::pipe::PIPE_BUF as u64;
+        }
     }
     let (blocked, in_syscall) = crate::task::scheduler::with_thread_mut(witness.tid, |thread| {
         (

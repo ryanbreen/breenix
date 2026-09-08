@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 ARCH=""
-PROGRAM=""
+PROGRAM="pipe_fifo_blocking_oracle"
 BOOTS=1
 QEMU_PID=""
 CURRENT_SERIAL=""
@@ -36,7 +36,11 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 case "$ARCH" in x86_64|aarch64) ;; *) echo "FAIL: --arch x86_64|aarch64 required"; false ;; esac
-[ "$PROGRAM" = pipe_fifo_blocking_oracle ] || { echo "FAIL: unsupported --program"; false; }
+# x86 runs the early retirement and stack cohorts before ordinary init. Use
+# the existing full x86 boot gate's 900-second bound for that startup workload.
+HOST_DEADLINE=120
+if [ "$ARCH" = x86_64 ]; then HOST_DEADLINE=900; fi
+case "$PROGRAM" in pipe_fifo_blocking_oracle|unix_stream_blocking_oracle) ;; *) echo "FAIL: unsupported --program"; false ;; esac
 case "$BOOTS" in ''|*[!0-9]*|0*) echo "FAIL: positive --boots required"; false ;; esac
 [ "${#BOOTS}" -le 2 ] && [ "$BOOTS" -le 25 ] || { echo "FAIL: boot budget exceeds 25"; false; }
 mkdir -p "$BREENIX_GATE_TMP"
@@ -61,6 +65,12 @@ EXPECTED_ARMS=(
     writev_atomic
     no_writer_eof
 )
+
+if [ "$PROGRAM" = unix_stream_blocking_oracle ]; then
+    EXPECTED_ARMS=(backpressure mode poll peer_close signal partial)
+fi
+echo "Revision: $(git -C "$BREENIX_ROOT" rev-parse HEAD)"
+git -C "$BREENIX_ROOT" diff --stat
 
 if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
     echo "blocking I/O oracle gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)" >&2
@@ -132,8 +142,8 @@ fi
 command -v "$DEBUGFS" >/dev/null
 # Copy to short paths before debugfs parsing; the debugfs commands below use
 # fixed relative filenames. Verify image bytes after installation.
-cp "$BIN_DIR/pipe_fifo_blocking_oracle.elf" "$OUTPUT_ROOT/worker.elf"
-cp "$BIN_DIR/pipe_fifo_blocking_supervisor.elf" "$OUTPUT_ROOT/supervisor.elf"
+cp "$BIN_DIR/$PROGRAM.elf" "$OUTPUT_ROOT/worker.elf"
+cp "$BIN_DIR/${PROGRAM%_oracle}_supervisor.elf" "$OUTPUT_ROOT/supervisor.elf"
 (
     cd "$OUTPUT_ROOT"
     cat >install.commands <<'COMMANDS'
@@ -146,6 +156,10 @@ set_inode_field /bin/pipe_fifo_blocking_oracle mode 0100755
 dump /sbin/init installed-supervisor.elf
 dump /bin/pipe_fifo_blocking_oracle installed-worker.elf
 COMMANDS
+    if [ "$PROGRAM" = unix_stream_blocking_oracle ]; then
+        sed 's/pipe_fifo_blocking_oracle/unix_stream_blocking_oracle/g' install.commands >unix-install.commands
+        mv unix-install.commands install.commands
+    fi
     "$DEBUGFS" -w -f install.commands oracle.img >install.log 2>&1
     cmp supervisor.elf installed-supervisor.elf
     cmp worker.elf installed-worker.elf
@@ -184,8 +198,8 @@ for ((boot=1; boot<=BOOTS; boot++)); do
     QEMU_PID=$!
     qemu_host_lock_track_pid "$QEMU_PID"
     elapsed=0
-    while [ "$elapsed" -lt 120 ]; do
-        if grep -aqF '[PIPE_WRITE_RESULT:' "$CURRENT_SERIAL"; then break; fi
+    while [ "$elapsed" -lt "$HOST_DEADLINE" ]; do
+        if grep -aqE '\[(PIPE|UNIX)_WRITE_RESULT:' "$CURRENT_SERIAL"; then break; fi
         if grep -aqE 'KERNEL PANIC|DATA_ABORT|INSTRUCTION_ABORT|DOUBLE FAULT|TRIPLE FAULT|soft lockup detected' "$RUN_DIR"/*.txt; then break; fi
         kill -0 "$QEMU_PID" 2>/dev/null || break
         sleep 1
@@ -195,27 +209,11 @@ for ((boot=1; boot<=BOOTS; boot++)); do
     wait "$QEMU_PID" 2>/dev/null || true
     QEMU_PID=""
     qemu_host_lock_release
-    [ "$elapsed" -lt 120 ] || { echo "FAIL: host deadline"; false; }
-    python3 - "$ARCH" "$RUN_DIR" "${EXPECTED_ARMS[@]}" <<'PY'
-import pathlib, re, sys
-arch, directory, *arms = sys.argv[1:]
-text = '\n'.join(p.read_text(errors='replace') for p in pathlib.Path(directory).glob('*.txt'))
-assert not re.search(r'KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|DOUBLE FAULT|TRIPLE FAULT|soft lockup detected', text, re.I), 'kernel crash'
-results = re.findall(r'\[PIPE_WRITE_RESULT:([^\]]+)\]', text)
-assert results == [f'{arch}:status=0'], f'missing/duplicate/nonzero reaped result: {results}'
-assert ':verdict=FAIL' not in text, 'oracle arm failed'
-records = re.findall(r'\[PIPE_WRITE_ORACLE:([^\]]+)\]', text)
-for kind in ('pipe', 'fifo'):
-    for arm in arms:
-        prefix = f'{arch}:{kind}:{arm}:verdict=PASS:bytes='
-        matches = [r for r in records if r.startswith(prefix)]
-        assert matches, f'missing {kind}/{arm}'
-        for record in matches:
-            counts = re.fullmatch(re.escape(prefix) + r'(\d+):expected=(\d+)', record)
-            assert counts and counts[1] == counts[2], f'byte tally: {record}'
-summary = f'[PIPE_WRITE_SUMMARY:{arch}:passed={2 * len(arms)}:failed=0]'
-assert summary in text, 'missing complete arm tally'
-print(f'PASS: {arch}, {2 * len(arms)} arms, exact byte tallies and worker reaped')
-PY
+    [ "$elapsed" -lt "$HOST_DEADLINE" ] || { echo "FAIL: host deadline"; false; }
+    if [ "$PROGRAM" = unix_stream_blocking_oracle ]; then
+        python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" --program "$PROGRAM" "${EXPECTED_ARMS[@]}"
+    else
+        python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" "${EXPECTED_ARMS[@]}"
+    fi
 done
 echo "PASS: blocking I/O oracle $ARCH boots=$BOOTS; serials=$OUTPUT_ROOT/boot_*/serial.txt"

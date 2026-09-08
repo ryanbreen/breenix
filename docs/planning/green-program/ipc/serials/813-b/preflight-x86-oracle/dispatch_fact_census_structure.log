@@ -1,0 +1,14 @@
+== compiling dispatch_fact_census_structure ==
+== running dispatch_fact_census_structure  ==
+
+running 7 tests
+test the_fact_family_is_one_list_in_one_order ... ok
+test the_ten_facts_reach_the_census_line ... ok
+test note_fact_is_one_relaxed_atomic_add ... ok
+test the_gate_pins_the_oracle_verdict ... ok
+test the_boot_oracle_drives_one_leg_per_fact ... ok
+test the_touched_functions_carry_no_emitting_logging_macro ... ok
+test every_deleted_site_still_publishes_its_fact ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
