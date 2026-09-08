@@ -431,3 +431,51 @@ Kernel rustfmt and diff-whitespace checks passed.
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/567-cfg-message.txt -> exit 0
+
+### Landing verdict: NOT LANDED
+
+Required-gate revision: `353f33eaeec75152ca1ffe8b12dda2549899ef61`, containing
+the conflict-free merge and the two architecture cfg corrections. Kernel
+source hashes are in `serials/567/landing/source.json`. The standalone
+structure run passed 72/72 on this revision
+(`serials/567/landing/structure.log`). The committed-tip aarch64 build passed
+with 0 project diagnostics (`serials/567/landing/aarch64-build.log`). The
+initial two warnings and their corrected rebuild remain in
+`serials/567/landing/aarch64-initial-build.log` and
+`serials/567/landing/aarch64-cfg-rebuild.log`.
+
+The required `bash docker/qemu/run-aarch64-boot-test-strict.sh 1` failed:
+0/1 successful boots, exit 1, ended_by=hard_timeout. The scorer reported the
+BSSH publickey oracle missing, duplicated, or failed. A direct scan finds
+0 BSSH_PUBKEY_ORACLE records in the 1,359-line capture; BUILD_ID is
+`006aa02f711ef8`. No inference about RIP/RSP corruption follows from this
+missing userspace result. See `serials/567/landing/aarch64-gate.log`,
+`serials/567/landing/aarch64-serial.txt` and
+`serials/567/landing/serial-scan.json`. The serial contains 0 matches for
+EXCEPTION, PAGE FAULT, GENERAL PROTECTION, DOUBLE FAULT, TRIPLE FAULT,
+KERNEL PANIC, panic!, and soft lockup detected. Absence of those markers
+does not make the gate green.
+
+The required `bash docker/qemu/run-x86-boot-tests.sh` was invoked once at
+launch load 0.05. Its preflight passed 72/72 on attempt 1. The invocation was
+terminated during its build, before an x86 guest launched, when the aarch64
+required gate failed. The stopped process group was identified from the
+lane launcher PID; no process-name kill was used. See
+`serials/567/landing/x86-gate.log`. It is an aborted invocation, not an x86
+boot pass. `bash docker/qemu/run-boot-parallel.sh 5` was not launched.
+There was no structure timeout or gate retry in this continuation.
+
+R182 remains incomplete: the failed aarch64 serial is retained as failure
+evidence and was not substituted for a green replay fixture. No PR was
+created or merged, no remote branch was deleted, and the worktree is retained
+for follow-up. Issue 567 remains open because the required landing gates are
+not green. Issues 545 and 583 receive no status change: this failed landing
+does not establish new shipped loopback coverage or stack-frame reclamation.
+
+Not claimed in this landing: a green aarch64 boot; any merged-tip x86 boot;
+a five-boot parallel result; a completed R182 fixture re-record; historical
+567 causation; a PR merge or issue closure.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/567-not-landed-message.txt -> exit 0

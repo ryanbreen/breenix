@@ -1,0 +1,9 @@
+{
+  "revision": "353f33eaeec75152ca1ffe8b12dda2549899ef61",
+  "sha256": {
+    "kernel/src/task/scheduler.rs": "49d3f74af6eec9c65a1d8cc32de459464d5411f8f1ae97596fdee28426b3db1c",
+    "kernel/src/interrupts/context_switch.rs": "38c60cd63542c8dc0c724c52caf8e7108cb6296599791df9dd6ce66217125805",
+    "kernel/src/task/boot_resume_oracle.rs": "b89479aea7eceab5ac32a29550f1f6f8df96eb2499db7f6e36c27a420f649ffc",
+    "kernel/src/net/mod.rs": "4a25df09badcfd784aa127fa8c43f597599e49606c7b3f834e08d3fb69ac5754"
+  }
+}

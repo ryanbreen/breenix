@@ -1,0 +1,30 @@
+1be090fe4ff57179ac92a881e3880195cf041d48
+diff --git a/kernel/src/net/mod.rs b/kernel/src/net/mod.rs
+index f14e179e..331c1271 100644
+--- a/kernel/src/net/mod.rs
++++ b/kernel/src/net/mod.rs
+@@ -483,6 +483,7 @@ pub(crate) fn loopback_queue_is_empty() -> bool {
+     LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire) == 0
+ }
+
++#[cfg(not(target_arch = "aarch64"))]
+ pub(crate) fn record_loopback_pump_rearm_from_sched() {
+     LOOPBACK_PUMP_REARM_FROM_SCHED.fetch_add(1, Ordering::Relaxed);
+ }
+diff --git a/kernel/src/task/scheduler.rs b/kernel/src/task/scheduler.rs
+index 1a42e249..e8118083 100644
+--- a/kernel/src/task/scheduler.rs
++++ b/kernel/src/task/scheduler.rs
+@@ -50,6 +50,7 @@
+ use super::thread::ThreadPrivilege;
+ use super::thread::{CpuContext, VirtAddr};
+ use super::thread::{Thread, ThreadState};
++#[cfg(target_arch = "x86_64")]
+ use crate::log_serial_println;
+ use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
+ use core::cmp::Reverse;
+   Compiling kernel v0.1.0 (<repo>/kernel)
+    Finished `release` profile [optimized] target(s) in 6.78s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+BUILD_EXIT=0
