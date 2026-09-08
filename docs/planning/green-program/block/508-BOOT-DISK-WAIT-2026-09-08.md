@@ -333,3 +333,17 @@ claim-lint: python3 scripts/claim-lint.py --files .tmp/508-issue-comment.md .tmp
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-landing-commit.txt -> exit 0
 ```
+
+
+Handoff verification: PR 980 is OPEN and draft, with mergedAt=null and no merge
+commit; issues 508 and 666 are OPEN with closedAt=null. Both issues received the
+mechanism/evidence update; PR 980 received the requested title and a corrected
+body describing this failed landing. Source locations were re-derived after the
+evidence commits at `74a57ab9` in `serials/508/landing/source-citations.txt`.
+The following handoff commit changes documentation/evidence only.
+
+```text
+claim-lint: python3 scripts/claim-lint.py --files .tmp/508-pr-body.md -> exit 0
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-handoff-commit.txt -> exit 0
+```

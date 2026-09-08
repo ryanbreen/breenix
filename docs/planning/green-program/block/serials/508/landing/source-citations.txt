@@ -1,0 +1,43 @@
+REVISION=74a57ab9a5c507be6ce8c6c20c662884d80590df
+kernel/src/task/completion.rs:147: fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns: u64) -> bool {
+kernel/src/task/completion.rs:198: pub fn waiter_tid(&self) -> u64 {
+kernel/src/task/completion.rs:214: pub fn wait_timeout(&self, expected_token: u32, timeout_ns: u64) -> Result<bool, i32> {
+kernel/src/task/completion.rs:222: pub fn wait_timeout_uninterruptible(
+kernel/src/task/completion.rs:230: fn wait_timeout_inner(
+kernel/src/task/completion.rs:390: Cpu::halt_with_interrupts();
+kernel/src/per_cpu.rs:38: // unpaired enable wrapped preempt_count to 0xFFFFFFFF and can_schedule()'s
+kernel/src/per_cpu.rs:39: // `preempt_count == 0` arms - ordinary timer preemption and yield-driven
+kernel/src/per_cpu.rs:72: pub preempt_count: u32,
+kernel/src/per_cpu.rs:169: // Linux-style preempt_count bit layout constants
+kernel/src/per_cpu.rs:233: offset_of!(PerCpuData, preempt_count) == PERCPU_PREEMPT_COUNT_OFFSET,
+kernel/src/per_cpu.rs:292: "preempt_count must be 4-byte aligned"
+kernel/src/per_cpu.rs:328: preempt_count: 0,
+kernel/src/per_cpu.rs:406: // Verify preempt_count read/write cycle
+kernel/src/per_cpu.rs:407: let initial_preempt = hal_percpu::X86PerCpu::preempt_count();
+kernel/src/per_cpu.rs:409: let after_disable = hal_percpu::X86PerCpu::preempt_count();
+kernel/src/per_cpu.rs:418: let after_enable = hal_percpu::X86PerCpu::preempt_count();
+kernel/src/per_cpu.rs:430: "Per-CPU data marked as initialized - preempt_count functions now use per-CPU storage"
+kernel/src/per_cpu.rs:689: let count_before = hal_percpu::X86PerCpu::preempt_count();
+kernel/src/per_cpu.rs:692: "irq_exit called but HARDIRQ count is already 0 (preempt_count={:#x})",
+kernel/src/per_cpu.rs:716: // Use HAL to read current preempt_count
+kernel/src/per_cpu.rs:718: let new_count = hal_percpu::X86PerCpu::preempt_count();
+kernel/src/per_cpu.rs:753: let count_before = hal_percpu::X86PerCpu::preempt_count();
+kernel/src/per_cpu.rs:756: "nmi_exit called but NMI count is already 0 (preempt_count={:#x})",
+kernel/src/per_cpu.rs:799: let count_before = hal_percpu::X86PerCpu::preempt_count();
+kernel/src/per_cpu.rs:802: "bh_enable called but bottom halves are not disabled (preempt_count={:#x})",
+kernel/src/per_cpu.rs:820: let count_before = hal_percpu::X86PerCpu::preempt_count();
+kernel/src/per_cpu.rs:823: "softirq_exit called but SOFTIRQ count is already 0 (preempt_count={:#x})",
+kernel/src/per_cpu.rs:958: // do not need to be: preempt_count is per-CPU, the PREEMPT field is moved
+kernel/src/per_cpu.rs:963: if hal_percpu::X86PerCpu::preempt_count() & PREEMPT_MASK == 0 {
+kernel/src/per_cpu.rs:990: pub fn preempt_count() -> u32 {
+kernel/src/per_cpu.rs:993: "preempt_count called before per-CPU initialization"
+kernel/src/per_cpu.rs:998: hal_percpu::X86PerCpu::preempt_count()
+kernel/src/per_cpu.rs:1001: /// Clear PREEMPT_ACTIVE bit (bit 28) from preempt_count
+kernel/src/per_cpu.rs:1365: /// Check if we can schedule (preempt_count == 0 and returning to userspace)
+kernel/src/per_cpu.rs:1366: pub fn can_schedule(saved_cs: u64) -> bool {
+kernel/src/per_cpu.rs:1367: let current_preempt = preempt_count();
+kernel/src/interrupts/context_switch.rs:367: switch_to_thread(
+kernel/src/interrupts/context_switch.rs:375: // Observe the resolved dispatch, after TLS/first-entry rollback can
+kernel/src/interrupts/context_switch.rs:655: fn switch_to_thread(
+kernel/src/boot/disk_wait_oracle.rs:34: "[BOOT_DISK_WAIT_ORACLE:x86:switched_away={}:tests_completed={}:{}]",
+kernel/src/main.rs:2084: serial_println!("[TEST_EXEC_BLOCK_COMPLETE:x86:calls=64]");
