@@ -748,3 +748,13 @@ or a production lost-wake reproduction from the callback-evidence mutation.
 
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/second-landing-message.txt -> exit 0
+
+Post-commit citations were re-derived from `45a1507527cac132df696770d288c29ffc334c9c` in
+`serials/891/landing-second/committed-citations.txt`. The kernel, docker,
+scripts, and tests delta from the gate revision is empty (0 changed files).
+The landing evidence commit changes documentation and retained transcripts.
+Git normalizes captured serial CRLF to LF when storing these new text blobs;
+the captured oracle tokens and line numbering are unchanged.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/second-citations-message.txt -> exit 0
