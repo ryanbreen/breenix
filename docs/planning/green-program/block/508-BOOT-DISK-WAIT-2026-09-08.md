@@ -303,7 +303,8 @@ exited 1: 0/1 successful boots, 1 failure, 0 inconclusive. Its 71/71 structure
 preflight passed. The scorer rejected the missing BSSH publickey oracle after
 `ended_by=hard_timeout`. The complete gate transcript is
 `serials/508/landing/aarch64-strict.log`; the captured serial is
-`serials/508/landing/aarch64-serial.txt`. This is a failed shared-code check;
+`serials/508/landing/aarch64-serial.txt.gz` (original serial bytes, including CRLF).
+The text copy is normalized by Git. This is a failed shared-code check;
 no causal attribution to this repair or the supplied userspace binaries is made.
 
 The x86 single command `bash docker/qemu/run-x86-boot-tests.sh` launched at
