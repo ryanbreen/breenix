@@ -1,0 +1,4 @@
+Evidence revision: 69c039a06ef31cdc60790b77211a0dff303c57d3
+Scorer: candidate later committed unchanged in 40e2925f32800702e3dfd42d31d0fe63760cf65c
+This is a saved-serial rescore, not another boot.
+PASS: aarch64, 6 Unix arms, byte totals and worker reap

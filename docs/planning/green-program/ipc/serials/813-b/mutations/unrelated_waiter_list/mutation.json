@@ -1,0 +1,7 @@
+{
+  "name": "unrelated_waiter_list",
+  "arm": "signal",
+  "path": "kernel/src/socket/unix.rs",
+  "before": "UnixEndpoint::A => self.pair.write_waiters_a.clone(),\n            UnixEndpoint::B => self.pair.write_waiters_b.clone(),",
+  "after": "UnixEndpoint::A => Arc::new(WaitQueueHead::new()),\n            UnixEndpoint::B => Arc::new(WaitQueueHead::new()),"
+}

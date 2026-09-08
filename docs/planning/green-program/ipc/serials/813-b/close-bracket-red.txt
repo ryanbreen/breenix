@@ -1,0 +1,20 @@
+4eac269d9fe4fff53fdb3391200635bd4888bc87
+Placement ratchet only: process_task source unchanged; a separate partial-count runtime mutation is active in blocking_io.rs and is not inspected by this filtered test.
+== compiling unix_stream_blocking_structure ==
+== running unix_stream_blocking_structure close_notifications_leave_pm ==
+
+running 1 test
+
+thread 'close_notifications_leave_pm_without_the_isr_buffer' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/tests/unix_stream_blocking_structure.rs:171:5:
+assertion failed: boundary.find("reclaim_preempt_disable()").expect("preemption guard") <
+    drain_at
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test close_notifications_leave_pm_without_the_isr_buffer ... FAILED
+
+failures:
+
+failures:
+    close_notifications_leave_pm_without_the_isr_buffer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.01s
+

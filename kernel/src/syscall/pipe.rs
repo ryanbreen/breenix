@@ -247,7 +247,8 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                 }
                 FdKind::UnixStream(socket) => {
                     // Close Unix socket endpoint
-                    socket.lock().close();
+                    let notifications = socket.lock().close();
+                    notifications.deliver();
                     log::debug!("sys_close: Closed Unix stream socket fd={}", fd);
                 }
                 FdKind::UnixSocket(_) => {

@@ -1,0 +1,38 @@
+== compiling capture_bxcap_schema_structure ==
+== running capture_bxcap_schema_structure  ==
+
+running 31 tests
+test a_lockup_capture_with_no_end_is_rejected - should panic ... ok
+test a_capture_from_a_future_schema_is_refused_not_guessed_at - should panic ... ok
+test a_begin_with_no_end_is_refused - should panic ... ok
+test a_lockup_capture_whose_bitmap_contradicts_its_rows_is_rejected - should panic ... ok
+test a_lockup_capture_that_drops_the_refusal_note_is_rejected - should panic ... ok
+test a_leading_prefix_from_another_writer_does_not_damage_a_record ... ok
+test a_run_with_only_one_episode_is_rejected - should panic ... ok
+test a_capture_with_no_version_field_is_refused - should panic ... ok
+test a_section_that_claims_completion_over_its_own_fragment_is_caught - should panic ... ok
+test a_record_with_another_writers_bytes_spliced_into_it_is_not_decoded - should panic ... ok
+test a_record_whose_terminator_the_budget_cut_is_still_counted ... ok
+test a_records_count_that_disagrees_with_the_wire_is_caught - should panic ... ok
+test a_complete_capture_missing_a_section_is_caught - should panic ... ok
+test a_capture_that_overran_the_budget_is_caught - should panic ... ok
+test a_verdict_that_contradicts_its_accounting_is_caught - should panic ... ok
+test a_section_whose_own_record_the_budget_cut_does_not_claim_completion ... ok
+test the_aarch64_panic_capture_states_a_refused_scheduler_read ... ok
+test dropping_the_refusal_note_is_caught - should panic ... ok
+test the_lockup_receipts_show_a_real_held_guard_on_a_peer_cpu ... ok
+test the_lockup_red_baseline_carries_no_capture_at_all ... ok
+test selftest_capture_with_the_scheduler_read_refused_still_reports_everything_else ... ok
+test the_aarch64_panic_handler_capture_is_complete ... ok
+test the_byte_budget_binds_and_the_end_line_still_lands ... ok
+test the_section_bit_table_matches_the_emitters_own_numbering ... ok
+test selftest_capture_with_the_scheduler_read_granted_is_complete ... ok
+test the_x86_panic_handler_capture_is_complete_and_precedes_exit_qemu ... ok
+test the_red_baselines_carry_no_capture_at_all ... ok
+test every_budget_arm_is_read_separately ... ok
+test the_aarch64_fatal_postmortem_capture_is_complete_and_keeps_the_wide_dump ... ok
+test the_lockup_edge_emits_one_capture_per_episode_in_one_boot ... ok
+test every_committed_fixture_decodes ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

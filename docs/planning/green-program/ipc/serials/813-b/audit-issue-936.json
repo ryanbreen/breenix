@@ -1,0 +1,12 @@
+{
+  "revision": "4eac269d9fe4fff53fdb3391200635bd4888bc87",
+  "command": "gh issue view 936 --json number,state,title,body,url",
+  "exit": 0,
+  "result": {
+    "body": "The original writer-close notification omission tracked by 919 is repaired by PR 933 for 4 of 4 Process::terminate callers. This issue retains the separate lock-order concern that 919's amended body left open.\n\nAt revision 26893a4fb55bb3de33b62e5c522348d231e2a26a, kernel/src/process/process.rs close_all_fds runs under caller-owned PROCESS_MANAGER for the restore-failure, manager fault-exit, signal Terminate, and signal CoreDump routes. Its PipeWrite/FifoWrite arms call kernel/src/ipc/pipe.rs close_write, which invokes wake_read_waiters inline on the last-writer transition. wake_read_waiters acquires the scheduler through with_scheduler while PM remains held.\n\nDesign a deferred reader-EOF notification boundary that preserves EOF wake delivery without acquiring the scheduler under PM. Do not discard reader notifications or add logging to dispatch paths. Also account for the saturation branch in kernel/src/task/scheduler.rs buffer_isr_wakeup: thread-context overflow currently falls back to with_scheduler, whereas interrupt-context overflow can reject a wake. The deferred writer-close route uses this buffer; its ordinary path is lock-free, but blanket lock-free/lossless saturation claims are not supported.\n\nThis is remaining work, not a claim that the original writer-wake omission persists. Evidence and scope: docs/planning/green-program/ipc/813-A2-2026-09-07.md. Parent 813 remains open for its other adapters.\n",
+    "number": 936,
+    "state": "OPEN",
+    "title": "IPC fault cleanup: defer legacy reader EOF wakes outside PM and audit wake-buffer saturation",
+    "url": "https://github.com/ryanbreen/breenix/issues/936"
+  }
+}

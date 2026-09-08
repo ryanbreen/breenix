@@ -1,0 +1,7 @@
+{
+  "name": "outer_lock_across_wait",
+  "arm": "peer_close",
+  "path": "kernel/src/syscall/handlers.rs",
+  "before": "let writer = socket.lock().writer();\n            super::blocking_io::write_unix(writer, &buffer, is_nonblocking)",
+  "after": "let socket_guard = socket.lock();\n            let writer = socket_guard.writer();\n            super::blocking_io::write_unix(writer, &buffer, is_nonblocking)"
+}

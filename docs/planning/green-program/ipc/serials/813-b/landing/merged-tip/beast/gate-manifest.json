@@ -1,0 +1,50 @@
+{
+  "userspace-build": {
+    "startRevision": "4c93a601a4d3f602823a346ed4f521cdd940a587",
+    "exit": [
+      "0"
+    ],
+    "preflight": [],
+    "compileDiagnostics": []
+  },
+  "x86-full": {
+    "startRevision": "4c93a601a4d3f602823a346ed4f521cdd940a587",
+    "exit": [
+      "1"
+    ],
+    "preflight": [
+      "67/67"
+    ],
+    "compileDiagnostics": []
+  },
+  "x86-unix": {
+    "startRevision": "3f29bc7bf0d166ef75e5b7c84a1049250d195c29",
+    "exit": [
+      "0"
+    ],
+    "preflight": [
+      "67/67"
+    ],
+    "compileDiagnostics": []
+  },
+  "x86-pipe": {
+    "startRevision": "3f29bc7bf0d166ef75e5b7c84a1049250d195c29",
+    "exit": [
+      "0"
+    ],
+    "preflight": [
+      "67/67"
+    ],
+    "compileDiagnostics": []
+  },
+  "x86-full-final": {
+    "startRevision": "3f29bc7bf0d166ef75e5b7c84a1049250d195c29",
+    "exit": [
+      "0"
+    ],
+    "preflight": [
+      "67/67"
+    ],
+    "compileDiagnostics": []
+  }
+}

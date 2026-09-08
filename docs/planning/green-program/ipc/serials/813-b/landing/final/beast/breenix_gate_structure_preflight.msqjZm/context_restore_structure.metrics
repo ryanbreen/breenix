@@ -1,0 +1,3 @@
+[GATE_SUITE:stem=context_restore_structure:attempt=1:timeout_s=300:wall_s=300:exit=124]
+[GATE_SUITE_TIMEOUT:stem=context_restore_structure:wall_s=300:host_load= 04:05:30 up 26 days, 10:20,  0 user,  load average: 12.67, 13.64, 9.30]
+[GATE_SUITE:stem=context_restore_structure:attempt=2:timeout_s=600:wall_s=231:exit=0]

@@ -1,0 +1,202 @@
+[CAPTURE_DRAIN:capture=complete:seq=3:edge=FAULT:cpu=0:records=3:drain_ms=50]
+[CAPTURE_DRAIN_EVENTS:last_events=CTX_SWITCH(7),CTX_SWITCH(8)]
++ set -e
++ source /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/docker/qemu/lib/gate-capture-drain.sh
++ mkfifo /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/ready /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/done
++ writer=21099
++ trap 'kill "$writer" 2>/dev/null || true' EXIT
++ released=0
++ command sleep 0
++ read -r token
++ BREENIX_GATE_DRAIN_DISABLE=0
++ BREENIX_GATE_DRAIN_SETTLE_MS=50
++ BREENIX_GATE_DRAIN_QUIET_MS=100
++ BREENIX_GATE_DRAIN_MAX_MS=2000
++ gcd_drain_and_report /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt
++ local settle_ms=0 wait_ms=0 total_ms
++ local cls capture seq edge cpu records events
++ local GCD_SETTLE_MS=50
++ local GCD_QUIET_MS=100
++ local GCD_MAX_MS=2000
++ local GCD_LAST_EVENTS_N=8
++ '[' 0 '!=' 1 ']'
+++ awk -v ms=50 'BEGIN { printf "%.3f", ms / 1000 }'
++ sleep 0.050
++ release_writer
++ '[' 0 = 0 ']'
++ released=1
++ printf 'go\n'
++ read -r token
++ printf %s $'[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]\n[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]\n'
++ printf 'done\n'
++ command sleep 0.050
++ settle_ms=50
+++ gcd_classify /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt
+++ existing=()
+++ local existing
+++ local f
+++ for f in "$@"
+++ '[' -f /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt ']'
+++ existing+=("$f")
+++ local begin_line seq edge cpu end_line records
+++ '[' 1 -eq 0 ']'
++++ grep -ahoE '\[BXCAP:BEGIN[^]]*\]' /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt
++++ tail -1
+++ begin_line='[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]'
+++ '[' -z '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' ']'
++++ gcd_field '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' seq
++++ local 'line=[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' key=seq
++++ printf '%s\n' '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]'
++++ grep -oE '(^|[ ])seq=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^seq=//'
+++ seq=3
++++ gcd_field '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' edge
++++ local 'line=[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' key=edge
++++ printf '%s\n' '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]'
++++ grep -oE '(^|[ ])edge=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^edge=//'
+++ edge=FAULT
++++ gcd_field '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' cpu
++++ local 'line=[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' key=cpu
++++ printf '%s\n' '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]'
++++ grep -oE '(^|[ ])cpu=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^cpu=//'
+++ cpu=0
++++ grep -ahoE '\[BXCAP:END[^]]*\]' /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt
++++ grep -F ' seq=3 '
++++ tail -1
+++ end_line='[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]'
+++ '[' -n '[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]' ']'
++++ gcd_field '[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]' records
++++ local 'line=[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]' key=records
++++ printf '%s\n' '[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]'
++++ grep -oE '(^|[ ])records=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^records=//'
+++ records=3
+++ echo 'complete 3 FAULT 0 3'
++ cls='complete 3 FAULT 0 3'
++ capture=complete
++ '[' complete = partial ']'
+++ gcd_classify /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt
+++ existing=()
+++ local existing
+++ local f
+++ for f in "$@"
+++ '[' -f /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt ']'
+++ existing+=("$f")
+++ local begin_line seq edge cpu end_line records
+++ '[' 1 -eq 0 ']'
++++ grep -ahoE '\[BXCAP:BEGIN[^]]*\]' /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt
++++ tail -1
+++ begin_line='[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]'
+++ '[' -z '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' ']'
++++ gcd_field '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' seq
++++ local 'line=[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' key=seq
++++ printf '%s\n' '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]'
++++ grep -oE '(^|[ ])seq=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^seq=//'
+++ seq=3
++++ gcd_field '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' edge
++++ local 'line=[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' key=edge
++++ printf '%s\n' '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]'
++++ grep -oE '(^|[ ])edge=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^edge=//'
+++ edge=FAULT
++++ gcd_field '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' cpu
++++ local 'line=[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]' key=cpu
++++ printf '%s\n' '[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]'
++++ grep -oE '(^|[ ])cpu=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^cpu=//'
+++ cpu=0
++++ grep -ahoE '\[BXCAP:END[^]]*\]' /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt
++++ grep -F ' seq=3 '
++++ tail -1
+++ end_line='[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]'
+++ '[' -n '[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]' ']'
++++ gcd_field '[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]' records
++++ local 'line=[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]' key=records
++++ printf '%s\n' '[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]'
++++ grep -oE '(^|[ ])records=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^records=//'
+++ records=3
+++ echo 'complete 3 FAULT 0 3'
++ cls='complete 3 FAULT 0 3'
++ IFS=' '
++ read -r capture seq edge cpu records
++ total_ms=50
+++ gcd_last_events 8 /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt
+++ local n=8
+++ shift
+++ existing=()
+++ local existing
+++ local f
+++ for f in "$@"
+++ '[' -f /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt ']'
+++ existing+=("$f")
+++ local lines out entry name payload
+++ '[' 1 -eq 0 ']'
++++ grep -ahoE '\[BXCAP:EV[^]]*\]' /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/capture-portability/serial.txt
++++ tail -n 8
+++ lines=$'[BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]\n[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]'
+++ '[' -z $'[BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]\n[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]' ']'
+++ out=
+++ IFS=
+++ read -r line
+++ '[' -n '[BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]' ']'
++++ gcd_field '[BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]' n
++++ local 'line=[BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]' key=n
++++ printf '%s\n' '[BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]'
++++ grep -oE '(^|[ ])n=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^n=//'
+++ name=CTX_SWITCH
++++ gcd_field '[BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]' p
++++ local 'line=[BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]' key=p
++++ printf '%s\n' '[BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]'
++++ grep -oE '(^|[ ])p=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^p=//'
+++ payload=7
+++ entry='CTX_SWITCH(7)'
+++ '[' -z '' ']'
+++ out='CTX_SWITCH(7)'
+++ IFS=
+++ read -r line
+++ '[' -n '[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]' ']'
++++ gcd_field '[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]' n
++++ local 'line=[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]' key=n
++++ printf '%s\n' '[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]'
++++ grep -oE '(^|[ ])n=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^n=//'
+++ name=CTX_SWITCH
++++ gcd_field '[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]' p
++++ local 'line=[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]' key=p
++++ printf '%s\n' '[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]'
++++ grep -oE '(^|[ ])p=[^] ]+'
++++ tail -1
++++ sed 's/^ //; s/^p=//'
+++ payload=8
+++ entry='CTX_SWITCH(8)'
+++ '[' -z 'CTX_SWITCH(7)' ']'
+++ out='CTX_SWITCH(7),CTX_SWITCH(8)'
+++ IFS=
+++ read -r line
+++ echo 'CTX_SWITCH(7),CTX_SWITCH(8)'
++ events='CTX_SWITCH(7),CTX_SWITCH(8)'
++ printf '[CAPTURE_DRAIN:capture=%s:seq=%s:edge=%s:cpu=%s:records=%s:drain_ms=%s]\n' complete 3 FAULT 0 3 50
++ printf '[CAPTURE_DRAIN_EVENTS:last_events=%s]\n' 'CTX_SWITCH(7),CTX_SWITCH(8)'
++ release_writer
++ '[' 1 = 0 ']'
++ wait 21099
++ trap - EXIT
+
+EXIT=0

@@ -1,0 +1,26 @@
+Evidence revisions: per-case revision.txt plus candidate.patch; checked at 40e2925f32800702e3dfd42d31d0fe63760cf65c
+First checker draft incorrectly required START on early explicit-failure cases that predated the START marker. Corrected to require an arm-specific FAIL, or START with the recorded timeout.
+immediate_eagain: rejected; [UNIX_WRITE_ORACLE:aarch64:backpressure:verdict=FAIL:query returned -9]
+delete_drain: rejected; [UNIX_WRITE_ORACLE:aarch64:backpressure:verdict=FAIL:read offset=0:EAGAIN]
+delete_read_wake: rejected; [UNIX_WRITE_ORACLE:aarch64:backpressure:verdict=FAIL:read deadline]
+swap_writer_queues: rejected; [UNIX_WRITE_ORACLE:aarch64:backpressure:verdict=FAIL:read deadline]
+full_count: rejected; [UNIX_WRITE_ORACLE:aarch64:backpressure:verdict=FAIL:unexpected EOF]
+construction_only: rejected; [UNIX_WRITE_ORACLE:aarch64:mode:verdict=FAIL:read deadline]
+ignore_nonblock_sleep: timeout_after_oracle_start; [UNIX_WRITE_START:aarch64:mode]
+poll_peer_only: rejected; [UNIX_WRITE_ORACLE:aarch64:poll:verdict=FAIL:unexpected EOF]
+poll_receive_space: rejected; [UNIX_WRITE_ORACLE:aarch64:poll:verdict=FAIL:unexpected EOF]
+reverse_transmit_direction: rejected; [UNIX_WRITE_ORACLE:aarch64:poll:verdict=FAIL:unexpected EOF]
+close_readers_only: rejected; [UNIX_WRITE_ORACLE:aarch64:peer_close:verdict=FAIL:read deadline]
+close_wrong_writers: rejected; [UNIX_WRITE_ORACLE:aarch64:peer_close:verdict=FAIL:read offset=0:EAGAIN]
+outer_lock_across_wait: timeout_after_oracle_start; [UNIX_WRITE_START:aarch64:peer_close]
+ignore_interruption: rejected; [UNIX_WRITE_ORACLE:aarch64:signal:verdict=FAIL:read offset=0:EAGAIN]
+ignored_pending_interrupts: rejected; [UNIX_WRITE_ORACLE:aarch64:signal:verdict=FAIL:ignored signal completed write]
+leak_registration: rejected; [UNIX_WRITE_ORACLE:aarch64:signal:verdict=FAIL:read offset=0:EAGAIN]
+unrelated_waiter_list: rejected; [UNIX_WRITE_ORACLE:aarch64:signal:verdict=FAIL:no queued writer witness]
+Excluded aborted draft: stream_atomicity_draft_aborted
+stream_atomicity: rejected; [UNIX_WRITE_ORACLE:aarch64:partial:verdict=FAIL:unexpected EOF]
+positive_space_eagain: rejected; [UNIX_WRITE_ORACLE:aarch64:partial:verdict=FAIL:unexpected EOF]
+mode_unconditional_eagain: rejected; [UNIX_WRITE_ORACLE:aarch64:mode:verdict=FAIL:query returned -9]
+peer_close_fake_success: rejected; [UNIX_WRITE_ORACLE:aarch64:peer_close:verdict=FAIL:unexpected EOF]
+partial_full_count: rejected; [UNIX_WRITE_ORACLE:aarch64:partial:verdict=FAIL:unexpected EOF]
+22/22 valid case classifications match saved arm evidence.

@@ -1,0 +1,7 @@
+{
+  "name": "construction_only",
+  "arm": "mode",
+  "path": "kernel/src/syscall/handlers.rs",
+  "before": "FdKind::UnixStream(socket) => WriteOperation::UnixStream {\n                socket: socket.clone(),\n                is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK)\n                    != 0,",
+  "after": "FdKind::UnixStream(socket) => WriteOperation::UnixStream {\n                socket: socket.clone(),\n                is_nonblocking: socket.lock().nonblocking,"
+}

@@ -1,0 +1,1 @@
+UEFI_IMAGE=/root/breenix-i813e/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img

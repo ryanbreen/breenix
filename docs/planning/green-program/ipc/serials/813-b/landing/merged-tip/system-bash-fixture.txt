@@ -1,0 +1,31 @@
+3f29bc7bf0d166ef75e5b7c84a1049250d195c29
+/bin/bash
+GNU bash, version 3.2.57(1)-release (arm64-apple-darwin25)
+== compiling gate_capture_drain_structure ==
+== running gate_capture_drain_structure  ==
+
+running 6 tests
+test moving_a_kill_above_its_drain_decision_reddens_the_check ... ok
+test converted_gates_exist_and_call_both_drain_functions ... ok
+test every_guest_kill_site_is_preceded_by_a_drain_decision ... ok
+test classify_pairs_a_begin_and_end_split_across_two_serial_files_by_seq ... ok
+test drain_disabled_reads_partial_drain_enabled_reads_complete_same_race ... FAILED
+test classify_distinguishes_complete_partial_and_absent_with_no_boot ... ok
+
+failures:
+
+---- drain_disabled_reads_partial_drain_enabled_reads_complete_same_race stdout ----
+
+thread 'drain_disabled_reads_partial_drain_enabled_reads_complete_same_race' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813e/wt/tests/gate_capture_drain_structure.rs:434:9:
+disabled failed to run: [CAPTURE_DRAIN:capture=partial:seq=3:edge=FAULT:cpu=0:records=-:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=CTX_SWITCH(7)]
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    drain_disabled_reads_partial_drain_enabled_reads_complete_same_race
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+EXIT=101

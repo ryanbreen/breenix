@@ -1,0 +1,7 @@
+{
+  "name": "ignore_interruption",
+  "arm": "signal",
+  "path": "kernel/src/syscall/blocking_io.rs",
+  "before": "if let Err(error) = wait_prepared(&queue, outcome) {\n            return SyscallResult::Err(error as u64);",
+  "after": "if let Err(error) = wait_prepared(&queue, outcome) {\n            if error == errno::EINTR { continue; }\n            return SyscallResult::Err(error as u64);"
+}

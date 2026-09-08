@@ -1,0 +1,7 @@
+{
+  "name": "ignored_pending_interrupts",
+  "arm": "signal",
+  "path": "kernel/src/syscall/mod.rs",
+  "before": "crate::signal::delivery::has_interrupting_signals(process)",
+  "after": "process.signals.pending != 0"
+}

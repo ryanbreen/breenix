@@ -1,0 +1,18 @@
+== compiling fork_lock_order_structure ==
+== running fork_lock_order_structure  ==
+
+running 11 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test negative_reordered_page_table_before_reclaim_is_rejected ... ok
+test negative_dropped_deferred_reclaim_call_is_rejected ... ok
+test negative_missing_drop_before_spawn_front_is_rejected ... ok
+test negative_reintroduced_interrupt_mask_is_rejected ... ok
+test both_production_forks_restore_the_parent_page_table_before_propagating ... ok
+test negative_deleted_cow_restore_is_rejected ... ok
+test negative_cow_restore_moved_after_the_try_is_rejected ... ok
+test negative_guard_live_across_reclaim_is_rejected ... ok
+test sys_fork_with_parent_context_has_the_required_lock_order ... ok
+test negative_dropped_terminated_reclaim_call_is_rejected ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

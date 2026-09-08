@@ -1,0 +1,7 @@
+{
+  "name": "delete_drain",
+  "arm": "backpressure",
+  "path": "userspace/programs/src/unix_stream_blocking_oracle.rs",
+  "before": "check(read_exact(peer, A)? == vec![0x83; A], \"prescribed drain\")?;",
+  "after": "check(A == 4096, \"mutation removes drain\")?;"
+}

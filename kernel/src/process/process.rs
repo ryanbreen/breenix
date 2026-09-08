@@ -594,7 +594,8 @@ impl Process {
                         }
                     }
                     FdKind::UnixStream(socket) => {
-                        socket.lock().close();
+                        let notifications = socket.lock().close();
+                        notifications.deliver_deferred();
                     }
                     FdKind::FifoRead(path, buffer) => {
                         crate::ipc::fifo::close_fifo_read(&path);
@@ -676,7 +677,8 @@ impl Process {
                         }
                     }
                     FdKind::UnixStream(socket) => {
-                        socket.lock().close();
+                        let notifications = socket.lock().close();
+                        notifications.deliver_deferred();
                     }
                     FdKind::FifoRead(path, buffer) => {
                         crate::ipc::fifo::close_fifo_read(&path);
