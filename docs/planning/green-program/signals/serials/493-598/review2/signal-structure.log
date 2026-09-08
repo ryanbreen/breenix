@@ -1,0 +1,18 @@
+Base revision: 17049b6ba3902fe8dd770982233e858a4f18a8cc + review2 changes
+== compiling signal_eintr_predicate_structure ==
+== running signal_eintr_predicate_structure  ==
+
+running 10 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test eintr_validator_rejects_deliverable_signal_call ... ok
+test disposition_oracle_drives_real_wait_and_strict_scorer_requires_both_arms ... ok
+test child_barrier_precedes_handler_assertion ... ok
+test disposition_mutation_is_rejected ... ok
+test syscall_eintr_uses_disposition_aware_signal_predicate ... ok
+test disposition_capture_is_silent_and_reporter_is_off_syscall_path ... ok
+test barrier_mutations_are_rejected ... ok
+test signal_delivery_and_local_helpers_are_silent ... ok
+test strict_disposition_scoring_rejects_missing_and_failed_arms ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+

@@ -239,8 +239,7 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                 {
                     // SAFETY: The address was validated and pre-touched above.
                     // A concurrent unmap remains a documented residual risk.
-                    let current_val =
-                        unsafe { core::ptr::read_volatile(uaddr as *const u32) };
+                    let current_val = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
                     value_matches = current_val == expected_val;
                     value_matches && !zero_timeout
                 }
@@ -294,6 +293,10 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                 // observe the waiter. The map lock is dropped above.
                 crate::syscall::futex_oracle::stage2_drive(tg_id, uaddr);
             }
+
+            #[cfg(feature = "boot_tests")]
+            let disposition_armed =
+                crate::syscall::futex_oracle::disposition_inject(_val3, thread_id);
 
             #[cfg(target_arch = "aarch64")]
             crate::per_cpu_aarch64::preempt_enable();
@@ -462,6 +465,9 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                     }
                 },
             );
+
+            #[cfg(feature = "boot_tests")]
+            crate::syscall::futex_oracle::disposition_record(_val3, disposition_armed, &result);
 
             result
         }

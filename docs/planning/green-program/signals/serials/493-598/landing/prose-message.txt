@@ -1,0 +1,4 @@
+docs(signals): clarify review evidence and pending landing
+
+Co-authored-by: Ryan Breen <ryan@breen.io>
+Co-authored-by: Claude Code <noreply@anthropic.com>

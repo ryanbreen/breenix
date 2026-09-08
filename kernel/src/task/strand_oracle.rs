@@ -24,10 +24,7 @@ pub static RESOLVED_EXERCISED: AtomicU64 = AtomicU64::new(0);
 
 // The pending-next mutation deliberately compiles out the only honest caller:
 // a lost handoff was not resolved, so notifying this oracle would be a lie.
-#[cfg(all(
-    target_arch = "aarch64",
-    not(feature = "coreproof_mut_pending_next")
-))]
+#[cfg(all(target_arch = "aarch64", not(feature = "coreproof_mut_pending_next")))]
 pub(crate) fn note_pending_next_resolved(tid: u64) {
     if tid == VICTIM_TID.load(Ordering::Acquire) {
         RESOLVED_EXERCISED.fetch_add(1, Ordering::Relaxed);
@@ -226,8 +223,7 @@ fn update_dwell(
     running_shape: &mut u64,
     ready_shape: &mut u64,
     worst_dwell_ms: &mut u64,
-    #[cfg(target_arch = "aarch64")]
-    first_strand: &mut Option<FirstStrand>,
+    #[cfg(target_arch = "aarch64")] first_strand: &mut Option<FirstStrand>,
 ) {
     let mut seen = [false; STRAND_CENSUS_CAPACITY];
 
@@ -461,6 +457,8 @@ fn report_strand(
     // where a real workload's tombstone census becomes visible: nonzero while
     // children are being reaped, back to zero once the drain has retired them.
     // Same context as the line above — a sampling kthread, never a hot path.
+    #[cfg(feature = "boot_tests")]
+    crate::syscall::futex_oracle::disposition_report();
     crate::tracing::providers::teardown::emit_tombstone_census();
     // #786 follow-on. The strict gate's profile kills QEMU shortly after exec
     // smoke, before the userspace heartbeat's procfs read has necessarily

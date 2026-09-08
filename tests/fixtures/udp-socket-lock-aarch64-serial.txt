@@ -940,3 +940,8 @@ CLONEVM_EXEC_TEST: PASS
 [TTBR0_ASID_CENSUS:untagged=0:tagged=20560:kernel=26339:cleared=46103]
 [init] clonevm_exec_test exited pid=100 code=0
 [spawn] path='/bin/bsshd'
+
+# Scorer fixture extension for issues 493/598; these two arms are from the
+# new disposition oracle, not the historical recording above.
+[SIGNAL_DISPOSITION_ORACLE:arm=default:blocked=1:pending=1:errno=110:PASS]
+[SIGNAL_DISPOSITION_ORACLE:arm=handler:blocked=1:pending=1:errno=4:PASS]

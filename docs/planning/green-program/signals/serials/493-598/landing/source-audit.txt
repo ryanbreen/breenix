@@ -1,0 +1,80 @@
+3ab6783d50513f8fa4fa2a05316adc7e1423ee30
+docker/qemu/run-aarch64-boot-test-strict.sh
+kernel/src/signal/delivery.rs
+kernel/src/signal/types.rs
+kernel/src/syscall/futex.rs
+kernel/src/syscall/futex_oracle.rs
+kernel/src/task/strand_oracle.rs
+kernel/src/test_framework/registry.rs
+tests/fixtures/udp-socket-lock-aarch64-serial.txt
+tests/signal_eintr_predicate_structure.rs
+tests/teardown_structure.rs
+kernel/src/signal/delivery.rs:17:pub fn has_deliverable_signals(process: &Process) -> bool {
+kernel/src/signal/delivery.rs:18:    process.signals.has_deliverable_signals()
+kernel/src/signal/delivery.rs:23:pub fn has_interrupting_signals(process: &Process) -> bool {
+kernel/src/signal/delivery.rs:24:    process.signals.has_interrupting_signals()
+kernel/src/signal/types.rs:197:    pub fn has_deliverable_signals(&self) -> bool {
+kernel/src/signal/types.rs:203:    pub fn has_interrupting_signals(&self) -> bool {
+kernel/src/signal/types.rs:204:        self.has_deliverable_signals()
+kernel/src/interrupts/context_switch.rs:956:                        crate::signal::delivery::has_deliverable_signals(process);
+kernel/src/interrupts/context_switch.rs:1470:                            if crate::signal::delivery::has_deliverable_signals(process) {
+kernel/src/interrupts/context_switch.rs:1712:            if crate::signal::delivery::has_deliverable_signals(process) {
+kernel/src/syscall/blocking_io.rs:35:        if crate::syscall::check_signals_for_eintr().is_some() {
+kernel/src/syscall/time.rs:200:        if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/fs.rs:3740:                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/futex.rs:314:                if crate::syscall::check_signals_for_eintr().is_some() {
+kernel/src/test_framework/registry.rs:7897:    if state.has_deliverable_signals() {
+kernel/src/test_framework/registry.rs:7903:    if !state.has_deliverable_signals() {
+kernel/src/test_framework/registry.rs:7914:    if state.has_deliverable_signals() {
+kernel/src/test_framework/registry.rs:7921:    if state.has_deliverable_signals() {
+kernel/src/test_framework/registry.rs:7927:    if !state.has_deliverable_signals() {
+kernel/src/test_framework/registry.rs:7949:        if fixture.pending != 0 || fixture.has_deliverable_signals() {
+kernel/src/test_framework/registry.rs:7960:        if !fixture.has_deliverable_signals() || !fixture.has_interrupting_signals() {
+kernel/src/test_framework/registry.rs:7964:        if fixture.has_deliverable_signals() {
+kernel/src/test_framework/registry.rs:7995:        if !fixture.has_deliverable_signals() {
+kernel/src/syscall/socket.rs:748:            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/socket.rs:1110:            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/socket.rs:1273:            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/socket.rs:1584:            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/signal.rs:1880:                crate::signal::delivery::has_deliverable_signals(process)
+kernel/src/syscall/signal.rs:1923:                        crate::signal::delivery::has_deliverable_signals(p)
+kernel/src/syscall/signal.rs:2241:                crate::signal::delivery::has_deliverable_signals(process)
+kernel/src/syscall/signal.rs:2285:                        crate::signal::delivery::has_deliverable_signals(p)
+kernel/src/syscall/handler.rs:609:            if !crate::signal::delivery::has_deliverable_signals(process) {
+kernel/src/syscall/epoll.rs:391:        if let Some(_eintr) = super::check_signals_for_eintr() {
+kernel/src/task/completion.rs:294:                if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
+kernel/src/task/completion.rs:308:                    if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
+kernel/src/task/completion.rs:371:                    if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
+kernel/src/syscall/mod.rs:578:pub fn check_signals_for_eintr() -> Option<i32> {
+kernel/src/syscall/mod.rs:588:            if crate::signal::delivery::has_interrupting_signals(process) {
+kernel/src/syscall/handlers.rs:790:                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/handlers.rs:942:                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/handlers.rs:1090:                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/handlers.rs:1375:                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/handlers.rs:1496:                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/handlers.rs:1594:                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/handlers.rs:1710:                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/handlers.rs:3473:                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/handlers.rs:3592:                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/handlers.rs:4183:            if let Some(_e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/wait.rs:178:                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/wait.rs:280:                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/arch_impl/aarch64/syscall_entry.rs:235:            if !crate::signal::delivery::has_deliverable_signals(process) {
+kernel/src/arch_impl/aarch64/context_switch.rs:7318:            if crate::signal::delivery::has_deliverable_signals(process) {
+userspace/programs/src/block_eintr_oracle.rs:161:        match process::waitpid(child.raw() as i32, &mut status, process::WNOHANG) {
+kernel/src/task/strand_oracle.rs:461:    crate::syscall::futex_oracle::disposition_report();
+kernel/src/syscall/futex_oracle.rs:352:pub fn disposition_record(tag: u32, armed: bool, result: &super::SyscallResult) {
+kernel/src/syscall/futex_oracle.rs:385:pub fn disposition_report() {
+tests/signal_eintr_predicate_structure.rs:333:fn validate_child_barrier(source: &str) -> Result<(), &'static str> {
+tests/signal_eintr_predicate_structure.rs:343:            match process::waitpid(child.raw() as i32, &mut status, process::WNOHANG) {
+tests/signal_eintr_predicate_structure.rs:421:        validate_child_barrier(&repo_text("userspace/programs/src/block_eintr_oracle.rs")),
+tests/signal_eintr_predicate_structure.rs:453:            validate_child_barrier(&source.replace(old, new)).is_err(),
+tests/signal_eintr_predicate_structure.rs:466:    assert!(validate_child_barrier(&spoof).is_err());
+tests/signal_eintr_predicate_structure.rs:480:    assert!(validate_child_barrier(&moved).is_err());
+tests/signal_eintr_predicate_structure.rs:493:    for name in ["disposition_inject", "disposition_record"] {
+tests/signal_eintr_predicate_structure.rs:503:    assert!(!calls_identifier(&futex, "disposition_report"));
+tests/signal_eintr_predicate_structure.rs:504:    assert!(calls_identifier(&futex, "disposition_record"));
+tests/signal_eintr_predicate_structure.rs:508:        "disposition_report"
+tests/signal_eintr_predicate_structure.rs:511:        live_code(function_body(&oracle, "disposition_record").unwrap())
+tests/signal_eintr_predicate_structure.rs:515:        live_code(function_body(&oracle, "disposition_report").unwrap())
+tests/signal_eintr_predicate_structure.rs:545:    assert!(futex.contains("disposition_record(_val3, disposition_armed, &result)"));

@@ -7785,7 +7785,7 @@ fn test_process_list_populated() -> TestResult {
 fn test_signal_delivery_infrastructure() -> TestResult {
     use crate::signal::constants::{
         is_catchable, is_valid_signal, sig_mask, signal_name, NSIG, SIGCHLD, SIGCONT, SIGINT,
-        SIGKILL, SIGSTOP, SIGTERM, SIG_DFL, SIG_IGN, UNCATCHABLE_SIGNALS,
+        SIGKILL, SIGSTOP, SIGTERM, SIGURG, SIGWINCH, SIG_DFL, SIG_IGN, UNCATCHABLE_SIGNALS,
     };
     use crate::signal::types::{default_action, SignalAction, SignalDefaultAction, SignalState};
 
@@ -7939,6 +7939,62 @@ fn test_signal_delivery_infrastructure() -> TestResult {
     let retrieved = state.get_handler(SIGTERM);
     if retrieved.handler != SIG_IGN {
         return TestResult::Fail("set/get handler mismatch");
+    }
+
+    // Disposition cache: generation discard, pending discard, handler delivery,
+    // mask changes, fork inheritance, exec reset, and uncatchable signals.
+    for sig in [SIGCHLD, SIGURG, SIGWINCH, SIGCONT] {
+        let mut fixture = SignalState::default();
+        fixture.set_pending(sig);
+        if fixture.pending != 0 || fixture.has_deliverable_signals() {
+            return TestResult::Fail("default ignored generation retained signal");
+        }
+        fixture.set_handler(
+            sig,
+            SignalAction {
+                handler: 0x1000,
+                ..SignalAction::default()
+            },
+        );
+        fixture.set_pending(sig);
+        if !fixture.has_deliverable_signals() || !fixture.has_interrupting_signals() {
+            return TestResult::Fail("handler disposition did not deliver");
+        }
+        fixture.block_signals(sig_mask(sig));
+        if fixture.has_deliverable_signals() {
+            return TestResult::Fail("blocked handled signal deliverable");
+        }
+        fixture.set_handler(sig, SignalAction::default());
+        if fixture.pending != 0 {
+            return TestResult::Fail("installing default ignore retained blocked pending");
+        }
+        fixture.unblock_signals(sig_mask(sig));
+        let mut child = fixture.fork();
+        child.set_pending(sig);
+        if child.pending != 0 {
+            return TestResult::Fail("fork lost ignored disposition cache");
+        }
+        child.set_handler(
+            sig,
+            SignalAction {
+                handler: 0x1000,
+                ..SignalAction::default()
+            },
+        );
+        child.exec_reset();
+        child.set_pending(sig);
+        if child.pending != 0 {
+            return TestResult::Fail("exec reset lost ignored disposition cache");
+        }
+    }
+    for sig in [SIGKILL, SIGSTOP] {
+        let mut fixture = SignalState::default();
+        fixture.set_handler(sig, custom_action);
+        fixture.block_signals(sig_mask(sig));
+        fixture.set_pending(sig);
+        if !fixture.has_deliverable_signals() {
+            return TestResult::Fail("uncatchable signal suppressed");
+        }
     }
 
     // Test 11: Verify process manager is accessible (used by signal delivery)

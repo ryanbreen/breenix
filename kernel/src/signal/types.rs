@@ -88,6 +88,11 @@ pub fn default_action(sig: u32) -> SignalDefaultAction {
     }
 }
 
+// SIGCONT's resume effect is applied at generation by send_signal_to_process.
+// Its default disposition has no remaining delivery work after that effect.
+const DEFAULT_IGNORED_SIGNALS: u64 =
+    sig_mask(SIGCHLD) | sig_mask(SIGURG) | sig_mask(SIGWINCH) | sig_mask(SIGCONT);
+
 /// Signal handler configuration (matches Linux sigaction structure layout)
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -147,6 +152,8 @@ pub struct SignalState {
     /// Signal handlers (one per signal, indices 0-63 for signals 1-64)
     /// Slab-allocated for O(1) alloc/free, falls back to heap - 64 * 32 bytes = 2KB
     handlers: SlabBox<[SignalAction; 64]>,
+    /// Cached disposition mask, maintained alongside the private handler table.
+    ignored: u64,
     /// Alternate signal stack configuration
     pub alt_stack: AltStack,
     /// Saved signal mask from sigsuspend - restored after signal handler returns via sigreturn
@@ -170,6 +177,7 @@ impl Default for SignalState {
             pending: 0,
             blocked: 0,
             handlers,
+            ignored: DEFAULT_IGNORED_SIGNALS,
             alt_stack: AltStack::default(),
             sigsuspend_saved_mask: None,
         }
@@ -183,44 +191,24 @@ impl SignalState {
         Self::default()
     }
 
-    /// Check whether there is pending signal work for the delivery path to process.
-    ///
-    /// This deliberately includes ignored dispositions so the delivery path can clear them.
-    /// Issue #493 motivated splitting this from the EINTR predicate: a default-ignored
-    /// SIGCHLD is delivery work even though userspace will not observe it.
+    /// Pending, unblocked signals with an observable disposition.
+    /// The cached mask makes this O(1), including on syscall/interrupt return.
     #[inline]
     pub fn has_deliverable_signals(&self) -> bool {
-        (self.pending & !self.blocked) != 0
+        (self.pending & !self.blocked & !self.ignored) != 0
     }
 
-    /// Check whether a pending signal will actually be seen by userspace, so a blocking
-    /// syscall must abort with EINTR.
-    ///
-    /// Unlike [`Self::has_deliverable_signals`], this excludes explicit and default-ignored
-    /// dispositions. Issue #493 was motivated by a default-ignored SIGCHLD incorrectly
-    /// interrupting a blocking syscall.
+    /// Interruptible waits use the same disposition decision as delivery.
     #[inline]
     pub fn has_interrupting_signals(&self) -> bool {
-        let mut pending = self.pending & !self.blocked;
-        while pending != 0 {
-            let sig = pending.trailing_zeros() + 1;
-            let action = self.get_handler(sig);
-            if !action.is_ignore()
-                && (action.is_handler()
-                    || (action.is_default() && default_action(sig) != SignalDefaultAction::Ignore))
-            {
-                return true;
-            }
-            pending &= pending - 1;
-        }
-        false
+        self.has_deliverable_signals()
     }
 
     /// Get the next deliverable signal (lowest number first)
     ///
     /// Returns None if no signals are pending and unblocked
     pub fn next_deliverable_signal(&self) -> Option<u32> {
-        let deliverable = self.pending & !self.blocked;
+        let deliverable = self.pending & !self.blocked & !self.ignored;
         if deliverable == 0 {
             return None;
         }
@@ -232,7 +220,10 @@ impl SignalState {
     /// Mark a signal as pending
     #[inline]
     pub fn set_pending(&mut self, sig: u32) {
-        if is_valid_signal(sig) {
+        // POSIX.1-2024 2.4.1/2.4.3: choose discard at generation for ignored
+        // signals, including blocked ignored signals (an unspecified choice).
+        // https://pubs.opengroup.org/onlinepubs/9799919799/functions/V2_chap02.html
+        if is_valid_signal(sig) && self.ignored & sig_mask(sig) == 0 {
             self.pending |= sig_mask(sig);
         }
     }
@@ -281,8 +272,17 @@ impl SignalState {
     ///
     /// Does nothing for invalid signal numbers
     pub fn set_handler(&mut self, sig: u32, action: SignalAction) {
-        if sig > 0 && sig <= NSIG {
+        if is_valid_signal(sig) && sig_mask(sig) & UNCATCHABLE_SIGNALS == 0 {
+            let bit = sig_mask(sig);
             self.handlers[(sig - 1) as usize] = action;
+            if action.is_ignore() || (action.is_default() && DEFAULT_IGNORED_SIGNALS & bit != 0) {
+                self.ignored |= bit;
+                // POSIX 2.4.3: installing ignore discards a pending signal,
+                // whether blocked or unblocked.
+                self.pending &= !bit;
+            } else {
+                self.ignored &= !bit;
+            }
         }
     }
 
@@ -315,6 +315,7 @@ impl SignalState {
             pending: 0, // Child starts with no pending signals
             blocked: self.blocked,
             handlers: self.handlers.clone(),
+            ignored: self.ignored,
             alt_stack: self.alt_stack,   // Alt stack is inherited per POSIX
             sigsuspend_saved_mask: None, // Child doesn't inherit sigsuspend state
         }
@@ -330,11 +331,11 @@ impl SignalState {
     /// same as aarch64's already did.
     pub fn exec_reset(&mut self) {
         self.pending = 0;
-        for handler in self.handlers.iter_mut() {
-            if handler.is_handler() {
-                *handler = SignalAction::default();
+        for sig in 1..=NSIG {
+            if self.get_handler(sig).is_handler() {
+                self.set_handler(sig, SignalAction::default());
             }
-            // SIG_IGN and SIG_DFL are preserved
+            // SIG_IGN and SIG_DFL are preserved.
         }
     }
 }

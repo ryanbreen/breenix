@@ -1,0 +1,13 @@
+diff --git a/kernel/src/signal/types.rs b/kernel/src/signal/types.rs
+index 207c07e3..df63720b 100644
+--- a/kernel/src/signal/types.rs
++++ b/kernel/src/signal/types.rs
+@@ -195,7 +195,7 @@ impl SignalState {
+     /// The cached mask makes this O(1), including on syscall/interrupt return.
+     #[inline]
+     pub fn has_deliverable_signals(&self) -> bool {
+-        (self.pending & !self.blocked & !self.ignored) != 0
++        (self.pending & !self.blocked) != 0
+     }
+ 
+     /// Interruptible waits use the same disposition decision as delivery.

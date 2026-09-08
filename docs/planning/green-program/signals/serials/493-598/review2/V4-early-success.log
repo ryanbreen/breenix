@@ -1,0 +1,22 @@
+Base revision: 17049b6ba3902fe8dd770982233e858a4f18a8cc + review2 working changes; mutation: V4-early-success
+== compiling signal_eintr_predicate_structure ==
+== running signal_eintr_predicate_structure child_barrier_precedes_handler_assertion ==
+
+running 1 test
+
+thread 'child_barrier_precedes_handler_assertion' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sig2/wt/tests/signal_eintr_predicate_structure.rs:420:5:
+assertion `left == right` failed
+  left: Err("reap is bypassable")
+ right: Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test child_barrier_precedes_handler_assertion ... FAILED
+
+failures:
+
+failures:
+    child_barrier_precedes_handler_assertion
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+EXIT: 101

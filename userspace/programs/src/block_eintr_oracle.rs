@@ -5,8 +5,7 @@
 //! published to the device. Waiting for that to happen by luck is not an
 //! oracle — the trigger rate is build-timing sensitive — so this program
 //! forces the race in real process context with no driver hook and no fake
-//! completion. Both stages fork a child that sleeps briefly and exits without
-//! being reaped, read one large file across the child's exit, then read a
+//! completion. Both stages fork a child that sleeps briefly and exits, read one large file across the child's exit, then read a
 //! second large file as the leaked-gate probe:
 //!
 //!   stage 1  leaves SIGCHLD at its default Ignore disposition. This reproduces
@@ -124,14 +123,14 @@ fn emit(line: &str) {
 }
 
 fn run_race(stages: &RaceStages) -> Result<(), Failure> {
-    match process::fork() {
+    let child = match process::fork() {
         Ok(ForkResult::Child) => {
             let _ = time::sleep_ms(CHILD_SLEEP_MS);
             process::exit(0);
         }
-        Ok(ForkResult::Parent(_pid)) => {}
+        Ok(ForkResult::Parent(pid)) => pid,
         Err(e) => return Err(fail(stages.fork, format!("{}", e))),
-    }
+    };
 
     let (got_a, size_a) = read_whole(FILE_A, &stages.first)?;
     if size_a < MIN_BYTES {
@@ -154,6 +153,27 @@ fn run_race(stages: &RaceStages) -> Result<(), Failure> {
         return Err(fail(stages.slow2, format!("{}ms", elapsed_ms)));
     }
 
+    // Issue 598: read duration cannot establish that the child has exited.
+    // Reap this stage before changing disposition or asserting handler delivery.
+    let deadline = monotonic_ms().saturating_add(PROBE_DEADLINE_MS);
+    loop {
+        let mut status = 0;
+        match process::waitpid(child.raw() as i32, &mut status, process::WNOHANG) {
+            Ok(pid) if pid == child => {
+                if !process::wifexited(status) || process::wexitstatus(status) != 0 {
+                    return Err(fail("child_status", format!("{}", status)));
+                }
+                break;
+            }
+            Ok(_) => {}
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINTR)) => {}
+            Err(e) => return Err(fail("child_wait", format!("{}", e))),
+        }
+        if monotonic_ms() >= deadline {
+            return Err(fail("child_wait_timeout", "not_reaped".to_string()));
+        }
+        let _ = process::yield_now();
+    }
     Ok(())
 }
 
