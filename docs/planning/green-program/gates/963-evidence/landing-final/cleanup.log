@@ -1,0 +1,3 @@
+revision=45ff0a90b76e71671d9499542f6a2165181ee344
+aarch64 gate exit=0; its tracked QEMU guest exited. Other-lane QEMU processes are excluded from cleanup.
+x86 post-gate process-reference scan: {"lanePathUsers": []}

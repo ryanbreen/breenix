@@ -1,0 +1,82 @@
+revision=4ae11b95a2b8f11b981738c8607e68fd9b3d916f
+
+file=tests/gate_qmp_backstop_structure.rs
+159:         .position(|l| is_kill_line(l))
+163:         .position(|l| l.contains("local QMP_PRECHECK_PASS"))
+209:         .position(|l| l.trim().starts_with("kill "))
+213:         .position(|l| active_call(l, DRAIN_CALL))
+253:                 pathlib.Path('dump-received').touch()
+256:                         signal.pause()
+274:     os.execvp('timeout', ['timeout'] + sys.argv[1:])
+279: child = subprocess.Popen(command, start_new_session=True, env={k:v for k,v in os.environ.items() if k != 'BASH_ENV' and not k.startswith('BASH_FUNC_timeout')})
+281:     while not pathlib.Path('dump-received').exists():
+283:         time.sleep(.01)
+285:     # operation whose response must be bounded. Suite timeout covers success.
+288:             result = child.wait(timeout=budget)
+294:         result = child.wait()
+300:     child.wait()
+323:         fs::write(dir.join("timeout.py"), FIXTURE_TIMEOUT).unwrap();
+327: timeout() { python3 timeout.py "$@"; }
+328: export -f timeout
+351:                         .try_wait()
+356:                 std::thread::sleep(std::time::Duration::from_millis(20));
+361:     fn run(&self, pass: bool, budget: u32) -> (String, std::time::Duration) {
+370:         // The suite timeout bounds setup. The fixture timeout starts only after
+391:     fn terminate(&mut self) {
+398:         let status = server.wait().unwrap();
+410:             let _ = server.wait();
+436:         eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+446:     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+448:     let position = |prefix: &str| log.lines().position(|l| l.starts_with(prefix)).unwrap();
+449:     assert!(position("RECV stop ") < position("RECV dump-guest-memory "));
+451:         position("RECV dump-guest-memory ") < position("SIGTERM "),
+481:     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+485:     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+496:         eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+500:     eprintln!("missing_socket_and_hung_dump_are_partial_and_bounded: socat present; asserting QMP timeout after dump command");
+501:     assert!(out.contains("capture=partial:reason=qmp_timeout:"), "{out}");
+503:     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+510:         "hang must reach dump"
+617:     let output = Command::new("timeout")
+688:     let output = Command::new("timeout")
+717:     let output = Command::new("timeout")
+747:     source.contains("timeout --kill-after=1 \"$budget_s\" bash \"$fc_sh\" --qmp \"$sock\"")
+751: fn shipped_capture_deadline_and_mutations() {
+755:         source.replace("timeout --kill-after=1", "timeout"),
+757:         source.replace("timeout --kill-after=1 \"$budget_s\" bash", "bash"),
+767: fn receipt_precedes_response_deadline() {
+768:     let receipt = "while not pathlib.Path('dump-received').exists():";
+769:     let deadline = "result = child.wait(timeout=budget)";
+777:     assert!(FAKE_QMP.contains("pathlib.Path('dump-received').touch()"));
+
+file=docker/qemu/lib/gate-qmp-backstop.sh
+8: # cached globals: a caller's current timeout override must reach this call.
+9: # The outer timeout bounds the entire forensic child, independently of its
+11: # that ignores TERM. Decoding has its own timeout; dump_ms measures capture.
+83:     # timeout treats 0 as unbounded; refuse it (and malformed budgets).
+100:     timeout --kill-after=1 "$budget_s" bash "$fc_sh" --qmp "$sock" --output-dir "$output_dir" \
+106:         decode_out="$(timeout --kill-after=1 "$budget_s" python3 "$decode_py" --parse "$core" --kernel "$kernel_elf" --validate 2>&1)" || true
+112:         printf '[QMP_DUMP:capture=partial:reason=qmp_timeout:core=-:decoded_events=-:dump_ms=%s]\n' "$dump_ms"
+
+file=tests/gate_capture_drain_structure.rs
+215:             .position(|l| is_kill_line(l))
+220:         .position(|l| l.contains("local CAPTURE_LINES"))
+260: fn run_with_drain_lib(script: &str) -> (bool, String) {
+399: sleep() {{ release_writer; }}
+
+file=scripts/forensic-capture.sh
+16: #   scripts/forensic-capture.sh --timeout 30 # Auto-capture after 30s of no output
+24: #   /tmp/breenix-forensic-<timestamp>/
+77:             echo "  --output-dir DIR  Capture directory (default: /tmp/breenix-forensic-<timestamp>)"
+81:             echo "Output: /tmp/breenix-forensic-<timestamp>/"
+132:         sleep 0.2
+134:         sleep 0.2
+136:         sleep 0.5
+144:         sleep 0.2
+146:         sleep 0.2
+149:             sleep 0.3
+151:         sleep 0.5
+182:         sleep 1
+188:     sleep 1
+323:     # Run GDB with timeout
+325:     timeout 30 "$GDB_BIN" --nx -batch -x "$GDB_CMDS" "$KERNEL_BIN" \

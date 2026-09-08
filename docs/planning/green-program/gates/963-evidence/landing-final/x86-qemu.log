@@ -1,0 +1,8 @@
+revision=45ff0a90b76e71671d9499542f6a2165181ee344
+WARNING: Image format was not specified for '/root/breenix-t963b-tmp/breenix_x86_boot_tests_1/OVMF_CODE.fd' and probing guessed raw.
+         Automatically detecting the format is dangerous for raw images, write operations on block 0 will be restricted.
+         Specify the 'raw' format explicitly to remove the restrictions.
+WARNING: Image format was not specified for '/root/breenix-t963b-tmp/breenix_x86_boot_tests_1/OVMF_VARS.fd' and probing guessed raw.
+         Automatically detecting the format is dangerous for raw images, write operations on block 0 will be restricted.
+         Specify the 'raw' format explicitly to remove the restrictions.
+qemu-system-x86_64: terminating on signal 15 from pid 2728206 (bash)

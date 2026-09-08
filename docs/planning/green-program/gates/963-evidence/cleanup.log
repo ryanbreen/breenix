@@ -1,0 +1,4 @@
+revision=4ae11b95a2b8f11b981738c8607e68fd9b3d916f
+Mac lane-owned QEMU count=0; host QEMU count=1
+tracked_QEMU_PID_1735589_absent
+Eight tracked CPU hogs were reaped by load-driver finally (see load-progress.log).
