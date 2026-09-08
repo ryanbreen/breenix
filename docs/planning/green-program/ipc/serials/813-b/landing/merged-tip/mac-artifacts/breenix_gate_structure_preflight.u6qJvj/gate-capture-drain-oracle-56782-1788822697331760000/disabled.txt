@@ -1,0 +1,4 @@
+[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]
+[BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]
+[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]
+[BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]

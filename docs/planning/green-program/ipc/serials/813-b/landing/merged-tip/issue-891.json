@@ -1,0 +1,1 @@
+{"number":891,"state":"OPEN","title":"x86 boot_tests: KERNEL PANIC in the ksoftirqd deferral self-test (softirq_tests.rs:228), 1 red on the smp-enum gate","url":"https://github.com/ryanbreen/breenix/issues/891"}
