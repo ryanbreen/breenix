@@ -758,3 +758,12 @@ the captured oracle tokens and line numbering are unchanged.
 
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/second-citations-message.txt -> exit 0
+
+The PR 967 body and issue-comment drafts were checked before publication.
+The merge commit uses the linted message below; actual GitHub merge state
+and issue actions will be verified after publication.
+
+claim-lint: python3 scripts/claim-lint.py --files .tmp/pr-body-second.md .tmp/issue891-second.md .tmp/issue562-second.md .tmp/issue-timer-second.md .tmp/issue586-second.md -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/merge-message-second.txt -> exit 0
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/publication-checks-message.txt -> exit 0
