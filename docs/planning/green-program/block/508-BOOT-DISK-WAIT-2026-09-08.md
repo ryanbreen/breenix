@@ -292,3 +292,43 @@ Fixture-replacement structure validation passed 71/71 suites (exit 0), recorded
 in `serials/508/landing/structure-fixture.log`. The Mac soft-float boot_tests
 build exited 0 with the accepted pinned-core future-incompatibility notice and
 no project diagnostics (`serials/508/landing/aarch64-build.log`).
+
+
+### Landing disposition: NOT LANDED
+
+Required gates ran against committed revision
+`6cff8cf8c43adeeccd8d6088a5c42af70091233e`, which includes the merge of main.
+The aarch64 strict command `bash docker/qemu/run-aarch64-boot-test-strict.sh 1`
+exited 1: 0/1 successful boots, 1 failure, 0 inconclusive. Its 71/71 structure
+preflight passed. The scorer rejected the missing BSSH publickey oracle after
+`ended_by=hard_timeout`. The complete gate transcript is
+`serials/508/landing/aarch64-strict.log`; the captured serial is
+`serials/508/landing/aarch64-serial.txt`. This is a failed shared-code check;
+no causal attribution to this repair or the supplied userspace binaries is made.
+
+The x86 single command `bash docker/qemu/run-x86-boot-tests.sh` launched at
+1-minute load 5.40. After the aarch64 failure, its verified process tree was
+terminated during structure preflight, before QEMU boot. Its partial transcript
+is `serials/508/landing/x86-single-cancelled.log`; it is cancelled, not GREEN.
+`bash docker/qemu/run-boot-parallel.sh 5` was not launched under the stop rule.
+No structure-timeout retry was required. No production gate was requested or run
+in this landing attempt. The required gate set is therefore not satisfied.
+
+PR 980 remains unmerged and issue 508 remains open. The local main comparison
+`git log origin/main..HEAD` is nonempty; there is no landed merge SHA or verified
+merge timestamp. V-3 and V-4 prose corrections do not establish R245 lane success.
+The branch and local worktree are retained for follow-up. The x86 lane clone and
+temporary directory were removed after confirming no process used their working
+directories, executables, or open descriptors. The gate reported aarch64 QEMU
+count 0 at exit; the cancelled x86 run had not launched QEMU.
+
+Not claimed by this landing: passing required boots, an 11/11 accepted historical
+oracle tally, closure of 508 or 666, atlas promotion, a new runtime mutation run,
+or a root cause for the missing BSSH oracle. Deferred code findings remain []
+(0 supplied findings); the failed gate is recorded here and on issue 508.
+
+```text
+claim-lint: python3 scripts/claim-lint.py --files .tmp/508-issue-comment.md .tmp/666-comment.md -> exit 0
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-landing-commit.txt -> exit 0
+```
