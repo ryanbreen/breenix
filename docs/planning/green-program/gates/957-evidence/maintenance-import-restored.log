@@ -1,0 +1,12 @@
+revision=a123f392560e3c404a4011b50a69ce0f3ea516e0; scope=unmodified source
+command=['bash', 'scripts/run-structure-tests.sh', 'parallels_capture_structure', 'pil_resolver_rejects_an_unusable_override']
+== compiling parallels_capture_structure ==
+== running parallels_capture_structure pil_resolver_rejects_an_unusable_override ==
+
+running 1 test
+test pil_resolver_rejects_an_unusable_override ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.08s
+
+
+exit=0; wall_seconds=0.205
