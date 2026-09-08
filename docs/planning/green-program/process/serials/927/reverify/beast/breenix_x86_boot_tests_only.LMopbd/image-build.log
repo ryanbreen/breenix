@@ -1,5 +1,5 @@
-   Compiling kernel v0.1.0 (/root/breenix-x927b/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-x927b)
+   Compiling kernel v0.1.0 (<isolated-checkout-169>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-174>)
     Finished `release` profile [optimized] target(s) in 19.24s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-x927b/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-169>/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)

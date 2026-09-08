@@ -137,7 +137,7 @@
    Compiling crc-catalog v2.5.0
    Compiling serde_json v1.0.151
    Compiling httparse v1.10.1
-   Compiling kernel v0.1.0 (/root/breenix-s891/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-133>/kernel)
    Compiling pin-project-lite v0.2.17
    Compiling slab v0.4.12
    Compiling usize_conversions v0.2.0
@@ -185,7 +185,7 @@
    Compiling utf8-zero v0.8.1
    Compiling sha2 v0.11.0
    Compiling lzma-rs v0.3.0
-   Compiling breenix v0.1.0 (/root/breenix-s891)
+   Compiling breenix v0.1.0 (<isolated-checkout-145>)
    Compiling tar v0.4.46
    Compiling rustls-webpki v0.103.15
    Compiling base16ct v1.0.0
@@ -193,7 +193,7 @@
    Compiling ovmf-prebuilt v0.2.9
     Finished `release` profile [optimized] target(s) in 1m 20s
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-s891/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  ELF:      <isolated-checkout-133>/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
   sha256:   8d4cc61ad05c62820346f25fe8fdac04e1b1c9e10eceb1648909f5d1974edeaf
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf
@@ -201,11 +201,11 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
   symbols in scope: 3
   call targets resolved: 14
 [0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
-   Compiling kernel v0.1.0 (/root/breenix-s891/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-s891)
+   Compiling kernel v0.1.0 (<isolated-checkout-133>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-145>)
     Finished `release` profile [optimized] target(s) in 23.82s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-s891/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-133>/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
    Compiling proc-macro2 v1.0.107
    Compiling unicode-ident v1.0.24
    Compiling quote v1.0.47
@@ -232,7 +232,7 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
    Compiling serde_derive v1.0.229
    Compiling structopt-derive v0.4.18
    Compiling structopt v0.3.26
-   Compiling xtask v0.1.0 (/root/breenix-s891/xtask)
+   Compiling xtask v0.1.0 (<isolated-checkout-133>/xtask)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.07s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -399,7 +399,7 @@ Test disk created: target/test_binaries.img
   Disk size: 62002 sectors (30.27 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-s891/target/ext2.img
+  Output: <isolated-checkout-133>/target/ext2.img
   Size: 256MB
   Payload: 46MB (userspace binaries + fonts)
   Minimum image size for this payload: 71MB (incl. ext2 overhead + headroom)
@@ -579,55 +579,55 @@ drwxr-xr-x 3 root root   4096 Sep  8 08:23 ..
 -rwxr-xr-x 1 root root 183584 Sep  8 08:23 wc_test
 -rwxr-xr-x 1 root root 182912 Sep  8 08:23 which_test
 -rwxr-xr-x 1 root root 182496 Sep  8 08:23 wnohang_timing_test
--rw-r--r-- 1 root root 17 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/hello.txt
--rw-r--r-- 1 root root 212340 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/SourceCodePro-Regular.ttf
--rw-r--r-- 1 root root 1708408 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/NotoSansMono-Regular.ttf
--rw-r--r-- 1 root root 205748 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/UbuntuMono-Regular.ttf
--rw-r--r-- 1 root root 300724 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/PlayfairDisplay-Regular.ttf
--rw-r--r-- 1 root root 1209508 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/SourceSerif4-Regular.ttf
--rw-r--r-- 1 root root 656568 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Lato-Regular.ttf
--rw-r--r-- 1 root root 260364 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/FiraCode-Regular.ttf
--rw-r--r-- 1 root root 312352 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Raleway-Regular.ttf
--rw-r--r-- 1 root root 108684 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Inconsolata-Regular.ttf
--rw-r--r-- 1 root root 598060 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/CascadiaCode-Regular.ttf
--rw-r--r-- 1 root root 488584 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Roboto-Regular.ttf
--rw-r--r-- 1 root root 160316 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Poppins-Regular.ttf
--rw-r--r-- 1 root root 532636 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/OpenSans-Regular.ttf
--rw-r--r-- 1 root root 1887192 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/NotoSerif-Regular.ttf
--rw-r--r-- 1 root root 2049096 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/NotoSans-Regular.ttf
--rw-r--r-- 1 root root 135580 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/IBMPlexMono-Regular.ttf
--rw-r--r-- 1 root root 646340 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/SourceSans3-Regular.ttf
--rw-r--r-- 1 root root 351884 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Ubuntu-Regular.ttf
--rw-r--r-- 1 root root 744936 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Montserrat-Regular.ttf
--rw-r--r-- 1 root root 273900 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/JetBrainsMono-Regular.ttf
--rw-r--r-- 1 root root 276932 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Nunito-Regular.ttf
--rw-r--r-- 1 root root 359048 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/PTSerif-Regular.ttf
--rw-r--r-- 1 root root 876576 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Inter-Regular.ttf
--rw-r--r-- 1 root root 309408 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Hack-Regular.ttf
--rw-r--r-- 1 root root 282844 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Merriweather-Regular.ttf
--rw-r--r-- 1 root root 757076 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/DejaVuSans.ttf
--rw-r--r-- 1 root root 340712 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/DejaVuSansMono.ttf
--rw-r--r-- 1 root root 183700 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/RobotoMono-Regular.ttf
--rw-r--r-- 1 root root 212196 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/usr/share/fonts/Lora-Regular.ttf
--rw-r--r-- 1 root root 19 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/trunctest.txt
--rw-r--r-- 1 root root 0 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/empty.txt
--rw-r--r-- 1 root root 83 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/etc/passwd
--rw-r--r-- 1 root root 679 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/etc/init.js
--rw-r--r-- 1 root root 445 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/etc/fonts.conf
--rw-r--r-- 1 root root 367 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/etc/bshrc
--rw-r--r-- 1 root root 26 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/etc/group
--rw-r--r-- 1 root root 349 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/etc/hotkeys.conf
--rw-r--r-- 1 root root 20 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/deep/path/to/file/data.txt
--rw-r--r-- 1 root root 20 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/test/nested.txt
--rwxr-xr-x 1 root root 184032 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/sbin/telnetd
--rwxr-xr-x 1 root root 187448 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/sbin/init
--rwxr-xr-x 1 root root 181920 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/sbin/blogd
--rw-r--r-- 1 root root 111 Sep  8 08:23 /root/breenix-s891-tmp/tmp.F0LCF6A7Ha/lines.txt
+-rw-r--r-- 1 root root 17 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/hello.txt
+-rw-r--r-- 1 root root 212340 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 340712 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 183700 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 19 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/trunctest.txt
+-rw-r--r-- 1 root root 0 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/empty.txt
+-rw-r--r-- 1 root root 83 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/etc/passwd
+-rw-r--r-- 1 root root 679 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/etc/init.js
+-rw-r--r-- 1 root root 445 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/etc/fonts.conf
+-rw-r--r-- 1 root root 367 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/etc/bshrc
+-rw-r--r-- 1 root root 26 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/etc/group
+-rw-r--r-- 1 root root 349 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/etc/hotkeys.conf
+-rw-r--r-- 1 root root 20 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 20 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/test/nested.txt
+-rwxr-xr-x 1 root root 184032 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/sbin/telnetd
+-rwxr-xr-x 1 root root 187448 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/sbin/init
+-rwxr-xr-x 1 root root 181920 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/sbin/blogd
+-rw-r--r-- 1 root root 111 Sep  8 08:23 <isolated-checkout-134>/tmp.F0LCF6A7Ha/lines.txt
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-s891/target/ext2.img
-  /root/breenix-s891/testdata/ext2.img
+  <isolated-checkout-133>/target/ext2.img
+  <isolated-checkout-133>/testdata/ext2.img
   Size: 256M
 
 Contents:

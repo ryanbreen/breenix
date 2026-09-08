@@ -1,4 +1,4 @@
-host: beast, breenix-x86 Incus container, clone /root/breenix-verdict
+host: beast, the x86 build environment, clone <isolated-checkout-23>
 sha: 8c87639a7069300c6498931d325a3cf0dad96f5b (this branch's merge commit, gates/verdict-discipline-widened)
 note: landing re-smoke (STEP 2), simulated preflight failure (relative
 BREENIX_GATE_TMP).

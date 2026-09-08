@@ -795,7 +795,7 @@ in isolation.
 | strict gate, boot 1 of 2 | `boot_tests`, cortex-a72 | 0 | PASS 1/1 | 15 | `untagged=0:tagged=20939:kernel=24838:cleared=45076` |
 | strict gate, boot 2 of 2 | `boot_tests`, cortex-a72 | 0 | PASS 1/1 | 15 | `untagged=0:tagged=20139:kernel=23548:cleared=43040` |
 | production gate ×1 | default, `-cpu max` | 0 | PASS | 15 | `untagged=0:tagged=24864:kernel=28094:cleared=52147` |
-| x86 build check, beast `breenix-x86` | `--features testing,external_test_bins --bin qemu-uefi` | n/a (build, not boot) | exit 0, 0 `^(warning\|error)` lines | n/a | n/a |
+| x86 build check, beast `<x86-build-environment>` | `--features testing,external_test_bins --bin qemu-uefi` | n/a (build, not boot) | exit 0, 0 `^(warning\|error)` lines | n/a | n/a |
 
 claim-lint:ok: the 3 boots and 2 builds in this table each have their gate
 output and (for the boots) their serial preserved under
@@ -815,9 +815,8 @@ claim-lint:ok: the 149-binary count and the create_ext2_disk.sh completion are
 both in this round's own session transcript; no serial file exists for a
 userspace build, which is not a boot.
 
-The x86 build check ran in a scratch clone under `/root/breenix-asid786-land`
-inside the `breenix-x86` Incus container on `beast`, cloned from `/root/
-breenix` and re-pointed at `origin` to fetch `ratchet/786-asid-tag-census`
+The x86 build check ran in a scratch clone under `<isolated-checkout-43>`
+inside the x86 build environment on `beast`, cloned from the canonical checkout and re-pointed at `origin` to fetch `ratchet/786-asid-tag-census`
 directly, checked out at `6e5fc3db` (`git rev-parse HEAD` printed that SHA
 before the build ran). It was run because `git diff --stat` against this
 branch's merge-base showed 3 shared (non-`arch_impl/aarch64`,

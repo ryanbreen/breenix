@@ -5054,7 +5054,7 @@ fn dispatch_thread_locked(
         // So: don't add a CPU-specific branch here without strong evidence.
         // If you think CPU0 genuinely needs special handling, reproduce the
         // problem first (per-CPU tick_count parity at 30s uptime via the
-        // cpu0-trace-dump-probe), confirm on the Linux probe VM (10.211.55.3)
+        // cpu0-trace-dump-probe), confirm on the Linux probe VM (<probe-address>)
         // that Linux needs the behavior — if Linux works without it, Breenix
         // can too — and make sure any requeue you add demonstrably routes to a
         // NON-CPU0 ready queue (NOT requeue_thread_after_save, which

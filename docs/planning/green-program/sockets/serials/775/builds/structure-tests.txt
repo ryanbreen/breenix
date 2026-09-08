@@ -1,6 +1,6 @@
 $ cargo test --test block_request_lifetime_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 18.38s
      Running tests/block_request_lifetime_structure.rs (target/debug/deps/block_request_lifetime_structure-dece37fc839c24eb)
 
@@ -23,8 +23,8 @@ test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 exit=0
 
 $ cargo test --test context_restore_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 9.46s
      Running tests/context_restore_structure.rs (target/debug/deps/context_restore_structure-8f902dabc2c5a842)
 
@@ -137,8 +137,8 @@ test result: ok. 97 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 exit=0
 
 $ cargo test --test coreproof_component_h_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 7.27s
      Running tests/coreproof_component_h_structure.rs (target/debug/deps/coreproof_component_h_structure-ff8feed618e83a75)
 
@@ -154,8 +154,8 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test coreproof_coverage_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.41s
      Running tests/coreproof_coverage_structure.rs (target/debug/deps/coreproof_coverage_structure-4815dc00494f992e)
 
@@ -170,8 +170,8 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test coreproof_mutation_register_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.65s
      Running tests/coreproof_mutation_register_structure.rs (target/debug/deps/coreproof_mutation_register_structure-9bca353e91f30b07)
 
@@ -187,8 +187,8 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test coreproof_sites_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.50s
      Running tests/coreproof_sites_structure.rs (target/debug/deps/coreproof_sites_structure-52f942f94961b960)
 
@@ -203,8 +203,8 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test degenerate_transfer_fd_validation_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.37s
      Running tests/degenerate_transfer_fd_validation_structure.rs (target/debug/deps/degenerate_transfer_fd_validation_structure-16dd95b1f0af89f4)
 
@@ -219,8 +219,8 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test dispatch_strand_census_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 9.59s
      Running tests/dispatch_strand_census_structure.rs (target/debug/deps/dispatch_strand_census_structure-341e99c2348b0d88)
 
@@ -234,8 +234,8 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test dma_and_log_sink_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.17s
      Running tests/dma_and_log_sink_structure.rs (target/debug/deps/dma_and_log_sink_structure-d76ee7876ced6f5d)
 
@@ -250,8 +250,8 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test exec_lock_order_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 8.31s
      Running tests/exec_lock_order_structure.rs (target/debug/deps/exec_lock_order_structure-ec6b3d7432b5cb34)
 
@@ -304,8 +304,8 @@ test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 exit=0
 
 $ cargo test --test exit_tally_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.21s
      Running tests/exit_tally_structure.rs (target/debug/deps/exit_tally_structure-1666ce81d3d40be2)
 
@@ -322,8 +322,8 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test ext2_lock_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.95s
      Running tests/ext2_lock_structure.rs (target/debug/deps/ext2_lock_structure-e1e296c3980e2e0b)
 
@@ -370,8 +370,8 @@ test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 exit=0
 
 $ cargo test --test fork_lock_order_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.07s
      Running tests/fork_lock_order_structure.rs (target/debug/deps/fork_lock_order_structure-175f0ca7f6a169c6)
 
@@ -392,8 +392,8 @@ test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 exit=0
 
 $ cargo test --test green_program_envelope_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.33s
      Running tests/green_program_envelope_structure.rs (target/debug/deps/green_program_envelope_structure-74f8ca1c62b82ac9)
 
@@ -418,8 +418,8 @@ test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 exit=0
 
 $ cargo test --test loopback_pump_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 7.27s
      Running tests/loopback_pump_structure.rs (target/debug/deps/loopback_pump_structure-5561a59acfc1d5dd)
 
@@ -493,8 +493,8 @@ test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 exit=0
 
 $ cargo test --test masked_binary_load_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.02s
      Running tests/masked_binary_load_structure.rs (target/debug/deps/masked_binary_load_structure-068d51ed85c0b03b)
 
@@ -509,8 +509,8 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test mmap_floor_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.18s
      Running tests/mmap_floor_structure.rs (target/debug/deps/mmap_floor_structure-21ca0270fc605c6a)
 
@@ -530,8 +530,8 @@ test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test net_lock_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 7.18s
      Running tests/net_lock_structure.rs (target/debug/deps/net_lock_structure-f507bbd4eeaa8d37)
 
@@ -561,8 +561,8 @@ test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 exit=0
 
 $ cargo test --test poll_tcp_gate_wiring_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.10s
      Running tests/poll_tcp_gate_wiring_structure.rs (target/debug/deps/poll_tcp_gate_wiring_structure-0c96fe42638249f6)
 
@@ -576,8 +576,8 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test preempt_bracket_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.03s
      Running tests/preempt_bracket_structure.rs (target/debug/deps/preempt_bracket_structure-b41ef1ffb4532712)
 
@@ -596,8 +596,8 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test serial_line_atomicity_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 7.98s
      Running tests/serial_line_atomicity_structure.rs (target/debug/deps/serial_line_atomicity_structure-d5e95e886bb736e7)
 
@@ -617,8 +617,8 @@ test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test signal_eintr_predicate_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 5.64s
      Running tests/signal_eintr_predicate_structure.rs (target/debug/deps/signal_eintr_predicate_structure-6eaac8f8cd851caf)
 
@@ -631,8 +631,8 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test strand_handoff_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 7.86s
      Running tests/strand_handoff_structure.rs (target/debug/deps/strand_handoff_structure-d8b1b16d47634471)
 
@@ -681,8 +681,8 @@ test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 exit=0
 
 $ cargo test --test syscall_return_register_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.60s
      Running tests/syscall_return_register_structure.rs (target/debug/deps/syscall_return_register_structure-e1f9379c5f54c7ae)
 
@@ -699,8 +699,8 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 
 $ cargo test --test teardown_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 7.73s
      Running tests/teardown_structure.rs (target/debug/deps/teardown_structure-de042a2120445bc7)
 
@@ -793,8 +793,8 @@ test result: ok. 81 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 exit=0
 
 $ cargo test --test tty_oracle_structure
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.84s
      Running tests/tty_oracle_structure.rs (target/debug/deps/tty_oracle_structure-58792ed16f2201ad)
 

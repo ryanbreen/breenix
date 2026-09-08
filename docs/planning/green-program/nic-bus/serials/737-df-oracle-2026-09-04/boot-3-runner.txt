@@ -1,5 +1,5 @@
 Running 1 parallel full boot tests (runner: native)...
-Image: /root/breenix-737-oracle/target/release/build/breenix-1ddb662735daef9c/out/breenix-uefi.img
+Image: <isolated-checkout-153>/target/release/build/breenix-1ddb662735daef9c/out/breenix-uefi.img
   Started test 1
 Waiting for kthread tests to complete (900s timeout)...
   Test 1: FAIL (x86 userspace verdict rejected the run)

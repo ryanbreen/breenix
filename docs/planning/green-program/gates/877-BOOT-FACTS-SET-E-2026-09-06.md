@@ -45,10 +45,7 @@ clean pass during its own landing: while validating it on beast, 4
 separate `run-x86-boot-tests.sh`/`run-x86-prod-profile-boot-test.sh`
 invocations that each ran past roughly a minute of wall-clock were
 silently `SIGKILL`ed by
-an unrelated, still-ongoing hardware fault on the beast host's physical
-disk `sdh` (filed as #871; `sudo journalctl -k` on the host shows
-`device offline error, dev sdh` and `attempting task abort!scmd(...)`
-cycles). #872's landing PR states plainly it could not obtain a completed
+a host storage fault, according to the original investigation and contemporaneous host diagnostics. #872's landing PR states plainly it could not obtain a completed
 `PASS` verdict from either x86 gate on beast because of this -- so the
 code path this `child=` line sits on (reached only late in a boot, right
 before the gate's own `kill`) did not run to completion during review. The gap surfaced independently five hours later during the
@@ -209,9 +206,9 @@ scripts/run-structure-tests.sh gate_boot_facts_pipefail_structure
   test result: ok. 4 passed; 0 failed
 ```
 
-**Beast** (Incus container `breenix-x86`, Debian, Linux, GNU bash
-5.2.21(1); clone `/root/breenix-p877` at `1bc265aa`, `BREENIX_GATE_TMP=
-/root/breenix-p877-tmp`):
+**Beast** (the x86 build environment, Debian, Linux, GNU bash
+5.2.21(1); clone `<isolated-checkout-19>` at `1bc265aa`, `BREENIX_GATE_TMP=
+<isolated-checkout-61>`):
 
 ```
 bash -n docker/qemu/lib/gate-boot-facts.sh                       -> exit 0
@@ -239,12 +236,7 @@ PASS: x86 production profile reached steady state with the teardown census at re
 Both required x86 gates reached their own `QEMU_ACTUAL_PID=$(gbf_resolve_qemu_pid
 ...)` line (the exact statement #877 reports aborting on) and their own
 verdict line with no ERR-trap `FAIL` output, on the first attempt each --
-no #871 attribution or retry needed this round. `#871`'s own disk fault
-was independently confirmed still active on the beast host at the same
-wall-clock window (`sudo journalctl -k --since "-15min" | grep sdh` on
-the host showed live `device offline error, dev sdh` / `task abort`
-entries immediately before both gate runs), so this is a clean pass
-alongside an unrelated live fault, not the fault's absence.
+no environmental attribution or retry needed this round. A host storage fault was independently observed during the same window, so these are completed passing runs despite an unrelated environmental fault, not evidence that the fault was absent.
 
 No new x86 timing-signature reds (#631/#766) on either boot; neither gate
 needed a retry.
@@ -325,12 +317,9 @@ total, 0 failed (includes `gate_boot_facts_pipefail_structure`: 5 passed, and
 python3 scripts/test_claim_lint.py -> exit 0 (72 tests, "OK")
 ```
 
-**Beast** (Incus container `breenix-x86`, Debian, Linux, GNU bash 5.2.21(1));
-own clone `/root/breenix-p877` at `baab16f6d`, `BREENIX_GATE_TMP=
-/root/breenix-p877-tmp`. `#871`'s disk fault independently confirmed still
-live in the same wall-clock window (`sudo journalctl -k --since "-15min" |
-grep sdh` on the host showed live `device offline error, dev sdh` / `task
-abort` entries immediately before and after both gate runs below).
+**Beast** (the x86 build environment, Debian, Linux, GNU bash 5.2.21(1));
+own clone `<isolated-checkout-19>` at `baab16f6d`, `BREENIX_GATE_TMP=
+<gate-scratch-dir>`. A host storage fault was independently observed in the same wall-clock window before and after both gate runs below.
 
 `docker/qemu/run-x86-boot-tests.sh 1`:
 ```
@@ -349,7 +338,7 @@ Both required x86 gates reached their own `QEMU_ACTUAL_PID=$(gbf_resolve_qemu_pi
 first attempt each -- no #871 attribution or retry needed this round (a clean
 pass alongside an unrelated live fault, not the fault's absence). No new x86
 timing-signature reds (#631/#766) on either boot; neither gate needed a retry.
-Beast clone removed after this round (`rm -rf /root/breenix-p877 /root/breenix-p877-tmp`).
+Beast clone removed after this round (`rm -rf <isolated-checkout-19> <isolated-checkout-61>`).
 
 **aarch64 strict** (native ARM64, this Mac, `docker/qemu/run-aarch64-boot-test-strict.sh`,
 script default of 20 iterations, 100% required): kernel rebuilt from this

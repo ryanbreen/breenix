@@ -2,8 +2,8 @@ Turn 15 input IRQ profile source/probe notes
 
 Probe access attempts:
 - ssh linux-probe: failed host-key verification for the alias.
-- ssh wrb@10.211.55.3: reached SSH, but available public keys were rejected.
-- ssh parallels@10.211.55.3: reached SSH, but available public keys were rejected.
+- ssh wrb@<probe-address>: reached SSH, but available public keys were rejected.
+- ssh parallels@<probe-address>: reached SSH, but available public keys were rejected.
 
 Runtime trace status:
 - BLOCKED. Could not collect bpftrace/ftrace from the actual linux-probe VM.

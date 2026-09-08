@@ -1,15 +1,15 @@
 Building the shipped x86_64 production kernel profile...
-   Compiling kernel v0.1.0 (/root/breenix/kernel)
-   Compiling breenix v0.1.0 (/root/breenix)
+   Compiling kernel v0.1.0 (<canonical-checkout>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-31>)
     Finished `release` profile [optimized] target(s) in 13.64s
-   Compiling kernel v0.1.0 (/root/breenix/kernel)
-   Compiling breenix v0.1.0 (/root/breenix)
+   Compiling kernel v0.1.0 (<canonical-checkout>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-31>)
     Finished `release` profile [optimized] target(s) in 14.32s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix/target/release/build/breenix-792743187c012d02/out/breenix-uefi.img (6356992 bytes)
+[qemu-uefi] Using UEFI image: <canonical-checkout>/target/release/build/breenix-792743187c012d02/out/breenix-uefi.img (6356992 bytes)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix/target/ext2.img
+  Output: <canonical-checkout>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -225,8 +225,8 @@ drwxr-xr-x 3 root root   4096 Aug 31 14:11 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix/target/ext2.img
-  /root/breenix/testdata/ext2.img
+  <canonical-checkout>/target/ext2.img
+  <canonical-checkout>/testdata/ext2.img
   Size: 256M
 
 Contents:

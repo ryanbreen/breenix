@@ -65,7 +65,7 @@
    Compiling x86_64 v0.14.13
    Compiling log v0.4.34
    Compiling futures-task v0.3.34
-   Compiling kernel v0.1.0 (/root/breenix-i813e/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-118>/kernel)
    Compiling anyhow v1.0.104
    Compiling linux-raw-sys v0.12.1
    Compiling httparse v1.10.1
@@ -116,7 +116,7 @@
    Compiling cpufeatures v0.3.1
    Compiling percent-encoding v2.3.2
    Compiling sha2 v0.11.0
-   Compiling breenix v0.1.0 (/root/breenix-i813e)
+   Compiling breenix v0.1.0 (<isolated-checkout-119>)
    Compiling lzma-rs v0.3.0
    Compiling tar v0.4.46
    Compiling rustls-webpki v0.103.15
@@ -125,7 +125,7 @@
    Compiling ovmf-prebuilt v0.2.9
     Finished `release` profile [optimized] target(s) in 1m 11s
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-i813e/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  ELF:      <isolated-checkout-118>/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
   sha256:   e782e921935fa6cafbec17414dec03dcae0bca155993ec9393388308939faa7d
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf
@@ -133,11 +133,11 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
   symbols in scope: 3
   call targets resolved: 14
 [0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
-   Compiling kernel v0.1.0 (/root/breenix-i813e/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-i813e)
+   Compiling kernel v0.1.0 (<isolated-checkout-118>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-119>)
     Finished `release` profile [optimized] target(s) in 16.18s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-i813e/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-118>/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
    Compiling proc-macro2 v1.0.107
    Compiling unicode-ident v1.0.24
    Compiling quote v1.0.47
@@ -164,7 +164,7 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
    Compiling serde_derive v1.0.229
    Compiling structopt-derive v0.4.18
    Compiling structopt v0.3.26
-   Compiling xtask v0.1.0 (/root/breenix-i813e/xtask)
+   Compiling xtask v0.1.0 (<isolated-checkout-118>/xtask)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.94s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -331,7 +331,7 @@ Test disk created: target/test_binaries.img
   Disk size: 62043 sectors (30.29 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-i813e/target/ext2.img
+  Output: <isolated-checkout-118>/target/ext2.img
   Size: 256MB
   Payload: 46MB (userspace binaries + fonts)
   Minimum image size for this payload: 71MB (incl. ext2 overhead + headroom)
@@ -511,55 +511,55 @@ drwxr-xr-x 3 root root   4096 Sep  7 23:17 ..
 -rwxr-xr-x 1 root root 183648 Sep  7 23:17 wc_test
 -rwxr-xr-x 1 root root 182976 Sep  7 23:17 which_test
 -rwxr-xr-x 1 root root 182560 Sep  7 23:17 wnohang_timing_test
--rw-r--r-- 1 root root 19 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/trunctest.txt
--rw-r--r-- 1 root root 83 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/etc/passwd
--rw-r--r-- 1 root root 445 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/etc/fonts.conf
--rw-r--r-- 1 root root 26 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/etc/group
--rw-r--r-- 1 root root 367 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/etc/bshrc
--rw-r--r-- 1 root root 349 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/etc/hotkeys.conf
--rw-r--r-- 1 root root 679 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/etc/init.js
--rw-r--r-- 1 root root 20 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/test/nested.txt
--rw-r--r-- 1 root root 0 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/empty.txt
--rw-r--r-- 1 root root 20 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/deep/path/to/file/data.txt
--rwxr-xr-x 1 root root 184088 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/sbin/telnetd
--rwxr-xr-x 1 root root 181976 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/sbin/blogd
--rwxr-xr-x 1 root root 187512 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/sbin/init
--rw-r--r-- 1 root root 17 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/hello.txt
--rw-r--r-- 1 root root 111 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/lines.txt
--rw-r--r-- 1 root root 1708408 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/NotoSansMono-Regular.ttf
--rw-r--r-- 1 root root 160316 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Poppins-Regular.ttf
--rw-r--r-- 1 root root 532636 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/OpenSans-Regular.ttf
--rw-r--r-- 1 root root 212196 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Lora-Regular.ttf
--rw-r--r-- 1 root root 488584 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Roboto-Regular.ttf
--rw-r--r-- 1 root root 276932 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Nunito-Regular.ttf
--rw-r--r-- 1 root root 359048 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/PTSerif-Regular.ttf
--rw-r--r-- 1 root root 183700 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/RobotoMono-Regular.ttf
--rw-r--r-- 1 root root 757076 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/DejaVuSans.ttf
--rw-r--r-- 1 root root 1209508 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/SourceSerif4-Regular.ttf
--rw-r--r-- 1 root root 212340 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/SourceCodePro-Regular.ttf
--rw-r--r-- 1 root root 273900 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/JetBrainsMono-Regular.ttf
--rw-r--r-- 1 root root 282844 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Merriweather-Regular.ttf
--rw-r--r-- 1 root root 312352 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Raleway-Regular.ttf
--rw-r--r-- 1 root root 646340 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/SourceSans3-Regular.ttf
--rw-r--r-- 1 root root 744936 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Montserrat-Regular.ttf
--rw-r--r-- 1 root root 2049096 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/NotoSans-Regular.ttf
--rw-r--r-- 1 root root 108684 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Inconsolata-Regular.ttf
--rw-r--r-- 1 root root 340712 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/DejaVuSansMono.ttf
--rw-r--r-- 1 root root 351884 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Ubuntu-Regular.ttf
--rw-r--r-- 1 root root 300724 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/PlayfairDisplay-Regular.ttf
--rw-r--r-- 1 root root 876576 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Inter-Regular.ttf
--rw-r--r-- 1 root root 309408 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Hack-Regular.ttf
--rw-r--r-- 1 root root 1887192 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/NotoSerif-Regular.ttf
--rw-r--r-- 1 root root 205748 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/UbuntuMono-Regular.ttf
--rw-r--r-- 1 root root 656568 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/Lato-Regular.ttf
--rw-r--r-- 1 root root 260364 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/FiraCode-Regular.ttf
--rw-r--r-- 1 root root 135580 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/IBMPlexMono-Regular.ttf
--rw-r--r-- 1 root root 598060 Sep  7 23:17 /root/breenix-i813e-tmp/tmp.rFwFB3CJNR/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 19 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/trunctest.txt
+-rw-r--r-- 1 root root 83 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/etc/passwd
+-rw-r--r-- 1 root root 445 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/etc/fonts.conf
+-rw-r--r-- 1 root root 26 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/etc/group
+-rw-r--r-- 1 root root 367 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/etc/bshrc
+-rw-r--r-- 1 root root 349 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/etc/hotkeys.conf
+-rw-r--r-- 1 root root 679 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/etc/init.js
+-rw-r--r-- 1 root root 20 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/test/nested.txt
+-rw-r--r-- 1 root root 0 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/empty.txt
+-rw-r--r-- 1 root root 20 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/deep/path/to/file/data.txt
+-rwxr-xr-x 1 root root 184088 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/sbin/telnetd
+-rwxr-xr-x 1 root root 181976 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/sbin/blogd
+-rwxr-xr-x 1 root root 187512 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/sbin/init
+-rw-r--r-- 1 root root 17 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/hello.txt
+-rw-r--r-- 1 root root 111 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/lines.txt
+-rw-r--r-- 1 root root 1708408 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 1209508 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 351884 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  7 23:17 <isolated-checkout-120>/tmp.rFwFB3CJNR/usr/share/fonts/CascadiaCode-Regular.ttf
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-i813e/target/ext2.img
-  /root/breenix-i813e/testdata/ext2.img
+  <isolated-checkout-118>/target/ext2.img
+  <isolated-checkout-118>/testdata/ext2.img
   Size: 256M
 
 Contents:
@@ -591,8 +591,8 @@ x86 frame-custody gate run 1: FAIL (set -e abort at docker/qemu/run-x86-boot-tes
   failing command: test "$passed" = true
 [CAPTURE_DRAIN:capture=complete:seq=0:edge=PANIC:cpu=0:records=76:drain_ms=300]
 [CAPTURE_DRAIN_EVENTS:last_events=UNKNOWN(2920305),CTX_SWITCH_ENTRY(65540),UNKNOWN(2301716),CTX_SWITCH_ENTRY(262146),UNKNOWN(2532946),CTX_SWITCH_ENTRY(131073),UNKNOWN(2920305),TIMER_TICK(41280)]
---- serial tail (last 200 lines per file, /root/breenix-i813e-tmp/breenix_x86_boot_tests_1) ---
-==> /root/breenix-i813e-tmp/breenix_x86_boot_tests_1/serial_kernel.txt <==
+--- serial tail (last 200 lines per file, <isolated-checkout-120>/breenix_x86_boot_tests_1) ---
+==> <isolated-checkout-120>/breenix_x86_boot_tests_1/serial_kernel.txt <==
 [DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28004b4b000
 [DEBUG] kernel::memory::process_memory: Testing read access at 0x28004b4b000
 [DEBUG] kernel::memory::process_memory: Read test successful
@@ -794,7 +794,7 @@ unblock(2): Added to per_cpu_queues[0]
 [ERROR] kernel: KERNEL PANIC: panicked at kernel/src/task/softirq_tests.rs:228:5:
 ksoftirqd should have processed deferred softirqs (tid=Some(2))
 
-==> /root/breenix-i813e-tmp/breenix_x86_boot_tests_1/serial_user.txt <==
+==> <isolated-checkout-120>/breenix_x86_boot_tests_1/serial_user.txt <==
 INFO : Framebuffer info: FrameBufferInfo { byte_len: 16384000, width: 2560, height: 1600, pixel_format: Bgr, bytes_per_pixel: 4, stride: 2560 }
 INFO : UEFI bootloader started
 INFO : Using framebuffer at 0x80000000
@@ -995,5 +995,5 @@ ksoftirqd should have processed deferred softirqs (tid=Some(2))
 [BXCAP:THR cpu=6 cur=0 rq=0 threads=8 blocked=4 q=exact]
 [BXCAP:THR cpu=7 cur=0 rq=0 threads=8 blocked=4 q=exact]
 [BXCAP:END v=1 seq=0 edge=PANIC verdict=complete records=76 bytes=4628 truncated=0 sections_skipped=0x0]
-  preserved failing serial + capture reading: /root/breenix-i813e-tmp/breenix_x86_boot_tests_failures/20260907T232416Z_1279626
+  preserved failing serial + capture reading: <isolated-checkout-120>/breenix_x86_boot_tests_failures/20260907T232416Z_1279626
 EXIT=1

@@ -1,5 +1,5 @@
-# docker/qemu/run-x86-boot-tests.sh 1 at branch head e2717b88, beast /root/breenix-smp1
-# BREENIX_GATE_TMP=/root/breenix-smp1-tmp
+# docker/qemu/run-x86-boot-tests.sh 1 at branch head e2717b88, beast <isolated-checkout-20>
+# BREENIX_GATE_TMP=<isolated-checkout-21>
 
 --- verdict lines (grep PASS|FAIL|GATE_EXIT over the gate transcript) ---
 13:PASS: 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
@@ -12,4 +12,4 @@
 
 
 --- the enumeration marker in this gate's own boot ---
-/root/breenix-smp1-tmp/breenix_x86_boot_tests_1/serial_kernel.txt:[X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]
+<isolated-checkout-21>/breenix_x86_boot_tests_1/serial_kernel.txt:[X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]

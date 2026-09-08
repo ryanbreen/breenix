@@ -1,4 +1,4 @@
-elf=/root/breenix-ab-main/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
+elf=<isolated-checkout-181>/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
 00000000003416c0 <kernel::memory::kernel_page_table::map_kernel_page>:
   3416c0:	48 81 ec a8 06 00 00 	sub    $0x6a8,%rsp
   3416c7:	48 89 bc 24 80 00 00 	mov    %rdi,0x80(%rsp)

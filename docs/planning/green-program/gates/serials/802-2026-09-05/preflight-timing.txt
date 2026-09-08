@@ -10,4 +10,4 @@ x86 production-profile gate: FAIL (set -e abort at ./docker/qemu/run-x86-prod-pr
   failing command: false
 === dirs that must NOT exist ===
 ls: cannot access '/root/gate-tmp-802-gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg': No such file or directory
-ls: cannot access '/root/breenix-health/relative-not-absolute': No such file or directory
+ls: cannot access '<isolated-checkout-17>/relative-not-absolute': No such file or directory

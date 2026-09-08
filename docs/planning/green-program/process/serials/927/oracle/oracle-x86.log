@@ -1,6 +1,6 @@
 REVISION=c5b5d0dc026044005e025e549fc121779e5b165f
 COMMAND=bash docker/qemu/run-blocking-io-oracle-gate.sh --arch x86_64
-Artifacts: /root/breenix-927a-tmp/breenix_813_x86_64.MWnXFR
+Artifacts: <isolated-checkout-167>/breenix_813_x86_64.MWnXFR
 [GATE_PREFLIGHT:structure_suites=65/65:critical_path_lines=260:pinned=120]
 ========================================
   STD USERSPACE BUILD (Rust std library)
@@ -172,14 +172,14 @@ Artifacts: /root/breenix-927a-tmp/breenix_813_x86_64.MWnXFR
   STD BUILD COMPLETE (x86_64)
   Installed: 151 binaries
 ========================================
-   Compiling kernel v0.1.0 (/root/breenix-927a/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-927a)
+   Compiling kernel v0.1.0 (<isolated-checkout-166>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-173>)
     Finished `release` profile [optimized] target(s) in 22.45s
-   Compiling kernel v0.1.0 (/root/breenix-927a/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-927a)
+   Compiling kernel v0.1.0 (<isolated-checkout-166>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-173>)
     Finished `release` profile [optimized] target(s) in 14.88s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-927a/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-166>/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
 QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
 Traceback (most recent call last):
   File "<stdin>", line 4, in <module>

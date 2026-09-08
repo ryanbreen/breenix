@@ -1,3 +1,3 @@
-   Compiling kernel v0.1.0 (/root/breenix-slice3e/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-slice3e)
+   Compiling kernel v0.1.0 (<isolated-checkout-39>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-50>)
     Finished `release` profile [optimized] target(s) in 14.90s

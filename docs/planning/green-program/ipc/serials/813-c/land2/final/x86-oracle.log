@@ -1,6 +1,6 @@
 87cf3de694cea98806e66d9352d1cb56329b81b1
  09:54:24 up 26 days, 16:09,  0 user,  load average: 0.90, 3.29, 4.04
-Artifacts: /root/breenix-i813c2-tmp/breenix_813_x86_64.D9KuaF
+Artifacts: <isolated-checkout-126>/breenix_813_x86_64.D9KuaF
 87cf3de694cea98806e66d9352d1cb56329b81b1
 Revision: 87cf3de694cea98806e66d9352d1cb56329b81b1
 [GATE_SUITE:stem=aarch64_testing_profile_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
@@ -245,16 +245,16 @@ Revision: 87cf3de694cea98806e66d9352d1cb56329b81b1
   STD BUILD COMPLETE (x86_64)
   Installed: 153 binaries
 ========================================
-   Compiling kernel v0.1.0 (/root/breenix-i813c2/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-i813c2)
+   Compiling kernel v0.1.0 (<isolated-checkout-110>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-128>)
     Finished `release` profile [optimized] target(s) in 15.82s
-   Compiling kernel v0.1.0 (/root/breenix-i813c2/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-i813c2)
+   Compiling kernel v0.1.0 (<isolated-checkout-110>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-128>)
     Finished `release` profile [optimized] target(s) in 14.68s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-i813c2/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-110>/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
 QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
 PASS: x86_64, 30 arms, exact byte tallies and worker reaped
 PASS: x86_64, 12 console/tty arms
-PASS: blocking I/O oracle x86_64 boots=1; serials=/root/breenix-i813c2-tmp/breenix_813_x86_64.D9KuaF/boot_*/serial.txt
+PASS: blocking I/O oracle x86_64 boots=1; serials=<isolated-checkout-126>/breenix_813_x86_64.D9KuaF/boot_*/serial.txt
 GATE_EXIT=0

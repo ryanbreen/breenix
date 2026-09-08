@@ -83,7 +83,7 @@ Add `ms_dump` equivalent for device contexts at M7, M8, M9:
 
 ### Priority 2: Extract Matching Data from Linux Module
 
-Run the Linux module on linux-probe and capture the full dmesg output with all context dumps. This becomes the **reference dataset**.
+Run the Linux module on <probe-environment> and capture the full dmesg output with the context dumps. This becomes the **reference dataset**.
 
 ### Priority 3: Byte-for-Byte Comparison
 

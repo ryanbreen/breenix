@@ -12,7 +12,7 @@ as required).
 ## x86 -- `docker/qemu/run-x86-boot-tests.sh`
 
 * `x86-boottests-branch-5983fc6f-20260902.txt` -- branch head, 3 sequential boots on
-  beast `breenix-x86` (TCG). **3 of 3 PASS**, `TOMBSTONE_QUIESCE:...removed=6` on all
+  beast `<x86-build-environment>` (TCG). **3 of 3 PASS**, `TOMBSTONE_QUIESCE:...removed=6` on all
   three (matches the census pin: `TOMBSTONE_FIXTURE_REMOVALS=2` +
   `PRODUCTION_REAPED_ROWS=4` = 6). No `POLL_TCP_ORACLE` marker of any kind appears --
   the oracle is not on the x86 `RING3_SMOKE` roster at this head (B1's fix), so this
@@ -20,7 +20,7 @@ as required).
   green on the branch.
 * `x86-boottests-main-509802e5-attempt{1,2,3,4}-*.txt` -- `origin/main` @
   `509802e5ef41e9d10003f6b7a4c3eafcda60b355` (fetched fresh from
-  `https://github.com/ryanbreen/breenix.git`, NOT the shared `/root/breenix` clone,
+  `https://github.com/ryanbreen/breenix.git`, NOT the shared `<canonical-checkout>` clone,
   whose checked-out commit at the time was a stale mid-branch state -- see the
   "worktree caveat" note below), same script, same host, four sequential attempts
   (the script always aborts the whole invocation on its first `set -e` failure, so
@@ -122,9 +122,9 @@ confirmed clean (`git status --short` / `git diff --stat` empty) before moving o
 ## Worktree/clone caveat
 
 Two beast scratch clones were used, per the round's isolation requirement:
-`/root/breenix-693-r2-prove` (branch, explicitly checked out to `5983fc6f...`) and
-`/root/breenix-693-r2-prove-main` (main). The main clone's FIRST setup cloned from
-the shared `/root/breenix` without an explicit checkout, which silently picked up
+`<isolated-checkout-183>` (branch, explicitly checked out to `5983fc6f...`) and
+`<isolated-checkout-184>` (main). The main clone's FIRST setup cloned from
+the shared `<canonical-checkout>` without an explicit checkout, which silently picked up
 whatever commit that shared repo happened to have checked out at that moment
 (`85596f62`, an intermediate `#693` branch commit belonging to a different lane,
 not `origin/main`) -- caught before any boots were reported, by checking

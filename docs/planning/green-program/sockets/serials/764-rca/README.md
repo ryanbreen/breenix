@@ -25,9 +25,9 @@ waiting to run.
 ## The battery
 
 76 boots, `docker/qemu/run-x86-gate.sh 4 full` (features
-`testing,external_test_bins`), beast `breenix-x86` (KVM, `-cpu host`), branch
+`testing,external_test_bins`), beast `<x86-build-environment>` (KVM, `-cpu host`), branch
 `fix/764-data-wake-latency` at `cd9bff44`, in a scratch clone at
-`/root/rca764/breenix` cloned from `https://github.com/ryanbreen/breenix.git`.
+`<host-artifact-dir-190>/breenix` cloned from `https://github.com/ryanbreen/breenix.git`.
 19 script invocations of 4 boots each; the four smoke boots that validated the
 instrumentation are counted in the 76 and use the same binary. Per-batch VM
 load is in `host-load.txt` (`uptime` before and after each batch; the VM's

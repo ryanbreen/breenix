@@ -1,4 +1,4 @@
-[qemu-uefi] Using UEFI image: /root/breenix-r113/target/release/build/breenix-9dd3fc5bffa20bc0/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-177>/target/release/build/breenix-9dd3fc5bffa20bc0/out/breenix-uefi.img (7405568 bytes)
 [qemu-uefi] Storage: virtio-blk (legacy mode)
 [qemu-uefi] Building test disk image...
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.45s
@@ -161,8 +161,8 @@ Test disk created: target/test_binaries.img
   Data size: 30683128 bytes (29.26 MB)
   Disk size: 60129 sectors (29.36 MB)
 [qemu-uefi] Test disk build complete
-[qemu-uefi] Test disk: /root/breenix-r113/target/test_binaries.img (30786048 bytes) [virtio-blk device index 1]
-[qemu-uefi] Ext2 disk: /root/breenix-r113/testdata/ext2.img -> /root/breenix-r113/target/ext2.img (268435456 bytes) [virtio-blk device index 2]
+[qemu-uefi] Test disk: <isolated-checkout-177>/target/test_binaries.img (30786048 bytes) [virtio-blk device index 1]
+[qemu-uefi] Ext2 disk: <isolated-checkout-177>/testdata/ext2.img -> <isolated-checkout-177>/target/ext2.img (268435456 bytes) [virtio-blk device index 2]
 [qemu-uefi] Graphics: virtio-vga 1920x1080 (headless)
 [qemu-uefi] Network: disabled
 [qemu-uefi] Extra args: ["-serial", "file:_r113r2out/L0/boot_02/serial_user.log", "-serial", "file:_r113r2out/L0/boot_02/serial_kernel.log", "-s"]

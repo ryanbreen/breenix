@@ -47,4 +47,4 @@ below; 3 rows use brace notation for the boots they cover.
 | `15-landing-strict-boot2-serial.txt` | that boot's serial, 15 census lines, all `untagged=0` |
 | `16-landing-prod-boot1.txt` | landing re-smoke, production gate at the merge commit: PASS, 15 census lines |
 | `16-landing-prod-boot1-serial.txt` | that boot's serial, ending `untagged=0:tagged=24864:kernel=28094:cleared=52147` |
-| `17-landing-x86-build-beast.txt` | landing re-smoke, x86 build check on beast (`breenix-x86` container) at the merge commit: `cargo build --release --features testing,external_test_bins --bin qemu-uefi`, exit 0, 0 `^(warning\|error)` lines |
+| `17-landing-x86-build-beast.txt` | landing re-smoke, x86 build check on beast (the x86 build environment) at the merge commit: `cargo build --release --features testing,external_test_bins --bin qemu-uefi`, exit 0, 0 `^(warning\|error)` lines |

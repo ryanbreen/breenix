@@ -1,6 +1,6 @@
 revision=10cd3cfeccd1ba18a3f71f0cadcad1b3bffe1ebd
 [GATE_PREFLIGHT:structure_suites=63/64:critical_path_lines=260:pinned=120]
-GATE_PREFLIGHT: FAIL (1 of 64 structure suite(s) red: context_restore_structure -- per-suite logs under /root/breenix-3f2-tmp/breenix_gate_structure_preflight.aMzLBh)
+GATE_PREFLIGHT: FAIL (1 of 64 structure suite(s) red: context_restore_structure -- per-suite logs under <isolated-checkout-29>/breenix_gate_structure_preflight.aMzLBh)
 x86 frame-custody gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)
 x86 frame-custody gate: FAIL (set -e abort at docker/qemu/run-x86-boot-tests.sh:157, exit 1)
   failing command: false

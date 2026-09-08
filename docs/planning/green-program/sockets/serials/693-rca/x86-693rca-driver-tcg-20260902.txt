@@ -1,7 +1,7 @@
 #!/bin/bash
 # #693 repeat driver, hermetic. Boots a PRIVATE copy of the branch's images with
 # the byte-identical QEMU argv the qemu-uefi runner emits under
-# BREENIX_NET_MODE=none, so a concurrent rebuild of /root/breenix cannot swap
+# BREENIX_NET_MODE=none, so a concurrent rebuild of <canonical-checkout> cannot swap
 # the kernel under a running boot (that is what boot15 of the first battery hit:
 # it loaded tcp_cloexec_exec_test, a program this branch does not contain).
 set -u

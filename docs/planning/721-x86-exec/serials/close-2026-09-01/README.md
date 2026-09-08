@@ -60,7 +60,7 @@ fix2-prove.md both carried as "pre-existing, unrelated" at 79/81.
 
 ## x86 production-profile gate on beast (post-merge)
 
-`breenix-x86` Incus container, synced to `9e5f47f5`, fresh
+the x86 build environment, synced to `9e5f47f5`, fresh
 `userspace/programs/build.sh --arch x86_64` rebuild (145 binaries), then
 `docker/qemu/run-x86-prod-profile-boot-test.sh`.
 

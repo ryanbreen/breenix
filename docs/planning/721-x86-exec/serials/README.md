@@ -2,7 +2,7 @@
 
 `beast-liveness-probe-serial_{kernel,user}.txt` are the raw serial captures
 from a manual, per-second-sampled boot of this branch's zero-feature x86_64
-production kernel on beast (Incus container `breenix-x86`, `pc,accel=tcg`,
+production kernel on beast (the x86 build environment, `pc,accel=tcg`,
 `-smp 1`), run outside the gate script to measure exactly how long each
 userspace milestone takes to appear after QEMU launch.
 

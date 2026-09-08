@@ -1,3 +1,3 @@
 revision=dfe14edf6e7c90b1973464e31acee1fb6c014989
-source=/root/breenix-i813pd-tmp/breenix_x86_boot_tests_1/serial_user.txt
+source=<isolated-checkout-109>/breenix_x86_boot_tests_1/serial_user.txt
 [TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=45:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=544:window_ms=668:measured=1:PASS]

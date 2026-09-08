@@ -1,11 +1,11 @@
-=== x86 boot-tests gate + checkers + prod + smp, branch final bytes ff74f0d6, beast breenix-x86 (TCG), 2026-09-06 ===
+=== x86 boot-tests gate + checkers + prod + smp, branch final bytes ff74f0d6, beast <x86-build-environment> (TCG), 2026-09-06 ===
 --- commit / tree ---
 ff74f0d65 test(766): withdraw the re-arming leg and keep the one both gates are green on
 4308:                        self.per_cpu_queues[target].push_front(tid);
 --- sha256 of the three files that decide these results ---
-2154e86dfd894deb8c9d854e484b144df9f615ddd5b5a4f29769fff0c69646f9  /root/breenix-p766/kernel/src/task/scheduler.rs
-04920c2d6788e1b8d8647936cd77effd31b53025a3cee7f4960b9eb3556f002f  /root/breenix-p766/kernel/src/task/timer_wake_oracle.rs
-eab37b482ba1a75653fa0f6126243e9513afe30e605927ef604a69bbb1c6f6da  /root/breenix-p766/docker/qemu/run-x86-boot-tests.sh
+2154e86dfd894deb8c9d854e484b144df9f615ddd5b5a4f29769fff0c69646f9  <isolated-checkout-210>/kernel/src/task/scheduler.rs
+04920c2d6788e1b8d8647936cd77effd31b53025a3cee7f4960b9eb3556f002f  <isolated-checkout-210>/kernel/src/task/timer_wake_oracle.rs
+eab37b482ba1a75653fa0f6126243e9513afe30e605927ef604a69bbb1c6f6da  <isolated-checkout-210>/docker/qemu/run-x86-boot-tests.sh
 --- build ---
 WARNCOUNT=0
 --- boot-tests gate verdict ---

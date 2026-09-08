@@ -1,4 +1,4 @@
-# R157 bytes (R17). Clone /root/breenix-737-oracle @ 3ff50763, container breenix-x86 on beast.
+# R157 bytes (R17). Clone <isolated-checkout-153> @ 3ff50763, container <x86-build-environment> on beast.
 # sha256  size  path
 db3ae5d3dda45a4fab470c9aa34a6abaabaada05d9af0baaa83d0354fc62d6d4  5467600  target/x86_64-unknown-none/release/deps/artifact/kernel-493a8075635ade12/bin/kernel-493a8075635ade12
 156d59f19b971ae9e325705afd5ed01f48ebd9d1181f337744d3bf61d26c035e  7405568  target/release/build/breenix-1ddb662735daef9c/out/breenix-uefi.img

@@ -64,10 +64,10 @@ Two premises died on contact with it.
 
 ## Evidence
 
-Every serial is preserved on beast under `/root/r636/<ARM>/serials/<ID>/` with a
+Serial captures were recorded privately on beast under `<host-artifact-dir-235>/<ARM>/serials/<ID>/` with a
 per-boot `provenance.txt` (arm, batch, slot, tree, HEAD, kernel-log size, date),
 plus `census.txt` (the loopback census + LOOPBACK_WAKE_TEST lines + tally) and a
-600 KB kernel-log tail. Driver: `/root/run636.sh`, builder `/root/build636.sh`
+600 KB kernel-log tail. Driver: `<host-driver-script>`, builder `<host-builder-script>`
 (full rebuild: userspace ELFs, kernel, UEFI image, test_binaries.img, ext2.img).
 
 ### Before (main @ 7fd74a91, instrumented, 20 boots, 5-way)

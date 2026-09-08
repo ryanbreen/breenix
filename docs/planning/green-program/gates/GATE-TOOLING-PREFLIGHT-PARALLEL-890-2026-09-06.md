@@ -135,7 +135,7 @@ maximum of two active bodies. Temporary fixture roots (including spaces and a
 quote) and their private `TMPDIR` artifacts are removed by `Drop`.
 
 `/bin/bash --version` reports 3.2.57(1)-release (arm64-apple-darwin25).
-`nproc` reports 18 on this host, so the unset preflight selects 8 workers.
+The detected worker capacity exceeded the configured cap, so the unset preflight selected 8 workers.
 The test does not depend on the caller setting a job count.
 
 ## Standalone preflight measurements
@@ -162,8 +162,8 @@ Final pair, from `/tmp/890-proof/sequential-final.log`,
 | --- | --- | ---: | ---: | --- |
 | Mac arm64, system Bash 3.2.57 | 1 | 99.00 | 0 | 53/53 |
 | Mac arm64, system Bash 3.2.57 | unset (8 workers) | 58.33 | 0 | 53/53 |
-| beast (Incus container `breenix-x86`, GNU Bash 5.2.21) | 1 | 337.488 | 0 | 53/53 |
-| beast (Incus container `breenix-x86`, GNU Bash 5.2.21) | unset (8 workers) | 197.000 | 0 | 53/53 |
+| beast (the x86 build environment, GNU Bash 5.2.21) | 1 | 337.488 | 0 | 53/53 |
+| beast (the x86 build environment, GNU Bash 5.2.21) | unset (8 workers) | 197.000 | 0 | 53/53 |
 
 The final Mac pair saved 40.67s (41.1% of the sequential wall time), computed
 from the two `real` lines above. These are single runs, not an expected speedup
@@ -188,19 +188,17 @@ passed as part of each full run.
 
 Codex was scoped to the Mac worktree and had no SSH access, so the beast pair
 above was run separately by the driving agent, from a fresh clone at
-`/root/breenix-890p` inside beast's `breenix-x86` Incus container
-(`ssh beast` then `sudo -n incus exec breenix-x86 -- bash -lc '<cmd>'`), on the
+`<isolated-checkout-87>` inside beast's x86 build environment
+(`ssh beast` then `sudo -n incus exec <x86-build-environment> -- bash -lc '<cmd>'`), on the
 same commit this branch pushed, `cb1fd3a02ee7d2441fe91b6e7e15553c56771d42`
 (`git log -1 --format=%H` inside the clone). `rust-fork` was symlinked to
-`/root/breenix/rust-fork-real` per this round's own dispatching instructions;
+`<rust-fork-checkout>` per this round's own dispatching instructions;
 the structure suites do not need it (`scripts/run-structure-tests.sh` is
 `rustc --test`, no crate deps), so it plays no role in the numbers below.
 `/bin/bash --version` on this container reports GNU Bash 5.2.21(1)-release
 (x86_64-pc-linux-gnu) -- unlike the Mac's system Bash 3.2.57, so this pair does
 not exercise the bash-3.2 compatibility concern; it exists to compare wall time
-on the host that actually gates x86 merges. `nproc` reports 8, so the unset
-knob selects 8 workers here too (the same cap as the Mac, coincidentally equal
-to this host's full core count).
+on the host that actually gates x86 merges. The unset preflight selected the configured cap of 8 workers.
 
 `/usr/bin/time` is not installed in this container, so timing used the bash
 `time` keyword with `TIMEFORMAT=%R` (wall-clock seconds only; no user/sys
@@ -246,7 +244,7 @@ confirmed with `gh issue view 559`; changing the toolchain is outside this
 round's scope, and no warning was suppressed. Modified host structure-suite
 compiles themselves emitted no warnings.
 
-The existing `/Users/wrb/fun/code/breenix/target/ext2-aarch64.img` and
+The existing `<local-checkout>` and
 `userspace/programs/aarch64/simple_exit.elf` from that worktree were copied into
 this worktree at the same relative paths as prerequisites. Userspace/rootfs
 were not independently rebuilt for this round.
@@ -298,7 +296,7 @@ QEMU processes.
 
 ## Not claimed and remaining work
 
-- Beast CPU-time breakdown: not available (`/usr/bin/time` is not installed in the `breenix-x86` container), so only wall-clock (`time`'s `%R`) is reported for the beast rows, unlike the Mac's user/sys split.
+- Beast CPU-time breakdown: not available (`/usr/bin/time` is not installed in the x86 build environment), so only wall-clock (`time`'s `%R`) is reported for the beast rows, unlike the Mac's user/sys split.
 - Repeated or statistically sampled beast measurements: one sequential run and one parallel run, back to back, not concurrent, not repeated.
 - A measured wall-time improvement from source caching: 0 of 3 post-cache runs were faster than their baselines.
 - Parser/masking/census CPU optimization: unchanged; follow-up stays in #890.
@@ -316,7 +314,7 @@ The required x86 build command, with the documented fork-library path override
 for this fresh worktree, exited 0:
 
 ```sh
-BREENIX_RUST_FORK_LIBRARY=/Users/wrb/fun/code/breenix/rust-fork/library cargo build --release --features testing,external_test_bins --bin qemu-uefi
+BREENIX_RUST_FORK_LIBRARY=<local-checkout> cargo build --release --features testing,external_test_bins --bin qemu-uefi
 ```
 
 `/tmp/890-proof/x86-build.log` contains no `warning:` or `error:` diagnostics.

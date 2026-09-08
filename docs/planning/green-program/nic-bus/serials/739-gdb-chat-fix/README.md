@@ -78,7 +78,7 @@ interface, fixed in the same commit since it directly blocked using
 - `unit-test-resync-symbols-output.txt` -- that script's output
   (`ALL ASSERTIONS PASSED`).
 - `live-two-boot-test-beast-20260901.txt` -- a live end-to-end run on beast
-  (`breenix-x86` container, `main`@`8b02ea29`'s already-built release
+  (the x86 build environment, `main`@`8b02ea29`'s already-built release
   binary), driven entirely through the documented `gdb_session.sh`
   interface: two independent boots, each `start` (halted at reset, base
   UNVERIFIED) -> `continue` (interrupted via SIGINT once serial shows the

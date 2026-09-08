@@ -11,7 +11,7 @@ boot and can be read from the same capture.
 
 | item | value |
 |---|---|
-| repository | `/root/breenix-775` on the beast `breenix-x86` VM |
+| repository | `<isolated-checkout-53>` on the x86 build environment on beast |
 | commit booted | `5b419714` — `29344251` plus the patch committed at `../case-a/historical-wedge/heartbeat-overlay.patch` |
 | harness | `docker/qemu/run-x86-gate.sh 4 full`, then `1 full`, then `1 full` (the gate caps one invocation at four sequential boots) |
 | old census | `git show bfbb7575:scripts/x86-strand-census.sh`, run on `serial_user.txt serial_kernel.txt` |

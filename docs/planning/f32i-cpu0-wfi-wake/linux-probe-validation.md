@@ -2,7 +2,7 @@
 
 Date: 2026-04-19
 
-Probe VM: `linux-probe` at `10.211.55.3`, started with `prlctl start linux-probe`.
+Probe VM: `<probe-environment>` at `<probe-address>`, started with `prlctl start <probe-environment>`.
 
 Kernel:
 
@@ -12,10 +12,10 @@ Linux probe 6.8.0-107-generic #107-Ubuntu SMP PREEMPT_DYNAMIC Fri Mar 13 19:42:3
 
 Artifacts:
 
-- Raw trace: `.factory-runs/f32i-cpu0-wfi-wake-20260419/linux-probe-validation/f32i_probe/trace.txt`
-- Target PIDs: `.factory-runs/f32i-cpu0-wfi-wake-20260419/linux-probe-validation/f32i_probe/targets.txt`
-- Latency CSV: `.factory-runs/f32i-cpu0-wfi-wake-20260419/linux-probe-validation/latency.csv`
-- Interrupt snapshots: `.factory-runs/f32i-cpu0-wfi-wake-20260419/linux-probe-validation/f32i_probe/interrupts.before` and `.factory-runs/f32i-cpu0-wfi-wake-20260419/linux-probe-validation/f32i_probe/interrupts.after`
+- Raw trace: `.factory-runs/f32i-cpu0-wfi-wake-20260419/<probe-environment>-validation/f32i_probe/trace.txt`
+- Target PIDs: `.factory-runs/f32i-cpu0-wfi-wake-20260419/<probe-environment>-validation/f32i_probe/targets.txt`
+- Latency CSV: `.factory-runs/f32i-cpu0-wfi-wake-20260419/<probe-environment>-validation/latency.csv`
+- Interrupt snapshots: `.factory-runs/f32i-cpu0-wfi-wake-20260419/<probe-environment>-validation/f32i_probe/interrupts.before` and `.factory-runs/f32i-cpu0-wfi-wake-20260419/<probe-environment>-validation/f32i_probe/interrupts.after`
 
 ## Test
 

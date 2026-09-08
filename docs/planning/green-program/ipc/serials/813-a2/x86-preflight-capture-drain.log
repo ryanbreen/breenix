@@ -13,7 +13,7 @@ failures:
 
 ---- drain_disabled_reads_partial_drain_enabled_reads_complete_same_race stdout ----
 
-thread 'drain_disabled_reads_partial_drain_enabled_reads_complete_same_race' panicked at /root/breenix-813c/tests/gate_capture_drain_structure.rs:410:5:
+thread 'drain_disabled_reads_partial_drain_enabled_reads_complete_same_race' panicked at <isolated-checkout-113>/tests/gate_capture_drain_structure.rs:410:5:
 leg A (BREENIX_GATE_DRAIN_DISABLE=1) must read capture=partial -- it read:
 [CAPTURE_DRAIN:capture=complete:seq=3:edge=FAULT:cpu=0:records=3:drain_ms=0]
 [CAPTURE_DRAIN_EVENTS:last_events=CTX_SWITCH(7),CTX_SWITCH(8)]

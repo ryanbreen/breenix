@@ -67,8 +67,8 @@
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-fcntlarm/target/ext2.img
-  /root/breenix-fcntlarm/testdata/ext2.img
+  <isolated-checkout-207>/target/ext2.img
+  <isolated-checkout-207>/testdata/ext2.img
   Size: 256M
 
 Contents:

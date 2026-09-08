@@ -1,8 +1,8 @@
 # provenance
-# host: beast, Incus container `breenix-x86` (x86_64, TCG)
-# clone: /root/breenix-p767   BREENIX_GATE_TMP=/root/breenix-p767-tmp
+# host: beast, the x86 build environment (x86_64, TCG)
+# clone: <isolated-checkout-212>   BREENIX_GATE_TMP=<isolated-checkout-214>
 # commit: ca8097d6ea783c4e0f7b8a541a9230d740bb3747 (branch fix/767-timekeeping-x86)
-# captured: 2026-09-05 (UTC), driver /root/beast-p767-final2.sh, log /root/p767r2-phase.log
+# captured: 2026-09-05 (UTC), driver <host-wrapper-dir>/beast-p767-final2.sh, log <host-artifact-dir-218>
 # profile: zero-feature (the shipped kernel)
 # command: ./docker/qemu/run-x86-prod-profile-boot-test.sh   (gate log /root/p767r2-prod.log)
 # UEFI image sha256: 90a8bcc16cac6eb4ee7692cecf31beb0bddebdcf23e56b02b28bb35faaa72b32

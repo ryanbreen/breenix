@@ -1,5 +1,5 @@
-   Compiling kernel v0.1.0 (/root/breenix-737-oracle/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-737-oracle)
+   Compiling kernel v0.1.0 (<isolated-checkout-153>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-162>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 7.23s
      Running tests/entry_point_df_structure.rs (target/debug/deps/entry_point_df_structure-95835f5ce9aacc2e)
 

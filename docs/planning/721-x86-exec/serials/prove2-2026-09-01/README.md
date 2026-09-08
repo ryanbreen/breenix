@@ -5,7 +5,7 @@ round's own commit repairing a stale gate literal -- see below).
 
 ## B2 runtime coverage -- the x86 CLONE_VM sibling refusal, observed live
 
-`docker/qemu/run-x86-boot-tests.sh` run 1 of 5 (beast, `breenix-x86` Incus
+`docker/qemu/run-x86-boot-tests.sh` run 1 of 5 (beast, `<x86-build-environment>` remote-environment
 VM), serial confirms the refusal fires on **both** x86 exec bodies:
 
 ```

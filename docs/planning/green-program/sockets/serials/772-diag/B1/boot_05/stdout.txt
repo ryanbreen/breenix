@@ -1,4 +1,4 @@
-[qemu-uefi] Using UEFI image: /root/breenix-772diag/target/release/build/breenix-9dd3fc5bffa20bc0/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-175>/target/release/build/breenix-9dd3fc5bffa20bc0/out/breenix-uefi.img (7405568 bytes)
 [qemu-uefi] Storage: virtio-blk (legacy mode)
 [qemu-uefi] Building test disk image...
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
@@ -161,11 +161,11 @@ Test disk created: target/test_binaries.img
   Data size: 30712816 bytes (29.29 MB)
   Disk size: 60185 sectors (29.39 MB)
 [qemu-uefi] Test disk build complete
-[qemu-uefi] Test disk: /root/breenix-772diag/target/test_binaries.img (30814720 bytes) [virtio-blk device index 1]
-[qemu-uefi] Ext2 disk: /root/breenix-772diag/testdata/ext2.img -> /root/breenix-772diag/target/ext2.img (268435456 bytes) [virtio-blk device index 2]
+[qemu-uefi] Test disk: <isolated-checkout-175>/target/test_binaries.img (30814720 bytes) [virtio-blk device index 1]
+[qemu-uefi] Ext2 disk: <isolated-checkout-175>/testdata/ext2.img -> <isolated-checkout-175>/target/ext2.img (268435456 bytes) [virtio-blk device index 2]
 [qemu-uefi] Graphics: virtio-vga 1920x1080 (headless)
 [qemu-uefi] Network: disabled
-[qemu-uefi] Extra args: ["-serial", "file:/root/breenix-772diag/diag-out/B1/boot_05/serial_user.log", "-serial", "file:/root/breenix-772diag/diag-out/B1/boot_05/serial_kernel.log", "-s"]
+[qemu-uefi] Extra args: ["-serial", "file:<isolated-checkout-175>/diag-out/B1/boot_05/serial_user.log", "-serial", "file:<isolated-checkout-175>/diag-out/B1/boot_05/serial_kernel.log", "-s"]
 [qemu-uefi] Launching QEMU...
 WARNING: Image format was not specified for 'target/ovmf/x64/code.fd' and probing guessed raw.
          Automatically detecting the format is dangerous for raw images, write operations on block 0 will be restricted.

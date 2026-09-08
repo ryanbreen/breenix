@@ -66,7 +66,7 @@
    Compiling futures-core v0.3.34
    Compiling log v0.4.34
    Compiling crc-catalog v2.5.0
-   Compiling kernel v0.1.0 (/root/breenix-i813pc/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-121>/kernel)
    Compiling httparse v1.10.1
    Compiling linux-raw-sys v0.12.1
    Compiling micromath v2.1.0
@@ -114,7 +114,7 @@
    Compiling percent-encoding v2.3.2
    Compiling sha2 v0.11.0
    Compiling lzma-rs v0.3.0
-   Compiling breenix v0.1.0 (/root/breenix-i813pc)
+   Compiling breenix v0.1.0 (<isolated-checkout-122>)
    Compiling tar v0.4.46
    Compiling base16ct v1.0.0
    Compiling rustls-webpki v0.103.15
