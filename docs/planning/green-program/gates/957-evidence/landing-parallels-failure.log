@@ -1,0 +1,101 @@
+Revision: ccd61b512efc97b587f01bb1efe74e89a2127c6f
+== compiling parallels_capture_structure ==
+== running parallels_capture_structure  ==
+
+running 15 tests
+test capture_display_writes_output_exactly_once_and_only_on_a_verified_frame ... ok
+test capture_display_output_write_check_is_not_vacuous ... ok
+test run_sh_has_no_silent_capture_fallback_and_calls_capture_display ... ok
+test run_sh_silent_fallback_check_is_not_vacuous ... ok
+test round_two::run_sh_test_mode_exit_reflects_capture_outcome ... ok
+test round_two::run_sh_capture_exit_check_is_not_vacuous ... ok
+test f24_render_verdict_rejects_missing_capture ... ok
+test round_two::find_vm_backend_pid_matches_exact_vm_name_not_a_prefix ... FAILED
+test round_two::capture_window_requires_pid_match_not_any_parallels_window ... FAILED
+test f24_render_verdict_rejects_solid_black_capture ... FAILED
+test f24_render_verdict_still_passes_a_real_capture ... FAILED
+test round_two::capture_window_does_not_report_success_when_screencapture_fails ... FAILED
+test round_two::capture_display_clears_stale_output_before_a_failing_run ... FAILED
+test round_two::capture_display_reports_success_when_baseline_write_fails_after_a_real_copy ... FAILED
+test round_two::f24_render_verdict_rejects_corrupt_png ... FAILED
+
+failures:
+
+---- round_two::find_vm_backend_pid_matches_exact_vm_name_not_a_prefix stdout ----
+
+thread 'round_two::find_vm_backend_pid_matches_exact_vm_name_not_a_prefix' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957/wt/tests/parallels_capture_structure.rs:409:13:
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'PIL'
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- round_two::capture_window_requires_pid_match_not_any_parallels_window stdout ----
+
+thread 'round_two::capture_window_requires_pid_match_not_any_parallels_window' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957/wt/tests/parallels_capture_structure.rs:409:13:
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'PIL'
+
+
+---- f24_render_verdict_rejects_solid_black_capture stdout ----
+
+thread 'f24_render_verdict_rejects_solid_black_capture' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957/wt/tests/parallels_capture_structure.rs:283:5:
+failed to synthesize the black PNG fixture (python3+PIL is already a hard dependency of the capture pipeline this test exercises): Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'PIL'
+
+
+---- f24_render_verdict_still_passes_a_real_capture stdout ----
+
+thread 'f24_render_verdict_still_passes_a_real_capture' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957/wt/tests/parallels_capture_structure.rs:345:5:
+failed to synthesize the rendered fixture: Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'PIL'
+
+
+---- round_two::capture_window_does_not_report_success_when_screencapture_fails stdout ----
+
+thread 'round_two::capture_window_does_not_report_success_when_screencapture_fails' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957/wt/tests/parallels_capture_structure.rs:409:13:
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'PIL'
+
+
+---- round_two::capture_display_clears_stale_output_before_a_failing_run stdout ----
+
+thread 'round_two::capture_display_clears_stale_output_before_a_failing_run' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957/wt/tests/parallels_capture_structure.rs:409:13:
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'PIL'
+
+
+---- round_two::capture_display_reports_success_when_baseline_write_fails_after_a_real_copy stdout ----
+
+thread 'round_two::capture_display_reports_success_when_baseline_write_fails_after_a_real_copy' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957/wt/tests/parallels_capture_structure.rs:409:13:
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'PIL'
+
+
+---- round_two::f24_render_verdict_rejects_corrupt_png stdout ----
+
+thread 'round_two::f24_render_verdict_rejects_corrupt_png' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957/wt/tests/parallels_capture_structure.rs:409:13:
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'PIL'
+
+
+
+failures:
+    f24_render_verdict_rejects_solid_black_capture
+    f24_render_verdict_still_passes_a_real_capture
+    round_two::capture_display_clears_stale_output_before_a_failing_run
+    round_two::capture_display_reports_success_when_baseline_write_fails_after_a_real_copy
+    round_two::capture_window_does_not_report_success_when_screencapture_fails
+    round_two::capture_window_requires_pid_match_not_any_parallels_window
+    round_two::f24_render_verdict_rejects_corrupt_png
+    round_two::find_vm_backend_pid_matches_exact_vm_name_not_a_prefix
+
+test result: FAILED. 7 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
