@@ -483,6 +483,7 @@ pub(crate) fn loopback_queue_is_empty() -> bool {
     LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire) == 0
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn record_loopback_pump_rearm_from_sched() {
     LOOPBACK_PUMP_REARM_FROM_SCHED.fetch_add(1, Ordering::Relaxed);
 }

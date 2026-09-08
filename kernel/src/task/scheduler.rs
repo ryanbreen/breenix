@@ -50,6 +50,7 @@
 use super::thread::ThreadPrivilege;
 use super::thread::{CpuContext, VirtAddr};
 use super::thread::{Thread, ThreadState};
+#[cfg(target_arch = "x86_64")]
 use crate::log_serial_println;
 use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
 use core::cmp::Reverse;

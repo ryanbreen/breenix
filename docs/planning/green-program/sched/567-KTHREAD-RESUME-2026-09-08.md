@@ -417,3 +417,17 @@ production scorer has no incoming requirement change.
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/567-merge-message.txt -> exit 0
+
+At merge commit 1be090fe, the standalone structure suite passed 72/72.
+The aarch64 boot_tests build completed but reported two project diagnostics:
+the x86 logging import in scheduler.rs was unused, and the scheduler-only
+loopback counter writer in net/mod.rs had no aarch64 caller after selection
+became x86-only. Matching cfg guards remove those unused aarch64 items.
+The rebuild passed with 0 project diagnostics; the pinned core
+future-incompatibility notice remains unsuppressed. These guards do not
+change x86 instructions or aarch64 ELR_EL1/SP_EL1 context restoration.
+Kernel rustfmt and diff-whitespace checks passed.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/567-cfg-message.txt -> exit 0
