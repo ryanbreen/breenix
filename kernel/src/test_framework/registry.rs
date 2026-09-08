@@ -3458,22 +3458,63 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
     result
 }
 
-/// Runs the sole loopback gate that x86 can execute safely in this boot window.
-///
-/// Four `Arch::Any` registry tests remain excluded from the direct x86 path until
-/// #567 fixes corrupted kthread/boot-thread resume contexts:
-/// - `loopback_recv_wake_when_idle` passes, then the boot page-faults on an
-///   `INSTRUCTION_FETCH` at RIP `0x0`.
-/// - `loopback_recv_wake_under_load` page-faults on a write to `0x100002590aa`.
-/// - `loopback_pump_does_not_busy_spin` page-faults while fetching an instruction
-///   from a data address.
-/// - `tcp_final_ack_survives_accept_publish_race` resumes at poison-filled RIP
-///   `0x4444446053e6`.
-///
-/// Any test that schedules in this window currently poisons the x86 boot, so this
-/// path runs only `loopback_wake_loss_counters_are_zero`, which does no scheduling.
+/// Runs the loopback tests in the pre-userspace x86 window for 567.
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn run_x86_loopback_gates() {
+    crate::serial_println!("[TEST:network:loopback_recv_wake_when_idle:START]");
+    let result = loopback_recv_wake_when_idle();
+    match result {
+        TestResult::Pass => {
+            crate::serial_println!("[TEST:network:loopback_recv_wake_when_idle:PASS]")
+        }
+        _ => crate::serial_println!(
+            "[TEST:network:loopback_recv_wake_when_idle:FAIL:{}]",
+            result.failure_message().unwrap_or("test failed")
+        ),
+    }
+    assert!(result.is_pass(), "x86 loopback_recv_wake_when_idle failed");
+    crate::serial_println!("[TEST:network:loopback_recv_wake_under_load:START]");
+    let result = loopback_recv_wake_under_load();
+    match result {
+        TestResult::Pass => {
+            crate::serial_println!("[TEST:network:loopback_recv_wake_under_load:PASS]")
+        }
+        _ => crate::serial_println!(
+            "[TEST:network:loopback_recv_wake_under_load:FAIL:{}]",
+            result.failure_message().unwrap_or("test failed")
+        ),
+    }
+    assert!(result.is_pass(), "x86 loopback_recv_wake_under_load failed");
+    crate::serial_println!("[TEST:network:loopback_pump_does_not_busy_spin:START]");
+    let result = loopback_pump_does_not_busy_spin();
+    match result {
+        TestResult::Pass => {
+            crate::serial_println!("[TEST:network:loopback_pump_does_not_busy_spin:PASS]")
+        }
+        _ => crate::serial_println!(
+            "[TEST:network:loopback_pump_does_not_busy_spin:FAIL:{}]",
+            result.failure_message().unwrap_or("test failed")
+        ),
+    }
+    assert!(
+        result.is_pass(),
+        "x86 loopback_pump_does_not_busy_spin failed"
+    );
+    crate::serial_println!("[TEST:network:tcp_final_ack_survives_accept_publish_race:START]");
+    let result = tcp_final_ack_survives_accept_publish_race();
+    match result {
+        TestResult::Pass => {
+            crate::serial_println!("[TEST:network:tcp_final_ack_survives_accept_publish_race:PASS]")
+        }
+        _ => crate::serial_println!(
+            "[TEST:network:tcp_final_ack_survives_accept_publish_race:FAIL:{}]",
+            result.failure_message().unwrap_or("test failed")
+        ),
+    }
+    assert!(
+        result.is_pass(),
+        "x86 tcp_final_ack_survives_accept_publish_race failed"
+    );
     crate::serial_println!("[TEST:network:loopback_wake_loss_counters_are_zero:START]");
     let result = loopback_wake_loss_counters_are_zero();
     match result {
@@ -3485,6 +3526,10 @@ pub fn run_x86_loopback_gates() {
             result.failure_message().unwrap_or("test failed")
         ),
     }
+    assert!(
+        result.is_pass(),
+        "x86 loopback_wake_loss_counters_are_zero failed"
+    );
 }
 
 /// Test NetRx softirq registration and dispatch on ARM64.

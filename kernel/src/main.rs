@@ -713,6 +713,8 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         kernel::task::process_task::run_x86_retirement_fence_gate();
         kernel::task::process_task::run_x86_reclaim_progress_gate();
         kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();
+        kernel::test_framework::registry::run_x86_loopback_gates();
+        kernel::task::boot_resume_oracle::run();
         kernel::tracing::providers::teardown::run_x86_exec_cohort_gate();
         kernel::tracing::providers::teardown::run_x86_exec_detach_gate();
         kernel::tracing::providers::teardown::run_x86_clone_admission_gate();
@@ -791,12 +793,6 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     kernel::task::workqueue_tests::test_workqueue();
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
     kernel::task::softirq_tests::test_softirq();
-
-    // Any test that schedules in this x86 boot window can poison its resume context
-    // (#567). After the softirq self-test, run only the non-scheduling loopback
-    // wake-loss counter gate; keep the four scheduling registry tests deferred.
-    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
-    kernel::test_framework::registry::run_x86_loopback_gates();
 
     // In kthread_test_only mode, exit immediately after join test
     #[cfg(feature = "kthread_test_only")]
@@ -881,17 +877,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     ))]
     kernel::task::kthread_tests::test_kthread_stop_after_exit();
 
-    // #766's wake-to-dispatch latency leg. Placed HERE, and not in the IF=1
-    // driver-self-test window above, for two reasons. First, it creates 10
-    // kernel threads and lets them run, which moves the frame, page-table and
-    // kernel-stack counts the gates in that window pin absolutely. Second,
-    // #567 says a scheduling event in this x86 boot window can resume the boot
-    // thread on a corrupted context; the placement that survives it today is
-    // the one after the softirq self-test, which is where the kthread
-    // lifecycle tests immediately above already spawn, dispatch and join
-    // kernel threads. This leg needs preemption to measure anything at all, so
-    // it goes where preemption is already exercised. It restores the interrupt
-    // flag it finds, so the boot sequence below inherits the state it had.
+    // The 766 latency leg creates ten kernel threads after the custody gates
+    // whose counters pin earlier allocations. Keep it beside the lifecycle
+    // tests; it restores the interrupt flag it finds on entry.
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     kernel::task::timer_wake_oracle::run();
 
@@ -1578,8 +1566,7 @@ fn kernel_main_continue() -> ! {
                 }
             }
 
-            // Launch the userspace #545 regression in the normal userspace phase,
-            // where scheduling works and the #567 boot-window restriction does not apply.
+            // Launch the userspace 545 regression in the normal userspace phase.
             {
                 serial_println!("RING3_SMOKE: creating loopback_wake_test userspace process");
                 match process::creation::create_user_process(

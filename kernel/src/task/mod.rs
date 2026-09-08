@@ -7,6 +7,8 @@ use core::{
 };
 
 // Core task/thread modules - shared across architectures
+#[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+pub mod boot_resume_oracle;
 pub mod completion;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatch_strand_census;

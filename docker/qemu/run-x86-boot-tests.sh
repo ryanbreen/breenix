@@ -677,9 +677,6 @@ for i in $(seq 1 "$COUNT"); do
     # at each existing break site rather than re-derived by re-grepping the
     # same patterns afterward -- see the loop's own comment on why.
     POLL_BREAK_REASON=""
-    # Four scheduling tests remain deferred on x86 until #567 is fixed:
-    # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
-    # loopback_pump_does_not_busy_spin, and tcp_final_ack_survives_accept_publish_race.
     # Review finding B1: the boot-window loopback wake-loss counter gate is a
     # bonus, not the proof for #545. It samples before any user process exists,
     # so three of its four counters are structurally zero and it cannot go red
@@ -882,6 +879,7 @@ for i in $(seq 1 "$COUNT"); do
     printf '%s\n' "$FACTS_LINE" > "$OUTPUT_DIR/gate_boot_facts.txt"
     echo "  $FACTS_LINE"
 
+    python3 "$BREENIX_ROOT/scripts/score-boot-resume.py" "$OUTPUT_DIR/serial_user.txt"
     python3 "$BREENIX_ROOT/scripts/score-softirq-deferral.py" "$OUTPUT_DIR/serial_kernel.txt" "$OUTPUT_DIR/serial_user.txt"
 
     # Device-enumeration census leg (green arc 5, bus+NIC blended). Placed
@@ -1090,9 +1088,6 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:init_group_refusal_oracle:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    # Four scheduling tests remain deferred on x86 until #567 is fixed:
-    # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
-    # loopback_pump_does_not_busy_spin, and tcp_final_ack_survives_accept_publish_race.
     test "$(grep -h -c '\[TEST:userspace:loopback_recv_wake:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c 'Refusing to map' \
