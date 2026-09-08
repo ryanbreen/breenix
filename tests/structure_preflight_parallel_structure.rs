@@ -126,7 +126,7 @@ fn mutation_is_green_red_green_with_default_and_one_job() {
         for fail in [false, true, false] {
             fixture.suite("bravo", fail);
             let output = fixture.run(jobs, false);
-            let stdout = String::from_utf8(output.stdout).unwrap();
+            let stdout = verdict(&output.stdout);
             let stderr = String::from_utf8(output.stderr).unwrap();
             assert_eq!(output.status.success(), !fail, "{stdout}\n{stderr}");
             assert_eq!(
@@ -179,7 +179,7 @@ fn two_jobs_overlap_and_never_exceed_the_bound() {
     assert!(
         output.status.success(),
         "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
+        verdict(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     let mut active = 0;
@@ -250,7 +250,7 @@ fn alpha_fixture() {{
     for output in [a.wait_with_output().unwrap(), b.wait_with_output().unwrap()] {
         assert!(output.status.success(), "{output:?}");
         assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
+            verdict(&output.stdout),
             "[GATE_PREFLIGHT:structure_suites=1/1:critical_path_lines=0:pinned=0]\n"
         );
         assert!(output.stderr.is_empty(), "{output:?}");
@@ -287,7 +287,7 @@ fn hung_suite_returns_red_within_budget() {
     assert!(start.elapsed() < std::time::Duration::from_secs(20));
     assert!(!output.status.success(), "{output:?}");
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
+        verdict(&output.stdout),
         "[GATE_PREFLIGHT:structure_suites=0/1:critical_path_lines=0:pinned=0]\n"
     );
 }
@@ -309,5 +309,69 @@ fn oversized_jobs_are_configuration_errors() {
         );
         assert!(!stderr.contains("suite(s) red"), "{stderr}");
         assert!(!stderr.contains("xargs:"), "{stderr}");
+    }
+}
+
+fn verdict(stdout: &[u8]) -> String {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter(|line| !line.starts_with("[GATE_SUITE"))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+#[test]
+fn timeout_retries_only_that_suite_once_with_double_budget() {
+    for (first, second, success, attempts) in
+        [(124, 0, true, 2), (124, 124, false, 2), (1, 0, false, 1)]
+    {
+        let fixture = Fixture::new();
+        fixture.suite("alpha", false);
+        fixture.suite("bravo", false);
+        let bin = fixture.0.join("bin");
+        fs::create_dir(&bin).unwrap();
+        let timeout = bin.join("timeout");
+        fs::write(
+            &timeout,
+            format!(
+                r#"#!/bin/bash
+stem="$4"
+echo "$stem $1" >> "$FIXTURE_ROOT/attempts"
+if [ "$stem" = alpha_structure ]; then
+    if [ ! -e "$FIXTURE_ROOT/retried" ]; then
+        touch "$FIXTURE_ROOT/retried"
+        exit {first}
+    fi
+    exit {second}
+fi
+exit 0
+"#
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&timeout, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = fixture
+            .command(Some("1"), false, &fixture.0.join("gate"))
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .env("BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS", "7")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.success(), success, "{output:?}");
+        let calls = fs::read_to_string(fixture.0.join("attempts")).unwrap();
+        assert_eq!(
+            calls,
+            if attempts == 2 {
+                "alpha_structure 7\nalpha_structure 14\nbravo_structure 7\n"
+            } else {
+                "alpha_structure 7\nbravo_structure 7\n"
+            }
+        );
+        let out = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(out.contains("host_load="), first == 124);
+        assert!(out.contains("wall_s="));
     }
 }

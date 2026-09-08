@@ -1,0 +1,10 @@
+revision=a123f392560e3c404a4011b50a69ce0f3ea516e0; scope=unmodified source
+command=['git', 'diff', '--name-status', '477d8055', 'a123f392560e3c404a4011b50a69ce0f3ea516e0']
+M	docs/planning/green-program/gates/957-DRAIN-RACE-2026-09-07.md
+A	docs/planning/green-program/gates/957-evidence/landing-final-arm-build.log
+A	docs/planning/green-program/gates/957-evidence/landing-final-arm-gate.log
+A	docs/planning/green-program/gates/957-evidence/landing-final-structure.log
+A	docs/planning/green-program/gates/957-evidence/landing-final-x86-gate.log
+A	docs/planning/green-program/gates/957-evidence/landing-final-x86-userspace.log
+
+exit=0; wall_seconds=0.006

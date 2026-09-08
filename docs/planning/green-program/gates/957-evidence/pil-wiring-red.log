@@ -1,0 +1,19 @@
+revision=436313ed58543e121bf7959563597d2734d45893 + ratchets; f23 consumer restored to HEAD
+== compiling parallels_capture_structure ==
+== running parallels_capture_structure pil_consumers_use_shared_resolution ==
+
+running 1 test
+
+thread 'pil_consumers_use_shared_resolution' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957b/wt/tests/parallels_capture_structure.rs:612:9:
+/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957b/wt/scripts/f23-render-verdict.sh missing resolver
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test pil_consumers_use_shared_resolution ... FAILED
+
+failures:
+
+failures:
+    pil_consumers_use_shared_resolution
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+exit=101

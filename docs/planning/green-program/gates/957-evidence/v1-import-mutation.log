@@ -1,0 +1,20 @@
+revision=a1055bab14f031eb0b39ea02ea3ddd79adeb950e + V-1 diagnostic/test working tree; command=['bash', 'scripts/run-structure-tests.sh', 'parallels_capture_structure', 'pil_resolver_rejects_an_unusable_override']
+== compiling parallels_capture_structure ==
+== running parallels_capture_structure pil_resolver_rejects_an_unusable_override ==
+
+running 1 test
+
+thread 'pil_resolver_rejects_an_unusable_override' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957b/wt/tests/parallels_capture_structure.rs:569:5:
+Output { status: ExitStatus(unix_wait_status(256)), stdout: "", stderr: "" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test pil_resolver_rejects_an_unusable_override ... FAILED
+
+failures:
+
+failures:
+    pil_resolver_rejects_an_unusable_override
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s
+
+
+exit=101

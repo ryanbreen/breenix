@@ -1,0 +1,271 @@
+477d8055bfd48e82987f1a2cd48294274843b547
+[GATE_SUITE:stem=aarch64_testing_profile_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=block_request_lifetime_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=blocking_fd_eagain_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=capture_bxcap_schema_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=capture_path_lock_free_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=context_restore_structure:attempt=1:timeout_s=300:wall_s=203:exit=0]
+[GATE_SUITE:stem=coreproof_component_h_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=coreproof_coverage_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=coreproof_mutation_register_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=coreproof_sites_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=critical_path_logging_census_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=ctx_diag_ring_sample_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=degenerate_transfer_fd_validation_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dispatch_fact_census_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dispatch_path_lock_free_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dispatch_strand_census_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dma_and_log_sink_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=entry_point_df_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=exec_lock_order_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=exit_tally_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ext2_disk_size_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ext2_lock_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=fcntl_pm_contention_gate_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=fork_lock_order_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=gate_boot_facts_pipefail_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=gate_boot_facts_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=gate_capture_drain_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=gate_qmp_backstop_structure:attempt=1:timeout_s=300:wall_s=7:exit=0]
+[GATE_SUITE:stem=gate_structure_preflight_wiring_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=green_program_envelope_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=launcher_smoke_xhci_evidence_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=lockup_capture_guard_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=loopback_pump_structure:attempt=1:timeout_s=300:wall_s=11:exit=0]
+[GATE_SUITE:stem=masked_binary_load_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=mmap_floor_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=net_lock_structure:attempt=1:timeout_s=300:wall_s=13:exit=0]
+[GATE_SUITE:stem=parallels_capture_structure:attempt=1:timeout_s=300:wall_s=10:exit=0]
+[GATE_SUITE:stem=parallels_kill_by_name_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=pipe_fifo_blocking_structure:attempt=1:timeout_s=300:wall_s=6:exit=0]
+[GATE_SUITE:stem=poll_tcp_gate_wiring_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=preempt_bracket_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=qemu_host_lock_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=qemu_kill_by_name_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=ring_span_report_site_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ring_span_unfiltered_report_site_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=run_inspector_import_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=serial_line_atomicity_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=signal_eintr_predicate_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=strand_handoff_structure:attempt=1:timeout_s=300:wall_s=6:exit=0]
+[GATE_SUITE:stem=structure_preflight_parallel_structure:attempt=1:timeout_s=300:wall_s=10:exit=0]
+[GATE_SUITE:stem=syscall_return_register_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=teardown_rustfmt_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=teardown_structure:attempt=1:timeout_s=300:wall_s=75:exit=0]
+[GATE_SUITE:stem=terminal_edge_capture_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=timer_wake_dispatch_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=trace_ring_depth_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=tracing_provider_gate_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ttbr0_shadow_reconciliation_structure:attempt=1:timeout_s=300:wall_s=67:exit=0]
+[GATE_SUITE:stem=tty_irq_fg_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=tty_irq_pm_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=tty_oracle_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=udp_ports_lock_irq_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=udp_socket_lock_irq_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=x86_boot_tests_profile_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=x86_smp_enum_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=xhci_wait_irq_order_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_PREFLIGHT:structure_suites=66/66:critical_path_lines=260:pinned=120]
+  RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
+    Updating git repository `https://github.com/rust-osdev/bootloader.git`
+    Updating crates.io index
+     Locking 154 packages to latest compatible versions
+      Adding aarch64-cpu v9.4.0 (available: v11.2.0)
+      Adding acpi v5.2.0 (available: v6.1.1)
+      Adding az v1.2.1 (available: v1.3.0)
+      Adding pic8259 v0.10.4 (available: v0.11.0)
+      Adding spin v0.9.9 (available: v0.12.3)
+      Adding tock-registers v0.8.1 (available: v0.10.1)
+      Adding uart_16550 v0.3.2 (available: v0.8.0)
+      Adding uefi v0.33.0 (available: v0.37.0)
+      Adding x86_64 v0.15.4 (available: v0.15.5)
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling serde v1.0.229
+   Compiling serde_core v1.0.229
+   Compiling rustversion v1.0.23
+   Compiling x86 v0.52.0
+   Compiling bit_field v0.10.3
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling libc v0.2.189
+   Compiling const_fn v0.4.12
+   Compiling shlex v2.0.1
+   Compiling autocfg v1.5.1
+   Compiling scopeguard v1.2.0
+   Compiling cfg-if v1.0.4
+   Compiling bitflags v2.13.1
+   Compiling find-msvc-tools v0.1.12
+   Compiling lock_api v0.4.14
+   Compiling num-traits v0.2.19
+   Compiling cc v1.4.5
+   Compiling volatile v0.4.6
+   Compiling az v1.2.1
+   Compiling bitflags v1.3.2
+   Compiling getrandom v0.4.3
+   Compiling raw-cpuid v10.7.0
+   Compiling syn v3.0.5
+   Compiling crossbeam-utils v0.8.23
+   Compiling rand_core v0.6.4
+   Compiling conquer-util v0.3.0
+   Compiling spinning_top v0.2.5
+   Compiling ring v0.17.14
+   Compiling byteorder v1.5.0
+   Compiling rustix v1.1.4
+   Compiling zeroize v1.9.0
+   Compiling zmij v1.0.23
+   Compiling zero v0.1.3
+   Compiling typenum v1.20.1
+   Compiling xmas-elf v0.8.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling uart_16550 v0.3.2
+   Compiling embedded-graphics-core v0.4.1
+   Compiling float-cmp v0.9.0
+   Compiling getrandom v0.2.17
+   Compiling conquer-once v0.3.2
+   Compiling rand_hc v0.3.2
+   Compiling rand v0.8.8
+   Compiling x86_64 v0.15.4
+   Compiling x86_64 v0.14.13
+   Compiling serde_json v1.0.151
+   Compiling hybrid-array v0.4.14
+   Compiling linux-raw-sys v0.12.1
+   Compiling serde_derive v1.0.229
+   Compiling noto-sans-mono-bitmap v0.2.0
+   Compiling futures-task v0.3.34
+   Compiling log v0.4.34
+   Compiling anyhow v1.0.104
+   Compiling futures-core v0.3.34
+   Compiling pin-project-lite v0.2.17
+   Compiling llvm-tools v0.1.1
+   Compiling slab v0.4.12
+   Compiling httparse v1.10.1
+   Compiling kernel v0.1.0 (/root/breenix-t957b/kernel)
+   Compiling untrusted v0.9.0
+   Compiling micromath v2.1.0
+   Compiling crc-catalog v2.5.0
+   Compiling usize_conversions v0.2.0
+   Compiling pic8259 v0.10.4
+   Compiling crc v3.4.0
+   Compiling embedded-graphics v0.8.2
+   Compiling futures-util v0.3.34
+   Compiling bootloader v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling crossbeam-queue v0.3.14
+   Compiling linked_list_allocator v0.10.6
+   Compiling uuid v1.26.0
+   Compiling conquer-once v0.4.0
+   Compiling spin v0.9.9
+   Compiling fastrand v2.5.0
+   Compiling rustls v0.23.44
+   Compiling bytes v1.12.1
+   Compiling bootloader-boot-config v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling itoa v1.0.18
+   Compiling bootloader-x86_64-common v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling memchr v2.8.3
+   Compiling once_cell v1.21.4
+   Compiling tempfile v3.27.0
+   Compiling fatfs v0.3.6
+   Compiling http v1.5.0
+   Compiling gpt v3.1.0
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling base64 v0.23.1
+   Compiling const-oid v0.10.2
+   Compiling subtle v2.6.1
+   Compiling digest v0.11.3
+   Compiling ureq-proto v0.6.2
+   Compiling xattr v1.6.1
+   Compiling webpki-roots v1.0.9
+   Compiling filetime v0.2.29
+   Compiling percent-encoding v2.3.2
+   Compiling utf8-zero v0.8.1
+   Compiling cpufeatures v0.3.1
+   Compiling sha2 v0.11.0
+   Compiling lzma-rs v0.3.0
+   Compiling tar v0.4.46
+   Compiling base16ct v1.0.0
+   Compiling breenix v0.1.0 (/root/breenix-t957b)
+   Compiling rustls-webpki v0.103.15
+   Compiling ureq v3.4.1
+   Compiling ovmf-prebuilt v0.2.9
+    Finished `release` profile [optimized] target(s) in 40.04s
+Guard: x86 kernel-thread dispatch allocation check (#791)
+  ELF:      /root/breenix-t957b/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  sha256:   ce1825abbf66f2524bcc22dc37b08cfa850b086f5d388f0fda228596b7ab7658
+  objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
+  readelf:  readelf
+  function: setup_kernel_thread_return (its own body and its closures)
+  symbols in scope: 3
+  call targets resolved: 14
+[0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
+   Compiling kernel v0.1.0 (/root/breenix-t957b/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-t957b)
+    Finished `release` profile [optimized] target(s) in 21.48s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-t957b/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling version_check v0.9.5
+   Compiling syn v1.0.109
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling unicode-segmentation v1.13.3
+   Compiling unicode-width v0.1.14
+   Compiling anyhow v1.0.104
+   Compiling bitflags v1.3.2
+   Compiling serde_json v1.0.151
+   Compiling serde v1.0.229
+   Compiling proc-macro-error-attr v1.0.4
+   Compiling proc-macro-error v1.0.4
+   Compiling textwrap v0.11.0
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling lazy_static v1.5.0
+   Compiling heck v0.3.3
+   Compiling clap v2.34.0
+   Compiling glob v0.3.4
+   Compiling syn v3.0.5
+   Compiling structopt-derive v0.4.18
+   Compiling structopt v0.3.26
+   Compiling serde_derive v1.0.229
+   Compiling xtask v0.1.0 (/root/breenix-t957b/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 32.55s
+     Running `target/debug/xtask create-test-disk`
+Creating test disk image...
+  Including std test: hello_std_real (227200 bytes)
+  Found 152 test binaries
+  Added: access_test (177992 bytes, sectors 128-475)
+  Added: alarm_test (182808 bytes, sectors 476-833)
+  Added: argv_test (184384 bytes, sectors 834-1194)
+  Added: bcheck (299192 bytes, sectors 1195-1779)
+  Added: bfontpicker (346184 bytes, sectors 1780-2456)
+  Added: biconkit (248088 bytes, sectors 2457-2941)
+  Added: blauncher (325304 bytes, sectors 2942-3577)
+  Added: bless (185688 bytes, sectors 3578-3940)
+  Added: block_eintr_oracle (190064 bytes, sectors 3941-4312)
+  Added: blocking_recv_test (188160 bytes, sectors 4313-4680)
+  Added: blog (331040 bytes, sectors 4681-5327)
+  Added: blogd (182008 bytes, sectors 5328-5683)
+  Added: bounce (275064 bytes, sectors 5684-6221)
+  Added: brk_test (182528 bytes, sectors 6222-6578)
+  Added: bsh (579456 bytes, sectors 6579-7710)
+  Added: bssh (322440 bytes, sectors 7711-8340)
+  Added: bsshd (314240 bytes, sectors 8341-8954)
+  Added: bterm (338560 bytes, sectors 8955-9616)
+  Added: btop (184232 bytes, sectors 9617-9976)
+  Added: btrace (198984 bytes, sectors 9977-10365)
+  Added: burl (483384 bytes, sectors 10366-11310)
+  Added: bwm (331336 bytes, sectors 11311-11958)
+  Added: cat_test (183288 bytes, sectors 11959-12316)
+  Added: clock_gettime_test (184600 bytes, sectors 12317-12677)
+  Added: cloexec_test (192640 bytes, sectors 12678-13054)
+  Added: clonevm_exec_test (184704 bytes, sectors 13055-13415)
+  Added: concurrent_recv_stress (188992 bytes, sectors 13416-13785)
+  Added: confetti (189288 bytes, sectors 13786-14155)
+  Added: counter (177680 bytes, sectors 14156-14503)
+Error: No space left on device (os error 28)
+x86 frame-custody gate: FAIL (set -e abort at docker/qemu/run-x86-boot-tests.sh:621, exit 1)
+  failing command: cargo run -p xtask -- create-test-disk
+EXIT=1

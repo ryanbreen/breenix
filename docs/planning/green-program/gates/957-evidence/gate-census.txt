@@ -1,0 +1,7 @@
+docker/qemu/run-aarch64-service-sequence-gate.sh:132:if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-x86-prod-profile-boot-test.sh:967:if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:468:if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-x86-boot-tests.sh:155:if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-x86-boot-tests-only.sh:24:if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-blocking-io-oracle-gate.sh:69:if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-aarch64-boot-test-strict.sh:364:if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then

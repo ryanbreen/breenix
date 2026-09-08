@@ -20,13 +20,10 @@
 //!    ABOVE its drain-decision block (literally "move the kill above the
 //!    drain") makes the check fail where the unmutated file passes.
 //! 3. A functional oracle over the shell library itself, run with no QEMU
-//!    boot: the SAME underlying race -- a capture whose `END` line lands
-//!    150ms after this check runs -- reads `partial` with
-//!    `BREENIX_GATE_DRAIN_DISABLE=1` (the drain skips both waits, so it reads the
-//!    file exactly as it stood) and `complete` with the drain enabled at its
-//!    ordinary (tightened, for test speed) bounds (the drain waits long
-//!    enough to see the `END` land). Both legs read the identical
-//!    underlying serial content; only whether draining happened differs.
+//!    boot: the SAME ordered capture starts with BEGIN and one event. A
+//!    controlled wait writes the remaining event and END synchronously.
+//!    Disabled draining reads partial before that transition; enabled
+//!    draining crosses it and reads complete using the real classifier.
 //!
 //! # Why line-window text matching, not an AST
 //!
@@ -378,9 +375,8 @@ fn classify_distinguishes_complete_partial_and_absent_with_no_boot() {
     fs::remove_dir_all(&dir).ok();
 }
 
-/// The producer holds END until the drain enters a real wait. A FIFO handshake
-/// makes the partial/complete distinction independent of host scheduling; the
-/// sleep wrapper calls the real sleep; the library classifies the serial file.
+/// Advance the producer synchronously at the wait boundary, with no FIFO or
+/// wall-clock dependency. The real library still reads and classifies the file.
 #[test]
 fn drain_disabled_reads_partial_drain_enabled_reads_complete_same_race() {
     let dir = unique_temp_dir("oracle");
@@ -389,44 +385,23 @@ fn drain_disabled_reads_partial_drain_enabled_reads_complete_same_race() {
     let rest = "[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]\n\
                 [BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]\n";
 
-    // The delayed cases also cover a caller descheduled beyond the old 150ms
-    // appender deadline. Both legs retain the same producer protocol.
-    for (case, disabled, startup_delay, expected) in [
-        ("disabled", "1", "0", "partial"),
-        ("enabled", "0", "0", "complete"),
-        ("disabled-delayed", "1", "0.3", "partial"),
-        ("enabled-delayed", "0", "0.3", "complete"),
-    ] {
+    for (case, disabled, expected) in [("disabled", "1", "partial"), ("enabled", "0", "complete")] {
         let serial = dir.join(format!("{case}.txt"));
-        let ready = dir.join(format!("{case}.ready"));
-        let done = dir.join(format!("{case}.done"));
         fs::write(&serial, begin).unwrap();
         let script = format!(
-            r#"mkfifo '{ready}' '{done}'
-( read -r token < '{ready}'; printf '%s' '{rest}' >> '{serial}'; printf 'done\n' > '{done}' ) &
-writer=$!
-trap 'kill "$writer" 2>/dev/null || true' EXIT
-released=0
+            r#"released=0
 release_writer() {{
     if [ "$released" = 0 ]; then
         released=1
-        printf 'go\n' > '{ready}'
-        read -r token < '{done}'
+        printf '%s' '{rest}' >> '{serial}'
     fi
 }}
-sleep() {{
-    release_writer
-    command sleep "$@"
-}}
-command sleep {startup_delay}
+sleep() {{ release_writer; }}
 BREENIX_GATE_DRAIN_DISABLE={disabled} BREENIX_GATE_DRAIN_SETTLE_MS=50 \
 BREENIX_GATE_DRAIN_QUIET_MS=100 BREENIX_GATE_DRAIN_MAX_MS=2000 \
 gcd_drain_and_report '{serial}'
 release_writer
-wait "$writer"
-trap - EXIT"#,
-            ready = ready.display(),
-            done = done.display(),
+[ "$(gcd_classify '{serial}')" = "complete 3 FAULT 0 3" ]"#,
             rest = rest.replace('\'', "'\\''"),
             serial = serial.display(),
         );

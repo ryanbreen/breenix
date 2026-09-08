@@ -1,0 +1,20 @@
+revision=a1055bab14f031eb0b39ea02ea3ddd79adeb950e + V-1 diagnostic/test working tree; command=['bash', 'scripts/run-structure-tests.sh', 'parallels_capture_structure', 'pil_consumers_use_shared_resolution']
+== compiling parallels_capture_structure ==
+== running parallels_capture_structure pil_consumers_use_shared_resolution ==
+
+running 1 test
+
+thread 'pil_consumers_use_shared_resolution' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957b/wt/tests/parallels_capture_structure.rs:612:9:
+/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957b/wt/scripts/f23-render-verdict.sh missing resolver
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test pil_consumers_use_shared_resolution ... FAILED
+
+failures:
+
+failures:
+    pil_consumers_use_shared_resolution
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s
+
+
+exit=101
