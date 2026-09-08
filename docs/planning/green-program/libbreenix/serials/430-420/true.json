@@ -1,0 +1,11 @@
+{
+  "name": "true",
+  "revision": "ece990b5137bcb47d6a1af6913bb8cc1fedeae1d",
+  "dirty": false,
+  "command": "timeout 15 ssh -vv -p 24430 -o UserKnownHostsFile=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/.tmp/final_known_hosts -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o PubkeyAcceptedAlgorithms=rsa-sha2-256 -i /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/.tmp/openssh-test-key -o StrictHostKeyChecking=yes root@127.0.0.1 true",
+  "stdin": null,
+  "exit": 0,
+  "expected": 0,
+  "seconds": 3.377,
+  "proof_ok": true
+}

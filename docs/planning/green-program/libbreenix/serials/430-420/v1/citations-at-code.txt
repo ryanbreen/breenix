@@ -1,0 +1,54 @@
+Code revision: 39fd946d2845b8b72dafb03e62a0beb4c5211306
+libs/libbreenix/src/ssh/transport.rs:325:             SSH_MSG_CHANNEL_CLOSE => {
+libs/libbreenix/src/ssh/transport.rs:326:                 let mut pos = 1;
+libs/libbreenix/src/ssh/transport.rs:327:                 let recipient = SshBuf::get_u32(&msg, &mut pos)
+libs/libbreenix/src/ssh/transport.rs:328:                     .ok_or(SshError::Protocol("bad channel close"))?;
+libs/libbreenix/src/ssh/transport.rs:329:                 if pos != msg.len() {
+libs/libbreenix/src/ssh/transport.rs:330:                     return Err(SshError::Protocol("bad channel close length"));
+libs/libbreenix/src/ssh/transport.rs:331:                 }
+libs/libbreenix/src/ssh/transport.rs:332:                 let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+libs/libbreenix/src/ssh/transport.rs:333:                 if recipient != ch.local_id {
+libs/libbreenix/src/ssh/transport.rs:334:                     return Err(SshError::ChannelNotFound);
+libs/libbreenix/src/ssh/transport.rs:335:                 }
+libs/libbreenix/src/ssh/transport.rs:336:                 ch.closed = true;
+libs/libbreenix/src/ssh/transport.rs:337:                 channel::send_channel_close(&mut self.io, ch)?;
+libs/libbreenix/src/ssh/transport.rs:338:                 Err(SshError::Disconnected)
+libs/libbreenix/src/ssh/transport.rs:339:             }
+libs/libbreenix/src/ssh/transport.rs:340:             SSH_MSG_DISCONNECT => Err(SshError::Disconnected),
+libs/libbreenix/src/ssh/transport.rs:341:             SSH_MSG_IGNORE | SSH_MSG_UNIMPLEMENTED => Ok(None),
+libs/libbreenix/src/ssh/transport.rs:342:             SSH_MSG_CHANNEL_REQUEST => {
+libs/libbreenix/src/ssh/transport.rs:343:                 // Handle window-change during session
+libs/libbreenix/src/ssh/transport.rs:344:                 if let Some(ref mut ch) = self.channel {
+libs/libbreenix/src/ssh/transport.rs:345:                     let _ = channel::server_handle_channel_request(&mut self.io, &msg, ch);
+libs/libbreenix/src/ssh/transport.rs:346:                 }
+tests/bssh_auth_close_structure.rs:76: /// Compile the production CLOSE arm, uint32 decoder, and CLOSE sender with a
+tests/bssh_auth_close_structure.rs:77: /// packet sink. This exercises channel state and reply bytes without guest I/O.
+tests/bssh_auth_close_structure.rs:78: #[test]
+tests/bssh_auth_close_structure.rs:79: fn close_recipient_validation_precedes_completion() {
+tests/bssh_auth_close_structure.rs:80:     use std::process::Command;
+tests/bssh_auth_close_structure.rs:81:     let transport = source("libs/libbreenix/src/ssh/transport.rs");
+tests/bssh_auth_close_structure.rs:82:     let arm = transport
+tests/bssh_auth_close_structure.rs:83:         .split("SSH_MSG_CHANNEL_CLOSE => {")
+tests/bssh_auth_close_structure.rs:84:         .nth(1)
+tests/bssh_auth_close_structure.rs:85:         .unwrap()
+tests/bssh_auth_close_structure.rs:86:         .split("SSH_MSG_DISCONNECT =>")
+tests/bssh_auth_close_structure.rs:87:         .next()
+tests/bssh_auth_close_structure.rs:88:         .unwrap();
+tests/bssh_auth_close_structure.rs:89:     let buf = source("libs/libbreenix/src/ssh/mod.rs");
+tests/bssh_auth_close_structure.rs:90:     let decoder = buf
+tests/bssh_auth_close_structure.rs:91:         .split("    pub fn get_u32(")
+tests/bssh_auth_close_structure.rs:92:         .nth(1)
+tests/bssh_auth_close_structure.rs:93:         .unwrap()
+tests/bssh_auth_close_structure.rs:94:         .split("    /// Read an SSH string")
+tests/bssh_auth_close_structure.rs:95:         .next()
+tests/bssh_auth_close_structure.rs:96:         .unwrap();
+tests/bssh_auth_close_structure.rs:97:     let channel = source("libs/libbreenix/src/ssh/channel.rs");
+tests/bssh_auth_close_structure.rs:98:     let sender = channel
+tests/bssh_auth_close_structure.rs:99:         .split("pub fn send_channel_close(")
+tests/bssh_auth_close_structure.rs:100:         .nth(1)
+tests/bssh_auth_close_structure.rs:101:         .unwrap()
+tests/bssh_auth_close_structure.rs:102:         .split("\n}\n")
+tests/bssh_auth_close_structure.rs:103:         .next()
+tests/bssh_auth_close_structure.rs:104:         .unwrap();
+tests/bssh_auth_close_structure.rs:105:     let harness = format!(
+tests/bssh_auth_close_structure.rs:106:         r#"

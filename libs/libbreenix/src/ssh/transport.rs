@@ -315,13 +315,26 @@ impl ServerSession {
                 }
                 Ok(None)
             }
-            SSH_MSG_CHANNEL_EOF | SSH_MSG_CHANNEL_CLOSE => {
-                if msg[0] == SSH_MSG_CHANNEL_CLOSE {
-                    // Send close back
-                    if let Some(ref ch) = self.channel {
-                        let _ = channel::send_channel_close(&mut self.io, ch);
-                    }
+            SSH_MSG_CHANNEL_EOF => {
+                if let Some(ref mut ch) = self.channel {
+                    ch.eof_received = true;
                 }
+                // EOF closes only the peer's sending direction.
+                Ok(None)
+            }
+            SSH_MSG_CHANNEL_CLOSE => {
+                let mut pos = 1;
+                let recipient = SshBuf::get_u32(&msg, &mut pos)
+                    .ok_or(SshError::Protocol("bad channel close"))?;
+                if pos != msg.len() {
+                    return Err(SshError::Protocol("bad channel close length"));
+                }
+                let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+                if recipient != ch.local_id {
+                    return Err(SshError::ChannelNotFound);
+                }
+                ch.closed = true;
+                channel::send_channel_close(&mut self.io, ch)?;
                 Err(SshError::Disconnected)
             }
             SSH_MSG_DISCONNECT => Err(SshError::Disconnected),
@@ -337,9 +350,57 @@ impl ServerSession {
         }
     }
 
+    /// Whether the peer has finished sending channel input.
+    pub fn input_eof(&self) -> bool {
+        self.channel.as_ref().is_some_and(|ch| ch.eof_received)
+    }
+
+    /// Finish a process channel in RFC 4254 sections 6.10/5.3 order.
+    /// A peer-initiated CLOSE is acknowledged once; our CLOSE awaits theirs.
+    pub fn finish(&mut self, status: i32) -> Result<(), SshError> {
+        if self
+            .channel
+            .as_ref()
+            .ok_or(SshError::ChannelNotFound)?
+            .closed
+        {
+            return Ok(());
+        }
+        self.send_exit_status(status)?;
+        let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+        channel::send_channel_eof(&mut self.io, ch)?;
+        channel::send_channel_close(&mut self.io, ch)?;
+        let deadline = crate::time::now_monotonic()
+            .map_err(|_| SshError::Io)?
+            .tv_sec
+            + 5;
+        while !self.channel.as_ref().unwrap().closed {
+            if crate::time::now_monotonic()
+                .map_err(|_| SshError::Io)?
+                .tv_sec
+                >= deadline
+            {
+                return Err(SshError::Protocol("channel close timeout"));
+            }
+            let mut fds = [crate::io::PollFd::new(
+                self.io.fd(),
+                crate::io::poll_events::POLLIN,
+            )];
+            if crate::io::poll(&mut fds, 100).map_err(|_| SshError::Io)? == 0 {
+                continue;
+            }
+            match self.recv_data() {
+                Err(SshError::Disconnected) if self.channel.as_ref().unwrap().closed => break,
+                Err(e) => return Err(e),
+                Ok(_) => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Send channel EOF and close.
     pub fn close(&mut self) {
-        if let Some(ref ch) = self.channel {
+        if let Some(ref mut ch) = self.channel {
             let _ = channel::send_channel_eof(&mut self.io, ch);
             let _ = channel::send_channel_close(&mut self.io, ch);
         }
@@ -547,7 +608,13 @@ impl ClientSession {
                 }
                 Ok(None)
             }
-            SSH_MSG_CHANNEL_CLOSE => Err(SshError::Disconnected),
+            SSH_MSG_CHANNEL_CLOSE => {
+                if let Some(ref mut ch) = self.channel {
+                    ch.closed = true;
+                    channel::send_channel_close(&mut self.io, ch)?;
+                }
+                Err(SshError::Disconnected)
+            }
             SSH_MSG_DISCONNECT => Err(SshError::Disconnected),
             SSH_MSG_IGNORE | SSH_MSG_UNIMPLEMENTED => Ok(None),
             SSH_MSG_CHANNEL_REQUEST => {
@@ -585,7 +652,7 @@ impl ClientSession {
 
     /// Close the session.
     pub fn close(&mut self) {
-        if let Some(ref ch) = self.channel {
+        if let Some(ref mut ch) = self.channel {
             let _ = channel::send_channel_eof(&mut self.io, ch);
             let _ = channel::send_channel_close(&mut self.io, ch);
         }

@@ -1,0 +1,12 @@
+Build/check revision: aba3617a87f45ebda16c7ca460a9a72c1f3ca902 plus working tree changes committed as ece990b5137bcb47d6a1af6913bb8cc1fedeae1d
+== compiling bssh_auth_close_structure ==
+== running bssh_auth_close_structure  ==
+
+running 4 tests
+test wrong_signer_reaches_signature_verification ... ok
+test termination_waits_for_peer_and_preserves_shell_status ... ok
+test oracle_requires_auth_refusal_and_strict_scorer_pins_it ... ok
+test scorer_rejects_missing_failed_and_duplicate_auth_evidence ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+

@@ -1,0 +1,11 @@
+{
+  "name": "pin",
+  "revision": "80a885e0a0c29bcc25d31e96795b9a4d6a6a610d",
+  "dirty": false,
+  "command": "timeout 15 ssh -vv -p 25430 -o UserKnownHostsFile=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/docs/planning/green-program/libbreenix/serials/430-420/landing/known_hosts -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o PubkeyAcceptedAlgorithms=rsa-sha2-256 -i /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/.tmp/openssh-test-key -o StrictHostKeyChecking=accept-new root@127.0.0.1 true",
+  "stdin": null,
+  "exit": 0,
+  "expected": 0,
+  "seconds": 2.548,
+  "proof_ok": true
+}
