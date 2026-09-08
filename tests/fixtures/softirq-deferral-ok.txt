@@ -1,0 +1,1 @@
+[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=3146000:dispatches=5:iterations=25:verdict=ok]

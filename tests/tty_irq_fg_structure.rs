@@ -1107,7 +1107,9 @@ fn the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it() {
     fs::create_dir_all(&scratch).expect("create the scratch directory for the gate legs");
     let write = |name: &str, body: &str| -> PathBuf {
         let path = scratch.join(format!("{name}.txt"));
-        fs::write(&path, body).expect("write a gate leg serial");
+        // Compose a scorer fixture with the new required oracle; this is synthetic,
+            // not an edit to the historical runtime capture.
+            fs::write(&path, format!("{body}\n{}", include_str!("fixtures/softirq-deferral-ok.txt"))).expect("write a gate leg serial");
         path
     };
 

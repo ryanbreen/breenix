@@ -49,7 +49,7 @@ pub mod timer_wake_oracle;
 pub mod kthread;
 #[cfg(feature = "testing")]
 pub mod kthread_tests;
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", feature = "boot_tests"))]
 pub mod softirq_tests;
 pub mod softirqd;
 pub mod workqueue;
@@ -84,7 +84,7 @@ pub use workqueue::{
 // Re-export softirqd public API for kernel-wide use
 #[allow(unused_imports)]
 pub use softirqd::{
-    init_softirq, raise_softirq, register_softirq_handler, shutdown_softirq, SoftirqHandler,
+    init_softirq, raise_softirq, register_softirq_handler, SoftirqHandler,
     SoftirqType,
 };
 

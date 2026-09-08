@@ -507,6 +507,7 @@ check_crash_markers() {
 # nothing and returns 0 when it is acceptable.
 score_serial() {
     local serial_file="$1"
+    python3 "$BREENIX_ROOT/scripts/score-softirq-deferral.py" "$serial_file" || return $?
     local boot_test_fail_line
     local crash_type
 

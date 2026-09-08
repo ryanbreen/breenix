@@ -1323,6 +1323,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         );
     }
 
+    kernel::task::softirqd::init_online_daemons();
+    #[cfg(all(feature = "boot_tests", not(feature = "testing")))]
+    kernel::task::softirq_tests::test_deferral();
+
     // Failure-capture PR-7's `edge=LOCKUP` oracle (test profile only, feature
     // `capture_lockup_oracle`). Placed here on purpose: SMP bring-up above has
     // finished, so a CPU1-pinned holder can actually be dispatched, and no
