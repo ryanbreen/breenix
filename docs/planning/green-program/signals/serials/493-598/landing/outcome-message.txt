@@ -1,0 +1,6 @@
+docs(signals): retain failed merged-tip landing gate
+
+Record strict 2/3 and stop before service, x86, or PR landing.
+
+Co-authored-by: Ryan Breen <ryan@breen.io>
+Co-authored-by: Claude Code <noreply@anthropic.com>
