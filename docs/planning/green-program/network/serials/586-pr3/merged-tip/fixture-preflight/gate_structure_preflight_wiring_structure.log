@@ -1,0 +1,14 @@
+== compiling gate_structure_preflight_wiring_structure ==
+== running gate_structure_preflight_wiring_structure  ==
+
+running 7 tests
+test missing_wiring_validator_rejects_a_gate_with_neither ... ok
+test service_preflight_precedes_build_and_aborts_on_failure ... ok
+test every_target_gate_calls_the_structure_preflight ... ok
+test service_sequence_capture_window_covers_strict ... ok
+test service_sequence_capture_window_45_mutation_is_rejected ... ok
+test missing_wiring_validator_rejects_a_gate_with_the_call_site_removed ... ok
+test shared_lib_defines_the_preflight_function_and_its_marker_line ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

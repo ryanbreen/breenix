@@ -1,0 +1,12 @@
+== compiling gate_boot_facts_structure ==
+== running gate_boot_facts_structure  ==
+
+running 5 tests
+test gate_boot_facts_line_has_all_required_fields ... ok
+test both_gates_source_and_call_gate_boot_facts ... ok
+test every_kill_path_in_the_strict_gate_sets_ended_by ... ok
+test every_kill_path_in_the_prod_gate_sets_ended_by ... ok
+test gate_boot_facts_predicates_are_not_vacuous ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

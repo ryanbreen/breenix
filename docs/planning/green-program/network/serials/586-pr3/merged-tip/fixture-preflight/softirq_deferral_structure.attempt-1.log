@@ -1,0 +1,34 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure  ==
+
+running 9 tests
+test limit_wakes_daemon_and_counter_is_at_callback ... ok
+test oracle_requires_daemon_dispatch_and_guest_ticks ... ok
+test daemon_is_cpu_local_and_checks_pending_after_park_publication ... ok
+test park_final_check_and_unpark_flag_share_scheduler_serialization ... ok
+test scorers_require_oracle ... ok
+test boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released ... ok
+test scorer_rejects_forged_ok_and_reports_starvation_separately ... ok
+test softirq_reexport_is_rustfmt_clean ... ok
+Traceback (most recent call last):
+  File "/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/scripts/test-softirq-strict-status.py", line 31, in <module>
+    assert result.returncode == status, result.stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: SCORE: FAIL - Loopback wake budget marker missing or failed: when_idle (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/.gate-tmp/breenix_gate_structure_preflight.c4nfh6/softirq-status-3rp05dpt/serial.txt)
+
+test strict_gate_preserves_starvation_status ... FAILED
+
+failures:
+
+---- strict_gate_preserves_starvation_status stdout ----
+
+thread 'strict_gate_preserves_starvation_status' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/tests/softirq_deferral_structure.rs:88:5:
+assertion failed: std::process::Command::new("python3").current_dir(root).arg("scripts/test-softirq-strict-status.py").status().unwrap().success()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    strict_gate_preserves_starvation_status
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+

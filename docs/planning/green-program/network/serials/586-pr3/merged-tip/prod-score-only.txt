@@ -1,0 +1,5 @@
+Revision: a3786feb71b8e1b193a4a4919654f62552a78982
+Index tree: a83fd8bacd6db671d3322ae6e8b49880037acf3e
+Command: env BREENIX_PROD_SCORE_ONLY=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/.gate-tmp/breenix_aarch64_prod_profile/serial.txt bash docker/qemu/run-aarch64-prod-profile-boot-test.sh
+FAIL: INPUT_INJECT production rejection: []
+EXIT: 1

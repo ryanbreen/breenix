@@ -1,0 +1,17 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure  ==
+
+running 9 tests
+test limit_wakes_daemon_and_counter_is_at_callback ... ok
+test park_final_check_and_unpark_flag_share_scheduler_serialization ... ok
+test daemon_is_cpu_local_and_checks_pending_after_park_publication ... ok
+test oracle_requires_daemon_dispatch_and_guest_ticks ... ok
+test scorers_require_oracle ... ok
+test boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released ... ok
+test scorer_rejects_forged_ok_and_reports_starvation_separately ... ok
+test softirq_reexport_is_rustfmt_clean ... ok
+strict status: score-only, frozen boot import/report, mixed aggregation PASS
+test strict_gate_preserves_starvation_status ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+

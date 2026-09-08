@@ -1,0 +1,8 @@
+{
+  "revision": "f6f7414a17253e0a5493121726d2d28f464d4eb1",
+  "source": "docs/planning/green-program/network/serials/586-pr3/merged-tip/strict/breenix_aarch64_strict_1/serial.txt",
+  "fixture": "tests/fixtures/udp-socket-lock-aarch64-serial.txt",
+  "sha256": "2a3593412acd4a574561cfeb409688404d7eb2a93b2bf0dbb77597f9b5d189bb",
+  "index_byte_equal": true,
+  "manual_serial_edits": false
+}

@@ -1,0 +1,18 @@
+== compiling unix_stream_blocking_structure ==
+== running unix_stream_blocking_structure  ==
+
+running 11 tests
+test census::parser_tracks_renames_negation_formatting_and_extracted_errors ... ok
+test guarded_state_defines_transmit_space_and_publication ... ok
+test transmit_predicate_and_single_mutations ... ok
+test driver_and_gate_have_six_scored_legs ... ok
+test census::blocking_eagain_mutations_fail_the_live_helper_census ... ok
+test descriptor_mode_drain_and_poll_are_connected ... ok
+test mode_drain_and_poll_mutations_are_rejected_singly ... ok
+test close_notifications_leave_pm_without_the_isr_buffer ... ok
+test census::repaired_families_have_no_blocking_eagain_exit ... ok
+test census::console_result_route_rejects_blocking_eagain_with_adapter_retained ... ok
+test unix_scorer_rejects_incomplete_or_corrupt_arm_sets ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+

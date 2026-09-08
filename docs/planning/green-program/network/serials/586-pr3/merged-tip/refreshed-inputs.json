@@ -1,0 +1,9 @@
+{
+  "revision": "a3786feb71b8e1b193a4a4919654f62552a78982",
+  "elf_sha256": "3b1b63ab907701cc0038e0ce75b23bf83fc65c62649398de55df9b4026e4fc83",
+  "image_sha256": "a5b5f6636157f02411407efe2822e30c8769e67bf0029c8333d8f671e587659c",
+  "image_entry": "/bin/futex_handoff_oracle",
+  "extracted_byte_equal": true,
+  "other_image_entries_changed": false,
+  "original_image": ".tmp/ext2-before-prod-refresh.img"
+}

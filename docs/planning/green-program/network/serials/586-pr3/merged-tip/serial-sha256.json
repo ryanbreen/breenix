@@ -1,0 +1,11 @@
+{
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip/fixture-recording/serial.txt": "0e252fd6aa1345f5c65f7df4aaf16c743039855ad4ce4e12f004f9f396f255eb",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip/fixture-recording-repeat/serial.txt": "ec3a60d65371aa8f3f0c7642fe2bbf3e60d79114ae33ba1d60336ee2595d4582",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip/strict/breenix_aarch64_strict_1/serial.txt": "2a3593412acd4a574561cfeb409688404d7eb2a93b2bf0dbb77597f9b5d189bb",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip/prod/breenix_aarch64_prod_profile/serial.txt": "594d7d50ba356f403ffb0ba762bfcc7b7fa99d6a83bd705d12bb2c153cefb497",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip/prod-refreshed/breenix_aarch64_prod_profile/serial.txt": "888b507b8b354c0ec5d6c4ec756428739a4a761e5905955ea1a6f4a069e8539a",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip/service/service/cortex-a72/serial-1.txt": "d83c7250db46d1304172bd8092e99c6cca768019837ae263eba69970928f835c",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip/service/service/cortex-a72/serial-2.txt": "6037f3dc7b24dba80a77790ebf92f456bdf888bc616fdc25c07b670b7969a337",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip/service/service/max/serial-1.txt": "fe9e5ce4c0a612f5d95f86925f7d567f7dee6f621ab4d3fb3a4ff68988c321f4",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip/service/service/max/serial-2.txt": "f4a894f192b9b7ef0fd25941f89762eefbd0a70298e971766bb4e4ffc068dce3"
+}

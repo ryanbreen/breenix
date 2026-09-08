@@ -1,0 +1,19 @@
+== compiling tty_irq_pm_structure ==
+== running tty_irq_pm_structure  ==
+
+running 12 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test both_boot_test_gates_pin_the_oracle_and_both_production_gates_pin_its_absence ... ok
+test each_blocking_process_manager_accessor_counts_itself ... ok
+test the_line_discipline_names_no_process_manager ... ok
+test the_entry_defers_the_adoption_it_used_to_resolve_in_the_interrupt ... ok
+test the_tty_input_irq_entry_takes_no_blocking_process_manager_acquisition ... ok
+test the_stdin_reader_takes_the_deferred_adoption ... ok
+test peer_hold_rendezvous_covers_both_lock_probes ... ok
+test every_tty_input_irq_handler_is_free_of_a_blocking_acquisition ... ok
+test peer_hold_rendezvous_rejects_time_only_and_unmasked_mutations ... ok
+test deliberately_broken_copies_redden_the_rules ... ok
+test the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.90s
+

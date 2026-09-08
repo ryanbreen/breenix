@@ -1,0 +1,2 @@
+Revision: d94ed1416031e3a3de2fc4237fe3b57a286ff81d + merge e43ead447f05db9caf23fa03f8acdbcd70b2d1b1 (uncommitted index; see initial-provenance.json)
+SCORE: FAIL - Boot test failure: [TEST:syscall:udp_socket_lock_oracle:FAIL:a with_locked_masked holder was interruptible on its own CPU] (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/docs/planning/green-program/network/serials/586-pr3/merged-tip/fixture-recording/serial.txt)

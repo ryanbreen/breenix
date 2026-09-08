@@ -1,0 +1,13 @@
+== compiling gate_capture_drain_structure ==
+== running gate_capture_drain_structure  ==
+
+running 6 tests
+test moving_a_kill_above_its_drain_decision_reddens_the_check ... ok
+test converted_gates_exist_and_call_both_drain_functions ... ok
+test every_guest_kill_site_is_preceded_by_a_drain_decision ... ok
+test classify_pairs_a_begin_and_end_split_across_two_serial_files_by_seq ... ok
+test classify_distinguishes_complete_partial_and_absent_with_no_boot ... ok
+test drain_disabled_reads_partial_drain_enabled_reads_complete_same_race ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+

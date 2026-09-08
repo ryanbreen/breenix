@@ -1,0 +1,332 @@
+Already up to date.
+Revision: f6f7414a17253e0a5493121726d2d28f464d4eb1
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: x86_64
+
+[1/3] Building libbreenix-libc (x86_64)...
+  Compiling compiler_builtins v0.1.160 (/root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+  Compiling core v0.0.0 (/root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core)
+  Compiling libbreenix v0.1.0 (/root/breenix-n956/libs/libbreenix)
+  Compiling libbreenix-libc v0.1.0 (/root/breenix-n956/libs/libbreenix-libc)
+  Finished `release` profile [optimized] target(s) in 23.52s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (x86_64)...
+  Updating crates.io index
+  Locking 10 packages to latest compatible versions
+  Compiling compiler_builtins v0.1.160 (/root/breenix-n956/rust-fork/library/compiler-builtins/compiler-builtins)
+  Compiling core v0.0.0 (/root/breenix-n956/rust-fork/library/core)
+  Compiling libc v0.2.174 (/root/breenix-n956/libs/libc)
+  Compiling std v0.0.0 (/root/breenix-n956/rust-fork/library/std)
+  Compiling rustc-std-workspace-core v1.99.0 (/root/breenix-n956/rust-fork/library/rustc-std-workspace-core)
+  Compiling alloc v0.0.0 (/root/breenix-n956/rust-fork/library/alloc)
+  Compiling panic_abort v0.0.0 (/root/breenix-n956/rust-fork/library/panic_abort)
+  Compiling cfg-if v1.0.1
+  Compiling rustc-demangle v0.1.25
+  Compiling unwind v0.0.0 (/root/breenix-n956/rust-fork/library/unwind)
+  Compiling rustc-std-workspace-alloc v1.99.0 (/root/breenix-n956/rust-fork/library/rustc-std-workspace-alloc)
+  Compiling panic_unwind v0.0.0 (/root/breenix-n956/rust-fork/library/panic_unwind)
+  Compiling hashbrown v0.15.4
+  Compiling std_detect v0.1.5 (/root/breenix-n956/rust-fork/library/stdarch/crates/std_detect)
+  Compiling rustc-std-workspace-std v1.99.0 (/root/breenix-n956/rust-fork/library/rustc-std-workspace-std)
+  Compiling rustc-literal-escaper v0.0.2
+  Compiling proc_macro v0.0.0 (/root/breenix-n956/rust-fork/library/proc_macro)
+  Compiling noto-sans-mono-bitmap v0.3.2
+  Compiling libfont v0.1.0 (/root/breenix-n956/libs/libfont)
+  Compiling libbreenix v0.1.0 (/root/breenix-n956/libs/libbreenix)
+  Compiling breenish-js v0.1.0 (/root/breenix-n956/libs/breenish-js)
+  Compiling libimg v0.1.0 (/root/breenix-n956/libs/libimg)
+  Compiling libgfx v0.1.0 (/root/breenix-n956/libs/libgfx)
+  Compiling libbui v0.1.0 (/root/breenix-n956/libs/libbui)
+  Compiling libicon v0.1.0 (/root/breenix-n956/libs/libicon)
+  Compiling libcollab v0.1.0 (/root/breenix-n956/libs/libcollab)
+  Compiling breengel v0.1.0 (/root/breenix-n956/libs/breengel)
+  Compiling userspace-programs v0.1.0 (/root/breenix-n956/userspace/programs)
+  Finished `release` profile [optimized] target(s) in 1m 37s
+  Userspace build successful
+
+[3/3] Installing std binaries...
+  Installed hello_world.elf (227152 bytes)
+  Installed exec_smoke.elf (178048 bytes)
+  Installed exec_smoke_target.elf (185032 bytes)
+  Installed fork_smoke.elf (187600 bytes)
+  Installed block_eintr_oracle.elf (190008 bytes)
+  Installed poll_tcp_oracle.elf (207168 bytes)
+  Installed futex_handoff_oracle.elf (187608 bytes)
+  Installed tty_oracle.elf (218400 bytes)
+  Installed df_preempt_oracle.elf (187632 bytes)
+  Installed syscall_enosys.elf (177512 bytes)
+  Installed clock_gettime_test.elf (184560 bytes)
+  Installed file_read_test.elf (182392 bytes)
+  Installed lseek_test.elf (182504 bytes)
+  Installed fs_write_test.elf (182880 bytes)
+  Installed fs_rename_test.elf (182696 bytes)
+  Installed fs_large_file_test.elf (182600 bytes)
+  Installed fs_directory_test.elf (183144 bytes)
+  Installed fs_link_test.elf (182792 bytes)
+  Installed access_test.elf (177936 bytes)
+  Installed devfs_test.elf (182432 bytes)
+  Installed cwd_test.elf (182608 bytes)
+  Installed getdents_test.elf (183976 bytes)
+  Installed pipe_test.elf (188232 bytes)
+  Installed pipe2_test.elf (188912 bytes)
+  Installed pipe_fifo_blocking_oracle.elf (224816 bytes)
+  Installed pipe_fifo_blocking_supervisor.elf (178032 bytes)
+  Installed unix_stream_blocking_oracle.elf (208008 bytes)
+  Installed unix_stream_blocking_supervisor.elf (178032 bytes)
+  Installed dup_test.elf (189144 bytes)
+  Installed fcntl_test.elf (188736 bytes)
+  Installed poll_test.elf (189016 bytes)
+  Installed select_test.elf (188904 bytes)
+  Installed epoll_test.elf (182824 bytes)
+  Installed nonblock_test.elf (188736 bytes)
+  Installed brk_test.elf (182472 bytes)
+  Installed signal_handler_test.elf (187888 bytes)
+  Installed signal_return_test.elf (188304 bytes)
+  Installed signal_regs_test.elf (188200 bytes)
+  Installed sigaltstack_test.elf (188992 bytes)
+  Installed sigsuspend_test.elf (188856 bytes)
+  Installed pause_test.elf (188352 bytes)
+  Installed tty_test.elf (188080 bytes)
+  Installed session_test.elf (187960 bytes)
+  Installed unix_socket_test.elf (205304 bytes)
+  Installed unix_named_socket_test.elf (195328 bytes)
+  Installed fifo_test.elf (198440 bytes)
+  Installed fork_test.elf (188080 bytes)
+  Installed fork_memory_test.elf (188656 bytes)
+  Installed fork_state_test.elf (189168 bytes)
+  Installed waitpid_test.elf (188136 bytes)
+  Installed exec_argv_test.elf (178192 bytes)
+  Installed cloexec_test.elf (192584 bytes)
+  Installed kill_process_group_test.elf (188472 bytes)
+  Installed sigchld_test.elf (182424 bytes)
+  Installed sigkill_teardown_test.elf (206704 bytes)
+  Installed sigchld_job_test.elf (187512 bytes)
+  Installed ctrl_c_test.elf (187976 bytes)
+  Installed job_control_test.elf (187640 bytes)
+  Installed signal_fork_test.elf (188152 bytes)
+  Installed signal_exec_test.elf (188712 bytes)
+  Installed wnohang_timing_test.elf (182528 bytes)
+  Installed fork_pending_signal_test.elf (187728 bytes)
+  Installed shell_pipe_test.elf (183120 bytes)
+  Installed pipeline_test.elf (191576 bytes)
+  Installed cow_cleanup_test.elf (182528 bytes)
+  Installed cow_sole_owner_test.elf (186992 bytes)
+  Installed cow_stress_test.elf (187088 bytes)
+  Installed cow_readonly_test.elf (187032 bytes)
+  Installed cow_signal_test.elf (188304 bytes)
+  Installed resolution.elf (186928 bytes)
+  Installed init_shell.elf (262512 bytes)
+  Installed argv_test.elf (184328 bytes)
+  Installed job_table_test.elf (192224 bytes)
+  Installed test_mmap.elf (182216 bytes)
+  Installed clonevm_exec_test.elf (184656 bytes)
+  Installed stdin_test.elf (182272 bytes)
+  Installed true_test.elf (182544 bytes)
+  Installed false_test.elf (182552 bytes)
+  Installed echo_argv_test.elf (182456 bytes)
+  Installed mkdir_argv_test.elf (182664 bytes)
+  Installed rm_argv_test.elf (182472 bytes)
+  Installed cp_mv_argv_test.elf (182792 bytes)
+  Installed nonblock_eagain_test.elf (179600 bytes)
+  Installed blocking_recv_test.elf (184008 bytes)
+  Installed tcp_client_test.elf (187608 bytes)
+  Installed wait_stress.elf (195552 bytes)
+  Installed simple_exit.elf (170576 bytes)
+  Installed simple_exit0.elf (170576 bytes)
+  Installed spawn_smoke_target.elf (170592 bytes)
+  Installed counter.elf (177624 bytes)
+  Installed spinner.elf (177624 bytes)
+  Installed hello_time.elf (177616 bytes)
+  Installed heartbeat.elf (189088 bytes)
+  Installed xhci_counters.elf (183104 bytes)
+  Installed fbinfo_test.elf (187560 bytes)
+  Installed demo.elf (189696 bytes)
+  Installed bounce.elf (275104 bytes)
+  Installed rectangles.elf (197080 bytes)
+  Installed particles.elf (193928 bytes)
+  Installed confetti.elf (189232 bytes)
+  Installed tones.elf (184208 bytes)
+  Installed fart.elf (191688 bytes)
+  Installed http_test.elf (468552 bytes)
+  Installed register_init_test.elf (177088 bytes)
+  Installed head_test.elf (183048 bytes)
+  Installed tail_test.elf (183048 bytes)
+  Installed wc_test.elf (183616 bytes)
+  Installed which_test.elf (182944 bytes)
+  Installed cat_test.elf (183224 bytes)
+  Installed ls_test.elf (183280 bytes)
+  Installed exec_stack_argv_test.elf (183424 bytes)
+  Installed exec_from_ext2_test.elf (188064 bytes)
+  Installed pipe_fork_test.elf (188816 bytes)
+  Installed pipe_concurrent_test.elf (188712 bytes)
+  Installed fs_block_alloc_test.elf (188608 bytes)
+  Installed cow_oom_test.elf (182496 bytes)
+  Installed signal_test.elf (187856 bytes)
+  Installed alarm_test.elf (182752 bytes)
+  Installed itimer_test.elf (183192 bytes)
+  Installed timer_test.elf (182136 bytes)
+  Installed sleep_debug_test.elf (188584 bytes)
+  Installed pipe_refcount_test.elf (199936 bytes)
+  Installed udp_socket_test.elf (193384 bytes)
+  Installed tcp_socket_test.elf (202280 bytes)
+  Installed tcp_dup_listener_test.elf (188824 bytes)
+  Installed tcp_cloexec_exec_test.elf (189440 bytes)
+  Installed tcp_blocking_test.elf (203424 bytes)
+  Installed concurrent_recv_stress.elf (188936 bytes)
+  Installed dns_test.elf (195232 bytes)
+  Installed net_test.elf (191568 bytes)
+  Installed http_fetch_test.elf (464400 bytes)
+  Installed loopback_wake_test.elf (190440 bytes)
+  Installed syscall_diagnostic_test.elf (170848 bytes)
+  Installed pty_test.elf (183000 bytes)
+  Installed signal_exec_check.elf (177872 bytes)
+  Installed bsh.elf (579408 bytes)
+  Installed bwm.elf (331368 bytes)
+  Installed btop.elf (184192 bytes)
+  Installed burl.elf (483336 bytes)
+  Installed init.elf (187480 bytes)
+  Installed telnetd.elf (184064 bytes)
+  Installed blogd.elf (181952 bytes)
+  Installed btrace.elf (198920 bytes)
+  Installed bless.elf (185640 bytes)
+  Installed bcheck.elf (299216 bytes)
+  Installed biconkit.elf (248120 bytes)
+  Installed guskit.elf (391544 bytes)
+  Installed bterm.elf (338584 bytes)
+  Installed blog.elf (331064 bytes)
+  Installed bfontpicker.elf (346216 bytes)
+  Installed blauncher.elf (325328 bytes)
+  Installed bsshd.elf (314272 bytes)
+  Installed bssh.elf (322480 bytes)
+
+========================================
+  STD BUILD COMPLETE (x86_64)
+  Installed: 153 binaries
+========================================
+    Updating git repository `https://github.com/rust-osdev/bootloader.git`
+    Updating crates.io index
+     Locking 154 packages to latest compatible versions
+      Adding aarch64-cpu v9.4.0 (available: v11.2.0)
+      Adding acpi v5.2.0 (available: v6.1.1)
+      Adding az v1.2.1 (available: v1.3.0)
+      Adding pic8259 v0.10.4 (available: v0.11.0)
+      Adding spin v0.9.9 (available: v0.12.3)
+      Adding tock-registers v0.8.1 (available: v0.10.1)
+      Adding uart_16550 v0.3.2 (available: v0.8.0)
+      Adding uefi v0.33.0 (available: v0.37.0)
+      Adding x86_64 v0.15.4 (available: v0.15.5)
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling serde v1.0.229
+   Compiling rustversion v1.0.23
+   Compiling serde_core v1.0.229
+   Compiling x86 v0.52.0
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling bit_field v0.10.3
+   Compiling libc v0.2.189
+   Compiling const_fn v0.4.12
+   Compiling find-msvc-tools v0.1.12
+   Compiling bitflags v2.13.1
+   Compiling shlex v2.0.1
+   Compiling autocfg v1.5.1
+   Compiling cfg-if v1.0.4
+   Compiling scopeguard v1.2.0
+   Compiling cc v1.4.5
+   Compiling lock_api v0.4.14
+   Compiling num-traits v0.2.19
+   Compiling bitflags v1.3.2
+   Compiling volatile v0.4.6
+   Compiling az v1.2.1
+   Compiling getrandom v0.4.3
+   Compiling syn v3.0.5
+   Compiling raw-cpuid v10.7.0
+   Compiling crossbeam-utils v0.8.23
+   Compiling rand_core v0.6.4
+   Compiling conquer-util v0.3.0
+   Compiling ring v0.17.14
+   Compiling spinning_top v0.2.5
+   Compiling zero v0.1.3
+   Compiling rustix v1.1.4
+   Compiling typenum v1.20.1
+   Compiling zmij v1.0.23
+   Compiling zeroize v1.9.0
+   Compiling byteorder v1.5.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling embedded-graphics-core v0.4.1
+   Compiling xmas-elf v0.8.0
+   Compiling hybrid-array v0.4.14
+   Compiling uart_16550 v0.3.2
+   Compiling float-cmp v0.9.0
+   Compiling getrandom v0.2.17
+   Compiling conquer-once v0.3.2
+   Compiling serde_derive v1.0.229
+   Compiling rand_hc v0.3.2
+   Compiling rand v0.8.8
+   Compiling x86_64 v0.14.13
+   Compiling x86_64 v0.15.4
+   Compiling futures-task v0.3.34
+   Compiling kernel v0.1.0 (/root/breenix-n956/kernel)
+   Compiling log v0.4.34
+   Compiling untrusted v0.9.0
+   Compiling anyhow v1.0.104
+   Compiling usize_conversions v0.2.0
+   Compiling slab v0.4.12
+   Compiling linux-raw-sys v0.12.1
+   Compiling futures-core v0.3.34
+   Compiling serde_json v1.0.151
+   Compiling httparse v1.10.1
+   Compiling llvm-tools v0.1.1
+   Compiling noto-sans-mono-bitmap v0.2.0
+   Compiling pin-project-lite v0.2.17
+   Compiling crc-catalog v2.5.0
+   Compiling micromath v2.1.0
+   Compiling embedded-graphics v0.8.2
+   Compiling crc v3.4.0
+   Compiling futures-util v0.3.34
+   Compiling pic8259 v0.10.4
+   Compiling bootloader v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling crossbeam-queue v0.3.14
+   Compiling linked_list_allocator v0.10.6
+   Compiling uuid v1.26.0
+   Compiling conquer-once v0.4.0
+   Compiling spin v0.9.9
+   Compiling itoa v1.0.18
+   Compiling bytes v1.12.1
+   Compiling once_cell v1.21.4
+   Compiling bootloader-boot-config v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling rustls v0.23.44
+   Compiling fastrand v2.5.0
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling memchr v2.8.3
+   Compiling bootloader-x86_64-common v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling tempfile v3.27.0
+   Compiling http v1.5.0
+   Compiling fatfs v0.3.6
+   Compiling gpt v3.1.0
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling const-oid v0.10.2
+   Compiling subtle v2.6.1
+   Compiling base64 v0.23.1
+   Compiling xattr v1.6.1
+   Compiling digest v0.11.3
+   Compiling ureq-proto v0.6.2
+   Compiling webpki-roots v1.0.9
+   Compiling filetime v0.2.29
+   Compiling utf8-zero v0.8.1
+   Compiling percent-encoding v2.3.2
+   Compiling cpufeatures v0.3.1
+   Compiling sha2 v0.11.0
+   Compiling lzma-rs v0.3.0
+   Compiling breenix v0.1.0 (/root/breenix-n956)
+   Compiling rustls-webpki v0.103.15
+   Compiling tar v0.4.46
+   Compiling base16ct v1.0.0
+   Compiling ureq v3.4.1
+   Compiling ovmf-prebuilt v0.2.9
+    Finished `release` profile [optimized] target(s) in 32.42s
+EXIT: 0

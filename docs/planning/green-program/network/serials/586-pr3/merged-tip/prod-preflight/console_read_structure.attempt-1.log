@@ -1,0 +1,13 @@
+== compiling console_read_structure ==
+== running console_read_structure  ==
+
+running 6 tests
+test observer_is_read_only_and_injection_requires_witness ... ok
+test both_architectures_score_all_console_arms ... ok
+test same_guard_check_prepare_and_common_enqueue_wake ... ok
+test data_signal_and_immediate_controls_remain_observable ... ok
+test device_modes_poll_and_non_sleeping_device_api ... ok
+test production_input_inject_control_requires_actual_rejection ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+

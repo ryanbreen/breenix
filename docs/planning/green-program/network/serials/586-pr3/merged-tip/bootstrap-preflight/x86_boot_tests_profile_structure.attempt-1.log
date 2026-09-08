@@ -1,0 +1,17 @@
+== compiling x86_boot_tests_profile_structure ==
+== running x86_boot_tests_profile_structure  ==
+
+running 10 tests
+test gate_builds_only_boot_tests_and_reuses_cohort_pins ... ok
+test x86_oracle_allows_the_same_cohort_startup_window ... ok
+test context_fork_is_profile_independent ... ok
+test mutation_missing_completion_is_rejected ... ok
+test supplied_page_table_fork_is_profile_independent ... ok
+test mutation_testing_only_cow_is_rejected ... ok
+test mutation_cow_error_before_parent_restore_is_rejected ... ok
+test mutation_context_cow_error_before_restore_is_rejected ... ok
+test mutation_testing_only_context_fork_is_rejected ... ok
+test oracle_scorer_distinguishes_gdt_setup_from_faults_without_weakening_arms ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
+
