@@ -40,8 +40,10 @@ stage list and shown alongside, but does not block moving on.
 
 The non-test modes build the kernel with no features, exactly like the prod-profile gate,
 and pass the mode to it with `-fw_cfg name=opt/breenix/mode,string=MODE`. The kernel
-prints `[boot] Boot mode: MODE` (`default` when none is given, which runs `/sbin/init`
-with no arguments, as before). A mode's stages for a milestone are `stages[MODE]` when
+prints `[boot] Boot mode: MODE` for the mode that runs: `default` when none is given,
+which runs `/sbin/init` with no arguments, as before. An unknown mode, or any mode given
+to the testing kernel, also runs `default`, and the kernel notes the ignored request on
+its own line. A mode's stages for a milestone are `stages[MODE]` when
 present, else `stages["aarch64"]` when the milestone has `"kernel": true`; otherwise the
 mode does not exercise that milestone.
 

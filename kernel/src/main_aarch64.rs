@@ -92,8 +92,10 @@ impl BootMode {
     }
 }
 
-/// Read the boot mode from fw_cfg and print the one `[boot] Boot mode:` line.
-/// A `testing` kernel always runs its test loader, so it reports and ignores the mode.
+/// Read the boot mode from fw_cfg and print the one `[boot] Boot mode: <mode>` line,
+/// naming the mode that actually runs. An unknown request, or any request to a
+/// `testing` kernel (which always runs its test loader), runs `default` and is noted
+/// on a separate line.
 #[cfg(target_arch = "aarch64")]
 fn read_boot_mode() -> BootMode {
     // fw_cfg exists only on QEMU (its MMIO window is absent on Parallels).
@@ -108,19 +110,21 @@ fn read_boot_mode() -> BootMode {
         Some("desktop") => BootMode::Desktop,
         _ => BootMode::Default,
     };
-    match requested.as_deref() {
+    let mode = match requested.as_deref() {
         Some(other) if mode == BootMode::Default && !other.is_empty() && other != "default" => {
-            serial_println!("[boot] Boot mode: default (unknown mode {:?})", other);
+            serial_println!("[boot] Ignoring unknown boot mode {:?}", other);
+            BootMode::Default
         }
         _ if cfg!(feature = "testing") && mode != BootMode::Default => {
             serial_println!(
-                "[boot] Boot mode: {} (ignored by the testing kernel)",
+                "[boot] Ignoring boot mode {:?}: the testing kernel runs its test loader",
                 mode.name()
             );
-            return BootMode::Default;
+            BootMode::Default
         }
-        _ => serial_println!("[boot] Boot mode: {}", mode.name()),
-    }
+        _ => mode,
+    };
+    serial_println!("[boot] Boot mode: {}", mode.name());
     mode
 }
 
