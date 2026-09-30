@@ -3,12 +3,17 @@
 # console on this terminal. In the default `tests` mode this is the boot-path gate
 # (docs/boot-path.md) with a console you can watch and type into.
 #
-#   scripts/boot-interactive.sh [--mode MODE] [--serial-log FILE] [--idle-exit SECONDS]
-#                               [--display | --no-display] [--no-build]
+#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--serial-log FILE]
+#                               [--idle-exit SECONDS] [--display | --no-display]
+#                               [--qmp SOCKET] [--fbconsole log] [--no-build]
 #
 #   --mode MODE          tests (default): the testing kernel and its test loader
-#                        probe | shell | desktop: the production kernel, told the mode via
-#                        -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md)
+#                        probe | shell | desktop | program: the production kernel, told the mode
+#                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md)
+#   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
+#   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
+#                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
+#   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
 #   --serial-log FILE    also write everything the guest prints to FILE (default: $TMPDIR/breenix-boot/serial.txt)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 = never)
 #   --display            open QEMU's display window as well (default: serial only; on for desktop)
@@ -17,6 +22,7 @@
 #
 # Ctrl-A X quits QEMU; Ctrl-A C toggles the QEMU monitor. Ctrl-C goes to the guest.
 # Each step prints a "==> " line so a watcher can tell building from booting.
+# --help prints this header.
 
 set -euo pipefail
 
@@ -26,26 +32,45 @@ IDLE_EXIT=300
 DISPLAY_MODE=
 BUILD=1
 MODE=tests
+PROGRAM=
+QMP_SOCKET=
+FBCONSOLE=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--serial-log|--idle-exit)
+        --mode|--program|--serial-log|--idle-exit|--qmp|--fbconsole)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
         --mode) MODE="$2"; shift 2 ;;
+        --program) PROGRAM="$2"; shift 2 ;;
+        --qmp) QMP_SOCKET="$2"; shift 2 ;;
+        --fbconsole) FBCONSOLE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;
         --display) DISPLAY_MODE=cocoa; shift ;;
         --no-display) DISPLAY_MODE=none; shift ;;
         --no-build) BUILD=0; shift ;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^# --help/p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 case "$MODE" in
-    tests|probe|shell|desktop) ;;
-    *) echo "unknown mode: $MODE (expected tests, probe, shell or desktop)" >&2; exit 2 ;;
+    tests|probe|shell|desktop|program) ;;
+    *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop or program)" >&2; exit 2 ;;
+esac
+if [ "$MODE" = program ]; then
+    case "$PROGRAM" in
+        /*) ;;
+        "") echo "--mode program needs --program PATH" >&2; exit 2 ;;
+        *) echo "--program needs an absolute guest path, got: $PROGRAM" >&2; exit 2 ;;
+    esac
+elif [ -n "$PROGRAM" ]; then
+    echo "--program is only for --mode program" >&2; exit 2
+fi
+case "$FBCONSOLE" in
+    ""|log) ;;
+    *) echo "unknown --fbconsole value: $FBCONSOLE (expected log)" >&2; exit 2 ;;
 esac
 if [ -z "$DISPLAY_MODE" ]; then
     if [ "$MODE" = desktop ]; then DISPLAY_MODE=cocoa; else DISPLAY_MODE=none; fi
@@ -57,13 +82,25 @@ if [ "$MODE" != tests ]; then
     MODE_ARGS=(-fw_cfg "name=opt/breenix/mode,string=$MODE")
     KERNEL_FEATURES=()
 fi
+if [ "$MODE" = program ]; then
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/program,string=$PROGRAM")
+fi
+if [ -n "$FBCONSOLE" ]; then
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/fbconsole,string=$FBCONSOLE")
+fi
+QMP_ARGS=()
+if [ -n "$QMP_SOCKET" ]; then
+    case "$QMP_SOCKET" in /*) ;; *) QMP_SOCKET="$PWD/$QMP_SOCKET" ;; esac
+    rm -f "$QMP_SOCKET"
+    QMP_ARGS=(-qmp "unix:$QMP_SOCKET,server=on,wait=off")
+fi
 case "$SERIAL_LOG" in /*) ;; *) SERIAL_LOG="$PWD/$SERIAL_LOG" ;; esac
 
 cd "$ROOT"
 KERNEL="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 DISK="$ROOT/target/ext2-aarch64.img"
 
-echo "==> Mode: $MODE"
+if [ "$MODE" = program ]; then echo "==> Mode: program $PROGRAM"; else echo "==> Mode: $MODE"; fi
 if [ "$BUILD" -eq 1 ]; then
     echo "==> Building userspace"
     userspace/programs/build.sh --arch aarch64
@@ -92,6 +129,7 @@ source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
 qemu_host_lock_acquire
 
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
+[ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $QMP_SOCKET out.png)"
 # Without job control a background job's stdin is /dev/null, so hand it the terminal explicitly.
 exec 3<&0
 qemu-system-aarch64 \
@@ -99,6 +137,7 @@ qemu-system-aarch64 \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
+    ${QMP_ARGS[@]+"${QMP_ARGS[@]}"} \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
