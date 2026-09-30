@@ -419,6 +419,10 @@ name = "init"
 path = "src/init.rs"
 
 [[bin]]
+name = "probe"
+path = "src/probe.rs"
+
+[[bin]]
 name = "itimer_test"
 path = "src/itimer_test.rs"
 
