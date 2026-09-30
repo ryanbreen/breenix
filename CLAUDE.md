@@ -1,5 +1,12 @@
 # Breenix OS
 
+## Boot path program (read first)
+
+Bring-up work follows `docs/boot-path.md`: one milestone at a time, in boot order, each
+gated by a single ARM64 `--features testing` boot that prints the milestone's stages from
+`docs/boot-path.json`. For that work the one-boot gate replaces the soak, repeated-boot,
+ratchet and evidence-document requirements elsewhere in this file.
+
 ## Project Overview
 
 Breenix is a production-quality x86_64 operating system kernel written in Rust. This is not a toy or learning project - we follow Linux/FreeBSD standard practices and prioritize quality over speed.
