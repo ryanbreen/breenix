@@ -29,6 +29,10 @@ MODE=tests
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --mode|--serial-log|--idle-exit)
+            [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
+    esac
+    case "$1" in
         --mode) MODE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;
