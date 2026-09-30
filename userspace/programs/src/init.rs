@@ -98,6 +98,14 @@ fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
+    // The kernel passes a boot mode as argv[1] (`shell` or `desktop`); no argument is the
+    // full boot below.
+    match std::env::args().nth(1).as_deref() {
+        Some("shell") => run_shell_mode(),
+        Some("desktop") => run_desktop_mode(),
+        _ => {}
+    }
+
     // The boot gates accept on the liveness service's marker: spawn it before the
     // exec smoke so gate acceptance never sits behind a spawn+exec+wait round trip.
     #[cfg(target_arch = "aarch64")]
@@ -160,6 +168,77 @@ fn main() {
             }
         }
     }
+}
+
+/// Boot modes (`init shell`, `init desktop`): reap one child, blocking. Returns its PID,
+/// or None after a one-second pause when waitpid fails (no children yet).
+fn reap_one() -> Option<i32> {
+    let mut status: i32 = 0;
+    match waitpid(-1, &mut status as *mut i32, 0) {
+        Ok(pid) => {
+            let sig = status & 0x7F;
+            let exit_code = (status >> 8) & 0xFF;
+            if sig != 0 {
+                print!("[init] Process {} killed by signal {}\n", pid.raw(), sig);
+            } else {
+                print!("[init] Process {} exited (code {})\n", pid.raw(), exit_code);
+            }
+            Some(pid.raw() as i32)
+        }
+        Err(_) => {
+            sleep_one_second();
+            None
+        }
+    }
+}
+
+fn reap_forever() -> ! {
+    loop {
+        reap_one();
+    }
+}
+
+fn sleep_one_second() {
+    let ts = libbreenix::types::Timespec {
+        tv_sec: 1,
+        tv_nsec: 0,
+    };
+    let _ = libbreenix::time::nanosleep(&ts);
+}
+
+/// `init shell`: an interactive bsh on the console, respawned whenever it exits. No
+/// services, oracles or smoke tests.
+fn run_shell_mode() -> ! {
+    print!("[init] mode shell\n");
+    print!("[init] shell ready\n");
+    loop {
+        match spawn(b"/bin/bsh\0") {
+            Ok(shell) => {
+                let shell = shell.raw() as i32;
+                while reap_one() != Some(shell) {}
+                print!("[init] shell exited; respawning\n");
+            }
+            Err(e) => {
+                print!("[init] Failed to spawn /bin/bsh: {}\n", e);
+            }
+        }
+        // A shell that dies at once must not turn this loop into a spin.
+        sleep_one_second();
+    }
+}
+
+/// `init desktop`: the window manager and a terminal window, then reap. No oracles or
+/// smoke tests.
+fn run_desktop_mode() -> ! {
+    print!("[init] mode desktop\n");
+    const DESKTOP: &[&[u8]] = &[b"/bin/bwm\0", b"/bin/bterm\0"];
+    for path in DESKTOP {
+        if let Err(e) = spawn(path) {
+            print!("[init] Warning: failed to spawn desktop service: {}\n", e);
+        }
+    }
+    print!("[init] desktop services started\n");
+    reap_forever();
 }
 
 /// Run the #575 block-EINTR oracle first: its marker is a hard gate condition on every
