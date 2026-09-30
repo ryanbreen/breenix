@@ -133,7 +133,9 @@ fn check(index: usize) -> Result<(), &'static str> {
             let (reader, writer) = io::pipe().map_err(|_| "pipe failed")?;
             let written = io::write(writer, b"p");
             let mut fds = [PollFd::new(reader, poll_events::POLLIN)];
-            let ready = io::poll(&mut fds, 100);
+            // The byte is already in the pipe, so readiness needs no wait; a zero timeout
+            // keeps this check non-blocking even when run inline.
+            let ready = io::poll(&mut fds, 0);
             let _ = io::close(reader);
             let _ = io::close(writer);
             if written.ok() == Some(1) && ready.ok() == Some(1)
@@ -220,38 +222,133 @@ fn exec_check(path: &[u8], argv: Option<&[*const u8; 3]>) -> Result<(), &'static
     }
 }
 
-fn monotonic_ms() -> Option<i128> { time::now_monotonic().ok().map(|ts| ts.as_nanos() / 1_000_000) }
+/// Checks whose worst case is one bounded syscall. Only these run inline in PID 1 when
+/// fork is unavailable; the rest wait on a sleep, another process, a socket or the disk,
+/// and without a supervising child nothing could stop them hanging the probe.
+const INLINE_SAFE: [bool; 16] = [
+    true, true, false, true, true, false, false, false,
+    false, true, true, false, false, true, false, true,
+];
+const LIMIT_NS: i128 = 2_000_000_000;
+const REAP_LIMIT_NS: i128 = 500_000_000;
+/// Consecutive polls with the monotonic clock unreadable or not moving before the
+/// supervisor stops waiting on it. A working clock moves long before this is reached.
+const STALLED_POLLS: u32 = 200_000;
 
-fn supervised_check(index: usize) -> (Result<(), &'static str>, bool) {
+fn monotonic_ns() -> Option<i128> { time::now_monotonic().ok().map(|ts| ts.as_nanos()) }
+
+/// Measures a time limit on the monotonic clock. `expired` is true once the limit has
+/// passed, or once the clock has stopped (or never read) for `STALLED_POLLS` polls.
+struct Deadline { start: Option<i128>, last: Option<i128>, stalled: u32, limit: i128 }
+
+enum Expiry { Running, Elapsed, ClockStopped }
+
+impl Deadline {
+    fn new(limit: i128) -> Self {
+        let now = monotonic_ns();
+        Deadline { start: now, last: now, stalled: 0, limit }
+    }
+
+    fn poll(&mut self) -> Expiry {
+        let now = monotonic_ns();
+        if self.start.is_none() { self.start = now; }
+        if self.start.zip(now).is_some_and(|(a, b)| b - a >= self.limit) { return Expiry::Elapsed; }
+        if now.is_some() && now != self.last { self.last = now; self.stalled = 0; }
+        else { self.stalled += 1; }
+        if self.stalled >= STALLED_POLLS { Expiry::ClockStopped } else { Expiry::Running }
+    }
+}
+
+/// Kill a check child that has run too long and reap it, saying truthfully if either failed.
+fn stop_child(pid: i32, reason: &str) -> String {
+    if signal::kill(pid, SIGKILL).is_err() {
+        return format!("{reason}; SIGKILL failed, child may still run");
+    }
+    let mut deadline = Deadline::new(REAP_LIMIT_NS);
+    loop {
+        let mut status = 0;
+        match process::waitpid(pid, &mut status, WNOHANG) {
+            Ok(done) if done.raw() as i32 == pid => return reason.to_string(),
+            Err(_) => return format!("{reason}; waitpid failed after SIGKILL"),
+            _ => {}
+        }
+        if !matches!(deadline.poll(), Expiry::Running) {
+            return format!("{reason}; child still alive after SIGKILL");
+        }
+        let _ = process::yield_now();
+    }
+}
+
+/// The child's own failure reason, if it wrote one before exiting. Poll with a zero
+/// timeout first: a grandchild may still hold the write end, so a bare read could block.
+fn read_reason(reader: Fd) -> Option<String> {
+    let mut fds = [PollFd::new(reader, poll_events::POLLIN)];
+    if io::poll(&mut fds, 0).ok()? == 0 || fds[0].revents & poll_events::POLLIN == 0 {
+        return None;
+    }
+    let mut buf = [0u8; 96];
+    let n = io::read(reader, &mut buf).ok().filter(|&n| n > 0)?;
+    std::str::from_utf8(&buf[..n]).ok().map(String::from)
+}
+
+fn child_verdict(status: i32, reader: Option<Fd>) -> Result<(), String> {
+    if process::wifexited(status) && process::wexitstatus(status) == 0 { return Ok(()); }
+    if let Some(reason) = reader.and_then(read_reason) { return Err(reason); }
+    if process::wifexited(status) {
+        Err(format!("check exited {} without a reason", process::wexitstatus(status)))
+    } else if process::wifsignaled(status) {
+        Err(format!("check killed by signal {}", process::wtermsig(status)))
+    } else {
+        Err("check ended abnormally".to_string())
+    }
+}
+
+/// Run one check in a child and give it `LIMIT_NS`. Returns the result and whether it ran
+/// inline because fork was unavailable (fork-failure reasons already say so).
+fn supervised_check(index: usize) -> (Result<(), String>, bool) {
+    // Close-on-exec so exec'd grandchildren never hold the reason channel open.
+    let channel = io::pipe2(io::status_flags::O_CLOEXEC).ok();
     match process::fork() {
-        Ok(ForkResult::Child) => process::exit(if check(index).is_ok() { 0 } else { 1 }),
+        Ok(ForkResult::Child) => {
+            if let Some((reader, _)) = channel { let _ = io::close(reader); }
+            let result = check(index);
+            if let (Err(reason), Some((_, writer))) = (result, channel) {
+                let _ = io::write(writer, reason.as_bytes());
+            }
+            process::exit(if result.is_ok() { 0 } else { 1 })
+        }
         Ok(ForkResult::Parent(pid)) => {
-            let started = monotonic_ms();
-            let mut spins = 0u32;
-            loop {
+            let pid = pid.raw() as i32;
+            if let Some((_, writer)) = channel { let _ = io::close(writer); }
+            let mut deadline = Deadline::new(LIMIT_NS);
+            let result = loop {
                 let mut status = 0;
-                match process::waitpid(pid.raw() as i32, &mut status, WNOHANG) {
-                    Ok(done) if done.raw() == pid.raw() => {
-                        return (if process::wifexited(status) && process::wexitstatus(status) == 0 {
-                            Ok(())
-                        } else { Err("verification failed") }, false);
+                match process::waitpid(pid, &mut status, WNOHANG) {
+                    Ok(done) if done.raw() as i32 == pid => {
+                        break child_verdict(status, channel.map(|(reader, _)| reader));
                     }
-                    Err(_) => return (Err("waitpid failed"), false),
+                    Err(_) => break Err(stop_child(pid, "waitpid failed")),
                     _ => {}
                 }
-                spins += 1;
-                if started.zip(monotonic_ms()).is_some_and(|(a, b)| b - a >= 2000)
-                    || spins >= 200_000 {
-                    let _ = signal::kill(pid.raw() as i32, SIGKILL);
-                    let _ = process::waitpid(pid.raw() as i32, &mut status, WNOHANG);
-                    return (Err("timeout"), false);
+                match deadline.poll() {
+                    Expiry::Running => {}
+                    Expiry::Elapsed => break Err(stop_child(pid, "timeout")),
+                    Expiry::ClockStopped => {
+                        break Err(stop_child(pid, "timeout (clock stopped; 2 s limit unmeasurable)"));
+                    }
                 }
                 let _ = process::yield_now();
-            }
+            };
+            if let Some((reader, _)) = channel { let _ = io::close(reader); }
+            (result, false)
         }
         Err(_) => {
-            // Fork failure is a finding itself; inline checks are still useful where possible.
-            (check(index), true)
+            if let Some((reader, writer)) = channel { let _ = io::close(reader); let _ = io::close(writer); }
+            if INLINE_SAFE[index] {
+                (check(index).map_err(|reason| format!("fork unavailable; inline {reason}")), true)
+            } else {
+                (Err("fork unavailable; not run inline because it could block".to_string()), true)
+            }
         }
     }
 }
@@ -309,9 +406,8 @@ fn main() {
                 println!("\x1b[32m✓\x1b[0m {} — {}: {}{}", IDS[index], MEANINGS[index], DETAILS[index], note);
             }
             Err(reason) => {
-                let note = if inline { "fork unavailable; inline " } else { "" };
-                println!("PROBE {} FAIL {}{}", IDS[index], note, reason);
-                println!("\x1b[31m✗\x1b[0m {} — {}: {}{}", IDS[index], MEANINGS[index], note, reason);
+                println!("PROBE {} FAIL {}", IDS[index], reason);
+                println!("\x1b[31m✗\x1b[0m {} — {}: {}", IDS[index], MEANINGS[index], reason);
             }
         }
         if let Some(ref mut screen) = fb { let _ = dashboard(&states, screen); }
