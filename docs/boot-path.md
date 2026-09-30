@@ -1,0 +1,44 @@
+# The boot path
+
+Breenix is brought up one milestone at a time, in the order a boot exercises it: arch
+bring-up, interrupts and time, devices, filesystems, the scheduler, the first userspace
+process, then process lifecycle, signals and IPC, userspace filesystem work, the TTY and
+shell, networking, and runtimes. `docs/boot-path.json` lists the milestones and, for
+each arch, which stages of the boot-stage catalog (`xtask/src/boot_stages.rs`) its gate
+needs. The catalog stays the only place a stage's serial marker, failure meaning and
+check hint are written down; the milestone file names stages and adds a marker only
+where the catalog has none.
+
+## The gate
+
+A milestone passes when **one** `--features testing` boot on ARM64 prints every one of
+its stages, with no kernel panic, soft lockup or EL1 abort (the `fatal` patterns). That
+is the whole gate:
+
+```bash
+userspace/programs/build.sh --arch aarch64 && scripts/create_ext2_disk.sh --arch aarch64
+docker/qemu/run-aarch64-testing-profile-boot-test.sh 1   # serial: $BREENIX_GATE_TMP/breenix_aarch64_testing_profile/1/serial.txt
+```
+
+From a fresh worktree that is about a minute and a half. x86-64 is scored against its own
+stage list and shown alongside, but does not block moving on.
+
+## Focus and backtracking
+
+The focus is the earliest milestone whose gate does not pass. Because a boot runs every
+earlier stage on its way, every boot re-checks every earlier gate for free: if a change
+breaks an earlier milestone, that milestone stops passing and becomes the focus again.
+Nothing else tracks regressions.
+
+## How to work a milestone
+
+- Fix the first stage that does not appear. Its failure meaning and check hint in the
+  catalog say where to look; the last lines of the serial say where the boot stopped.
+- Prove the fix with one build and one boot, and read the serial.
+- Do not add soak runs, repeated-boot batteries, ratchets, oracles, census lines or
+  evidence documents to pass a gate. Repeating a boot is for chasing a specific flake,
+  never for passing.
+- When a milestone needs a stage the catalog does not have, add the marker to the kernel
+  and the catalog, and name it in `boot-path.json`.
+
+Vigil's Breenix page reads this file, runs boots, and shows the ladder live.
