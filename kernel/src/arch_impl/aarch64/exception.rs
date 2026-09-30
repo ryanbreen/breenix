@@ -343,6 +343,7 @@ fn handle_unhandled_el1_exception(frame: &Aarch64ExceptionFrame, ec: u32, esr: u
         let fatal_uart_guard = acquire_fatal_postmortem_uart();
         dump_el1_first_fault(frame, ec, esr, far, cpu_id, &evidence);
         drop(fatal_uart_guard);
+        crate::graphics::boot_screen::show_fault("Unhandled exception", esr, far, frame.elr);
     }
 
     loop {
@@ -1074,6 +1075,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64, from_el0);
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
+            if !from_el0 {
+                crate::graphics::boot_screen::show_fault("Data abort", esr, far, frame_ref.elr);
+            }
 
             // EL1 may have faulted while holding SCHEDULER, so termination is
             // non-blocking there. Preserve the established EL0 path exactly.
@@ -1192,6 +1196,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
 
                     dump_fatal_postmortem_once("INSTRUCTION_ABORT");
+                    crate::graphics::boot_screen::show_fault(
+                        "Instruction abort",
+                        esr,
+                        far,
+                        frame_ref.elr,
+                    );
                 }
 
                 // Register dump for EL0 instruction abort at low address —
@@ -1870,6 +1880,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
             drop(fatal_uart_guard);
+            crate::graphics::boot_screen::show_fault(
+                "Unhandled exception",
+                esr,
+                far,
+                frame_ref.elr,
+            );
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;

@@ -149,6 +149,24 @@ pub fn flush_dirty_rect(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static s
     }
 }
 
+/// Flush a rectangle to the display without blocking on any lock.
+///
+/// For fatal paths (panic, EL1 fault). Returns false when the flush could not be
+/// issued: the GPU lock is held, or the backend (VirtIO GPU PCI) has no
+/// non-blocking path.
+pub fn try_flush_rect_nonblocking(x: u32, y: u32, w: u32, h: u32) -> bool {
+    if is_gop_active() {
+        unsafe {
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
+        true
+    } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+        false
+    } else {
+        gpu_mmio::try_flush_rect(x, y, w, h)
+    }
+}
+
 /// Atomic fetch_min for u32 (CAS loop).
 #[inline]
 fn fetch_min_u32(atom: &AtomicU32, val: u32) {

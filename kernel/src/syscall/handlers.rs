@@ -4733,6 +4733,9 @@ pub fn sys_take_over_display() -> SyscallResult {
             }
         }
 
+        #[cfg(target_arch = "aarch64")]
+        let _ = crate::graphics::boot_screen::hand_over();
+
         // Tell the render thread to stop flushing the framebuffer.
         // BWM will handle all GPU operations via its own fb_flush() syscall.
         crate::graphics::render_task::set_display_taken();

@@ -93,3 +93,22 @@ pub fn read_all() -> alloc::string::String {
 
     alloc::string::String::from_utf8_lossy(&result).into_owned()
 }
+
+/// Copy the most recent log bytes (up to `buf.len()`) into `buf`, oldest first.
+///
+/// Allocation-free and lock-free, for the panic diagnostics screen. A write racing
+/// the copy can tear the oldest line; the caller treats the result as best effort.
+pub fn copy_tail(buf: &mut [u8]) -> usize {
+    if !is_ready() || buf.is_empty() {
+        return 0;
+    }
+    let head = LOG_HEAD.load(Ordering::Acquire);
+    let tail = LOG_TAIL.load(Ordering::Acquire);
+    let available = (tail + LOG_BUFFER_SIZE - head) % LOG_BUFFER_SIZE;
+    let count = available.min(buf.len());
+    let start = (tail + LOG_BUFFER_SIZE - count) % LOG_BUFFER_SIZE;
+    for (i, slot) in buf[..count].iter_mut().enumerate() {
+        *slot = unsafe { LOG_BUFFER[(start + i) % LOG_BUFFER_SIZE] };
+    }
+    count
+}

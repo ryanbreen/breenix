@@ -71,6 +71,7 @@ fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> 
 
 /// Which PID 1 a production boot launches. QEMU selects it with
 /// `-fw_cfg name=opt/breenix/mode,string=<mode>`; absent or unknown is `Default`.
+/// `program` also needs `-fw_cfg name=opt/breenix/program,string=<absolute path>`.
 #[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BootMode {
@@ -78,6 +79,7 @@ enum BootMode {
     Probe,
     Shell,
     Desktop,
+    Program,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -88,16 +90,19 @@ impl BootMode {
             BootMode::Probe => "probe",
             BootMode::Shell => "shell",
             BootMode::Desktop => "desktop",
+            BootMode::Program => "program",
         }
     }
 }
 
 /// Read the boot mode from fw_cfg and print the one `[boot] Boot mode: <mode>` line,
-/// naming the mode that actually runs. An unknown request, or any request to a
-/// `testing` kernel (which always runs its test loader), runs `default` and is noted
-/// on a separate line.
+/// naming the mode that actually runs (`program <path>` for program mode). An
+/// unknown request, a program request without an absolute program path, or any
+/// request to a `testing` kernel (which always runs its test loader), runs
+/// `default` and is noted on a separate line. Returns the program path for
+/// program mode.
 #[cfg(target_arch = "aarch64")]
-fn read_boot_mode() -> BootMode {
+fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
     // fw_cfg exists only on QEMU (its MMIO window is absent on Parallels).
     let requested = if kernel::platform_config::is_qemu() {
         kernel::drivers::fw_cfg::read_string("opt/breenix/mode")
@@ -108,6 +113,7 @@ fn read_boot_mode() -> BootMode {
         Some("probe") => BootMode::Probe,
         Some("shell") => BootMode::Shell,
         Some("desktop") => BootMode::Desktop,
+        Some("program") => BootMode::Program,
         _ => BootMode::Default,
     };
     let mode = match requested.as_deref() {
@@ -124,40 +130,118 @@ fn read_boot_mode() -> BootMode {
         }
         _ => mode,
     };
-    serial_println!("[boot] Boot mode: {}", mode.name());
-    mode
+    let program = if mode == BootMode::Program {
+        match kernel::drivers::fw_cfg::read_string("opt/breenix/program") {
+            Some(path) if path.starts_with('/') => Some(path),
+            Some(path) if !path.is_empty() => {
+                serial_println!(
+                    "[boot] Ignoring boot mode \"program\": program path {:?} is not absolute",
+                    path
+                );
+                None
+            }
+            _ => {
+                serial_println!(
+                    "[boot] Ignoring boot mode \"program\": no program given (-fw_cfg name=opt/breenix/program)"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mode = if mode == BootMode::Program && program.is_none() {
+        BootMode::Default
+    } else {
+        mode
+    };
+    match program.as_deref() {
+        Some(path) => {
+            serial_println!("[boot] Boot mode: program {}", path);
+            boot_screen::set_mode(format_args!("program {}", path));
+        }
+        None => {
+            serial_println!("[boot] Boot mode: {}", mode.name());
+            if cfg!(feature = "testing") {
+                boot_screen::set_mode(format_args!("tests (testing kernel)"));
+            } else {
+                boot_screen::set_mode(format_args!("{}", mode.name()));
+            }
+        }
+    }
+    (mode, program)
+}
+
+/// Whether `-fw_cfg name=opt/breenix/fbconsole,string=log` asks for kernel log
+/// lines on the screen. Anything else keeps the boot screen, noting a bad value.
+#[cfg(target_arch = "aarch64")]
+fn read_fbconsole_log() -> bool {
+    if !kernel::platform_config::is_qemu() {
+        return false;
+    }
+    match kernel::drivers::fw_cfg::read_string("opt/breenix/fbconsole").as_deref() {
+        Some("log") => {
+            serial_println!("[boot] fbconsole: log (kernel log lines on screen)");
+            true
+        }
+        None | Some("") => false,
+        Some(other) => {
+            serial_println!(
+                "[boot] Ignoring unknown fbconsole {:?} (expected log)",
+                other
+            );
+            false
+        }
+    }
 }
 
 /// The program a boot mode launches as PID 1, and its argv.
 #[cfg(target_arch = "aarch64")]
 struct InitLaunch {
     path: &'static str,
-    argv: &'static [&'static [u8]],
+    argv: alloc::vec::Vec<alloc::vec::Vec<u8>>,
 }
 
 #[cfg(target_arch = "aarch64")]
 impl InitLaunch {
-    const DEFAULT: InitLaunch = InitLaunch {
-        path: "/sbin/init",
-        argv: &[b"/sbin/init"],
-    };
-
-    fn for_mode(mode: BootMode) -> InitLaunch {
-        match mode {
-            BootMode::Default => InitLaunch::DEFAULT,
-            BootMode::Probe => InitLaunch {
-                path: "/sbin/probe",
-                argv: &[b"/sbin/probe"],
-            },
-            BootMode::Shell => InitLaunch {
-                path: "/sbin/init",
-                argv: &[b"init", b"shell"],
-            },
-            BootMode::Desktop => InitLaunch {
-                path: "/sbin/init",
-                argv: &[b"init", b"desktop"],
-            },
+    fn new(path: &'static str, argv: &[&[u8]]) -> InitLaunch {
+        InitLaunch {
+            path,
+            argv: argv.iter().map(|arg| arg.to_vec()).collect(),
         }
+    }
+
+    fn default_init() -> InitLaunch {
+        InitLaunch::new("/sbin/init", &[b"/sbin/init"])
+    }
+
+    fn for_mode(mode: BootMode, program: Option<&str>) -> InitLaunch {
+        match mode {
+            BootMode::Default => InitLaunch::default_init(),
+            BootMode::Probe => InitLaunch::new("/sbin/probe", &[b"/sbin/probe"]),
+            BootMode::Shell => InitLaunch::new("/sbin/init", &[b"init", b"shell"]),
+            BootMode::Desktop => InitLaunch::new("/sbin/init", &[b"init", b"desktop"]),
+            BootMode::Program => InitLaunch::new(
+                "/sbin/probe",
+                &[b"probe", b"--run", program.unwrap_or("").as_bytes()],
+            ),
+        }
+    }
+
+    /// Launch this program from its pre-loaded ELF (see `launch_init_from_elf`).
+    fn launch(
+        &self,
+        elf_data: alloc::vec::Vec<u8>,
+    ) -> Result<core::convert::Infallible, &'static str> {
+        let argv: alloc::vec::Vec<&[u8]> = self.argv.iter().map(|arg| arg.as_slice()).collect();
+        let mut shown = alloc::string::String::from(self.path);
+        for arg in self.argv.iter().skip(1) {
+            shown.push(' ');
+            shown.push_str(core::str::from_utf8(arg).unwrap_or("?"));
+        }
+        boot_screen::stage(Stage::StartingPid1);
+        boot_screen::set_status(format_args!("Starting {}", shown));
+        launch_init_from_elf(elf_data, self.path, &argv)
     }
 }
 
@@ -428,9 +512,9 @@ use kernel::drivers::virtio::input_mmio;
 #[cfg(target_arch = "aarch64")]
 use kernel::graphics::arm64_fb;
 #[cfg(target_arch = "aarch64")]
-use kernel::graphics::particles;
+use kernel::graphics::boot_screen::{self, Stage};
 #[cfg(target_arch = "aarch64")]
-use kernel::graphics::primitives::{draw_vline, fill_rect, Color, Rect};
+use kernel::graphics::particles;
 #[cfg(target_arch = "aarch64")]
 use kernel::serial;
 
@@ -583,6 +667,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("  BUILD_ID: {}", env!("BREENIX_BUILD_ID"));
     serial_println!("========================================");
     serial_println!();
+    boot_screen::stage(Stage::KernelStarting);
 
     // #596 anti-vacuity: name the inline-save resume-point oracle and whether
     // the forced-ERET repro knob is compiled in. Emitted after serial init, so
@@ -612,8 +697,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Print CPU info
     let el = current_exception_level();
     serial_println!("[boot] Current exception level: EL{}", el);
+    if el == 1 {
+        boot_screen::stage(Stage::RunningAtEl1);
+    }
 
     serial_println!("[boot] MMU already enabled (high-half kernel)");
+    boot_screen::stage(Stage::MmuEnabled);
 
     // Zero the boot identity map L0 entry to prevent new TLB entries from
     // being created for the user VA range while we're still in kernel init.
@@ -640,6 +729,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::memory::frame_allocator::init_frame_ledger();
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
+    boot_screen::stage(Stage::MemoryReady);
 
     // Initialize BTRT (requires memory and serial)
     #[cfg(feature = "btrt")]
@@ -663,6 +753,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         freq,
         freq / 1_000_000
     );
+    boot_screen::stage(Stage::TimerCalibrated);
 
     // Initialize RTC for wall-clock time (PL031 on QEMU virt)
     serial_println!("[boot] Initializing PL031 RTC...");
@@ -671,11 +762,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Read current timestamp
     let ts = timer::rdtsc();
     serial_println!("[boot] Current timestamp: {}", ts);
+    boot_screen::stage(Stage::RtcRead);
 
     // Initialize GIC
     serial_println!("[boot] Initializing GIC...");
     Gicv2::init();
     serial_println!("[boot] GIC initialized (version {})", gic::active_version());
+    boot_screen::stage(Stage::GicInitialized);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_GIC_INIT);
 
@@ -693,6 +786,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::arch_impl::aarch64::gic::dump_irq_state(33);
 
     serial_println!("[boot] UART interrupts enabled");
+    boot_screen::stage(Stage::UartInterrupts);
 
     // Enable interrupts
     serial_println!("[boot] Enabling interrupts...");
@@ -701,6 +795,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
     let irq_enabled = Aarch64Cpu::interrupts_enabled();
     serial_println!("[boot] Interrupts enabled: {}", irq_enabled);
+    boot_screen::stage(Stage::InterruptsEnabled);
 
     // Read display resolution from fw_cfg before driver init (QEMU only;
     // fw_cfg device at 0x09020000 doesn't exist on Parallels)
@@ -723,7 +818,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Initializing device drivers...");
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
+    boot_screen::stage(Stage::DriversInitialized);
     kernel::drivers::run_post_init_self_tests();
+    boot_screen::stage(Stage::DriverSelfTests);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
@@ -740,6 +837,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     match kernel::fs::ext2::init_root_fs() {
         Ok(()) => {
             serial_println!("[boot] ext2 root filesystem mounted");
+            boot_screen::stage(Stage::Ext2Mounted);
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
@@ -769,10 +867,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize devfs (/dev virtual filesystem)
     kernel::fs::devfs::init();
     serial_println!("[boot] devfs initialized at /dev");
+    boot_screen::stage(Stage::Devfs);
 
     // Initialize devptsfs (/dev/pts pseudo-terminal slave filesystem)
     kernel::fs::devptsfs::init();
     serial_println!("[boot] devptsfs initialized at /dev/pts");
+    boot_screen::stage(Stage::Devpts);
 
     // Detect CPU features (must be before procfs so /proc/cpuinfo has real data)
     kernel::arch_impl::aarch64::cpuinfo::init();
@@ -789,12 +889,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize procfs (/proc virtual filesystem)
     kernel::fs::procfs::init();
     serial_println!("[boot] procfs initialized at /proc");
+    boot_screen::stage(Stage::Procfs);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PROCFS_INIT);
 
     // Initialize TTY subsystem (console + PTY infrastructure)
     kernel::tty::init();
     serial_println!("[boot] TTY subsystem initialized");
+    boot_screen::stage(Stage::Tty);
 
     // Initialize graphics based on available hardware (capability-based detection)
     //
@@ -906,6 +1008,18 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Skip when VirGL owns the display — we don't want a competing 2D path.
     if has_display && !virgl_display {
         kernel::graphics::arm64_fb::upgrade_to_double_buffer();
+        // The screen shows the boot screen; kernel log lines stay on serial unless
+        // -fw_cfg name=opt/breenix/fbconsole,string=log asks for them on screen.
+        if read_fbconsole_log() {
+            kernel::graphics::log_console::start();
+        } else {
+            boot_screen::set_last_stage_label(if cfg!(feature = "testing") {
+                "Starting test programs"
+            } else {
+                "Starting PID 1"
+            });
+            boot_screen::show();
+        }
     }
 
     // Initialize input devices (capability-based detection)
@@ -938,6 +1052,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
     kernel::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
     serial_println!("[boot] Per-CPU data initialized");
+    boot_screen::stage(Stage::PerCpu);
 
     // Disable preemption for the boot sequence on CPU 0.
     // The timer interrupt fires while kernel_main is running and the scheduler
@@ -952,11 +1067,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Initializing process manager...");
     kernel::process::init();
     serial_println!("[boot] Process manager initialized");
+    boot_screen::stage(Stage::ProcessManager);
 
     // Initialize scheduler with an idle task
     serial_println!("[boot] Initializing scheduler...");
     init_scheduler();
     serial_println!("[boot] Scheduler initialized");
+    boot_screen::stage(Stage::Scheduler);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
 
@@ -1009,10 +1126,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // single-CPU, avoids both issues entirely.
     // (ext2 root filesystem was mounted above at init_root_fs().)
     // Probe mode pre-loads /sbin/probe the same way and falls back to /sbin/init.
-    let boot_mode = read_boot_mode();
-    let mut init_launch = InitLaunch::for_mode(boot_mode);
-    let probe_elf: Option<alloc::vec::Vec<u8>> = if boot_mode == BootMode::Probe && device_count > 0
-    {
+    let (boot_mode, program) = read_boot_mode();
+    let mut init_launch = InitLaunch::for_mode(boot_mode, program.as_deref());
+    let runs_probe = matches!(boot_mode, BootMode::Probe | BootMode::Program);
+    let probe_elf: Option<alloc::vec::Vec<u8>> = if runs_probe && device_count > 0 {
         serial_println!("[boot] Pre-loading /sbin/probe from ext2 (before timer)...");
         match read_init_from_ext2("/sbin/probe") {
             Ok(data) => {
@@ -1031,8 +1148,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     } else {
         None
     };
-    if boot_mode == BootMode::Probe && probe_elf.is_none() {
-        init_launch = InitLaunch::DEFAULT;
+    if runs_probe && probe_elf.is_none() {
+        init_launch = InitLaunch::default_init();
     }
     let init_elf: Option<alloc::vec::Vec<u8>> = if probe_elf.is_some() {
         probe_elf
@@ -1071,6 +1188,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Initializing timer interrupt...");
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
+    boot_screen::stage(Stage::TimerInterrupt);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
 
@@ -1438,6 +1556,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             "[smp] {} CPUs online",
             kernel::arch_impl::aarch64::smp::cpus_online()
         );
+        boot_screen::stage(Stage::SmpOnline);
         kernel::arch_impl::aarch64::gic::init_gicr_rdist_map(
             kernel::arch_impl::aarch64::smp::cpus_online() as usize,
         );
@@ -1591,6 +1710,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!();
     serial_println!("Hello from ARM64!");
     serial_println!();
+    boot_screen::stage(Stage::BootComplete);
 
     // Spawn particle animation thread (if graphics is available and not running boot tests)
     // This MUST be done BEFORE userspace loading because launch_init_from_elf never returns
@@ -1619,6 +1739,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     if device_count > 0 {
         serial_println!("[test] Loading test binaries from ext2...");
         load_test_binaries_from_ext2();
+        boot_screen::stage(Stage::StartingPid1);
         serial_println!("[test] Test processes loaded - will run via timer interrupts");
         serial_println!("[test] Entering scheduler idle loop");
         // Print shell prompt to serial before enabling interrupts.
@@ -1644,7 +1765,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     if device_count > 0 {
         if let Some(elf_data) = init_elf {
             serial_println!("[boot] Launching init from pre-loaded ELF...");
-            match launch_init_from_elf(elf_data, init_launch.path, init_launch.argv) {
+            match init_launch.launch(elf_data) {
                 Err(e) => {
                     serial_println!("[boot] Failed to launch pre-loaded init: {}", e);
                     serial_println!("[boot] Loading userspace init_shell from test disk...");
@@ -1665,7 +1786,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             match read_init_from_ext2(init_launch.path) {
                 Ok(elf_data) => {
                     serial_println!("[boot] Late ext2 read succeeded, launching init...");
-                    match launch_init_from_elf(elf_data, init_launch.path, init_launch.argv) {
+                    match init_launch.launch(elf_data) {
                         Err(e) => {
                             serial_println!("[boot] Failed to launch init: {}", e);
                             serial_println!(
@@ -1748,7 +1869,14 @@ fn load_test_binaries_from_ext2() {
     // Search paths for test binaries - try each in order
     let search_dirs = ["/bin", "/usr/local/cbin", "/usr/local/test/bin", "/sbin"];
 
-    for name in test_binaries {
+    for (index, name) in test_binaries.iter().enumerate() {
+        // Show which program is loading, so a hang names it on screen.
+        boot_screen::set_status(format_args!(
+            "Loading test programs {} of {}: {}",
+            index + 1,
+            test_binaries.len(),
+            name
+        ));
         // Load ELF from ext2 - acquire and release lock for each binary
         let elf_data = {
             let fs_guard = kernel::fs::ext2::root_fs_read();
@@ -1843,6 +1971,10 @@ fn load_test_binaries_from_ext2() {
         failed,
         test_binaries.len() - loaded - failed
     );
+    boot_screen::set_status(format_args!(
+        "Loaded {} test programs ({} failed); running them",
+        loaded, failed
+    ));
 }
 
 /// Initialize the scheduler with an idle thread (ARM64)
@@ -2135,42 +2267,10 @@ fn init_graphics() -> Result<(), &'static str> {
     let (width, height) = arm64_fb::dimensions().ok_or("Failed to get framebuffer dimensions")?;
     serial_println!("[graphics] Framebuffer: {}x{}", width, height);
 
-    // Calculate layout: 50/50 split with 4-pixel divider
-    let divider_width = 4usize;
-    let divider_x = width / 2;
-    let left_width = divider_x;
+    let left_width = width / 2;
 
-    // Get the framebuffer and draw initial frame
-    if let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() {
-        let mut fb_guard = fb.lock();
-
-        // Clear entire screen with dark background
-        fill_rect(
-            &mut *fb_guard,
-            Rect {
-                x: 0,
-                y: 0,
-                width: width as u32,
-                height: height as u32,
-            },
-            Color::rgb(15, 20, 35),
-        );
-
-        // Draw vertical divider
-        let divider_color = Color::rgb(60, 80, 100);
-        for i in 0..divider_width {
-            draw_vline(
-                &mut *fb_guard,
-                (divider_x + i) as i32,
-                0,
-                height as i32 - 1,
-                divider_color,
-            );
-        }
-
-        // Flush to display
-        fb_guard.flush();
-    }
+    // The boot screen (or the fbconsole=log console) is drawn once the
+    // framebuffer is double-buffered; see kernel_main.
 
     // Initialize particle system for left pane (animation will start later)
     // Leave a small margin from edges
@@ -2187,9 +2287,6 @@ fn init_graphics() -> Result<(), &'static str> {
     // This enables lock-free echo from interrupt context
     kernel::graphics::render_queue::init();
 
-    // Initialize log capture ring buffer for serial output tee
-    kernel::graphics::log_capture::init();
-
     serial_println!("[graphics] Split-screen terminal UI initialized");
     Ok(())
 }
@@ -2204,42 +2301,10 @@ fn init_gop_display() -> Result<(), &'static str> {
     let (width, height) = arm64_fb::dimensions().ok_or("Failed to get framebuffer dimensions")?;
     serial_println!("[graphics] GOP Framebuffer: {}x{}", width, height);
 
-    // Calculate layout: 50/50 split with 4-pixel divider
-    let divider_width = 4usize;
-    let divider_x = width / 2;
-    let left_width = divider_x;
+    let left_width = width / 2;
 
-    // Get the framebuffer and draw initial frame
-    if let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() {
-        let mut fb_guard = fb.lock();
-
-        // Clear entire screen with dark background
-        fill_rect(
-            &mut *fb_guard,
-            Rect {
-                x: 0,
-                y: 0,
-                width: width as u32,
-                height: height as u32,
-            },
-            Color::rgb(15, 20, 35),
-        );
-
-        // Draw vertical divider
-        let divider_color = Color::rgb(60, 80, 100);
-        for i in 0..divider_width {
-            draw_vline(
-                &mut *fb_guard,
-                (divider_x + i) as i32,
-                0,
-                height as i32 - 1,
-                divider_color,
-            );
-        }
-
-        // Flush to display
-        fb_guard.flush();
-    }
+    // The boot screen (or the fbconsole=log console) is drawn once the
+    // framebuffer is double-buffered; see kernel_main.
 
     // Initialize particle system for left pane
     let margin = 10;
@@ -2253,9 +2318,6 @@ fn init_gop_display() -> Result<(), &'static str> {
 
     // Initialize the render queue for deferred framebuffer rendering
     kernel::graphics::render_queue::init();
-
-    // Initialize log capture ring buffer for serial output tee
-    kernel::graphics::log_capture::init();
 
     serial_println!("[graphics] GOP split-screen terminal UI initialized");
     Ok(())
@@ -2299,6 +2361,10 @@ fn panic(info: &PanicInfo) -> ! {
     // shows -- so dropping it would narrow the evidence on the one path that
     // has it today.
     kernel::tracing::output::trace_dump_counters();
+
+    // Show the panic on screen too. Never blocks: skipped if the framebuffer or
+    // GPU lock is held (possibly by this CPU).
+    boot_screen::show_panic(info);
 
     loop {
         unsafe {

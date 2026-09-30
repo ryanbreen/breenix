@@ -2317,6 +2317,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // Read the command from userspace
     let cmd: FbDrawCmd = unsafe { core::ptr::read(cmd_ptr as *const FbDrawCmd) };
 
+    // Userspace is drawing: the kernel's boot screen gives the screen up. After a
+    // kernel failure the diagnostics screen keeps it.
+    #[cfg(target_arch = "aarch64")]
+    if !crate::graphics::boot_screen::hand_over() {
+        return SyscallResult::Err(super::ErrorCode::Busy as u64);
+    }
+
     // On ARM64, read fb_mmap info BEFORE acquiring SHELL_FRAMEBUFFER.
     // This prevents holding PROCESS_MANAGER (which disables interrupts on ARM64)
     // while also holding the framebuffer lock — that nested lock pattern caused
