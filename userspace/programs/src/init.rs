@@ -232,12 +232,19 @@ fn run_shell_mode() -> ! {
 fn run_desktop_mode() -> ! {
     print!("[init] mode desktop\n");
     const DESKTOP: &[&[u8]] = &[b"/bin/bwm\0", b"/bin/bterm\0"];
+    let mut started = 0;
     for path in DESKTOP {
-        if let Err(e) = spawn(path) {
-            print!("[init] Warning: failed to spawn desktop service: {}\n", e);
+        match spawn(path) {
+            Ok(_) => started += 1,
+            Err(e) => print!("[init] Warning: failed to spawn desktop service: {}\n", e),
         }
     }
-    print!("[init] desktop services started\n");
+    // The boot-path marker claims the desktop came up, so it prints only when it did.
+    if started == DESKTOP.len() {
+        print!("[init] desktop services started\n");
+    } else {
+        print!("[init] desktop services incomplete: {} of {} started\n", started, DESKTOP.len());
+    }
     reap_forever();
 }
 
