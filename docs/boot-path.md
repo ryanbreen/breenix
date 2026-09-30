@@ -16,11 +16,13 @@ its stages, with no kernel panic, soft lockup or EL1 abort (the `fatal` patterns
 is the whole gate:
 
 ```bash
-userspace/programs/build.sh --arch aarch64 && scripts/create_ext2_disk.sh --arch aarch64
-docker/qemu/run-aarch64-testing-profile-boot-test.sh 1   # serial: $BREENIX_GATE_TMP/breenix_aarch64_testing_profile/1/serial.txt
+scripts/boot-interactive.sh --serial-log "$TMPDIR/breenix-boot/serial.txt" --idle-exit 30 < /dev/null
 ```
 
-From a fresh worktree that is about a minute and a half. x86-64 is scored against its own
+It builds userspace, the ext2 disk and the testing kernel, then boots once with the serial
+console on the terminal and in the log file (Ctrl-A X quits; `--idle-exit` stops a boot that
+has gone quiet; `--display` also opens the VM's screen). From a fresh worktree that is about a
+minute and a half. Run from a terminal, the same script is an interactive boot you can type into. x86-64 is scored against its own
 stage list and shown alongside, but does not block moving on.
 
 ## Focus and backtracking
