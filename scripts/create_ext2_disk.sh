@@ -197,7 +197,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             # Copy remaining binaries from /binaries directory
             # Routing: musl C programs (*_musl*) -> /usr/local/cbin
             #          test binaries (*_test, test_*) -> /usr/local/test/bin
-            #          system binaries (telnetd, init, blogd) -> /sbin
+            #          system binaries (telnetd, init, probe, blogd) -> /sbin
             #          everything else -> /bin
             echo "Installing other binaries..."
             bin_count=0
@@ -217,7 +217,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
                         cp "$elf_file" /mnt/ext2/usr/local/test/bin/${bin_name}
                         chmod 755 /mnt/ext2/usr/local/test/bin/${bin_name}
                         test_count=$((test_count + 1))
-                    elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "blogd" ]; then
+                    elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "probe" ] || [ "$bin_name" = "blogd" ]; then
                         cp "$elf_file" /mnt/ext2/sbin/${bin_name}
                         chmod 755 /mnt/ext2/sbin/${bin_name}
                         sbin_count=$((sbin_count + 1))
@@ -477,7 +477,7 @@ else
     # Copy remaining binaries from userspace directory
     # Routing: musl C programs (*_musl*) -> /usr/local/cbin
     #          test binaries (*_test, test_*) -> /usr/local/test/bin
-    #          system binaries (telnetd, init, blogd) -> /sbin
+    #          system binaries (telnetd, init, probe, blogd) -> /sbin
     #          everything else -> /bin
     echo "Installing other binaries..."
     bin_count=0
@@ -497,7 +497,7 @@ else
                 cp "$elf_file" "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 test_count=$((test_count + 1))
-            elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "blogd" ]; then
+            elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "probe" ] || [ "$bin_name" = "blogd" ]; then
                 cp "$elf_file" "$MOUNT_DIR/sbin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/sbin/${bin_name}"
                 sbin_count=$((sbin_count + 1))

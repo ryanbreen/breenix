@@ -8,11 +8,30 @@
     "!!! SOFT LOCKUP DETECTED !!!",
     "\\[(DATA|INSTRUCTION)_ABORT\\].*from_el0=0"
   ],
+  "modes": {
+    "tests": {
+      "title": "Tests",
+      "summary": "The testing kernel boots and its test loader runs every test binary; this is the milestone gate."
+    },
+    "probe": {
+      "title": "Probe",
+      "summary": "The production kernel runs /sbin/probe as PID 1, which checks each subsystem in boot order and prints one PROBE line per check."
+    },
+    "shell": {
+      "title": "Shell",
+      "summary": "The production kernel runs /sbin/init shell: an interactive bsh prompt on the serial console."
+    },
+    "desktop": {
+      "title": "Desktop",
+      "summary": "The production kernel runs /sbin/init desktop: the Breenix window manager (bwm) and a terminal in the VM window."
+    }
+  },
   "milestones": [
     {
       "id": "arch-bringup",
       "title": "Arch bring-up",
       "summary": "The kernel is entered at the right privilege level with paging, memory management and a working serial console.",
+      "kernel": true,
       "stages": {
         "aarch64": [
           "ARM64 kernel starting",
@@ -52,6 +71,7 @@
       "id": "interrupts-time",
       "title": "Interrupts & time",
       "summary": "The interrupt controller routes device and timer interrupts, the clock is calibrated, and interrupts are on.",
+      "kernel": true,
       "stages": {
         "aarch64": [
           "Timer calibrated",
@@ -76,6 +96,7 @@
       "id": "devices",
       "title": "Devices",
       "summary": "PCI and virtio devices are found and their drivers initialize.",
+      "kernel": true,
       "stages": {
         "aarch64": [
           "Device drivers initialized",
@@ -99,6 +120,7 @@
       "id": "filesystems",
       "title": "Filesystems & console",
       "summary": "The ext2 root mounts, the pseudo-filesystems exist, and the TTY layer is up.",
+      "kernel": true,
       "stages": {
         "aarch64": [
           "ext2 root filesystem mounted",
@@ -116,6 +138,7 @@
       "id": "scheduler",
       "title": "Scheduler, timer tick & SMP",
       "summary": "Per-CPU state, the process manager and the scheduler come up, the timer tick drives scheduling, and secondary CPUs join.",
+      "kernel": true,
       "stages": {
         "aarch64": [
           "Per-CPU data initialized",
@@ -200,6 +223,40 @@
           "Diagnostic: Single clock_gettime",
           "Diagnostic: Register preservation",
           "Diagnostic: Second clock_gettime"
+        ],
+        "shell": [
+          {
+            "name": "init shell mode ready",
+            "marker": "[init] shell ready"
+          }
+        ],
+        "desktop": [
+          {
+            "name": "init desktop services started",
+            "marker": "[init] desktop services started"
+          }
+        ],
+        "probe": [
+          {
+            "name": "Console output",
+            "marker": "PROBE console OK"
+          },
+          {
+            "name": "Process identity",
+            "marker": "PROBE getpid OK"
+          },
+          {
+            "name": "Monotonic clock advances",
+            "marker": "PROBE clock OK"
+          },
+          {
+            "name": "Heap grows with brk",
+            "marker": "PROBE brk OK"
+          },
+          {
+            "name": "Memory mapping",
+            "marker": "PROBE mmap OK"
+          }
         ]
       }
     },
@@ -235,6 +292,20 @@
           "CoW sole owner test passed",
           "CoW stress test passed",
           "CoW read-only page sharing test passed"
+        ],
+        "probe": [
+          {
+            "name": "Fork and wait",
+            "marker": "PROBE fork-wait OK"
+          },
+          {
+            "name": "Program execution",
+            "marker": "PROBE exec OK"
+          },
+          {
+            "name": "Program arguments arrive",
+            "marker": "PROBE argv OK"
+          }
         ]
       }
     },
@@ -289,6 +360,20 @@
           "O_NONBLOCK pipe test passed",
           "Unix socket test passed",
           "Process group kill semantics test passed"
+        ],
+        "probe": [
+          {
+            "name": "Data crosses a pipe",
+            "marker": "PROBE pipe OK"
+          },
+          {
+            "name": "Signal handler runs",
+            "marker": "PROBE signal OK"
+          },
+          {
+            "name": "Poll reports a readable pipe",
+            "marker": "PROBE poll OK"
+          }
         ]
       }
     },
@@ -338,6 +423,16 @@
           "Exec ext2 ENOTDIR OK",
           "Exec ext2 /bin/ls OK",
           "Exec ext2 test passed"
+        ],
+        "probe": [
+          {
+            "name": "Ext2 file round trip",
+            "marker": "PROBE file OK"
+          },
+          {
+            "name": "Ext2 directory create, list, remove",
+            "marker": "PROBE dir OK"
+          }
         ]
       }
     },
@@ -357,6 +452,18 @@
           "Session syscall test passed",
           "Ctrl-C (SIGINT) test passed",
           "Shell pipeline execution test passed"
+        ],
+        "shell": [
+          {
+            "name": "bsh prompt on the console",
+            "marker": "bsh />"
+          }
+        ],
+        "probe": [
+          {
+            "name": "Console is a terminal",
+            "marker": "PROBE tty OK"
+          }
         ]
       }
     },
@@ -513,6 +620,12 @@
           "HTTP invalid domain",
           "HTTP example fetch",
           "HTTP test completed"
+        ],
+        "probe": [
+          {
+            "name": "UDP loopback round trip",
+            "marker": "PROBE udp-loopback OK"
+          }
         ]
       }
     },
@@ -590,6 +703,18 @@
           "ls coreutil test passed",
           "Diagnostic: Summary",
           "FbInfo syscall test passed"
+        ],
+        "desktop": [
+          {
+            "name": "Window manager started",
+            "marker": "[bwm] Breenix Window Manager starting"
+          }
+        ],
+        "probe": [
+          {
+            "name": "Framebuffer drawing",
+            "marker": "PROBE framebuffer OK"
+          }
         ]
       }
     }

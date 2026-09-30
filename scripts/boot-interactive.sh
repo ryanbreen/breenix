@@ -1,13 +1,18 @@
 #!/bin/bash
-# Build the ARM64 testing kernel and userspace disk, then boot it once with the
-# serial console on this terminal. This is the boot-path gate (docs/boot-path.md)
-# with a console you can watch and type into.
+# Build the ARM64 kernel and userspace disk, then boot it once with the serial
+# console on this terminal. In the default `tests` mode this is the boot-path gate
+# (docs/boot-path.md) with a console you can watch and type into.
 #
-#   scripts/boot-interactive.sh [--serial-log FILE] [--idle-exit SECONDS] [--display] [--no-build]
+#   scripts/boot-interactive.sh [--mode MODE] [--serial-log FILE] [--idle-exit SECONDS]
+#                               [--display | --no-display] [--no-build]
 #
+#   --mode MODE          tests (default): the testing kernel and its test loader
+#                        probe | shell | desktop: the production kernel, told the mode via
+#                        -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md)
 #   --serial-log FILE    also write everything the guest prints to FILE (default: $TMPDIR/breenix-boot/serial.txt)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 = never)
-#   --display            open QEMU's display window as well (default: serial only)
+#   --display            open QEMU's display window as well (default: serial only; on for desktop)
+#   --no-display         serial only, even for desktop
 #   --no-build           boot the kernel and disk already in target/
 #
 # Ctrl-A X quits QEMU; Ctrl-A C toggles the QEMU monitor. Ctrl-C goes to the guest.
@@ -18,32 +23,59 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERIAL_LOG="${TMPDIR:-/tmp}/breenix-boot/serial.txt"
 IDLE_EXIT=300
-DISPLAY_ARGS=(-display none)
+DISPLAY_MODE=
 BUILD=1
+MODE=tests
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --mode|--serial-log|--idle-exit)
+            [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
+    esac
+    case "$1" in
+        --mode) MODE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;
-        --display) DISPLAY_ARGS=(-display cocoa); shift ;;
+        --display) DISPLAY_MODE=cocoa; shift ;;
+        --no-display) DISPLAY_MODE=none; shift ;;
         --no-build) BUILD=0; shift ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+case "$MODE" in
+    tests|probe|shell|desktop) ;;
+    *) echo "unknown mode: $MODE (expected tests, probe, shell or desktop)" >&2; exit 2 ;;
+esac
+if [ -z "$DISPLAY_MODE" ]; then
+    if [ "$MODE" = desktop ]; then DISPLAY_MODE=cocoa; else DISPLAY_MODE=none; fi
+fi
+DISPLAY_ARGS=(-display "$DISPLAY_MODE")
+MODE_ARGS=()
+KERNEL_FEATURES=(--features testing)
+if [ "$MODE" != tests ]; then
+    MODE_ARGS=(-fw_cfg "name=opt/breenix/mode,string=$MODE")
+    KERNEL_FEATURES=()
+fi
 case "$SERIAL_LOG" in /*) ;; *) SERIAL_LOG="$PWD/$SERIAL_LOG" ;; esac
 
 cd "$ROOT"
 KERNEL="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 DISK="$ROOT/target/ext2-aarch64.img"
 
+echo "==> Mode: $MODE"
 if [ "$BUILD" -eq 1 ]; then
     echo "==> Building userspace"
     userspace/programs/build.sh --arch aarch64
     echo "==> Building the ext2 disk"
     scripts/create_ext2_disk.sh --arch aarch64
-    echo "==> Building the testing kernel"
-    cargo build --release --features testing --target aarch64-breenix-kernel.json \
+    if [ "$MODE" = tests ]; then
+        echo "==> Building the testing kernel"
+    else
+        echo "==> Building the production kernel"
+    fi
+    # The production build is the prod-profile gate's command: no features at all.
+    cargo build --release ${KERNEL_FEATURES[@]+"${KERNEL_FEATURES[@]}"} --target aarch64-breenix-kernel.json \
         -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
     scripts/check-kernel-no-neon.sh "$KERNEL"
 fi
@@ -66,6 +98,7 @@ qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
+    ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \

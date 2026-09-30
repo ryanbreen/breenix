@@ -305,6 +305,7 @@ STD_BINARIES=(
 
     # Services
     "init"
+    "probe"
     "telnetd"
     "blogd"
 

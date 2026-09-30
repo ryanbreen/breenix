@@ -25,6 +25,28 @@ has gone quiet; `--display` also opens the VM's screen). From a fresh worktree t
 minute and a half. Run from a terminal, the same script is an interactive boot you can type into. x86-64 is scored against its own
 stage list and shown alongside, but does not block moving on.
 
+## Boot modes
+
+`scripts/boot-interactive.sh --mode MODE` boots the same disk four ways (`modes` in
+`boot-path.json`):
+
+- `tests` (default): the testing kernel and its test loader. This is the gate above.
+- `probe`: the production kernel runs `/sbin/probe` as PID 1, which checks one
+  subsystem per line (`PROBE <id> OK|FAIL ...`) and ends with `PROBE DONE`.
+- `shell`: the production kernel runs `/sbin/init shell`, a bsh prompt on the serial
+  console you can type into.
+- `desktop`: the production kernel runs `/sbin/init desktop`, the window manager and a
+  terminal in the VM window (`--no-display` keeps it headless).
+
+The non-test modes build the kernel with no features, exactly like the prod-profile gate,
+and pass the mode to it with `-fw_cfg name=opt/breenix/mode,string=MODE`. The kernel
+prints `[boot] Boot mode: MODE` for the mode that runs: `default` when none is given,
+which runs `/sbin/init` with no arguments, as before. An unknown mode, or any mode given
+to the testing kernel, also runs `default`, and the kernel notes the ignored request on
+its own line. A mode's stages for a milestone are `stages[MODE]` when
+present, else `stages["aarch64"]` when the milestone has `"kernel": true`; otherwise the
+mode does not exercise that milestone.
+
 ## Focus and backtracking
 
 The focus is the earliest milestone whose gate does not pass. Because a boot runs every
