@@ -235,6 +235,28 @@
             "name": "init desktop services started",
             "marker": "[init] desktop services started"
           }
+        ],
+        "probe": [
+          {
+            "name": "Console output",
+            "marker": "PROBE console OK"
+          },
+          {
+            "name": "Process identity",
+            "marker": "PROBE getpid OK"
+          },
+          {
+            "name": "Monotonic clock advances",
+            "marker": "PROBE clock OK"
+          },
+          {
+            "name": "Heap grows with brk",
+            "marker": "PROBE brk OK"
+          },
+          {
+            "name": "Memory mapping",
+            "marker": "PROBE mmap OK"
+          }
         ]
       }
     },
@@ -270,6 +292,20 @@
           "CoW sole owner test passed",
           "CoW stress test passed",
           "CoW read-only page sharing test passed"
+        ],
+        "probe": [
+          {
+            "name": "Fork and wait",
+            "marker": "PROBE fork-wait OK"
+          },
+          {
+            "name": "Program execution",
+            "marker": "PROBE exec OK"
+          },
+          {
+            "name": "Program arguments arrive",
+            "marker": "PROBE argv OK"
+          }
         ]
       }
     },
@@ -324,6 +360,20 @@
           "O_NONBLOCK pipe test passed",
           "Unix socket test passed",
           "Process group kill semantics test passed"
+        ],
+        "probe": [
+          {
+            "name": "Data crosses a pipe",
+            "marker": "PROBE pipe OK"
+          },
+          {
+            "name": "Signal handler runs",
+            "marker": "PROBE signal OK"
+          },
+          {
+            "name": "Poll reports a readable pipe",
+            "marker": "PROBE poll OK"
+          }
         ]
       }
     },
@@ -373,6 +423,16 @@
           "Exec ext2 ENOTDIR OK",
           "Exec ext2 /bin/ls OK",
           "Exec ext2 test passed"
+        ],
+        "probe": [
+          {
+            "name": "Ext2 file round trip",
+            "marker": "PROBE file OK"
+          },
+          {
+            "name": "Ext2 directory create, list, remove",
+            "marker": "PROBE dir OK"
+          }
         ]
       }
     },
@@ -397,6 +457,12 @@
           {
             "name": "bsh prompt on the console",
             "marker": "bsh />"
+          }
+        ],
+        "probe": [
+          {
+            "name": "Console is a terminal",
+            "marker": "PROBE tty OK"
           }
         ]
       }
@@ -554,6 +620,12 @@
           "HTTP invalid domain",
           "HTTP example fetch",
           "HTTP test completed"
+        ],
+        "probe": [
+          {
+            "name": "UDP loopback round trip",
+            "marker": "PROBE udp-loopback OK"
+          }
         ]
       }
     },
@@ -636,6 +708,12 @@
           {
             "name": "Window manager started",
             "marker": "[bwm] Breenix Window Manager starting"
+          }
+        ],
+        "probe": [
+          {
+            "name": "Framebuffer drawing",
+            "marker": "PROBE framebuffer OK"
           }
         ]
       }
