@@ -43,16 +43,24 @@ impl GpuPciLock {
             }
 
             if gpu_lock_can_sleep() {
-                if self
-                    .waiters
-                    .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
-                    .is_some()
-                {
-                    if self.locked.load(Ordering::Acquire) {
+                // The sleep is bounded: a holder that releases without a wake
+                // (`try_flush_rect_polled`, from a fatal context) costs a sleeper
+                // at most one park interval. The recheck runs under the waitqueue
+                // lock, so a release before the enqueue is not missed.
+                let (secs, nanos) = crate::time::get_monotonic_time_ns();
+                let deadline = secs as u64 * 1_000_000_000 + nanos as u64 + GPU_LOCK_PARK_NS;
+                match self.waiters.prepare_to_wait_checked(
+                    crate::task::thread::ThreadState::BlockedOnIO,
+                    Some(deadline),
+                    || self.locked.load(Ordering::Acquire),
+                ) {
+                    crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
+                    crate::task::waitqueue::PrepareOutcome::Queued => {
                         crate::task::waitqueue::schedule_current_wait();
+                        self.waiters.finish_wait();
+                        continue;
                     }
-                    self.waiters.finish_wait();
-                    continue;
+                    crate::task::waitqueue::PrepareOutcome::PublishFailed => {}
                 }
             }
 
@@ -60,6 +68,9 @@ impl GpuPciLock {
         }
     }
 }
+
+/// Longest a GPU lock waiter sleeps before rechecking the lock on its own.
+const GPU_LOCK_PARK_NS: u64 = 10_000_000;
 
 impl Drop for GpuPciGuard {
     fn drop(&mut self) {
@@ -2502,6 +2513,9 @@ fn send_command_with_trace(
     cmd_type: u32,
     resource_id: u32,
 ) -> Result<u32, &'static str> {
+    if polled_chain_outstanding() {
+        return Err("GPU PCI control queue still holds a timed-out polled command");
+    }
     drain_stale_ctrlq_completions(state);
     let previous_used_idx = state.last_used_idx;
     prepare_ctrlq_completion_wait(previous_used_idx)?;
@@ -2637,6 +2651,9 @@ fn send_command_3desc_with_trace(
     cmd_type: u32,
     resource_id: u32,
 ) -> Result<(u32, u32), &'static str> {
+    if polled_chain_outstanding() {
+        return Err("GPU PCI control queue still holds a timed-out polled command");
+    }
     drain_stale_ctrlq_completions(state);
     let previous_used_idx = state.last_used_idx;
     prepare_ctrlq_completion_wait(previous_used_idx)?;
@@ -4347,8 +4364,9 @@ fn present_3d(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static str> {
 /// retrying for about 100 ms in case another CPU is mid-command, and gives up if
 /// the lock stays held (possibly by the dying context itself). Each command is
 /// built in the preallocated polled DMA page and its completion is polled from
-/// the used ring, rather than slept on, with the same deadline. Returns false when
-/// the present was skipped or a command did not complete OK.
+/// the used ring, rather than slept on, with the same deadline (see
+/// `submit_polled`). Returns false when the present was skipped or a command did
+/// not complete OK.
 pub fn try_flush_rect_polled(x: u32, y: u32, width: u32, height: u32) -> bool {
     let deadline = crate::arch_impl::aarch64::timer::rdtsc()
         + crate::arch_impl::aarch64::timer::frequency_hz() / 10;
@@ -4371,7 +4389,8 @@ pub fn try_flush_rect_polled(x: u32, y: u32, width: u32, height: u32) -> bool {
         _ => false,
     };
     // Release without waking sleepers: a wake takes the wait-queue lock, which
-    // the dying context may hold. A sleeper retries on its next wakeup.
+    // the dying context may hold. Sleepers park with a timeout (GPU_LOCK_PARK_NS)
+    // and recheck the lock when it expires.
     core::mem::forget(guard);
     GPU_PCI_LOCK.locked.store(false, Ordering::Release);
     presented
@@ -4451,14 +4470,62 @@ fn present_polled(
     }
 }
 
+/// The control queue's available index after the last polled command that timed
+/// out, or `NO_POLLED_TIMEOUT`. The device still owns that chain (descriptor 0
+/// and the polled DMA page) until the used index reaches this value.
+static POLLED_TIMED_OUT_AT: AtomicU32 = AtomicU32::new(NO_POLLED_TIMEOUT);
+const NO_POLLED_TIMEOUT: u32 = u32::MAX;
+
+/// Chains published on the control queue that the device has not yet returned.
+fn ctrlq_in_flight() -> u16 {
+    let avail_idx = unsafe { read_volatile(&raw const PCI_CTRL_QUEUE.avail.idx) };
+    avail_idx.wrapping_sub(virtgpu_trace_used_idx())
+}
+
+/// Whether a polled command that timed out is still owned by the device. The
+/// commands sleeping on the completion IRQ refuse to publish meanwhile: they would
+/// rewrite descriptor 0 under the device and could take that late completion for
+/// their own.
+fn polled_chain_outstanding() -> bool {
+    let target = POLLED_TIMED_OUT_AT.load(Ordering::Acquire);
+    if target == NO_POLLED_TIMEOUT {
+        return false;
+    }
+    if virtgpu_trace_used_idx().wrapping_sub(target as u16) < 0x8000 {
+        let _ = POLLED_TIMED_OUT_AT.compare_exchange(
+            target,
+            NO_POLLED_TIMEOUT,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        return false;
+    }
+    true
+}
+
 /// Submit `command` from the polled DMA page and poll the used ring for its
 /// completion until `deadline`. Returns whether the device answered OK.
+///
+/// The queue carries one chain at a time at descriptor 0 (Parallels reads
+/// descriptor 0 whatever the head index), and the device owns that chain's
+/// descriptors and buffers until it returns it. So the page and descriptor are
+/// written only once the queue is empty, and a command that times out is recorded in
+/// `POLLED_TIMED_OUT_AT`: its page is not reused, and no completion is taken
+/// for a later command, until the device has returned it.
 fn submit_polled<T>(
     state: &mut GpuPciDeviceState,
     page: *mut u8,
     command: &T,
     deadline: u64,
 ) -> bool {
+    while ctrlq_in_flight() != 0 {
+        if crate::arch_impl::aarch64::timer::rdtsc() >= deadline {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+    POLLED_TIMED_OUT_AT.store(NO_POLLED_TIMEOUT, Ordering::Release);
+
     let cmd_len = core::mem::size_of::<T>();
     let resp_len = core::mem::size_of::<VirtioGpuCtrlHdr>();
     let resp = unsafe { page.add(POLLED_RESP_OFFSET) };
@@ -4470,22 +4537,23 @@ fn submit_polled<T>(
     dma_cache_clean(resp, resp_len);
 
     drain_stale_ctrlq_completions(state);
-    let previous_used_idx = state.last_used_idx;
     publish_ctrlq_2desc(
         virt_to_phys(page as u64),
         cmd_len as u32,
         virt_to_phys(resp as u64),
         resp_len as u32,
     );
+    let target = unsafe { read_volatile(&raw const PCI_CTRL_QUEUE.avail.idx) };
     state.device.notify_queue_fast(0);
     loop {
         let used_idx = virtgpu_trace_used_idx();
-        if used_idx != previous_used_idx {
+        if used_idx == target {
             state.last_used_idx = used_idx;
             GPU_COMPLETED_USED_IDX.store(used_idx as u32, Ordering::Release);
             break;
         }
         if crate::arch_impl::aarch64::timer::rdtsc() >= deadline {
+            POLLED_TIMED_OUT_AT.store(target as u32, Ordering::Release);
             return false;
         }
         core::hint::spin_loop();
