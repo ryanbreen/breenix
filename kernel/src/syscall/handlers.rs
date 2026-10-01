@@ -4722,13 +4722,16 @@ pub struct CowStatsResult {
 pub fn sys_take_over_display() -> SyscallResult {
     #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
     {
-        // Mark the calling process as the display owner
+        // Mark the calling process as the display owner. Ownership moves: a
+        // previous owner's whole-screen mapping can no longer draw.
         use crate::syscall::memory_common::get_current_thread_id;
         if let Some(tid) = get_current_thread_id() {
             let mut mgr_guard = crate::process::manager();
             if let Some(ref mut mgr) = *mgr_guard {
-                if let Some((_pid, process)) = mgr.find_process_by_thread_mut(tid) {
+                if let Some((pid, process)) = mgr.find_process_by_thread_mut(tid) {
                     process.has_display_ownership = true;
+                    crate::syscall::graphics::DISPLAY_OWNER_PID
+                        .store(pid.as_u64(), core::sync::atomic::Ordering::Release);
                 }
             }
         }

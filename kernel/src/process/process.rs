@@ -19,7 +19,8 @@ use x86_64::VirtAddr;
 pub struct FbMmapInfo {
     /// Userspace virtual address of the mapping
     pub user_addr: u64,
-    /// Width in pixels (pane only)
+    /// Width in pixels: the whole screen for the display owner, else the left half.
+    /// The pane starts at x 0.
     pub width: usize,
     /// Height in pixels
     pub height: usize,
@@ -29,8 +30,9 @@ pub struct FbMmapInfo {
     pub bpp: usize,
     /// Total mapping size in bytes (page-aligned)
     pub mapping_size: u64,
-    /// Pixel X offset in the physical framebuffer (0 for left pane, width/2+4 for right pane)
-    pub x_offset: usize,
+    /// Mapped as the display owner (the whole screen). Draws through it are
+    /// refused once another process has taken the display.
+    pub whole_screen: bool,
 }
 
 /// Process ID type

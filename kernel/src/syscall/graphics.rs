@@ -41,6 +41,24 @@ use crate::graphics::primitives::{
 #[cfg(target_arch = "aarch64")]
 pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// PID of the process that most recently took the display
+/// (`sys_take_over_display`). One process owns the display at a time: a later
+/// take-over moves ownership there, and the earlier owner's whole-screen
+/// mapping can no longer draw.
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+pub(crate) static DISPLAY_OWNER_PID: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// Whether `process` (whose PID is `pid`) owns the display now.
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+fn owns_display(
+    pid: crate::process::process::ProcessId,
+    process: &crate::process::process::Process,
+) -> bool {
+    process.has_display_ownership
+        && DISPLAY_OWNER_PID.load(core::sync::atomic::Ordering::Acquire) == pid.as_u64()
+}
+
 /// Waitqueue for BWM's compositor_wait syscall (op=23).
 #[cfg(target_arch = "aarch64")]
 static COMPOSITOR_FRAME_WQ: crate::task::waitqueue::WaitQueueHead =
@@ -2317,24 +2335,27 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // Read the command from userspace
     let cmd: FbDrawCmd = unsafe { core::ptr::read(cmd_ptr as *const FbDrawCmd) };
 
-    // On ARM64, read fb_mmap info BEFORE acquiring SHELL_FRAMEBUFFER.
-    // This prevents holding PROCESS_MANAGER (which disables interrupts on ARM64)
-    // while also holding the framebuffer lock — that nested lock pattern caused
-    // contention with the render thread and other syscall paths.
-    #[cfg(target_arch = "aarch64")]
-    let fb_mmap_info_pre: Option<crate::process::process::FbMmapInfo> = {
+    // Read the caller's fb_mmap info and display ownership BEFORE acquiring
+    // SHELL_FRAMEBUFFER. This prevents holding PROCESS_MANAGER (which disables
+    // interrupts on ARM64) while also holding the framebuffer lock — that nested
+    // lock pattern caused contention with the render thread and other syscall paths.
+    let (fb_mmap_info_pre, caller_owns_display): (
+        Option<crate::process::process::FbMmapInfo>,
+        bool,
+    ) = {
         use crate::syscall::memory_common::get_current_thread_id;
         let thread_id = get_current_thread_id();
         if let Some(tid) = thread_id {
             let mgr_guard = crate::process::manager();
             if let Some(ref mgr) = *mgr_guard {
                 mgr.find_process_by_thread(tid)
-                    .and_then(|(_pid, proc)| proc.fb_mmap)
+                    .map(|(pid, proc)| (proc.fb_mmap, owns_display(pid, proc)))
+                    .unwrap_or((None, false))
             } else {
-                None
+                (None, false)
             }
         } else {
-            None
+            (None, false)
         }
     };
 
@@ -2344,6 +2365,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     #[cfg(target_arch = "aarch64")]
     if cmd.op == 7 || cmd.op >= 9 {
         return handle_virgl_op(&cmd);
+    }
+
+    // A whole-screen mapping was made by a display owner. Once another process
+    // has taken the display, drawing through it would overwrite the new owner's
+    // frames, so the caller is told with EPERM (unlike the transient EBUSY below).
+    if fb_mmap_info_pre.is_some_and(|info| info.whole_screen) && !caller_owns_display {
+        return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
 
     // Get framebuffer
@@ -2525,7 +2553,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
             let has_rect = cmd.p3 > 0 && cmd.p4 > 0;
 
             // If this process has an mmap'd framebuffer, copy user buffer → shadow
-            // buffer's left pane before flushing.
+            // buffer (its pane starts at x 0) before flushing.
             #[cfg(target_arch = "x86_64")]
             {
                 // Check if this process has an fb_mmap by reading process state.
@@ -2558,18 +2586,17 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         (0, mmap_info.height)
                     };
 
-                    // Copy user buffer → shadow buffer at correct x_offset row by row
+                    // Copy user buffer → shadow buffer row by row
                     use crate::graphics::primitives::Canvas;
                     let fb_stride_bytes = fb_guard.stride() * fb_guard.bytes_per_pixel();
                     let row_bytes = mmap_info.width * mmap_info.bpp;
-                    let x_byte_offset = mmap_info.x_offset * mmap_info.bpp;
 
                     if let Some(db) = fb_guard.double_buffer_mut() {
                         let shadow = db.buffer_mut();
                         for y in y_start..y_end {
                             let user_row_ptr =
                                 (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
-                            let shadow_row_offset = y * fb_stride_bytes + x_byte_offset;
+                            let shadow_row_offset = y * fb_stride_bytes;
 
                             if shadow_row_offset + row_bytes <= shadow.len() {
                                 unsafe {
@@ -2584,13 +2611,12 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
                         // Mark dirty region and flush incrementally (in framebuffer coords)
                         let (dx_start, dx_end) = if has_rect {
-                            let xs =
-                                mmap_info.x_offset + (cmd.p1.max(0) as usize).min(mmap_info.width);
-                            let xe = mmap_info.x_offset
-                                + (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
+                            let xs = (cmd.p1.max(0) as usize).min(mmap_info.width);
+                            let xe =
+                                (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
                             (xs, xe)
                         } else {
-                            (mmap_info.x_offset, mmap_info.x_offset + mmap_info.width)
+                            (0, mmap_info.width)
                         };
                         db.mark_region_dirty_rect(y_start, y_end, dx_start, dx_end);
                         db.flush();
@@ -2613,18 +2639,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                 {
                     if has_rect {
                         Some((
-                            (mmap_info.x_offset as u32) + cmd.p1.max(0) as u32,
+                            cmd.p1.max(0) as u32,
                             cmd.p2.max(0) as u32,
                             cmd.p3 as u32,
                             cmd.p4 as u32,
                         ))
                     } else {
-                        Some((
-                            mmap_info.x_offset as u32,
-                            0,
-                            mmap_info.width as u32,
-                            mmap_info.height as u32,
-                        ))
+                        Some((0, 0, mmap_info.width as u32, mmap_info.height as u32))
                     }
                 } else if has_rect {
                     Some((
@@ -2658,22 +2679,20 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
                     let fb_stride_bytes = fb_guard.stride() * fb_guard.bytes_per_pixel();
                     let row_bytes = mmap_info.width * mmap_info.bpp;
-                    let x_byte_offset = mmap_info.x_offset * mmap_info.bpp;
 
                     // When a dirty rect is specified, only copy the dirty columns
                     // instead of the full mmap width. For per-ball flushes this
                     // reduces the copy from ~3.4KB/row to ~336 bytes/row.
-                    let (user_col_offset, shadow_col_offset, copy_row_bytes) = if has_rect {
+                    let (col_offset, copy_row_bytes) = if has_rect {
                         let col_start = (cmd.p1.max(0) as usize).min(mmap_info.width);
                         let col_end =
                             (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
                         (
                             col_start * mmap_info.bpp,
-                            x_byte_offset + col_start * mmap_info.bpp,
                             (col_end - col_start) * mmap_info.bpp,
                         )
                     } else {
-                        (0, x_byte_offset, row_bytes)
+                        (0, row_bytes)
                     };
 
                     if crate::graphics::arm64_fb::is_gop_active() {
@@ -2689,8 +2708,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                             for y in y_start..y_end {
                                 let user_row_ptr = (mmap_info.user_addr as usize)
                                     + y * mmap_info.user_stride
-                                    + user_col_offset;
-                                let target_row_offset = y * fb_stride_bytes + shadow_col_offset;
+                                    + col_offset;
+                                let target_row_offset = y * fb_stride_bytes + col_offset;
                                 if target_row_offset + copy_row_bytes <= gop_buf.len() {
                                     unsafe {
                                         core::ptr::copy_nonoverlapping(
@@ -2708,8 +2727,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                             for y in y_start..y_end {
                                 let user_row_ptr = (mmap_info.user_addr as usize)
                                     + y * mmap_info.user_stride
-                                    + user_col_offset;
-                                let target_row_offset = y * fb_stride_bytes + shadow_col_offset;
+                                    + col_offset;
+                                let target_row_offset = y * fb_stride_bytes + col_offset;
                                 if target_row_offset + copy_row_bytes <= shadow.len() {
                                     unsafe {
                                         core::ptr::copy_nonoverlapping(
@@ -2727,7 +2746,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         for y in y_start..y_end {
                             let user_row_ptr =
                                 (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
-                            let target_row_offset = y * fb_stride_bytes + x_byte_offset;
+                            let target_row_offset = y * fb_stride_bytes;
 
                             if target_row_offset + row_bytes <= target_buf.len() {
                                 unsafe {
@@ -2739,14 +2758,6 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                                 }
                             }
                         }
-                    }
-                }
-
-                // Notify VirGL compositing that the terminal pane changed.
-                // x_offset > 0 means this is a right-pane (bwm/terminal) flush.
-                if let Some(mmap_info) = fb_mmap_info {
-                    if mmap_info.x_offset > 0 {
-                        crate::graphics::arm64_fb::mark_terminal_dirty();
                     }
                 }
 
@@ -2819,8 +2830,6 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
                         if fb_stride_bytes > 0 {
                             if let Some(gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
-                                let x_byte_offset = mmap_info.x_offset * mmap_info.bpp;
-
                                 for rect in rects {
                                     if rect.w <= 0 || rect.h <= 0 {
                                         continue;
@@ -2833,8 +2842,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                                     let y_end = (rect.y.max(0) as usize + rect.h as usize)
                                         .min(mmap_info.height);
 
-                                    let user_col_byte = col_start * mmap_info.bpp;
-                                    let target_col_byte = x_byte_offset + col_start * mmap_info.bpp;
+                                    let col_byte = col_start * mmap_info.bpp;
                                     let copy_row_bytes = (col_end - col_start) * mmap_info.bpp;
 
                                     if copy_row_bytes == 0 {
@@ -2844,9 +2852,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                                     for y in y_start..y_end {
                                         let user_row_ptr = (mmap_info.user_addr as usize)
                                             + y * mmap_info.user_stride
-                                            + user_col_byte;
-                                        let target_row_offset =
-                                            y * fb_stride_bytes + target_col_byte;
+                                            + col_byte;
+                                        let target_row_offset = y * fb_stride_bytes + col_byte;
                                         if target_row_offset + copy_row_bytes <= gop_buf.len() {
                                             unsafe {
                                                 core::ptr::copy_nonoverlapping(
@@ -2863,11 +2870,6 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                             // ONE DSB for all BAR0 writes
                             unsafe {
                                 core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-                            }
-
-                            // Notify VirGL compositing that the terminal pane changed
-                            if mmap_info.x_offset > 0 {
-                                crate::graphics::arm64_fb::mark_terminal_dirty();
                             }
                         }
                     }
@@ -2938,17 +2940,35 @@ pub fn sys_get_mouse_pos(_out_ptr: u64) -> SyscallResult {
 
 /// sys_fbmmap - Map a framebuffer buffer into the calling process's address space
 ///
-/// Allocates physical frames, maps them into the process as a compact left-pane
-/// buffer, and returns the userspace pointer. Drawing can then happen with zero
-/// syscalls; only the flush requires a syscall.
+/// Allocates physical frames, maps them into the process as a compact buffer at
+/// x 0 (the whole screen for the display owner, the left half for everyone
+/// else), and returns the userspace pointer. Drawing then needs no syscall;
+/// only the flush requires one. On aarch64, when the argument `width_out` is not
+/// 0 it receives the pane width in pixels (the row stride is that width times
+/// bytes per pixel).
+///
+/// x86_64's syscall dispatch (`syscall/handler.rs`) passes FBMMAP no argument,
+/// so no width is reported there and the display owner, like other processes,
+/// gets the left half: the layout a caller assumes when no width is reported.
 ///
 /// # Returns
 /// * Userspace address of the mapped buffer on success
 /// * -EBUSY if already mapped
 /// * -ENOMEM if allocation fails
 /// * -ENODEV if no framebuffer is available
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[cfg(target_arch = "aarch64")]
+pub fn sys_fbmmap(width_out: u64) -> SyscallResult {
+    fbmmap(width_out)
+}
+
+/// sys_fbmmap - x86_64 form; see the aarch64 form above.
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 pub fn sys_fbmmap() -> SyscallResult {
+    fbmmap(0)
+}
+
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+fn fbmmap(width_out: u64) -> SyscallResult {
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
@@ -2967,12 +2987,19 @@ pub fn sys_fbmmap() -> SyscallResult {
         None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
     };
 
+    // Check the optional pane-width out pointer before mapping anything.
+    if width_out != 0
+        && crate::syscall::userptr::validate_user_ptr_write(width_out as *mut u64).is_err()
+    {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
     // Check if the calling process owns the display (called take_over_display)
     let caller_owns_display = {
         let mgr_guard = crate::process::manager();
         if let Some(ref mgr) = *mgr_guard {
             mgr.find_process_by_thread(current_thread_id)
-                .map(|(_pid, proc)| proc.has_display_ownership)
+                .map(|(pid, proc)| owns_display(pid, proc))
                 .unwrap_or(false)
         } else {
             false
@@ -2980,29 +3007,30 @@ pub fn sys_fbmmap() -> SyscallResult {
     };
 
     // Get framebuffer dimensions.
-    // The display owner (BWM) gets the right pane. All other processes get the left pane.
+    // The display owner (the process that called take_over_display) gets the
+    // whole screen on aarch64. Other processes, and on x86_64 the owner too, get
+    // the left half.
+    let whole_screen = cfg!(target_arch = "aarch64") && caller_owns_display;
     //
     // On ARM64, use the lock-free FbInfoCache to avoid contention with BWM's
     // fb_flush, which holds SHELL_FRAMEBUFFER for ~400μs during full-screen
     // pixel copies. Dimensions are immutable after init.
     #[cfg(target_arch = "aarch64")]
-    let (pane_width, x_offset, height, bpp) = {
+    let (pane_width, height, bpp) = {
         let cache = match crate::graphics::arm64_fb::FB_INFO_CACHE.get() {
             Some(c) => c,
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         };
-        if caller_owns_display {
-            let divider_width = 4;
-            let right_x = cache.width / 2 + divider_width;
-            let right_width = cache.width.saturating_sub(right_x);
-            (right_width, right_x, cache.height, cache.bytes_per_pixel)
+        let pane_width = if whole_screen {
+            cache.width
         } else {
-            (cache.width / 2, 0, cache.height, cache.bytes_per_pixel)
-        }
+            cache.width / 2
+        };
+        (pane_width, cache.height, cache.bytes_per_pixel)
     };
 
     #[cfg(not(target_arch = "aarch64"))]
-    let (pane_width, x_offset, height, bpp) = {
+    let (pane_width, height, bpp) = {
         let fb = match SHELL_FRAMEBUFFER.get() {
             Some(fb) => fb,
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
@@ -3024,24 +3052,12 @@ pub fn sys_fbmmap() -> SyscallResult {
                 }
             }
         };
-        if caller_owns_display {
-            let divider_width = 4;
-            let right_x = fb_guard.width() / 2 + divider_width;
-            let right_width = fb_guard.width().saturating_sub(right_x);
-            (
-                right_width,
-                right_x,
-                fb_guard.height(),
-                fb_guard.bytes_per_pixel(),
-            )
+        let pane_width = if whole_screen {
+            fb_guard.width()
         } else {
-            (
-                fb_guard.width() / 2,
-                0,
-                fb_guard.height(),
-                fb_guard.bytes_per_pixel(),
-            )
-        }
+            fb_guard.width() / 2
+        };
+        (pane_width, fb_guard.height(), fb_guard.bytes_per_pixel())
     };
 
     let user_stride = pane_width * bpp;
@@ -3184,8 +3200,13 @@ pub fn sys_fbmmap() -> SyscallResult {
         user_stride,
         bpp,
         mapping_size,
-        x_offset,
+        whole_screen,
     });
+
+    // The pointer was validated before mapping.
+    if width_out != 0 {
+        let _ = crate::syscall::userptr::copy_to_user(width_out as *mut u64, &(pane_width as u64));
+    }
 
     log::info!(
         "sys_fbmmap: mapped {}x{} fb buffer at {:#x} ({} pages)",

@@ -365,7 +365,7 @@ const FLOOR_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/graphics.rs", "handle_resize_window_buffer", 1),
     ("kernel/src/syscall/graphics.rs", "handle_map_window_buffer", 1),
     ("kernel/src/syscall/graphics.rs", "handle_map_compositor_texture", 1),
-    ("kernel/src/syscall/graphics.rs", "sys_fbmmap", 1),
+    ("kernel/src/syscall/graphics.rs", "fbmmap", 1),
 ];
 
 /// The five `mmap_hint` seed sites: the struct-literal init in
