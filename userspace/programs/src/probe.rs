@@ -359,21 +359,56 @@ fn supervised_check(index: usize) -> (Result<(), String>, bool) {
     }
 }
 
-/// Take the display and map the whole screen; the display owner's mapping is full width.
-fn open_screen() -> Option<FrameBuf> {
+/// Probe's screen mapping, and whether a program `probe --run` started has taken
+/// the display from it.
+struct Screen {
+    fb: FrameBuf,
+    lost: bool,
+}
+
+/// Take the display and map it: the whole screen, as the display owner, where the
+/// kernel supports that.
+fn open_screen() -> Option<Screen> {
     let info = graphics::fbinfo().ok()?;
     if info.width < 480 || info.height < 400
         || !(3..=4).contains(&info.bytes_per_pixel) { return None; }
     graphics::take_over_display().ok()?;
-    let ptr = graphics::fb_mmap().ok()?;
-    Some(unsafe { FrameBuf::from_raw(ptr, info.width as usize, info.height as usize,
-        (info.width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize,
-        info.is_bgr()) })
+    let (ptr, width) = graphics::fb_mmap_pane().ok()?;
+    if width < 240 { return None; }
+    let fb = unsafe { FrameBuf::from_raw(ptr, width as usize, info.height as usize,
+        (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize,
+        info.is_bgr()) };
+    Some(Screen { fb, lost: false })
 }
 
-fn draw_probe(fb: &mut Option<FrameBuf>, states: &[Option<bool>; 16], details: &[String; 16],
+/// Probe's screen, if it has one and still holds the display.
+fn drawable(screen: &mut Option<Screen>) -> Option<&mut Screen> {
+    screen.as_mut().filter(|screen| !screen.lost)
+}
+
+/// Put probe's screen on the display. A program run by `probe --run` that takes the
+/// display itself (bwm, say) moves it away from probe, whose flushes are then
+/// refused with EPERM: probe stops drawing and leaves the screen to that program
+/// until it exits (`reclaim_screen`). Output still goes to serial.
+fn flush_screen(screen: &mut Screen) {
+    if let Err(libbreenix::error::Error::Os(libbreenix::Errno::EPERM)) = graphics::fb_flush() {
+        screen.lost = true;
+    }
+}
+
+/// The program has exited: take the display back, if it had taken it, to show the
+/// verdict.
+fn reclaim_screen(screen: &mut Option<Screen>) {
+    if let Some(screen) = screen.as_mut() {
+        if screen.lost && graphics::take_over_display().is_ok() {
+            screen.lost = false;
+        }
+    }
+}
+
+fn draw_probe(screen: &mut Option<Screen>, states: &[Option<bool>; 16], details: &[String; 16],
     passed: usize, finished: bool) {
-    let Some(fb) = fb else { return; };
+    let Some(screen) = drawable(screen) else { return; };
     let checks: Vec<_> = (0..IDS.len()).map(|index| Check {
         name: IDS[index],
         state: match states[index] {
@@ -386,14 +421,14 @@ fn draw_probe(fb: &mut Option<FrameBuf>, states: &[Option<bool>; 16], details: &
         title, checks: &checks[*first..*end],
     }).collect();
     let verdict = format!("{} passed / {} failed", passed, states.iter().filter(|s| **s == Some(false)).count());
-    diagnostics::draw(fb, &Panel {
+    diagnostics::draw(&mut screen.fb, &Panel {
         title: "BREENIX / BOOT PROBE", subtitle: "Live subsystem status",
         groups: &groups, output: &[],
         verdict: if finished {
             if passed == IDS.len() { Verdict::Passed(&verdict) } else { Verdict::Failed(&verdict) }
         } else { Verdict::Running(&verdict) },
     });
-    let _ = graphics::fb_flush();
+    flush_screen(screen);
 }
 
 fn reap_forever() -> ! {
@@ -437,9 +472,9 @@ fn probe() {
     reap_forever();
 }
 
-fn draw_run(fb: &mut Option<FrameBuf>, path: &str, elapsed: i128,
+fn draw_run(screen: &mut Option<Screen>, path: &str, elapsed: i128,
     output: &[String], partial: &[u8], verdict: Verdict<'_>) {
-    let Some(fb) = fb else { return; };
+    let Some(screen) = drawable(screen) else { return; };
     let subtitle = format!("{} seconds elapsed", elapsed.max(0) / 1_000_000_000);
     let checks = [Check { name: path, state: match &verdict {
         Verdict::Running(_) => CheckState::Running,
@@ -450,11 +485,11 @@ fn draw_run(fb: &mut Option<FrameBuf>, path: &str, elapsed: i128,
     let partial = String::from_utf8_lossy(partial);
     let mut lines: Vec<_> = output.iter().map(String::as_str).collect();
     if !partial.is_empty() { lines.push(&partial); }
-    diagnostics::draw(fb, &Panel {
+    diagnostics::draw(&mut screen.fb, &Panel {
         title: "BREENIX / PROGRAM RUN", subtitle: &subtitle,
         groups: &groups, output: &lines, verdict,
     });
-    let _ = graphics::fb_flush();
+    flush_screen(screen);
 }
 
 fn write_serial(mut bytes: &[u8]) -> bool {
@@ -707,6 +742,7 @@ fn run_program(path: &str, args: &[String]) {
         } else if failure.is_none() { failure = Some("abnormal child status".to_string()); }
     }
     let elapsed = monotonic_ns().zip(start).map(|(now, then)| now - then).unwrap_or(0);
+    reclaim_screen(&mut fb);
     if let Some(reason) = failure {
         println!("RUN {} DONE FAIL {}", path, reason);
         draw_run(&mut fb, path, elapsed, &recent, &[], Verdict::Failed(&reason));

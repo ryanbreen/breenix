@@ -30,6 +30,9 @@ pub struct FbMmapInfo {
     pub bpp: usize,
     /// Total mapping size in bytes (page-aligned)
     pub mapping_size: u64,
+    /// Mapped as the display owner (the whole screen). Draws through it are
+    /// refused once another process has taken the display.
+    pub whole_screen: bool,
 }
 
 /// Process ID type

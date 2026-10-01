@@ -695,7 +695,7 @@ fn dispatch_syscall_enum(
         // Graphics syscalls
         SyscallNumber::FbInfo => result_to_u64(crate::syscall::graphics::sys_fbinfo(arg1)),
         SyscallNumber::FbDraw => result_to_u64(crate::syscall::graphics::sys_fbdraw(arg1)),
-        SyscallNumber::FbMmap => result_to_u64(crate::syscall::graphics::sys_fbmmap()),
+        SyscallNumber::FbMmap => result_to_u64(crate::syscall::graphics::sys_fbmmap(arg1)),
         SyscallNumber::GetMousePos => {
             result_to_u64(crate::syscall::graphics::sys_get_mouse_pos(arg1))
         }

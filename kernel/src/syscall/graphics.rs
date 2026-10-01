@@ -41,6 +41,24 @@ use crate::graphics::primitives::{
 #[cfg(target_arch = "aarch64")]
 pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// PID of the process that most recently took the display
+/// (`sys_take_over_display`). One process owns the display at a time: a later
+/// take-over moves ownership there, and the earlier owner's whole-screen
+/// mapping can no longer draw.
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+pub(crate) static DISPLAY_OWNER_PID: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// Whether `process` (whose PID is `pid`) owns the display now.
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+fn owns_display(
+    pid: crate::process::process::ProcessId,
+    process: &crate::process::process::Process,
+) -> bool {
+    process.has_display_ownership
+        && DISPLAY_OWNER_PID.load(core::sync::atomic::Ordering::Acquire) == pid.as_u64()
+}
+
 /// Waitqueue for BWM's compositor_wait syscall (op=23).
 #[cfg(target_arch = "aarch64")]
 static COMPOSITOR_FRAME_WQ: crate::task::waitqueue::WaitQueueHead =
@@ -2317,24 +2335,27 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // Read the command from userspace
     let cmd: FbDrawCmd = unsafe { core::ptr::read(cmd_ptr as *const FbDrawCmd) };
 
-    // On ARM64, read fb_mmap info BEFORE acquiring SHELL_FRAMEBUFFER.
-    // This prevents holding PROCESS_MANAGER (which disables interrupts on ARM64)
-    // while also holding the framebuffer lock — that nested lock pattern caused
-    // contention with the render thread and other syscall paths.
-    #[cfg(target_arch = "aarch64")]
-    let fb_mmap_info_pre: Option<crate::process::process::FbMmapInfo> = {
+    // Read the caller's fb_mmap info and display ownership BEFORE acquiring
+    // SHELL_FRAMEBUFFER. This prevents holding PROCESS_MANAGER (which disables
+    // interrupts on ARM64) while also holding the framebuffer lock — that nested
+    // lock pattern caused contention with the render thread and other syscall paths.
+    let (fb_mmap_info_pre, caller_owns_display): (
+        Option<crate::process::process::FbMmapInfo>,
+        bool,
+    ) = {
         use crate::syscall::memory_common::get_current_thread_id;
         let thread_id = get_current_thread_id();
         if let Some(tid) = thread_id {
             let mgr_guard = crate::process::manager();
             if let Some(ref mgr) = *mgr_guard {
                 mgr.find_process_by_thread(tid)
-                    .and_then(|(_pid, proc)| proc.fb_mmap)
+                    .map(|(pid, proc)| (proc.fb_mmap, owns_display(pid, proc)))
+                    .unwrap_or((None, false))
             } else {
-                None
+                (None, false)
             }
         } else {
-            None
+            (None, false)
         }
     };
 
@@ -2344,6 +2365,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     #[cfg(target_arch = "aarch64")]
     if cmd.op == 7 || cmd.op >= 9 {
         return handle_virgl_op(&cmd);
+    }
+
+    // A whole-screen mapping was made by a display owner. Once another process
+    // has taken the display, drawing through it would overwrite the new owner's
+    // frames, so the caller is told with EPERM (unlike the transient EBUSY below).
+    if fb_mmap_info_pre.is_some_and(|info| info.whole_screen) && !caller_owns_display {
+        return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
 
     // Get framebuffer
@@ -2915,15 +2943,32 @@ pub fn sys_get_mouse_pos(_out_ptr: u64) -> SyscallResult {
 /// Allocates physical frames, maps them into the process as a compact buffer at
 /// x 0 (the whole screen for the display owner, the left half for everyone
 /// else), and returns the userspace pointer. Drawing then needs no syscall;
-/// only the flush requires one.
+/// only the flush requires one. On aarch64, when the argument `width_out` is not
+/// 0 it receives the pane width in pixels (the row stride is that width times
+/// bytes per pixel).
+///
+/// x86_64's syscall dispatch (`syscall/handler.rs`) passes FBMMAP no argument,
+/// so no width is reported there and the display owner, like other processes,
+/// gets the left half: the layout a caller assumes when no width is reported.
 ///
 /// # Returns
 /// * Userspace address of the mapped buffer on success
 /// * -EBUSY if already mapped
 /// * -ENOMEM if allocation fails
 /// * -ENODEV if no framebuffer is available
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[cfg(target_arch = "aarch64")]
+pub fn sys_fbmmap(width_out: u64) -> SyscallResult {
+    fbmmap(width_out)
+}
+
+/// sys_fbmmap - x86_64 form; see the aarch64 form above.
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 pub fn sys_fbmmap() -> SyscallResult {
+    fbmmap(0)
+}
+
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+fn fbmmap(width_out: u64) -> SyscallResult {
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
@@ -2942,12 +2987,19 @@ pub fn sys_fbmmap() -> SyscallResult {
         None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
     };
 
+    // Check the optional pane-width out pointer before mapping anything.
+    if width_out != 0
+        && crate::syscall::userptr::validate_user_ptr_write(width_out as *mut u64).is_err()
+    {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
     // Check if the calling process owns the display (called take_over_display)
     let caller_owns_display = {
         let mgr_guard = crate::process::manager();
         if let Some(ref mgr) = *mgr_guard {
             mgr.find_process_by_thread(current_thread_id)
-                .map(|(_pid, proc)| proc.has_display_ownership)
+                .map(|(pid, proc)| owns_display(pid, proc))
                 .unwrap_or(false)
         } else {
             false
@@ -2956,7 +3008,9 @@ pub fn sys_fbmmap() -> SyscallResult {
 
     // Get framebuffer dimensions.
     // The display owner (the process that called take_over_display) gets the
-    // whole screen. Any other process gets the left half.
+    // whole screen on aarch64. Other processes, and on x86_64 the owner too, get
+    // the left half.
+    let whole_screen = cfg!(target_arch = "aarch64") && caller_owns_display;
     //
     // On ARM64, use the lock-free FbInfoCache to avoid contention with BWM's
     // fb_flush, which holds SHELL_FRAMEBUFFER for ~400μs during full-screen
@@ -2967,7 +3021,7 @@ pub fn sys_fbmmap() -> SyscallResult {
             Some(c) => c,
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         };
-        let pane_width = if caller_owns_display {
+        let pane_width = if whole_screen {
             cache.width
         } else {
             cache.width / 2
@@ -2998,7 +3052,7 @@ pub fn sys_fbmmap() -> SyscallResult {
                 }
             }
         };
-        let pane_width = if caller_owns_display {
+        let pane_width = if whole_screen {
             fb_guard.width()
         } else {
             fb_guard.width() / 2
@@ -3146,7 +3200,13 @@ pub fn sys_fbmmap() -> SyscallResult {
         user_stride,
         bpp,
         mapping_size,
+        whole_screen,
     });
+
+    // The pointer was validated before mapping.
+    if width_out != 0 {
+        let _ = crate::syscall::userptr::copy_to_user(width_out as *mut u64, &(pane_width as u64));
+    }
 
     log::info!(
         "sys_fbmmap: mapped {}x{} fb buffer at {:#x} ({} pages)",
