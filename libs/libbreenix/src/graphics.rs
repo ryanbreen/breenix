@@ -321,12 +321,14 @@ pub fn fb_draw_line(x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<()
 
 /// Map a framebuffer buffer into this process's address space.
 ///
-/// Returns a pointer to a compact left-pane buffer that can be drawn to
-/// directly with zero syscalls. Call `fb_flush()` after drawing to sync
+/// Returns a pointer to a compact buffer placed at x 0 that can be drawn to
+/// directly, without syscalls. Call `fb_flush()` after drawing to sync
 /// the buffer to the screen.
 ///
-/// The buffer layout is: `stride = left_pane_width * bytes_per_pixel` (compact).
-/// Use `fbinfo()` to get dimensions and pixel format.
+/// A process that called `take_over_display()` first gets the whole screen
+/// (`width` pixels wide); any other process gets the left half
+/// (`left_pane_width()` pixels). The layout is compact: `stride = pane width *
+/// bytes_per_pixel`. Use `fbinfo()` to get dimensions and pixel format.
 pub fn fb_mmap() -> Result<*mut u8, Error> {
     let ret = unsafe { raw::syscall0(nr::FBMMAP) as i64 };
     Error::from_syscall(ret).map(|v| v as *mut u8)
@@ -1157,8 +1159,9 @@ impl Framebuffer {
 
 /// Deactivate the kernel's terminal manager so userspace can take over the display.
 ///
-/// After this call, the kernel will no longer render to the right-side terminal pane.
-/// The calling process is responsible for all display rendering via fb_mmap.
+/// After this call the kernel stops drawing its own screen, and a later `fb_mmap()`
+/// by this process maps the whole screen. The calling process is responsible for
+/// drawing the display.
 pub fn take_over_display() -> Result<(), Error> {
     let result = unsafe { raw::syscall0(nr::TAKE_OVER_DISPLAY) };
     Error::from_syscall(result as i64).map(|_| ())

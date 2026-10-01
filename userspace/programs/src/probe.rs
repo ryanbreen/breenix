@@ -359,14 +359,16 @@ fn supervised_check(index: usize) -> (Result<(), String>, bool) {
     }
 }
 
+/// Take the display and map the whole screen; the display owner's mapping is full width.
 fn open_screen() -> Option<FrameBuf> {
     let info = graphics::fbinfo().ok()?;
-    if info.left_pane_width() < 240 || info.height < 400
+    if info.width < 480 || info.height < 400
         || !(3..=4).contains(&info.bytes_per_pixel) { return None; }
+    graphics::take_over_display().ok()?;
     let ptr = graphics::fb_mmap().ok()?;
-    Some(unsafe { FrameBuf::from_raw(ptr, info.left_pane_width() as usize,
-        info.height as usize, (info.left_pane_width() * info.bytes_per_pixel) as usize,
-        info.bytes_per_pixel as usize, info.is_bgr()) })
+    Some(unsafe { FrameBuf::from_raw(ptr, info.width as usize, info.height as usize,
+        (info.width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize,
+        info.is_bgr()) })
 }
 
 fn draw_probe(fb: &mut Option<FrameBuf>, states: &[Option<bool>; 16], details: &[String; 16],

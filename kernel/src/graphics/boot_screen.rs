@@ -10,8 +10,8 @@
 //! only rows whose state changed, and takes the framebuffer with `try_lock`: a
 //! contended update is skipped and caught up by the next one. Once userspace takes
 //! the display (`stop_drawing`) the kernel stops drawing; when userspace actually
-//! draws (`hand_over`) the kernel's screen is replaced by the split layout userspace
-//! expects. If userspace never draws, the boot screen stays up.
+//! draws (`hand_over`) the kernel's screen is cleared to a plain background for it.
+//! If userspace never draws, the boot screen stays up.
 //!
 //! On a panic or fatal EL1 fault `show_panic`/`show_fault` draw a red diagnostics
 //! screen with the failure, the boot stage and the last log lines. They never block:
@@ -21,9 +21,7 @@
 #![cfg(target_arch = "aarch64")]
 
 use super::arm64_fb;
-use super::primitives::{
-    draw_char, draw_rect, draw_vline, fill_rect, Canvas, Color, Rect, TextStyle,
-};
+use super::primitives::{draw_char, draw_rect, fill_rect, Canvas, Color, Rect, TextStyle};
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
@@ -120,7 +118,6 @@ const DONE: Color = Color::rgb(70, 200, 120);
 const RUNNING: Color = Color::rgb(240, 190, 60);
 const PENDING: Color = Color::rgb(75, 85, 105);
 const BAR_BG: Color = Color::rgb(40, 50, 75);
-const DIVIDER: Color = Color::rgb(60, 80, 100);
 
 const LINE: i32 = 20;
 const TEXT_CAP: usize = 112;
@@ -470,8 +467,9 @@ pub fn stop_drawing() -> bool {
     true
 }
 
-/// Userspace is about to draw into `fb`: replace the kernel's screen with the
-/// split layout (dark background, divider) that userspace panes are placed in.
+/// Userspace is about to draw into `fb`: replace the kernel's screen with a
+/// plain dark background for the userspace pane (the whole screen for the
+/// display owner, the left half for other programs).
 ///
 /// Called from the fb syscalls with the framebuffer lock held, after they have
 /// checked that the command draws, so the layout is settled in the same critical
@@ -501,9 +499,6 @@ pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
             },
             BG,
         );
-        for i in 0..4 {
-            draw_vline(fb, (width / 2 + i) as i32, 0, height as i32 - 1, DIVIDER);
-        }
         if let Some(db) = fb.double_buffer_mut() {
             db.flush_if_dirty();
         }

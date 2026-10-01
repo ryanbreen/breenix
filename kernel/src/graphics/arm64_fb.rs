@@ -899,26 +899,6 @@ impl Canvas for ShellFrameBuffer {
 /// Global shell framebuffer instance (compatible with x86_64 logger.rs interface)
 pub static SHELL_FRAMEBUFFER: OnceCell<Mutex<ShellFrameBuffer>> = OnceCell::uninit();
 
-// =============================================================================
-// Terminal dirty tracking for VirGL compositing
-// =============================================================================
-
-/// Whether the terminal (right pane) has been updated since the last VirGL composite.
-/// Initialized to `true` so the first VirGL frame captures the terminal.
-static TERMINAL_DIRTY: AtomicBool = AtomicBool::new(true);
-
-/// Mark the terminal (right pane) as dirty. Called from syscall flush when bwm
-/// writes to the right pane of the display.
-pub fn mark_terminal_dirty() {
-    TERMINAL_DIRTY.store(true, Ordering::Release);
-}
-
-/// Atomically check and clear the terminal dirty flag. Returns `true` if the
-/// terminal was dirty (and thus needs compositing into the VirGL 3D resource).
-pub fn take_terminal_dirty() -> bool {
-    TERMINAL_DIRTY.swap(false, Ordering::Acquire)
-}
-
 /// Read the shadow buffer (double buffer) contents without holding the lock
 /// longer than necessary.
 ///
