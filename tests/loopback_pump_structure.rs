@@ -4467,8 +4467,14 @@ pub fn run(offline: bool) {
 }
 "#);
     harness.push_str(&format!("fn main() {{ scheduler::run({offline}); }}\n"));
-    let scratch =
-        std::env::temp_dir().join(format!("retention-probe-{}-{offline}", std::process::id()));
+    let stdout = run_host_probe(&harness, &format!("retention-probe-{offline}"));
+    assert!(!stdout.contains("[PINNED_HOME_CPU_UNAVAILABLE:first:"));
+}
+
+/// Compile `harness` with host rustc (warnings denied), run it, and return its
+/// stdout; panics if either step fails.
+fn run_host_probe(harness: &str, tag: &str) -> String {
+    let scratch = std::env::temp_dir().join(format!("{tag}-{}", std::process::id()));
     fs::create_dir_all(&scratch).unwrap();
     let input = scratch.join("probe.rs");
     let binary = scratch.join("probe");
@@ -4486,15 +4492,15 @@ pub fn run(offline: bool) {
         String::from_utf8_lossy(&build.stderr)
     );
     let run = std::process::Command::new(&binary).output().unwrap();
-    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
     println!("{stdout}");
     assert!(
         run.status.success(),
         "probe failed: {}",
         String::from_utf8_lossy(&run.stderr)
     );
-    assert!(!stdout.contains("[PINNED_HOME_CPU_UNAVAILABLE:first:"));
     fs::remove_dir_all(scratch).unwrap();
+    stdout
 }
 
 #[test]
@@ -4505,6 +4511,165 @@ fn forced_stalled_home_retention() {
 #[test]
 fn forced_offline_home_declines_retention() {
     forced_retention_probe(true);
+}
+
+/// Execute the source's hold and delivery bodies against a host scheduler with
+/// several threads and CPUs. `get_thread` counts lookups, so each step can tell
+/// whether a scheduler entry scanned the thread table or returned early.
+#[test]
+fn pinned_hold_credits_deliver_once_on_the_home_cpu() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let mut harness = String::from(
+        r#"
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::collections::VecDeque;
+const MAX_CPUS: usize = 4;
+static PINNED_HOME_CPU_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+static PINNED_HOLDS_OUTSTANDING: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
+static PINNED_WAKES_DELIVERED: AtomicU64 = AtomicU64::new(0);
+static ENQUEUE_SAME_LOCK_OK: AtomicU64 = AtomicU64::new(0);
+static CURRENT_CPU: AtomicUsize = AtomicUsize::new(0);
+static LOOKUPS: AtomicU64 = AtomicU64::new(0);
+mod tracing { pub mod output { pub fn raw_serial_str(s: &str) { print!("{s}"); } pub fn raw_serial_dec(n: u64) { print!("{n}"); } } }
+#[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Blocked }
+#[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
+struct Thread { tid: u64, state: ThreadState, cpu_affinity: Option<CpuPin> }
+impl Thread { fn id(&self) -> u64 { self.tid } }
+#[derive(Default)] struct CpuState { current_thread: Option<u64>, previous_thread: Option<u64>, pending_next: Option<u64> }
+mod scheduler {
+use super::*;
+struct Scheduler { threads: Vec<Thread>, per_cpu_queues: [VecDeque<u64>; MAX_CPUS], cpu_state: [CpuState; MAX_CPUS] }
+impl Scheduler {
+fn current_cpu_id() -> usize { CURRENT_CPU.load(Ordering::Relaxed) }
+fn get_thread(&self, tid: u64) -> Option<&Thread> { LOOKUPS.fetch_add(1, Ordering::Relaxed); self.threads.iter().find(|t| t.tid == tid) }
+fn is_in_deferred_requeue(&self, _tid: u64) -> bool { false }
+"#,
+    );
+    for (name, signature) in [
+        (
+            "hold_pinned_wake_for_home",
+            "fn hold_pinned_wake_for_home(&self, thread_id: u64)",
+        ),
+        (
+            "pinned_wake_is_waiting_here",
+            "fn pinned_wake_is_waiting_here(&self, tid: u64, cpu: usize) -> bool",
+        ),
+        (
+            "deliver_pinned_wakes_for_this_cpu",
+            "fn deliver_pinned_wakes_for_this_cpu(&mut self)",
+        ),
+    ] {
+        let body = function_body(&source, name)
+            .expect("production method body")
+            .replace("#[cfg(target_arch = \"aarch64\")]", "#[cfg(all())]");
+        harness.push_str(&format!("{signature} {body}\n"));
+    }
+    harness.push_str(
+        r#"}
+fn holds() -> Vec<u64> { PINNED_HOLDS_OUTSTANDING.iter().map(|c| c.load(Ordering::Relaxed)).collect() }
+fn delivered() -> u64 { PINNED_WAKES_DELIVERED.load(Ordering::Relaxed) }
+fn queue(s: &Scheduler, cpu: usize) -> Vec<u64> { s.per_cpu_queues[cpu].iter().copied().collect() }
+// Hold `tid` from CPU `from`, as a placement on that CPU would.
+fn hold(s: &Scheduler, from: usize, tid: u64) { CURRENT_CPU.store(from, Ordering::Relaxed); s.hold_pinned_wake_for_home(tid); }
+// Run one scheduler entry's delivery on `cpu`; returns the thread lookups it made.
+fn enter(s: &mut Scheduler, cpu: usize) -> u64 {
+    CURRENT_CPU.store(cpu, Ordering::Relaxed);
+    let before = LOOKUPS.load(Ordering::Relaxed);
+    s.deliver_pinned_wakes_for_this_cpu();
+    LOOKUPS.load(Ordering::Relaxed) - before
+}
+// The home CPU dispatches `tid` from its queue; it is later Ready and unqueued again.
+fn dispatch_and_release(s: &mut Scheduler, cpu: usize, tid: u64) {
+    assert_eq!(s.per_cpu_queues[cpu].pop_front(), Some(tid));
+}
+pub fn run() {
+    let pinned = |tid, cpu, state| Thread { tid, state, cpu_affinity: Some(CpuPin { cpu, per_cpu_worker: true }) };
+    let mut s = Scheduler {
+        threads: vec![pinned(7, 1, ThreadState::Ready), pinned(8, 2, ThreadState::Ready), pinned(9, 1, ThreadState::Blocked), Thread { tid: 10, state: ThreadState::Ready, cpu_affinity: None }],
+        per_cpu_queues: std::array::from_fn(|_| VecDeque::new()),
+        cpu_state: std::array::from_fn(|_| CpuState::default()),
+    };
+    let full_pass = s.threads.len() as u64;
+    s.threads[1].state = ThreadState::Blocked;
+
+    // No hold anywhere: no CPU scans.
+    for cpu in 0..MAX_CPUS { assert_eq!(enter(&mut s, cpu), 0, "cpu {cpu} scanned with no hold"); }
+
+    // A hold taken on CPU 0 credits tid 7's home, CPU 1, and only CPU 1.
+    hold(&s, 0, 7);
+    assert_eq!(holds(), [0, 1, 0, 0]);
+    assert_eq!(PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed), 1);
+
+    // Peer CPUs neither scan nor consume the home's credit.
+    for cpu in [0, 2, 3] { assert_eq!(enter(&mut s, cpu), 0, "peer cpu {cpu} scanned"); }
+    assert_eq!(holds(), [0, 1, 0, 0]);
+    assert!(s.per_cpu_queues.iter().all(VecDeque::is_empty));
+
+    // The home CPU's next entry makes one pass, queues the wake once, and clears its credit.
+    assert_eq!(enter(&mut s, 1), full_pass);
+    assert_eq!(queue(&s, 1), [7]);
+    assert_eq!(delivered(), 1);
+    assert_eq!(ENQUEUE_SAME_LOCK_OK.load(Ordering::Relaxed), 1);
+    assert_eq!(holds(), [0, 0, 0, 0]);
+
+    // Later entries on the home CPU stop scanning; the wake stays queued once.
+    assert_eq!(enter(&mut s, 1), 0);
+    assert_eq!(queue(&s, 1), [7]);
+    assert_eq!(delivered(), 1);
+
+    // A subsequent hold re-arms the home CPU and is delivered again.
+    dispatch_and_release(&mut s, 1, 7);
+    hold(&s, 0, 7);
+    assert_eq!(holds(), [0, 1, 0, 0]);
+    assert_eq!(enter(&mut s, 1), full_pass);
+    assert_eq!(queue(&s, 1), [7]);
+    assert_eq!(delivered(), 2);
+    assert_eq!(holds(), [0, 0, 0, 0]);
+
+    // A hold whose wake another path already queued is resolved without a second enqueue.
+    dispatch_and_release(&mut s, 1, 7);
+    hold(&s, 0, 7);
+    s.per_cpu_queues[1].push_back(7);
+    assert_eq!(enter(&mut s, 1), full_pass);
+    assert_eq!(queue(&s, 1), [7]);
+    assert_eq!(delivered(), 2);
+    assert_eq!(holds(), [0, 0, 0, 0]);
+
+    // Holds for two homes: each home delivers only its own wake and clears only its own credit.
+    dispatch_and_release(&mut s, 1, 7);
+    s.threads[1].state = ThreadState::Ready;
+    hold(&s, 3, 7);
+    hold(&s, 3, 8);
+    assert_eq!(holds(), [0, 1, 1, 0]);
+    assert_eq!(enter(&mut s, 1), full_pass);
+    assert_eq!(queue(&s, 1), [7]);
+    assert!(s.per_cpu_queues[2].is_empty());
+    assert_eq!(holds(), [0, 0, 1, 0]);
+    assert_eq!(enter(&mut s, 2), full_pass);
+    assert_eq!(queue(&s, 2), [8]);
+    assert_eq!(delivered(), 4);
+    assert_eq!(holds(), [0, 0, 0, 0]);
+    for cpu in 0..MAX_CPUS { assert_eq!(enter(&mut s, cpu), 0, "cpu {cpu} scanned after its holds cleared"); }
+
+    // The blocked and unpinned threads were never queued.
+    assert!(s.per_cpu_queues.iter().all(|q| !q.contains(&9) && !q.contains(&10)));
+    println!();
+    println!("pinned-hold-credits: holds=5 delivered={} PASS", delivered());
+}
+}
+fn main() { scheduler::run(); }
+"#,
+    );
+    let stdout = run_host_probe(&harness, "pinned-hold-credit-probe");
+    assert_eq!(
+        stdout
+            .matches("[PINNED_HOME_CPU_UNAVAILABLE:first:")
+            .count(),
+        1
+    );
+    assert!(stdout.contains("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=7:home=1:cpu=0:count=1]"));
+    assert!(stdout.contains("pinned-hold-credits: holds=5 delivered=4 PASS"));
 }
 
 /// The wake-budget marker is printed on the passing path and on every
