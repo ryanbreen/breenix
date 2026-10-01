@@ -1228,9 +1228,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         || kernel::platform_config::is_vmware()
         || kernel::platform_config::is_parallels()
     {
-        // Tell boot.S the correct UART address for this platform's serial debug output
-        kernel::arch_impl::aarch64::smp::set_uart_phys(kernel::platform_config::uart_base_phys());
-
         // Write per-CPU stack base address. Placed AFTER kernel image + full BSS
         // (which includes large statics like PCI_3D_FRAMEBUFFER extending to ~0x43000000).
         // Platform-dependent:

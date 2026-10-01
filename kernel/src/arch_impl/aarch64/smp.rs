@@ -43,11 +43,6 @@ extern "C" {
     /// memory — the ~1 TiB gap exceeds the ADRP relocation range (+/- 4 GiB).
     static SECONDARY_CPU_ENTRY_PHYS: u64;
 
-    /// Pointer to SMP_UART_PHYS (which lives in .bss.boot, low physical memory).
-    /// Stored in .rodata so Rust can reach it via ADRP, then we dereference to
-    /// get the actual address of the variable and write through it.
-    static SMP_UART_PHYS_PTR: u64;
-
     /// Pointers to SMP_TTBR0_PHYS / SMP_TTBR1_PHYS / SMP_MAIR_PHYS / SMP_TCR_PHYS
     /// variables (in .bss.boot). Secondary CPUs read these to get the correct
     /// page table addresses and MMU configuration.
@@ -112,33 +107,6 @@ pub fn set_smp_ttbrs() {
 
         // Single DSB to ensure all cache cleans complete
         core::arch::asm!("dsb ish", options(nostack),);
-    }
-}
-
-/// Set the UART physical address for secondary CPU boot debug output.
-/// Must be called before `release_cpu()`.
-///
-/// Uses indirection through SMP_UART_PHYS_PTR because SMP_UART_PHYS lives in
-/// .bss.boot (low physical memory) and direct ADRP from high-half Rust code
-/// would overflow the +/-4GiB relocation range.
-///
-/// Includes cache clean + DSB so the value is visible to secondary CPUs
-/// which start with MMU off (uncached reads from physical memory).
-pub fn set_uart_phys(addr: u64) {
-    unsafe {
-        // SMP_UART_PHYS_PTR holds the physical address of SMP_UART_PHYS.
-        // Add HHDM base to get the virtual address, then write through it.
-        let phys = core::ptr::read_volatile(&SMP_UART_PHYS_PTR);
-        let virt = phys + 0xFFFF_0000_0000_0000u64; // KERNEL_VIRT_BASE / HHDM
-        let ptr = virt as *mut u64;
-        core::ptr::write_volatile(ptr, addr);
-        // Clean cache line to Point of Coherency so uncached reads see it
-        core::arch::asm!(
-            "dc cvac, {addr}",  // Clean by VA to PoC
-            "dsb ish",          // Ensure completion
-            addr = in(reg) ptr,
-            options(nostack),
-        );
     }
 }
 
