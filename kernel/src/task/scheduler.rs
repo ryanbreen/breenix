@@ -447,6 +447,12 @@ fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> 
 pub static PINNED_HOME_CPU_UNAVAILABLE: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
+/// Holds taken for each home CPU that its next scheduler entry has not yet
+/// resolved. Written only under the scheduler lock: incremented by
+/// `hold_pinned_wake_for_home`, cleared by `deliver_pinned_wakes_for_this_cpu`
+/// once it has scanned for that CPU's held wakes.
+static PINNED_HOLDS_OUTSTANDING: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
 /// Pins rejected at publication because the CPU they named is outside the
 /// online range -- counted here, where slice 3c discarded them in silence.
 ///
@@ -4745,6 +4751,14 @@ impl Scheduler {
     /// that cleared one would leave the other naming a CPU the thread is not
     /// pinned to.
     fn hold_pinned_wake_for_home(&self, thread_id: u64) {
+        let home = self
+            .get_thread(thread_id)
+            .and_then(|thread| thread.cpu_affinity)
+            .map(|pin| pin.cpu)
+            .unwrap_or(usize::MAX);
+        if home < MAX_CPUS {
+            PINNED_HOLDS_OUTSTANDING[home].fetch_add(1, Ordering::Relaxed);
+        }
         let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
         if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
             // Raw serial, one shot: this runs under the scheduler lock with
@@ -4752,11 +4766,6 @@ impl Scheduler {
             // tid and its home CPU are on the line because "something got held"
             // is not actionable and "this worker's home stopped dispatching"
             // is.
-            let home = self
-                .get_thread(thread_id)
-                .and_then(|thread| thread.cpu_affinity)
-                .map(|pin| pin.cpu)
-                .unwrap_or(usize::MAX);
             crate::tracing::output::raw_serial_str("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=");
             crate::tracing::output::raw_serial_dec(thread_id);
             crate::tracing::output::raw_serial_str(":home=");
@@ -4819,18 +4828,18 @@ impl Scheduler {
     /// wake to rescue it -- which matters, because the wake that was refused
     /// may have been the only one its waiter was ever going to get.
     ///
-    /// The early return reads a counter with 1 writer, a `fetch_add`, so it can
-    /// skip the scan only on a boot where 0 holds have happened -- which is
-    /// what a healthy boot is. Once one has, the scan runs on each scheduler
-    /// entry, and the gate is already red.
-    /// claim-lint:ok: 1 of 1 writer of `PINNED_HOME_CPU_UNAVAILABLE` is the
-    /// `fetch_add` in `hold_pinned_wake_for_home`; 3 of 3 strict boots and 3 of
-    /// 3 production boots at this head read it at 0
+    /// The scan runs only while this CPU has outstanding holds, so a hold for
+    /// one CPU does not make every later scheduler entry on every CPU walk the
+    /// thread table. One full pass under the scheduler lock queues every wake
+    /// held here; a hold whose wake another path already placed, terminated or
+    /// requeued has nothing left to deliver. Either way the pass resolves all
+    /// of this CPU's holds, so it clears them. A thread that later returns to
+    /// the held shape gets there through a placement that holds again.
     fn deliver_pinned_wakes_for_this_cpu(&mut self) {
-        if PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed) == 0 {
+        let cpu = Self::current_cpu_id();
+        if PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) == 0 {
             return;
         }
-        let cpu = Self::current_cpu_id();
         let mut index = 0;
         while index < self.threads.len() {
             let tid = self.threads[index].id();
@@ -4842,6 +4851,7 @@ impl Scheduler {
             PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
             ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
         }
+        PINNED_HOLDS_OUTSTANDING[cpu].store(0, Ordering::Relaxed);
     }
 
     /// Keep a CPU-pinned thread on the CPU its pin names, instead of letting a
