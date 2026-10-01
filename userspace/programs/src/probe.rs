@@ -1,13 +1,13 @@
 //! Production boot probe: one bounded, honest result for each userspace milestone check.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+mod probe_signal;
 
 use libbreenix::fs::{self, DirentIter, O_CREAT, O_DIRECTORY, O_RDONLY, O_TRUNC, O_WRONLY};
 use libbreenix::graphics;
 use libbreenix::io::{self, poll_events, PollFd};
 use libbreenix::memory;
 use libbreenix::process::{self, ForkResult, WNOHANG};
-use libbreenix::signal::{self, Sigaction, SIGKILL, SIGUSR1};
+use libbreenix::signal::{self, SIGKILL};
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_DGRAM};
 use libbreenix::termios::{self, Termios};
 use libbreenix::time;
@@ -29,7 +29,7 @@ const DETAILS: [&str; 16] = [
     "stdout write succeeded", "PID is positive", "advanced after 10 ms sleep",
     "program break advanced", "mapped memory read back", "child exited 7",
     "exec child exited 0", "target validated argv", "child sent bytes to parent",
-    "SIGUSR1 handler ran", "POLLIN reported", "write/read/unlink succeeded",
+    "ignored, blocked and caught signal waits passed", "POLLIN reported", "write/read/unlink succeeded",
     "mkdir/list/rmdir succeeded", "isatty and tcgetattr succeeded",
     "datagram echoed on 127.0.0.1", "fb info and draw succeeded",
 ];
@@ -39,12 +39,6 @@ const GROUPS: [(&str, usize, usize); 7] = [
     ("TTY + SHELL", 13, 14), ("NETWORKING", 14, 15),
     ("RUNTIMES", 15, 16),
 ];
-static SIGNAL_SEEN: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_signal(_: i32) {
-    SIGNAL_SEEN.store(true, Ordering::SeqCst);
-}
-
 fn check(index: usize) -> Result<(), &'static str> {
     match index {
         0 => {
@@ -117,18 +111,7 @@ fn check(index: usize) -> Result<(), &'static str> {
                 }
             }
         }
-        9 => {
-            SIGNAL_SEEN.store(false, Ordering::SeqCst);
-            signal::sigaction(SIGUSR1, Some(&Sigaction::new(on_signal)), None)
-                .map_err(|_| "sigaction failed")?;
-            let pid = process::getpid().map_err(|_| "getpid failed")?;
-            signal::kill(pid.raw() as i32, SIGUSR1).map_err(|_| "self signal failed")?;
-            for _ in 0..1000 {
-                if SIGNAL_SEEN.load(Ordering::SeqCst) { return Ok(()); }
-                let _ = process::yield_now();
-            }
-            Err("signal handler did not run")
-        }
+        9 => probe_signal::run(),
         10 => {
             let (reader, writer) = io::pipe().map_err(|_| "pipe failed")?;
             let written = io::write(writer, b"p");
@@ -227,7 +210,7 @@ fn exec_check(path: &[u8], argv: Option<&[*const u8; 3]>) -> Result<(), &'static
 /// and without a supervising child nothing could stop them hanging the probe.
 const INLINE_SAFE: [bool; 16] = [
     true, true, false, true, true, false, false, false,
-    false, true, true, false, false, true, false, true,
+    false, false, true, false, false, true, false, true,
 ];
 const LIMIT_NS: i128 = 2_000_000_000;
 const REAP_LIMIT_NS: i128 = 500_000_000;
@@ -595,9 +578,8 @@ fn run_program(path: &str, args: &[String]) {
                     .map(|arg| [arg.as_bytes(), b"\0"].concat()).collect();
                 let mut argv: Vec<*const u8> = argv_bytes.iter().map(|arg| arg.as_ptr()).collect();
                 argv.push(std::ptr::null());
-                if let Err(error) = process::execv(&path_bytes, argv.as_ptr()) {
-                    let _ = io::write(exec_writer, format!("exec failed: {error:?}").as_bytes());
-                }
+                let Err(error) = process::execv(&path_bytes, argv.as_ptr());
+                let _ = io::write(exec_writer, format!("exec failed: {error:?}").as_bytes());
                 process::exit(127);
             }
             Ok(ForkResult::Parent(pid)) => {
