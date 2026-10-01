@@ -595,9 +595,8 @@ fn run_program(path: &str, args: &[String]) {
                     .map(|arg| [arg.as_bytes(), b"\0"].concat()).collect();
                 let mut argv: Vec<*const u8> = argv_bytes.iter().map(|arg| arg.as_ptr()).collect();
                 argv.push(std::ptr::null());
-                if let Err(error) = process::execv(&path_bytes, argv.as_ptr()) {
-                    let _ = io::write(exec_writer, format!("exec failed: {error:?}").as_bytes());
-                }
+                let Err(error) = process::execv(&path_bytes, argv.as_ptr());
+                let _ = io::write(exec_writer, format!("exec failed: {error:?}").as_bytes());
                 process::exit(127);
             }
             Ok(ForkResult::Parent(pid)) => {

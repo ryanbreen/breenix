@@ -257,14 +257,15 @@ static USE_GROUP0: AtomicBool = AtomicBool::new(false);
 /// the hypervisor/firmware maps Group 0 physical delivery to Group 1 NS.
 static DS_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Whether this platform supports split EOI/DIR interrupt deactivation.
-/// VMware Fusion's HVF rejects two-step deactivation, so it stays in
-/// EOImode=0 and performs EOI+deactivate together after the handler.
+/// Effective ICC_CTLR_EL1.EOImode read back after init; VMware requests mode 0
+/// because HVF rejects ICC_DIR_EL1, and Parallels ignores the mode-1 write
+/// (observed RAZ/WI).
 static SPLIT_DEACTIVATE_SUPPORTED: AtomicBool = AtomicBool::new(false);
 
 /// Tracks which group the last acknowledged interrupt came from.
-/// 0 = Group 1 (normal), 1 = Group 0. Per-CPU would be ideal but
-/// a single atomic suffices for the boot CPU (VMware is single-CPU for now).
+/// 0 = Group 0, 1 = Group 1 (normal). The group selects EOIR only when
+/// USE_GROUP0 && DS_ENABLED, a combination restricted to single-CPU operation.
+/// Otherwise acknowledgements store Group 1 and EOIR1 is used, including on SMP.
 static LAST_ACK_GROUP: AtomicU32 = AtomicU32::new(0);
 
 /// Peripheral ID Register 2 (contains GIC architecture version)
@@ -472,7 +473,7 @@ pub fn init_cpu_interface_secondary() {
             // ICC system registers are per-CPU and independent of the
             // redistributor MMIO aperture. Bring SRE/PMR/IGRPEN up before any
             // GICR range guard so every CPU emits the SRE audit line.
-            init_gicv3_cpu_interface();
+            init_gicv3_cpu_interface(false);
 
             if !validate_gicr_range_for_cpu(cpu_id) {
                 return;
@@ -538,7 +539,7 @@ impl InterruptController for Gicv2 {
                 refresh_gicr_rdist_map(GICR_RDIST_SLOTS);
                 init_gicv3_distributor();
                 init_gicv3_redistributor(0); // CPU 0
-                init_gicv3_cpu_interface();
+                init_gicv3_cpu_interface(true);
             }
             _ => {
                 panic!("Unknown GIC architecture version {}", version);
@@ -721,6 +722,10 @@ pub fn acknowledge_irq() -> Option<u32> {
 }
 
 /// Drop active IRQ priority by ID.
+///
+/// In effective mode 0 and on GICv2 this is a no-op: EOIR in deactivate_irq
+/// drops priority and deactivates together. With uniform IRQ priorities the
+/// handler body remains at active priority and cannot be preempted by another IRQ.
 ///
 /// Uses EOIR0 for Group 0 interrupts (VMware) and EOIR1 for Group 1 (normal).
 /// CRITICAL: `#[inline(never)]` prevents the compiler from hoisting the
@@ -1641,39 +1646,65 @@ fn init_gicv3_redistributor(cpu_id: usize) {
 }
 
 /// Initialize GICv3 CPU Interface via ICC system registers.
-fn init_gicv3_cpu_interface() {
+fn init_gicv3_cpu_interface(boot_cpu: bool) {
     unsafe {
         // Enable system register interface (ICC_SRE_EL1)
         let sre: u64 = 0x7; // SRE | DFB | DIB
         core::arch::asm!("msr icc_sre_el1, {}", in(reg) sre, options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
 
-        let supports_split = !crate::platform_config::is_vmware();
-        SPLIT_DEACTIVATE_SUPPORTED.store(supports_split, Ordering::Release);
+        let request_split = !crate::platform_config::is_vmware();
 
-        // Set ICC_CTLR_EL1.EOImode from platform support. Split mode matches
-        // Linux's regular gic_handle_irq() path; VMware Fusion stays in
+        // Request ICC_CTLR_EL1.EOImode; the request may be ignored. Split mode
+        // matches Linux's regular gic_handle_irq() path; VMware requests
         // single-step mode because HVF rejects ICC_DIR_EL1 deactivation.
         let icc_ctlr: u64;
         core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) icc_ctlr, options(nomem, nostack));
-        let new_ctlr = if supports_split {
+        let new_ctlr = if request_split {
             icc_ctlr | (1u64 << 1)
         } else {
             icc_ctlr & !(1u64 << 1)
         };
         core::arch::asm!("msr icc_ctlr_el1, {}", in(reg) new_ctlr, options(nomem, nostack));
         core::arch::asm!("isb", options(nostack, preserves_flags));
-        if supports_split {
-            crate::serial_println!("[gic] EOImode=1 (split EOI/DIR) - non-VMware path");
+        // Parallels ignores the EOImode write (ICC_CTLR_EL1 reads 0x40300 after
+        // writing 0x40302) even though the architecture defines it as RW;
+        // use the read-back value. In mode 0 early EOIR would deactivate a
+        // level IRQ before its handler has cleared the source.
+        let effective_ctlr: u64;
+        core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) effective_ctlr, options(nomem, nostack));
+        let split_enabled = effective_ctlr & (1u64 << 1) != 0;
+        if boot_cpu {
+            SPLIT_DEACTIVATE_SUPPORTED.store(split_enabled, Ordering::Release);
         } else {
-            crate::serial_println!("[gic] EOImode=0 (single-step EOI+deactivate) - VMware path");
+            let boot_split = SPLIT_DEACTIVATE_SUPPORTED.load(Ordering::Acquire);
+            assert_eq!(
+                split_enabled, boot_split,
+                "GIC secondary EOImode differs from boot CPU"
+            );
+        }
+        if split_enabled {
+            crate::serial_println!("[gic] EOImode=1 effective: split priority-drop/DIR");
+        } else if request_split {
+            crate::serial_println!(
+                "[gic] EOImode=0 effective (requested 1, write ignored): EOI+deactivate after handler"
+            );
+        } else {
+            crate::serial_println!(
+                "[gic] EOImode=0 effective (requested 0): EOI+deactivate after handler"
+            );
         }
         crate::serial_println!(
-            "[gic] ICC_CTLR_EL1: {:#x} -> {:#x} (EOImode={})",
-            icc_ctlr,
-            new_ctlr,
-            (new_ctlr >> 1) & 1
+            "[gic] ICC_CTLR_EL1: {icc_ctlr:#x}, wrote {new_ctlr:#x}, read back {effective_ctlr:#x} (EOImode requested={}, effective={})",
+            u8::from(request_split),
+            u8::from(split_enabled)
         );
+        if request_split != split_enabled {
+            crate::serial_println!(
+                "[gic] EOImode request differs from readback; using effective mode {}",
+                u8::from(split_enabled)
+            );
+        }
 
         // Set priority mask to accept all (ICC_PMR_EL1)
         let pmr: u64 = LINUX_DEFAULT_PMR as u64;
