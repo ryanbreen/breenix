@@ -667,12 +667,12 @@ impl TtyDevice {
     ///
     /// # Lock ordering
     ///
-    /// On ARM64, this uses raw UART writes (no lock) instead of
-    /// `crate::serial::write_byte()` to avoid acquiring SERIAL1 from IRQ
-    /// context. On SMP, another CPU may hold SERIAL1 and be waiting for the
-    /// SCHEDULER lock that this IRQ path also needs -- using the lock here
-    /// would create a deadlock. The raw UART write is safe because PL011
-    /// TX FIFO writes are atomic at the register level.
+    /// On ARM64, this writes through `serial_line` UART ownership. An owner
+    /// holds it only while writing bytes, never while waiting on a lock, so
+    /// this cannot deadlock against SCHEDULER or the line discipline. Owners
+    /// are served in order, so the echo waits at most for the records other
+    /// CPUs had already queued, each of which waits at most 10 ms per byte
+    /// for the UART.
     ///
     /// On x86_64, `write_byte()` disables interrupts and acquires the lock,
     /// which is safe because x86_64 uses separate COM1/COM2 ports.
@@ -697,7 +697,7 @@ impl TtyDevice {
             let _ = crate::graphics::render_queue::queue_byte(b'\r');
         }
 
-        // Write the character -- lock-free on ARM64, locked on x86_64
+        // Write the character -- under UART ownership on ARM64, locked on x86_64
         #[cfg(target_arch = "aarch64")]
         crate::serial_line::Line::new().char(c);
         #[cfg(target_arch = "x86_64")]

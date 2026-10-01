@@ -617,6 +617,7 @@ fn dump_fatal_postmortem_once(label: &str) {
     });
 }
 
+/// Write one complete `  STACK=` row naming the stack region `frame_addr` is on.
 #[inline(never)]
 fn dump_stack_classification(frame_addr: u64) {
     let stack_base = super::constants::percpu_stack_region_base();
@@ -629,14 +630,15 @@ fn dump_stack_classification(frame_addr: u64) {
         let cpu_id = offset_from_base / super::constants::PERCPU_STACK_STRIDE;
         let offset_in_slot = offset_from_base % super::constants::PERCPU_STACK_STRIDE;
         if offset_in_slot < super::constants::PERCPU_SCHED_STACK_SIZE {
-            line.text("\n  STACK=sched_cpu");
+            line.text("  STACK=sched_cpu");
         } else {
-            line.text("\n  STACK=boot_cpu");
+            line.text("  STACK=boot_cpu");
         }
         line.dec(cpu_id);
+        line.text("\n");
     } else if frame_addr >= ARM64_KERNEL_STACK_BASE && frame_addr < ARM64_KERNEL_STACK_END {
         let mut line = crate::serial_line::Line::new();
-        line.text("\n  STACK=alloc_kstack");
+        line.text("  STACK=alloc_kstack");
         if let Some((slot, tid)) =
             crate::arch_impl::aarch64::context_switch::last_dispatched_tid_for_stack_address(
                 frame_addr,
@@ -647,9 +649,10 @@ fn dump_stack_classification(frame_addr: u64) {
             line.text(" last_dispatched_tid=");
             line.dec(tid);
         }
+        line.text("\n");
     } else {
         let mut line = crate::serial_line::Line::new();
-        line.text("\n  STACK=unknown");
+        line.text("  STACK=unknown\n");
     }
 }
 
@@ -825,6 +828,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 line.hex(ttbr0);
                 line.text(" from_el0=");
                 line.char(if from_el0 { b'1' } else { b'0' });
+                line.text("\n");
 
                 // For kernel-mode faults, dump extra diagnostic info to identify
                 // the faulting code path (null deref, wild pointer, use-after-free)
@@ -837,7 +841,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         far,
                         cpu_id as usize,
                     );
-                    line.text(" cpu=");
+                    line.text("  cpu=");
                     line.dec(cpu_id as u64);
                     line.text("\n  x19=");
                     line.hex(frame_ref.x19);
@@ -904,12 +908,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     line.dec(isr_cmd as u64);
                     line.text(" waiter_tid=");
                     line.dec(waiter_tid);
+                    line.text("\n");
 
                     // Classify which stack region the frame is on
                     let frame_addr = frame as u64;
                     dump_stack_classification(frame_addr);
                 }
-                line.text("\n");
             }
 
             if from_el0 {
@@ -1118,6 +1122,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 line.hex(ttbr0);
                 line.text(" from_el0=");
                 line.char(if from_el0 { b'1' } else { b'0' });
+                line.text("\n");
 
                 if !from_el0 {
                     let cpu_id =
@@ -1156,6 +1161,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             line.hex(thread.inline_schedule_caller_lr);
                             line.text(" saved_slot20=");
                             line.hex(saved_slot20);
+                            line.text("\n");
                             crate::tracing::record_event(
                                 crate::tracing::TraceEventType::EL1_INLINE_ABORT,
                                 0,
@@ -1345,10 +1351,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     use crate::memory::kernel_stack::{
                         ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END,
                     };
+                    line.text("\n");
                     dump_stack_classification(frame_addr);
 
                     // DISPATCH TRACE: last 8 dispatches on this CPU
-                    line.text("\n  DISPATCH_TRACE cpu=");
+                    line.text("  DISPATCH_TRACE cpu=");
                     line.dec(cpu_id as u64);
                     line.text(":\n");
                     crate::arch_impl::aarch64::context_switch::dump_dispatch_trace(cpu_id as usize);
@@ -1559,6 +1566,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 line.dec(cpu_id as u64);
                 if verbose {
                     if !from_el0 {
+                        line.text("\n");
                         dump_el1_fatal_frame_and_dispatch_trace(
                             "PC_ALIGN",
                             frame_ref,

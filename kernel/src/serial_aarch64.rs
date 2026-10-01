@@ -358,21 +358,26 @@ pub fn _log_print(args: fmt::Arguments) {
 // Hardware output under UART ownership
 // =============================================================================
 
-/// The UART byte sink. Callers must own the UART (see `serial_line`).
-pub(crate) fn hardware_byte(c: u8, _owner: &crate::serial_line::Ownership) {
+/// The UART can accept a byte.
+pub(crate) fn hardware_ready() -> bool {
     let addr = crate::platform_config::uart_virt() as usize;
     unsafe {
         if crate::platform_config::uart_type() == 1 {
-            while core::ptr::read_volatile((addr + reg16550::LSR) as *const u8) & reg16550::LSR_THRE
-                == 0
-            {
-                core::hint::spin_loop();
-            }
+            core::ptr::read_volatile((addr + reg16550::LSR) as *const u8) & reg16550::LSR_THRE != 0
+        } else {
+            core::ptr::read_volatile((addr + reg::FR) as *const u32) & flag::TXFF == 0
+        }
+    }
+}
+
+/// The UART byte sink. Callers must own the UART and have waited for
+/// [`hardware_ready`] (see `serial_line`).
+pub(crate) fn hardware_write(c: u8, _owner: &crate::serial_line::Ownership) {
+    let addr = crate::platform_config::uart_virt() as usize;
+    unsafe {
+        if crate::platform_config::uart_type() == 1 {
             core::ptr::write_volatile(addr as *mut u8, c);
         } else {
-            while core::ptr::read_volatile((addr + reg::FR) as *const u32) & flag::TXFF != 0 {
-                core::hint::spin_loop();
-            }
             core::ptr::write_volatile(addr as *mut u32, c as u32);
         }
     }

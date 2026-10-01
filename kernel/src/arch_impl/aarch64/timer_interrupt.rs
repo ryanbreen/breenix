@@ -976,11 +976,12 @@ fn check_soft_lockup(cpu0_tick: u64) {
     }
 }
 
-// Keep diagnostic record storage out of the ordinary timer frame.
+// The timer is not yet acknowledged or rearmed here, so the breadcrumb is
+// skipped rather than wait while another CPU owns the UART.
 #[cold]
 #[inline(never)]
 fn emit_tick_breadcrumb(count: u64) {
-    crate::serial_line::Line::new().bytes(&[b'T', b'0' + (count % 10) as u8]);
+    crate::serial_line::try_write(&[b'T', b'0' + (count % 10) as u8]);
 }
 
 #[cold]
