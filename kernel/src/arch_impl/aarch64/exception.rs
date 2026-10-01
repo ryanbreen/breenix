@@ -2206,12 +2206,6 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
     }
 }
 
-#[inline(always)]
-fn handle_irq_event(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
-    dispatch_irq_action(irq_id, frame);
-    gic::deactivate_irq(irq_id);
-}
-
 /// Handle IRQ interrupts
 ///
 /// Called from assembly after saving registers.
@@ -2227,6 +2221,9 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             crate::per_cpu_aarch64::irq_enter();
         }
 
+        // In effective mode 0 and on GICv2 priority_drop_irq is a no-op.
+        // EOIR in deactivate_irq drops priority and deactivates together;
+        // uniform priorities keep the handler body non-preemptible by IRQs.
         gic::priority_drop_irq(irq_id);
         unsafe {
             core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
@@ -2240,13 +2237,17 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             }
         }
 
-        handle_irq_event(irq_id, frame);
+        dispatch_irq_action(irq_id, frame);
 
         if reopen_nested_irq_window {
             unsafe {
                 core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
             }
         }
+
+        // Mask IRQs before deactivation: a level source may already be
+        // asserted again after its handler, including a stalled timer PPI.
+        gic::deactivate_irq(irq_id);
 
         if have_percpu {
             crate::per_cpu_aarch64::irq_exit();
