@@ -6,12 +6,12 @@
 //!
 //! # What this writer may use, and why
 //!
-//! Only `crate::tracing::output::raw_serial_char`, which is a single port
-//! write on x86_64 and a single volatile MMIO store on aarch64. It takes no
-//! lock and performs no allocation, and neither does its one callee. The
-//! code above it here is integer arithmetic over a stack array. That is the
-//! reason the capture path can run from a fault handler or a masked
-//! interrupt.
+//! On x86_64, only `crate::tracing::output::raw_serial_char`, which is a
+//! single port write. On aarch64, only a `crate::serial_line::Line` held in
+//! the writer, which assembles the record on the stack and writes it while
+//! owning the UART. Neither takes a lock or allocates. The code above it here
+//! is integer arithmetic over a stack array. That is the reason the capture
+//! path can run from a fault handler or a masked interrupt.
 //!
 //! # The bound
 //!
@@ -34,6 +34,7 @@
 //! the budget stops the capture at a record boundary; the mid-record cut is
 //! the worst case, not the normal one.
 
+#[cfg(target_arch = "x86_64")]
 use crate::tracing::output::raw_serial_char;
 
 /// Schema major version. A decoder refuses a record set whose `v=` it does
@@ -100,6 +101,8 @@ pub const BXCAP_BUDGET_BYTES: u32 = 44;
 /// and dropped when the capture returns, so there is no writer to outlive
 /// it.
 pub struct Writer {
+    #[cfg(target_arch = "aarch64")]
+    line: crate::serial_line::Line,
     remaining: u32,
     records: u32,
     bytes: u32,
@@ -115,6 +118,8 @@ impl Writer {
     #[inline(always)]
     pub fn new() -> Self {
         Self {
+            #[cfg(target_arch = "aarch64")]
+            line: crate::serial_line::Line::new(),
             remaining: BXCAP_BUDGET_BYTES,
             records: 0,
             bytes: 0,
@@ -126,7 +131,7 @@ impl Writer {
 
     /// The single byte sink, and the single budget-enforcement point.
     ///
-    /// Returns whether the byte reached the wire. Most callers have no use
+    /// Returns whether the byte was written. Most callers have no use
     /// for that; `close()` does, because whether a record's `]` landed is
     /// the difference between a line a reader can parse and a fragment it
     /// cannot.
@@ -140,7 +145,10 @@ impl Writer {
             self.remaining -= 1;
         }
         self.bytes = self.bytes.saturating_add(1);
+        #[cfg(target_arch = "x86_64")]
         raw_serial_char(byte);
+        #[cfg(target_arch = "aarch64")]
+        self.line.char(byte);
         true
     }
 

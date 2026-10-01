@@ -2114,7 +2114,7 @@ fn test_serial_output() -> TestResult {
     #[cfg(target_arch = "aarch64")]
     {
         // Use the raw_serial_str function for lock-free output
-        crate::serial_aarch64::raw_serial_str(b"[LOGGING_TEST] Serial test ARM64\n");
+        crate::serial_line::Line::new().bytes(b"[LOGGING_TEST] Serial test ARM64\n");
     }
 
     TestResult::Pass

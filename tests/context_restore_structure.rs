@@ -7092,7 +7092,7 @@ fn ret_dispatch_sites_record_an_r_path_dispatch_row() {
     let dumper = function_body(&source, "dump_dispatch_trace")
         .unwrap_or_else(|| panic!("`dump_dispatch_trace` body not found in {CONTEXT_SWITCH_PATH}"));
     assert!(
-        dumper.contains("raw_uart_char(e.path)"),
+        dumper.contains("line.char(e.path)"),
         "`dump_dispatch_trace` no longer prints the path character, so an 'R' row would be \
          indistinguishable from a 'K' one"
     );

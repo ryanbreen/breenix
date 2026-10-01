@@ -147,6 +147,7 @@ pub static mut TRACE_DUMP_COUNT: u64 = 0;
 /// This is safe to call from panic handlers and interrupt contexts.
 /// Uses direct port I/O on x86-64, UART on ARM64.
 #[inline(always)]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn raw_serial_char(c: u8) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
@@ -154,16 +155,11 @@ pub(crate) fn raw_serial_char(c: u8) {
         let mut port: Port<u8> = Port::new(0x3F8); // COM1 data port
         port.write(c);
     }
-
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        let uart_addr = crate::platform_config::uart_virt() as *mut u8;
-        core::ptr::write_volatile(uart_addr, c);
-    }
 }
 
 /// Write a string to serial output without any locks.
 #[inline(never)]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn raw_serial_str(s: &str) {
     for c in s.bytes() {
         raw_serial_char(c);
@@ -172,12 +168,14 @@ pub(crate) fn raw_serial_str(s: &str) {
 
 /// Write a newline to serial output.
 #[inline(always)]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn raw_serial_newline() {
     raw_serial_char(b'\r');
     raw_serial_char(b'\n');
 }
 
 /// Write a u64 value in hexadecimal to serial output.
+#[cfg(target_arch = "x86_64")]
 fn raw_serial_hex(value: u64) {
     const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
     raw_serial_str("0x");
@@ -200,6 +198,7 @@ fn raw_serial_hex(value: u64) {
 }
 
 /// Write a u64 value in decimal to serial output.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn raw_serial_dec(mut value: u64) {
     if value == 0 {
         raw_serial_char(b'0');
@@ -222,6 +221,7 @@ pub(crate) fn raw_serial_dec(mut value: u64) {
 }
 
 /// Write a u16 value in hexadecimal with 4 digits (zero-padded).
+#[cfg(target_arch = "x86_64")]
 fn raw_serial_hex16(value: u16) {
     const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
     raw_serial_str("0x");
@@ -521,25 +521,26 @@ fn payload_description(event_type: u16) -> &'static str {
 /// - `event`: The trace event to format
 /// - `index`: The index in the ring buffer
 fn format_event_to_serial(event: &TraceEvent, index: usize) {
-    raw_serial_str("[TRACE] CPU");
-    raw_serial_dec(event.cpu_id as u64);
-    raw_serial_str(" idx=");
-    raw_serial_dec(index as u64);
-    raw_serial_str(" ts=");
-    raw_serial_dec(event.timestamp);
-    raw_serial_str(" type=");
-    raw_serial_hex16(event.event_type);
-    raw_serial_char(b' ');
-    raw_serial_str(event_type_name(event.event_type));
-    raw_serial_char(b' ');
-    raw_serial_str(payload_description(event.event_type));
-    raw_serial_char(b'=');
-    raw_serial_dec(event.payload as u64);
+    let mut line = Line::new();
+    line.text("[TRACE] CPU");
+    line.dec(event.cpu_id as u64);
+    line.text(" idx=");
+    line.dec(index as u64);
+    line.text(" ts=");
+    line.dec(event.timestamp);
+    line.text(" type=");
+    line.hex16(event.event_type);
+    line.char(b' ');
+    line.text(event_type_name(event.event_type));
+    line.char(b' ');
+    line.text(payload_description(event.event_type));
+    line.char(b'=');
+    line.dec(event.payload as u64);
     if event.flags != 0 {
-        raw_serial_str(" flags=");
-        raw_serial_hex(event.flags as u64);
+        line.text(" flags=");
+        line.hex(event.flags as u64);
     }
-    raw_serial_newline();
+    line.newline();
 }
 
 // =============================================================================
@@ -560,10 +561,11 @@ fn format_event_to_serial(event: &TraceEvent, index: usize) {
 /// This function accesses static mutable data (TRACE_BUFFERS).
 /// It should only be called when tracing is disabled or during panic.
 pub fn dump_buffer(cpu_id: usize) {
+    let mut line = Line::new();
     if cpu_id >= MAX_CPUS {
-        raw_serial_str("[TRACE] Invalid CPU ID: ");
-        raw_serial_dec(cpu_id as u64);
-        raw_serial_newline();
+        line.text("[TRACE] Invalid CPU ID: ");
+        line.dec(cpu_id as u64);
+        line.newline();
         return;
     }
 
@@ -578,22 +580,22 @@ pub fn dump_buffer(cpu_id: usize) {
     let dropped = buffer.dropped_count();
 
     // Header
-    raw_serial_str("[TRACE] === CPU ");
-    raw_serial_dec(cpu_id as u64);
-    raw_serial_str(" Buffer ===");
-    raw_serial_newline();
-    raw_serial_str("[TRACE] Events: ");
-    raw_serial_dec(count as u64);
-    raw_serial_str(" (write_idx=");
-    raw_serial_dec(write_idx as u64);
-    raw_serial_str(", dropped=");
-    raw_serial_dec(dropped);
-    raw_serial_char(b')');
-    raw_serial_newline();
+    line.text("[TRACE] === CPU ");
+    line.dec(cpu_id as u64);
+    line.text(" Buffer ===");
+    line.newline();
+    line.text("[TRACE] Events: ");
+    line.dec(count as u64);
+    line.text(" (write_idx=");
+    line.dec(write_idx as u64);
+    line.text(", dropped=");
+    line.dec(dropped);
+    line.char(b')');
+    line.newline();
 
     if count == 0 {
-        raw_serial_str("[TRACE] (empty)");
-        raw_serial_newline();
+        line.text("[TRACE] (empty)");
+        line.newline();
         return;
     }
 
@@ -631,31 +633,32 @@ pub fn dump_buffer(cpu_id: usize) {
 /// This function iterates over all CPU buffers and dumps them in order.
 /// It is lock-free and safe to call from panic handlers.
 pub fn dump_all_buffers() {
-    raw_serial_str("[TRACE] ====== TRACE BUFFER DUMP ======");
-    raw_serial_newline();
-    raw_serial_str("[TRACE] Tracing enabled: ");
-    raw_serial_str(if TRACE_ENABLED.load(Ordering::Relaxed) != 0 {
+    let mut line = Line::new();
+    line.text("[TRACE] ====== TRACE BUFFER DUMP ======");
+    line.newline();
+    line.text("[TRACE] Tracing enabled: ");
+    line.text(if TRACE_ENABLED.load(Ordering::Relaxed) != 0 {
         "yes"
     } else {
         "no"
     });
-    raw_serial_newline();
+    line.newline();
 
     // Output timestamp frequency for offline conversion
     let freq = timestamp_frequency_hz();
     if freq != 0 {
-        raw_serial_str("[TRACE] Timestamp frequency: ");
-        raw_serial_dec(freq);
-        raw_serial_str(" Hz");
-        raw_serial_newline();
+        line.text("[TRACE] Timestamp frequency: ");
+        line.dec(freq);
+        line.text(" Hz");
+        line.newline();
     }
 
     for cpu in 0..MAX_CPUS {
         dump_buffer(cpu);
     }
 
-    raw_serial_str("[TRACE] ====== END TRACE DUMP ======");
-    raw_serial_newline();
+    line.text("[TRACE] ====== END TRACE DUMP ======");
+    line.newline();
 }
 
 /// Dump the most recent N events across all CPUs.
@@ -667,10 +670,11 @@ pub fn dump_all_buffers() {
 ///
 /// - `n`: Maximum number of events to dump (across all CPUs)
 pub fn dump_latest_events(n: usize) {
-    raw_serial_str("[TRACE] === Latest ");
-    raw_serial_dec(n as u64);
-    raw_serial_str(" Events ===");
-    raw_serial_newline();
+    let mut line = Line::new();
+    line.text("[TRACE] === Latest ");
+    line.dec(n as u64);
+    line.text(" Events ===");
+    line.newline();
 
     // Collect the most recent event from each CPU
     // We use a simple O(n*CPUs) algorithm since n is typically small
@@ -725,8 +729,8 @@ pub fn dump_latest_events(n: usize) {
         }
     }
 
-    raw_serial_str("[TRACE] === End Latest Events ===");
-    raw_serial_newline();
+    line.text("[TRACE] === End Latest Events ===");
+    line.newline();
 }
 
 // =============================================================================
@@ -741,19 +745,20 @@ pub fn dump_latest_events(n: usize) {
 /// [COUNTER] IRQ_TOTAL: 98765
 /// ```
 pub fn dump_counters() {
-    raw_serial_str("[COUNTER] ====== COUNTER DUMP ======");
-    raw_serial_newline();
+    let mut line = Line::new();
+    line.text("[COUNTER] ====== COUNTER DUMP ======");
+    line.newline();
 
     let count = TRACE_COUNTER_COUNT.load(Ordering::Relaxed);
-    raw_serial_str("[COUNTER] Registered counters: ");
-    raw_serial_dec(count);
-    raw_serial_newline();
+    line.text("[COUNTER] Registered counters: ");
+    line.dec(count);
+    line.newline();
 
     for counter in list_counters() {
-        raw_serial_str("[COUNTER] ");
-        raw_serial_str(counter.name);
-        raw_serial_str(": ");
-        raw_serial_dec(counter.aggregate());
+        line.text("[COUNTER] ");
+        line.text(counter.name);
+        line.text(": ");
+        line.dec(counter.aggregate());
 
         // Show per-CPU breakdown for non-zero values
         let mut has_percpu = false;
@@ -761,25 +766,25 @@ pub fn dump_counters() {
             let val = counter.get_cpu(cpu);
             if val > 0 {
                 if !has_percpu {
-                    raw_serial_str(" (");
+                    line.text(" (");
                     has_percpu = true;
                 } else {
-                    raw_serial_str(", ");
+                    line.text(", ");
                 }
-                raw_serial_str("cpu");
-                raw_serial_dec(cpu as u64);
-                raw_serial_char(b'=');
-                raw_serial_dec(val);
+                line.text("cpu");
+                line.dec(cpu as u64);
+                line.char(b'=');
+                line.dec(val);
             }
         }
         if has_percpu {
-            raw_serial_char(b')');
+            line.char(b')');
         }
-        raw_serial_newline();
+        line.newline();
     }
 
-    raw_serial_str("[COUNTER] ====== END COUNTERS ======");
-    raw_serial_newline();
+    line.text("[COUNTER] ====== END COUNTERS ======");
+    line.newline();
 }
 
 // =============================================================================
@@ -788,31 +793,32 @@ pub fn dump_counters() {
 
 /// Dump all registered providers and their enable state.
 pub fn dump_providers() {
-    raw_serial_str("[PROVIDER] ====== PROVIDER DUMP ======");
-    raw_serial_newline();
+    let mut line = Line::new();
+    line.text("[PROVIDER] ====== PROVIDER DUMP ======");
+    line.newline();
 
     let count = TRACE_PROVIDER_COUNT.load(Ordering::Relaxed);
-    raw_serial_str("[PROVIDER] Registered providers: ");
-    raw_serial_dec(count);
-    raw_serial_newline();
+    line.text("[PROVIDER] Registered providers: ");
+    line.dec(count);
+    line.newline();
 
     unsafe {
         let providers_ptr = core::ptr::addr_of!(TRACE_PROVIDERS);
         for i in 0..super::provider::MAX_PROVIDERS {
             if let Some(provider) = (*providers_ptr)[i] {
-                raw_serial_str("[PROVIDER] ");
-                raw_serial_str(provider.name);
-                raw_serial_str(" (id=");
-                raw_serial_hex(provider.id as u64);
-                raw_serial_str("): enabled=");
-                raw_serial_hex(provider.enabled.load(Ordering::Relaxed));
-                raw_serial_newline();
+                line.text("[PROVIDER] ");
+                line.text(provider.name);
+                line.text(" (id=");
+                line.hex(provider.id as u64);
+                line.text("): enabled=");
+                line.hex(provider.enabled.load(Ordering::Relaxed));
+                line.newline();
             }
         }
     }
 
-    raw_serial_str("[PROVIDER] ====== END PROVIDERS ======");
-    raw_serial_newline();
+    line.text("[PROVIDER] ====== END PROVIDERS ======");
+    line.newline();
 }
 
 // =============================================================================
@@ -888,8 +894,9 @@ pub fn count_events_in_range(start_ts: u64, end_ts: u64) -> u64 {
 
 /// Print a summary of event counts by category.
 pub fn dump_event_summary() {
-    raw_serial_str("[SUMMARY] ====== EVENT SUMMARY ======");
-    raw_serial_newline();
+    let mut line = Line::new();
+    line.text("[SUMMARY] ====== EVENT SUMMARY ======");
+    line.newline();
 
     let counts = count_events_by_category();
 
@@ -909,22 +916,22 @@ pub fn dump_event_summary() {
     for (cat, name) in categories.iter() {
         let count = counts[*cat as usize];
         if count > 0 {
-            raw_serial_str("[SUMMARY] ");
-            raw_serial_str(name);
-            raw_serial_str(": ");
-            raw_serial_dec(count);
-            raw_serial_newline();
+            line.text("[SUMMARY] ");
+            line.text(name);
+            line.text(": ");
+            line.dec(count);
+            line.newline();
         }
     }
 
     // Total events
     let total: u64 = counts.iter().sum();
-    raw_serial_str("[SUMMARY] Total events: ");
-    raw_serial_dec(total);
-    raw_serial_newline();
+    line.text("[SUMMARY] Total events: ");
+    line.dec(total);
+    line.newline();
 
-    raw_serial_str("[SUMMARY] ====== END SUMMARY ======");
-    raw_serial_newline();
+    line.text("[SUMMARY] ====== END SUMMARY ======");
+    line.newline();
 }
 
 // =============================================================================
@@ -1014,5 +1021,35 @@ mod tests {
             payload_description(TraceEventType::CTX_SWITCH_ENTRY),
             "old_tid<<16|new_tid"
         );
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) use crate::serial_line::Line;
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) struct Line;
+#[cfg(target_arch = "x86_64")]
+impl Line {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+    pub(crate) fn text(&mut self, s: &str) {
+        raw_serial_str(s);
+    }
+    pub(crate) fn dec(&mut self, n: u64) {
+        raw_serial_dec(n);
+    }
+    fn hex(&mut self, n: u64) {
+        raw_serial_hex(n);
+    }
+    fn hex16(&mut self, n: u16) {
+        raw_serial_hex16(n);
+    }
+    pub(crate) fn newline(&mut self) {
+        raw_serial_newline();
+    }
+    fn char(&mut self, c: u8) {
+        raw_serial_char(c);
     }
 }

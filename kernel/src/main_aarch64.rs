@@ -645,19 +645,19 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     // Breadcrumb: 'E' = exception vectors installed
-    kernel::serial_aarch64::raw_serial_char(b'E');
+    kernel::serial_line::Line::new().char(b'E');
 
     // Initialize physical memory offset (needed for MMIO access)
     kernel::memory::init_physical_memory_offset_aarch64();
 
     // Breadcrumb: 'O' = physical memory offset initialized
-    kernel::serial_aarch64::raw_serial_char(b'O');
+    kernel::serial_line::Line::new().char(b'O');
 
     // Initialize serial output first so we can print
     serial::init_serial();
 
     // Breadcrumb: 'S' = serial initialized
-    kernel::serial_aarch64::raw_serial_char(b'S');
+    kernel::serial_line::Line::new().char(b'S');
 
     // Install debug-only sentinels between the scheduler and idle/exception
     // halves before either scheduler startup or secondary-CPU bring-up.

@@ -515,15 +515,6 @@ pub fn is_cpu_online(cpu_id: usize) -> bool {
     CPU_ONLINE[cpu_id].load(Ordering::Acquire)
 }
 
-/// Raw UART output for secondary CPUs (no locks, no allocations).
-#[inline(always)]
-fn raw_uart_char(c: u8) {
-    let addr = crate::platform_config::uart_virt() as *mut u8;
-    unsafe {
-        core::ptr::write_volatile(addr, c);
-    }
-}
-
 /// Secondary CPU entry point.
 ///
 /// Called from boot.S after PSCI CPU_ON starts the CPU and boot.S
@@ -535,7 +526,7 @@ fn raw_uart_char(c: u8) {
 #[no_mangle]
 pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     // Emit raw UART character to signal this CPU is alive
-    raw_uart_char(b'0' + cpu_id as u8);
+    crate::serial_line::Line::new().char(b'0' + cpu_id as u8);
     set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_RUST_ENTRY);
 
     // Initialize per-CPU data (sets TPIDR_EL1 for this CPU)
