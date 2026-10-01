@@ -13,28 +13,34 @@
 use super::primitives::{Canvas, Color};
 use crate::drivers::virtio::gpu_mmio;
 use conquer_once::spin::OnceCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 // =============================================================================
 // Dirty Rect Tracking (lock-free, used to decouple pixel writes from GPU flush)
 // =============================================================================
 
-/// Whether any region has been modified since the last flush.
-static FB_DIRTY: AtomicBool = AtomicBool::new(false);
-/// Dirty rect left edge (minimum x).
-static DIRTY_X_MIN: AtomicU32 = AtomicU32::new(u32::MAX);
-/// Dirty rect top edge (minimum y).
-static DIRTY_Y_MIN: AtomicU32 = AtomicU32::new(u32::MAX);
-/// Dirty rect right edge (maximum x + width, exclusive).
-static DIRTY_X_MAX: AtomicU32 = AtomicU32::new(0);
-/// Dirty rect bottom edge (maximum y + height, exclusive).
-static DIRTY_Y_MAX: AtomicU32 = AtomicU32::new(0);
+/// The dirty rect, packed into one word so a mark and a take can never interleave
+/// and lose a region: bits 0-15 x_min, 16-31 y_min, 32-47 x_max, 48-63 y_max
+/// (max edges exclusive). `DIRTY_EMPTY` (min edges at 0xFFFF, max edges at 0)
+/// means clean. Coordinates saturate at 0xFFFF, past any display size.
+static DIRTY_RECT: AtomicU64 = AtomicU64::new(DIRTY_EMPTY);
+const DIRTY_EMPTY: u64 = 0xFFFF | (0xFFFF << 16);
+
+fn pack_rect(x_min: u32, y_min: u32, x_max: u32, y_max: u32) -> u64 {
+    let field = |v: u32| v.min(0xFFFF) as u64;
+    field(x_min) | field(y_min) << 16 | field(x_max) << 32 | field(y_max) << 48
+}
+
+fn unpack_rect(packed: u64) -> (u32, u32, u32, u32) {
+    let field = |shift: u32| ((packed >> shift) & 0xFFFF) as u32;
+    (field(0), field(16), field(32), field(48))
+}
 
 /// Mark a rectangular region as dirty (union with existing dirty rect).
 ///
 /// This is lock-free and safe to call from any context (syscall, kthread, etc.).
-/// Uses atomic min/max to expand the dirty rect to include the new region.
+/// Merges the region into the packed dirty rect with a compare-and-swap.
 pub fn mark_dirty(x: u32, y: u32, w: u32, h: u32) {
     if w == 0 || h == 0 {
         return;
@@ -42,14 +48,21 @@ pub fn mark_dirty(x: u32, y: u32, w: u32, h: u32) {
     let x2 = x.saturating_add(w);
     let y2 = y.saturating_add(h);
 
-    // Expand dirty rect using atomic min/max
-    fetch_min_u32(&DIRTY_X_MIN, x);
-    fetch_min_u32(&DIRTY_Y_MIN, y);
-    fetch_max_u32(&DIRTY_X_MAX, x2);
-    fetch_max_u32(&DIRTY_Y_MAX, y2);
-
-    // Set dirty flag last — readers check this first
-    FB_DIRTY.store(true, Ordering::Release);
+    // Expand the dirty rect to include this region in one compare-and-swap.
+    let mut current = DIRTY_RECT.load(Ordering::Relaxed);
+    loop {
+        let (x_min, y_min, x_max, y_max) = unpack_rect(current);
+        let merged = pack_rect(x_min.min(x), y_min.min(y), x_max.max(x2), y_max.max(y2));
+        match DIRTY_RECT.compare_exchange_weak(
+            current,
+            merged,
+            Ordering::Release,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 /// Mark the entire framebuffer as dirty.
@@ -72,7 +85,7 @@ pub fn mark_full_dirty() {
 /// Used by the render thread to decide whether to yield or loop back
 /// for another flush. Does not reset the dirty flag.
 pub fn has_dirty_rect() -> bool {
-    FB_DIRTY.load(Ordering::Acquire)
+    DIRTY_RECT.load(Ordering::Acquire) != DIRTY_EMPTY
 }
 
 /// Take the dirty rect, resetting to clean.
@@ -85,15 +98,9 @@ pub fn has_dirty_rect() -> bool {
 /// out-of-bounds coordinates (e.g., from cursor mark_dirty near screen edges)
 /// from being sent to the VirtIO GPU, which rejects invalid rects.
 pub fn take_dirty_rect() -> Option<(u32, u32, u32, u32)> {
-    if !FB_DIRTY.swap(false, Ordering::Acquire) {
-        return None;
-    }
-
-    // Read and reset the rect bounds
-    let x_min = DIRTY_X_MIN.swap(u32::MAX, Ordering::Relaxed);
-    let y_min = DIRTY_Y_MIN.swap(u32::MAX, Ordering::Relaxed);
-    let x_max = DIRTY_X_MAX.swap(0, Ordering::Relaxed);
-    let y_max = DIRTY_Y_MAX.swap(0, Ordering::Relaxed);
+    // Read and reset the rect bounds in one step.
+    let (x_min, y_min, x_max, y_max) =
+        unpack_rect(DIRTY_RECT.swap(DIRTY_EMPTY, Ordering::Acquire));
 
     if x_min >= x_max || y_min >= y_max {
         return None;
@@ -149,27 +156,21 @@ pub fn flush_dirty_rect(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static s
     }
 }
 
-/// Atomic fetch_min for u32 (CAS loop).
-#[inline]
-fn fetch_min_u32(atom: &AtomicU32, val: u32) {
-    let mut current = atom.load(Ordering::Relaxed);
-    while val < current {
-        match atom.compare_exchange_weak(current, val, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => break,
-            Err(actual) => current = actual,
+/// Flush a rectangle to the display without blocking on any lock.
+///
+/// For fatal paths (panic, EL1 fault). Returns false when the flush could not be
+/// issued: the GPU lock is held, or the backend (VirtIO GPU PCI) has no
+/// non-blocking path.
+pub fn try_flush_rect_nonblocking(x: u32, y: u32, w: u32, h: u32) -> bool {
+    if is_gop_active() {
+        unsafe {
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
         }
-    }
-}
-
-/// Atomic fetch_max for u32 (CAS loop).
-#[inline]
-fn fetch_max_u32(atom: &AtomicU32, val: u32) {
-    let mut current = atom.load(Ordering::Relaxed);
-    while val > current {
-        match atom.compare_exchange_weak(current, val, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => break,
-            Err(actual) => current = actual,
-        }
+        true
+    } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+        false
+    } else {
+        gpu_mmio::try_flush_rect(x, y, w, h)
     }
 }
 

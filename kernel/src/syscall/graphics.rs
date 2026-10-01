@@ -2374,6 +2374,14 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         }
     };
 
+    // Every op that reaches here (0-6, 8) draws into this framebuffer: userspace
+    // is drawing, so the kernel's boot screen gives the screen up, under the same
+    // lock as this draw. After a kernel failure the diagnostics screen keeps it.
+    #[cfg(target_arch = "aarch64")]
+    if !crate::graphics::boot_screen::hand_over(&mut fb_guard) {
+        return SyscallResult::Err(super::ErrorCode::Busy as u64);
+    }
+
     // Get left pane dimensions (half the screen width)
     let pane_width = fb_guard.width() / 2;
     let pane_height = fb_guard.height();

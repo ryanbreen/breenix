@@ -90,6 +90,12 @@ fn render_thread_main_kthread() {
             did_work = true;
         }
 
+        // Draw kernel log lines when the on-screen log console is enabled.
+        #[cfg(target_arch = "aarch64")]
+        if super::log_console::pump() {
+            did_work = true;
+        }
+
         // Flush dirty regions to the GPU. Returns true if a flush happened.
         if flush_framebuffer() {
             did_work = true;

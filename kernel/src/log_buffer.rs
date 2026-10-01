@@ -6,13 +6,15 @@
 //! On ARM64, this reuses the existing `graphics::log_capture` buffer.
 //! On x86_64, this module provides its own capture ring buffer.
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 /// Size of the log ring buffer (32 KB).
 const LOG_BUFFER_SIZE: usize = 32 * 1024;
 
-/// The log ring buffer.
-static mut LOG_BUFFER: [u8; LOG_BUFFER_SIZE] = [0u8; LOG_BUFFER_SIZE];
+/// The log ring buffer. Bytes are atomics so readers on other CPUs (/proc/kmsg,
+/// the panic diagnostics screen) never race a writer; relaxed byte loads and
+/// stores compile to plain ones.
+static LOG_BUFFER: [AtomicU8; LOG_BUFFER_SIZE] = [const { AtomicU8::new(0) }; LOG_BUFFER_SIZE];
 
 /// Read index (consumer).
 static LOG_HEAD: AtomicUsize = AtomicUsize::new(0);
@@ -52,9 +54,7 @@ pub fn capture_byte(byte: u8) {
         LOG_HEAD.store((head + 1) % LOG_BUFFER_SIZE, Ordering::Release);
     }
 
-    unsafe {
-        LOG_BUFFER[tail] = byte;
-    }
+    LOG_BUFFER[tail].store(byte, Ordering::Relaxed);
     LOG_TAIL.store(next_tail, Ordering::Release);
 }
 
@@ -85,11 +85,29 @@ pub fn read_all() -> alloc::string::String {
     let mut current = head;
 
     for _ in 0..available {
-        unsafe {
-            result.push(LOG_BUFFER[current]);
-        }
+        result.push(LOG_BUFFER[current].load(Ordering::Relaxed));
         current = (current + 1) % LOG_BUFFER_SIZE;
     }
 
     alloc::string::String::from_utf8_lossy(&result).into_owned()
+}
+
+/// Copy the most recent log bytes (up to `buf.len()`) into `buf`, oldest first.
+///
+/// Allocation-free and lock-free, for the panic diagnostics screen. A write racing
+/// the copy can overwrite the oldest bytes mid-copy (the bytes are atomics, so
+/// that is a stale line, not a data race); the caller treats it as best effort.
+pub fn copy_tail(buf: &mut [u8]) -> usize {
+    if !is_ready() || buf.is_empty() {
+        return 0;
+    }
+    let head = LOG_HEAD.load(Ordering::Acquire);
+    let tail = LOG_TAIL.load(Ordering::Acquire);
+    let available = (tail + LOG_BUFFER_SIZE - head) % LOG_BUFFER_SIZE;
+    let count = available.min(buf.len());
+    let start = (tail + LOG_BUFFER_SIZE - count) % LOG_BUFFER_SIZE;
+    for (i, slot) in buf[..count].iter_mut().enumerate() {
+        *slot = LOG_BUFFER[(start + i) % LOG_BUFFER_SIZE].load(Ordering::Relaxed);
+    }
+    count
 }

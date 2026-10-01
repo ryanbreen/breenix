@@ -7,6 +7,7 @@
 
 pub mod bitmap_font;
 pub mod color;
+pub mod diagnostics;
 pub mod font;
 pub mod framebuf;
 pub mod math;

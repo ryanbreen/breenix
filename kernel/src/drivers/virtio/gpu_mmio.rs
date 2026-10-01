@@ -872,6 +872,28 @@ pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'stati
     })
 }
 
+/// Flush a rectangle without waiting for the GPU lock; returns false if it is held.
+///
+/// For fatal paths (panic, EL1 fault) where the failing CPU may hold the lock.
+pub fn try_flush_rect(x: u32, y: u32, width: u32, height: u32) -> bool {
+    let Some(_guard) = GPU_LOCK.try_lock() else {
+        return false;
+    };
+    let state = unsafe {
+        let ptr = &raw mut GPU_DEVICE;
+        match (*ptr).as_mut() {
+            Some(state) => state,
+            None => return false,
+        }
+    };
+    let Some(device) = VirtioMmioDevice::probe(state.base) else {
+        return false;
+    };
+    fence(Ordering::SeqCst);
+    transfer_to_host(&device, state, x, y, width, height).is_ok()
+        && resource_flush(&device, state, x, y, width, height).is_ok()
+}
+
 /// Get the framebuffer dimensions
 pub fn dimensions() -> Option<(u32, u32)> {
     unsafe {

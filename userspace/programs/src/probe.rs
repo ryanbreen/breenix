@@ -12,7 +12,7 @@ use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_DGRAM};
 use libbreenix::termios::{self, Termios};
 use libbreenix::time;
 use libbreenix::types::Fd;
-use libgfx::{color::Color, font, framebuf::FrameBuf, shapes};
+use libgfx::{diagnostics::{self, Check, CheckState, Group, Panel, Verdict}, framebuf::FrameBuf};
 
 const IDS: [&str; 16] = [
     "console", "getpid", "clock", "brk", "mmap", "fork-wait", "exec", "argv",
@@ -237,16 +237,22 @@ const STALLED_POLLS: u32 = 200_000;
 
 fn monotonic_ns() -> Option<i128> { time::now_monotonic().ok().map(|ts| ts.as_nanos()) }
 
-/// Measures a time limit on the monotonic clock. `expired` is true once the limit has
-/// passed, or once the clock has stopped (or never read) for `STALLED_POLLS` polls.
-struct Deadline { start: Option<i128>, last: Option<i128>, stalled: u32, limit: i128 }
+/// Measures a time limit on the monotonic clock. `poll` reports `Elapsed` once the limit
+/// has passed, or `ClockStopped` once the clock has stopped (or never read) for the
+/// deadline's stall limit of consecutive polls.
+struct Deadline { start: Option<i128>, last: Option<i128>, stalled: u32, stall_limit: u32, limit: i128 }
 
 enum Expiry { Running, Elapsed, ClockStopped }
 
 impl Deadline {
-    fn new(limit: i128) -> Self {
+    /// For loops that only yield between polls: `STALLED_POLLS` polls.
+    fn new(limit: i128) -> Self { Self::with_stall_limit(limit, STALLED_POLLS) }
+
+    /// For loops that wait between polls: size `stall_limit` so that many waits add
+    /// up to no more than `limit`, so a stopped clock ends the wait within the limit.
+    fn with_stall_limit(limit: i128, stall_limit: u32) -> Self {
         let now = monotonic_ns();
-        Deadline { start: now, last: now, stalled: 0, limit }
+        Deadline { start: now, last: now, stalled: 0, stall_limit, limit }
     }
 
     fn poll(&mut self) -> Expiry {
@@ -255,7 +261,7 @@ impl Deadline {
         if self.start.zip(now).is_some_and(|(a, b)| b - a >= self.limit) { return Expiry::Elapsed; }
         if now.is_some() && now != self.last { self.last = now; self.stalled = 0; }
         else { self.stalled += 1; }
-        if self.stalled >= STALLED_POLLS { Expiry::ClockStopped } else { Expiry::Running }
+        if self.stalled >= self.stall_limit { Expiry::ClockStopped } else { Expiry::Running }
     }
 }
 
@@ -353,45 +359,54 @@ fn supervised_check(index: usize) -> (Result<(), String>, bool) {
     }
 }
 
-fn dashboard(states: &[Option<bool>; 16], fb: &mut FrameBuf) -> Result<(), ()> {
-    fb.clear(Color::rgb(12, 19, 31));
-    font::draw_text(fb, b"BREENIX / BOOT PROBE", 16, 12, Color::WHITE, 2);
-    font::draw_text(fb, b"Live subsystem status", 16, 35, Color::GRAY, 1);
-    let mut y = 57i32;
-    let gap = 6i32;
-    let tile_w = ((fb.width as i32 - 32 - gap) / 2).max(80);
-    for (title, first, end) in GROUPS {
-        font::draw_text(fb, title.as_bytes(), 16, y as usize, Color::rgb(110, 168, 212), 1);
-        y += 15;
-        for (within, index) in (first..end).enumerate() {
-            let x = 16 + (within % 2) as i32 * (tile_w + gap);
-            let row_y = y + (within / 2) as i32 * 27;
-            let fill = match states[index] {
-                None => Color::rgb(57, 67, 80),
-                Some(true) => Color::rgb(26, 112, 77),
-                Some(false) => Color::rgb(145, 50, 58),
-            };
-            shapes::fill_rect(fb, x, row_y, tile_w, 23, fill);
-            font::draw_text(fb, IDS[index].as_bytes(), (x + 8) as usize,
-                (row_y + 7) as usize, Color::WHITE, 1);
-        }
-        y += ((end - first + 1) / 2) as i32 * 27 + 9;
-    }
-    graphics::fb_flush().map_err(|_| ())
+fn open_screen() -> Option<FrameBuf> {
+    let info = graphics::fbinfo().ok()?;
+    if info.left_pane_width() < 240 || info.height < 400
+        || !(3..=4).contains(&info.bytes_per_pixel) { return None; }
+    let ptr = graphics::fb_mmap().ok()?;
+    Some(unsafe { FrameBuf::from_raw(ptr, info.left_pane_width() as usize,
+        info.height as usize, (info.left_pane_width() * info.bytes_per_pixel) as usize,
+        info.bytes_per_pixel as usize, info.is_bgr()) })
 }
 
-fn main() {
-    let mut states = [None; 16];
-    let mut fb = graphics::fbinfo().ok().and_then(|info| {
-        if info.left_pane_width() < 240 || info.height < 540 || !(3..=4).contains(&info.bytes_per_pixel) {
-            return None;
-        }
-        let ptr = graphics::fb_mmap().ok()?;
-        Some(unsafe { FrameBuf::from_raw(ptr, info.left_pane_width() as usize,
-            info.height as usize, (info.left_pane_width() * info.bytes_per_pixel) as usize,
-            info.bytes_per_pixel as usize, info.is_bgr()) })
+fn draw_probe(fb: &mut Option<FrameBuf>, states: &[Option<bool>; 16], details: &[String; 16],
+    passed: usize, finished: bool) {
+    let Some(fb) = fb else { return; };
+    let checks: Vec<_> = (0..IDS.len()).map(|index| Check {
+        name: IDS[index],
+        state: match states[index] {
+            None => CheckState::Pending,
+            Some(true) => CheckState::Ok(&details[index]),
+            Some(false) => CheckState::Fail(&details[index]),
+        },
+    }).collect();
+    let groups: Vec<_> = GROUPS.iter().map(|(title, first, end)| Group {
+        title, checks: &checks[*first..*end],
+    }).collect();
+    let verdict = format!("{} passed / {} failed", passed, states.iter().filter(|s| **s == Some(false)).count());
+    diagnostics::draw(fb, &Panel {
+        title: "BREENIX / BOOT PROBE", subtitle: "Live subsystem status",
+        groups: &groups, output: &[],
+        verdict: if finished {
+            if passed == IDS.len() { Verdict::Passed(&verdict) } else { Verdict::Failed(&verdict) }
+        } else { Verdict::Running(&verdict) },
     });
-    if let Some(ref mut screen) = fb { let _ = dashboard(&states, screen); }
+    let _ = graphics::fb_flush();
+}
+
+fn reap_forever() -> ! {
+    loop {
+        let mut status = 0;
+        while process::waitpid(-1, &mut status, WNOHANG).is_ok_and(|pid| pid.raw() != 0) {}
+        let _ = time::sleep_ms(100);
+    }
+}
+
+fn probe() {
+    let mut states = [None; 16];
+    let mut details: [String; 16] = std::array::from_fn(|_| String::new());
+    let mut fb = open_screen();
+    draw_probe(&mut fb, &states, &details, 0, false);
 
     println!("\x1b[1;36mBreenix boot probe — subsystem checklist\x1b[0m");
     let mut passed = 0;
@@ -402,21 +417,309 @@ fn main() {
             Ok(()) => {
                 passed += 1;
                 let note = if inline { " (fork unavailable; ran inline)" } else { "" };
+                details[index] = format!("{}{}", DETAILS[index], note);
                 println!("PROBE {} OK {}{}", IDS[index], DETAILS[index], note);
                 println!("\x1b[32m✓\x1b[0m {} — {}: {}{}", IDS[index], MEANINGS[index], DETAILS[index], note);
             }
             Err(reason) => {
+                details[index] = reason.clone();
                 println!("PROBE {} FAIL {}", IDS[index], reason);
                 println!("\x1b[31m✗\x1b[0m {} — {}: {}", IDS[index], MEANINGS[index], reason);
             }
         }
-        if let Some(ref mut screen) = fb { let _ = dashboard(&states, screen); }
+        draw_probe(&mut fb, &states, &details, passed, false);
     }
     println!("PROBE DONE passed={} failed={}", passed, IDS.len() - passed);
     println!("\x1b[1mProbe complete: {} passed, {} failed\x1b[0m", passed, IDS.len() - passed);
-    loop {
-        let mut status = 0;
-        while process::waitpid(-1, &mut status, WNOHANG).is_ok_and(|pid| pid.raw() != 0) {}
-        let _ = time::sleep_ms(100);
+    draw_probe(&mut fb, &states, &details, passed, true);
+    reap_forever();
+}
+
+fn draw_run(fb: &mut Option<FrameBuf>, path: &str, elapsed: i128,
+    output: &[String], partial: &[u8], verdict: Verdict<'_>) {
+    let Some(fb) = fb else { return; };
+    let subtitle = format!("{} seconds elapsed", elapsed.max(0) / 1_000_000_000);
+    let checks = [Check { name: path, state: match &verdict {
+        Verdict::Running(_) => CheckState::Running,
+        Verdict::Passed(_) => CheckState::Ok("exit 0; no FAIL output"),
+        Verdict::Failed(reason) => CheckState::Fail(reason),
+    }}];
+    let groups = [Group { title: "PROGRAM", checks: &checks }];
+    let partial = String::from_utf8_lossy(partial);
+    let mut lines: Vec<_> = output.iter().map(String::as_str).collect();
+    if !partial.is_empty() { lines.push(&partial); }
+    diagnostics::draw(fb, &Panel {
+        title: "BREENIX / PROGRAM RUN", subtitle: &subtitle,
+        groups: &groups, output: &lines, verdict,
+    });
+    let _ = graphics::fb_flush();
+}
+
+fn write_serial(mut bytes: &[u8]) -> bool {
+    while !bytes.is_empty() {
+        match io::write(Fd::STDOUT, bytes) {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => bytes = &bytes[n..],
+        }
     }
+    true
+}
+
+fn add_output_byte(byte: u8, pending: &mut Vec<u8>, recent: &mut Vec<String>,
+    fail_tail: &mut Vec<u8>, saw_fail: &mut bool, fail_line: &mut Option<String>) {
+    if byte == b'\n' {
+        let text = String::from_utf8_lossy(pending).trim_end_matches('\r').to_string();
+        if *saw_fail && fail_line.is_none() {
+            *fail_line = Some(if text.contains("FAIL") { text.clone() }
+                else { format!("FAIL in long output line: {text}") });
+        }
+        recent.push(text);
+        if recent.len() > 30 { recent.remove(0); }
+        pending.clear();
+        fail_tail.clear();
+        return;
+    }
+    if pending.len() < 512 { pending.push(byte); }
+    fail_tail.push(byte);
+    if fail_tail.len() > 4 { fail_tail.remove(0); }
+    if fail_tail.as_slice() == b"FAIL" { *saw_fail = true; }
+}
+
+/// `probe --run` time limit, and the poll wait of its supervising loop.
+const RUN_LIMIT_NS: i128 = 60_000_000_000;
+const RUN_POLL_MS: i32 = 100;
+/// New output is drawn at most this often, so a chatty program never waits on the panel.
+const RUN_DRAW_INTERVAL_NS: i128 = 250_000_000;
+/// Limit for the child to reach exec, measured from fork.
+const EXEC_LIMIT_NS: i128 = 10_000_000_000;
+
+/// Polls of `RUN_POLL_MS` that add up to `limit`.
+fn run_polls(limit: i128) -> u32 { (limit / (RUN_POLL_MS as i128 * 1_000_000)) as u32 }
+
+/// Wait until the child has exec'd. Its close-on-exec status pipe reaches end of file with
+/// no data once exec succeeds, and carries the reason when exec fails.
+fn wait_for_exec(reader: Fd) -> Result<(), String> {
+    let mut deadline = Deadline::with_stall_limit(EXEC_LIMIT_NS, run_polls(EXEC_LIMIT_NS));
+    loop {
+        let mut fds = [PollFd::new(reader, poll_events::POLLIN)];
+        match io::poll(&mut fds, RUN_POLL_MS) {
+            Ok(0) => {}
+            Ok(_) => {
+                let mut buf = [0u8; 96];
+                return match io::read(reader, &mut buf) {
+                    Ok(0) => Ok(()),
+                    Ok(n) => Err(String::from_utf8_lossy(&buf[..n]).to_string()),
+                    Err(_) => Err("exec status read failed".to_string()),
+                };
+            }
+            Err(_) => return Err("exec status poll failed".to_string()),
+        }
+        match deadline.poll() {
+            Expiry::Running => {}
+            Expiry::Elapsed => return Err("program did not reach exec within 10 seconds".to_string()),
+            Expiry::ClockStopped => {
+                return Err("program did not reach exec (clock stopped; 10 s limit unmeasurable)".to_string());
+            }
+        }
+    }
+}
+
+fn run_program(path: &str, args: &[String]) {
+    let mut fb = open_screen();
+    let mut recent = Vec::new();
+    let start = monotonic_ns();
+    draw_run(&mut fb, path, 0, &recent, &[], Verdict::Running("Program starting"));
+
+    let mut failure = None;
+    let mut status = None;
+    let mut started = false;
+    let mut timed_out = false;
+    let mut clock_stopped = false;
+    if !path.starts_with('/') || path.as_bytes().contains(&0)
+        || args.iter().any(|arg| arg.as_bytes().contains(&0)) {
+        failure = Some("invalid program path or argument".to_string());
+    } else if start.is_none() {
+        failure = Some("monotonic clock unavailable".to_string());
+    } else if let (Ok((reader, writer)), Ok((exec_reader, exec_writer))) =
+        (io::pipe(), io::pipe2(io::status_flags::O_CLOEXEC)) {
+        match process::fork() {
+            Ok(ForkResult::Child) => {
+                let _ = io::close(reader);
+                let _ = io::close(exec_reader);
+                if io::dup2(writer, Fd::STDOUT).is_err()
+                    || io::dup2(writer, Fd::STDERR).is_err() {
+                    let _ = io::write(exec_writer, b"could not redirect output");
+                    process::exit(127);
+                }
+                let _ = io::close(writer);
+                let path_bytes = [path.as_bytes(), b"\0"].concat();
+                let argv_bytes: Vec<Vec<u8>> = std::iter::once(path)
+                    .chain(args.iter().map(String::as_str))
+                    .map(|arg| [arg.as_bytes(), b"\0"].concat()).collect();
+                let mut argv: Vec<*const u8> = argv_bytes.iter().map(|arg| arg.as_ptr()).collect();
+                argv.push(std::ptr::null());
+                if let Err(error) = process::execv(&path_bytes, argv.as_ptr()) {
+                    let _ = io::write(exec_writer, format!("exec failed: {error:?}").as_bytes());
+                }
+                process::exit(127);
+            }
+            Ok(ForkResult::Parent(pid)) => {
+                let _ = io::close(writer);
+                let _ = io::close(exec_writer);
+                let pid = pid.raw() as i32;
+                match wait_for_exec(exec_reader) {
+                    Ok(()) => {
+                        started = true;
+                        println!("RUN {} START", path);
+                    }
+                    Err(reason) => failure = Some(reason),
+                }
+                let _ = io::close(exec_reader);
+                let mut pending = Vec::new();
+                let mut fail_tail = Vec::new();
+                let mut saw_fail = false;
+                let mut fail_line = None;
+                let mut eof = false;
+                let mut last_second = -1;
+                let mut last_draw = 0;
+                let mut output_dirty = false;
+                let mut deadline = Deadline::with_stall_limit(RUN_LIMIT_NS, run_polls(RUN_LIMIT_NS));
+                let mut kill_deadline = None;
+                while started {
+                    let elapsed = monotonic_ns().zip(start).map(|(now, then)| now - then).unwrap_or(0);
+                    let second = elapsed / 1_000_000_000;
+                    if second != last_second
+                        || output_dirty && elapsed - last_draw >= RUN_DRAW_INTERVAL_NS {
+                        draw_run(&mut fb, path, elapsed, &recent, &pending, Verdict::Running("Program running"));
+                        last_second = second;
+                        last_draw = elapsed;
+                        output_dirty = false;
+                    }
+                    if !timed_out {
+                        let expiry = deadline.poll();
+                        if !matches!(expiry, Expiry::Running) {
+                            timed_out = true;
+                            clock_stopped = matches!(expiry, Expiry::ClockStopped);
+                            kill_deadline = Some(Deadline::with_stall_limit(REAP_LIMIT_NS, run_polls(REAP_LIMIT_NS)));
+                            if status.is_some() {
+                                failure = Some(if clock_stopped {
+                                    "output pipe remained open (clock stopped; 60 s limit unmeasurable)".to_string()
+                                } else {
+                                    "output pipe remained open after 60 seconds".to_string()
+                                });
+                                break;
+                            } else if signal::kill(pid, SIGKILL).is_err() {
+                                failure = Some("timeout; SIGKILL failed".to_string());
+                            }
+                        }
+                    }
+                    if status.is_none() {
+                        let mut raw = 0;
+                        match process::waitpid(pid, &mut raw, WNOHANG) {
+                            Ok(done) if done.raw() as i32 == pid => status = Some(raw),
+                            Err(_) => { failure = Some("waitpid failed".to_string()); break; }
+                            _ => {}
+                        }
+                    }
+                    if eof && status.is_some() { break; }
+                    if kill_deadline.as_mut().is_some_and(|limit: &mut Deadline|
+                        !matches!(limit.poll(), Expiry::Running)) { break; }
+                    let mut fds = [PollFd::new(reader, poll_events::POLLIN)];
+                    match io::poll(&mut fds, RUN_POLL_MS) {
+                        Ok(0) => {}
+                        Ok(_) if fds[0].revents & (poll_events::POLLIN | poll_events::POLLHUP) != 0 => {
+                            let mut buf = [0u8; 1024];
+                            match io::read(reader, &mut buf) {
+                                Ok(0) => eof = true,
+                                Ok(n) => {
+                                    if !write_serial(&buf[..n]) { failure = Some("serial write failed".to_string()); }
+                                    for &byte in &buf[..n] {
+                                        add_output_byte(byte, &mut pending, &mut recent,
+                                            &mut fail_tail, &mut saw_fail, &mut fail_line);
+                                    }
+                                    output_dirty = true;
+                                }
+                                Err(_) => { failure = Some("output read failed".to_string()); break; }
+                            }
+                        }
+                        Ok(_) => { failure = Some("output pipe failed".to_string()); break; }
+                        Err(_) => { failure = Some("output poll failed".to_string()); break; }
+                    }
+                }
+                if !pending.is_empty() {
+                    let text = String::from_utf8_lossy(&pending).to_string();
+                    if saw_fail && fail_line.is_none() {
+                        fail_line = Some(if text.contains("FAIL") { text.clone() }
+                            else { format!("FAIL in long output line: {text}") });
+                    }
+                    recent.push(text);
+                }
+                let _ = io::close(reader);
+                if status.is_none() {
+                    if !timed_out && signal::kill(pid, SIGKILL).is_err() && failure.is_none() {
+                        failure = Some("could not kill child after I/O failure".to_string());
+                    }
+                    let mut reap_deadline = Deadline::new(REAP_LIMIT_NS);
+                    loop {
+                        let mut raw = 0;
+                        match process::waitpid(pid, &mut raw, WNOHANG) {
+                            Ok(done) if done.raw() as i32 == pid => { status = Some(raw); break; }
+                            Err(_) => break,
+                            _ => {}
+                        }
+                        if !matches!(reap_deadline.poll(), Expiry::Running) { break; }
+                        let _ = process::yield_now();
+                    }
+                    if status.is_none() && failure.is_none() {
+                        failure = Some("child could not be reaped".to_string());
+                    }
+                }
+                if timed_out && failure.is_none() {
+                    failure = Some(if clock_stopped {
+                        "timeout (clock stopped; 60 s limit unmeasurable)".to_string()
+                    } else {
+                        "timeout after 60 seconds".to_string()
+                    });
+                }
+                if failure.is_none() { failure = fail_line.map(|line| format!("FAIL output: {line}")); }
+            }
+            Err(_) => {
+                for fd in [reader, writer, exec_reader, exec_writer] { let _ = io::close(fd); }
+                failure = Some("fork failed".to_string());
+            }
+        }
+    } else {
+        failure = Some("pipe failed".to_string());
+    }
+
+    // EXIT and SIGNAL describe the program, so they follow only a START.
+    if let Some(raw) = status.filter(|_| started) {
+        if process::wifexited(raw) {
+            let code = process::wexitstatus(raw);
+            println!("RUN {} EXIT {}", path, code);
+            if code != 0 && failure.is_none() { failure = Some(format!("exit code {code}")); }
+        } else if process::wifsignaled(raw) {
+            let signal = process::wtermsig(raw);
+            println!("RUN {} SIGNAL {}", path, signal);
+            if failure.is_none() { failure = Some(format!("signal {signal}")); }
+        } else if failure.is_none() { failure = Some("abnormal child status".to_string()); }
+    }
+    let elapsed = monotonic_ns().zip(start).map(|(now, then)| now - then).unwrap_or(0);
+    if let Some(reason) = failure {
+        println!("RUN {} DONE FAIL {}", path, reason);
+        draw_run(&mut fb, path, elapsed, &recent, &[], Verdict::Failed(&reason));
+    } else {
+        println!("RUN {} DONE PASS exit 0; no FAIL output", path);
+        draw_run(&mut fb, path, elapsed, &recent, &[], Verdict::Passed("PASS: exit 0; no FAIL output"));
+    }
+    reap_forever();
+}
+
+fn main() {
+    let mut args = std::env::args();
+    let _ = args.next();
+    if args.next().as_deref() == Some("--run") {
+        if let Some(path) = args.next() { run_program(&path, &args.collect::<Vec<_>>()); }
+        else { run_program("", &[]); }
+    } else { probe(); }
 }
