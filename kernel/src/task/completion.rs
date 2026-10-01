@@ -149,6 +149,9 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
 
     interrupts::without_interrupts(|| {
         crate::per_cpu::preempt_disable();
+        // Idle polls done and never sleeps in the scheduler. Do not leave a
+        // previous waiter eligible for an ISR wakeup while IRQs are enabled.
+        completion.waiter.store(0, Ordering::Release);
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         let deadline = (secs * 1_000_000_000 + nanos).saturating_add(timeout_ns);
         let completed = loop {
