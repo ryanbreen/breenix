@@ -140,6 +140,33 @@ fn syscall_sleep_path_available() -> bool {
     }
 }
 
+/// The x86 boot continuation is the idle task, not a sleepable worker.
+/// Keep its scheduling brake while allowing IRQ completion and timeout ticks.
+/// The masked check plus STI; HLT closes the completion-before-halt race.
+#[cfg(target_arch = "x86_64")]
+fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns: u64) -> bool {
+    use x86_64::instructions::interrupts;
+
+    interrupts::without_interrupts(|| {
+        crate::per_cpu::preempt_disable();
+        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+        let deadline = (secs * 1_000_000_000 + nanos).saturating_add(timeout_ns);
+        let completed = loop {
+            if completion.done.load(Ordering::Acquire) == expected_token {
+                break true;
+            }
+            let (secs, nanos) = crate::time::get_monotonic_time_ns();
+            if secs * 1_000_000_000 + nanos >= deadline {
+                break false;
+            }
+            interrupts::enable_and_hlt();
+            interrupts::disable();
+        };
+        crate::per_cpu::preempt_enable();
+        completed
+    })
+}
+
 /// Completion primitive — pairs one waiter thread with one ISR.
 pub struct Completion {
     /// 0 = not done, otherwise the completion token published by `complete()`.
@@ -218,6 +245,16 @@ impl Completion {
         // Obtain current thread ID. If no scheduler exists yet (early boot),
         // fall through to the polling path below.
         let tid = crate::task::scheduler::current_thread_id();
+
+        // Idle's saved boot continuation is discarded after Ring 3 starts.
+        // preempt_count > 0 does not identify a syscall: boot holds it too.
+        // Do not release that caller's brake or publish idle as BlockedOnIO.
+        #[cfg(target_arch = "x86_64")]
+        if crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid)
+            == Some(true)
+        {
+            return Ok(wait_idle_completion(self, expected_token, timeout_ns));
+        }
 
         if let Some(tid) = tid {
             // Store TID so complete() can wake us.
