@@ -920,7 +920,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     //   - When VirGL is active, virgl_init() already switched SET_SCANOUT to the
     //     3D resource. Do NOT initialize GOP framebuffer (arm64_fb) because its
     //     flush calls would send RESOURCE_FLUSH on the 2D resource, overriding
-    //     the VirGL scanout.
+    //     the VirGL scanout. The kernel's boot and diagnostics screens instead
+    //     draw into the 3D resource's guest backing (gpu_pci::framebuffer) and
+    //     present it with TRANSFER_TO_HOST_3D, until userspace takes the display.
     let has_display = if kernel::drivers::virtio::gpu_pci::is_initialized()
         && kernel::drivers::virtio::gpu_pci::is_virgl_enabled()
     {
@@ -940,6 +942,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 w,
                 h
             );
+        }
+        if let Err(e) = arm64_fb::init_shell_framebuffer() {
+            serial_println!("[boot] VirGL shell framebuffer failed: {}", e);
         }
         true
     } else if kernel::drivers::virtio::gpu_pci::is_initialized()
@@ -1010,8 +1015,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Upgrade framebuffer to double buffering now that heap is available.
     // This allocates a shadow buffer in cached RAM so pixel writes are fast
     // (~1ns vs ~100ns for direct GOP BAR0 writes on Parallels).
-    // Skip when VirGL owns the display — we don't want a competing 2D path.
-    if has_display && !virgl_display {
+    // With VirGL the shell framebuffer is the 3D scanout's backing; the boot
+    // screen presents it synchronously and stops once userspace takes the display.
+    if has_display && arm64_fb::SHELL_FRAMEBUFFER.get().is_some() {
         kernel::graphics::arm64_fb::upgrade_to_double_buffer();
         // The screen shows the boot screen; kernel log lines stay on serial unless
         // -fw_cfg name=opt/breenix/fbconsole,string=log asks for them on screen.
@@ -2346,6 +2352,13 @@ fn panic(info: &PanicInfo) -> ! {
     serial_println!("{}", info);
     serial_println!();
 
+    // Show the panic on screen before the long serial dumps below, so the
+    // screen does not wait on them and a failure while they run (an interrupt
+    // aborting mid-dump has been seen on Parallels) cannot keep it off the
+    // display. It does not print or block: skipped if the framebuffer or GPU
+    // lock stays held (possibly by this CPU).
+    boot_screen::show_panic(info);
+
     // Failure-capture PR-4: the bounded, lock-free BXCAP record.
     //
     // ORDER. It goes after the banner because a reader wants the panic
@@ -2373,10 +2386,6 @@ fn panic(info: &PanicInfo) -> ! {
     // shows -- so dropping it would narrow the evidence on the one path that
     // has it today.
     kernel::tracing::output::trace_dump_counters();
-
-    // Show the panic on screen too. Never blocks: skipped if the framebuffer or
-    // GPU lock is held (possibly by this CPU).
-    boot_screen::show_panic(info);
 
     loop {
         unsafe {

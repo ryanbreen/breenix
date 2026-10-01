@@ -10,7 +10,7 @@
 use super::pci_transport::VirtioPciDevice;
 use crate::tracing::providers::virtgpu;
 use core::ptr::read_volatile;
-use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 struct GpuPciLock {
     locked: AtomicBool,
@@ -728,6 +728,20 @@ fn init_2d_framebuffer(width: u32, height: u32) {
         phys,
         size
     );
+}
+
+/// Heap page for the command (offset 0) and response (`POLLED_RESP_OFFSET`) of
+/// a polled present (`present_polled`), allocated at init so a present does
+/// not allocate. Used under GPU_PCI_LOCK. Heap rather than BSS for the same reason
+/// as `PCI_FB_PTR`.
+static POLLED_DMA_PAGE: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+const POLLED_RESP_OFFSET: usize = 2048;
+
+fn init_polled_dma_page() {
+    let layout =
+        alloc::alloc::Layout::from_size_align(4096, 4096).expect("invalid polled DMA page layout");
+    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    POLLED_DMA_PAGE.store(ptr, Ordering::Release);
 }
 
 /// Separate backing for 3D resource — NOT shared with the 2D resource.
@@ -2155,6 +2169,7 @@ pub fn init() -> Result<(), &'static str> {
 
     // Allocate the heap-backed 2D framebuffer now that the resolution is known.
     init_2d_framebuffer(use_width, use_height);
+    init_polled_dma_page();
 
     // Always create 2D resource to establish display mode.
     // Without a 2D resource, Parallels shows the "no video signal" watermark.
@@ -2491,6 +2506,30 @@ fn send_command_with_trace(
     let previous_used_idx = state.last_used_idx;
     prepare_ctrlq_completion_wait(previous_used_idx)?;
 
+    publish_ctrlq_2desc(cmd_phys, cmd_len, resp_phys, resp_len);
+
+    enable_ctrlq_interrupts();
+
+    // Signal that we're waiting for a completion, then notify device
+    virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
+    virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
+    virtgpu::trace_wait_completion_enter(cmd_type, resource_id, virtgpu::WAIT_PATH_2DESC);
+    state.device.notify_queue_fast(0);
+    wait_for_ctrlq_completion(
+        state,
+        previous_used_idx,
+        cmd_type,
+        resource_id,
+        virtgpu::WAIT_PATH_2DESC,
+    )
+}
+
+/// Publish a 2-descriptor command/response chain at the head of the control
+/// queue's available ring (the caller notifies the device and waits).
+///
+/// Descriptor 0: command (device reads)
+/// Descriptor 1: response (device writes)
+fn publish_ctrlq_2desc(cmd_phys: u64, cmd_len: u32, resp_phys: u64, resp_len: u32) {
     unsafe {
         let q = &raw mut PCI_CTRL_QUEUE;
 
@@ -2540,21 +2579,6 @@ fn send_command_with_trace(
 
         fence(Ordering::SeqCst);
     }
-
-    enable_ctrlq_interrupts();
-
-    // Signal that we're waiting for a completion, then notify device
-    virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
-    virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
-    virtgpu::trace_wait_completion_enter(cmd_type, resource_id, virtgpu::WAIT_PATH_2DESC);
-    state.device.notify_queue_fast(0);
-    wait_for_ctrlq_completion(
-        state,
-        previous_used_idx,
-        cmd_type,
-        resource_id,
-        virtgpu::WAIT_PATH_2DESC,
-    )
 }
 
 /// Send a command using a 3-descriptor chain (Linux format):
@@ -4173,6 +4197,9 @@ fn set_scanout_resource(
 
 /// Flush the entire framebuffer to the display.
 pub fn flush() -> Result<(), &'static str> {
+    if scanout_is_3d() {
+        return present_3d(0, 0, u32::MAX, u32::MAX);
+    }
     with_device_state(|state| {
         fence(Ordering::SeqCst);
         transfer_to_host(state, 0, 0, state.width, state.height)?;
@@ -4189,6 +4216,9 @@ pub fn flush() -> Result<(), &'static str> {
 
 /// Flush a rectangular region of the framebuffer to the display.
 pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
+    if scanout_is_3d() {
+        return present_3d(x, y, width, height);
+    }
     with_device_state(|state| {
         fence(Ordering::SeqCst);
         transfer_to_host(state, x, y, width, height)?;
@@ -4233,19 +4263,237 @@ pub fn dimensions() -> Option<(u32, u32)> {
     }
 }
 
-/// Get a mutable reference to the heap-backed 2D framebuffer pixels.
-#[allow(dead_code)]
+/// The pixels of the resource the display scans out: the VirGL 3D resource's
+/// guest backing once VirGL owns the scanout, else the 2D resource's backing.
 pub fn framebuffer() -> Option<&'static mut [u8]> {
     unsafe {
         let ptr = &raw mut GPU_PCI_STATE;
-        if (*ptr).as_ref().is_some() {
-            if PCI_FB_PTR.is_null() {
-                return None;
-            }
-            Some(core::slice::from_raw_parts_mut(PCI_FB_PTR, PCI_FB_LEN))
-        } else {
-            None
+        if (*ptr).as_ref().is_none() {
+            return None;
         }
+        let (pixels, len) = if scanout_is_3d() {
+            (PCI_3D_FB_PTR, PCI_3D_FB_LEN)
+        } else {
+            (PCI_FB_PTR, PCI_FB_LEN)
+        };
+        if pixels.is_null() {
+            return None;
+        }
+        Some(core::slice::from_raw_parts_mut(pixels, len))
+    }
+}
+
+/// Whether the display scans out the VirGL 3D resource (set once `virgl_init`
+/// switches it). The kernel's own screens then draw into that resource's guest
+/// backing and present it with TRANSFER_TO_HOST_3D; a 2D transfer would not
+/// reach the screen.
+fn scanout_is_3d() -> bool {
+    VIRGL_SCANOUT_ACTIVE.load(Ordering::Acquire) && unsafe { !PCI_3D_FB_PTR.is_null() }
+}
+
+/// Clip a rectangle to the display; an empty result is reported as absent.
+fn clip_rect(
+    state: &GpuPciDeviceState,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let x = x.min(state.width);
+    let y = y.min(state.height);
+    let w = w.min(state.width - x);
+    let h = h.min(state.height - y);
+    (w > 0 && h > 0).then_some((x, y, w, h))
+}
+
+/// Clean rows `y..y + h` of the 3D resource's guest backing out of the CPU cache
+/// so the host's DMA reads the pixels just drawn.
+fn clean_3d_backing_rows(y: u32, h: u32, stride: u32) {
+    unsafe {
+        let start = (y as usize * stride as usize).min(PCI_3D_FB_LEN);
+        let len = (h as usize * stride as usize).min(PCI_3D_FB_LEN - start);
+        dma_cache_clean(PCI_3D_FB_PTR.add(start), len);
+    }
+}
+
+/// Show a rectangle of the 3D resource's guest backing: TRANSFER_TO_HOST_3D, then
+/// SET_SCANOUT and RESOURCE_FLUSH, the per-frame order Parallels needs.
+///
+/// Completions are polled for up to a second rather than slept on: the boot
+/// screen presents from the boot thread, which must not block on the completion
+/// IRQ once the scheduler runs, matching the MMIO backend's spin-polled flush.
+fn present_3d(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static str> {
+    let page = POLLED_DMA_PAGE.load(Ordering::Acquire);
+    if page.is_null() {
+        return Err("GPU PCI polled DMA page not allocated");
+    }
+    with_device_state(|state| {
+        let Some((x, y, w, h)) = clip_rect(state, x, y, w, h) else {
+            return Ok(());
+        };
+        let deadline = crate::arch_impl::aarch64::timer::rdtsc()
+            + crate::arch_impl::aarch64::timer::frequency_hz();
+        if present_polled(state, page, x, y, w, h, deadline) {
+            Ok(())
+        } else {
+            Err("GPU PCI present did not complete")
+        }
+    })
+}
+
+/// Present a rectangle of `framebuffer()` from a panic or fatal-fault context.
+///
+/// It does not block, allocate or log. It takes the GPU lock with `try_lock`,
+/// retrying for about 100 ms in case another CPU is mid-command, and gives up if
+/// the lock stays held (possibly by the dying context itself). Each command is
+/// built in the preallocated polled DMA page and its completion is polled from
+/// the used ring, rather than slept on, with the same deadline. Returns false when
+/// the present was skipped or a command did not complete OK.
+pub fn try_flush_rect_polled(x: u32, y: u32, width: u32, height: u32) -> bool {
+    let deadline = crate::arch_impl::aarch64::timer::rdtsc()
+        + crate::arch_impl::aarch64::timer::frequency_hz() / 10;
+    let guard = loop {
+        if let Some(guard) = GPU_PCI_LOCK.try_lock() {
+            break guard;
+        }
+        if crate::arch_impl::aarch64::timer::rdtsc() >= deadline {
+            return false;
+        }
+        core::hint::spin_loop();
+    };
+    let page = POLLED_DMA_PAGE.load(Ordering::Acquire);
+    let state = unsafe { (*(&raw mut GPU_PCI_STATE)).as_mut() };
+    let presented = match state {
+        Some(state) if !page.is_null() => match clip_rect(state, x, y, width, height) {
+            Some((x, y, w, h)) => present_polled(state, page, x, y, w, h, deadline),
+            None => true,
+        },
+        _ => false,
+    };
+    // Release without waking sleepers: a wake takes the wait-queue lock, which
+    // the dying context may hold. A sleeper retries on its next wakeup.
+    core::mem::forget(guard);
+    GPU_PCI_LOCK.locked.store(false, Ordering::Release);
+    presented
+}
+
+/// Present one clipped rectangle of `framebuffer()` with commands built in `page`,
+/// polling each completion until `deadline`. The caller holds GPU_PCI_LOCK.
+fn present_polled(
+    state: &mut GpuPciDeviceState,
+    page: *mut u8,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    deadline: u64,
+) -> bool {
+    let hdr = |type_: u32, ctx_id: u32| VirtioGpuCtrlHdr {
+        type_,
+        flags: 0,
+        fence_id: 0,
+        ctx_id,
+        padding: 0,
+    };
+    let flush = |resource_id: u32| VirtioGpuResourceFlush {
+        hdr: hdr(cmd::RESOURCE_FLUSH, 0),
+        r_x: x,
+        r_y: y,
+        r_width: w,
+        r_height: h,
+        resource_id,
+        padding: 0,
+    };
+    if scanout_is_3d() {
+        let stride = state.width * 4;
+        clean_3d_backing_rows(y, h, stride);
+        let transfer = VirtioGpuTransferHost3d {
+            hdr: hdr(cmd::TRANSFER_TO_HOST_3D, VIRGL_CTX_ID),
+            box_x: x,
+            box_y: y,
+            box_z: 0,
+            box_w: w,
+            box_h: h,
+            box_d: 1,
+            offset: y as u64 * stride as u64 + x as u64 * 4,
+            resource_id: RESOURCE_3D_ID,
+            level: 0,
+            stride,
+            layer_stride: 0,
+        };
+        let scanout = VirtioGpuSetScanout {
+            hdr: hdr(cmd::SET_SCANOUT, 0),
+            r_x: 0,
+            r_y: 0,
+            r_width: state.width,
+            r_height: state.height,
+            scanout_id: 0,
+            resource_id: RESOURCE_3D_ID,
+        };
+        submit_polled(state, page, &transfer, deadline)
+            && submit_polled(state, page, &scanout, deadline)
+            && submit_polled(state, page, &flush(RESOURCE_3D_ID), deadline)
+    } else {
+        let stride = state.width as u64 * BYTES_PER_PIXEL as u64;
+        let transfer = VirtioGpuTransferToHost2d {
+            hdr: hdr(cmd::TRANSFER_TO_HOST_2D, 0),
+            r_x: x,
+            r_y: y,
+            r_width: w,
+            r_height: h,
+            offset: y as u64 * stride + x as u64 * BYTES_PER_PIXEL as u64,
+            resource_id: state.resource_id,
+            padding: 0,
+        };
+        let resource_id = state.resource_id;
+        submit_polled(state, page, &transfer, deadline)
+            && submit_polled(state, page, &flush(resource_id), deadline)
+    }
+}
+
+/// Submit `command` from the polled DMA page and poll the used ring for its
+/// completion until `deadline`. Returns whether the device answered OK.
+fn submit_polled<T>(
+    state: &mut GpuPciDeviceState,
+    page: *mut u8,
+    command: &T,
+    deadline: u64,
+) -> bool {
+    let cmd_len = core::mem::size_of::<T>();
+    let resp_len = core::mem::size_of::<VirtioGpuCtrlHdr>();
+    let resp = unsafe { page.add(POLLED_RESP_OFFSET) };
+    unsafe {
+        core::ptr::copy_nonoverlapping(command as *const T as *const u8, page, cmd_len);
+        core::ptr::write_volatile(resp as *mut u32, 0xDEADBEEF);
+    }
+    dma_cache_clean(page, cmd_len);
+    dma_cache_clean(resp, resp_len);
+
+    drain_stale_ctrlq_completions(state);
+    let previous_used_idx = state.last_used_idx;
+    publish_ctrlq_2desc(
+        virt_to_phys(page as u64),
+        cmd_len as u32,
+        virt_to_phys(resp as u64),
+        resp_len as u32,
+    );
+    state.device.notify_queue_fast(0);
+    loop {
+        let used_idx = virtgpu_trace_used_idx();
+        if used_idx != previous_used_idx {
+            state.last_used_idx = used_idx;
+            GPU_COMPLETED_USED_IDX.store(used_idx as u32, Ordering::Release);
+            break;
+        }
+        if crate::arch_impl::aarch64::timer::rdtsc() >= deadline {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+    unsafe {
+        core::arch::asm!("dc civac, {}", in(reg) resp as usize, options(nostack));
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        core::ptr::read_volatile(resp as *const u32) == cmd::RESP_OK_NODATA
     }
 }
 
