@@ -1120,6 +1120,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     } else if virgl_display {
         serial_println!("[boot] Render thread skipped — VirGL owns the display");
+        // Without a render thread, a kernel screen whose synchronous present
+        // failed would stay off the display; this thread presents it later.
+        if arm64_fb::SHELL_FRAMEBUFFER.get().is_some() {
+            match kernel::graphics::boot_screen::spawn_presenter() {
+                Ok(tid) => serial_println!("[boot] Screen presenter spawned (tid={})", tid),
+                Err(e) => serial_println!("[boot] Failed to spawn screen presenter: {}", e),
+            }
+        }
     }
 
     // Initialize tracing subsystem (must be after allocator, before timer)
@@ -2345,6 +2353,14 @@ fn init_gop_display() -> Result<(), &'static str> {
 #[cfg(target_arch = "aarch64")]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    // Mask IRQ and FIQ on this CPU, as Linux's panic() masks interrupts: a timer
+    // tick taken between the serial dumps below could preempt the panicking
+    // thread and switch away from it, leaving the dumps and the screen unfinished.
+    // Each serial print already masks them while it writes.
+    unsafe {
+        core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
+    }
+
     serial_println!();
     serial_println!("========================================");
     serial_println!("  KERNEL PANIC!");
@@ -2352,12 +2368,9 @@ fn panic(info: &PanicInfo) -> ! {
     serial_println!("{}", info);
     serial_println!();
 
-    // Show the panic on screen before the long serial dumps below, so the
-    // screen does not wait on them and a failure while they run (an interrupt
-    // aborting mid-dump has been seen on Parallels) cannot keep it off the
-    // display. It does not print or block: skipped if the framebuffer or GPU
-    // lock stays held (possibly by this CPU).
-    boot_screen::show_panic(info);
+    // The screen drawn below shows the log as it stands now, ending with this
+    // banner, not the dumps printed in between.
+    boot_screen::capture_panic_log();
 
     // Failure-capture PR-4: the bounded, lock-free BXCAP record.
     //
@@ -2386,6 +2399,12 @@ fn panic(info: &PanicInfo) -> ! {
     // shows -- so dropping it would narrow the evidence on the one path that
     // has it today.
     kernel::tracing::output::trace_dump_counters();
+
+    // Show the panic on screen after the serial records above, so drawing and
+    // GPU commands cannot delay or lose them. It does not print or block on a
+    // lock: skipped if the framebuffer lock is held, and left for the render or
+    // presenter thread if the GPU lock stays held (possibly by this CPU).
+    boot_screen::show_panic(info);
 
     loop {
         unsafe {

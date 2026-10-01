@@ -15,16 +15,17 @@
 //!
 //! On a panic or fatal EL1 fault `show_panic`/`show_fault` draw a red diagnostics
 //! screen with the failure, the boot stage and the last log lines. They do not
-//! block on a lock: if the framebuffer lock is held, or the GPU lock stays held
-//! for about 100 ms (possibly by the failing CPU), the screen or its flush is
-//! skipped and the report is on serial alone.
+//! block on a lock: if the framebuffer lock is held the screen is skipped and the
+//! report is on serial alone; if the GPU lock stays held for about 100 ms
+//! (possibly by the failing CPU) the screen is left marked dirty for the render
+//! thread, or on VirGL the presenter thread (`spawn_presenter`), to present.
 
 #![cfg(target_arch = "aarch64")]
 
 use super::arm64_fb;
 use super::primitives::{draw_char, draw_rect, fill_rect, Canvas, Color, Rect, TextStyle};
 use core::fmt::Write;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use spin::Mutex;
 
 /// Kernel boot stages, in boot order. Names match docs/boot-path.json.
@@ -524,7 +525,7 @@ pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
 ///
 /// The flush is synchronous so that a boot that hangs right after an update still
 /// shows it. After one failed flush the dirty region is left marked for the render
-/// thread instead (see `GPU_FLUSH_FAILED`).
+/// thread, or on VirGL the presenter thread, instead (see `GPU_FLUSH_FAILED`).
 fn present(mut guard: spin::MutexGuard<'_, arm64_fb::ShellFrameBuffer>) {
     if let Some(db) = guard.double_buffer_mut() {
         db.flush_if_dirty();
@@ -538,6 +539,47 @@ fn present(mut guard: spin::MutexGuard<'_, arm64_fb::ShellFrameBuffer>) {
             GPU_FLUSH_FAILED.store(true, Ordering::Release);
             arm64_fb::mark_dirty(x, y, w, h);
         }
+    }
+}
+
+/// Start the thread that presents the kernel's screen when a synchronous present
+/// could not, for displays with no render thread (VirGL: the render thread's
+/// cursor and dirty-rect flushes would overwrite the frames bwm composites).
+///
+/// A boot-screen update whose flush failed, or a diagnostics screen whose flush
+/// found the GPU lock busy, is left marked dirty; this thread presents it once
+/// the GPU is free. It presents only while the kernel's screen is up (the boot
+/// screen until userspace takes the display, or the diagnostics screen) and
+/// otherwise just idles.
+pub fn spawn_presenter() -> Result<u64, &'static str> {
+    let handle = crate::task::kthread::kthread_run(presenter_main, "kscreen")
+        .map_err(|_| "failed to spawn the screen presenter kthread")?;
+    let tid = handle.tid();
+    *PRESENTER.lock() = Some(handle);
+    Ok(tid)
+}
+
+static PRESENTER: Mutex<Option<crate::task::kthread::KthreadHandle>> = Mutex::new(None);
+
+/// Runs with interrupts enabled: no logging (see render_task).
+fn presenter_main() {
+    use crate::arch_impl::aarch64::timer;
+    let mut retry_at = 0u64;
+    while !crate::task::kthread::kthread_should_stop() {
+        let kernel_screen_up =
+            DIAG_CLAIMED.load(Ordering::Acquire) || !HANDED_OVER.load(Ordering::Acquire);
+        if kernel_screen_up && timer::rdtsc() >= retry_at {
+            if let Some((x, y, w, h)) = arm64_fb::take_dirty_rect() {
+                // Non-blocking: the GPU lock may be held for good by a CPU that
+                // failed inside a GPU command. Back off a second after a miss.
+                if !arm64_fb::try_flush_rect_nonblocking(x, y, w, h) {
+                    arm64_fb::mark_dirty(x, y, w, h);
+                    retry_at = timer::rdtsc() + timer::frequency_hz();
+                }
+            }
+        }
+        crate::task::scheduler::yield_current();
+        crate::arch_halt();
     }
 }
 
@@ -595,6 +637,55 @@ const DIAG_TEXT: Color = Color::rgb(255, 235, 235);
 const DIAG_DIM: Color = Color::rgb(235, 170, 170);
 const DIAG_LOG_LINES: usize = 20;
 
+/// Bytes of recent kernel log the diagnostics screen reads.
+const DIAG_LOG_BYTES: usize = 4096;
+
+/// The kernel log as it stood when a panic began (`capture_panic_log`), before the
+/// serial dumps the panic handler prints ahead of the screen. `PANIC_LOG_LEN` is
+/// `usize::MAX` until it is captured; the first panicking CPU captures it.
+static PANIC_LOG: [AtomicU8; DIAG_LOG_BYTES] = [const { AtomicU8::new(0) }; DIAG_LOG_BYTES];
+static PANIC_LOG_LEN: AtomicUsize = AtomicUsize::new(usize::MAX);
+static PANIC_LOG_CLAIMED: AtomicBool = AtomicBool::new(false);
+
+/// Keep the recent kernel log as it is now, for the panic's diagnostics screen to
+/// show the lines that led to the panic rather than the dumps printed after it.
+/// Lock-free and allocation-free.
+pub fn capture_panic_log() {
+    if PANIC_LOG_CLAIMED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let mut tail = [0u8; DIAG_LOG_BYTES];
+    let n = crate::log_buffer::copy_tail(&mut tail);
+    for (slot, &byte) in PANIC_LOG.iter().zip(&tail[..n]) {
+        slot.store(byte, Ordering::Relaxed);
+    }
+    PANIC_LOG_LEN.store(n, Ordering::Release);
+}
+
+/// Which kernel log the diagnostics screen shows.
+#[derive(Clone, Copy)]
+enum RecentLog {
+    /// The log as it is now.
+    Live,
+    /// The log captured when the panic began, if it was.
+    AtPanic,
+}
+
+impl RecentLog {
+    fn copy(self, buf: &mut [u8; DIAG_LOG_BYTES]) -> usize {
+        let captured = PANIC_LOG_LEN.load(Ordering::Acquire);
+        match self {
+            RecentLog::AtPanic if captured != usize::MAX => {
+                for (byte, slot) in buf.iter_mut().zip(&PANIC_LOG[..captured]) {
+                    *byte = slot.load(Ordering::Relaxed);
+                }
+                captured
+            }
+            _ => crate::log_buffer::copy_tail(buf),
+        }
+    }
+}
+
 /// Draw the diagnostics screen for a kernel panic. Never blocks.
 pub fn show_panic(info: &core::panic::PanicInfo) {
     let mut what = Text::new();
@@ -613,6 +704,7 @@ pub fn show_panic(info: &core::panic::PanicInfo) {
         "KERNEL PANIC",
         what.as_str(),
         &[("Location", place.as_str())],
+        RecentLog::AtPanic,
     );
 }
 
@@ -661,6 +753,7 @@ pub fn show_fault(esr: u64, far: u64, elr: u64) {
             ("PC", pc.as_str()),
             ("Exception", exception.as_str()),
         ],
+        RecentLog::Live,
     );
 }
 
@@ -718,7 +811,7 @@ fn write_fault_status(out: &mut Text, status: u8) {
 
 /// Draw the red diagnostics screen: `title`, a large `headline` saying what
 /// failed, labelled `details`, the boot stage and the recent kernel log.
-fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)]) {
+fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recent: RecentLog) {
     if DIAG_CLAIMED.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -775,8 +868,8 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)]) {
     draw_str(canvas, left, y, "Recent kernel log:", &dim);
     y += LINE + 4;
 
-    let mut tail = [0u8; 4096];
-    let n = crate::log_buffer::copy_tail(&mut tail);
+    let mut tail = [0u8; DIAG_LOG_BYTES];
+    let n = recent.copy(&mut tail);
     let log = &tail[..n];
     let mut starts = [0usize; DIAG_LOG_LINES + 1];
     let mut found = 0;
@@ -809,7 +902,10 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)]) {
         // per byte; a sequence cut by the start of the copied tail is one `?`.
         let mut line = Text::new();
         for chunk in log[start..stop].utf8_chunks() {
-            let _ = line.write_str(chunk.valid());
+            // CRLF line ends leave a '\r' that would draw as '?'.
+            for part in chunk.valid().split('\r') {
+                let _ = line.write_str(part);
+            }
             if !chunk.invalid().is_empty() {
                 let _ = line.write_str("?");
             }
@@ -827,10 +923,10 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)]) {
     present_diagnostics(width as u32, height as u32);
 }
 
-/// Put the diagnostics screen on the display. The render thread may be
-/// presenting on another CPU and hold the GPU lock, so retry for about 100 ms;
-/// if the flush still cannot be issued, leave the screen marked dirty for a
-/// live render thread rather than dropping it.
+/// Put the diagnostics screen on the display. The render thread (or on VirGL the
+/// presenter thread) may be presenting on another CPU and hold the GPU lock, so
+/// retry for about 100 ms; if the flush still cannot be issued, leave the screen
+/// marked dirty for that thread to present once the GPU is free.
 fn present_diagnostics(width: u32, height: u32) {
     use crate::arch_impl::aarch64::timer;
     let _ = arm64_fb::take_dirty_rect();
