@@ -509,16 +509,13 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
 
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
 
-    // Snapshot SPSR_EL1 for this CPU — this is the saved PSTATE from BEFORE
-    // the interrupt was taken.  Bits [9:6] are the pre-interrupt DAIF mask.
-    // Reading DAIF inside the handler always yields 0x3c0 (all masked on entry),
-    // which is useless.  SPSR_EL1 tells us the actual pre-interrupt state.
-    let spsr: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr, options(nomem, nostack));
-    }
+    // Use the entry frame's saved pre-IRQ PSTATE. A nested IRQ can overwrite
+    // live SPSR_EL1 before this handler reads it; bits [9:6] are the DAIF mask.
     if cpu_id < 8 {
-        TIMER_TICK_DAIF[cpu_id].store(spsr, Ordering::Relaxed);
+        if !frame.is_null() {
+            let spsr = unsafe { (*frame).spsr };
+            TIMER_TICK_DAIF[cpu_id].store(spsr, Ordering::Relaxed);
+        }
         TIMER_TICK_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
     }
 
