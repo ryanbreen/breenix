@@ -237,16 +237,22 @@ const STALLED_POLLS: u32 = 200_000;
 
 fn monotonic_ns() -> Option<i128> { time::now_monotonic().ok().map(|ts| ts.as_nanos()) }
 
-/// Measures a time limit on the monotonic clock. `expired` is true once the limit has
-/// passed, or once the clock has stopped (or never read) for `STALLED_POLLS` polls.
-struct Deadline { start: Option<i128>, last: Option<i128>, stalled: u32, limit: i128 }
+/// Measures a time limit on the monotonic clock. `poll` reports `Elapsed` once the limit
+/// has passed, or `ClockStopped` once the clock has stopped (or never read) for the
+/// deadline's stall limit of consecutive polls.
+struct Deadline { start: Option<i128>, last: Option<i128>, stalled: u32, stall_limit: u32, limit: i128 }
 
 enum Expiry { Running, Elapsed, ClockStopped }
 
 impl Deadline {
-    fn new(limit: i128) -> Self {
+    /// For loops that only yield between polls: `STALLED_POLLS` polls.
+    fn new(limit: i128) -> Self { Self::with_stall_limit(limit, STALLED_POLLS) }
+
+    /// For loops that wait between polls: size `stall_limit` so that many waits add
+    /// up to no more than `limit`, so a stopped clock ends the wait within the limit.
+    fn with_stall_limit(limit: i128, stall_limit: u32) -> Self {
         let now = monotonic_ns();
-        Deadline { start: now, last: now, stalled: 0, limit }
+        Deadline { start: now, last: now, stalled: 0, stall_limit, limit }
     }
 
     fn poll(&mut self) -> Expiry {
@@ -255,7 +261,7 @@ impl Deadline {
         if self.start.zip(now).is_some_and(|(a, b)| b - a >= self.limit) { return Expiry::Elapsed; }
         if now.is_some() && now != self.last { self.last = now; self.stalled = 0; }
         else { self.stalled += 1; }
-        if self.stalled >= STALLED_POLLS { Expiry::ClockStopped } else { Expiry::Running }
+        if self.stalled >= self.stall_limit { Expiry::ClockStopped } else { Expiry::Running }
     }
 }
 
@@ -430,7 +436,7 @@ fn probe() {
 }
 
 fn draw_run(fb: &mut Option<FrameBuf>, path: &str, elapsed: i128,
-    output: &[String], verdict: Verdict<'_>) {
+    output: &[String], partial: &[u8], verdict: Verdict<'_>) {
     let Some(fb) = fb else { return; };
     let subtitle = format!("{} seconds elapsed", elapsed.max(0) / 1_000_000_000);
     let checks = [Check { name: path, state: match &verdict {
@@ -439,7 +445,9 @@ fn draw_run(fb: &mut Option<FrameBuf>, path: &str, elapsed: i128,
         Verdict::Failed(reason) => CheckState::Fail(reason),
     }}];
     let groups = [Group { title: "PROGRAM", checks: &checks }];
-    let lines: Vec<_> = output.iter().map(String::as_str).collect();
+    let partial = String::from_utf8_lossy(partial);
+    let mut lines: Vec<_> = output.iter().map(String::as_str).collect();
+    if !partial.is_empty() { lines.push(&partial); }
     diagnostics::draw(fb, &Panel {
         title: "BREENIX / PROGRAM RUN", subtitle: &subtitle,
         groups: &groups, output: &lines, verdict,
@@ -458,7 +466,7 @@ fn write_serial(mut bytes: &[u8]) -> bool {
 }
 
 fn add_output_byte(byte: u8, pending: &mut Vec<u8>, recent: &mut Vec<String>,
-    fail_tail: &mut Vec<u8>, saw_fail: &mut bool, fail_line: &mut Option<String>) -> bool {
+    fail_tail: &mut Vec<u8>, saw_fail: &mut bool, fail_line: &mut Option<String>) {
     if byte == b'\n' {
         let text = String::from_utf8_lossy(pending).trim_end_matches('\r').to_string();
         if *saw_fail && fail_line.is_none() {
@@ -469,36 +477,80 @@ fn add_output_byte(byte: u8, pending: &mut Vec<u8>, recent: &mut Vec<String>,
         if recent.len() > 30 { recent.remove(0); }
         pending.clear();
         fail_tail.clear();
-        return true;
+        return;
     }
     if pending.len() < 512 { pending.push(byte); }
     fail_tail.push(byte);
     if fail_tail.len() > 4 { fail_tail.remove(0); }
     if fail_tail.as_slice() == b"FAIL" { *saw_fail = true; }
-    false
+}
+
+/// `probe --run` time limit, and the poll wait of its supervising loop.
+const RUN_LIMIT_NS: i128 = 60_000_000_000;
+const RUN_POLL_MS: i32 = 100;
+/// New output is drawn at most this often, so a chatty program never waits on the panel.
+const RUN_DRAW_INTERVAL_NS: i128 = 250_000_000;
+/// Limit for the child to reach exec, measured from fork.
+const EXEC_LIMIT_NS: i128 = 10_000_000_000;
+
+/// Polls of `RUN_POLL_MS` that add up to `limit`.
+fn run_polls(limit: i128) -> u32 { (limit / (RUN_POLL_MS as i128 * 1_000_000)) as u32 }
+
+/// Wait until the child has exec'd. Its close-on-exec status pipe reaches end of file with
+/// no data once exec succeeds, and carries the reason when exec fails.
+fn wait_for_exec(reader: Fd) -> Result<(), String> {
+    let mut deadline = Deadline::with_stall_limit(EXEC_LIMIT_NS, run_polls(EXEC_LIMIT_NS));
+    loop {
+        let mut fds = [PollFd::new(reader, poll_events::POLLIN)];
+        match io::poll(&mut fds, RUN_POLL_MS) {
+            Ok(0) => {}
+            Ok(_) => {
+                let mut buf = [0u8; 96];
+                return match io::read(reader, &mut buf) {
+                    Ok(0) => Ok(()),
+                    Ok(n) => Err(String::from_utf8_lossy(&buf[..n]).to_string()),
+                    Err(_) => Err("exec status read failed".to_string()),
+                };
+            }
+            Err(_) => return Err("exec status poll failed".to_string()),
+        }
+        match deadline.poll() {
+            Expiry::Running => {}
+            Expiry::Elapsed => return Err("program did not reach exec within 10 seconds".to_string()),
+            Expiry::ClockStopped => {
+                return Err("program did not reach exec (clock stopped; 10 s limit unmeasurable)".to_string());
+            }
+        }
+    }
 }
 
 fn run_program(path: &str, args: &[String]) {
-    println!("RUN {} START", path);
     let mut fb = open_screen();
     let mut recent = Vec::new();
     let start = monotonic_ns();
-    draw_run(&mut fb, path, 0, &recent, Verdict::Running("Program running"));
+    draw_run(&mut fb, path, 0, &recent, &[], Verdict::Running("Program starting"));
 
     let mut failure = None;
     let mut status = None;
+    let mut started = false;
     let mut timed_out = false;
+    let mut clock_stopped = false;
     if !path.starts_with('/') || path.as_bytes().contains(&0)
         || args.iter().any(|arg| arg.as_bytes().contains(&0)) {
         failure = Some("invalid program path or argument".to_string());
     } else if start.is_none() {
         failure = Some("monotonic clock unavailable".to_string());
-    } else if let Ok((reader, writer)) = io::pipe() {
+    } else if let (Ok((reader, writer)), Ok((exec_reader, exec_writer))) =
+        (io::pipe(), io::pipe2(io::status_flags::O_CLOEXEC)) {
         match process::fork() {
             Ok(ForkResult::Child) => {
                 let _ = io::close(reader);
+                let _ = io::close(exec_reader);
                 if io::dup2(writer, Fd::STDOUT).is_err()
-                    || io::dup2(writer, Fd::STDERR).is_err() { process::exit(127); }
+                    || io::dup2(writer, Fd::STDERR).is_err() {
+                    let _ = io::write(exec_writer, b"could not redirect output");
+                    process::exit(127);
+                }
                 let _ = io::close(writer);
                 let path_bytes = [path.as_bytes(), b"\0"].concat();
                 let argv_bytes: Vec<Vec<u8>> = std::iter::once(path)
@@ -506,36 +558,59 @@ fn run_program(path: &str, args: &[String]) {
                     .map(|arg| [arg.as_bytes(), b"\0"].concat()).collect();
                 let mut argv: Vec<*const u8> = argv_bytes.iter().map(|arg| arg.as_ptr()).collect();
                 argv.push(std::ptr::null());
-                let _ = process::execv(&path_bytes, argv.as_ptr());
-                let _ = io::write(Fd::STDERR, b"exec failed\n");
+                if let Err(error) = process::execv(&path_bytes, argv.as_ptr()) {
+                    let _ = io::write(exec_writer, format!("exec failed: {error:?}").as_bytes());
+                }
                 process::exit(127);
             }
             Ok(ForkResult::Parent(pid)) => {
                 let _ = io::close(writer);
+                let _ = io::close(exec_writer);
                 let pid = pid.raw() as i32;
+                match wait_for_exec(exec_reader) {
+                    Ok(()) => {
+                        started = true;
+                        println!("RUN {} START", path);
+                    }
+                    Err(reason) => failure = Some(reason),
+                }
+                let _ = io::close(exec_reader);
                 let mut pending = Vec::new();
                 let mut fail_tail = Vec::new();
                 let mut saw_fail = false;
                 let mut fail_line = None;
                 let mut eof = false;
                 let mut last_second = -1;
-                let mut deadline = Deadline::new(60_000_000_000);
+                let mut last_draw = 0;
+                let mut output_dirty = false;
+                let mut deadline = Deadline::with_stall_limit(RUN_LIMIT_NS, run_polls(RUN_LIMIT_NS));
                 let mut kill_deadline = None;
-                loop {
+                while started {
                     let elapsed = monotonic_ns().zip(start).map(|(now, then)| now - then).unwrap_or(0);
                     let second = elapsed / 1_000_000_000;
-                    if second != last_second {
-                        draw_run(&mut fb, path, elapsed, &recent, Verdict::Running("Program running"));
+                    if second != last_second
+                        || output_dirty && elapsed - last_draw >= RUN_DRAW_INTERVAL_NS {
+                        draw_run(&mut fb, path, elapsed, &recent, &pending, Verdict::Running("Program running"));
                         last_second = second;
+                        last_draw = elapsed;
+                        output_dirty = false;
                     }
-                    if !timed_out && !matches!(deadline.poll(), Expiry::Running) {
-                        timed_out = true;
-                        kill_deadline = Some(Deadline::new(REAP_LIMIT_NS));
-                        if status.is_some() {
-                            failure = Some("output pipe remained open after 60 seconds".to_string());
-                            break;
-                        } else if signal::kill(pid, SIGKILL).is_err() {
-                            failure = Some("timeout; SIGKILL failed".to_string());
+                    if !timed_out {
+                        let expiry = deadline.poll();
+                        if !matches!(expiry, Expiry::Running) {
+                            timed_out = true;
+                            clock_stopped = matches!(expiry, Expiry::ClockStopped);
+                            kill_deadline = Some(Deadline::with_stall_limit(REAP_LIMIT_NS, run_polls(REAP_LIMIT_NS)));
+                            if status.is_some() {
+                                failure = Some(if clock_stopped {
+                                    "output pipe remained open (clock stopped; 60 s limit unmeasurable)".to_string()
+                                } else {
+                                    "output pipe remained open after 60 seconds".to_string()
+                                });
+                                break;
+                            } else if signal::kill(pid, SIGKILL).is_err() {
+                                failure = Some("timeout; SIGKILL failed".to_string());
+                            }
                         }
                     }
                     if status.is_none() {
@@ -550,7 +625,7 @@ fn run_program(path: &str, args: &[String]) {
                     if kill_deadline.as_mut().is_some_and(|limit: &mut Deadline|
                         !matches!(limit.poll(), Expiry::Running)) { break; }
                     let mut fds = [PollFd::new(reader, poll_events::POLLIN)];
-                    match io::poll(&mut fds, 100) {
+                    match io::poll(&mut fds, RUN_POLL_MS) {
                         Ok(0) => {}
                         Ok(_) if fds[0].revents & (poll_events::POLLIN | poll_events::POLLHUP) != 0 => {
                             let mut buf = [0u8; 1024];
@@ -559,16 +634,10 @@ fn run_program(path: &str, args: &[String]) {
                                 Ok(n) => {
                                     if !write_serial(&buf[..n]) { failure = Some("serial write failed".to_string()); }
                                     for &byte in &buf[..n] {
-                                        if add_output_byte(byte, &mut pending, &mut recent,
-                                            &mut fail_tail, &mut saw_fail, &mut fail_line) {
-                                            draw_run(&mut fb, path, elapsed, &recent, Verdict::Running("Program running"));
-                                        }
+                                        add_output_byte(byte, &mut pending, &mut recent,
+                                            &mut fail_tail, &mut saw_fail, &mut fail_line);
                                     }
-                                    if !pending.is_empty() {
-                                        let mut shown = recent.clone();
-                                        shown.push(String::from_utf8_lossy(&pending).to_string());
-                                        draw_run(&mut fb, path, elapsed, &shown, Verdict::Running("Program running"));
-                                    }
+                                    output_dirty = true;
                                 }
                                 Err(_) => { failure = Some("output read failed".to_string()); break; }
                             }
@@ -587,7 +656,7 @@ fn run_program(path: &str, args: &[String]) {
                 }
                 let _ = io::close(reader);
                 if status.is_none() {
-                    if !timed_out && signal::kill(pid, SIGKILL).is_err() {
+                    if !timed_out && signal::kill(pid, SIGKILL).is_err() && failure.is_none() {
                         failure = Some("could not kill child after I/O failure".to_string());
                     }
                     let mut reap_deadline = Deadline::new(REAP_LIMIT_NS);
@@ -606,13 +675,16 @@ fn run_program(path: &str, args: &[String]) {
                     }
                 }
                 if timed_out && failure.is_none() {
-                    failure = Some("timeout after 60 seconds".to_string());
+                    failure = Some(if clock_stopped {
+                        "timeout (clock stopped; 60 s limit unmeasurable)".to_string()
+                    } else {
+                        "timeout after 60 seconds".to_string()
+                    });
                 }
                 if failure.is_none() { failure = fail_line.map(|line| format!("FAIL output: {line}")); }
             }
             Err(_) => {
-                let _ = io::close(reader);
-                let _ = io::close(writer);
+                for fd in [reader, writer, exec_reader, exec_writer] { let _ = io::close(fd); }
                 failure = Some("fork failed".to_string());
             }
         }
@@ -620,7 +692,8 @@ fn run_program(path: &str, args: &[String]) {
         failure = Some("pipe failed".to_string());
     }
 
-    if let Some(raw) = status {
+    // EXIT and SIGNAL describe the program, so they follow only a START.
+    if let Some(raw) = status.filter(|_| started) {
         if process::wifexited(raw) {
             let code = process::wexitstatus(raw);
             println!("RUN {} EXIT {}", path, code);
@@ -634,10 +707,10 @@ fn run_program(path: &str, args: &[String]) {
     let elapsed = monotonic_ns().zip(start).map(|(now, then)| now - then).unwrap_or(0);
     if let Some(reason) = failure {
         println!("RUN {} DONE FAIL {}", path, reason);
-        draw_run(&mut fb, path, elapsed, &recent, Verdict::Failed(&reason));
+        draw_run(&mut fb, path, elapsed, &recent, &[], Verdict::Failed(&reason));
     } else {
         println!("RUN {} DONE PASS exit 0; no FAIL output", path);
-        draw_run(&mut fb, path, elapsed, &recent, Verdict::Passed("PASS: exit 0; no FAIL output"));
+        draw_run(&mut fb, path, elapsed, &recent, &[], Verdict::Passed("PASS: exit 0; no FAIL output"));
     }
     reap_forever();
 }

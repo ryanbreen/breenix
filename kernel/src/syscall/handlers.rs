@@ -4733,8 +4733,10 @@ pub fn sys_take_over_display() -> SyscallResult {
             }
         }
 
+        // The kernel stops drawing its boot screen but leaves it up until the new
+        // owner draws, so an owner that fails first does not blank the screen.
         #[cfg(target_arch = "aarch64")]
-        let _ = crate::graphics::boot_screen::hand_over();
+        let _ = crate::graphics::boot_screen::stop_drawing();
 
         // Tell the render thread to stop flushing the framebuffer.
         // BWM will handle all GPU operations via its own fb_flush() syscall.

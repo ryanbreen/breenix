@@ -8,9 +8,10 @@
 //!
 //! Drawing happens only on the boot thread (never from interrupt context), redraws
 //! only rows whose state changed, and takes the framebuffer with `try_lock`: a
-//! contended update is skipped and caught up by the next one. Once userspace draws
-//! (`hand_over`) the kernel stops drawing and restores the split layout userspace
-//! expects; if userspace never draws, the boot screen stays up.
+//! contended update is skipped and caught up by the next one. Once userspace takes
+//! the display (`stop_drawing`) the kernel stops drawing; when userspace actually
+//! draws (`hand_over`) the kernel's screen is replaced by the split layout userspace
+//! expects. If userspace never draws, the boot screen stays up.
 //!
 //! On a panic or fatal EL1 fault `show_panic`/`show_fault` draw a red diagnostics
 //! screen with the failure, the boot stage and the last log lines. They never block:
@@ -96,12 +97,18 @@ const GROUPS: [(&str, usize, usize); 6] = [
 
 /// Bit i set = stage i reached.
 static REACHED: AtomicU32 = AtomicU32::new(0);
-/// The boot screen has been drawn and still owns the screen.
+/// The boot screen has been drawn and its pixels are still on screen.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
-/// Userspace has drawn; the kernel no longer draws the boot screen.
+/// The fbconsole=log console was drawing and its pixels are still on screen.
+static LOG_CONSOLE_UP: AtomicBool = AtomicBool::new(false);
+/// Userspace has taken the display; the kernel no longer draws the boot screen.
 static HANDED_OVER: AtomicBool = AtomicBool::new(false);
-/// The screen has been put back in the split layout after a hand-over.
+/// Userspace has drawn and the kernel's screen has been replaced by the split layout.
 static LAYOUT_SETTLED: AtomicBool = AtomicBool::new(false);
+/// A boot-screen GPU flush failed (a stalled or broken GPU). Later updates are
+/// still drawn, but their flush is left to the render thread, so a stalled GPU
+/// costs the boot path one command timeout rather than one per update.
+static GPU_FLUSH_FAILED: AtomicBool = AtomicBool::new(false);
 /// The diagnostics screen has been claimed (first failure wins).
 static DIAG_CLAIMED: AtomicBool = AtomicBool::new(false);
 
@@ -448,81 +455,81 @@ fn clear_line(canvas: &mut impl Canvas, layout: &Layout, y: i32) {
     );
 }
 
-/// Userspace has started drawing: stop the boot screen (or log console) and
-/// restore the split layout (dark background, divider) that userspace panes are
-/// placed in.
+/// Userspace has taken the display: stop drawing the boot screen (or log
+/// console), leaving its pixels up until userspace draws (`hand_over`). If the
+/// new owner fails before it draws, the boot screen stays on screen.
 ///
-/// Called from the fb syscalls, which run with interrupts masked, before they take
-/// the framebuffer lock themselves. It therefore never blocks: the lock is tried
-/// with the same bounded spin the syscalls use, and a failed attempt is retried on
-/// the next draw. The GPU flush is left to the render thread's dirty-rect flush.
+/// Returns false once the diagnostics screen is up: it keeps the screen.
+pub fn stop_drawing() -> bool {
+    if DIAG_CLAIMED.load(Ordering::Acquire) {
+        return false;
+    }
+    if !HANDED_OVER.swap(true, Ordering::AcqRel) && super::log_console::stop() {
+        LOG_CONSOLE_UP.store(true, Ordering::Release);
+    }
+    true
+}
+
+/// Userspace is about to draw into `fb`: replace the kernel's screen with the
+/// split layout (dark background, divider) that userspace panes are placed in.
+///
+/// Called from the fb syscalls with the framebuffer lock held, after they have
+/// checked that the command draws, so the layout is settled in the same critical
+/// section as the first userspace draw. The GPU flush is left to the caller's
+/// flush and the render thread's dirty-rect flush.
 ///
 /// Returns false once the diagnostics screen is up: it keeps the screen, and the
 /// caller refuses the draw.
-pub fn hand_over() -> bool {
-    if DIAG_CLAIMED.load(Ordering::Acquire) {
+pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
+    if !stop_drawing() {
         return false;
     }
     if LAYOUT_SETTLED.load(Ordering::Acquire) {
         return true;
     }
-    if !HANDED_OVER.swap(true, Ordering::AcqRel) {
-        let log_console_was_up = super::log_console::stop();
-        let boot_screen_was_up = ACTIVE.swap(false, Ordering::AcqRel);
-        if !boot_screen_was_up && !log_console_was_up {
-            LAYOUT_SETTLED.store(true, Ordering::Release);
-            return true;
-        }
-    }
-    let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() else {
-        LAYOUT_SETTLED.store(true, Ordering::Release);
-        return true;
-    };
-    let Some(mut guard) = (0..4096).find_map(|_| {
-        let guard = fb.try_lock();
-        if guard.is_none() {
-            core::hint::spin_loop();
-        }
-        guard
-    }) else {
-        return true;
-    };
-    let canvas = &mut *guard;
-    let (width, height) = (canvas.width(), canvas.height());
-    fill_rect(
-        canvas,
-        Rect {
-            x: 0,
-            y: 0,
-            width: width as u32,
-            height: height as u32,
-        },
-        BG,
-    );
-    for i in 0..4 {
-        draw_vline(
-            canvas,
-            (width / 2 + i) as i32,
-            0,
-            height as i32 - 1,
-            DIVIDER,
+    let boot_screen_up = ACTIVE.swap(false, Ordering::AcqRel);
+    let log_console_up = LOG_CONSOLE_UP.swap(false, Ordering::AcqRel);
+    if boot_screen_up || log_console_up {
+        let (width, height) = (fb.width(), fb.height());
+        fill_rect(
+            fb,
+            Rect {
+                x: 0,
+                y: 0,
+                width: width as u32,
+                height: height as u32,
+            },
+            BG,
         );
-    }
-    if let Some(db) = guard.double_buffer_mut() {
-        db.flush_if_dirty();
+        for i in 0..4 {
+            draw_vline(fb, (width / 2 + i) as i32, 0, height as i32 - 1, DIVIDER);
+        }
+        if let Some(db) = fb.double_buffer_mut() {
+            db.flush_if_dirty();
+        }
     }
     LAYOUT_SETTLED.store(true, Ordering::Release);
     true
 }
 
 /// Copy the shadow buffer out (if any) and flush the dirty region to the display.
+///
+/// The flush is synchronous so that a boot that hangs right after an update still
+/// shows it. After one failed flush the dirty region is left marked for the render
+/// thread instead (see `GPU_FLUSH_FAILED`).
 fn present(mut guard: spin::MutexGuard<'_, arm64_fb::ShellFrameBuffer>) {
     if let Some(db) = guard.double_buffer_mut() {
         db.flush_if_dirty();
     }
     drop(guard);
+    if GPU_FLUSH_FAILED.load(Ordering::Acquire) {
+        return;
+    }
     if let Some((x, y, w, h)) = arm64_fb::take_dirty_rect() {
-        let _ = arm64_fb::flush_dirty_rect(x, y, w, h);
+        if arm64_fb::flush_dirty_rect(x, y, w, h).is_err() {
+            GPU_FLUSH_FAILED.store(true, Ordering::Release);
+            arm64_fb::mark_dirty(x, y, w, h);
+        }
     }
 }
 

@@ -95,12 +95,11 @@ impl BootMode {
     }
 }
 
-/// Read the boot mode from fw_cfg and print the one `[boot] Boot mode: <mode>` line,
-/// naming the mode that actually runs (`program <path>` for program mode). An
-/// unknown request, a program request without an absolute program path, or any
-/// request to a `testing` kernel (which always runs its test loader), runs
-/// `default` and is noted on a separate line. Returns the program path for
-/// program mode.
+/// Read the boot mode from fw_cfg. An unknown request, a program request without
+/// an absolute program path, or any request to a `testing` kernel (which always
+/// runs its test loader), runs `default` and is noted on a separate line. Returns
+/// the program path for program mode. `announce_boot_mode` prints the mode once
+/// it is known to run.
 #[cfg(target_arch = "aarch64")]
 fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
     // fw_cfg exists only on QEMU (its MMIO window is absent on Parallels).
@@ -155,7 +154,14 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
     } else {
         mode
     };
-    match program.as_deref() {
+    (mode, program)
+}
+
+/// Print the one `[boot] Boot mode: <mode>` line, naming the mode that actually
+/// runs (`program <path>` for program mode), and show it on the boot screen.
+#[cfg(target_arch = "aarch64")]
+fn announce_boot_mode(mode: BootMode, program: Option<&str>) {
+    match program {
         Some(path) => {
             serial_println!("[boot] Boot mode: program {}", path);
             boot_screen::set_mode(format_args!("program {}", path));
@@ -169,7 +175,6 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
             }
         }
     }
-    (mode, program)
 }
 
 /// Whether `-fw_cfg name=opt/breenix/fbconsole,string=log` asks for kernel log
@@ -1126,7 +1131,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // single-CPU, avoids both issues entirely.
     // (ext2 root filesystem was mounted above at init_root_fs().)
     // Probe mode pre-loads /sbin/probe the same way and falls back to /sbin/init.
-    let (boot_mode, program) = read_boot_mode();
+    let (mut boot_mode, mut program) = read_boot_mode();
     let mut init_launch = InitLaunch::for_mode(boot_mode, program.as_deref());
     let runs_probe = matches!(boot_mode, BootMode::Probe | BootMode::Program);
     let probe_elf: Option<alloc::vec::Vec<u8>> = if runs_probe && device_count > 0 {
@@ -1149,8 +1154,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         None
     };
     if runs_probe && probe_elf.is_none() {
+        serial_println!(
+            "[boot] Ignoring boot mode {:?}: /sbin/probe could not be loaded",
+            boot_mode.name()
+        );
+        boot_mode = BootMode::Default;
+        program = None;
         init_launch = InitLaunch::default_init();
     }
+    announce_boot_mode(boot_mode, program.as_deref());
     let init_elf: Option<alloc::vec::Vec<u8>> = if probe_elf.is_some() {
         probe_elf
     } else if device_count > 0 {

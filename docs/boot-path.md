@@ -39,17 +39,20 @@ stage list and shown alongside, but does not block moving on.
   terminal in the VM window (`--no-display` keeps it headless).
 - `program`: the production kernel runs `/sbin/probe --run PATH` as PID 1 (`--program PATH`,
   an absolute guest path, passed as `-fw_cfg name=opt/breenix/program,string=PATH`). Probe
-  runs that one program, relays its output, and prints `RUN PATH START`, `RUN PATH EXIT <code>`
-  (or `SIGNAL <n>`) and `RUN PATH DONE PASS|FAIL <reason>`. It passes when the program exits 0
-  and printed no line containing `FAIL`; one running past 60 seconds is killed and fails.
+  runs that one program, relays its output, and prints `RUN PATH START` once the program has
+  been exec'd, `RUN PATH EXIT <code>` (or `SIGNAL <n>`) and `RUN PATH DONE PASS|FAIL <reason>`;
+  a program that never starts gets only the `DONE FAIL` line. It passes when the program exits
+  0 and printed no line containing `FAIL`; one running past 60 seconds is killed and fails.
+  Stage markers are substrings and the program's output is relayed unchanged, so a program
+  that prints probe's own `START` or `DONE PASS` text can match those stages.
 
 The non-test modes build the kernel with no features, exactly like the prod-profile gate,
 and pass the mode to it with `-fw_cfg name=opt/breenix/mode,string=MODE`. The kernel
 prints `[boot] Boot mode: MODE` for the mode that runs (`program PATH` in program mode):
 `default` when none is given, which runs `/sbin/init` with no arguments, as before. An
-unknown mode, any mode given to the testing kernel, or program mode without an absolute
-program path also runs `default`, and the kernel notes the ignored request on its own
-line. A mode's stages for a milestone are `stages[MODE]` when present, else
+unknown mode, any mode given to the testing kernel, program mode without an absolute
+program path, or probe or program mode when `/sbin/probe` cannot be loaded also runs
+`default`, and the kernel notes the ignored request on its own line. A mode's stages for a milestone are `stages[MODE]` when present, else
 `stages["aarch64"]` when the milestone has `"kernel": true`; otherwise the mode does not
 exercise that milestone.
 
@@ -72,10 +75,15 @@ every log line still goes there.
 - `--fbconsole log` draws the kernel log on screen instead of the boot screen (kernel lines
   only, not userspace output).
 
+Wait for a serial line rather than a fixed time, since the build before the boot takes a
+minute or two. Remove the old log first: the script truncates it only once the build is done.
+
 ```bash
+log="$TMPDIR/breenix-boot/serial.txt"; rm -f "$log"
 scripts/boot-interactive.sh --mode program --program /usr/local/test/bin/argv_test \
-    --qmp "$TMPDIR/breenix.qmp" --idle-exit 30 < /dev/null &
-sleep 40; scripts/qmp-screendump.py "$TMPDIR/breenix.qmp" "$TMPDIR/screen.png"
+    --qmp "$TMPDIR/breenix.qmp" --serial-log "$log" --idle-exit 90 < /dev/null &
+until grep -q ' DONE ' "$log" 2>/dev/null; do sleep 2; done
+scripts/qmp-screendump.py "$TMPDIR/breenix.qmp" "$TMPDIR/screen.png"
 ```
 
 ## Focus and backtracking

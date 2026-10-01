@@ -243,11 +243,11 @@
         "program": [
           {
             "name": "Program started",
-            "marker": "RUN /"
+            "marker": " START"
           },
           {
             "name": "Program passed",
-            "marker": " DONE PASS"
+            "marker": " DONE PASS exit 0; no FAIL output"
           }
         ],
         "probe": [
