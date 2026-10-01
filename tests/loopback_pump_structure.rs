@@ -4364,6 +4364,7 @@ const MAX_CPUS: usize = 4;
 const CPU_STALL_TICKS: u64 = 20;
 const PIN_GUARD_ORACLE_HELD: usize = 255;
 static PINNED_HOME_CPU_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+static PINNED_HOLDS_OUTSTANDING: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
 static PINNED_PUBLISH_DISCARDED: AtomicU64 = AtomicU64::new(0);
 static PINNED_HOLD_PEN_MIGRATED: AtomicU64 = AtomicU64::new(0);
