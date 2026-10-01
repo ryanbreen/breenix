@@ -4377,7 +4377,7 @@ static ENQUEUE_STALLED_RECLAIMED: AtomicU64 = AtomicU64::new(0);
 mod thread { pub static CPU_PINS_STAMPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); }
 mod time { pub fn get_ticks() -> u64 { 100 } }
 mod arch_impl { pub mod aarch64 { pub mod constants { pub fn percpu_stack_slot_of(sp: u64) -> Option<usize> { assert_eq!(sp, 0); None } } } }
-mod tracing { pub mod output { pub fn raw_serial_str(s: &str) { print!("{s}"); } pub fn raw_serial_dec(n: u64) { print!("{n}"); } } }
+mod tracing { pub mod output { pub struct Line; impl Line { pub fn new() -> Self { Self } pub fn text(&mut self, s: &str) { print!("{s}"); } pub fn dec(&mut self, n: u64) { print!("{n}"); } } } }
 fn arch_can_dispatch_here() -> bool { true }
 #[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Terminated }
 #[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
@@ -4531,7 +4531,7 @@ static PINNED_WAKES_DELIVERED: AtomicU64 = AtomicU64::new(0);
 static ENQUEUE_SAME_LOCK_OK: AtomicU64 = AtomicU64::new(0);
 static CURRENT_CPU: AtomicUsize = AtomicUsize::new(0);
 static LOOKUPS: AtomicU64 = AtomicU64::new(0);
-mod tracing { pub mod output { pub fn raw_serial_str(s: &str) { print!("{s}"); } pub fn raw_serial_dec(n: u64) { print!("{n}"); } } }
+mod tracing { pub mod output { pub struct Line; impl Line { pub fn new() -> Self { Self } pub fn text(&mut self, s: &str) { print!("{s}"); } pub fn dec(&mut self, n: u64) { print!("{n}"); } } } }
 #[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Blocked }
 #[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
 struct Thread { tid: u64, state: ThreadState, cpu_affinity: Option<CpuPin> }

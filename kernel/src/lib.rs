@@ -13,6 +13,8 @@ pub mod serial;
 #[cfg(target_arch = "aarch64")]
 pub mod serial_aarch64;
 #[cfg(target_arch = "aarch64")]
+pub mod serial_line;
+#[cfg(target_arch = "aarch64")]
 pub use serial_aarch64 as serial;
 pub mod arch_impl;
 pub mod drivers;

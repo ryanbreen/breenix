@@ -14,7 +14,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::tracing::output::{raw_serial_dec, raw_serial_newline, raw_serial_str};
+use crate::tracing::output::Line;
 
 /// The grep anchor. Present exactly when a timed futex wait arbitrated to
 /// something other than `ETIMEDOUT` after its deadline or without a waker.
@@ -52,30 +52,31 @@ pub fn record(record: &TimedWaitRecord) {
         return;
     }
 
-    // Kept to one line of short fields: every write here is lock-free, so a
-    // shorter line is a smaller window for another writer to interleave.
-    raw_serial_str(MARKER);
-    raw_serial_str(" tid=");
-    raw_serial_dec(record.thread_id);
-    raw_serial_str(" removed_by_me=");
-    raw_serial_str(bit(record.removed_by_me));
-    raw_serial_str(" signal_pending=");
-    raw_serial_str(bit(record.signal_pending));
-    raw_serial_str(" deadline_ns=");
-    raw_serial_dec(record.user_deadline_ns);
-    raw_serial_str(" now_ns=");
-    raw_serial_dec(record.now_ns);
-    raw_serial_str(" timer_pop=");
-    raw_serial_str(match record.timer_pop_wake_time_set {
+    // Aarch64 collects these fields into one owned UART record; x86 keeps
+    // the existing raw-byte output implementation.
+    let mut line = Line::new();
+    line.text(MARKER);
+    line.text(" tid=");
+    line.dec(record.thread_id);
+    line.text(" removed_by_me=");
+    line.text(bit(record.removed_by_me));
+    line.text(" signal_pending=");
+    line.text(bit(record.signal_pending));
+    line.text(" deadline_ns=");
+    line.dec(record.user_deadline_ns);
+    line.text(" now_ns=");
+    line.dec(record.now_ns);
+    line.text(" timer_pop=");
+    line.text(match record.timer_pop_wake_time_set {
         Some(true) => "wake_time_set",
         Some(false) => "wake_time_cleared",
         None => "never_popped",
     });
-    raw_serial_str(" errno=");
-    raw_serial_dec(record.errno);
-    raw_serial_str(" seen=");
-    raw_serial_dec(seen + 1);
-    raw_serial_newline();
+    line.text(" errno=");
+    line.dec(record.errno);
+    line.text(" seen=");
+    line.dec(seen + 1);
+    line.newline();
 }
 
 fn bit(value: bool) -> &'static str {

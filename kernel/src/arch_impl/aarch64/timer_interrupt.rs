@@ -525,8 +525,7 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     if cpu_id == 0 {
         let count = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
         if count <= 10 {
-            crate::serial_aarch64::raw_serial_char(b'T');
-            crate::serial_aarch64::raw_serial_char(b'0' + (count % 10) as u8);
+            emit_tick_breadcrumb(count);
         }
     }
 
@@ -559,48 +558,7 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
             }
             // 10% threshold: cpu0 * 10 < max_peer means cpu0 < 10% of max.
             if cpu0.saturating_mul(10) < max_peer {
-                crate::serial_aarch64::raw_serial_str(
-                    b"\n!!! CPU0 REGRESSION ALARM !!!\n",
-                );
-                crate::serial_aarch64::raw_serial_str(b"CPU0 tick_count = ");
-                let mut n = cpu0;
-                let mut buf = [0u8; 20];
-                let mut i = 20usize;
-                if n == 0 {
-                    i -= 1;
-                    buf[i] = b'0';
-                } else {
-                    while n > 0 {
-                        i -= 1;
-                        buf[i] = b'0' + (n % 10) as u8;
-                        n /= 10;
-                    }
-                }
-                crate::serial_aarch64::raw_serial_str(&buf[i..]);
-                crate::serial_aarch64::raw_serial_str(b", max peer = ");
-                let mut n = max_peer;
-                let mut buf = [0u8; 20];
-                let mut i = 20usize;
-                if n == 0 {
-                    i -= 1;
-                    buf[i] = b'0';
-                } else {
-                    while n > 0 {
-                        i -= 1;
-                        buf[i] = b'0' + (n % 10) as u8;
-                        n /= 10;
-                    }
-                }
-                crate::serial_aarch64::raw_serial_str(&buf[i..]);
-                crate::serial_aarch64::raw_serial_str(
-                    b"\nSee docs/planning/cpu0-user-guard-autopsy/README.md\n",
-                );
-                panic!(
-                    "CPU0 timer regression: tick_count={} but peer max={}; \
-                     read docs/planning/cpu0-user-guard-autopsy/README.md \
-                     before touching anything",
-                    cpu0, max_peer
-                );
+                report_cpu0_regression(cpu0, max_peer);
             }
         }
     }
@@ -947,53 +905,6 @@ fn dump_gic_state() {
     }
 }
 
-/// Raw serial output - no locks, single char for debugging (used by print_timer_count)
-#[inline(always)]
-fn raw_serial_char(c: u8) {
-    crate::serial_aarch64::raw_serial_char(c);
-}
-
-/// Raw serial output - write a string without locks for debugging
-#[allow(dead_code)] // Debug utility, kept for future use
-#[inline(always)]
-fn raw_serial_str(s: &[u8]) {
-    crate::serial_aarch64::raw_serial_str(s);
-}
-
-/// Print a decimal number using raw serial output
-/// Used by timer interrupt handler to output [TIMER_COUNT:N] markers
-#[allow(dead_code)] // Debug utility, kept for future use
-fn print_timer_count_decimal(count: u64) {
-    if count == 0 {
-        raw_serial_char(b'0');
-    } else {
-        // Convert to decimal digits (max u64 is 20 digits)
-        let mut digits = [0u8; 20];
-        let mut n = count;
-        let mut i = 0;
-        while n > 0 {
-            digits[i] = (n % 10) as u8 + b'0';
-            n /= 10;
-            i += 1;
-        }
-        // Print in reverse order
-        while i > 0 {
-            i -= 1;
-            raw_serial_char(digits[i]);
-        }
-    }
-}
-
-/// Print a u64 as 16-char zero-padded hexadecimal using raw serial output.
-#[allow(dead_code)] // Debug utility for soft lockup dumps
-fn print_hex_u64(val: u64) {
-    const HEX: [u8; 16] = *b"0123456789abcdef";
-    // Print 16 hex digits (big-endian nibble order)
-    for i in (0..16).rev() {
-        raw_serial_char(HEX[((val >> (i * 4)) & 0xF) as usize]);
-    }
-}
-
 /// Check for soft lockup (CPU 0 only, called from timer interrupt).
 ///
 /// Compares the current liveness counters against their last observed values.
@@ -1065,6 +976,32 @@ fn check_soft_lockup(cpu0_tick: u64) {
     }
 }
 
+// The timer is not yet acknowledged or rearmed here, so the breadcrumb is
+// skipped rather than wait while another CPU owns the UART.
+#[cold]
+#[inline(never)]
+fn emit_tick_breadcrumb(count: u64) {
+    crate::serial_line::try_write(&[b'T', b'0' + (count % 10) as u8]);
+}
+
+#[cold]
+#[inline(never)]
+fn report_cpu0_regression(cpu0: u64, max_peer: u64) -> ! {
+    let mut line = crate::serial_line::Line::new();
+    line.bytes(b"\n!!! CPU0 REGRESSION ALARM !!!\n");
+    line.bytes(b"CPU0 tick_count = ");
+    line.dec(cpu0);
+    line.bytes(b", max peer = ");
+    line.dec(max_peer);
+    line.bytes(b"\nSee docs/planning/cpu0-user-guard-autopsy/README.md\n");
+    panic!(
+        "CPU0 timer regression: tick_count={} but peer max={}; \
+         read docs/planning/cpu0-user-guard-autopsy/README.md \
+         before touching anything",
+        cpu0, max_peer
+    );
+}
+
 /// Dump diagnostic state when a soft lockup is detected.
 ///
 /// The report is five raw string writes -- an opening banner, the stalled
@@ -1095,16 +1032,21 @@ fn check_soft_lockup(cpu0_tick: u64) {
 #[cold]
 #[inline(never)]
 fn dump_lockup_state(stall_ticks: u64) {
-    raw_serial_str(b"\n\n!!! SOFT LOCKUP DETECTED !!!\n");
-    raw_serial_str(b"No watchdog progress for ~");
-    print_timer_count_decimal(stall_ticks / TARGET_TIMER_HZ);
-    raw_serial_str(b" seconds (");
-    print_timer_count_decimal(stall_ticks);
-    raw_serial_str(b" ticks)\n");
-
+    emit_lockup_progress(stall_ticks);
     crate::capture::emit(crate::capture::Edge::Lockup, stall_ticks, TARGET_TIMER_HZ);
+    crate::serial_line::Line::new().bytes(b"!!! END SOFT LOCKUP DUMP !!!\n\n");
+}
 
-    raw_serial_str(b"!!! END SOFT LOCKUP DUMP !!!\n\n");
+#[cold]
+#[inline(never)]
+fn emit_lockup_progress(stall_ticks: u64) {
+    let mut line = crate::serial_line::Line::new();
+    line.bytes(b"\n\n!!! SOFT LOCKUP DETECTED !!!\n");
+    line.bytes(b"No watchdog progress for ~");
+    line.dec(stall_ticks / TARGET_TIMER_HZ);
+    line.bytes(b" seconds (");
+    line.dec(stall_ticks);
+    line.bytes(b" ticks)\n");
 }
 
 /// The detector's real threshold, readable by the `capture_lockup_oracle`

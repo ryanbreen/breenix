@@ -13,31 +13,37 @@
 //! Level 1: SCHEDULER       (kernel/src/task/scheduler.rs)     — highest priority
 //! Level 2: PROCESS_MANAGER (kernel/src/process/mod.rs)
 //! Level 3: STDIN_BUFFER / BLOCKED_READERS (kernel/src/ipc/stdin.rs)
-//! Level 4: SERIAL1         (kernel/src/serial_aarch64.rs)     — lowest priority
+//! Level 4: SERIAL1         (kernel/src/serial.rs, x86_64)     — lowest priority
 //! ```
 //!
-//! ## Key Rules
+//! ## Serial output on aarch64
+//!
+//! Aarch64 serial output takes no lock. Every writer goes through
+//! `crate::serial_line`, which owns the UART only while a record's bytes are
+//! written, with IRQs masked, and is reentrant on the owning CPU, so output is
+//! safe while holding SCHEDULER or PROCESS_MANAGER and from interrupt context.
+//! The rules below are about the x86_64 SERIAL1 lock.
+//!
+//! ## Key Rules (x86_64)
 //!
 //! - **Never acquire SERIAL1 while holding SCHEDULER or PROCESS_MANAGER.**
 //!   This means no `serial_println!`, `log_serial_println!`, or `write_byte()`
-//!   calls from code that holds the scheduler lock. Use `raw_uart_char()` /
-//!   `raw_uart_str()` from `serial_aarch64.rs` or `context_switch.rs` for
-//!   lock-free debug output instead.
+//!   calls from code that holds the scheduler lock. Use `raw_serial_char()` /
+//!   `raw_serial_str()` from `interrupts/context_switch.rs` for lock-free
+//!   debug output instead.
 //!
 //! - **Never acquire SCHEDULER while holding SERIAL1.** Timer interrupts that
-//!   fire while SERIAL1 is held must not try to acquire SCHEDULER. On ARM64,
-//!   `write_byte()` and `_print()` disable interrupts before acquiring SERIAL1
-//!   to prevent this.
+//!   fire while SERIAL1 is held must not try to acquire SCHEDULER.
 //!
 //! - **IRQ context must use lock-free output.** Interrupt handlers (keyboard,
-//!   timer, UART RX) must use `raw_serial_char()` / `raw_serial_str()` or the
-//!   lock-free `raw_uart_char()` / `raw_uart_str()` for any diagnostic output.
-//!   They must never call `serial_println!` or `crate::serial::write_byte()`.
+//!   timer, UART RX) must use `raw_serial_char()` / `raw_serial_str()` for any
+//!   diagnostic output. They must never call `serial_println!` or
+//!   `crate::serial::write_byte()`.
 //!
 //! ## Rationale
 //!
-//! On ARM64 SMP, there is a single PL011 UART shared by all CPUs. If CPU 0
-//! holds SERIAL1 (via `serial_println!`) and CPU 1 holds SCHEDULER, then:
+//! With a serial lock shared by all CPUs, if CPU 0 holds SERIAL1 (via
+//! `serial_println!`) and CPU 1 holds SCHEDULER, then:
 //! - CPU 0's timer interrupt tries to acquire SCHEDULER → spins on CPU 1
 //! - CPU 1 tries to log via `serial_println!` → spins on SERIAL1 held by CPU 0
 //! - Classic ABBA deadlock.
@@ -1777,7 +1783,8 @@ pub(crate) fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, 
 /// Dump the cpu_state change history for a CPU (debug utility).
 #[cfg(target_arch = "aarch64")]
 pub fn dump_cpu_state_history(cpu: usize) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+    let mut line = crate::serial_line::Line::new();
+
     if cpu >= MAX_CPUS {
         return;
     }
@@ -1792,28 +1799,28 @@ pub fn dump_cpu_state_history(cpu: usize) {
     } else {
         total - HISTORY_SIZE
     };
-    raw_uart_str("  cpu_state_history[");
-    raw_uart_dec(cpu as u64);
-    raw_uart_str("] (last ");
-    raw_uart_dec(count as u64);
-    raw_uart_str(" of ");
-    raw_uart_dec(total as u64);
-    raw_uart_str("):\n");
+    line.text("  cpu_state_history[");
+    line.dec(cpu as u64);
+    line.text("] (last ");
+    line.dec(count as u64);
+    line.text(" of ");
+    line.dec(total as u64);
+    line.text("):\n");
     for i in 0..count {
         let slot = (start + i) % HISTORY_SIZE;
         let base = slot * 3;
         let setter = CPU_STATE_HISTORY[cpu][base].load(core::sync::atomic::Ordering::Relaxed);
         let old = CPU_STATE_HISTORY[cpu][base + 1].load(core::sync::atomic::Ordering::Relaxed);
         let new = CPU_STATE_HISTORY[cpu][base + 2].load(core::sync::atomic::Ordering::Relaxed);
-        raw_uart_str("    [");
-        raw_uart_dec((start + i) as u64);
-        raw_uart_str("] setter=");
-        raw_uart_dec(setter);
-        raw_uart_str(" ");
-        raw_uart_dec(old);
-        raw_uart_str("->");
-        raw_uart_dec(new);
-        raw_uart_str("\n");
+        line.text("    [");
+        line.dec((start + i) as u64);
+        line.text("] setter=");
+        line.dec(setter);
+        line.text(" ");
+        line.dec(old);
+        line.text("->");
+        line.dec(new);
+        line.text("\n");
     }
 }
 
@@ -4766,15 +4773,16 @@ impl Scheduler {
             // tid and its home CPU are on the line because "something got held"
             // is not actionable and "this worker's home stopped dispatching"
             // is.
-            crate::tracing::output::raw_serial_str("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=");
-            crate::tracing::output::raw_serial_dec(thread_id);
-            crate::tracing::output::raw_serial_str(":home=");
-            crate::tracing::output::raw_serial_dec(home as u64);
-            crate::tracing::output::raw_serial_str(":cpu=");
-            crate::tracing::output::raw_serial_dec(Self::current_cpu_id() as u64);
-            crate::tracing::output::raw_serial_str(":count=");
-            crate::tracing::output::raw_serial_dec(holds);
-            crate::tracing::output::raw_serial_str("]\r\n");
+            let mut line = crate::tracing::output::Line::new();
+            line.text("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=");
+            line.dec(thread_id);
+            line.text(":home=");
+            line.dec(home as u64);
+            line.text(":cpu=");
+            line.dec(Self::current_cpu_id() as u64);
+            line.text(":count=");
+            line.dec(holds);
+            line.text("]\r\n");
         }
     }
 
