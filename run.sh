@@ -130,6 +130,14 @@ while [[ $# -gt 0 ]]; do
             RESOLUTION="$2"
             shift 2
             ;;
+        --serial-log)
+            SERIAL_LOG_OVERRIDE="$2"
+            shift 2
+            ;;
+        --retina)
+            RETINA=true
+            shift
+            ;;
         --headless|--serial)
             HEADLESS=true
             shift
@@ -157,6 +165,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --ahci                     Use AHCI (SATA) disk instead of virtio-blk (ARM64)"
             echo "  --no-audio                 Disable audio entirely (default: coreaudio output on)"
             echo "  --debug                    Enable GDB stub (port 1234) for debugging"
+            echo "  --serial-log PATH          Parallels/VMware: write the VM's serial output to PATH"
+            echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
             echo "  -h, --help                 Show this help"
@@ -212,7 +222,7 @@ if [ "$PARALLELS" = true ]; then
     fi
 
     PARALLELS_DIR="$BREENIX_ROOT/target/parallels"
-    SERIAL_LOG="/tmp/breenix-parallels-serial.log"
+    SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-parallels-serial.log}"
     HDD_DIR="$PARALLELS_DIR/breenix-efi.hdd"
     EXT2_HDD_DIR="$PARALLELS_DIR/breenix-ext2.hdd"
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
@@ -421,7 +431,12 @@ if [ "$PARALLELS" = true ]; then
     # VirtIO GPU with 3D acceleration (required for VirGL)
     prlctl set "$PARALLELS_VM" --3d-accelerate highest 2>/dev/null || true
     prlctl set "$PARALLELS_VM" --videosize 2048 2>/dev/null || true
-    prlctl set "$PARALLELS_VM" --high-resolution on 2>/dev/null || true
+    # Scaled by default: each guest pixel is two Retina pixels, so the boot screen is readable.
+    if [ "${RETINA:-false}" = true ]; then
+        prlctl set "$PARALLELS_VM" --high-resolution on 2>/dev/null || true
+    else
+        prlctl set "$PARALLELS_VM" --high-resolution off 2>/dev/null || true
+    fi
     prlctl set "$PARALLELS_VM" --vertical-sync on 2>/dev/null || true
 
     # Remove any default devices Parallels created (cdrom, hdd, serial) to avoid conflicts
@@ -564,7 +579,9 @@ if [ "$VMWARE" = true ]; then
     fi
 
     VMWARE_DIR="$BREENIX_ROOT/target/vmware"
-    SERIAL_LOG="/tmp/breenix-vmware-serial.log"
+    SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial.log}"
+    # Fusion's "Use full resolution for Retina display": off by default so the guest is scaled 2x.
+    if [ "${RETINA:-false}" = true ]; then VMWARE_NATIVE_RESOLUTION=TRUE; else VMWARE_NATIVE_RESOLUTION=FALSE; fi
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
     VM_MACHINES="$HOME/Virtual Machines.localized"
 
@@ -770,6 +787,7 @@ usb_xhci:6.deviceType = "mouse"
 usb_xhci:6.port = "6"
 
 svga.vramSize = "268435456"
+gui.fitGuestUsingNativeDisplayResolution = "${VMWARE_NATIVE_RESOLUTION}"
 mks.enable3d = "TRUE"
 
 vmci0.present = "TRUE"
