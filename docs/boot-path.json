@@ -24,6 +24,10 @@
     "desktop": {
       "title": "Desktop",
       "summary": "The production kernel runs /sbin/init desktop: the Breenix window manager (bwm) and a terminal in the VM window."
+    },
+    "program": {
+      "title": "Program",
+      "summary": "The production kernel runs /sbin/probe --run <path> as PID 1, which runs that one program, relays its output and shows a pass or fail verdict on screen."
     }
   },
   "milestones": [
@@ -234,6 +238,16 @@
           {
             "name": "init desktop services started",
             "marker": "[init] desktop services started"
+          }
+        ],
+        "program": [
+          {
+            "name": "Program started",
+            "marker": "RUN /"
+          },
+          {
+            "name": "Program passed",
+            "marker": " DONE PASS"
           }
         ],
         "probe": [

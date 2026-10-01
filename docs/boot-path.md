@@ -27,7 +27,7 @@ stage list and shown alongside, but does not block moving on.
 
 ## Boot modes
 
-`scripts/boot-interactive.sh --mode MODE` boots the same disk four ways (`modes` in
+`scripts/boot-interactive.sh --mode MODE` boots the same disk five ways (`modes` in
 `boot-path.json`):
 
 - `tests` (default): the testing kernel and its test loader. This is the gate above.
@@ -37,15 +37,46 @@ stage list and shown alongside, but does not block moving on.
   console you can type into.
 - `desktop`: the production kernel runs `/sbin/init desktop`, the window manager and a
   terminal in the VM window (`--no-display` keeps it headless).
+- `program`: the production kernel runs `/sbin/probe --run PATH` as PID 1 (`--program PATH`,
+  an absolute guest path, passed as `-fw_cfg name=opt/breenix/program,string=PATH`). Probe
+  runs that one program, relays its output, and prints `RUN PATH START`, `RUN PATH EXIT <code>`
+  (or `SIGNAL <n>`) and `RUN PATH DONE PASS|FAIL <reason>`. It passes when the program exits 0
+  and printed no line containing `FAIL`; one running past 60 seconds is killed and fails.
 
 The non-test modes build the kernel with no features, exactly like the prod-profile gate,
 and pass the mode to it with `-fw_cfg name=opt/breenix/mode,string=MODE`. The kernel
-prints `[boot] Boot mode: MODE` for the mode that runs: `default` when none is given,
-which runs `/sbin/init` with no arguments, as before. An unknown mode, or any mode given
-to the testing kernel, also runs `default`, and the kernel notes the ignored request on
-its own line. A mode's stages for a milestone are `stages[MODE]` when
-present, else `stages["aarch64"]` when the milestone has `"kernel": true`; otherwise the
-mode does not exercise that milestone.
+prints `[boot] Boot mode: MODE` for the mode that runs (`program PATH` in program mode):
+`default` when none is given, which runs `/sbin/init` with no arguments, as before. An
+unknown mode, any mode given to the testing kernel, or program mode without an absolute
+program path also runs `default`, and the kernel notes the ignored request on its own
+line. A mode's stages for a milestone are `stages[MODE]` when present, else
+`stages["aarch64"]` when the milestone has `"kernel": true`; otherwise the mode does not
+exercise that milestone.
+
+## Watching a boot
+
+The VM screen shows the boot, not the log. As soon as the framebuffer exists the kernel
+draws a boot screen: "Breenix", the boot mode, a progress bar, and the kernel stages of
+milestones 1-5 ticking in, ending in "Starting PID 1" with the program it starts. A
+testing kernel shows "Loading test programs N of M: NAME" while its loader runs, so a hang
+names the program it stopped on. When PID 1 draws for the first time the screen is
+handed over to it: `/sbin/probe` draws its checklist, `probe --run` its program panel
+(output, elapsed time, verdict). If PID 1 never draws, the boot screen stays up. A kernel
+panic or fatal EL1 fault replaces whatever is on screen with a red diagnostics screen: the
+message or fault, the boot stage, and the last 20 log lines. Serial output is unchanged;
+every log line still goes there.
+
+- `--display` opens the screen in a window.
+- `--qmp SOCKET` opens a QMP socket; `scripts/qmp-screendump.py SOCKET out.png` saves the
+  screen at that moment, with or without `--display`.
+- `--fbconsole log` draws the kernel log on screen instead of the boot screen (kernel lines
+  only, not userspace output).
+
+```bash
+scripts/boot-interactive.sh --mode program --program /usr/local/test/bin/argv_test \
+    --qmp "$TMPDIR/breenix.qmp" --idle-exit 30 < /dev/null &
+sleep 40; scripts/qmp-screendump.py "$TMPDIR/breenix.qmp" "$TMPDIR/screen.png"
+```
 
 ## Focus and backtracking
 
