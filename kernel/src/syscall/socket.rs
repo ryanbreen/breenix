@@ -980,7 +980,7 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
         };
 
         // Check O_NONBLOCK status flag
-        let nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+        let nonblocking = (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
 
         // Determine listener type
         let lt = match &fd_entry.kind {
@@ -1425,7 +1425,7 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         };
 
         // Check O_NONBLOCK status flag
-        let nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+        let nonblocking = (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
 
         // Handle connect based on socket type
         match &fd_entry.kind {

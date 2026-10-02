@@ -318,17 +318,17 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 /// with `EBADF`; ours returned success and told the caller nothing (#670).
 ///
 /// Returns `Err(EBADF)` only when the caller has a process context whose
-/// descriptor table has no such entry. Kernel threads have no descriptor table
-/// at all, so they keep whatever fallback their handler already applied.
+/// descriptor table has no such entry, or the entry is a regular file whose
+/// open file description lacks the access the transfer needs (`write` says
+/// which), as the ordinary path refuses it. Kernel threads have no descriptor
+/// table at all, so they keep whatever fallback their handler already applied.
 ///
 /// A regular file not opened for the transfer's direction (`for_write`) fails
 /// with `EBADF` too, as the ordinary path does.
 ///
 /// This runs only on the degenerate path. The ordinary path already performs
 /// the same lookup, so no non-degenerate call gains work.
-fn validate_fd_for_degenerate_transfer(fd: i32, for_write: bool) -> Result<(), u64> {
-    use crate::ipc::FdKind;
-
+pub(crate) fn validate_fd_for_degenerate_transfer(fd: i32, write: bool) -> Result<(), u64> {
     let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
         return Ok(());
     };
@@ -340,19 +340,12 @@ fn validate_fd_for_degenerate_transfer(fd: i32, for_write: bool) -> Result<(), u
         let Some((_pid, process)) = manager.find_process_by_thread(thread_id) else {
             return Ok(());
         };
-        match process.fd_table.get(fd).map(|entry| &entry.kind) {
-            Some(FdKind::RegularFile(file)) => {
-                let file = file.lock();
-                let permitted = if for_write {
-                    file.writable()
-                } else {
-                    file.readable()
-                };
-                if permitted {
-                    Ok(())
-                } else {
-                    Err(super::errno::EBADF as u64)
-                }
+        match process.fd_table.get(fd) {
+            Some(entry)
+                if matches!(entry.kind, crate::ipc::FdKind::RegularFile(_))
+                    && !(if write { entry.writable() } else { entry.readable() }) =>
+            {
+                Err(super::errno::EBADF as u64)
             }
             Some(_) => Ok(()),
             None => Err(super::errno::EBADF as u64),
@@ -416,6 +409,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         },
         RegularFile {
             file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>>,
+            append: bool,
         },
         TcpConnection {
             conn_id: crate::net::tcp::ConnectionId,
@@ -460,13 +454,13 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
             FdKind::PipeWrite(pipe_buffer) => WriteOperation::Pipe {
                 pipe_buffer: pipe_buffer.clone(),
-                is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK)
+                is_nonblocking: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
             },
             FdKind::PipeRead(_) => WriteOperation::Ebadf,
             FdKind::FifoWrite(_path, pipe_buffer) => WriteOperation::Fifo {
                 pipe_buffer: pipe_buffer.clone(),
-                is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK)
+                is_nonblocking: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
             },
             FdKind::FifoRead(_, _) => WriteOperation::Ebadf,
@@ -476,15 +470,17 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp, // UDP must use sendto
             FdKind::UnixStream(socket) => WriteOperation::UnixStream {
                 socket: socket.clone(),
-                is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK)
+                is_nonblocking: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
             },
             FdKind::UnixSocket(_) => WriteOperation::Enotconn, // Unconnected Unix socket
             FdKind::UnixListener(_) => WriteOperation::Enotconn, // Listener can't write
-            FdKind::RegularFile(file) if file.lock().writable() => {
-                WriteOperation::RegularFile { file: file.clone() }
-            }
-            FdKind::RegularFile(_) => WriteOperation::Ebadf, // not open for writing
+            // A description opened O_RDONLY is not writable (EBADF).
+            FdKind::RegularFile(_) if !fd_entry.writable() => WriteOperation::Ebadf,
+            FdKind::RegularFile(file) => WriteOperation::RegularFile {
+                file: file.clone(),
+                append: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND) != 0,
+            },
             FdKind::Directory(_) => WriteOperation::Eisdir,
             FdKind::Device(device_type) => WriteOperation::Device {
                 device_type: device_type.clone(),
@@ -581,14 +577,13 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
         }
-        WriteOperation::RegularFile { file } => {
+        WriteOperation::RegularFile { file, append } => {
             // Write to ext2 regular file
-            let (inode_num, position, flags, file_mount_id) = {
+            let (inode_num, position, file_mount_id) = {
                 let file_guard = file.lock();
                 (
                     file_guard.inode_num,
                     file_guard.position,
-                    file_guard.flags,
                     file_guard.mount_id,
                 )
             };
@@ -602,7 +597,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
                 };
-                let wo = if (flags & crate::syscall::fs::O_APPEND) != 0 {
+                let wo = if append {
                     match fs.read_inode(inode_num as u32) {
                         Ok(inode) => inode.size(),
                         Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
@@ -621,7 +616,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
                 };
-                let wo = if (flags & crate::syscall::fs::O_APPEND) != 0 {
+                let wo = if append {
                     match fs.read_inode(inode_num as u32) {
                         Ok(inode) => inode.size(),
                         Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
@@ -876,7 +871,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::PipeRead(pipe_buffer) => {
             // Check O_NONBLOCK status flag
             let is_nonblocking =
-                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let pipe_buffer_clone = pipe_buffer.clone();
 
             // CRITICAL: Release process manager lock before potentially blocking!
@@ -1024,7 +1019,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::FifoRead(_path, pipe_buffer) => {
             // FIFO read - with blocking support
             let is_nonblocking =
-                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let pipe_buffer_clone = pipe_buffer.clone();
 
             // CRITICAL: Release process manager lock before blocking!
@@ -1174,6 +1169,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             log::error!("sys_read: Cannot read from UDP socket, use recvfrom instead");
             SyscallResult::Err(95) // EOPNOTSUPP
         }
+        // A description opened O_WRONLY is not readable (EBADF).
+        FdKind::RegularFile(_) if !fd_entry.readable() => SyscallResult::Err(9),
         FdKind::RegularFile(file_ref) => {
             // Read from ext2 regular file.
             //
@@ -1184,9 +1181,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let file_ref_owned = file_ref.clone();
             let (inode_num, position, file_mount_id) = {
                 let file = file_ref.lock();
-                if !file.readable() {
-                    return SyscallResult::Err(super::errno::EBADF as u64);
-                }
                 (file.inode_num, file.position, file.mount_id)
             };
             // Release PM lock now — disk I/O below needs IRQs enabled.
@@ -1273,7 +1267,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Read from devfs device (/dev/null, /dev/zero, /dev/console, /dev/tty)
             let device_type = *device_type;
             let is_nonblocking =
-                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
             let mut user_buf = alloc::vec![0u8; count as usize];
             let result = match device_type {
@@ -1319,7 +1313,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Clone conn_id and capture flags before dropping manager_guard
             let conn_id = *conn_id;
             let is_nonblocking =
-                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
 
             let mut user_buf = alloc::vec![0u8; count as usize];
@@ -1459,7 +1453,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Read from PTY master (slave's output) with blocking support
             let pty_num = *pty_num;
             let is_nonblocking =
-                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let pair = match crate::tty::pty::get(pty_num) {
                 Some(p) => p,
                 None => {
@@ -1557,7 +1551,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Read from PTY slave (from line discipline output) with blocking support
             let pty_num = *pty_num;
             let is_nonblocking =
-                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let pair = match crate::tty::pty::get(pty_num) {
                 Some(p) => p,
                 None => {
@@ -1654,7 +1648,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::UnixStream(socket_ref) => {
             // Read from Unix stream socket
             let is_nonblocking =
-                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let socket_clone = socket_ref.clone();
 
             // Drop manager guard before potentially blocking
@@ -3784,7 +3778,34 @@ fn complete_wait(
 ///
 /// Returns: new_fd on success, negative error code on failure
 pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
-    log::debug!("sys_dup2: old_fd={}, new_fd={}", old_fd, new_fd);
+    dup_to(old_fd, new_fd, false)
+}
+
+/// sys_dup3 - dup2 with flags
+///
+/// dup3(old_fd, new_fd, flags) is dup2 except that `flags` may hold only
+/// O_CLOEXEC, which sets FD_CLOEXEC on new_fd, and old_fd == new_fd is EINVAL
+/// rather than a no-op.
+///
+/// Returns: new_fd on success, negative error code on failure
+pub fn sys_dup3(old_fd: u64, new_fd: u64, flags: u64) -> SyscallResult {
+    use crate::ipc::fd::status_flags::O_CLOEXEC;
+
+    if flags & !(O_CLOEXEC as u64) != 0 || old_fd == new_fd {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    dup_to(old_fd, new_fd, flags & O_CLOEXEC as u64 != 0)
+}
+
+/// Shared body of dup2 and dup3: duplicate old_fd onto new_fd, closing what
+/// new_fd held, with FD_CLOEXEC on new_fd set only when `set_cloexec`.
+fn dup_to(old_fd: u64, new_fd: u64, set_cloexec: bool) -> SyscallResult {
+    log::debug!(
+        "sys_dup2: old_fd={}, new_fd={}, cloexec={}",
+        old_fd,
+        new_fd,
+        set_cloexec
+    );
 
     // Get current thread to find process
     let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -3812,7 +3833,9 @@ pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
     };
 
     // Call the fd_table's dup2 implementation
-    let duplicated = process.fd_table.dup2(old_fd as i32, new_fd as i32);
+    let duplicated = process
+        .fd_table
+        .dup2(old_fd as i32, new_fd as i32, set_cloexec);
     let lock_owner = process.lock_owner.id();
     drop(manager_guard);
     match duplicated {
@@ -4084,8 +4107,11 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
         else {
             return SyscallResult::Err(EBADF as u64);
         };
-        match process.fd_table.get(fd).map(|entry| &entry.kind) {
-            Some(FdKind::RegularFile(file)) => {
+        let Some(entry) = process.fd_table.get(fd) else {
+            return SyscallResult::Err(EBADF as u64);
+        };
+        match &entry.kind {
+            FdKind::RegularFile(file) => {
                 let file = file.lock();
                 (
                     process.lock_owner.id(),
@@ -4093,13 +4119,12 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
                         mount_id: file.mount_id,
                         inode: file.inode_num,
                     },
-                    file.flags & 3,
+                    entry.status_flags() & crate::ipc::fd::status_flags::O_ACCMODE,
                     file.position,
                 )
             }
             // A descriptor for anything but a regular file does not support locking.
-            Some(_) => return SyscallResult::Err(EINVAL as u64),
-            None => return SyscallResult::Err(EBADF as u64),
+            _ => return SyscallResult::Err(EINVAL as u64),
         }
     };
 
@@ -5308,11 +5333,11 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
             if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
                 if let Some(fd_entry) = process.fd_table.get(fd) {
                     match &fd_entry.kind {
+                        FdKind::RegularFile(_) if !fd_entry.readable() => {
+                            return Err(super::errno::EBADF as u64);
+                        }
                         FdKind::RegularFile(file_ref) => {
                             let file = file_ref.lock();
-                            if !file.readable() {
-                                return Err(super::errno::EBADF as u64);
-                            }
                             return Ok((file.inode_num, file.mount_id));
                         }
                         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
@@ -5404,11 +5429,11 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
             if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
                 if let Some(fd_entry) = process.fd_table.get(fd) {
                     match &fd_entry.kind {
+                        FdKind::RegularFile(_) if !fd_entry.writable() => {
+                            return Err(super::errno::EBADF as u64);
+                        }
                         FdKind::RegularFile(file_ref) => {
                             let file = file_ref.lock();
-                            if !file.writable() {
-                                return Err(super::errno::EBADF as u64);
-                            }
                             return Ok((file.inode_num, file.mount_id));
                         }
                         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {

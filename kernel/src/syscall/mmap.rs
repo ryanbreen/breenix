@@ -26,6 +26,18 @@ use crate::syscall::memory_common::{
 
 extern crate alloc;
 
+/// Whether `fd` is an open descriptor of the calling process.
+fn descriptor_is_open(fd: i32) -> bool {
+    let Some(thread_id) = get_current_thread_id() else {
+        return false;
+    };
+    let manager_guard = crate::process::manager();
+    manager_guard
+        .as_ref()
+        .and_then(|manager| manager.find_process_by_thread(thread_id))
+        .map_or(false, |(_pid, process)| process.fd_table.get(fd).is_some())
+}
+
 /// Syscall 9: mmap - Map memory into process address space
 ///
 /// Arguments:
@@ -57,6 +69,12 @@ pub fn sys_mmap(
         fd,
         offset
     );
+
+    // A file mapping names a descriptor, which is looked up before any other
+    // argument is checked: one that is not open is EBADF.
+    if !flags.contains(MmapFlags::ANONYMOUS) && !descriptor_is_open(fd as i32) {
+        return SyscallResult::Err(crate::syscall::errno::EBADF as u64);
+    }
 
     // Validate length
     if length == 0 {

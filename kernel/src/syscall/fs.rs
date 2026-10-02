@@ -486,7 +486,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     use super::errno::{EACCES, EISDIR, EMFILE, ENOENT, ENOTDIR};
     use super::userptr::copy_cstr_from_user;
     use crate::fs::ext2::{self, FileType as Ext2FileType};
-    use crate::ipc::fd::{DirectoryFile, RegularFile};
+    use crate::ipc::fd::{DirectoryFile, FileDescriptor, RegularFile};
     use alloc::sync::Arc;
     use spin::Mutex;
 
@@ -654,8 +654,9 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
             };
 
             // Allocate file descriptor for directory
-            let fd_kind = FdKind::Directory(Arc::new(Mutex::new(dir_file)));
-            match process.fd_table.alloc(fd_kind) {
+            let fd_entry =
+                FileDescriptor::opened(FdKind::Directory(Arc::new(Mutex::new(dir_file))), flags);
+            match process.fd_table.alloc_with_entry(fd_entry) {
                 Ok(fd) => {
                     log::info!(
                         "sys_open: opened directory {} as fd {} (inode {})",
@@ -697,7 +698,6 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
             inode_num: inode_num as u64,
             mount_id,
             position: 0,
-            flags,
         };
 
         // Get current process and allocate fd
@@ -724,9 +724,11 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
             }
         };
 
-        // Allocate file descriptor
-        let fd_kind = FdKind::RegularFile(Arc::new(Mutex::new(regular_file)));
-        match process.fd_table.alloc(fd_kind) {
+        // Allocate a descriptor for the new open file description, carrying
+        // its access mode, status flags and O_CLOEXEC from the open flags.
+        let fd_entry =
+            FileDescriptor::opened(FdKind::RegularFile(Arc::new(Mutex::new(regular_file))), flags);
+        match process.fd_table.alloc_with_entry(fd_entry) {
             Ok(fd) => {
                 log::info!(
                     "sys_open: opened {} as fd {} (inode {})",
@@ -805,10 +807,10 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
                 return SyscallResult::Err(5); // EIO
             }
         };
-        let new_position = file_size + offset;
-        if new_position < 0 {
-            return SyscallResult::Err(22); // EINVAL
-        }
+        let new_position = match file_size.checked_add(offset) {
+            Some(position) if position >= 0 => position,
+            _ => return SyscallResult::Err(22), // EINVAL
+        };
         let new_pos = new_position as u64;
         let _ = current_position; // not needed, position updated below
 
@@ -859,8 +861,13 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
         FdKind::RegularFile(file) => {
             let mut file = file.lock();
             let new_pos = match whence {
-                SEEK_SET => offset as u64,
-                SEEK_CUR => (file.position as i64 + offset) as u64,
+                SEEK_SET => Some(offset),
+                SEEK_CUR => (file.position as i64).checked_add(offset),
+                _ => return SyscallResult::Err(22), // EINVAL
+            };
+            // A resulting offset that is negative or overflows is EINVAL.
+            let new_pos = match new_pos {
+                Some(position) if position >= 0 => position as u64,
                 _ => return SyscallResult::Err(22), // EINVAL
             };
             file.position = new_pos;
@@ -2404,7 +2411,7 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 ///
 /// For directories (/proc, /proc/trace, /proc/[pid]), returns a ProcfsDirectory fd.
 /// For files, generates the content at open time and stores it in a ProcfsFile fd.
-fn handle_procfs_open(path: &str, _flags: u32) -> SyscallResult {
+fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
     use crate::ipc::fd::{FdKind, FileDescriptor};
 
     let normalized = path.trim_end_matches('/');
@@ -2425,7 +2432,7 @@ fn handle_procfs_open(path: &str, _flags: u32) -> SyscallResult {
             path: dir_path,
             position: 0,
         };
-        let fd_entry = FileDescriptor::new(fd_kind);
+        let fd_entry = FileDescriptor::opened(fd_kind, flags);
 
         let thread_id = match crate::task::scheduler::current_thread_id() {
             Some(id) => id,
@@ -2463,7 +2470,7 @@ fn handle_procfs_open(path: &str, _flags: u32) -> SyscallResult {
         content,
         position: 0,
     };
-    let fd_entry = FileDescriptor::new(fd_kind);
+    let fd_entry = FileDescriptor::opened(fd_kind, flags);
 
     // Get current process
     let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -2488,8 +2495,8 @@ fn handle_procfs_open(path: &str, _flags: u32) -> SyscallResult {
     }
 }
 
-/// * `flags` - Open flags. Forwarded to the /dev/pts path, which builds a real
-///   fd entry from them; the remaining device kinds still ignore them.
+/// * `flags` - Open flags. Every device descriptor records their access mode,
+///   status flags and O_CLOEXEC.
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
@@ -2497,12 +2504,6 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devfs;
     use crate::ipc::fd::FileDescriptor;
-
-    /// O_CLOEXEC as seen in an `open(2)` flags word. Same value/pattern as
-    /// the local const in `handle_devpts_open` (NB7: was a bare 0x80000
-    /// literal here; kept local rather than shared to match that function's
-    /// own precedent of a per-function const guard).
-    const O_CLOEXEC: u32 = 0x80000;
 
     log::debug!("handle_devfs_open: device_name={:?}", device_name);
 
@@ -2514,7 +2515,7 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
 
     // Check for /dev/pts directory itself
     if device_name == "pts" {
-        return handle_devpts_directory_open();
+        return handle_devpts_directory_open(flags);
     }
 
     // Look up the device in static devfs
@@ -2602,15 +2603,7 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
                     // /dev/tty opened O_NONBLOCK must read non-blocking too.
                     // Exercised on every production boot by the TTY oracle's
                     // `ctty` arm (arm 13), which drives exactly this branch.
-                    let entry = FileDescriptor::with_flags(
-                        FdKind::PtySlave(pty_num),
-                        if (flags & O_CLOEXEC) != 0 {
-                            crate::ipc::fd::flags::FD_CLOEXEC
-                        } else {
-                            0
-                        },
-                        flags & crate::ipc::fd::status_flags::O_NONBLOCK,
-                    );
+                    let entry = FileDescriptor::opened(FdKind::PtySlave(pty_num), flags);
                     return match proc2.fd_table.alloc_with_entry(entry) {
                         Ok(fd) => {
                             // #704 (found and fixed on feat/green-tty): this
@@ -2664,15 +2657,7 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
                 return SyscallResult::Err(3); // ESRCH
             }
         };
-        let fd_kind = FileDescriptor::with_flags(
-            FdKind::Device(device.device_type),
-            if flags & O_CLOEXEC != 0 {
-                crate::ipc::fd::flags::FD_CLOEXEC
-            } else {
-                0
-            },
-            flags & crate::ipc::fd::status_flags::O_NONBLOCK,
-        );
+        let fd_kind = FileDescriptor::opened(FdKind::Device(device.device_type), flags);
         return match process.fd_table.alloc_with_entry(fd_kind) {
             Ok(fd) => {
                 log::info!("handle_devfs_open: /dev/tty (no ctty) as fd {}", fd);
@@ -2683,15 +2668,7 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
     }
 
     // Allocate file descriptor with Device kind
-    let fd_kind = FileDescriptor::with_flags(
-        FdKind::Device(device.device_type),
-        if flags & O_CLOEXEC != 0 {
-            crate::ipc::fd::flags::FD_CLOEXEC
-        } else {
-            0
-        },
-        flags & crate::ipc::fd::status_flags::O_NONBLOCK,
-    );
+    let fd_kind = FileDescriptor::opened(FdKind::Device(device.device_type), flags);
     match process.fd_table.alloc_with_entry(fd_kind) {
         Ok(fd) => {
             log::info!(
@@ -2723,10 +2700,7 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
 fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devptsfs;
-    use crate::ipc::fd::{status_flags, FileDescriptor};
-
-    /// O_CLOEXEC as seen in an `open(2)` flags word.
-    const O_CLOEXEC: u32 = 0x80000;
+    use crate::ipc::fd::FileDescriptor;
 
     // Look up the PTY slave in devptsfs
     let pty_num = match devptsfs::lookup(pty_name) {
@@ -2759,16 +2733,7 @@ fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
 
     // Allocate file descriptor with PtySlave kind, carrying the caller's
     // status flags so a slave opened O_NONBLOCK actually reads non-blocking.
-    let fd_flags = if (flags & O_CLOEXEC) != 0 {
-        crate::ipc::fd::flags::FD_CLOEXEC
-    } else {
-        0
-    };
-    let entry = FileDescriptor::with_flags(
-        FdKind::PtySlave(pty_num),
-        fd_flags,
-        flags & status_flags::O_NONBLOCK,
-    );
+    let entry = FileDescriptor::opened(FdKind::PtySlave(pty_num), flags);
     match process.fd_table.alloc_with_entry(entry) {
         Ok(fd) => {
             // Increment slave reference count so master can detect hangup
@@ -2784,8 +2749,9 @@ fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
 /// Handle opening the /dev/pts directory itself
 ///
 /// Returns a directory fd that can be used with getdents64 to list PTY slaves.
-fn handle_devpts_directory_open() -> SyscallResult {
+fn handle_devpts_directory_open(flags: u32) -> SyscallResult {
     use super::errno::EMFILE;
+    use crate::ipc::fd::FileDescriptor;
 
     log::debug!("handle_devpts_directory_open: opening /dev/pts directory");
 
@@ -2817,8 +2783,8 @@ fn handle_devpts_directory_open() -> SyscallResult {
     };
 
     // Allocate file descriptor with DevptsDirectory kind
-    let fd_kind = FdKind::DevptsDirectory { position: 0 };
-    match process.fd_table.alloc(fd_kind) {
+    let fd_entry = FileDescriptor::opened(FdKind::DevptsDirectory { position: 0 }, flags);
+    match process.fd_table.alloc_with_entry(fd_entry) {
         Ok(fd) => {
             log::info!("handle_devpts_directory_open: opened /dev/pts as fd {}", fd);
             SyscallResult::Ok(fd as u64)
@@ -2836,8 +2802,9 @@ fn handle_devpts_directory_open() -> SyscallResult {
 ///
 /// # Arguments
 /// * `_flags` - Open flags (O_DIRECTORY expected)
-fn handle_devfs_directory_open(_flags: u32) -> SyscallResult {
+fn handle_devfs_directory_open(flags: u32) -> SyscallResult {
     use super::errno::EMFILE;
+    use crate::ipc::fd::FileDescriptor;
 
     log::debug!("handle_devfs_directory_open: opening /dev directory");
 
@@ -2869,8 +2836,8 @@ fn handle_devfs_directory_open(_flags: u32) -> SyscallResult {
     };
 
     // Allocate file descriptor with DevfsDirectory kind
-    let fd_kind = FdKind::DevfsDirectory { position: 0 };
-    match process.fd_table.alloc(fd_kind) {
+    let fd_entry = FileDescriptor::opened(FdKind::DevfsDirectory { position: 0 }, flags);
+    match process.fd_table.alloc_with_entry(fd_entry) {
         Ok(fd) => {
             log::info!("handle_devfs_directory_open: opened /dev as fd {}", fd);
             SyscallResult::Ok(fd as u64)
@@ -3743,10 +3710,7 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
                 FdKind::FifoRead(String::from(path), buffer)
             };
 
-            let mut fd_entry = FileDescriptor::new(kind);
-            if nonblock {
-                fd_entry.status_flags |= status_flags::O_NONBLOCK;
-            }
+            let fd_entry = FileDescriptor::opened(kind, flags);
 
             // Allocate fd in current process
             let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -3905,10 +3869,7 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
                         FdKind::FifoRead(path_owned.clone(), buffer)
                     };
 
-                    let mut fd_entry = FileDescriptor::new(kind);
-                    if nonblock {
-                        fd_entry.status_flags |= status_flags::O_NONBLOCK;
-                    }
+                    let fd_entry = FileDescriptor::opened(kind, flags);
 
                     let mut manager_guard = crate::process::manager();
                     let manager = match manager_guard.as_mut() {

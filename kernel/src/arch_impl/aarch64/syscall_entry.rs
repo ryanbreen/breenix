@@ -654,7 +654,7 @@ fn dispatch_syscall_enum(
             arg3,
             arg4,
         )),
-        SyscallNumber::Dup3 => result_to_u64(crate::syscall::handlers::sys_dup2(arg1, arg2)), // dup3 with flags=0 is dup2
+        SyscallNumber::Dup3 => result_to_u64(crate::syscall::handlers::sys_dup3(arg1, arg2, arg3)),
         SyscallNumber::Pselect6 => result_to_u64(crate::syscall::handlers::sys_select(
             arg1 as i32,
             arg2,

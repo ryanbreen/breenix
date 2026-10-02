@@ -62,7 +62,7 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
                 crate::ipc::FdKind::PipeWrite(buffer)
                 | crate::ipc::FdKind::FifoWrite(_, buffer) => Some((
                     buffer.clone(),
-                    entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK != 0,
+                    entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK != 0,
                 )),
                 _ => None,
             }
