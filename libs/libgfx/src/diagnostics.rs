@@ -60,16 +60,21 @@ fn line(fb: &mut FrameBuf, text: &str, x: i32, y: i32, width: i32, color: Color,
 /// and no more than there are groups, so a lone group spans the width), then the recent
 /// output across the full width. It draws at double size whenever the groups still fit
 /// that way. When the groups do not fit above the verdict bar with two-line check cards,
-/// the cards drop to one line (a failure keeps its reason, after the name); if they still
-/// do not fit, the cards that would reach the bar are left out and a line says so.
+/// the cards drop to one line (a failure keeps its reason, after the name). If they still
+/// do not fit, each group longer than the space allows shows a window of its checks --
+/// the running check, then failures, then the checks nearest the running one (or the
+/// last one finished), so the window follows the run -- and a last row counting the
+/// checks it leaves out. Only if even the group headings do not fit are whole groups
+/// left out, with a line saying so.
 pub fn draw(fb: &mut FrameBuf, panel: &Panel<'_>) {
     let width = fb.width as i32;
     let height = fb.height as i32;
     if width < 160 || height < 120 { return; }
-    let fits = |s: i32, cards: Cards, room_for_output: bool| {
-        layout_groups(None, panel, s, cards, width, i32::MAX).0
+    let fits_capped = |s: i32, cards: Cards, room_for_output: bool, cap: usize| {
+        layout_groups(None, panel, s, cards, width, i32::MAX, cap).0
             <= bottom(height, s, room_for_output)
     };
+    let fits = |s: i32, cards: Cards, room_for_output: bool| fits_capped(s, cards, room_for_output, usize::MAX);
     let (s, cards) = if width >= 960 && fits(2, Cards::Full, !panel.output.is_empty()) {
         (2, Cards::Full)
     } else if fits(1, Cards::Full, false) {
@@ -89,13 +94,28 @@ pub fn draw(fb: &mut FrameBuf, panel: &Panel<'_>) {
 
     let body_bottom = bottom(height, s, false);
     let line_height = 11 * s;
-    let mut y = if fits(s, cards, false) {
-        layout_groups(Some(&mut *fb), panel, s, cards, width, body_bottom).0
+    // The most checks a group may show (its window, the last row counting the rest)
+    // so that every group fits; at least two, the running check and that row.
+    let longest = panel.groups.iter().map(|group| group.checks.len()).max().unwrap_or(0);
+    let cap = if fits(s, cards, false) {
+        Some(usize::MAX)
+    } else if longest >= 2 && fits_capped(s, cards, false, 2) {
+        let (mut low, mut high) = (2, longest);
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            if fits_capped(s, cards, false, mid) { low = mid; } else { high = mid - 1; }
+        }
+        Some(low)
+    } else {
+        None
+    };
+    let mut y = if let Some(cap) = cap {
+        layout_groups(Some(&mut *fb), panel, s, cards, width, body_bottom, cap).0
     } else {
         // Keep the last body line for a note about the checks left out.
         let limit = body_bottom - line_height;
         let (groups_bottom, hidden) =
-            layout_groups(Some(&mut *fb), panel, s, cards, width, limit);
+            layout_groups(Some(&mut *fb), panel, s, cards, width, limit, 2);
         if hidden > 0 {
             line(fb, "NOT ALL CHECKS FIT ON SCREEN", margin, limit, text_width, HEADING, s as usize);
             body_bottom
@@ -253,17 +273,19 @@ fn bottom(height: i32, s: i32, room_for_output: bool) -> i32 {
 /// The height of a group's title, and of its progress bar when `scored`, at scale 1.
 fn heading_height(scored: bool) -> i32 { if scored { 22 } else { 13 } }
 
-fn group_height(group: &Group<'_>, s: i32, cards: Cards, scored: bool) -> i32 {
-    (heading_height(scored) + group.checks.len() as i32 * cards.size().1 + 8) * s
+/// A group's height when it shows at most `cap` rows of checks.
+fn group_height(group: &Group<'_>, s: i32, cards: Cards, scored: bool, cap: usize) -> i32 {
+    (heading_height(scored) + group.checks.len().min(cap) as i32 * cards.size().1 + 8) * s
 }
 
 /// Lay the panel's groups out below the banner (and the score, when scored) at scale
 /// `s`: in order, down one column and on to the next, splitting them so the tallest
-/// column is as short as possible. Draws when given a framebuffer, leaving out any
-/// heading or card that would extend below `limit`. Returns the bottom of the tallest
-/// column as laid out and how many checks were left out.
+/// column is as short as possible, each group showing at most `cap` rows (see
+/// `draw_group`). Draws when given a framebuffer, leaving out any heading or card that
+/// would extend below `limit`. Returns the bottom of the tallest column as laid out and
+/// how many checks were left out below `limit`.
 fn layout_groups(mut fb: Option<&mut FrameBuf>, panel: &Panel<'_>, s: i32, cards: Cards,
-    width: i32, limit: i32) -> (i32, usize) {
+    width: i32, limit: i32, cap: usize) -> (i32, usize) {
     let groups = panel.groups;
     let scored = panel.scored;
     let margin = 16 * s;
@@ -275,25 +297,25 @@ fn layout_groups(mut fb: Option<&mut FrameBuf>, panel: &Panel<'_>, s: i32, cards
     let columns_for = |column_limit: i32| {
         let (mut used, mut filled) = (1, 0);
         for group in groups {
-            let height = group_height(group, s, cards, scored);
+            let height = group_height(group, s, cards, scored, cap);
             if filled > 0 && filled + height > column_limit { used += 1; filled = 0; }
             filled += height;
         }
         used
     };
-    let mut low = groups.iter().map(|group| group_height(group, s, cards, scored)).max().unwrap_or(0);
-    let mut high: i32 = groups.iter().map(|group| group_height(group, s, cards, scored)).sum();
+    let mut low = groups.iter().map(|group| group_height(group, s, cards, scored, cap)).max().unwrap_or(0);
+    let mut high: i32 = groups.iter().map(|group| group_height(group, s, cards, scored, cap)).sum();
     while low < high {
         let mid = (low + high) / 2;
         if columns_for(mid) <= columns { high = mid; } else { low = mid + 1; }
     }
     let (mut column, mut filled, mut tallest, mut hidden) = (0, 0, 0, 0);
     for group in groups {
-        let height = group_height(group, s, cards, scored);
+        let height = group_height(group, s, cards, scored, cap);
         if filled > 0 && filled + height > low { column += 1; filled = 0; }
         if let Some(fb) = fb.as_deref_mut() {
             let x = margin + column * (column_width + gap);
-            hidden += draw_group(fb, group, x, top + filled, column_width, s, cards, scored, limit);
+            hidden += draw_group(fb, group, x, top + filled, column_width, s, cards, scored, limit, cap);
         }
         filled += height;
         tallest = tallest.max(filled);
@@ -302,10 +324,11 @@ fn layout_groups(mut fb: Option<&mut FrameBuf>, panel: &Panel<'_>, s: i32, cards
 }
 
 /// Draw one group's heading (with its progress bar and count when `scored`) and
-/// cards, leaving out any that would extend below `limit`. Returns how many checks
-/// were left out.
+/// cards, leaving out any that would extend below `limit`. A group of more than `cap`
+/// checks shows `cap - 1` of them (`shown`) and a row counting the rest. Returns how
+/// many checks were left out below `limit`.
 fn draw_group(fb: &mut FrameBuf, group: &Group<'_>, x: i32, mut y: i32, width: i32, s: i32,
-    cards: Cards, scored: bool, limit: i32) -> usize {
+    cards: Cards, scored: bool, limit: i32, cap: usize) -> usize {
     let heading = heading_height(scored) * s;
     if y + heading > limit { return group.checks.len(); }
     if scored {
@@ -321,8 +344,12 @@ fn draw_group(fb: &mut FrameBuf, group: &Group<'_>, x: i32, mut y: i32, width: i
     }
     y += heading;
     let (card_height, pitch) = cards.size();
+    let windowed = group.checks.len() > cap;
+    let mut drawn = 0;
     for (index, check) in group.checks.iter().enumerate() {
-        if y + card_height * s > limit { return group.checks.len() - index; }
+        if windowed && !shown(group.checks, index, cap - 1) { continue; }
+        if y + card_height * s > limit { return group.checks.len() - drawn; }
+        drawn += 1;
         let (label, detail, fill) = match &check.state {
             CheckState::Pending => ("PENDING", "", PENDING),
             CheckState::Running => ("RUNNING", "", Color::rgb(82, 85, 144)),
@@ -348,5 +375,38 @@ fn draw_group(fb: &mut FrameBuf, group: &Group<'_>, x: i32, mut y: i32, width: i
         }
         y += pitch * s;
     }
+    if windowed {
+        if y + card_height * s > limit { return group.checks.len() - drawn; }
+        let hidden = |state: fn(&CheckState<'_>) -> bool| group.checks.iter().enumerate()
+            .filter(|&(index, check)| !shown(group.checks, index, cap - 1) && state(&check.state))
+            .count();
+        let failed = hidden(|state| matches!(state, CheckState::Fail(_)));
+        let mut more = Text::new();
+        let _ = write!(more, "+{} MORE", group.checks.len() - drawn);
+        if failed > 0 {
+            let _ = write!(more, " ({} FAILED)", failed);
+        }
+        shapes::fill_rect(fb, x, y, width, card_height * s, PENDING);
+        line(fb, more.as_str(), x + 6 * s, y + 2 * s, width - 12 * s, HEADING, s as usize);
+    }
     0
+}
+
+/// Whether check `index` is in its group's window of `count` checks: the running
+/// check first, then failures, then the checks nearest the focus (the running
+/// check, else the last one finished), earlier ones first on a tie.
+fn shown(checks: &[Check<'_>], index: usize, count: usize) -> bool {
+    let focus = checks.iter().position(|check| matches!(check.state, CheckState::Running))
+        .or_else(|| checks.iter().rposition(|check| !matches!(check.state, CheckState::Pending)))
+        .unwrap_or(0);
+    let key = |i: usize| {
+        let class = match checks[i].state {
+            CheckState::Running => 0,
+            CheckState::Fail(_) => 1,
+            _ => 2,
+        };
+        (class, i.abs_diff(focus), i)
+    };
+    let mine = key(index);
+    (0..checks.len()).filter(|&other| key(other) < mine).count() < count
 }

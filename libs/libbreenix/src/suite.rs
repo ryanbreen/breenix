@@ -16,13 +16,19 @@
 //! scored) as the cases run. When every case has run it leaves the final panel up and
 //! idles: a suite runs as PID 1 and never exits.
 //!
-//! Each case runs in a forked child, so a case that crashes or runs past the suite's
-//! time limit is reported as a FAIL saying so, and the suite goes on to the next case.
-//! A case that cannot be forked runs in the suite's own process.
+//! Each record is written with a single write that starts with a newline, so output
+//! another writer left without one (the x86-64 scheduler's raw COM1 breadcrumbs, say)
+//! never prefixes it.
+//!
+//! Each case runs in a forked child whose stdout and stderr go to `/dev/null`, so a
+//! case cannot print a line that looks like one of the suite's own. A case that
+//! crashes or runs past the suite's time limit is reported as a FAIL saying so, and
+//! the suite goes on to the next case; so is a case that cannot be started in a child
+//! at all, since running it in the suite's own process would lose that isolation.
 //!
 //! The manifest `docs/suites/<id>.json` lists the same categories and cases in the same
 //! order, with the same titles; a host test (`tests/suite_manifests.rs`) checks it
-//! against the `category(...)` and `case(...)` calls in the suite's source.
+//! against the `SUITE` table in the suite's source.
 //!
 //! ```rust,ignore
 //! use libbreenix::suite::{case, category, check, skip, suite, CaseResult, Suite};
@@ -49,6 +55,7 @@ use libgfx::diagnostics::{self, Check, CheckState, Group, Panel, Verdict};
 use libgfx::framebuf::FrameBuf;
 
 use crate::error::Error;
+use crate::fs;
 use crate::io::{self, poll_events, status_flags, PollFd};
 use crate::process::{self, ForkResult, WNOHANG};
 use crate::signal::{self, SIGKILL};
@@ -207,9 +214,11 @@ enum State {
     Done(Outcome),
 }
 
-/// Write one serial line with a single write, so it is never split.
+/// Write one serial line with a single write, so it is never split, starting with
+/// a newline so it always begins a line of its own.
 fn emit(line: &str) {
-    let mut bytes = Vec::with_capacity(line.len() + 1);
+    let mut bytes = Vec::with_capacity(line.len() + 2);
+    bytes.push(b'\n');
     bytes.extend_from_slice(line.as_bytes());
     bytes.push(b'\n');
     let mut rest = &bytes[..];
@@ -249,7 +258,7 @@ fn ms_since(start: Option<i128>) -> u64 {
     }
 }
 
-/// Run a case in the suite's own process.
+/// Run a case in this process (the case's forked child).
 fn run_inline(case: &Case) -> Outcome {
     let start = monotonic_ns();
     let result = (case.run)();
@@ -295,68 +304,132 @@ fn read_report(reader: Fd) -> Option<Outcome> {
     parse_report(std::str::from_utf8(&buf[..n]).ok()?)
 }
 
-/// Kill a child that has run too long and reap it.
-fn stop_child(pid: i32) -> Option<&'static str> {
-    if signal::kill(pid, SIGKILL).is_err() {
-        return Some("; SIGKILL failed, the case may still be running");
-    }
-    for _ in 0..500 {
+/// Polls in a row that may see the monotonic clock stand still before the suite
+/// decides it has stopped. A poll is a waitpid, a clock read and a yield, so a
+/// working clock moves long before this many.
+const CLOCK_STALL_POLLS: u32 = 1_000_000;
+
+/// How a wait for a child ended.
+enum Waited {
+    /// It exited, with this wait status.
+    Exited(i32),
+    /// It was still running when the limit passed, after this many ms.
+    TimedOut(u64),
+    /// The monotonic clock stopped moving, this many ms in.
+    ClockStopped(u64),
+    /// waitpid failed.
+    Failed(Error),
+}
+
+/// Wait up to `limit_ms` after `start` for `pid` to exit. Polls and yields rather
+/// than sleeping: a sleep's wake-up is timed by the monotonic clock, so if that
+/// clock stopped the suite would never wake to report it. Instead, polls that see
+/// the clock stand still are counted, and `CLOCK_STALL_POLLS` of them end the wait.
+fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64) -> Waited {
+    let mut last = monotonic_ns();
+    let mut still = 0;
+    loop {
         let mut status = 0;
         match process::waitpid(pid, &mut status, WNOHANG) {
-            Ok(done) if done.raw() as i32 == pid => return None,
-            Err(_) => return Some("; waitpid failed after SIGKILL"),
+            Ok(done) if done.raw() as i32 == pid => return Waited::Exited(status),
+            Err(error) => return Waited::Failed(error),
             _ => {}
         }
-        let _ = time::sleep_ms(1);
+        let now = monotonic_ns();
+        let ms = ms_since(start);
+        if ms >= limit_ms {
+            return Waited::TimedOut(ms);
+        }
+        if now.is_none() || now == last {
+            still += 1;
+            if still >= CLOCK_STALL_POLLS {
+                return Waited::ClockStopped(ms);
+            }
+        } else {
+            still = 0;
+            last = now;
+        }
+        let _ = process::yield_now();
     }
-    Some("; still running after SIGKILL")
+}
+
+/// Kill a child that has run too long and reap it. Returns a note for the FAIL
+/// message when it could not be reaped.
+fn stop_child(pid: i32) -> &'static str {
+    if signal::kill(pid, SIGKILL).is_err() {
+        return "; SIGKILL failed, the case may still be running";
+    }
+    match wait_exit(pid, monotonic_ns(), 1000) {
+        Waited::Exited(_) => "",
+        Waited::Failed(_) => "; waitpid failed after SIGKILL",
+        Waited::TimedOut(_) | Waited::ClockStopped(_) => "; still running after SIGKILL",
+    }
+}
+
+/// In the child: send stdout and stderr to /dev/null, so nothing the case prints
+/// reaches the suite's serial lines.
+fn silence_output() -> Result<(), Error> {
+    let null = fs::open("/dev/null", fs::O_WRONLY)?;
+    io::dup2(null, Fd::STDOUT)?;
+    io::dup2(null, Fd::STDERR)?;
+    if null != Fd::STDOUT && null != Fd::STDERR {
+        let _ = io::close(null);
+    }
+    Ok(())
 }
 
 /// Run a case in a forked child, giving it `limit_ms`.
 fn run_case(case: &Case, limit_ms: u64) -> Outcome {
     // Close-on-exec so a case that execs never leaves the report pipe open.
-    let Ok((reader, writer)) = io::pipe2(status_flags::O_CLOEXEC) else {
-        return run_inline(case);
+    let (reader, writer) = match io::pipe2(status_flags::O_CLOEXEC) {
+        Ok(ends) => ends,
+        Err(error) => {
+            return Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: pipe failed: {error}")) };
+        }
     };
     let start = monotonic_ns();
     match process::fork() {
         Ok(ForkResult::Child) => {
             let _ = io::close(reader);
-            let line = report(&run_inline(case));
+            let outcome = match silence_output() {
+                Ok(()) => run_inline(case),
+                Err(error) => Outcome::Fail {
+                    ms: 0,
+                    msg: plain(&std::format!("could not send the case's output to /dev/null: {error}")),
+                },
+            };
+            let line = report(&outcome);
             let _ = io::write(writer, line.as_bytes());
             process::exit(0)
         }
         Ok(ForkResult::Parent(pid)) => {
             let pid = pid.raw() as i32;
             let _ = io::close(writer);
-            // A backstop in case the clock stops: each poll sleeps at least a millisecond.
-            let max_polls = limit_ms.saturating_mul(4).max(1);
-            let mut polls = 0;
-            let outcome = loop {
-                let mut status = 0;
-                match process::waitpid(pid, &mut status, WNOHANG) {
-                    Ok(done) if done.raw() as i32 == pid => break exited(status, reader, ms_since(start)),
-                    Err(error) => {
-                        let note = stop_child(pid).unwrap_or("");
-                        break Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) };
+            let outcome = match wait_exit(pid, start, limit_ms) {
+                Waited::Exited(status) => exited(status, reader, ms_since(start)),
+                Waited::TimedOut(ms) => {
+                    let note = stop_child(pid);
+                    Outcome::Fail { ms, msg: plain(&std::format!("timed out after {limit_ms} ms{note}")) }
+                }
+                Waited::ClockStopped(ms) => {
+                    let note = stop_child(pid);
+                    Outcome::Fail {
+                        ms,
+                        msg: plain(&std::format!("the monotonic clock stopped {ms} ms into the case; it was killed{note}")),
                     }
-                    _ => {}
                 }
-                let ms = ms_since(start);
-                polls += 1;
-                if ms >= limit_ms || polls >= max_polls {
-                    let note = stop_child(pid).unwrap_or("");
-                    break Outcome::Fail { ms, msg: plain(&std::format!("timed out after {limit_ms} ms{note}")) };
+                Waited::Failed(error) => {
+                    let note = stop_child(pid);
+                    Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) }
                 }
-                let _ = time::sleep_ms(1);
             };
             let _ = io::close(reader);
             outcome
         }
-        Err(_) => {
+        Err(error) => {
             let _ = io::close(reader);
             let _ = io::close(writer);
-            run_inline(case)
+            Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: fork failed: {error}")) }
         }
     }
 }
@@ -393,17 +466,17 @@ struct Screen {
 }
 
 impl Screen {
-    /// Take the display and map all of it. Without a framebuffer (or one too small
-    /// for the panel) the suite still runs and prints its serial lines.
+    /// Take the display and map all of it. Without a framebuffer the suite still
+    /// runs and prints its serial lines; on a small one the panel draws what fits.
     fn open() -> Screen {
         let fb = (|| {
             let info = graphics::fbinfo().ok()?;
-            if info.width < 480 || info.height < 400 || !(3..=4).contains(&info.bytes_per_pixel) {
+            if !(3..=4).contains(&info.bytes_per_pixel) {
                 return None;
             }
             graphics::take_over_display().ok()?;
             let (ptr, width) = graphics::fb_mmap_pane().ok()?;
-            if width < 240 { return None; }
+            if width == 0 { return None; }
             Some(unsafe {
                 FrameBuf::from_raw(ptr, width as usize, info.height as usize,
                     (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize, info.is_bgr())
@@ -443,6 +516,9 @@ impl Screen {
             .map(|(title, checks)| Group { title, checks })
             .collect();
         diagnostics::draw(fb, &Panel { title, subtitle, groups: &groups, output: &[], verdict, scored: true });
+        // A case may have taken the display (its own take_over_display); take it
+        // back, or the flush is refused and the panel stops updating.
+        let _ = graphics::take_over_display();
         let _ = graphics::fb_flush();
     }
 }

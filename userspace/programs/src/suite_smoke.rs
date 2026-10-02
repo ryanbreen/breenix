@@ -2,8 +2,10 @@
 //! machinery end to end (docs/suites/smoke.json).
 
 use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+use libbreenix::io;
 use libbreenix::process;
-use libbreenix::suite::{case, category, check, fail, skip, suite, CaseResult, Suite};
+use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
+use libbreenix::types::Fd;
 use libbreenix::time;
 
 static SUITE: Suite = suite("smoke", "Smoke", &[
@@ -23,9 +25,11 @@ fn getpid() -> CaseResult {
     check(pid.raw() > 0, "getpid returned 0")
 }
 
-/// The deliberate SKIP: stdout is the suite's serial channel, where only SUITE lines go.
+/// A case's stdout is /dev/null, so the write reaches no serial line.
 fn stdout_write() -> CaseResult {
-    skip("stdout carries the suite's own serial lines; a test write would add a stray line")
+    const LINE: &[u8] = b"smoke: a line to stdout\n";
+    let written = io::write(Fd::STDOUT, LINE)?;
+    check(written == LINE.len(), "write to stdout returned a short count")
 }
 
 fn clock_read() -> CaseResult {
