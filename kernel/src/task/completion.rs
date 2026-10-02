@@ -170,6 +170,41 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
     })
 }
 
+/// An aarch64 idle thread is not a sleepable continuation either: dispatching
+/// one restarts it at idle_loop_arm64, so blocking it would discard its caller.
+/// Poll with the CPU's preemption brake held. A masked WFI still wakes on a
+/// pending interrupt, and unmasking right after takes it, so a completion IRQ
+/// that lands after the check is not missed.
+#[cfg(target_arch = "aarch64")]
+fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns: u64) -> bool {
+    crate::arch_without_interrupts(|| {
+        crate::per_cpu_aarch64::preempt_disable();
+        completion.waiter.store(0, Ordering::Release);
+        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+        let deadline = (secs * 1_000_000_000 + nanos).saturating_add(timeout_ns);
+        let completed = loop {
+            if completion.done.load(Ordering::Acquire) == expected_token {
+                break true;
+            }
+            let (secs, nanos) = crate::time::get_monotonic_time_ns();
+            if secs * 1_000_000_000 + nanos >= deadline {
+                break false;
+            }
+            unsafe {
+                core::arch::asm!(
+                    "wfi",
+                    "msr daifclr, #2",
+                    "isb",
+                    "msr daifset, #2",
+                    options(nostack)
+                );
+            }
+        };
+        crate::per_cpu_aarch64::preempt_enable();
+        completed
+    })
+}
+
 /// Completion primitive — pairs one waiter thread with one ISR.
 pub struct Completion {
     /// 0 = not done, otherwise the completion token published by `complete()`.
@@ -252,7 +287,6 @@ impl Completion {
         // Idle's saved boot continuation is discarded after Ring 3 starts.
         // preempt_count > 0 does not identify a syscall: boot holds it too.
         // Do not release that caller's brake or publish idle as BlockedOnIO.
-        #[cfg(target_arch = "x86_64")]
         if crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid)
             == Some(true)
         {
