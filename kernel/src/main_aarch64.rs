@@ -1224,7 +1224,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Parallels is included again for F29 validation. F21's secondary CPU fault
     // may have been fixed by later GICR/AHCI/timer changes; if it still
     // reproduces, this branch must document that failure rather than merging.
-    if kernel::platform_config::is_qemu()
+    if kernel::arch_impl::aarch64::gic::use_group0()
+        && kernel::arch_impl::aarch64::gic::ds_enabled()
+    {
+        serial_println!("[smp] Refusing secondary CPU probe: dual-group GIC acknowledgement requires single-CPU operation");
+    } else if kernel::platform_config::is_qemu()
         || kernel::platform_config::is_vmware()
         || kernel::platform_config::is_parallels()
     {
@@ -2023,9 +2027,9 @@ fn init_scheduler() {
             )
         } else {
             // Parallels: UEFI loader stack at 0x42000000 (phys), now at HHDM
-            // The loader leaves the first 4KB of the 2MB region unmapped.
+            // The loader maps the full 2MB region without overflow protection.
             const PARALLELS_STACK_TOP_PHYS: u64 = 0x4200_0000;
-            const PARALLELS_STACK_SIZE: u64 = 0x20_0000 - 4096;
+            const PARALLELS_STACK_SIZE: u64 = 0x20_0000;
             (
                 VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS),
                 VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS - PARALLELS_STACK_SIZE),

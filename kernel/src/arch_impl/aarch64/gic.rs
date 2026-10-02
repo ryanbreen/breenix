@@ -264,7 +264,7 @@ static EFFECTIVE_SPLIT_EOI: AtomicBool = AtomicBool::new(false);
 
 /// Tracks which group the last acknowledged interrupt came from.
 /// 0 = Group 0, 1 = Group 1 (normal). The group selects EOIR only when
-/// USE_GROUP0 && DS_ENABLED; secondary CPU interface init rejects that combination.
+/// USE_GROUP0 && DS_ENABLED; boot skips secondary probing in that combination.
 /// Otherwise acknowledgements store Group 1 and EOIR1 is used, including on SMP.
 static LAST_ACK_GROUP: AtomicU32 = AtomicU32::new(0);
 
@@ -731,7 +731,7 @@ pub fn acknowledge_irq() -> Option<u32> {
 /// GICv2 leaves this false because it uses combined EOI/deactivation.
 #[inline]
 pub fn effective_split_eoi() -> bool {
-    EFFECTIVE_SPLIT_EOI.load(Ordering::Acquire)
+    EFFECTIVE_SPLIT_EOI.load(Ordering::Relaxed)
 }
 
 /// Drop active IRQ priority by ID.
@@ -747,7 +747,7 @@ pub fn effective_split_eoi() -> bool {
 pub fn priority_drop_irq(irq_id: u32) {
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
     if version >= 3 {
-        if EFFECTIVE_SPLIT_EOI.load(Ordering::Acquire) {
+        if EFFECTIVE_SPLIT_EOI.load(Ordering::Relaxed) {
             write_gicv3_eoir(irq_id);
         }
     }
@@ -758,7 +758,7 @@ pub fn priority_drop_irq(irq_id: u32) {
 pub fn deactivate_irq(irq_id: u32) {
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
     if version >= 3 {
-        if EFFECTIVE_SPLIT_EOI.load(Ordering::Acquire) {
+        if EFFECTIVE_SPLIT_EOI.load(Ordering::Relaxed) {
             unsafe {
                 core::arch::asm!("msr icc_dir_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
             }
@@ -1690,7 +1690,7 @@ fn init_gicv3_cpu_interface(boot_cpu: bool) {
         if boot_cpu {
             EFFECTIVE_SPLIT_EOI.store(split_enabled, Ordering::Release);
         } else {
-            let boot_split = EFFECTIVE_SPLIT_EOI.load(Ordering::Acquire);
+            let boot_split = EFFECTIVE_SPLIT_EOI.load(Ordering::Relaxed);
             assert_eq!(
                 split_enabled, boot_split,
                 "GIC secondary EOImode differs from boot CPU"
