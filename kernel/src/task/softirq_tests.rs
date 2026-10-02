@@ -141,7 +141,12 @@ pub fn test_softirq() {
     );
     log::info!("SOFTIRQ_TEST: nested interrupt rejection passed");
 
+    // The deferral probe checks that do_softirq() stops at its restart limit
+    // and that ksoftirqd then runs the remaining work.
     let deferral_ok = test_deferral();
+    if deferral_ok {
+        log::info!("SOFTIRQ_TEST: iteration limit passed (restart limit held, ksoftirqd ran the deferred work)");
+    }
 
     // Test 8: Verify ksoftirqd is initialized (keep original test)
     log::info!("SOFTIRQ_TEST: Verifying ksoftirqd is initialized...");
