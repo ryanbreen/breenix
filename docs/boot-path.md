@@ -53,7 +53,8 @@ stage list and shown alongside, but does not block moving on.
   `./run.sh --parallels|--vmware --suite ID`, and the x86-64 gate with
   `BREENIX_BOOT_SUITE=ID docker/qemu/run-x86-gate.sh`: both write `/etc/breenix/boot-target`
   (one line, `suite ID`) onto a copy of the ext2 disk. The kernel takes the fw_cfg mode
-  first, then that file, else `default`. Suite mode exercises the kernel milestones only.
+  first (x86-64 QEMU reads fw_cfg too, for `default` and `suite`), then that file, else
+  `default`. Suite mode exercises the kernel milestones only.
 
 The non-test modes build the kernel with no features, exactly like the prod-profile gate,
 and pass the mode to it with `-fw_cfg name=opt/breenix/mode,string=MODE`. The kernel
@@ -62,7 +63,8 @@ prints `[boot] Boot mode: MODE` for the mode that runs (`program PATH` in progra
 `default` when none is given, which runs `/sbin/init` with no arguments, as before. An
 unknown mode, any mode given to the testing kernel, program mode without an absolute
 program path, suite mode without a valid suite id, an unusable boot-target file, or probe,
-program or suite mode when its binary cannot be loaded also runs `default`, and the kernel
+program or suite mode when its binary is missing, is not a loadable ELF for the kernel's
+architecture or fails to start also runs `default`, and the kernel
 notes the ignored request on its own line. A mode's stages for a milestone are `stages[MODE]` when present, else
 `stages["aarch64"]` when the milestone has `"kernel": true`; otherwise the mode does not
 exercise that milestone.

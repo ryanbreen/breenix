@@ -73,7 +73,7 @@ elif [ -n "$PROGRAM" ]; then
 fi
 if [ "$MODE" = suite ]; then
     [ -n "$SUITE" ] || { echo "--mode suite needs --suite ID" >&2; exit 2; }
-    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || [ "${#SUITE}" -gt 40 ]; then
+    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
         echo "--suite needs a suite id (lowercase words joined by '-'), got: $SUITE" >&2; exit 2
     fi
 elif [ -n "$SUITE" ]; then

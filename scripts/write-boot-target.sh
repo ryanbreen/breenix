@@ -2,28 +2,34 @@
 # Write the boot-target file onto an ext2 disk image, so a production kernel booted
 # from it runs that effort suite as PID 1 (docs/boot-path.md, "Boot modes"):
 #
-#   scripts/write-boot-target.sh IMAGE SUITE_ID
+#   scripts/write-boot-target.sh IMAGE SUITE_ID [SUITE_ELF]
 #
 # IMAGE gets /etc/breenix/boot-target containing the one line "suite SUITE_ID",
 # replacing any boot target already there. Write it onto a copy, never onto the
 # disk an ordinary boot uses: every production boot of that disk would run the suite.
+# The image must hold /sbin/suite-SUITE_ID; given SUITE_ELF, it must be that file,
+# byte for byte, so a stale or partly copied image is refused.
 #
 # Uses debugfs (e2fsprogs) when it is on PATH or in Homebrew's keg-only e2fsprogs,
 # and otherwise runs debugfs in an Alpine container.
 
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 fi
 IMAGE="$1"
 SUITE="$2"
-if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || [ "${#SUITE}" -gt 40 ]; then
+SUITE_ELF="${3:-}"
+if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
     echo "write-boot-target: not a suite id (lowercase words joined by '-'): $SUITE" >&2
     exit 2
 fi
 [ -f "$IMAGE" ] || { echo "write-boot-target: no disk image at $IMAGE" >&2; exit 1; }
+if [ -n "$SUITE_ELF" ] && [ ! -f "$SUITE_ELF" ]; then
+    echo "write-boot-target: no suite binary at $SUITE_ELF" >&2; exit 1
+fi
 
 DEBUGFS=
 for candidate in debugfs /sbin/debugfs /usr/sbin/debugfs \
@@ -46,6 +52,7 @@ if [ -n "$DEBUGFS" ]; then
     sed "s|/work/|$WORK/|" "$WORK/commands" > "$WORK/commands.host"
     "$DEBUGFS" -w -f "$WORK/commands.host" "$IMAGE" >/dev/null 2>&1 || true
     written="$("$DEBUGFS" -R 'cat /etc/breenix/boot-target' "$IMAGE" 2>/dev/null || true)"
+    "$DEBUGFS" -R "dump /sbin/suite-$SUITE $WORK/installed.elf" "$IMAGE" >/dev/null 2>&1 || true
 else
     command -v docker >/dev/null 2>&1 || { echo "write-boot-target: needs debugfs (e2fsprogs) or docker" >&2; exit 1; }
     image_dir="$(cd "$(dirname "$IMAGE")" && pwd)"
@@ -53,11 +60,20 @@ else
     written="$(docker run --rm -v "$image_dir:/disk" -v "$WORK:/work" alpine:latest sh -c "
         apk add --no-cache e2fsprogs-extra >/dev/null 2>&1 || exit 1
         debugfs -w -f /work/commands /disk/$image_name >/dev/null 2>&1
+        debugfs -R 'dump /sbin/suite-$SUITE /work/installed.elf' /disk/$image_name >/dev/null 2>&1
         debugfs -R 'cat /etc/breenix/boot-target' /disk/$image_name 2>/dev/null")" || true
 fi
 
 if [ "$written" != "suite $SUITE" ]; then
     echo "write-boot-target: /etc/breenix/boot-target on $IMAGE reads back as '$written', not 'suite $SUITE'" >&2
+    exit 1
+fi
+if [ ! -s "$WORK/installed.elf" ]; then
+    echo "write-boot-target: $IMAGE has no /sbin/suite-$SUITE" >&2
+    exit 1
+fi
+if [ -n "$SUITE_ELF" ] && ! cmp -s "$WORK/installed.elf" "$SUITE_ELF"; then
+    echo "write-boot-target: /sbin/suite-$SUITE on $IMAGE is not $SUITE_ELF (a stale or partial disk image)" >&2
     exit 1
 fi
 echo "Boot target on $IMAGE: suite $SUITE"

@@ -22,11 +22,12 @@ serial lines a suite boot prints.
 ```
 
 `area` is the POSIX area name Vigil's syscall page uses. Suite, category and case ids are
-lowercase words of `a-z` and `0-9` joined by `-`, at most 40 characters. The binary runs
-exactly the manifest's categories and cases, in the same order and with the same titles.
-`tests/suite_manifests.rs` checks every manifest's shape and ids, and checks it against the
-`category(...)` and `case(...)` calls in the suite's source, `userspace/programs/src/suite_<id>.rs`
-with `-` in the id written as `_`.
+lowercase words of `a-z` and `0-9` joined by `-`. The binary runs exactly the manifest's
+categories and cases, in the same order and with the same titles. `tests/suite_manifests.rs`
+checks every manifest's shape and ids, and checks it against the table the suite runs: it
+parses the suite's source, `userspace/programs/src/suite_<id>.rs` with `-` in the id written
+as `_`, and reads the `static` that `main` calls `.run()` on, so comments, disabled code and
+calls outside that table do not count.
 
 ## Serial lines
 
@@ -40,9 +41,17 @@ SUITE <id> CASE <category>/<case> SKIP msg=<why>
 SUITE <id> DONE passed=<p> failed=<f> skipped=<s> total=<n>
 ```
 
-Each case runs in a forked child: one that crashes or runs past the suite's time limit
-(10 seconds unless the suite sets its own) is a FAIL whose message says so, and the suite
-goes on. If the suite itself stops, the missing CASE lines show where.
+Each record is one write that starts with a newline, so it always begins its own line even
+when other output on the same serial port (the x86-64 scheduler's COM1 breadcrumbs) left a
+line unfinished; a reader takes the lines that start with `SUITE <id> ` and ignores blank
+lines.
+
+Each case runs in a forked child whose stdout and stderr go to `/dev/null`, so nothing a
+case prints can look like a suite line. A case that crashes or runs past the suite's time
+limit (10 seconds unless the suite sets its own) is a FAIL whose message says so, and so is
+one that cannot be started in a child; the suite goes on. The suite waits on a case by
+polling, not sleeping, so a monotonic clock that stops is reported as a FAIL too. If the
+suite itself stops, the missing CASE lines show where.
 
 ## Writing a suite
 
@@ -76,20 +85,29 @@ binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BINARIES` 
   `opt/breenix/mode=suite`, `opt/breenix/suite=<id>`).
 - Parallels and VMware: `./run.sh --parallels|--vmware --suite <id>`.
 - x86-64 gate: `BREENIX_BOOT_SUITE=<id> docker/qemu/run-x86-gate.sh`, or
-  `swift run breenix-runs run x86 --suite <id>` from `tools/breenix-runs`. With
-  `BREENIX_QMP_SOCKET=<path>` QEMU also opens a QMP socket for screendumps, and the gate saves
-  the final screen as `screen.png` next to the boot's serial logs.
+  `swift run breenix-runs run x86 --suite <id>` from `tools/breenix-runs`. The gate scores
+  the boot with `scripts/suite-verdict.py`: one START with the manifest's case count, a CASE
+  line for every manifest case in order, a DONE that agrees with them and has `failed=0`, and
+  no fatal kernel output. With `BREENIX_QMP_SOCKET=<path>` QEMU also opens a QMP socket for
+  screendumps, and the gate saves the final screen as `screen.png` next to the boot's serial
+  logs (breenix-runs keeps boot N's as `screen-N.png`).
 
 The last two write `/etc/breenix/boot-target` (one line, `suite <id>`) onto a copy of the
-ext2 disk with `scripts/write-boot-target.sh`. The kernel takes the fw_cfg mode first, then
-that file, else the default `/sbin/init`.
+ext2 disk with `scripts/write-boot-target.sh`, which also checks that the copy's
+`/sbin/suite-<id>` is the binary just built. On both architectures the kernel takes the
+fw_cfg mode first (`opt/breenix/mode=suite` with `opt/breenix/suite=<id>`; on x86-64 QEMU too),
+then that file, else the default `/sbin/init`. A suite binary that is missing or not a
+loadable ELF for the kernel's architecture runs `/sbin/init` instead, and so does one that
+then fails to start.
 
 ## The panel
 
 As cases run, the suite draws libgfx's diagnostics panel in its scored form on the
 framebuffer: the title, the overall score (passed of total, a percentage and a bar), one
-progress bar per category and each case marked pending, running, pass, fail or skip. When
-every case has run it prints the DONE line, leaves the final panel up and idles; it never
-exits. The production x86-64 kernel has no framebuffer for userspace (its graphics syscalls
-are built only with the `interactive` feature), so on x86-64 a suite prints its serial
-lines and draws nothing.
+progress bar per category and each case marked pending, running, pass, fail or skip. A
+category with more cases than fit shows a window of them that follows the run (the running
+case, then failures, then its neighbours) and a row counting the rest. The suite takes the
+display back before every update, so a case that took it cannot leave the panel stale.
+When every case has run it prints the DONE line, leaves the final panel up and idles; it
+never exits. On x86-64 the production kernel gives the display owner the bootloader's
+framebuffer (and stops drawing its own log there), so the panel shows on every platform.

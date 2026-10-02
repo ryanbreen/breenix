@@ -37,8 +37,10 @@
 #                       mode argument says), boots it with /etc/breenix/boot-target
 #                       ("suite <id>") written onto a copy of the ext2 disk so the
 #                       kernel runs /sbin/suite-<id> as PID 1, stops the VM a few
-#                       seconds after the suite's `SUITE <id> DONE` line, and passes
-#                       when that line reports failed=0.
+#                       seconds after the suite's `SUITE <id> DONE` line, and scores
+#                       the boot with scripts/suite-verdict.py: one START, every
+#                       manifest case's CASE line in order, a DONE agreeing with
+#                       them with failed=0, and no fatal kernel output.
 #   BREENIX_QMP_SOCKET  if set, QEMU opens a QMP socket at this path (qemu-uefi.rs)
 #                       so a screendump can be taken while the VM runs. In suite
 #                       mode the gate also saves the final screen as screen.png in
@@ -150,8 +152,11 @@ esac
 # Suite mode: the production kernel (no features) runs /sbin/suite-<id> as PID 1.
 SUITE="${BREENIX_BOOT_SUITE:-}"
 if [ -n "$SUITE" ]; then
-  if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || [ "${#SUITE}" -gt 40 ]; then
+  if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
     echo "GATE: FAIL (BREENIX_BOOT_SUITE is not a suite id: $SUITE)"; exit 1
+  fi
+  if [ ! -f "docs/suites/$SUITE.json" ]; then
+    echo "GATE: FAIL (no manifest docs/suites/$SUITE.json)"; exit 1
   fi
   MODE="suite"
   FEATURES=""
@@ -183,8 +188,13 @@ if [ -n "$SUITE" ]; then
   fi
   # The boot target goes on a copy: qemu-uefi.rs copies BREENIX_EXT2_SOURCE (default
   # testdata/ext2.img) to target/ext2.img for each boot, and testdata/ext2.img stays clean.
-  cp testdata/ext2.img target/ext2-boot-target.img
-  if ! ./scripts/write-boot-target.sh target/ext2-boot-target.img "$SUITE"; then
+  # write-boot-target.sh also checks that the copy's /sbin/suite-$SUITE is the binary
+  # just built, so a stale or partial copy is never booted.
+  rm -f target/ext2-boot-target.img
+  if ! cp testdata/ext2.img target/ext2-boot-target.img; then
+    echo "GATE: FAIL (could not copy testdata/ext2.img for the boot target)"; exit 1
+  fi
+  if ! ./scripts/write-boot-target.sh target/ext2-boot-target.img "$SUITE" "userspace/programs/suite-$SUITE.elf"; then
     echo "GATE: FAIL (could not write the boot target onto the ext2 disk)"; exit 1
   fi
   export BREENIX_EXT2_SOURCE="$REPO_DIR/target/ext2-boot-target.img"
@@ -247,9 +257,11 @@ for i in $(seq 1 "$COUNT"); do
   QEMU_TIMEOUT_PID=$!
   if [ -n "$SUITE" ]; then
     # A suite never exits (it is PID 1 and idles with its final panel up): stop the VM
-    # once its DONE line is out, after saving the screen and holding it briefly.
+    # once its DONE line is out, after saving the screen and holding it briefly. Only a
+    # whole DONE line on the suite's own serial (COM1) counts.
+    done_shape="^SUITE $SUITE DONE passed=[0-9]+ failed=[0-9]+ skipped=[0-9]+ total=[0-9]+\$"
     while kill -0 "$QEMU_TIMEOUT_PID" 2>/dev/null; do
-      if grep -qs "SUITE $SUITE DONE " "$OUTDIR"/serial_*.log; then
+      if tr -d '\r' < "$OUTDIR/serial_user.log" 2>/dev/null | grep -qE "$done_shape"; then
         sleep 2
         if [ -n "${BREENIX_QMP_SOCKET:-}" ] && \
             python3 "$REPO_DIR/scripts/qmp-screendump.py" "$BREENIX_QMP_SOCKET" "$OUTDIR/screen.png" >/dev/null 2>&1; then
@@ -322,18 +334,15 @@ for i in $(seq 1 "$COUNT"); do
   # snapshot `seq`, not by argument order.
   # claim-lint:ok: #775 ruling R134 defines the census input contract.
   if [ -n "$SUITE" ]; then
-    done_line=$(grep -h -o -E "SUITE $SUITE DONE passed=[0-9]+ failed=[0-9]+ skipped=[0-9]+ total=[0-9]+" \
-        "$OUTDIR"/serial_*.log 2>/dev/null | tail -1)
-    if [ -z "$done_line" ]; then
-      verdict_ok=false
-      verdict_reason="no 'SUITE $SUITE DONE' line; the last CASE line shows where it stopped (see $OUTDIR/serial_user.log)"
-    elif [[ "$done_line" =~ failed=0\  ]]; then
+    suite_verdict=$(python3 "$REPO_DIR/scripts/suite-verdict.py" "docs/suites/$SUITE.json" \
+        "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log" 2>&1)
+    if [ $? -eq 0 ]; then
       verdict_ok=true
       verdict_reason=""
-      echo "  $done_line"
+      echo "  ${suite_verdict#PASS: }"
     else
       verdict_ok=false
-      verdict_reason="$done_line"
+      verdict_reason="${suite_verdict#FAIL: } (see $OUTDIR/serial_user.log)"
     fi
   elif [ "$MODE" = "full" ]; then
     # EXPECTED_EXITS is mandatory for the verdict script; 10 is the count for

@@ -202,7 +202,7 @@ if [ -n "$SUITE" ]; then
         echo "--suite is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode suite --suite ID)"
         exit 1
     fi
-    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || [ "${#SUITE}" -gt 40 ]; then
+    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
         echo "--suite needs a suite id (lowercase words joined by '-'), got: $SUITE"
         exit 1
     fi
@@ -221,8 +221,26 @@ stage_boot_ext2_disk() {
     fi
     mkdir -p "$staging_dir"
     BOOT_EXT2_DISK="$staging_dir/ext2-boot-target.img"
-    cp "$built" "$BOOT_EXT2_DISK"
-    "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" || exit 1
+    rm -f "$BOOT_EXT2_DISK"
+    cp "$built" "$BOOT_EXT2_DISK" || { echo "ERROR: could not copy $built for the boot target"; exit 1; }
+    "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
+        "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" || exit 1
+}
+
+# Whether the VM's wrapped data disk (whose suite marker file is $1) must be made
+# again from the built disk: when the boot disk was rebuilt (as before --suite
+# existed), when this run boots a suite, and when the wrapped disk is a suite copy
+# from an earlier --suite run that this run must not boot. Otherwise the wrapped
+# disk, and any changes the guest made to it, is kept.
+ext2_rewrap_needed() {
+    local rebuilt="$1" marker="$2"
+    [ "$rebuilt" = true ] || [ -n "$SUITE" ] || [ -f "$marker" ]
+}
+
+# Record whether the data disk just wrapped carries a suite boot target.
+mark_wrapped_ext2() {
+    local marker="$1"
+    if [ -n "$SUITE" ]; then echo "$SUITE" > "$marker"; else rm -f "$marker"; fi
 }
 
 # BTRT mode: delegate to xtask and exit
@@ -350,6 +368,7 @@ if [ "$PARALLELS" = true ]; then
     fi
 
     DEPLOY_NEEDED=true
+    EXT2_SUITE_MARKER="$EXT2_HDD_DIR.suite"
     if [ "$NO_BUILD" = true ] && [ -n "$EXISTING_HDS" ] && [ -f "$EXISTING_HDS" ] \
         && [ ! "$KERNEL_ELF" -nt "$EXISTING_HDS" ] && [ ! "$LOADER_EFI" -nt "$EXISTING_HDS" ]; then
         DEPLOY_NEEDED=false
@@ -416,11 +435,10 @@ if [ "$PARALLELS" = true ]; then
         echo "  EFI disk: $HDD_DIR"
     fi
 
-    # Wrap the ext2 data disk in Parallels .hdd format. Every run, even with
-    # --no-build and an up-to-date EFI disk: the data disk to boot (with or
-    # without a --suite boot target) may differ from the one wrapped last time.
-    stage_boot_ext2_disk "$EXT2_DISK" "$PARALLELS_DIR"
-    if [ -f "$BOOT_EXT2_DISK" ]; then
+    # Wrap the ext2 data disk in Parallels .hdd format (see ext2_rewrap_needed).
+    if ! ext2_rewrap_needed "$DEPLOY_NEEDED" "$EXT2_SUITE_MARKER"; then
+        echo "  ext2 disk: keeping $EXT2_HDD_DIR"
+    elif stage_boot_ext2_disk "$EXT2_DISK" "$PARALLELS_DIR" && [ -f "$BOOT_EXT2_DISK" ]; then
         EXT2_SIZE_MB=$(( $(stat -f%z "$BOOT_EXT2_DISK") / 1048576 ))
         rm -rf "$EXT2_HDD_DIR"
         prl_disk_tool create --hdd "$EXT2_HDD_DIR" --size "${EXT2_SIZE_MB}M" >/dev/null 2>&1
@@ -429,6 +447,7 @@ if [ "$PARALLELS" = true ]; then
             echo "WARNING: No .hds file in $EXT2_HDD_DIR, ext2 disk won't be attached"
         else
             cp "$BOOT_EXT2_DISK" "$HDS_FILE"
+            mark_wrapped_ext2 "$EXT2_SUITE_MARKER"
             echo "  ext2 disk: $EXT2_HDD_DIR (${EXT2_SIZE_MB}MB)"
         fi
     else
@@ -723,12 +742,16 @@ if [ "$VMWARE" = true ]; then
         echo "  Boot VMDK: $VMWARE_DIR/boot.vmdk"
     fi
 
-    # Convert the ext2 data disk to VMDK. Every run, even with --no-build: the data
-    # disk to boot (with or without a --suite boot target) may differ from last time.
-    stage_boot_ext2_disk "$EXT2_DISK" "$VMWARE_DIR"
-    if [ -f "$BOOT_EXT2_DISK" ]; then
+    # Convert the ext2 data disk to VMDK (see ext2_rewrap_needed).
+    EXT2_SUITE_MARKER="$VMWARE_DIR/ext2-data.vmdk.suite"
+    VMWARE_REBUILT=true
+    [ "$NO_BUILD" = true ] && VMWARE_REBUILT=false
+    if ! ext2_rewrap_needed "$VMWARE_REBUILT" "$EXT2_SUITE_MARKER"; then
+        echo "  Data VMDK: keeping $VMWARE_DIR/ext2-data.vmdk"
+    elif stage_boot_ext2_disk "$EXT2_DISK" "$VMWARE_DIR" && [ -f "$BOOT_EXT2_DISK" ]; then
         mkdir -p "$VMWARE_DIR"
         qemu-img convert -f raw -O vmdk "$BOOT_EXT2_DISK" "$VMWARE_DIR/ext2-data.vmdk"
+        mark_wrapped_ext2 "$EXT2_SUITE_MARKER"
         echo "  Data VMDK: $VMWARE_DIR/ext2-data.vmdk"
     fi
 

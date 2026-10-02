@@ -69,9 +69,13 @@ public enum RemoteCommand {
         public var removeClone: ProcessRequest
     }
 
-    /// An effort-suite id: lowercase words of a-z and 0-9 joined by '-', at most 40 characters.
+    /// An effort-suite id: lowercase words of a-z and 0-9 joined by '-'. Checked
+    /// character by character (no regex, whose `$` would also match before a final
+    /// newline), because an accepted id goes unquoted into a remote shell command.
     public static func isSuiteID(_ id: String) -> Bool {
-        id.range(of: "^[a-z0-9]+(-[a-z0-9]+)*$", options: .regularExpression) != nil && id.count <= 40
+        !id.isEmpty && id.split(separator: "-", omittingEmptySubsequences: false).allSatisfy { word in
+            !word.isEmpty && word.unicodeScalars.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) }
+        }
     }
 
     public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil) -> Plan {
@@ -110,10 +114,15 @@ public enum RemoteCommand {
     // with a gate failure.
     // A suite id (validated by `isSuiteID`, so safe unquoted) makes the gate boot the
     // production kernel running /sbin/suite-<id>, with a QMP socket in gate-tmp for its screen.
+    // An id that is not one never reaches the shell: the request fails the gate instead of
+    // quietly running the ordinary one (BeastLauncher refuses such an id before this).
     public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil) -> ProcessRequest {
         let profileEnv: String = qemuProfile.map { " BREENIX_QEMU_PROFILE=\($0.rawValue)" } ?? ""
         var suiteEnv = ""
-        if let suite, isSuiteID(suite) {
+        if let suite {
+            guard isSuiteID(suite) else {
+                return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: "mkdir -p \(paths.gateTmpPath) && echo \"GATE: FAIL (the requested suite is not a suite id)\" && exit 1"))
+            }
             suiteEnv = " BREENIX_BOOT_SUITE=\(suite) BREENIX_QMP_SOCKET=\(paths.gateTmpPath)/qmp.sock"
         }
         let script = "mkdir -p \(paths.gateTmpPath)"

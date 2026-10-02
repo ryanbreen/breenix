@@ -5,6 +5,7 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
     case prepareCloneFailed(exitCode: Int, output: String)
     case missingLocalSHA
     case invalidBootCount(Int)
+    case invalidSuiteID(String)
 
     public var description: String {
         switch self {
@@ -16,6 +17,8 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
             return "could not resolve local git SHA; pass --sha explicitly"
         case .invalidBootCount(let boots):
             return "--boots requires a positive integer, got \(boots)"
+        case .invalidSuiteID(let id):
+            return "--suite requires a suite id (lowercase words of a-z and 0-9 joined by '-'), got \(id.debugDescription)"
         }
     }
 }
@@ -178,9 +181,9 @@ public struct BeastLauncher {
         let command = readableGateCommand(paths: planResult.paths, boots: options.boots, mode: options.mode)
         let env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile, suite: options.suite)
         var captures = [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutBytes)]
-        let screenURL = runDirectory.appendingPathComponent("screen.png")
-        if FileManager.default.fileExists(atPath: screenURL.path) {
-            captures.append(CaptureRef(name: "screen.png", path: "screen.png", bytes: fileSize(screenURL)))
+        for screen in screenNames(in: runDirectory) {
+            let url = runDirectory.appendingPathComponent(screen)
+            captures.append(CaptureRef(name: screen, path: screen, bytes: fileSize(url)))
         }
 
         let gateStdoutText = String(decoding: try Data(contentsOf: gateStdoutURL), as: UTF8.self)
@@ -239,6 +242,9 @@ public struct BeastLauncher {
         guard !options.sha.isEmpty else {
             throw BeastLauncherError.missingLocalSHA
         }
+        if let suite = options.suite, !RemoteCommand.isSuiteID(suite) {
+            throw BeastLauncherError.invalidSuiteID(suite)
+        }
     }
 
     private func paths(forRunID id: String) -> BeastPaths {
@@ -291,7 +297,7 @@ public struct BeastLauncher {
                 arguments: ["-xzf", tarballURL.path, "-C", runDirectory.path]
             ))
             try mergeSerials(from: gateTmpURL, userURL: userURL, kernelURL: kernelURL)
-            keepScreen(from: gateTmpURL, runDirectory: runDirectory)
+            keepScreens(from: gateTmpURL, runDirectory: runDirectory)
         }
 
         return [
@@ -300,17 +306,27 @@ public struct BeastLauncher {
         ]
     }
 
-    /// A suite gate saves its final screen as breenix_gate_<n>/screen.png; keep the last one.
-    private func keepScreen(from gateTmp: URL, runDirectory: URL) {
+    /// A suite gate saves each boot's final screen as breenix_gate_<n>/screen.png.
+    /// Each is kept as screen-<n>.png, so a screen is always the boot it came from and
+    /// a boot that saved none has none.
+    private func keepScreens(from gateTmp: URL, runDirectory: URL) {
         let iterations = (try? FileManager.default.contentsOfDirectory(atPath: gateTmp.path)) ?? []
-        let screens = iterations.filter { $0.hasPrefix("breenix_gate_") }
+        for iteration in iterations where iteration.hasPrefix("breenix_gate_") {
+            let boot = iteration.dropFirst("breenix_gate_".count)
+            guard !boot.isEmpty, boot.allSatisfy(\.isNumber) else { continue }
+            let screen = gateTmp.appendingPathComponent(iteration).appendingPathComponent("screen.png")
+            guard FileManager.default.fileExists(atPath: screen.path) else { continue }
+            let destination = runDirectory.appendingPathComponent("screen-\(boot).png")
+            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.copyItem(at: screen, to: destination)
+        }
+    }
+
+    /// The per-boot screens `keepScreens` kept, in boot order.
+    private func screenNames(in runDirectory: URL) -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: runDirectory.path)) ?? []
+        return names.filter { $0.hasPrefix("screen-") && $0.hasSuffix(".png") }
             .sorted { naturalSerialKey($0) < naturalSerialKey($1) }
-            .map { gateTmp.appendingPathComponent($0).appendingPathComponent("screen.png") }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
-        guard let screen = screens.last else { return }
-        let destination = runDirectory.appendingPathComponent("screen.png")
-        try? FileManager.default.removeItem(at: destination)
-        try? FileManager.default.copyItem(at: screen, to: destination)
     }
 
     private func mergeSerials(from gateTmp: URL, userURL: URL, kernelURL: URL) throws {
