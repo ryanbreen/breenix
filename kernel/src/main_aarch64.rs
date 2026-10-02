@@ -619,9 +619,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         // After TTBR0 is switched to a process page table, these addresses become
         // inaccessible — timer IRQ vectors fault, kernel threads can't resume, etc.
         //
-        // Solution: switch SP and PC to HHDM addresses now. After this, all code runs
-        // through TTBR1, which is never modified. This mirrors what boot.S does on QEMU
-        // (line 143-147: adds KERNEL_VIRT_BASE to SP and branches to high-half code).
+        // Switch SP to its physical HHDM alias, but PC to the linked high-half
+        // mapping. VMware loads the image above its linked physical address;
+        // the loader maps both aliases to the same image. Keeping PC in the
+        // relocated alias mixes PC-relative addresses (including VBAR and the
+        // resume-PC guard bounds) with absolute linked function pointers. The
+        // first timer return can then reject a valid linked kernel PC and
+        // abandon the bootstrap continuation before PID 1 starts.
+        let ram_base_offset = kernel::platform_config::ram_base_offset();
         unsafe {
             core::arch::asm!(
                 // Add HHDM offset to SP (switch to HHDM stack)
@@ -629,17 +634,18 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 "lsl x8, x8, #48",        // x8 = 0xFFFF_0000_0000_0000
                 "add sp, sp, x8",          // SP now in HHDM
 
-                // Compute HHDM address of continuation label and branch there.
-                // ADR gives the physical address of the label (PC-relative).
-                // Adding x8 gives the HHDM address.
+                // ADR follows the relocated physical image. Remove the load
+                // offset for code only, then select the linked TTBR1 mapping.
                 "adr x9, 1f",             // x9 = physical addr of label '1'
-                "add x9, x9, x8",         // x9 = HHDM addr of label '1'
-                "br x9",                   // Branch to HHDM
+                "sub x9, x9, x10",        // x9 = linked physical addr of label '1'
+                "add x9, x9, x8",         // x9 = linked high-half addr of label '1'
+                "br x9",                   // Branch to linked high-half code
                 "1:",
                 // Now executing at HHDM address through TTBR1.
                 // All subsequent ADRP instructions will compute HHDM-relative addresses.
                 out("x8") _,
                 out("x9") _,
+                in("x10") ram_base_offset,
                 options(nostack),
             );
         }
