@@ -1143,7 +1143,7 @@ fn nonblock_eagain_test_main() -> ! {
         feature = "disable_x86_prod_init"
     ))
 ))]
-fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
+fn launch_x86_production_init(name: &str, elf_data: &[u8]) -> Result<(), &'static str> {
     use alloc::string::String;
 
     let (thread, designated_pid_raw, reserved_collisions) = {
@@ -1152,7 +1152,7 @@ fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
             .as_mut()
             .ok_or("process manager not available")?;
 
-        let ticket = manager.create_init_process(String::from("init"), elf_data)?;
+        let ticket = manager.create_init_process(String::from(name), elf_data)?;
         let publication = manager.designate_init(ticket)?;
         let designated_pid_raw = manager
             .designated_init()
@@ -1173,6 +1173,45 @@ fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
     task::scheduler::spawn(thread);
 
     Ok(())
+}
+
+/// Read the program the production kernel runs as PID 1 from the ext2 root:
+/// `/sbin/suite-<id>` when the boot-target file (`kernel::boot::target`) names a
+/// suite whose binary loads, otherwise `/sbin/init`. Returns its process name and
+/// ELF. A boot-target file that cannot be used, or a suite binary that cannot be
+/// read, is noted and the default init runs.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))
+))]
+fn read_x86_production_init() -> Result<(alloc::string::String, alloc::vec::Vec<u8>), &'static str>
+{
+    use alloc::string::String;
+    use kernel::boot::{init_image::read_init_from_ext2, target};
+
+    match target::read() {
+        Ok(Some(id)) => {
+            let path = target::suite_path(&id);
+            match read_init_from_ext2(&path) {
+                Ok(elf_data) => {
+                    log::info!("[boot] Boot mode: suite {}", id);
+                    return Ok((alloc::format!("suite-{}", id), elf_data));
+                }
+                Err(e) => log::warn!(
+                    "[boot] Ignoring boot mode \"suite\": {} could not be loaded ({})",
+                    path,
+                    e
+                ),
+            }
+        }
+        Ok(None) => {}
+        Err(why) => log::warn!("[boot] Ignoring boot target {}: {}", target::PATH, why),
+    }
+    read_init_from_ext2("/sbin/init").map(|elf_data| (String::from("init"), elf_data))
 }
 
 /// Continue kernel initialization after setting up threading
@@ -1770,10 +1809,10 @@ fn kernel_main_continue() -> ! {
 
         x86_64::instructions::interrupts::enable();
 
-        match kernel::boot::init_image::read_init_from_ext2("/sbin/init") {
-            Ok(elf_data) => {
+        match read_x86_production_init() {
+            Ok((name, elf_data)) => {
                 x86_64::instructions::interrupts::without_interrupts(|| {
-                    if let Err(e) = launch_x86_production_init(&elf_data) {
+                    if let Err(e) = launch_x86_production_init(&name, &elf_data) {
                         log::error!("PRODUCTION INIT: failed to launch init: {}", e);
                     }
                 });

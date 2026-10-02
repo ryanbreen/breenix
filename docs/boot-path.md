@@ -27,7 +27,7 @@ stage list and shown alongside, but does not block moving on.
 
 ## Boot modes
 
-`scripts/boot-interactive.sh --mode MODE` boots the same disk five ways (`modes` in
+`scripts/boot-interactive.sh --mode MODE` boots the same disk six ways (`modes` in
 `boot-path.json`):
 
 - `tests` (default): the testing kernel and its test loader. This is the gate above.
@@ -45,14 +45,25 @@ stage list and shown alongside, but does not block moving on.
   0 and printed no line containing `FAIL`; one running past 60 seconds is killed and fails.
   Stage markers are substrings and the program's output is relayed unchanged, so a program
   that prints probe's own `START` or `DONE PASS` text can match those stages.
+- `suite`: the production kernel runs an effort suite, `/sbin/suite-ID`, as PID 1
+  (`--suite ID`, passed as `-fw_cfg name=opt/breenix/suite,string=ID`). The suite runs every
+  case of `docs/suites/ID.json`, prints `SUITE ID START`, one `SUITE ID CASE` line per case and
+  `SUITE ID DONE passed=P failed=F skipped=S total=N`, and leaves its scored panel on screen
+  (`docs/suites/README.md`). Parallels and VMware boot a suite with
+  `./run.sh --parallels|--vmware --suite ID`, and the x86-64 gate with
+  `BREENIX_BOOT_SUITE=ID docker/qemu/run-x86-gate.sh`: both write `/etc/breenix/boot-target`
+  (one line, `suite ID`) onto a copy of the ext2 disk. The kernel takes the fw_cfg mode
+  first, then that file, else `default`. Suite mode exercises the kernel milestones only.
 
 The non-test modes build the kernel with no features, exactly like the prod-profile gate,
 and pass the mode to it with `-fw_cfg name=opt/breenix/mode,string=MODE`. The kernel
-prints `[boot] Boot mode: MODE` for the mode that runs (`program PATH` in program mode):
+prints `[boot] Boot mode: MODE` for the mode that runs (`program PATH` in program mode,
+`suite ID` in suite mode):
 `default` when none is given, which runs `/sbin/init` with no arguments, as before. An
 unknown mode, any mode given to the testing kernel, program mode without an absolute
-program path, or probe or program mode when `/sbin/probe` cannot be loaded also runs
-`default`, and the kernel notes the ignored request on its own line. A mode's stages for a milestone are `stages[MODE]` when present, else
+program path, suite mode without a valid suite id, an unusable boot-target file, or probe,
+program or suite mode when its binary cannot be loaded also runs `default`, and the kernel
+notes the ignored request on its own line. A mode's stages for a milestone are `stages[MODE]` when present, else
 `stages["aarch64"]` when the milestone has `"kernel": true`; otherwise the mode does not
 exercise that milestone.
 
