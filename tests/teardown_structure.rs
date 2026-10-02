@@ -13609,7 +13609,7 @@ fn validate_qemu_accelerator_and_cpu_knobs(source: &str) -> Result<(), &'static 
         "Ok(\"hvf\") => \"hvf\"",
         "Ok(\"whpx\") => \"whpx\"",
         "_ => \"tcg\"",
-        "format!(\"pc,accel={}\", qemu_accel)",
+        "format!(\"{},accel={}\", profile.machine(), qemu_accel)",
         "machine.as_str()",
     ] {
         if !main.contains(required) {
