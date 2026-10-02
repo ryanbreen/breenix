@@ -667,5 +667,5 @@ name = "suite-files-io"
 path = "src/suite_files_io.rs"
 
 [[bin]]
-name = "files-io-exec"
+name = "files-io-exec_test"
 path = "src/files_io_exec.rs"

@@ -2,7 +2,7 @@
   "id": "files-io",
   "title": "Files & I/O",
   "area": "Files & I/O",
-  "summary": "Passing every case demonstrates POSIX file access, descriptor, offset, metadata, pipe, mapping, synchronization and libc stream behavior.",
+  "summary": "Passing every case demonstrates the listed POSIX file access, descriptor, offset, metadata, pipe, mapping and synchronization behaviors.",
   "binary": "/sbin/suite-files-io",
   "categories": [
     {
@@ -660,116 +660,6 @@
         {
           "id": "fdatasync-pipe",
           "title": "fdatasync rejects a pipe with EINVAL"
-        }
-      ]
-    },
-    {
-      "id": "stdio",
-      "title": "libc streams and buffering",
-      "cases": [
-        {
-          "id": "mode-read",
-          "title": "fopen r reads existing data"
-        },
-        {
-          "id": "mode-write",
-          "title": "fopen w truncates existing data"
-        },
-        {
-          "id": "mode-append",
-          "title": "fopen a appends writes"
-        },
-        {
-          "id": "mode-read-update",
-          "title": "fopen r+ permits read and write without truncation"
-        },
-        {
-          "id": "mode-write-update",
-          "title": "fopen w+ truncates and permits read and write"
-        },
-        {
-          "id": "mode-append-update",
-          "title": "fopen a+ appends writes after an explicit seek"
-        },
-        {
-          "id": "missing-r",
-          "title": "fopen r fails for a missing file"
-        },
-        {
-          "id": "missing-rupdate",
-          "title": "fopen r+ fails for a missing file"
-        },
-        {
-          "id": "create-w",
-          "title": "fopen w creates a missing file"
-        },
-        {
-          "id": "create-a",
-          "title": "fopen a creates a missing file"
-        },
-        {
-          "id": "create-wupdate",
-          "title": "fopen w+ creates a missing file"
-        },
-        {
-          "id": "create-aupdate",
-          "title": "fopen a+ creates a missing file"
-        },
-        {
-          "id": "fread-items",
-          "title": "fread returns complete item count rather than byte count"
-        },
-        {
-          "id": "fread-short",
-          "title": "fread at EOF returns the count of complete items"
-        },
-        {
-          "id": "fread-zero",
-          "title": "fread of zero items returns zero"
-        },
-        {
-          "id": "fwrite-items",
-          "title": "fwrite returns item count and preserves bytes"
-        },
-        {
-          "id": "fseek",
-          "title": "fseek repositions the next stream read"
-        },
-        {
-          "id": "ftell",
-          "title": "ftell reports the logical position after buffered reads"
-        },
-        {
-          "id": "fflush",
-          "title": "fflush makes buffered output visible through another descriptor"
-        },
-        {
-          "id": "fclose-flush",
-          "title": "fclose flushes pending output"
-        },
-        {
-          "id": "ungetc",
-          "title": "ungetc returns the pushed byte on the next read"
-        },
-        {
-          "id": "ungetc-eof",
-          "title": "ungetc clears the EOF indicator"
-        },
-        {
-          "id": "fgets-line",
-          "title": "fgets includes the newline and NUL terminates"
-        },
-        {
-          "id": "fgets-bound",
-          "title": "fgets reads at most n-1 bytes"
-        },
-        {
-          "id": "fputs",
-          "title": "fputs writes characters without the terminating NUL"
-        },
-        {
-          "id": "fseek-clears-eof",
-          "title": "A successful fseek clears the EOF indicator"
         }
       ]
     }

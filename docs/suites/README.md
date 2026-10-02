@@ -111,3 +111,28 @@ display back before every update, so a case that took it cannot leave the panel 
 When every case has run it prints the DONE line, leaves the final panel up and idles; it
 never exits. On x86-64 the production kernel gives the display owner the bootloader's
 framebuffer (and stops drawing its own log there), so the panel shows on every platform.
+
+## Files & I/O
+
+`files-io` has 151 syscall and descriptor cases. Stream stdio cases are deferred until
+there is a musl-built helper; libbreenix-libc supplies Rust's runtime ABI and has no
+stdio implementation. Synchronization cases call the kernel's fsync/fdatasync ABI,
+so an unimplemented syscall fails with ENOSYS rather than passing a libc stub.
+
+The suite uses the runner's default 10-second case deadline, including helper children;
+there is no shorter fork/exec deadline. This is a hang limit, not a performance target.
+A timeout reports a failure to finish, not the result of a POSIX assertion. Allow 1800
+seconds on x86 for 151 cases, their kill/reap allowance, boot and panel overhead:
+
+```bash
+BREENIX_BOOT_SUITE=files-io BREENIX_GATE_TIMEOUT=1800 docker/qemu/run-x86-gate.sh 1
+# From tools/breenix-runs (also captures the final panel through QMP):
+swift run breenix-runs run x86 --boots 1 --suite files-io --gate-timeout 1800 --sha <pushed-sha>
+```
+
+Suite helpers are ordinary userspace binaries named with the `_test` suffix, built via
+`STD_BINARIES` and installed in `/usr/local/test/bin`. They ship alongside the suite in
+all images, including default boot images, so changing boot mode does not require a
+second userspace image; default boot does not execute them. Files & I/O uses
+`/usr/local/test/bin/files-io-exec_test` for descriptor lifetime across exec. Helpers
+must return their result to the case and must not print suite serial records.
