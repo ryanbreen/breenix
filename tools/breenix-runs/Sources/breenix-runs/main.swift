@@ -14,6 +14,7 @@ struct RunArmArguments {
 }
 
 struct RunX86Arguments {
+    var qemuProfile: X86HardwareProfile?
     var profile: X86Profile = .gate
     var profileWasSet = false
     var boots = 1
@@ -43,7 +44,7 @@ func usage() -> String {
     """
     Usage:
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
-      breenix-runs run x86 [gate] [--boots N] [--sha SHA] [--mode kthread|full] [--host HOST] [--dry-run] [--tag T] [--no-store]
+      breenix-runs run x86 [gate] [--profile NAME] [--boots N] [--sha SHA] [--mode kthread|full] [--host HOST] [--dry-run] [--tag T] [--no-store]
       breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
       breenix-runs list [--arch aarch64|x86_64] [--profile NAME] [--verdict pass|fail|attributed|running|unknown]
       breenix-runs facts <run-id|latest> [--json]
@@ -60,6 +61,8 @@ func usage() -> String {
     Override for CLI and app: BREENIX_RUNS_STORE=/absolute/store/path
     show defaults to subsystems; combine flags to select panes.
     run arm launches local QEMU; run x86 supports the remote gate profile only.
+    x86 --profile selects hardware from docs/x86-profiles.json (unset: default).
+    BREENIX_GATE_TIMEOUT sets the remote x86 per-boot timeout (default: 900).
     --no-store avoids persistence; --dry-run prints the x86 remote plan.
     import preserves gate metadata when present; loose serial verdicts remain unknown.
     Use --help or <command> --help to print this usage without accessing the store.
@@ -111,6 +114,11 @@ func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
 
     while let arg = iterator.next() {
         switch arg {
+        case "--profile":
+            guard let value = iterator.next(), let profile = X86HardwareProfile(rawValue: value) else {
+                throw CLIError(description: "--profile requires one of: \(X86HardwareProfile.allCases.map(\.rawValue).joined(separator: ", "))")
+            }
+            parsed.qemuProfile = profile
         case "--boots":
             guard let value = iterator.next(), let boots = Int(value), boots > 0 else {
                 throw CLIError(description: "--boots requires a positive integer")
@@ -423,9 +431,14 @@ func main() -> Int32 {
                     FileHandle.standardError.write(Data("warning: beast will test the pushed commit \(sha), not the dirty working tree\n".utf8))
                 }
 
+                let timeoutText = ProcessInfo.processInfo.environment["BREENIX_GATE_TIMEOUT"] ?? "900"
+                guard let timeout = Int(timeoutText), timeout > 0 else {
+                    throw CLIError(description: "BREENIX_GATE_TIMEOUT requires a positive integer")
+                }
                 let launcher = BeastLauncher(
                     store: store,
                     runner: runner,
+                    timeoutSecs: timeout,
                     pathsTemplate: BeastPaths(host: runArgs.host, clonePath: "")
                 )
                 let options = BeastLaunchOptions(
@@ -434,7 +447,8 @@ func main() -> Int32 {
                     sha: sha,
                     gitDirty: git.dirty,
                     tags: runArgs.tags,
-                    persist: runArgs.persist
+                    persist: runArgs.persist,
+                    qemuProfile: runArgs.qemuProfile
                 )
                 if runArgs.dryRun {
                     printDryRun(plan: try launcher.plan(options: options))

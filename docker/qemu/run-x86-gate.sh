@@ -62,6 +62,9 @@ MODE="${2:-kthread}"
 MAX_CONCURRENCY=4
 REPO_DIR="${BREENIX_REPO_DIR:-$DEFAULT_REPO_DIR}"
 TIMEOUT_SECS="${BREENIX_GATE_TIMEOUT:-150}"
+PROFILE="${BREENIX_QEMU_PROFILE-default}"
+export BREENIX_QEMU_PROFILE="$PROFILE"
+echo "[gate] profile=$PROFILE"
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 # Must be absolute: a relative value would resolve against whatever
 # directory happens to be current when each command runs (review finding F6
@@ -147,6 +150,13 @@ fi
 BUILD_SECS=$((SECONDS - BUILD_START))
 echo "[gate] Build clean (0 warnings) in ${BUILD_SECS}s"
 
+# Ask the launcher for the selected hardware's census, rather than counting
+# source strings (AHCI/NVMe attach no VirtIO block devices).
+if ! expected_census=$(BREENIX_PRINT_QEMU_CENSUS=1 ./target/release/qemu-uefi); then
+  echo "GATE: FAIL (invalid QEMU profile/storage configuration)"; exit 1
+fi
+read -r expected_virtio_block expected_network <<< "$expected_census"
+
 echo "[gate] === Running $COUNT boot test(s), mode=$MODE ==="
 # Sequential, not wall-clock-parallel: the qemu-uefi binary opens the shared
 # breenix-uefi.img read-write, so simultaneous instances collide on QEMU's image
@@ -167,42 +177,10 @@ for i in $(seq 1 "$COUNT"); do
     -serial file:"$OUTDIR/serial_kernel.log" \
     > "$OUTDIR/stdout.log" 2>&1
 
-  # Device-enumeration census leg (green arc 5, bus+NIC blended). Neither
-  # branch below proves pci::enumerate() found the device set this boot
-  # actually attached -- #702 is a silent hang inside PCI enumeration right
-  # after "E1000 network device found", and every check below reads that
-  # failure only as "marker not found" / "USERSPACE TEST COMPLETE was
-  # absent", with no signal naming where the boot actually stopped. This
-  # makes that region legible without a new QEMU invocation: the census
-  # line's mere absence is itself signal, and its VirtIO-block count is
-  # checked against what this binary itself attaches, self-counted from
-  # src/bin/qemu-uefi.rs rather than a second hand-pinned literal here (the
-  # #549/#551/[[gate-target-fidelity-528]] census-not-literal lesson).
-  # BREENIX_NET_MODE=none only skips the explicit -netdev/-device args in
-  # qemu-uefi.rs; it never passes QEMU its own `-nic none`. QEMU 8.2 (the
-  # beast host's version) auto-attaches its own default e1000 NIC whenever
-  # no -net/-netdev/-nic option is given at all, so a real NIC (00:02.0
-  # [8086:100e]) IS present on every boot of this gate -- confirmed
-  # empirically (a boot here reports "PCI: ... Found 9 devices (3 VirtIO
-  # block, 1 network)" and "E1000 network device found"), not assumed from
-  # reading qemu-uefi.rs alone. The honest expected floor is therefore >=1.
-  # claim-lint:ok: #702 records the silent enumeration failure and gate requirement.
+  # Require enumeration to finish and match the selected profile's block
+  # count and network floor. Default still requires 3 VirtIO block and >=1 NIC.
   census_ok=true
   census_reason=""
-  # Anchored to the emitted -device arg form (leading whitespace then the
-  # opening quote), not a bare substring match: an unanchored grep for the
-  # literal text can equally match a future comment or doc string that
-  # merely mentions the flag, permanently inflating the count and
-  # permanently reddening this gate (review finding F9 -- the same
-  # self-referential-vacuity class the aarch64 leg and run-x86-boot-tests.sh
-  # each hit once already, hardened here before it was hit a third time).
-  # All three sites are conditional on BREENIX_QEMU_STORAGE: this gate never
-  # sets it, so storage_mode defaults to "virtio" and all three attach --
-  # BREENIX_QEMU_STORAGE=ide (used elsewhere, e.g. CI's OVMF-discovery
-  # profile) would attach zero and make this expected count wrong for that
-  # profile; it is not read by this script today.
-  # claim-lint:ok: #702 and src/bin/qemu-uefi.rs resolve the attachment count.
-  expected_virtio_block=$(grep -cE -- '^[[:space:]]*"virtio-blk-pci,drive=' "$REPO_DIR/src/bin/qemu-uefi.rs")
   pci_census_line=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
       "$OUTDIR"/serial_*.log 2>/dev/null | tail -1)
   if [ -z "$pci_census_line" ]; then
@@ -218,10 +196,10 @@ for i in $(seq 1 "$COUNT"); do
       census_reason="device-enumeration census line malformed: $pci_census_line"
     elif [ "$census_virtio_block" -ne "$expected_virtio_block" ]; then
       census_ok=false
-      census_reason="device-enumeration census reports $census_virtio_block VirtIO block device(s), self-counted expected $expected_virtio_block from src/bin/qemu-uefi.rs"
-    elif [ "$census_network" -lt 1 ]; then
+      census_reason="device-enumeration census reports $census_virtio_block VirtIO block device(s), expected $expected_virtio_block for profile=$PROFILE"
+    elif [ "$census_network" -lt "$expected_network" ]; then
       census_ok=false
-      census_reason="device-enumeration census reports $census_network network device(s); QEMU's implicit default NIC (BREENIX_NET_MODE=none never passes -nic none) should always yield >=1"
+      census_reason="device-enumeration census reports $census_network network device(s); profile=$PROFILE requires >=$expected_network"
     fi
   fi
 
