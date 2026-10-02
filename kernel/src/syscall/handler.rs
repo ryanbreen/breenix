@@ -383,7 +383,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Readlinkat) => {
             super::fs::sys_readlinkat(args.0 as i32, args.1, args.2, args.3)
         }
-        Some(SyscallNumber::Dup3) => super::handlers::sys_dup2(args.0, args.1),
+        Some(SyscallNumber::Dup3) => super::handlers::sys_dup3(args.0, args.1, args.2),
         Some(SyscallNumber::Pselect6) => {
             super::handlers::sys_select(args.0 as i32, args.1, args.2, args.3, args.4)
         }
