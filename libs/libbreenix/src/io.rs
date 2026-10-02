@@ -182,6 +182,13 @@ pub fn dup(old_fd: Fd) -> Result<Fd, Error> {
 /// `new_fd` on success, `Err(Error)` on error.
 #[inline]
 pub fn dup2(old_fd: Fd, new_fd: Fd) -> Result<Fd, Error> {
+    // ARM64 has dup3 but no dup2 syscall. dup2(fd, fd) must validate
+    // the descriptor and succeed; dup3(fd, fd, 0) instead returns EINVAL.
+    #[cfg(target_arch = "aarch64")]
+    if old_fd == new_fd {
+        fcntl_getfd(old_fd)?;
+        return Ok(old_fd);
+    }
     let ret = unsafe {
         #[cfg(target_arch = "x86_64")]
         { raw::syscall2(nr::DUP2, old_fd.raw(), new_fd.raw()) }

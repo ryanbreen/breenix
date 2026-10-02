@@ -1,0 +1,667 @@
+{
+  "id": "files-io",
+  "title": "Files & I/O",
+  "area": "Files & I/O",
+  "summary": "Passing every case demonstrates the listed POSIX file access, descriptor, offset, metadata, pipe, mapping and synchronization behaviors.",
+  "binary": "/sbin/suite-files-io",
+  "categories": [
+    {
+      "id": "open",
+      "title": "open / creat flags",
+      "cases": [
+        {
+          "id": "create",
+          "title": "O_CREAT creates a missing regular file"
+        },
+        {
+          "id": "exclusive-new",
+          "title": "O_CREAT|O_EXCL succeeds for a missing path"
+        },
+        {
+          "id": "exclusive-existing",
+          "title": "O_CREAT|O_EXCL returns EEXIST for an existing file"
+        },
+        {
+          "id": "create-preserves",
+          "title": "O_CREAT without O_TRUNC preserves existing data"
+        },
+        {
+          "id": "truncate",
+          "title": "O_TRUNC reduces an existing file to zero bytes"
+        },
+        {
+          "id": "truncate-offset",
+          "title": "An O_TRUNC open starts at offset zero"
+        },
+        {
+          "id": "append",
+          "title": "O_APPEND writes at EOF after seeking to the start"
+        },
+        {
+          "id": "append-each-write",
+          "title": "Every O_APPEND write uses the current EOF"
+        },
+        {
+          "id": "readonly-write",
+          "title": "O_RDONLY rejects write with EBADF"
+        },
+        {
+          "id": "writeonly-read",
+          "title": "O_WRONLY rejects read with EBADF"
+        },
+        {
+          "id": "readwrite-read",
+          "title": "O_RDWR permits reading"
+        },
+        {
+          "id": "readwrite-write",
+          "title": "O_RDWR permits writing"
+        },
+        {
+          "id": "cloexec-flag",
+          "title": "O_CLOEXEC sets FD_CLOEXEC"
+        },
+        {
+          "id": "cloexec-exec",
+          "title": "O_CLOEXEC closes the descriptor across exec"
+        },
+        {
+          "id": "ordinary-exec",
+          "title": "An ordinary open descriptor survives exec"
+        },
+        {
+          "id": "directory",
+          "title": "O_DIRECTORY opens a directory"
+        },
+        {
+          "id": "directory-regular",
+          "title": "O_DIRECTORY rejects a regular file with ENOTDIR"
+        },
+        {
+          "id": "missing",
+          "title": "Opening a missing file without O_CREAT returns ENOENT"
+        },
+        {
+          "id": "missing-parent",
+          "title": "O_CREAT cannot create missing parent directories"
+        },
+        {
+          "id": "directory-write",
+          "title": "Opening a directory for write returns EISDIR"
+        },
+        {
+          "id": "nondirectory-parent",
+          "title": "A regular file in a path prefix produces ENOTDIR"
+        },
+        {
+          "id": "permission-denied",
+          "title": "A non-root process cannot open a mode-000 file"
+        }
+      ]
+    },
+    {
+      "id": "read-write",
+      "title": "read / write and vectors",
+      "cases": [
+        {
+          "id": "short-read",
+          "title": "A read larger than the file returns only available bytes"
+        },
+        {
+          "id": "zero-read",
+          "title": "A zero-length read returns zero"
+        },
+        {
+          "id": "zero-write",
+          "title": "A zero-length write returns zero"
+        },
+        {
+          "id": "zero-offset",
+          "title": "Zero-length I/O does not advance the file offset"
+        },
+        {
+          "id": "eof",
+          "title": "Reading at EOF returns zero"
+        },
+        {
+          "id": "eof-repeat",
+          "title": "Repeated reads at EOF keep returning zero"
+        },
+        {
+          "id": "empty",
+          "title": "Reading an empty file returns zero"
+        },
+        {
+          "id": "binary",
+          "title": "read and write preserve embedded NUL and high bytes"
+        },
+        {
+          "id": "large",
+          "title": "A 64 KiB buffer survives a write/read round trip"
+        },
+        {
+          "id": "overwrite",
+          "title": "A write within the file preserves the trailing bytes"
+        },
+        {
+          "id": "extend",
+          "title": "Writing at EOF extends the file"
+        },
+        {
+          "id": "readv",
+          "title": "readv scatters data in vector order"
+        },
+        {
+          "id": "readv-short",
+          "title": "readv stops at EOF in the middle of a vector"
+        },
+        {
+          "id": "writev",
+          "title": "writev gathers data in vector order"
+        },
+        {
+          "id": "readv-empty",
+          "title": "readv with zero vectors returns zero"
+        },
+        {
+          "id": "readv-bad-fd",
+          "title": "readv rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "writev-empty",
+          "title": "writev with zero vectors returns zero"
+        },
+        {
+          "id": "writev-bad-fd",
+          "title": "writev rejects an invalid descriptor with EBADF"
+        }
+      ]
+    },
+    {
+      "id": "offsets",
+      "title": "Offsets and positioned I/O",
+      "cases": [
+        {
+          "id": "set",
+          "title": "SEEK_SET sets an absolute offset"
+        },
+        {
+          "id": "cur",
+          "title": "SEEK_CUR adds to the current offset"
+        },
+        {
+          "id": "end",
+          "title": "SEEK_END measures from file size"
+        },
+        {
+          "id": "past-end",
+          "title": "Seeking past EOF succeeds without growing the file"
+        },
+        {
+          "id": "read-position",
+          "title": "read advances the file offset by its byte count"
+        },
+        {
+          "id": "write-position",
+          "title": "write advances the file offset by its byte count"
+        },
+        {
+          "id": "negative",
+          "title": "Seeking before offset zero returns EINVAL"
+        },
+        {
+          "id": "invalid-whence",
+          "title": "An invalid seek origin returns EINVAL"
+        },
+        {
+          "id": "pipe",
+          "title": "Seeking on a pipe returns ESPIPE"
+        },
+        {
+          "id": "hole",
+          "title": "Writing past EOF makes the gap read as zeros"
+        },
+        {
+          "id": "past-end-read",
+          "title": "Reading past EOF returns zero"
+        },
+        {
+          "id": "pread-data",
+          "title": "pread reads from the requested absolute offset"
+        },
+        {
+          "id": "pread-offset",
+          "title": "pread does not change the shared file offset"
+        },
+        {
+          "id": "pread-eof",
+          "title": "pread at EOF returns zero"
+        },
+        {
+          "id": "pwrite-data",
+          "title": "pwrite writes at the requested absolute offset"
+        },
+        {
+          "id": "pwrite-offset",
+          "title": "pwrite does not change the shared file offset"
+        },
+        {
+          "id": "pread-negative",
+          "title": "pread rejects a negative offset with EINVAL"
+        },
+        {
+          "id": "pwrite-negative",
+          "title": "pwrite rejects a negative offset with EINVAL"
+        }
+      ]
+    },
+    {
+      "id": "descriptors",
+      "title": "Descriptor lifetime and duplication",
+      "cases": [
+        {
+          "id": "dup",
+          "title": "dup returns a distinct valid descriptor"
+        },
+        {
+          "id": "dup-offset",
+          "title": "dup shares the open file offset"
+        },
+        {
+          "id": "separate-offset",
+          "title": "Independent opens have independent offsets"
+        },
+        {
+          "id": "dup-clear-cloexec",
+          "title": "dup clears FD_CLOEXEC on the new descriptor"
+        },
+        {
+          "id": "dup-close",
+          "title": "Closing one duplicate leaves the other usable"
+        },
+        {
+          "id": "dup-lowest",
+          "title": "dup chooses the lowest unused descriptor"
+        },
+        {
+          "id": "open-lowest",
+          "title": "open reuses the lowest free descriptor"
+        },
+        {
+          "id": "dup2-target",
+          "title": "dup2 returns the requested target descriptor"
+        },
+        {
+          "id": "dup2-replace",
+          "title": "dup2 closes and replaces an occupied target"
+        },
+        {
+          "id": "dup2-self",
+          "title": "dup2 of a valid descriptor onto itself succeeds"
+        },
+        {
+          "id": "dup2-clear-cloexec",
+          "title": "dup2 clears FD_CLOEXEC on its target"
+        },
+        {
+          "id": "dup2-invalid-preserves",
+          "title": "dup2 with an invalid source preserves the target"
+        },
+        {
+          "id": "dup3-cloexec",
+          "title": "dup3 with O_CLOEXEC sets FD_CLOEXEC"
+        },
+        {
+          "id": "dup3-self",
+          "title": "dup3 onto itself returns EINVAL"
+        },
+        {
+          "id": "dup3-flags",
+          "title": "dup3 rejects unsupported flags with EINVAL"
+        },
+        {
+          "id": "close-twice",
+          "title": "Closing a descriptor twice returns EBADF"
+        },
+        {
+          "id": "read-bad-fd",
+          "title": "read rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "write-bad-fd",
+          "title": "write rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "close-bad-fd",
+          "title": "close rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "dup-bad-fd",
+          "title": "dup rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "seek-bad-fd",
+          "title": "seek rejects an invalid descriptor with EBADF"
+        }
+      ]
+    },
+    {
+      "id": "fcntl",
+      "title": "fcntl flags and advisory locks",
+      "cases": [
+        {
+          "id": "getfl-readonly",
+          "title": "F_GETFL reports O_RDONLY"
+        },
+        {
+          "id": "getfl-writeonly",
+          "title": "F_GETFL reports O_WRONLY"
+        },
+        {
+          "id": "getfl-readwrite",
+          "title": "F_GETFL reports O_RDWR"
+        },
+        {
+          "id": "setfl-append",
+          "title": "F_SETFL enables append behavior"
+        },
+        {
+          "id": "clear-append",
+          "title": "F_SETFL can clear O_APPEND"
+        },
+        {
+          "id": "setfl-access",
+          "title": "F_SETFL cannot change the access mode"
+        },
+        {
+          "id": "shared-status",
+          "title": "File status flags are shared by duplicates"
+        },
+        {
+          "id": "getfd-default",
+          "title": "FD_CLOEXEC is clear on an ordinary open"
+        },
+        {
+          "id": "setfd",
+          "title": "F_SETFD sets FD_CLOEXEC"
+        },
+        {
+          "id": "clearfd",
+          "title": "F_SETFD clears FD_CLOEXEC"
+        },
+        {
+          "id": "private-fd-flags",
+          "title": "Descriptor flags are not shared by duplicates"
+        },
+        {
+          "id": "dupfd-minimum",
+          "title": "F_DUPFD returns a descriptor at or above its minimum"
+        },
+        {
+          "id": "dupfd-offset",
+          "title": "F_DUPFD shares the file offset"
+        },
+        {
+          "id": "dupfd-negative",
+          "title": "F_DUPFD rejects a negative minimum with EINVAL"
+        },
+        {
+          "id": "bad-fd",
+          "title": "F_GETFL rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "lock-set",
+          "title": "F_SETLK establishes a write lock"
+        },
+        {
+          "id": "lock-unlock",
+          "title": "F_SETLK can release an advisory lock"
+        },
+        {
+          "id": "lock-get",
+          "title": "F_GETLK reports F_UNLCK when no other process holds a lock"
+        },
+        {
+          "id": "lock-conflict",
+          "title": "A conflicting process cannot acquire a write lock"
+        },
+        {
+          "id": "lock-owner",
+          "title": "F_GETLK reports the conflicting lock owner PID"
+        }
+      ]
+    },
+    {
+      "id": "metadata",
+      "title": "Metadata, truncation and timestamps",
+      "cases": [
+        {
+          "id": "stat-type",
+          "title": "stat identifies a regular file"
+        },
+        {
+          "id": "fstat-type",
+          "title": "fstat identifies a regular file"
+        },
+        {
+          "id": "stat-size",
+          "title": "stat reports the exact byte size"
+        },
+        {
+          "id": "fstat-size",
+          "title": "fstat reports the exact byte size"
+        },
+        {
+          "id": "identity",
+          "title": "stat and fstat agree on device and inode"
+        },
+        {
+          "id": "links",
+          "title": "A newly created file has one hard link"
+        },
+        {
+          "id": "mode",
+          "title": "Creation mode restricts group and other access"
+        },
+        {
+          "id": "directory",
+          "title": "stat identifies a directory"
+        },
+        {
+          "id": "lstat-link",
+          "title": "lstat describes the symlink rather than its target"
+        },
+        {
+          "id": "stat-link",
+          "title": "stat follows a symlink to its target"
+        },
+        {
+          "id": "lstat-size",
+          "title": "lstat reports the symlink target string length"
+        },
+        {
+          "id": "missing",
+          "title": "stat on a missing path returns ENOENT"
+        },
+        {
+          "id": "bad-fd",
+          "title": "fstat on an invalid descriptor returns EBADF"
+        },
+        {
+          "id": "write-size",
+          "title": "Metadata size grows after a write at EOF"
+        },
+        {
+          "id": "ftruncate-shrink",
+          "title": "ftruncate shrinks the file and preserves its prefix"
+        },
+        {
+          "id": "ftruncate-grow",
+          "title": "ftruncate grows the file with zero-filled bytes"
+        },
+        {
+          "id": "ftruncate-size",
+          "title": "fstat reflects the size after ftruncate"
+        },
+        {
+          "id": "ftruncate-offset",
+          "title": "ftruncate does not move the file offset"
+        },
+        {
+          "id": "ftruncate-negative",
+          "title": "ftruncate with a negative size returns EINVAL"
+        },
+        {
+          "id": "truncate",
+          "title": "truncate by path changes the file size"
+        },
+        {
+          "id": "mtime-advances",
+          "title": "mtime advances after write"
+        },
+        {
+          "id": "ctime-advances",
+          "title": "ctime advances after write"
+        },
+        {
+          "id": "atime-advances",
+          "title": "atime advances after read"
+        },
+        {
+          "id": "timestamp-nanos",
+          "title": "Timestamp nanoseconds are in the POSIX range"
+        }
+      ]
+    },
+    {
+      "id": "pipes",
+      "title": "Pipes, atomicity and nonblocking I/O",
+      "cases": [
+        {
+          "id": "roundtrip",
+          "title": "A pipe preserves written bytes"
+        },
+        {
+          "id": "short-read",
+          "title": "Pipe read returns available bytes without filling the buffer"
+        },
+        {
+          "id": "eof",
+          "title": "Pipe read returns EOF after the last writer closes"
+        },
+        {
+          "id": "drain-before-eof",
+          "title": "Buffered pipe bytes remain readable before EOF"
+        },
+        {
+          "id": "duplicate-writer",
+          "title": "EOF waits for a duplicated writer to close"
+        },
+        {
+          "id": "epipe",
+          "title": "Writing with no readers returns EPIPE when SIGPIPE is ignored"
+        },
+        {
+          "id": "sigpipe",
+          "title": "Writing with no readers delivers SIGPIPE"
+        },
+        {
+          "id": "nonblock-empty",
+          "title": "An empty nonblocking pipe returns EAGAIN"
+        },
+        {
+          "id": "nonblock-full",
+          "title": "A full nonblocking pipe returns EAGAIN"
+        },
+        {
+          "id": "nonblock-flags",
+          "title": "pipe2 O_NONBLOCK applies to both ends"
+        },
+        {
+          "id": "cloexec",
+          "title": "pipe2 O_CLOEXEC applies to both ends"
+        },
+        {
+          "id": "atomic-small",
+          "title": "Concurrent 512-byte pipe writes do not interleave"
+        },
+        {
+          "id": "atomic-pipe-buf",
+          "title": "Concurrent PIPE_BUF-sized writes do not interleave"
+        },
+        {
+          "id": "atomic-nonblock",
+          "title": "A nonblocking PIPE_BUF write is all-or-nothing"
+        }
+      ]
+    },
+    {
+      "id": "mmap",
+      "title": "File-backed mappings",
+      "cases": [
+        {
+          "id": "read",
+          "title": "A file-backed mapping exposes the file bytes"
+        },
+        {
+          "id": "shared-writeback",
+          "title": "MAP_SHARED changes reach the file after msync"
+        },
+        {
+          "id": "shared-peer",
+          "title": "MAP_SHARED changes are visible in another shared mapping"
+        },
+        {
+          "id": "private-copy",
+          "title": "MAP_PRIVATE writes do not change the file"
+        },
+        {
+          "id": "private-readback",
+          "title": "MAP_PRIVATE writes remain readable in that mapping"
+        },
+        {
+          "id": "close-fd",
+          "title": "A mapping stays valid after its file descriptor closes"
+        },
+        {
+          "id": "unaligned-offset",
+          "title": "mmap rejects an unaligned file offset with EINVAL"
+        },
+        {
+          "id": "bad-fd",
+          "title": "File-backed mmap rejects an invalid descriptor with EBADF"
+        }
+      ]
+    },
+    {
+      "id": "sync",
+      "title": "File synchronization",
+      "cases": [
+        {
+          "id": "fsync",
+          "title": "fsync returns success for a writable regular file"
+        },
+        {
+          "id": "fsync-bad-fd",
+          "title": "fsync rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "fsync-pipe",
+          "title": "fsync rejects a pipe with EINVAL"
+        },
+        {
+          "id": "fdatasync",
+          "title": "fdatasync returns success for a writable regular file"
+        },
+        {
+          "id": "fdatasync-bad-fd",
+          "title": "fdatasync rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "fdatasync-pipe",
+          "title": "fdatasync rejects a pipe with EINVAL"
+        }
+      ]
+    }
+  ]
+}
