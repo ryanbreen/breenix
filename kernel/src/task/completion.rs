@@ -173,8 +173,10 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
 /// An aarch64 idle thread is not a sleepable continuation either: dispatching
 /// one restarts it at idle_loop_arm64, so blocking it would discard its caller.
 /// Poll with the CPU's preemption brake held. A masked WFI still wakes on a
-/// pending interrupt, and unmasking right after takes it, so a completion IRQ
-/// that lands after the check is not missed.
+/// pending interrupt, and unmasking IRQ and FIQ right after takes it whichever
+/// class the GIC delivers, so a completion that lands after the check is not
+/// missed. Only used once the timer runs: its tick bounds every WFI, so a lost
+/// device interrupt still reaches the deadline.
 #[cfg(target_arch = "aarch64")]
 fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns: u64) -> bool {
     crate::arch_without_interrupts(|| {
@@ -193,9 +195,9 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
             unsafe {
                 core::arch::asm!(
                     "wfi",
-                    "msr daifclr, #2",
+                    "msr daifclr, #3",
                     "isb",
-                    "msr daifset, #2",
+                    "msr daifset, #3",
                     options(nostack)
                 );
             }
@@ -287,8 +289,15 @@ impl Completion {
         // Idle's saved boot continuation is discarded after Ring 3 starts.
         // preempt_count > 0 does not identify a syscall: boot holds it too.
         // Do not release that caller's brake or publish idle as BlockedOnIO.
-        if crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid)
-            == Some(true)
+        // Before the aarch64 timer runs, idle takes the bounded spin path
+        // below instead, since nothing would end a WFI on a lost interrupt.
+        #[cfg(target_arch = "x86_64")]
+        let idle_poll_available = true;
+        #[cfg(target_arch = "aarch64")]
+        let idle_poll_available = crate::arch_impl::aarch64::timer_interrupt::is_initialized();
+        if idle_poll_available
+            && crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid)
+                == Some(true)
         {
             return Ok(wait_idle_completion(self, expected_token, timeout_ns));
         }
