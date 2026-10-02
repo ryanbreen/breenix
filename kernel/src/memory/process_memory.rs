@@ -541,26 +541,26 @@ impl ProcessPageTable {
             // PHASE 2: Use master kernel PML4 if available
             if let Some(master_pml4_frame) = crate::memory::kernel_page_table::master_kernel_pml4()
             {
-                log::info!("PHASE2: Using master kernel PML4 for process creation");
+                log::debug!("PHASE2: Using master kernel PML4 for process creation");
 
                 // Copy upper-half entries from master instead of current
                 let master_pml4_virt = phys_offset + master_pml4_frame.start_address().as_u64();
                 let master_pml4 = &*(master_pml4_virt.as_ptr() as *const PageTable);
 
                 // Log what we're about to copy for critical entries
-                log::info!(
+                log::debug!(
                     "PHASE2-DEBUG: Reading master PML4 from virtual address {:p}",
                     master_pml4
                 );
-                log::info!(
+                log::debug!(
                     "PHASE2-DEBUG: Master PML4[402] = {:?}",
                     master_pml4[402].frame()
                 );
-                log::info!(
+                log::debug!(
                     "PHASE2-DEBUG: Master PML4[403] = {:?}",
                     master_pml4[403].frame()
                 );
-                log::info!(
+                log::debug!(
                     "PHASE2-DEBUG: &master_pml4[403] is at {:p}",
                     &master_pml4[403]
                 );
@@ -577,7 +577,7 @@ impl ProcessPageTable {
                     // Keep the master flags EXACTLY as they are - no modifications
                     // The kernel structures at PML4[2] should remain kernel-only
                     level_4_table[2].set_addr(master_pml4[2].addr(), master_flags);
-                    log::info!("CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: {:?}", master_flags);
+                    log::debug!("CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: {:?}", master_flags);
                 }
 
                 // Copy ONLY kernel-specific lower-half entries from master
@@ -606,7 +606,7 @@ impl ProcessPageTable {
                         lower_half_copied += 1;
                     }
                 }
-                log::info!("PHASE2: Copied {} kernel-only lower-half entries (skipped userspace), PML4[0] left empty", lower_half_copied);
+                log::debug!("PHASE2: Copied {} kernel-only lower-half entries (skipped userspace), PML4[0] left empty", lower_half_copied);
 
                 // CREATE a fresh PDPT for PML4[0] to enable userspace mappings
                 // PML4[0] covers 0x0 - 0x7FFFFFFFFF (512GB) - this is the userspace region
@@ -631,7 +631,7 @@ impl ProcessPageTable {
                 level_4_table[0].set_addr(fresh_pdpt_frame.start_address(), pml4_0_flags);
                 // PML4[0] is the one root-slot sub-hierarchy this constructor allocates.
                 owned_root_slots.insert(0);
-                log::info!(
+                log::debug!(
                     "PHASE2: Created fresh PDPT for PML4[0] at frame {:#x}",
                     fresh_pdpt_frame.start_address().as_u64()
                 );
@@ -654,7 +654,7 @@ impl ProcessPageTable {
                                     master_pml4[i].frame().unwrap();
                                 let copied_frame: PhysFrame<Size4KiB> =
                                     level_4_table[i].frame().unwrap();
-                                log::info!(
+                                log::debug!(
                                     "PHASE2: PML4[402] (kernel stacks): master={:?}, copied={:?}",
                                     master_frame,
                                     copied_frame
@@ -668,7 +668,7 @@ impl ProcessPageTable {
                                     master_pml4[i].frame().unwrap();
                                 let copied_frame: PhysFrame<Size4KiB> =
                                     level_4_table[i].frame().unwrap();
-                                log::info!(
+                                log::debug!(
                                     "PHASE2: PML4[403] (IST stacks): master={:?}, copied={:?}",
                                     master_frame,
                                     copied_frame
@@ -683,7 +683,7 @@ impl ProcessPageTable {
                                         master_pml4[i].frame().unwrap();
                                     let copied_frame: PhysFrame<Size4KiB> =
                                         level_4_table[i].frame().unwrap();
-                                    log::info!(
+                                    log::debug!(
                                         "PHASE2: PML4[510]: master={:?}, copied={:?}",
                                         master_frame,
                                         copied_frame
@@ -695,14 +695,14 @@ impl ProcessPageTable {
                                     master_pml4[i].frame().unwrap();
                                 let copied_frame: PhysFrame<Size4KiB> =
                                     level_4_table[i].frame().unwrap();
-                                log::info!("PHASE2: PML4[511] (kernel high-half): master={:?}, copied={:?}",
+                                log::debug!("PHASE2: PML4[511] (kernel high-half): master={:?}, copied={:?}",
                                          master_frame, copied_frame);
                             }
                             _ => {}
                         }
                     }
                 }
-                log::info!(
+                log::debug!(
                     "PHASE2: Inherited {} upper-half kernel mappings (256-511) from master PML4",
                     upper_half_copied
                 );
@@ -723,7 +723,7 @@ impl ProcessPageTable {
                         master_pml4[402].frame(),
                         master_pml4[403].frame()
                     );
-                    log::info!(
+                    log::debug!(
                         "✓ INVARIANT OK: PML4[402]={:?} != PML4[403]={:?}",
                         f402,
                         f403
@@ -754,7 +754,7 @@ impl ProcessPageTable {
 
                 // PML4[0] is left EMPTY (all entries set to unused) - this is intentional
                 // Each process gets its own independent userspace address range
-                log::info!("PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)");
+                log::debug!("PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)");
 
                 // NOTE: PML4[2] is already handled above at lines 398-483 with USER_ACCESSIBLE
                 // set on all levels. Do NOT overwrite it here!
@@ -768,7 +768,7 @@ impl ProcessPageTable {
                     // DO NOT modify flags - copy verbatim
                     let master_flags = master_pml4[3].flags();
                     level_4_table[3].set_addr(master_pml4[3].addr(), master_flags);
-                    // log::info!("PHASE2-TEMP: Copied PML4[3] from master with original flags");
+                    // log::debug!("PHASE2-TEMP: Copied PML4[3] from master with original flags");
                 }
 
                 // Note: PML4[403] (IST stacks) is already copied in the upper-half loop above
@@ -776,7 +776,7 @@ impl ProcessPageTable {
                 // PHASE 3: Identity mapping no longer needed since we're copying PML4[0] from master
                 // which already contains the kernel low-half mappings
                 // Once we complete the high-half transition, we'll remove the PML4[0] copy entirely
-                log::info!(
+                log::debug!(
                     "PHASE3: Skipping manual identity mapping - PML4[0] already copied from master"
                 );
 
@@ -961,7 +961,7 @@ impl ProcessPageTable {
                         addr += 0x1000; // Next page
                     }
 
-                    log::info!("PHASE3-TEMP: Mapped kernel regions: 0x100000-0x300000 and 0x100000f0000-0x100000f4000");
+                    log::debug!("PHASE3-TEMP: Mapped kernel regions: 0x100000-0x300000 and 0x100000f0000-0x100000f4000");
                 }
                 */
             } else {
@@ -994,7 +994,7 @@ impl ProcessPageTable {
 
                             level_4_table[i].set_addr(addr, new_flags);
                             if i == 0 {
-                                log::info!("PHASE1: Fixed PML4[0] flags for kernel code at 0x100000 (cleared USER, added GLOBAL)");
+                                log::debug!("PHASE1: Fixed PML4[0] flags for kernel code at 0x100000 (cleared USER, added GLOBAL)");
                             } else {
                                 log::debug!("Fixed low-memory kernel PML4[{}] flags", i);
                             }
@@ -1027,7 +1027,7 @@ impl ProcessPageTable {
                     stack_flags.insert(PageTableFlags::GLOBAL);
                     level_4_table[kernel_stack_pml4_idx]
                         .set_addr(current_l4_table[kernel_stack_pml4_idx].addr(), stack_flags);
-                    log::info!(
+                    log::debug!(
                         "PHASE1: Fixed kernel stack PML4[{}] flags (0xffffc90000000000)",
                         kernel_stack_pml4_idx
                     );
@@ -1049,7 +1049,7 @@ impl ProcessPageTable {
                     ist_flags.insert(PageTableFlags::GLOBAL);
                     level_4_table[ist_stack_pml4_idx]
                         .set_addr(current_l4_table[ist_stack_pml4_idx].addr(), ist_flags);
-                    log::info!(
+                    log::debug!(
                         "PHASE1: Fixed IST stack PML4[{}] flags (0xffffc98000000000)",
                         ist_stack_pml4_idx
                     );
