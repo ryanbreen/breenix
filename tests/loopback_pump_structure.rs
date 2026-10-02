@@ -649,6 +649,12 @@ fn validate_tcp_accept_claims_pending_in_peek_closure(source: &str) -> Result<()
     Ok(())
 }
 
+/// The testing boot continuation hands loading to the `test-loader` thread
+/// and then idles in kernel_main; the first loop after that spawn is its idle
+/// loop. The prompt now prints from the loader thread, so it no longer marks
+/// this loop.
+const AARCH64_TESTING_IDLE_ANCHOR: &str = r#"kthread_run(run_test_loader, "test-loader")"#;
+
 fn validate_general_idle_loops_drain_loopback(
     x86_source: &str,
     aarch64_source: &str,
@@ -659,9 +665,17 @@ fn validate_general_idle_loops_drain_loopback(
         return Err("x86 idle_thread_fn does not use the idle drain seam".to_string());
     }
 
+    let kernel_main = function_body(aarch64_source, "kernel_main")
+        .ok_or_else(|| "missing aarch64 kernel_main".to_string())?;
+    let testing_loop = loop_body_after_anchor(kernel_main, AARCH64_TESTING_IDLE_ANCHOR)
+        .ok_or_else(|| "aarch64 testing boot-thread idle loop is not in kernel_main".to_string())?;
+    if !has_identifier(testing_loop, "drain_loopback_from_idle") {
+        return Err("aarch64 testing boot-thread idle loop does not use the idle drain seam".into());
+    }
+
     for (anchor, description) in [
         (
-            r#"serial_print!("breenix> ");"#,
+            AARCH64_TESTING_IDLE_ANCHOR,
             "aarch64 testing boot-thread idle loop",
         ),
         (
@@ -1792,7 +1806,7 @@ fn general_idle_loop_validator_rejects_missing_aarch64_testing_drain() {
     let aarch64_source = repo_text("kernel/src/main_aarch64.rs");
     let mutated = remove_call_from_loop_after_anchor(
         &aarch64_source,
-        r#"serial_print!("breenix> ");"#,
+        AARCH64_TESTING_IDLE_ANCHOR,
         "kernel::net::drain_loopback_from_idle();",
     )
     .expect("fixture mutation must apply");
