@@ -144,7 +144,7 @@ pub(crate) unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_conf
         "isb",
 
         // Set up a temporary kernel stack in the identity-mapped region.
-        // The bottom page of this 2MB region is unmapped in both aliases.
+        // This 2MB region is mapped in both aliases without overflow protection.
         // The kernel will set up proper stacks during init.
         "ldr x4, ={boot_stack_top}",
         "mov sp, x4",
