@@ -58,6 +58,7 @@ PARALLELS_VM="breenix-dev"
 PARALLELS_TEST=false
 PARALLELS_TEST_WAIT=35
 VMWARE=false
+SUITE=""
 DEBUG=false
 REBUILD_HOME=false
 RESOLUTION=""
@@ -134,6 +135,10 @@ while [[ $# -gt 0 ]]; do
             SERIAL_LOG_OVERRIDE="$2"
             shift 2
             ;;
+        --suite)
+            SUITE="${2:-}"
+            shift 2
+            ;;
         --retina)
             RETINA=true
             shift
@@ -166,6 +171,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-audio                 Disable audio entirely (default: coreaudio output on)"
             echo "  --debug                    Enable GDB stub (port 1234) for debugging"
             echo "  --serial-log PATH          Parallels/VMware: write the VM's serial output to PATH"
+            echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
@@ -188,6 +194,36 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# --suite ID: the VM's ext2 disk gets /etc/breenix/boot-target ("suite ID"), so the
+# production kernel runs /sbin/suite-ID as PID 1 (docs/boot-path.md, "Boot modes").
+if [ -n "$SUITE" ]; then
+    if [ "$PARALLELS" != true ] && [ "$VMWARE" != true ]; then
+        echo "--suite is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode suite --suite ID)"
+        exit 1
+    fi
+    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || [ "${#SUITE}" -gt 40 ]; then
+        echo "--suite needs a suite id (lowercase words joined by '-'), got: $SUITE"
+        exit 1
+    fi
+fi
+
+# The ext2 disk a Parallels or VMware VM boots: the built disk itself, or with
+# --suite a copy carrying the boot target (the built disk never gets one, so later
+# boots of it are unaffected). Sets BOOT_EXT2_DISK.
+stage_boot_ext2_disk() {
+    local built="$1" staging_dir="$2"
+    BOOT_EXT2_DISK="$built"
+    [ -n "$SUITE" ] || return 0
+    if [ ! -f "$built" ]; then
+        echo "ERROR: --suite needs the ext2 disk at $built (run without --no-build to create it)"
+        exit 1
+    fi
+    mkdir -p "$staging_dir"
+    BOOT_EXT2_DISK="$staging_dir/ext2-boot-target.img"
+    cp "$built" "$BOOT_EXT2_DISK"
+    "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" || exit 1
+}
 
 # BTRT mode: delegate to xtask and exit
 if [ "$BTRT" = true ]; then
@@ -378,22 +414,25 @@ if [ "$PARALLELS" = true ]; then
         cp "$RAW_IMG" "$HDS_FILE"
         rm -f "$RAW_IMG"
         echo "  EFI disk: $HDD_DIR"
+    fi
 
-        # Wrap ext2 data disk in Parallels .hdd format
-        if [ -f "$EXT2_DISK" ]; then
-            EXT2_SIZE_MB=$(( $(stat -f%z "$EXT2_DISK") / 1048576 ))
-            rm -rf "$EXT2_HDD_DIR"
-            prl_disk_tool create --hdd "$EXT2_HDD_DIR" --size "${EXT2_SIZE_MB}M" >/dev/null 2>&1
-            HDS_FILE=$(find "$EXT2_HDD_DIR" -name "*.hds" | head -1)
-            if [ -z "$HDS_FILE" ]; then
-                echo "WARNING: No .hds file in $EXT2_HDD_DIR, ext2 disk won't be attached"
-            else
-                cp "$EXT2_DISK" "$HDS_FILE"
-                echo "  ext2 disk: $EXT2_HDD_DIR (${EXT2_SIZE_MB}MB)"
-            fi
+    # Wrap the ext2 data disk in Parallels .hdd format. Every run, even with
+    # --no-build and an up-to-date EFI disk: the data disk to boot (with or
+    # without a --suite boot target) may differ from the one wrapped last time.
+    stage_boot_ext2_disk "$EXT2_DISK" "$PARALLELS_DIR"
+    if [ -f "$BOOT_EXT2_DISK" ]; then
+        EXT2_SIZE_MB=$(( $(stat -f%z "$BOOT_EXT2_DISK") / 1048576 ))
+        rm -rf "$EXT2_HDD_DIR"
+        prl_disk_tool create --hdd "$EXT2_HDD_DIR" --size "${EXT2_SIZE_MB}M" >/dev/null 2>&1
+        HDS_FILE=$(find "$EXT2_HDD_DIR" -name "*.hds" | head -1)
+        if [ -z "$HDS_FILE" ]; then
+            echo "WARNING: No .hds file in $EXT2_HDD_DIR, ext2 disk won't be attached"
         else
-            echo "WARNING: ext2 disk not found at $EXT2_DISK"
+            cp "$BOOT_EXT2_DISK" "$HDS_FILE"
+            echo "  ext2 disk: $EXT2_HDD_DIR (${EXT2_SIZE_MB}MB)"
         fi
+    else
+        echo "WARNING: ext2 disk not found at $EXT2_DISK"
     fi
 
     echo ""
@@ -682,12 +721,15 @@ if [ "$VMWARE" = true ]; then
         qemu-img convert -f raw -O vmdk "$RAW_IMG" "$VMWARE_DIR/boot.vmdk"
         rm -f "$RAW_IMG"
         echo "  Boot VMDK: $VMWARE_DIR/boot.vmdk"
+    fi
 
-        # Convert ext2 data disk to VMDK
-        if [ -f "$EXT2_DISK" ]; then
-            qemu-img convert -f raw -O vmdk "$EXT2_DISK" "$VMWARE_DIR/ext2-data.vmdk"
-            echo "  Data VMDK: $VMWARE_DIR/ext2-data.vmdk"
-        fi
+    # Convert the ext2 data disk to VMDK. Every run, even with --no-build: the data
+    # disk to boot (with or without a --suite boot target) may differ from last time.
+    stage_boot_ext2_disk "$EXT2_DISK" "$VMWARE_DIR"
+    if [ -f "$BOOT_EXT2_DISK" ]; then
+        mkdir -p "$VMWARE_DIR"
+        qemu-img convert -f raw -O vmdk "$BOOT_EXT2_DISK" "$VMWARE_DIR/ext2-data.vmdk"
+        echo "  Data VMDK: $VMWARE_DIR/ext2-data.vmdk"
     fi
 
     echo ""
