@@ -3430,6 +3430,7 @@ impl ProcessManager {
         process.vmas.clear();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
+        closes.release_record_locks(process.id.as_u64());
         log::debug!(
             "exec_process: Reset signal/heap/mmap for process {}, heap_start={:#x}",
             pid.as_u64(),
@@ -3809,6 +3810,7 @@ impl ProcessManager {
 
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
+        closes.release_record_locks(process.id.as_u64());
 
         // Replace the page table with the new one
         process.page_table = Some(new_page_table.publish());
@@ -4116,6 +4118,7 @@ impl ProcessManager {
 
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
+        closes.release_record_locks(process.id.as_u64());
 
         process.page_table = Some(new_page_table.publish());
         // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
@@ -4436,6 +4439,7 @@ impl ProcessManager {
         process.vmas.clear();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
+        closes.release_record_locks(process.id.as_u64());
         log::debug!(
             "exec_process [ARM64]: Reset signal/heap/mmap for process {}, heap_start={:#x}",
             pid.as_u64(),

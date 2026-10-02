@@ -474,6 +474,8 @@ impl Process {
         // Close all file descriptors before setting state to Terminated
         // This ensures pipe counts are properly decremented so readers get EOF
         self.close_all_fds();
+        // An exiting process's record locks go with it (POSIX fcntl).
+        crate::fs::locks::release_owner(self.id.as_u64());
 
         // Clean up Copy-on-Write frame references
         // This decrements refcounts for all pages and deallocates frames that are no longer shared

@@ -895,6 +895,8 @@ impl ProcessScheduler {
 
             // Close FDs outside PM lock (pipe close_write wakes readers, etc.)
             close_extracted_fds(fd_entries);
+            // An exiting process's record locks go with it (POSIX fcntl).
+            crate::fs::locks::release_owner(pid.as_u64());
 
             // Clean up window buffers so the compositor stops reading freed pages
             #[cfg(target_arch = "aarch64")]

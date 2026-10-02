@@ -70,12 +70,18 @@ pub const EPIPE: i32 = 32;
 /// Result too large / buffer too small
 pub const ERANGE: i32 = 34;
 
+/// Resource deadlock would occur (a blocking record lock would wait forever)
+pub const EDEADLK: i32 = 35;
+
 /// Function not implemented (used by syscall dispatcher)
 #[allow(dead_code)]
 pub const ENOSYS: i32 = 38;
 
 /// Directory not empty
 pub const ENOTEMPTY: i32 = 39;
+
+/// Value too large for its type (a record lock range past the largest offset)
+pub const EOVERFLOW: i32 = 75;
 
 /// Not a socket
 pub const ENOTSOCK: i32 = 88;

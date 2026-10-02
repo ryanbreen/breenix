@@ -156,6 +156,9 @@ pub fn sys_close(fd: i32) -> SyscallResult {
     drop(manager_guard);
     match closed {
         Ok(fd_entry) => {
+            // Closing any descriptor for a file drops the process's record
+            // locks on it (POSIX fcntl).
+            crate::fs::locks::release_closed(process_pid.as_u64(), &fd_entry.kind);
             // Handle cleanup for specific fd types
             match fd_entry.kind {
                 FdKind::PipeRead(buffer) => {
