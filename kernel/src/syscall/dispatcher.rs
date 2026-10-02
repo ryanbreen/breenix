@@ -142,7 +142,7 @@ pub fn dispatch_syscall(
         // Graphics syscalls (Breenix-specific)
         SyscallNumber::FbInfo => super::graphics::sys_fbinfo(arg1),
         SyscallNumber::FbDraw => super::graphics::sys_fbdraw(arg1),
-        SyscallNumber::FbMmap => super::graphics::sys_fbmmap(),
+        SyscallNumber::FbMmap => super::graphics::sys_fbmmap(arg1),
         SyscallNumber::GetMousePos => super::graphics::sys_get_mouse_pos(arg1),
         // Audio syscalls (Breenix-specific)
         SyscallNumber::AudioInit => super::audio::sys_audio_init(),

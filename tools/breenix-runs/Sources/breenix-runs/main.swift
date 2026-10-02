@@ -21,6 +21,7 @@ struct RunX86Arguments {
     var boots = 1
     var sha: String?
     var mode: RemoteGateMode = .full
+    var suite: String?
     var host = "beast"
     var dryRun = false
     var tags: [String] = []
@@ -45,7 +46,7 @@ func usage() -> String {
     """
     Usage:
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
-      breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full] [--host HOST] [--dry-run] [--tag T] [--no-store]
+      breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full] [--suite ID] [--host HOST] [--dry-run] [--tag T] [--no-store]
       breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
       breenix-runs list [--arch aarch64|x86_64] [--profile NAME] [--verdict pass|fail|attributed|running|unknown]
       breenix-runs facts <run-id|latest> [--json]
@@ -140,6 +141,11 @@ func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
                 throw CLIError(description: "--mode requires one of: kthread, full")
             }
             parsed.mode = mode
+        case "--suite":
+            guard let value = iterator.next(), RemoteCommand.isSuiteID(value) else {
+                throw CLIError(description: "--suite requires a suite id (lowercase words joined by '-')")
+            }
+            parsed.suite = value
         case "--host":
             guard let value = iterator.next(), !value.isEmpty else {
                 throw CLIError(description: "--host requires a non-empty value")
@@ -450,7 +456,8 @@ func main() -> Int32 {
                     gitDirty: git.dirty,
                     tags: runArgs.tags,
                     persist: runArgs.persist,
-                    qemuProfile: runArgs.qemuProfile
+                    qemuProfile: runArgs.qemuProfile,
+                    suite: runArgs.suite
                 )
                 if runArgs.dryRun {
                     printDryRun(plan: try launcher.plan(options: options))

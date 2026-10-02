@@ -256,8 +256,12 @@ fn main() {
         );
 
         // Attach ext2 filesystem disk (third disk, index 2)
-        // Copy pristine image from testdata/ to target/ so tests can write without modifying the source
-        let ext2_source_path = project_root.join("testdata/ext2.img");
+        // Copy pristine image from testdata/ to target/ so tests can write without modifying the source.
+        // BREENIX_EXT2_SOURCE names a different image to copy from (run-x86-gate.sh passes a copy
+        // carrying a boot target, so testdata/ext2.img itself never gets one).
+        let ext2_source_path = env::var("BREENIX_EXT2_SOURCE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| project_root.join("testdata/ext2.img"));
         let ext2_disk_path = project_root.join("target/ext2.img");
         if ext2_source_path.exists() {
             // Always copy fresh from source to ensure clean state
@@ -365,6 +369,15 @@ fn main() {
         }
         _ => {
             qemu.args(["-monitor", "none"]);
+        }
+    }
+    // BREENIX_QMP_SOCKET=<path> opens a QMP socket there, so another process (over ssh,
+    // say) can take screendumps of the running VM.
+    if let Ok(path) = env::var("BREENIX_QMP_SOCKET") {
+        if !path.is_empty() {
+            let _ = fs::remove_file(&path);
+            qemu.args(["-qmp", &format!("unix:{},server,nowait", path)]);
+            eprintln!("[qemu-uefi] QMP socket: {}", path);
         }
     }
     // Deterministic guest-driven exit for CI via isa-debug-exit on port 0xF4

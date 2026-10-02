@@ -1143,7 +1143,7 @@ fn nonblock_eagain_test_main() -> ! {
         feature = "disable_x86_prod_init"
     ))
 ))]
-fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
+fn launch_x86_production_init(name: &str, elf_data: &[u8]) -> Result<(), &'static str> {
     use alloc::string::String;
 
     let (thread, designated_pid_raw, reserved_collisions) = {
@@ -1152,7 +1152,7 @@ fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
             .as_mut()
             .ok_or("process manager not available")?;
 
-        let ticket = manager.create_init_process(String::from("init"), elf_data)?;
+        let ticket = manager.create_init_process(String::from(name), elf_data)?;
         let publication = manager.designate_init(ticket)?;
         let designated_pid_raw = manager
             .designated_init()
@@ -1173,6 +1173,108 @@ fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
     task::scheduler::spawn(thread);
 
     Ok(())
+}
+
+/// Which suite, if any, the production kernel runs as PID 1 instead of
+/// `/sbin/init`: fw_cfg first (`opt/breenix/mode=suite` with
+/// `opt/breenix/suite=<id>`; `default` runs `/sbin/init` whatever the disk says),
+/// then the boot-target file (`kernel::boot::target`), else none. A request that
+/// cannot be used is noted on its own line and the default runs.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))
+))]
+fn x86_boot_suite() -> Option<alloc::string::String> {
+    use kernel::boot::target;
+    use kernel::drivers::fw_cfg;
+
+    match fw_cfg::read_string("opt/breenix/mode").as_deref() {
+        None | Some("") => match target::read() {
+            Ok(id) => id,
+            Err(why) => {
+                log::warn!("[boot] Ignoring boot target {}: {}", target::PATH, why);
+                None
+            }
+        },
+        Some("default") => None,
+        Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
+            Some(id) if target::is_suite_id(&id) => Some(id),
+            Some(id) if !id.is_empty() => {
+                log::warn!(
+                    "[boot] Ignoring boot mode \"suite\": {:?} is not a suite id",
+                    id
+                );
+                None
+            }
+            _ => {
+                log::warn!(
+                    "[boot] Ignoring boot mode \"suite\": no suite given (-fw_cfg name=opt/breenix/suite)"
+                );
+                None
+            }
+        },
+        Some(other) => {
+            log::warn!(
+                "[boot] Ignoring boot mode {:?}: x86-64 runs only default and suite",
+                other
+            );
+            None
+        }
+    }
+}
+
+/// Read the program the production kernel runs as PID 1 from the ext2 root:
+/// `/sbin/suite-<id>` when `x86_boot_suite` names a suite whose binary reads
+/// and is a loadable ELF, otherwise `/sbin/init`. Returns its process name and
+/// ELF. A suite binary that cannot be used is noted and the default init runs.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))
+))]
+fn read_x86_production_init() -> Result<(alloc::string::String, alloc::vec::Vec<u8>), &'static str>
+{
+    use kernel::boot::{init_image::read_init_from_ext2, target};
+
+    if let Some(id) = x86_boot_suite() {
+        let path = target::suite_path(&id);
+        match read_init_from_ext2(&path)
+            .and_then(|elf_data| target::check_elf(&elf_data).map(|()| elf_data))
+        {
+            Ok(elf_data) => {
+                log::info!("[boot] Boot mode: suite {}", id);
+                return Ok((alloc::format!("suite-{}", id), elf_data));
+            }
+            Err(e) => log::warn!(
+                "[boot] Ignoring boot mode \"suite\": {} could not be loaded ({})",
+                path,
+                e
+            ),
+        }
+    }
+    read_default_x86_init()
+}
+
+/// Read `/sbin/init`, the default PID 1, and announce the default boot mode.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))
+))]
+fn read_default_x86_init() -> Result<(alloc::string::String, alloc::vec::Vec<u8>), &'static str> {
+    log::info!("[boot] Boot mode: default");
+    kernel::boot::init_image::read_init_from_ext2("/sbin/init")
+        .map(|elf_data| (alloc::string::String::from("init"), elf_data))
 }
 
 /// Continue kernel initialization after setting up threading
@@ -1770,20 +1872,36 @@ fn kernel_main_continue() -> ! {
 
         x86_64::instructions::interrupts::enable();
 
-        match kernel::boot::init_image::read_init_from_ext2("/sbin/init") {
-            Ok(elf_data) => {
-                x86_64::instructions::interrupts::without_interrupts(|| {
-                    if let Err(e) = launch_x86_production_init(&elf_data) {
-                        log::error!("PRODUCTION INIT: failed to launch init: {}", e);
+        // A suite that reads but cannot be launched falls back to /sbin/init.
+        let mut image = read_x86_production_init();
+        loop {
+            match image {
+                Ok((name, elf_data)) => {
+                    let launched = x86_64::instructions::interrupts::without_interrupts(|| {
+                        launch_x86_production_init(&name, &elf_data)
+                    });
+                    match launched {
+                        Ok(()) => {}
+                        Err(e) if name != "init" => {
+                            log::error!(
+                                "PRODUCTION INIT: failed to launch {}: {}; running /sbin/init",
+                                name,
+                                e
+                            );
+                            image = read_default_x86_init();
+                            continue;
+                        }
+                        Err(e) => log::error!("PRODUCTION INIT: failed to launch init: {}", e),
                     }
-                });
+                }
+                Err(e) => {
+                    log::error!(
+                        "PRODUCTION INIT: failed to read /sbin/init from ext2: {}",
+                        e
+                    );
+                }
             }
-            Err(e) => {
-                log::error!(
-                    "PRODUCTION INIT: failed to read /sbin/init from ext2: {}",
-                    e
-                );
-            }
+            break;
         }
     }
 

@@ -3,14 +3,15 @@
 # console on this terminal. In the default `tests` mode this is the boot-path gate
 # (docs/boot-path.md) with a console you can watch and type into.
 #
-#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--serial-log FILE]
+#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID] [--serial-log FILE]
 #                               [--idle-exit SECONDS] [--display | --no-display]
 #                               [--qmp SOCKET] [--fbconsole log] [--no-build]
 #
 #   --mode MODE          tests (default): the testing kernel and its test loader
-#                        probe | shell | desktop | program: the production kernel, told the mode
+#                        probe | shell | desktop | program | suite: the production kernel, told the mode
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md)
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
+#   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
@@ -33,17 +34,19 @@ DISPLAY_MODE=
 BUILD=1
 MODE=tests
 PROGRAM=
+SUITE=
 QMP_SOCKET=
 FBCONSOLE=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--serial-log|--idle-exit|--qmp|--fbconsole)
+        --mode|--program|--suite|--serial-log|--idle-exit|--qmp|--fbconsole)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
         --mode) MODE="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
+        --suite) SUITE="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; shift 2 ;;
         --fbconsole) FBCONSOLE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
@@ -56,8 +59,8 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 case "$MODE" in
-    tests|probe|shell|desktop|program) ;;
-    *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop or program)" >&2; exit 2 ;;
+    tests|probe|shell|desktop|program|suite) ;;
+    *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop, program or suite)" >&2; exit 2 ;;
 esac
 if [ "$MODE" = program ]; then
     case "$PROGRAM" in
@@ -67,6 +70,14 @@ if [ "$MODE" = program ]; then
     esac
 elif [ -n "$PROGRAM" ]; then
     echo "--program is only for --mode program" >&2; exit 2
+fi
+if [ "$MODE" = suite ]; then
+    [ -n "$SUITE" ] || { echo "--mode suite needs --suite ID" >&2; exit 2; }
+    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+        echo "--suite needs a suite id (lowercase words joined by '-'), got: $SUITE" >&2; exit 2
+    fi
+elif [ -n "$SUITE" ]; then
+    echo "--suite is only for --mode suite" >&2; exit 2
 fi
 case "$FBCONSOLE" in
     ""|log) ;;
@@ -85,6 +96,9 @@ fi
 if [ "$MODE" = program ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/program,string=$PROGRAM")
 fi
+if [ "$MODE" = suite ]; then
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=$SUITE")
+fi
 if [ -n "$FBCONSOLE" ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/fbconsole,string=$FBCONSOLE")
 fi
@@ -100,7 +114,11 @@ cd "$ROOT"
 KERNEL="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 DISK="$ROOT/target/ext2-aarch64.img"
 
-if [ "$MODE" = program ]; then echo "==> Mode: program $PROGRAM"; else echo "==> Mode: $MODE"; fi
+case "$MODE" in
+    program) echo "==> Mode: program $PROGRAM" ;;
+    suite) echo "==> Mode: suite $SUITE" ;;
+    *) echo "==> Mode: $MODE" ;;
+esac
 if [ "$BUILD" -eq 1 ]; then
     echo "==> Building userspace"
     userspace/programs/build.sh --arch aarch64

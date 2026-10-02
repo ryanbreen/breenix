@@ -71,7 +71,10 @@ fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> 
 
 /// Which PID 1 a production boot launches. QEMU selects it with
 /// `-fw_cfg name=opt/breenix/mode,string=<mode>`; absent or unknown is `Default`.
-/// `program` also needs `-fw_cfg name=opt/breenix/program,string=<absolute path>`.
+/// `program` also needs `-fw_cfg name=opt/breenix/program,string=<absolute path>`,
+/// and `suite` needs `-fw_cfg name=opt/breenix/suite,string=<id>`. With no fw_cfg
+/// mode (and always on Parallels and VMware), the boot-target file
+/// (`kernel::boot::target`) can select a suite.
 #[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BootMode {
@@ -80,6 +83,7 @@ enum BootMode {
     Shell,
     Desktop,
     Program,
+    Suite,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -91,17 +95,20 @@ impl BootMode {
             BootMode::Shell => "shell",
             BootMode::Desktop => "desktop",
             BootMode::Program => "program",
+            BootMode::Suite => "suite",
         }
     }
 }
 
-/// Read the boot mode from fw_cfg. An unknown request, a program request without
-/// an absolute program path, or any request to a `testing` kernel (which always
-/// runs its test loader), runs `default` and is noted on a separate line. Returns
-/// the program path for program mode. `announce_boot_mode` prints the mode once
-/// it is known to run.
+/// Read the boot mode: fw_cfg first, then the boot-target file, else `default`. An
+/// unknown request, a program request without an absolute program path, a suite
+/// request without a valid suite id, an unusable boot-target file, or any request to
+/// a `testing` kernel (which always runs its test loader), runs `default` and is
+/// noted on a separate line. Returns the program path for program mode and the suite
+/// id for suite mode. `announce_boot_mode` prints the mode once it is known to run.
 #[cfg(target_arch = "aarch64")]
 fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
+    use kernel::boot::target;
     // fw_cfg exists only on QEMU (its MMIO window is absent on Parallels).
     let requested = if kernel::platform_config::is_qemu() {
         kernel::drivers::fw_cfg::read_string("opt/breenix/mode")
@@ -113,24 +120,40 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
         Some("shell") => BootMode::Shell,
         Some("desktop") => BootMode::Desktop,
         Some("program") => BootMode::Program,
+        Some("suite") => BootMode::Suite,
         _ => BootMode::Default,
     };
+    // Without a fw_cfg mode, the boot-target file may name a suite.
+    let mut target_suite = None;
     let mode = match requested.as_deref() {
-        Some(other) if mode == BootMode::Default && !other.is_empty() && other != "default" => {
+        None | Some("") => match target::read() {
+            Ok(Some(id)) => {
+                target_suite = Some(id);
+                BootMode::Suite
+            }
+            Ok(None) => BootMode::Default,
+            Err(why) => {
+                serial_println!("[boot] Ignoring boot target {}: {}", target::PATH, why);
+                BootMode::Default
+            }
+        },
+        Some(other) if mode == BootMode::Default && other != "default" => {
             serial_println!("[boot] Ignoring unknown boot mode {:?}", other);
-            BootMode::Default
-        }
-        _ if cfg!(feature = "testing") && mode != BootMode::Default => {
-            serial_println!(
-                "[boot] Ignoring boot mode {:?}: the testing kernel runs its test loader",
-                mode.name()
-            );
             BootMode::Default
         }
         _ => mode,
     };
-    let program = if mode == BootMode::Program {
-        match kernel::drivers::fw_cfg::read_string("opt/breenix/program") {
+    let mode = if cfg!(feature = "testing") && mode != BootMode::Default {
+        serial_println!(
+            "[boot] Ignoring boot mode {:?}: the testing kernel runs its test loader",
+            mode.name()
+        );
+        BootMode::Default
+    } else {
+        mode
+    };
+    let arg = match mode {
+        BootMode::Program => match kernel::drivers::fw_cfg::read_string("opt/breenix/program") {
             Some(path) if path.starts_with('/') => Some(path),
             Some(path) if !path.is_empty() => {
                 serial_println!(
@@ -145,28 +168,45 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
                 );
                 None
             }
-        }
-    } else {
-        None
+        },
+        BootMode::Suite if target_suite.is_some() => target_suite,
+        BootMode::Suite => match kernel::drivers::fw_cfg::read_string("opt/breenix/suite") {
+            Some(id) if target::is_suite_id(&id) => Some(id),
+            Some(id) if !id.is_empty() => {
+                serial_println!(
+                    "[boot] Ignoring boot mode \"suite\": {:?} is not a suite id",
+                    id
+                );
+                None
+            }
+            _ => {
+                serial_println!(
+                    "[boot] Ignoring boot mode \"suite\": no suite given (-fw_cfg name=opt/breenix/suite)"
+                );
+                None
+            }
+        },
+        _ => None,
     };
-    let mode = if mode == BootMode::Program && program.is_none() {
+    let mode = if matches!(mode, BootMode::Program | BootMode::Suite) && arg.is_none() {
         BootMode::Default
     } else {
         mode
     };
-    (mode, program)
+    (mode, arg)
 }
 
 /// Print the one `[boot] Boot mode: <mode>` line, naming the mode that actually
-/// runs (`program <path>` for program mode), and show it on the boot screen.
+/// runs (`program <path>` for program mode, `suite <id>` for suite mode), and show
+/// it on the boot screen.
 #[cfg(target_arch = "aarch64")]
-fn announce_boot_mode(mode: BootMode, program: Option<&str>) {
-    match program {
-        Some(path) => {
-            serial_println!("[boot] Boot mode: program {}", path);
-            boot_screen::set_mode(format_args!("program {}", path));
+fn announce_boot_mode(mode: BootMode, arg: Option<&str>) {
+    match (mode, arg) {
+        (BootMode::Program | BootMode::Suite, Some(arg)) => {
+            serial_println!("[boot] Boot mode: {} {}", mode.name(), arg);
+            boot_screen::set_mode(format_args!("{} {}", mode.name(), arg));
         }
-        None => {
+        _ => {
             serial_println!("[boot] Boot mode: {}", mode.name());
             if cfg!(feature = "testing") {
                 boot_screen::set_mode(format_args!("tests (testing kernel)"));
@@ -203,15 +243,15 @@ fn read_fbconsole_log() -> bool {
 /// The program a boot mode launches as PID 1, and its argv.
 #[cfg(target_arch = "aarch64")]
 struct InitLaunch {
-    path: &'static str,
+    path: alloc::string::String,
     argv: alloc::vec::Vec<alloc::vec::Vec<u8>>,
 }
 
 #[cfg(target_arch = "aarch64")]
 impl InitLaunch {
-    fn new(path: &'static str, argv: &[&[u8]]) -> InitLaunch {
+    fn new(path: &str, argv: &[&[u8]]) -> InitLaunch {
         InitLaunch {
-            path,
+            path: alloc::string::String::from(path),
             argv: argv.iter().map(|arg| arg.to_vec()).collect(),
         }
     }
@@ -220,7 +260,7 @@ impl InitLaunch {
         InitLaunch::new("/sbin/init", &[b"/sbin/init"])
     }
 
-    fn for_mode(mode: BootMode, program: Option<&str>) -> InitLaunch {
+    fn for_mode(mode: BootMode, arg: Option<&str>) -> InitLaunch {
         match mode {
             BootMode::Default => InitLaunch::default_init(),
             BootMode::Probe => InitLaunch::new("/sbin/probe", &[b"/sbin/probe"]),
@@ -228,8 +268,12 @@ impl InitLaunch {
             BootMode::Desktop => InitLaunch::new("/sbin/init", &[b"init", b"desktop"]),
             BootMode::Program => InitLaunch::new(
                 "/sbin/probe",
-                &[b"probe", b"--run", program.unwrap_or("").as_bytes()],
+                &[b"probe", b"--run", arg.unwrap_or("").as_bytes()],
             ),
+            BootMode::Suite => {
+                let path = kernel::boot::target::suite_path(arg.unwrap_or(""));
+                InitLaunch::new(&path, &[path.as_bytes()])
+            }
         }
     }
 
@@ -239,14 +283,14 @@ impl InitLaunch {
         elf_data: alloc::vec::Vec<u8>,
     ) -> Result<core::convert::Infallible, &'static str> {
         let argv: alloc::vec::Vec<&[u8]> = self.argv.iter().map(|arg| arg.as_slice()).collect();
-        let mut shown = alloc::string::String::from(self.path);
+        let mut shown = self.path.clone();
         for arg in self.argv.iter().skip(1) {
             shown.push(' ');
             shown.push_str(core::str::from_utf8(arg).unwrap_or("?"));
         }
         boot_screen::stage(Stage::StartingPid1);
         boot_screen::set_status(format_args!("Starting {}", shown));
-        launch_init_from_elf(elf_data, self.path, &argv)
+        launch_init_from_elf(elf_data, &self.path, &argv)
     }
 }
 
@@ -1151,41 +1195,59 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // from clearing. Reading the ELF now, while the timer is still off and
     // single-CPU, avoids both issues entirely.
     // (ext2 root filesystem was mounted above at init_root_fs().)
-    // Probe mode pre-loads /sbin/probe the same way and falls back to /sbin/init.
-    let (mut boot_mode, mut program) = read_boot_mode();
-    let mut init_launch = InitLaunch::for_mode(boot_mode, program.as_deref());
-    let runs_probe = matches!(boot_mode, BootMode::Probe | BootMode::Program);
-    let probe_elf: Option<alloc::vec::Vec<u8>> = if runs_probe && device_count > 0 {
-        serial_println!("[boot] Pre-loading /sbin/probe from ext2 (before timer)...");
-        match read_init_from_ext2("/sbin/probe") {
-            Ok(data) => {
-                serial_println!("[boot] Probe binary pre-loaded: {} bytes", data.len());
-                Some(data)
-            }
+    // Probe, program and suite modes pre-load their own binary (/sbin/probe, or
+    // /sbin/suite-<id>) the same way and fall back to /sbin/init.
+    let (mut boot_mode, mut mode_arg) = read_boot_mode();
+    let mut init_launch = InitLaunch::for_mode(boot_mode, mode_arg.as_deref());
+    let runs_own_binary = matches!(
+        boot_mode,
+        BootMode::Probe | BootMode::Program | BootMode::Suite
+    );
+    let mode_elf: Option<alloc::vec::Vec<u8>> = if runs_own_binary && device_count > 0 {
+        serial_println!(
+            "[boot] Pre-loading {} from ext2 (before timer)...",
+            init_launch.path
+        );
+        match read_init_from_ext2(&init_launch.path) {
+            Ok(data) => match kernel::boot::target::check_elf(&data) {
+                Ok(()) => {
+                    serial_println!(
+                        "[boot] {} pre-loaded: {} bytes",
+                        init_launch.path,
+                        data.len()
+                    );
+                    Some(data)
+                }
+                Err(e) => {
+                    serial_println!("[boot] {} is not a loadable ELF: {}", init_launch.path, e);
+                    None
+                }
+            },
             Err("init not found") => {
-                serial_println!("[boot] /sbin/probe not found");
+                serial_println!("[boot] {} not found", init_launch.path);
                 None
             }
             Err(e) => {
-                serial_println!("[boot] Failed to pre-load /sbin/probe: {}", e);
+                serial_println!("[boot] Failed to pre-load {}: {}", init_launch.path, e);
                 None
             }
         }
     } else {
         None
     };
-    if runs_probe && probe_elf.is_none() {
+    if runs_own_binary && mode_elf.is_none() {
         serial_println!(
-            "[boot] Ignoring boot mode {:?}: /sbin/probe could not be loaded",
-            boot_mode.name()
+            "[boot] Ignoring boot mode {:?}: {} could not be loaded",
+            boot_mode.name(),
+            init_launch.path
         );
         boot_mode = BootMode::Default;
-        program = None;
+        mode_arg = None;
         init_launch = InitLaunch::default_init();
     }
-    announce_boot_mode(boot_mode, program.as_deref());
-    let init_elf: Option<alloc::vec::Vec<u8>> = if probe_elf.is_some() {
-        probe_elf
+    announce_boot_mode(boot_mode, mode_arg.as_deref());
+    let init_elf: Option<alloc::vec::Vec<u8>> = if mode_elf.is_some() {
+        mode_elf
     } else if device_count > 0 {
         serial_println!("[boot] Pre-loading /sbin/init from ext2 (before timer)...");
         match read_init_from_ext2("/sbin/init") {
@@ -1808,6 +1870,22 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             match init_launch.launch(elf_data) {
                 Err(e) => {
                     serial_println!("[boot] Failed to launch pre-loaded init: {}", e);
+                    // A probe, program or suite binary that would not launch: run
+                    // the default /sbin/init in its place.
+                    if runs_own_binary && boot_mode != BootMode::Default {
+                        serial_println!(
+                            "[boot] Ignoring boot mode {:?}: {} could not be launched; running /sbin/init",
+                            boot_mode.name(),
+                            init_launch.path
+                        );
+                        match read_init_from_ext2("/sbin/init") {
+                            Ok(elf_data) => match InitLaunch::default_init().launch(elf_data) {
+                                Err(e) => serial_println!("[boot] Failed to launch /sbin/init: {}", e),
+                                Ok(never) => match never {},
+                            },
+                            Err(e) => serial_println!("[boot] Failed to read /sbin/init: {}", e),
+                        }
+                    }
                     serial_println!("[boot] Loading userspace init_shell from test disk...");
                     match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
                         Err(e) => {
@@ -1823,7 +1901,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // Pre-load was not attempted or failed — try ext2 now as a last resort
             // (single-CPU machines or QEMU where SMP interference isn't a concern).
             serial_println!("[boot] No pre-loaded init — attempting ext2 read post-SMP...");
-            match read_init_from_ext2(init_launch.path) {
+            match read_init_from_ext2(&init_launch.path) {
                 Ok(elf_data) => {
                     serial_println!("[boot] Late ext2 read succeeded, launching init...");
                     match init_launch.launch(elf_data) {

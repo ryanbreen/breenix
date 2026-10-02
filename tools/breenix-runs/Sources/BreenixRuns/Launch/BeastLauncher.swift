@@ -5,6 +5,7 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
     case prepareCloneFailed(exitCode: Int, output: String)
     case missingLocalSHA
     case invalidBootCount(Int)
+    case invalidSuiteID(String)
 
     public var description: String {
         switch self {
@@ -16,6 +17,8 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
             return "could not resolve local git SHA; pass --sha explicitly"
         case .invalidBootCount(let boots):
             return "--boots requires a positive integer, got \(boots)"
+        case .invalidSuiteID(let id):
+            return "--suite requires a suite id (lowercase words of a-z and 0-9 joined by '-'), got \(id.debugDescription)"
         }
     }
 }
@@ -34,6 +37,8 @@ public enum X86HardwareProfile: String, CaseIterable, Sendable {
 
 public struct BeastLaunchOptions: Sendable {
     public var qemuProfile: X86HardwareProfile?
+    /// An effort-suite id: the gate boots the production kernel running /sbin/suite-<id>.
+    public var suite: String?
     public var boots: Int
     public var mode: RemoteGateMode
     public var sha: String
@@ -50,9 +55,11 @@ public struct BeastLaunchOptions: Sendable {
         tags: [String] = [],
         persist: Bool = true,
         runID: String? = nil,
-        qemuProfile: X86HardwareProfile? = nil
+        qemuProfile: X86HardwareProfile? = nil,
+        suite: String? = nil
     ) {
         self.qemuProfile = qemuProfile
+        self.suite = suite
         self.boots = boots
         self.mode = mode
         self.sha = sha
@@ -111,7 +118,8 @@ public struct BeastLauncher {
             mode: options.mode,
             timeoutSecs: timeoutSecs,
             paths: paths(forRunID: id),
-            qemuProfile: options.qemuProfile
+            qemuProfile: options.qemuProfile,
+            suite: options.suite
         )
     }
 
@@ -171,7 +179,12 @@ public struct BeastLauncher {
         let serialRefs = try harvestSerials(pullResult: pullResult, runDirectory: runDirectory)
         let gateStdoutBytes = fileSize(gateStdoutURL)
         let command = readableGateCommand(paths: planResult.paths, boots: options.boots, mode: options.mode)
-        let env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile)
+        let env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile, suite: options.suite)
+        var captures = [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutBytes)]
+        for screen in screenNames(in: runDirectory) {
+            let url = runDirectory.appendingPathComponent(screen)
+            captures.append(CaptureRef(name: screen, path: screen, bytes: fileSize(url)))
+        }
 
         let gateStdoutText = String(decoding: try Data(contentsOf: gateStdoutURL), as: UTF8.self)
         let gateVerdictString: String
@@ -200,7 +213,7 @@ public struct BeastLauncher {
             verdict: verdict,
             verdictSource: .gateScript(command: command, exitCode: Int(gateResult.exitCode)),
             serials: serialRefs,
-            captures: [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutBytes)],
+            captures: captures,
             command: command,
             env: env,
             tags: options.tags,
@@ -228,6 +241,9 @@ public struct BeastLauncher {
         }
         guard !options.sha.isEmpty else {
             throw BeastLauncherError.missingLocalSHA
+        }
+        if let suite = options.suite, !RemoteCommand.isSuiteID(suite) {
+            throw BeastLauncherError.invalidSuiteID(suite)
         }
     }
 
@@ -281,12 +297,36 @@ public struct BeastLauncher {
                 arguments: ["-xzf", tarballURL.path, "-C", runDirectory.path]
             ))
             try mergeSerials(from: gateTmpURL, userURL: userURL, kernelURL: kernelURL)
+            keepScreens(from: gateTmpURL, runDirectory: runDirectory)
         }
 
         return [
             SerialRef(name: "serial_user.txt", path: "serial_user.txt", bytes: fileSize(userURL), stream: .com1),
             SerialRef(name: "serial_kernel.txt", path: "serial_kernel.txt", bytes: fileSize(kernelURL), stream: .com2)
         ]
+    }
+
+    /// A suite gate saves each boot's final screen as breenix_gate_<n>/screen.png.
+    /// Each is kept as screen-<n>.png, so a screen is always the boot it came from and
+    /// a boot that saved none has none.
+    private func keepScreens(from gateTmp: URL, runDirectory: URL) {
+        let iterations = (try? FileManager.default.contentsOfDirectory(atPath: gateTmp.path)) ?? []
+        for iteration in iterations where iteration.hasPrefix("breenix_gate_") {
+            let boot = iteration.dropFirst("breenix_gate_".count)
+            guard !boot.isEmpty, boot.allSatisfy(\.isNumber) else { continue }
+            let screen = gateTmp.appendingPathComponent(iteration).appendingPathComponent("screen.png")
+            guard FileManager.default.fileExists(atPath: screen.path) else { continue }
+            let destination = runDirectory.appendingPathComponent("screen-\(boot).png")
+            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.copyItem(at: screen, to: destination)
+        }
+    }
+
+    /// The per-boot screens `keepScreens` kept, in boot order.
+    private func screenNames(in runDirectory: URL) -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: runDirectory.path)) ?? []
+        return names.filter { $0.hasPrefix("screen-") && $0.hasSuffix(".png") }
+            .sorted { naturalSerialKey($0) < naturalSerialKey($1) }
     }
 
     private func mergeSerials(from gateTmp: URL, userURL: URL, kernelURL: URL) throws {
@@ -378,7 +418,7 @@ public struct BeastLauncher {
         ["\(paths.clonePath)/docker/qemu/run-x86-gate.sh", "\(boots)", mode.rawValue]
     }
 
-    private func gateEnvironment(paths: BeastPaths, timeoutSecs: Int, qemuProfile: X86HardwareProfile?) -> [String: String] {
+    private func gateEnvironment(paths: BeastPaths, timeoutSecs: Int, qemuProfile: X86HardwareProfile?, suite: String?) -> [String: String] {
         var environment = [
             "BREENIX_GATE_TMP": paths.gateTmpPath,
             "BREENIX_REPO_DIR": paths.clonePath,
@@ -386,6 +426,10 @@ public struct BeastLauncher {
             "BREENIX_GATE_TIMEOUT": "\(timeoutSecs)"
         ]
         environment["BREENIX_QEMU_PROFILE"] = (qemuProfile ?? .default).rawValue
+        if let suite {
+            environment["BREENIX_BOOT_SUITE"] = suite
+            environment["BREENIX_QMP_SOCKET"] = paths.gateTmpPath + "/qmp.sock"
+        }
         return environment
     }
 

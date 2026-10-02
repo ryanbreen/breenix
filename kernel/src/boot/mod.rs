@@ -16,3 +16,7 @@ pub mod test_list;
 // of aarch64's own copy in main_aarch64.rs rather than a shared helper.
 #[cfg(target_arch = "x86_64")]
 pub mod init_image;
+
+// The boot-target file (/etc/breenix/boot-target): `suite <id>` runs that effort
+// suite as PID 1. Read by both architectures' production init launch.
+pub mod target;

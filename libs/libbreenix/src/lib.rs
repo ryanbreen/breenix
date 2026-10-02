@@ -55,6 +55,8 @@ pub mod pty;
 pub mod runtime;
 pub mod signal;
 pub mod socket;
+#[cfg(feature = "suite")]
+pub mod suite;
 pub mod synth;
 pub mod syscall;
 pub mod termios;

@@ -16,6 +16,9 @@ crate-type = ["rlib"]
 default = []
 std = []
 runtime = []
+# The effort-suite runner (src/suite.rs): needs std, and libgfx for its panel.
+suite = ["std", "dep:libgfx"]
 
 [dependencies]
-# No dependencies - pure no_std library
+# None by default - a pure no_std library. libgfx only with the suite feature.
+libgfx = { path = "../libgfx", optional = true }

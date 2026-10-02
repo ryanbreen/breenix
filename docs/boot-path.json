@@ -28,6 +28,10 @@
     "program": {
       "title": "Program",
       "summary": "The production kernel runs /sbin/probe --run <path> as PID 1, which runs that one program, relays its output and shows a pass or fail verdict on screen."
+    },
+    "suite": {
+      "title": "Suite",
+      "summary": "The production kernel runs an effort suite, /sbin/suite-<id>, as PID 1: it runs every case in docs/suites/<id>.json, prints one SUITE line per case and leaves a scored panel on screen."
     }
   },
   "milestones": [
