@@ -1,0 +1,1201 @@
+{
+  "title": "Path to a POSIX kernel with a userspace you can build on",
+  "outcome": "Breenix runs real programs unmodified on ARM64 and x86-64: every POSIX system interface backed and behaving to the standard, a C library and Rust std on top, POSIX utilities, and an SDK for building our own applications.",
+  "efforts": [
+    {
+      "id": "kernel-bring-up",
+      "title": "Kernel bring-up",
+      "outcome": "Every platform boots to its first userspace process: the boot path's first six milestones pass on ARM64 QEMU, Parallels, VMware and x86-64.",
+      "subsystems": [
+        1,
+        2,
+        3,
+        4,
+        8,
+        13,
+        19,
+        21
+      ],
+      "milestones": [
+        {
+          "id": "arch-bringup",
+          "title": "Arch bring-up",
+          "measure": {
+            "bootPath": "arch-bringup"
+          }
+        },
+        {
+          "id": "interrupts-time",
+          "title": "Interrupts & time",
+          "measure": {
+            "bootPath": "interrupts-time"
+          }
+        },
+        {
+          "id": "devices",
+          "title": "Devices",
+          "measure": {
+            "bootPath": "devices"
+          }
+        },
+        {
+          "id": "filesystems",
+          "title": "Filesystems & console",
+          "measure": {
+            "bootPath": "filesystems"
+          }
+        },
+        {
+          "id": "scheduler",
+          "title": "Scheduler, timer tick & SMP",
+          "measure": {
+            "bootPath": "scheduler"
+          }
+        },
+        {
+          "id": "first-userspace",
+          "title": "First userspace process",
+          "measure": {
+            "bootPath": "first-userspace"
+          }
+        }
+      ]
+    },
+    {
+      "id": "files-io",
+      "title": "Files & I/O",
+      "outcome": "Every POSIX file and I/O behaviour a program relies on works on every target.",
+      "suite": "files-io",
+      "area": "Files & I/O",
+      "subsystems": [
+        12,
+        22
+      ],
+      "milestones": [
+        {
+          "id": "open",
+          "title": "open & creat flags",
+          "measure": {
+            "suite": "files-io",
+            "categories": [
+              "open"
+            ]
+          }
+        },
+        {
+          "id": "read-write",
+          "title": "read & write",
+          "measure": {
+            "suite": "files-io",
+            "categories": [
+              "read-write"
+            ]
+          }
+        },
+        {
+          "id": "offsets",
+          "title": "offsets & positioned I/O",
+          "measure": {
+            "suite": "files-io",
+            "categories": [
+              "offsets"
+            ]
+          }
+        },
+        {
+          "id": "descriptors",
+          "title": "descriptors & dup",
+          "measure": {
+            "suite": "files-io",
+            "categories": [
+              "descriptors"
+            ]
+          }
+        },
+        {
+          "id": "fcntl",
+          "title": "fcntl flags & record locks",
+          "measure": {
+            "suite": "files-io",
+            "categories": [
+              "fcntl"
+            ]
+          }
+        },
+        {
+          "id": "metadata",
+          "title": "stat, truncate & timestamps",
+          "measure": {
+            "suite": "files-io",
+            "categories": [
+              "metadata"
+            ]
+          }
+        },
+        {
+          "id": "pipes",
+          "title": "pipes",
+          "measure": {
+            "suite": "files-io",
+            "categories": [
+              "pipes"
+            ]
+          }
+        },
+        {
+          "id": "mmap",
+          "title": "file-backed mmap",
+          "measure": {
+            "suite": "files-io",
+            "categories": [
+              "mmap"
+            ]
+          }
+        },
+        {
+          "id": "sync",
+          "title": "fsync & fdatasync",
+          "measure": {
+            "suite": "files-io",
+            "categories": [
+              "sync"
+            ]
+          }
+        },
+        {
+          "id": "poll-select",
+          "title": "poll & select",
+          "measure": {
+            "suite": "files-io",
+            "categories": [
+              "poll-select"
+            ]
+          }
+        },
+        {
+          "id": "interfaces",
+          "title": "Every Files & I/O system interface backed",
+          "measure": {
+            "interfaces": "Files & I/O"
+          }
+        }
+      ]
+    },
+    {
+      "id": "directories",
+      "title": "Directories & links",
+      "outcome": "Programs can build, walk and rearrange directory trees with POSIX semantics, including permissions and timestamps.",
+      "suite": "directories",
+      "area": "Directories & links",
+      "subsystems": [
+        12
+      ],
+      "milestones": [
+        {
+          "id": "userspace-fs",
+          "title": "Filesystem from userspace (boot path)",
+          "measure": {
+            "bootPath": "userspace-fs"
+          }
+        },
+        {
+          "id": "mkdir-rmdir",
+          "title": "mkdir & rmdir",
+          "measure": {
+            "suite": "directories",
+            "categories": [
+              "mkdir-rmdir"
+            ]
+          }
+        },
+        {
+          "id": "readdir",
+          "title": "readdir & seekdir",
+          "measure": {
+            "suite": "directories",
+            "categories": [
+              "readdir"
+            ]
+          }
+        },
+        {
+          "id": "links",
+          "title": "hard links & unlink",
+          "measure": {
+            "suite": "directories",
+            "categories": [
+              "links"
+            ]
+          }
+        },
+        {
+          "id": "symlinks",
+          "title": "symlinks & readlink",
+          "measure": {
+            "suite": "directories",
+            "categories": [
+              "symlinks"
+            ]
+          }
+        },
+        {
+          "id": "rename",
+          "title": "rename & atomic replace",
+          "measure": {
+            "suite": "directories",
+            "categories": [
+              "rename"
+            ]
+          }
+        },
+        {
+          "id": "cwd",
+          "title": "getcwd, chdir & relative paths",
+          "measure": {
+            "suite": "directories",
+            "categories": [
+              "cwd"
+            ]
+          }
+        },
+        {
+          "id": "permissions",
+          "title": "chmod, chown, access & umask",
+          "measure": {
+            "suite": "directories",
+            "categories": [
+              "permissions"
+            ]
+          }
+        },
+        {
+          "id": "timestamps",
+          "title": "utimensat & time updates",
+          "measure": {
+            "suite": "directories",
+            "categories": [
+              "timestamps"
+            ]
+          }
+        },
+        {
+          "id": "interfaces",
+          "title": "Every directory system interface backed",
+          "measure": {
+            "interfaces": "Directories & links"
+          }
+        }
+      ]
+    },
+    {
+      "id": "processes",
+      "title": "Processes",
+      "outcome": "fork, exec, wait and exit behave as POSIX requires, with process groups, sessions, credentials and limits.",
+      "suite": "processes",
+      "area": "Processes",
+      "subsystems": [
+        5,
+        22
+      ],
+      "milestones": [
+        {
+          "id": "process-lifecycle",
+          "title": "Process lifecycle (boot path)",
+          "measure": {
+            "bootPath": "process-lifecycle"
+          }
+        },
+        {
+          "id": "fork",
+          "title": "fork & copy-on-write",
+          "measure": {
+            "suite": "processes",
+            "categories": [
+              "fork"
+            ]
+          }
+        },
+        {
+          "id": "exec",
+          "title": "exec, argv & environment",
+          "measure": {
+            "suite": "processes",
+            "categories": [
+              "exec"
+            ]
+          }
+        },
+        {
+          "id": "wait",
+          "title": "wait, waitpid & exit status",
+          "measure": {
+            "suite": "processes",
+            "categories": [
+              "wait"
+            ]
+          }
+        },
+        {
+          "id": "groups-sessions",
+          "title": "process groups & sessions",
+          "measure": {
+            "suite": "processes",
+            "categories": [
+              "groups-sessions"
+            ]
+          }
+        },
+        {
+          "id": "credentials",
+          "title": "user & group IDs",
+          "measure": {
+            "suite": "processes",
+            "categories": [
+              "credentials"
+            ]
+          }
+        },
+        {
+          "id": "limits",
+          "title": "resource limits & usage",
+          "measure": {
+            "suite": "processes",
+            "categories": [
+              "limits"
+            ]
+          }
+        },
+        {
+          "id": "scheduling",
+          "title": "priorities & sched_yield",
+          "measure": {
+            "suite": "processes",
+            "categories": [
+              "scheduling"
+            ]
+          }
+        },
+        {
+          "id": "interfaces",
+          "title": "Every process system interface backed",
+          "measure": {
+            "interfaces": "Processes"
+          }
+        }
+      ]
+    },
+    {
+      "id": "signals",
+      "title": "Signals",
+      "outcome": "Signals are generated, blocked, delivered and handled exactly as POSIX specifies, including realtime signals and interval timers.",
+      "suite": "signals",
+      "area": "Signals",
+      "subsystems": [
+        10
+      ],
+      "milestones": [
+        {
+          "id": "signals-ipc",
+          "title": "Signals & IPC (boot path)",
+          "measure": {
+            "bootPath": "signals-ipc"
+          }
+        },
+        {
+          "id": "dispositions",
+          "title": "dispositions & default actions",
+          "measure": {
+            "suite": "signals",
+            "categories": [
+              "dispositions"
+            ]
+          }
+        },
+        {
+          "id": "masks",
+          "title": "masks & pending signals",
+          "measure": {
+            "suite": "signals",
+            "categories": [
+              "masks"
+            ]
+          }
+        },
+        {
+          "id": "handlers",
+          "title": "handlers, SA_RESTART & EINTR",
+          "measure": {
+            "suite": "signals",
+            "categories": [
+              "handlers"
+            ]
+          }
+        },
+        {
+          "id": "waits",
+          "title": "sigsuspend, pause & sigtimedwait",
+          "measure": {
+            "suite": "signals",
+            "categories": [
+              "waits"
+            ]
+          }
+        },
+        {
+          "id": "altstack",
+          "title": "alternate signal stacks",
+          "measure": {
+            "suite": "signals",
+            "categories": [
+              "altstack"
+            ]
+          }
+        },
+        {
+          "id": "realtime",
+          "title": "realtime signals & sigqueue",
+          "measure": {
+            "suite": "signals",
+            "categories": [
+              "realtime"
+            ]
+          }
+        },
+        {
+          "id": "job-control",
+          "title": "SIGSTOP, SIGCONT & SIGCHLD",
+          "measure": {
+            "suite": "signals",
+            "categories": [
+              "job-control"
+            ]
+          }
+        },
+        {
+          "id": "interfaces",
+          "title": "Every signal system interface backed",
+          "measure": {
+            "interfaces": "Signals"
+          }
+        }
+      ]
+    },
+    {
+      "id": "time",
+      "title": "Time & timers",
+      "outcome": "Clocks, sleeps and POSIX timers keep correct time on every target.",
+      "suite": "time",
+      "area": "Time & timers",
+      "subsystems": [
+        4
+      ],
+      "milestones": [
+        {
+          "id": "clocks",
+          "title": "clocks & resolution",
+          "measure": {
+            "suite": "time",
+            "categories": [
+              "clocks"
+            ]
+          }
+        },
+        {
+          "id": "sleep",
+          "title": "nanosleep & clock_nanosleep",
+          "measure": {
+            "suite": "time",
+            "categories": [
+              "sleep"
+            ]
+          }
+        },
+        {
+          "id": "timers",
+          "title": "POSIX timers",
+          "measure": {
+            "suite": "time",
+            "categories": [
+              "timers"
+            ]
+          }
+        },
+        {
+          "id": "itimers",
+          "title": "alarm & interval timers",
+          "measure": {
+            "suite": "time",
+            "categories": [
+              "itimers"
+            ]
+          }
+        },
+        {
+          "id": "interfaces",
+          "title": "Every time system interface backed",
+          "measure": {
+            "interfaces": "Time & timers"
+          }
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "title": "Memory",
+      "outcome": "Anonymous and shared memory, protection changes and locking behave as POSIX requires.",
+      "suite": "memory",
+      "area": "Memory",
+      "subsystems": [
+        7
+      ],
+      "milestones": [
+        {
+          "id": "anonymous",
+          "title": "anonymous mmap & munmap",
+          "measure": {
+            "suite": "memory",
+            "categories": [
+              "anonymous"
+            ]
+          }
+        },
+        {
+          "id": "protection",
+          "title": "mprotect & faults",
+          "measure": {
+            "suite": "memory",
+            "categories": [
+              "protection"
+            ]
+          }
+        },
+        {
+          "id": "shared",
+          "title": "shared mappings across fork",
+          "measure": {
+            "suite": "memory",
+            "categories": [
+              "shared"
+            ]
+          }
+        },
+        {
+          "id": "brk",
+          "title": "brk & sbrk",
+          "measure": {
+            "suite": "memory",
+            "categories": [
+              "brk"
+            ]
+          }
+        },
+        {
+          "id": "locking",
+          "title": "mlock & msync",
+          "measure": {
+            "suite": "memory",
+            "categories": [
+              "locking"
+            ]
+          }
+        },
+        {
+          "id": "interfaces",
+          "title": "Every memory system interface backed",
+          "measure": {
+            "interfaces": "Memory"
+          }
+        }
+      ]
+    },
+    {
+      "id": "threads",
+      "title": "Threads",
+      "outcome": "POSIX threads work: creation, joining, mutexes, condition variables, thread-local storage and per-thread signals.",
+      "suite": "threads",
+      "area": "Threads",
+      "subsystems": [
+        6
+      ],
+      "milestones": [
+        {
+          "id": "lifecycle",
+          "title": "pthread create, join & detach",
+          "measure": {
+            "suite": "threads",
+            "categories": [
+              "lifecycle"
+            ]
+          }
+        },
+        {
+          "id": "mutex",
+          "title": "mutexes",
+          "measure": {
+            "suite": "threads",
+            "categories": [
+              "mutex"
+            ]
+          }
+        },
+        {
+          "id": "cond",
+          "title": "condition variables",
+          "measure": {
+            "suite": "threads",
+            "categories": [
+              "cond"
+            ]
+          }
+        },
+        {
+          "id": "rwlock-barrier",
+          "title": "rwlocks, barriers & once",
+          "measure": {
+            "suite": "threads",
+            "categories": [
+              "rwlock-barrier"
+            ]
+          }
+        },
+        {
+          "id": "tls",
+          "title": "thread-local storage",
+          "measure": {
+            "suite": "threads",
+            "categories": [
+              "tls"
+            ]
+          }
+        },
+        {
+          "id": "signals",
+          "title": "per-thread signals",
+          "measure": {
+            "suite": "threads",
+            "categories": [
+              "signals"
+            ]
+          }
+        },
+        {
+          "id": "scheduling",
+          "title": "thread scheduling parameters",
+          "measure": {
+            "suite": "threads",
+            "categories": [
+              "scheduling"
+            ]
+          }
+        },
+        {
+          "id": "interfaces",
+          "title": "Every thread system interface backed",
+          "measure": {
+            "interfaces": "Threads"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ipc",
+      "title": "IPC",
+      "outcome": "Processes can talk through FIFOs, message queues, semaphores and shared memory.",
+      "suite": "ipc",
+      "area": "XSI & message-queue IPC",
+      "subsystems": [
+        9
+      ],
+      "milestones": [
+        {
+          "id": "fifos",
+          "title": "named pipes (FIFOs)",
+          "measure": {
+            "suite": "ipc",
+            "categories": [
+              "fifos"
+            ]
+          }
+        },
+        {
+          "id": "mq",
+          "title": "POSIX message queues",
+          "measure": {
+            "suite": "ipc",
+            "categories": [
+              "mq"
+            ]
+          }
+        },
+        {
+          "id": "semaphores",
+          "title": "semaphores",
+          "measure": {
+            "suite": "ipc",
+            "categories": [
+              "semaphores"
+            ]
+          }
+        },
+        {
+          "id": "shm",
+          "title": "shared memory",
+          "measure": {
+            "suite": "ipc",
+            "categories": [
+              "shm"
+            ]
+          }
+        },
+        {
+          "id": "sysv",
+          "title": "System V IPC",
+          "measure": {
+            "suite": "ipc",
+            "categories": [
+              "sysv"
+            ]
+          }
+        },
+        {
+          "id": "interfaces",
+          "title": "Every IPC system interface backed",
+          "measure": {
+            "interfaces": "XSI & message-queue IPC"
+          }
+        }
+      ]
+    },
+    {
+      "id": "terminals",
+      "title": "Terminals & job control",
+      "outcome": "Interactive programs work: termios, pseudo-terminals, a controlling terminal and shell job control.",
+      "suite": "terminals",
+      "subsystems": [
+        11
+      ],
+      "milestones": [
+        {
+          "id": "tty-shell",
+          "title": "TTY & shell (boot path)",
+          "measure": {
+            "bootPath": "tty-shell"
+          }
+        },
+        {
+          "id": "termios",
+          "title": "termios modes & attributes",
+          "measure": {
+            "suite": "terminals",
+            "categories": [
+              "termios"
+            ]
+          }
+        },
+        {
+          "id": "pty",
+          "title": "pseudo-terminals",
+          "measure": {
+            "suite": "terminals",
+            "categories": [
+              "pty"
+            ]
+          }
+        },
+        {
+          "id": "controlling",
+          "title": "controlling terminal & sessions",
+          "measure": {
+            "suite": "terminals",
+            "categories": [
+              "controlling"
+            ]
+          }
+        },
+        {
+          "id": "job-control",
+          "title": "foreground, background & SIGTTOU",
+          "measure": {
+            "suite": "terminals",
+            "categories": [
+              "job-control"
+            ]
+          }
+        },
+        {
+          "id": "interfaces",
+          "title": "Terminal interfaces backed",
+          "measure": {
+            "interfaces": [
+              "ioctl",
+              "setsid",
+              "getsid",
+              "setpgid",
+              "getpgid"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "networking",
+      "title": "Networking & sockets",
+      "outcome": "TCP, UDP and Unix-domain sockets behave as POSIX requires, and programs reach real hosts.",
+      "suite": "networking",
+      "area": "Sockets",
+      "subsystems": [
+        14,
+        15,
+        16
+      ],
+      "milestones": [
+        {
+          "id": "networking",
+          "title": "Networking (boot path)",
+          "measure": {
+            "bootPath": "networking"
+          }
+        },
+        {
+          "id": "udp",
+          "title": "UDP",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "udp"
+            ]
+          }
+        },
+        {
+          "id": "tcp",
+          "title": "TCP",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "tcp"
+            ]
+          }
+        },
+        {
+          "id": "unix",
+          "title": "Unix-domain sockets",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "unix"
+            ]
+          }
+        },
+        {
+          "id": "options",
+          "title": "socket options & shutdown",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "options"
+            ]
+          }
+        },
+        {
+          "id": "multiplex",
+          "title": "poll & select on sockets",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "multiplex"
+            ]
+          }
+        },
+        {
+          "id": "resolve",
+          "title": "name resolution",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "resolve"
+            ]
+          }
+        },
+        {
+          "id": "interfaces",
+          "title": "Every socket system interface backed",
+          "measure": {
+            "interfaces": "Sockets"
+          }
+        }
+      ]
+    },
+    {
+      "id": "libc",
+      "title": "C library",
+      "outcome": "A complete C standard library and POSIX C API, so ordinary C programs compile and run unchanged.",
+      "suite": "libc",
+      "subsystems": [
+        23
+      ],
+      "milestones": [
+        {
+          "id": "stdio",
+          "title": "stdio streams",
+          "measure": {
+            "suite": "libc",
+            "categories": [
+              "stdio"
+            ]
+          }
+        },
+        {
+          "id": "string-stdlib",
+          "title": "string & stdlib",
+          "measure": {
+            "suite": "libc",
+            "categories": [
+              "string-stdlib"
+            ]
+          }
+        },
+        {
+          "id": "math",
+          "title": "math",
+          "measure": {
+            "suite": "libc",
+            "categories": [
+              "math"
+            ]
+          }
+        },
+        {
+          "id": "locale-wchar",
+          "title": "locale & wide characters",
+          "measure": {
+            "suite": "libc",
+            "categories": [
+              "locale-wchar"
+            ]
+          }
+        },
+        {
+          "id": "dirent-glob",
+          "title": "dirent, glob & fnmatch",
+          "measure": {
+            "suite": "libc",
+            "categories": [
+              "dirent-glob"
+            ]
+          }
+        },
+        {
+          "id": "getopt-env",
+          "title": "getopt & environment",
+          "measure": {
+            "suite": "libc",
+            "categories": [
+              "getopt-env"
+            ]
+          }
+        },
+        {
+          "id": "pthread",
+          "title": "pthreads through libc",
+          "measure": {
+            "suite": "libc",
+            "categories": [
+              "pthread"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "rust-std",
+      "title": "Rust std",
+      "outcome": "Rust's standard library targets Breenix: fs, io, process, thread, net and time work through std.",
+      "suite": "rust-std",
+      "subsystems": [
+        22
+      ],
+      "milestones": [
+        {
+          "id": "runtimes",
+          "title": "Runtimes & programs (boot path)",
+          "measure": {
+            "bootPath": "runtimes"
+          }
+        },
+        {
+          "id": "fs-io",
+          "title": "std::fs & std::io",
+          "measure": {
+            "suite": "rust-std",
+            "categories": [
+              "fs-io"
+            ]
+          }
+        },
+        {
+          "id": "process",
+          "title": "std::process",
+          "measure": {
+            "suite": "rust-std",
+            "categories": [
+              "process"
+            ]
+          }
+        },
+        {
+          "id": "thread-sync",
+          "title": "std::thread & std::sync",
+          "measure": {
+            "suite": "rust-std",
+            "categories": [
+              "thread-sync"
+            ]
+          }
+        },
+        {
+          "id": "net",
+          "title": "std::net",
+          "measure": {
+            "suite": "rust-std",
+            "categories": [
+              "net"
+            ]
+          }
+        },
+        {
+          "id": "time-env",
+          "title": "std::time & std::env",
+          "measure": {
+            "suite": "rust-std",
+            "categories": [
+              "time-env"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "utilities",
+      "title": "Shell & POSIX utilities",
+      "outcome": "A POSIX shell and the core utilities run scripts the way they do elsewhere.",
+      "suite": "utilities",
+      "subsystems": [
+        24
+      ],
+      "milestones": [
+        {
+          "id": "shell",
+          "title": "POSIX sh language",
+          "measure": {
+            "suite": "utilities",
+            "categories": [
+              "shell"
+            ]
+          }
+        },
+        {
+          "id": "file-utils",
+          "title": "file utilities",
+          "measure": {
+            "suite": "utilities",
+            "categories": [
+              "file-utils"
+            ]
+          }
+        },
+        {
+          "id": "text-utils",
+          "title": "text utilities",
+          "measure": {
+            "suite": "utilities",
+            "categories": [
+              "text-utils"
+            ]
+          }
+        },
+        {
+          "id": "process-utils",
+          "title": "process utilities",
+          "measure": {
+            "suite": "utilities",
+            "categories": [
+              "process-utils"
+            ]
+          }
+        },
+        {
+          "id": "scripts",
+          "title": "real shell scripts",
+          "measure": {
+            "suite": "utilities",
+            "categories": [
+              "scripts"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "sdk",
+      "title": "Developer SDK",
+      "outcome": "Our own applications build outside the kernel tree against a packaged toolchain, headers and libraries, and run on every target.",
+      "suite": "sdk",
+      "subsystems": [
+        22,
+        23
+      ],
+      "milestones": [
+        {
+          "id": "toolchain",
+          "title": "packaged C and Rust toolchains",
+          "measure": {
+            "suite": "sdk",
+            "categories": [
+              "toolchain"
+            ]
+          }
+        },
+        {
+          "id": "c-app",
+          "title": "a C app built outside the tree",
+          "measure": {
+            "suite": "sdk",
+            "categories": [
+              "c-app"
+            ]
+          }
+        },
+        {
+          "id": "rust-app",
+          "title": "a Rust app built outside the tree",
+          "measure": {
+            "suite": "sdk",
+            "categories": [
+              "rust-app"
+            ]
+          }
+        },
+        {
+          "id": "install",
+          "title": "installing apps onto a Breenix disk",
+          "measure": {
+            "suite": "sdk",
+            "categories": [
+              "install"
+            ]
+          }
+        },
+        {
+          "id": "templates",
+          "title": "project templates & docs",
+          "measure": {
+            "suite": "sdk",
+            "categories": [
+              "templates"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
