@@ -1580,7 +1580,7 @@ impl Ext2SpinStallTracker {
 /// after the #728 fix: pre-fix it is the *only* path (this function's
 /// behavior on unfixed code, unchanged from the plain spin), post-fix it is
 /// reached only when parking is unsafe (`ext2_lock_can_sleep()` false) or
-/// after a bounded number of park rounds made no progress.
+/// the scheduler refuses to publish the wait.
 fn ext2_spin_wait<T>(lock_name: &str, mut try_acquire: impl FnMut() -> Option<T>) -> T {
     let mut tracker = Ext2SpinStallTracker::new();
     loop {
@@ -1646,14 +1646,19 @@ fn ext2_spin_wait_upgrade(
 // the same instrument measures both the pre-fix state (spin, always) and
 // this fix's fallback edges (spin, sometimes).
 //
-// A parked acquisition is also bounded: `EXT2_LOCK_PARK_ROUNDS` rounds of
-// `EXT2_LOCK_PARK_TIMEOUT_NS` each, using `prepare_to_wait_checked`'s
-// enqueue-under-the-waitqueue-lock recheck (never the untimed
-// `prepare_to_wait`) so a missed wake degrades to a bounded retry rather than
-// a permanent hang, matching this kernel's own lost-wake history (#584,
-// #586, #589). If every round leaves the lock still unavailable — which
-// would mean the wake path itself is broken — the accessor falls back to the
-// unchanged spin rather than looping forever on a wait that isn't working.
+// Each park is a timed wait of `EXT2_LOCK_PARK_TIMEOUT_NS`, using
+// `prepare_to_wait_checked`'s enqueue-under-the-waitqueue-lock recheck (never
+// the untimed `prepare_to_wait`), so a missed wake degrades to a bounded
+// retry rather than a permanent hang, matching this kernel's own lost-wake
+// history (#584, #586, #589). A contender that may park keeps parking until
+// it acquires the lock, rather than falling back to the spin after a fixed
+// number of rounds. The spin holds the
+// CPU with preemption disabled, and the holder it waits for can be asleep on
+// block I/O with its guard held (the residual below), so a spin can only
+// help a holder that is already on another CPU. Once one contender per CPU
+// spins, the holder can never run again: under milestone 6's concurrent
+// filesystem tests, readers woken ahead of an upgrade-waiting writer used up a
+// fixed 32-round budget within seconds, and all four CPUs ended in the spin.
 //
 // Guards returned by the four accessors below are wrapped in
 // `Ext2ReadGuard`/`Ext2WriteGuard`, which `Deref`/`DerefMut` transparently to
@@ -1679,15 +1684,9 @@ fn ext2_spin_wait_upgrade(
 // (`Ext2Fs::block_groups`/`superblock`), which is real filesystem-correctness
 // work, not a locking-primitive change.
 
-/// Rounds of `EXT2_LOCK_PARK_TIMEOUT_NS` a parked acquisition will retry
-/// before giving up and falling back to the (always-correct) spin path.
-const EXT2_LOCK_PARK_ROUNDS: u32 = 32;
-
 /// Per-round park timeout. Bounded per C6 of the #728 pre-check: a missed
 /// wake degrades to a retry at this granularity rather than a permanent
-/// hang. 32 rounds at 200ms is a 6.4s worst-case bound before falling back
-/// to the spin path — generous next to ordinary block-device I/O latency,
-/// small next to "forever."
+/// hang.
 const EXT2_LOCK_PARK_TIMEOUT_NS: u64 = 200_000_000;
 
 /// Running count of acquisition attempts that actually parked (queued on a
@@ -1808,9 +1807,8 @@ fn ext2_record_park(lock_name: &str) {
 ///
 /// aarch64 syscalls are the opposite: `syscall_entry.S` unmasks DAIF before
 /// `rust_syscall_handler` runs, so IRQs are normally *unmasked* in an
-/// aarch64 syscall, and the one aarch64 site that masks them anyway
-/// (`load_test_binaries_from_ext2`, C3) needs exactly this check to stay a
-/// hard no-park. That is why the check is aarch64-only rather than deleted
+/// aarch64 syscall, and a caller that masks them anyway (C3) needs exactly
+/// this check to stay a hard no-park. That is why the check is aarch64-only rather than deleted
 /// outright: on aarch64 it is load-bearing; on x86 it is never anything but
 /// unconditionally false, so keeping it there defeats the fix.
 ///
@@ -1837,9 +1835,8 @@ fn ext2_record_park(lock_name: &str) {
 /// guards) would still enter the park loop, but `preempt_enable()`'s single
 /// decrement would leave `preempt_count() == 1` on return — a park that can
 /// never be scheduled away by the only clause that can reach it, silently
-/// turning into the full `EXT2_LOCK_PARK_ROUNDS`-round timeout on every
-/// occurrence before falling back to the spin. Pinned in the structural
-/// ratchet (`tests/ext2_lock_structure.rs`).
+/// turning every round into a full `EXT2_LOCK_PARK_TIMEOUT_NS` timeout.
+/// Pinned in the structural ratchet (`tests/ext2_lock_structure.rs`).
 #[inline]
 fn ext2_lock_can_sleep() -> bool {
     if crate::task::scheduler::current_thread_id().is_none() {
@@ -1872,9 +1869,9 @@ fn ext2_schedule_current_wait() {
     crate::task::waitqueue::schedule_current_wait();
 }
 
-/// Try the fast (uncontended) path, then park up to `EXT2_LOCK_PARK_ROUNDS`
-/// times when it's safe to, then fall back to the unchanged spin. Shared by
-/// the read and write acquisition paths below via the closures they pass.
+/// Try the fast (uncontended) path, then park until acquired when it's safe
+/// to, otherwise fall back to the unchanged spin. Shared by the read and
+/// write acquisition paths below via the closures they pass.
 /// `lock_name` is used only for the `ext2_record_park()` marker below (the
 /// same name each caller already passes to its own `ext2_spin_wait*` spin
 /// fallback).
@@ -1889,7 +1886,7 @@ fn ext2_acquire<T>(
     }
 
     if ext2_lock_can_sleep() {
-        for _ in 0..EXT2_LOCK_PARK_ROUNDS {
+        loop {
             if let Some(v) = try_acquire() {
                 return v;
             }
@@ -1958,7 +1955,7 @@ fn ext2_acquire_write(
         return ext2_spin_wait_upgrade(upgradeable, lock_name);
     }
 
-    for _ in 0..EXT2_LOCK_PARK_ROUNDS {
+    loop {
         // `slot` lets the `FnOnce` recheck closure below hand the
         // upgradeable guard back out (its own signature can only return
         // `bool`) via a captured-by-reference `Option`, so we never drop it
@@ -2001,8 +1998,6 @@ fn ext2_acquire_write(
             }
         }
     }
-
-    ext2_spin_wait_upgrade(upgradeable, lock_name)
 }
 
 /// Wraps a `spin::RwLockReadGuard` on `ROOT_EXT2`/`HOME_EXT2`. Transparent
@@ -2047,10 +2042,9 @@ impl Drop for Ext2ReadGuard {
         // than the upgrade-waiting writer that could actually proceed --
         // that reader retries `try_read()`, is refused while UPGRADED is
         // set, and re-parks, deferring the writer's own wake to its next
-        // bounded per-round timeout (C6, `EXT2_LOCK_PARK_TIMEOUT_NS`,
-        // worst case `EXT2_LOCK_PARK_ROUNDS` rounds later). This is bounded
-        // added latency, not a hang, and it existed before this correction
-        // too (`has_waiters()` never changed which waiter gets popped) --
+        // bounded per-round timeout (C6, `EXT2_LOCK_PARK_TIMEOUT_NS`). This
+        // is bounded added latency, not a hang, and it existed before this
+        // correction too (`has_waiters()` never changed which waiter gets popped) --
         // recorded here since it was under-stated originally. The queue is
         // shared rather than writer-priority (module docs above); making it
         // writer-priority is a real option for a future round, not done

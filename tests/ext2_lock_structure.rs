@@ -317,8 +317,8 @@ fn validate_can_sleep_arch_split(fn_body: &str) -> Result<(), String> {
     let aarch64_mask = code_mask(aarch64_block);
     if identifier_offsets(aarch64_block, &aarch64_mask, "interrupts_enabled").is_empty() {
         return Err(
-            "aarch64 arm lost its interrupts_enabled() gate — the C3 IRQ-masked no-park site \
-             (load_test_binaries_from_ext2) is no longer provably refused"
+            "aarch64 arm lost its interrupts_enabled() gate — an IRQ-masked caller (C3) is \
+             no longer provably refused"
                 .to_string(),
         );
     }

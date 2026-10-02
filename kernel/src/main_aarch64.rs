@@ -250,6 +250,16 @@ impl InitLaunch {
     }
 }
 
+/// Release the preempt pin kernel_main takes after per-CPU init, once the boot
+/// sequence no longer needs CPU 0 to stay on its boot stack, and publish CPU
+/// 0's softirq daemon, which is held back until then so it is not left queued
+/// through the unschedulable boot phase.
+#[cfg(target_arch = "aarch64")]
+fn release_boot_preempt_pin() {
+    kernel::per_cpu_aarch64::preempt_enable();
+    kernel::task::softirqd::init_online_daemons();
+}
+
 /// Create a userspace process from a pre-loaded ELF and jump to it.
 ///
 /// Takes ELF bytes that were read earlier (e.g., before SMP bring-up) and
@@ -359,11 +369,8 @@ fn launch_init_from_elf(
     // from context-switching the boot CPU away from its boot stack (which would
     // leave the boot CPU stuck in idle_loop_arm64 and never return here).
     // From this point on, the init thread is being set as CPU 0's current thread,
-    // and the scheduler can run normally.
-    kernel::per_cpu_aarch64::preempt_enable();
-    // IRQs remain masked through ERET; CPU0's daemon can now be published
-    // without leaving it queued through the unschedulable boot phase.
-    kernel::task::softirqd::init_online_daemons();
+    // and the scheduler can run normally. IRQs remain masked through ERET.
+    release_boot_preempt_pin();
 
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(init_thread);
@@ -1758,19 +1765,25 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // dispatch them. Do NOT call launch_init_from_elf() - its manual
     // spawn_as_current() + return_to_userspace() bypasses the scheduler and
     // conflicts with the 60+ test processes already in the ready queue.
+    //
+    // This context is CPU 0's idle thread, and dispatching an idle thread
+    // always restarts it at idle_loop_arm64, so a block here would abandon
+    // the rest of the boot. Loading reads ext2, and every read waits for a
+    // VirtIO completion, so the loader runs on its own kernel thread and
+    // this context becomes CPU 0's idle loop.
     #[cfg(feature = "testing")]
     if device_count > 0 {
         serial_println!("[test] Loading test binaries from ext2...");
-        load_test_binaries_from_ext2();
-        boot_screen::stage(Stage::StartingPid1);
-        serial_println!("[test] Test processes loaded - will run via timer interrupts");
-        serial_println!("[test] Entering scheduler idle loop");
-        // Print shell prompt to serial before enabling interrupts.
-        // Once interrupts are enabled, the scheduler takes over and the BSP
-        // (its idle thread) enters idle_loop_arm64 - it won't return here.
-        // The prompt signals to the test harness that boot is complete.
-        serial_print!("breenix> ");
-        // Enable interrupts - scheduler dispatches test processes via timer.
+        if let Err(e) = kernel::task::kthread::kthread_run(run_test_loader, "test-loader") {
+            serial_println!("[test] Failed to start the test loader thread: {:?}", e);
+        }
+        // CPU 0 can now run test processes. Once the pin drops, a tick could
+        // switch this idle context away for good, so keep IRQs masked until
+        // CPU 0's softirq daemon has been published.
+        unsafe {
+            kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts();
+        }
+        release_boot_preempt_pin();
         unsafe {
             kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
         }
@@ -1854,6 +1867,41 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 }
 
+/// The testing profile's boot continuation, run on the `test-loader` kernel
+/// thread: load the test binaries, then print the markers the boot gate reads.
+#[cfg(target_arch = "aarch64")]
+#[cfg(feature = "testing")]
+#[cfg_attr(
+    any(
+        feature = "kthread_test_only",
+        feature = "kthread_stress_test",
+        feature = "workqueue_test_only"
+    ),
+    allow(dead_code)
+)]
+fn run_test_loader() {
+    // Each create_user_process() adds a thread to the ready queue, and without
+    // a preempt pin the timer would hand this CPU to those test processes
+    // between binaries, stretching loading to tens of seconds. The pin keeps
+    // the loader on its CPU except while it sleeps on a block read, the same
+    // shape as a syscall: the completion wait releases the pin while it
+    // sleeps and retakes it on wake, on whichever CPU that is.
+    kernel::per_cpu_aarch64::preempt_disable();
+    // Tests start running and exiting while later binaries are still being
+    // read, so the suite only counts as finished once loading has ended.
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::begin_loading();
+    load_test_binaries_from_ext2();
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::end_loading();
+    kernel::per_cpu_aarch64::preempt_enable();
+    boot_screen::stage(Stage::StartingPid1);
+    serial_println!("[test] Test processes loaded - will run via timer interrupts");
+    serial_println!("[test] Entering scheduler idle loop");
+    // The prompt signals to the test harness that boot is complete.
+    serial_print!("breenix> ");
+}
+
 /// Load test binaries from ext2 filesystem and create userspace processes.
 ///
 /// Each test binary is loaded from /bin/<name>.elf, parsed as ELF, and scheduled
@@ -1871,17 +1919,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 fn load_test_binaries_from_ext2() {
     use alloc::format;
     use alloc::string::String;
-
-    // CRITICAL: Disable interrupts during the entire loading loop.
-    // With interrupts enabled, each create_user_process() adds a thread to the
-    // scheduler's ready queue. Timer interrupts (200Hz) then preempt this loading
-    // thread to run the newly created test processes. By binary #30, the loading
-    // thread competes with 30+ threads for CPU time and loading takes >90 seconds.
-    // With interrupts disabled, VirtIO block I/O still works (polling mode) and
-    // all binaries load in under a second.
-    unsafe {
-        kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts();
-    }
 
     // Use the canonical shared test binary list (see boot::test_list)
     let test_binaries = kernel::boot::test_list::TEST_BINARIES;
@@ -1980,12 +2017,6 @@ fn load_test_binaries_from_ext2() {
             }
         }
     }
-
-    // NOTE: Interrupts remain DISABLED here. The caller is responsible for
-    // printing status messages and re-enabling interrupts before entering
-    // the idle loop. If we re-enable here, the scheduler immediately preempts
-    // the boot thread to run test processes, and subsequent serial_println!
-    // calls in the caller never execute.
 
     serial_println!(
         "[test] Loaded {}/{} test binaries ({} failed, {} not found)",

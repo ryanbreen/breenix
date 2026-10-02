@@ -366,6 +366,37 @@ static BTRT_REGISTERED_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Number of registered PIDs that have exited.
 static BTRT_COMPLETED_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// Set while a loader is still registering test PIDs. Registered tests can
+/// all exit before the next one is registered, so auto-finalize waits for it.
+static BTRT_LOADING: AtomicBool = AtomicBool::new(false);
+
+/// Hold auto-finalize until `end_loading()`: more tests are about to be
+/// registered while earlier ones may already be running.
+pub fn begin_loading() {
+    BTRT_LOADING.store(true, Ordering::SeqCst);
+}
+
+/// Mark registration complete, and finalize if every registered test has
+/// already exited.
+pub fn end_loading() {
+    BTRT_LOADING.store(false, Ordering::SeqCst);
+    finalize_if_all_exited();
+}
+
+/// Finalize once registration has ended and every registered PID has exited.
+/// The SeqCst pair with `end_loading()` means at least one of the last exit
+/// and the end of loading sees the other; `finalize()` runs only once.
+fn finalize_if_all_exited() {
+    if BTRT_LOADING.load(Ordering::SeqCst) {
+        return;
+    }
+    let completed = BTRT_COMPLETED_COUNT.load(Ordering::SeqCst);
+    let registered = BTRT_REGISTERED_COUNT.load(Ordering::SeqCst);
+    if completed == registered && registered > 0 {
+        finalize();
+    }
+}
+
 /// Register a userspace test process PID → test_id mapping.
 ///
 /// Call this immediately after `create_user_process()` succeeds.
@@ -411,11 +442,8 @@ pub fn on_process_exit(pid: u64, exit_code: i32) {
             }
 
             // Increment completed count and check for auto-finalize
-            let completed = BTRT_COMPLETED_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
-            let registered = BTRT_REGISTERED_COUNT.load(Ordering::Acquire);
-            if completed == registered && registered > 0 {
-                finalize();
-            }
+            BTRT_COMPLETED_COUNT.fetch_add(1, Ordering::SeqCst);
+            finalize_if_all_exited();
             return;
         }
     }
