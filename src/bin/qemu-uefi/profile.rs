@@ -77,10 +77,62 @@ impl Profile {
         (blocks, 1)
     }
 
+    /// Stable preflight format consumed by the gate: block count, NIC floor.
+    pub fn census_line(self, storage_mode: &str) -> String {
+        let (blocks, network) = self.census(storage_mode);
+        format!("{blocks} {network}")
+    }
+
+    /// Exact PCI function counts for the selected chipset, storage and NIC.
+    pub fn pci_census(self) -> Vec<(&'static str, usize)> {
+        let mut required = vec![("1af4:1050", 1)]; // virtio-vga
+        if self.machine() == "q35" {
+            required.extend([
+                ("8086:29c0", 1),
+                ("1b36:000c", if self == Self::E1000e { 2 } else { 1 }),
+                ("1b36:000e", 1),
+            ]);
+        } else {
+            required.push(("8086:1237", 1));
+        }
+        required.push(match self {
+            Self::Ahci => ("8086:2922", 1),
+            Self::Nvme => ("1b36:0010", 3),
+            Self::VirtioModern => ("1af4:1042", 3),
+            _ => ("1af4:1001", 3),
+        });
+        required.push(match self {
+            Self::E1000e => ("8086:10d3", 1),
+            Self::Rtl8139 => ("10ec:8139", 1),
+            Self::VirtioNet => ("1af4:1000", 1),
+            _ => ("8086:100e", 1),
+        });
+        required
+    }
+
+    pub fn pci_census_lines(self) -> String {
+        self.pci_census()
+            .into_iter()
+            .map(|(id, count)| format!("{id} {count}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn add_none_network(self, qemu: &mut Command) {
+        if self != Self::Default {
+            qemu.args([
+                "-netdev",
+                "user,id=net0",
+                "-device",
+                &format!("{},netdev=net0,mac=52:54:00:12:34:56", self.nic_device()),
+            ]);
+        }
+    }
+
     pub fn add_controllers(self, qemu: &mut Command) {
         if self.machine() == "q35" {
             // Transitional virtio and e1000 are conventional PCI endpoints.
-            // Put them behind a PCIe root port and PCI bridge to exercise bus routing.
+            // Attach them behind a PCIe root port and conventional PCI bridge.
             qemu.args([
                 "-device",
                 "pcie-root-port,id=profile-root,chassis=1,slot=1",

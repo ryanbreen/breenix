@@ -3,6 +3,15 @@ import Foundation
 import XCTest
 
 final class BeastLauncherTests: XCTestCase {
+    func testHardwareProfilesMatchCatalogInOrder() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("docs/x86-profiles.json"))
+        let rows = try JSONDecoder().decode([[String: String]].self, from: data)
+        XCTAssertEqual(X86HardwareProfile.allCases.map(\.rawValue), rows.map { $0["name"]! })
+    }
+
     func testPrepareCloneRequestArgv() {
         let request = RemoteCommand.prepareCloneRequest(
             sha: "abc123def",

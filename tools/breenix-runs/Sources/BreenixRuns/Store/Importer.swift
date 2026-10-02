@@ -601,7 +601,7 @@ public struct Importer {
             serials: serialRefs,
             captures: captureRefs,
             command: provenance?.command ?? [],
-            env: [:],
+            env: provenance?.env ?? [:],
             tags: ["imported"],
             notes: nil
         )

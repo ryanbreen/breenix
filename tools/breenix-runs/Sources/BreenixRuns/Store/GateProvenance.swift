@@ -13,6 +13,7 @@ struct GateProvenance: Codable {
     var command: [String]
     var serials: [String]
     var captures: [String]
+    var env: [String: String]? = nil
 
     static func read(from directory: URL) throws -> GateProvenance? {
         let url = directory.appendingPathComponent("run-inspector.json")

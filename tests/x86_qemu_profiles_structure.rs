@@ -63,13 +63,10 @@ for row in rows:
     for profile in Profile::ALL {
         assert!(error.contains(profile.name()));
     }
-    let launcher = std::fs::read_to_string(root().join("src/bin/qemu-uefi.rs")).unwrap();
-    assert!(launcher.contains("mod profile;"));
-    assert!(launcher.contains("Profile::parse(&profile_name)"));
 }
 
 #[test]
-fn default_hardware_arguments_remain_identical() {
+fn default_hardware_components_match_expected_values() {
     let default = Profile::Default;
     let mut command = Command::new("qemu-system-x86_64");
     default.add_controllers(&mut command);
@@ -114,4 +111,45 @@ fn storage_census_matches_the_devices_constructed_for_each_profile() {
     assert!(Profile::Nvme
         .disk_device("hd", 0, true)
         .starts_with("nvme,"));
+}
+
+#[test]
+fn preflight_output_and_none_network_use_production_construction() {
+    for profile in Profile::ALL {
+        let (blocks, network) = profile.census("virtio");
+        assert_eq!(profile.census_line("virtio"), format!("{blocks} {network}"));
+        let pci = profile.pci_census_lines();
+        assert!(!pci.is_empty());
+        for line in pci.lines() {
+            let mut fields = line.split(' ');
+            let id = fields.next().unwrap();
+            let count: usize = fields.next().unwrap().parse().unwrap();
+            assert_eq!(id.len(), 9);
+            assert!(count > 0);
+            assert!(fields.next().is_none());
+        }
+        let mut command = Command::new("qemu-system-x86_64");
+        profile.add_none_network(&mut command);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        if profile == Profile::Default {
+            assert!(args.is_empty());
+        } else {
+            assert_eq!(
+                args,
+                vec![
+                    "-netdev",
+                    "user,id=net0",
+                    "-device",
+                    &format!("{},netdev=net0,mac=52:54:00:12:34:56", profile.nic_device())
+                ]
+            );
+        }
+    }
+    assert!(Profile::Ahci.pci_census().contains(&("8086:2922", 1)));
+    assert!(Profile::Nvme.pci_census().contains(&("1b36:0010", 3)));
+    assert_eq!(Profile::Default.census_line("virtio"), "3 1");
+    assert_eq!(Profile::Ahci.census_line("virtio"), "0 1");
 }

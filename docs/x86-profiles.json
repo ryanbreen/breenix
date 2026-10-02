@@ -50,7 +50,7 @@
   {
     "name": "smp4",
     "title": "Four CPUs",
-    "summary": "Increases the CPU count from one to four.",
-    "devices": "pc; OVMF; 3 legacy virtio-blk; e1000; virtio-vga; 4 CPUs"
+    "summary": "Configures four CPUs; Breenix currently brings only the boot CPU online (issue #629).",
+    "devices": "pc; OVMF; 3 legacy virtio-blk; e1000; virtio-vga; 4 configured CPUs, 1 online"
   }
 ]

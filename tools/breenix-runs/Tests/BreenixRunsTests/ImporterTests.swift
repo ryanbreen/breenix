@@ -17,6 +17,21 @@ final class ImporterTests: XCTestCase {
         return (RunStore(root: root.appendingPathComponent("store")), evidence, provenance)
     }
 
+    func testGateImportPreservesHardwareEnvironment() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, initial) = try declaredFixture(root: root)
+        var provenance = initial
+        provenance.arch = .x86_64
+        provenance.profile = "gate"
+        provenance.env = ["BREENIX_QEMU_PROFILE": "ahci"]
+        try RunStore.encoder.encode(provenance).write(to: evidence.appendingPathComponent("run-inspector.json"))
+        let imported = try Importer(store: store).importPath(evidence)
+        let manifest = try store.readManifest(id: XCTUnwrap(imported.imported.first?.id))
+        XCTAssertEqual(manifest.profile, "gate")
+        XCTAssertEqual(manifest.env["BREENIX_QEMU_PROFILE"], "ahci")
+    }
+
     func testImportRefusesWhenSidecarDeclaresAFileMissingOnDisk() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

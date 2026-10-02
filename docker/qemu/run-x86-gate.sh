@@ -84,6 +84,25 @@ fi
 
 cd "$REPO_DIR" || { echo "GATE: FAIL (repo dir missing: $REPO_DIR)"; exit 1; }
 
+# Validate against the catalog before any build or disk packing. An explicitly
+# empty name is invalid, while an unset variable selects default.
+if ! python3 - "$PROFILE" "$REPO_DIR/docs/x86-profiles.json" <<'PYPROFILE'
+import json, sys
+names = [row["name"] for row in json.load(open(sys.argv[2]))]
+if sys.argv[1] not in names:
+    print("GATE: FAIL (invalid QEMU profile %r; valid profiles: %s)" %
+          (sys.argv[1], ", ".join(names)))
+    sys.exit(1)
+PYPROFILE
+then
+  exit 1
+fi
+# This gate repacks and requires all three disks; IDE skips the test disks.
+if [ "${BREENIX_QEMU_STORAGE:-virtio}" != virtio ]; then
+  echo "GATE: FAIL (this gate requires BREENIX_QEMU_STORAGE=virtio)"; exit 1
+fi
+export BREENIX_QEMU_STORAGE=virtio
+
 TOTAL_START=$SECONDS
 echo "[gate] repo: $REPO_DIR  head: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
@@ -155,7 +174,18 @@ echo "[gate] Build clean (0 warnings) in ${BUILD_SECS}s"
 if ! expected_census=$(BREENIX_PRINT_QEMU_CENSUS=1 ./target/release/qemu-uefi); then
   echo "GATE: FAIL (invalid QEMU profile/storage configuration)"; exit 1
 fi
+if [[ ! "$expected_census" =~ ^[0-9]+\ [0-9]+$ ]]; then
+  echo "GATE: FAIL (malformed QEMU census: $expected_census)"; exit 1
+fi
 read -r expected_virtio_block expected_network <<< "$expected_census"
+if ! expected_pci=$(BREENIX_PRINT_QEMU_PCI=1 ./target/release/qemu-uefi) || [ -z "$expected_pci" ]; then
+  echo "GATE: FAIL (missing QEMU PCI requirements)"; exit 1
+fi
+while read -r pci_id pci_count; do
+  if [[ ! "$pci_id" =~ ^[0-9a-f]{4}:[0-9a-f]{4}$ ]] || [[ ! "$pci_count" =~ ^[1-9][0-9]*$ ]]; then
+    echo "GATE: FAIL (malformed QEMU PCI requirement: $pci_id $pci_count)"; exit 1
+  fi
+done <<< "$expected_pci"
 
 echo "[gate] === Running $COUNT boot test(s), mode=$MODE ==="
 # Sequential, not wall-clock-parallel: the qemu-uefi binary opens the shared
@@ -202,6 +232,16 @@ for i in $(seq 1 "$COUNT"); do
       census_reason="device-enumeration census reports $census_network network device(s); profile=$PROFILE requires >=$expected_network"
     fi
   fi
+
+  # Require the profile's actual controllers and NIC, independently of drivers.
+  while read -r pci_id pci_count; do
+    observed=$(grep -h -E "^PCI_FN [0-9a-f]{2}:[0-9a-f]{2}\\.[0-7] $pci_id " \
+        "$OUTDIR"/serial_*.log 2>/dev/null | wc -l)
+    if [ "$observed" -ne "$pci_count" ]; then
+      census_ok=false
+      census_reason="${census_reason:+$census_reason; }PCI $pci_id count=$observed expected=$pci_count for profile=$PROFILE"
+    fi
+  done <<< "$expected_pci"
 
   # The census is an ADDITIONAL requirement, not a short-circuit (review
   # finding B5). In full mode, x86-gate-verdict.sh runs UNCONDITIONALLY --

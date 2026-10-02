@@ -26,9 +26,10 @@ public enum X86Profile: String, CaseIterable, Sendable {
 
 /// Hardware selected by qemu-uefi; separate from the gate's test mode.
 public enum X86HardwareProfile: String, CaseIterable, Sendable {
-    case `default`, q35, e1000e, rtl8139, ahci, nvme, smp4
+    case `default`, q35, e1000e, rtl8139
     case virtioNet = "virtio-net"
     case virtioModern = "virtio-modern"
+    case ahci, nvme, smp4
 }
 
 public struct BeastLaunchOptions: Sendable {
@@ -384,9 +385,7 @@ public struct BeastLauncher {
             "BREENIX_RUST_FORK": paths.rustForkPath,
             "BREENIX_GATE_TIMEOUT": "\(timeoutSecs)"
         ]
-        if let qemuProfile {
-            environment["BREENIX_QEMU_PROFILE"] = qemuProfile.rawValue
-        }
+        environment["BREENIX_QEMU_PROFILE"] = (qemuProfile ?? .default).rawValue
         return environment
     }
 

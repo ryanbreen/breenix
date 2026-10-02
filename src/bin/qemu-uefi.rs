@@ -28,8 +28,11 @@ fn main() {
     // Gate preflight: report the attachment census without fetching firmware,
     // building disks, or launching QEMU. Use the same profile as the boot.
     if env::var("BREENIX_PRINT_QEMU_CENSUS").ok().as_deref() == Some("1") {
-        let (blocks, network) = profile.census(&storage_mode);
-        println!("{blocks} {network}");
+        println!("{}", profile.census_line(&storage_mode));
+        return;
+    }
+    if env::var("BREENIX_PRINT_QEMU_PCI").ok().as_deref() == Some("1") {
+        println!("{}", profile.pci_census_lines());
         return;
     }
     // Allow overriding OVMF firmware paths via environment for CI/DEBUG builds
@@ -148,7 +151,7 @@ fn main() {
     }
 
     // Attach test binaries disk (second disk, index 1)
-    // MANDATORY - disk loading is always required
+    // Attach the test disk when using the virtio storage configuration.
     if storage_mode == "virtio" {
         // Determine project root by walking up from executable directory
         let exe_path = env::current_exe().expect("Failed to get executable path");
@@ -298,10 +301,7 @@ fn main() {
         Ok("max") => "max",
         _ => "qemu64",
     };
-    let machine = match profile.machine() {
-        "pc" => format!("pc,accel={}", qemu_accel),
-        chipset => format!("{},accel={}", chipset, qemu_accel),
-    };
+    let machine = format!("{},accel={}", profile.machine(), qemu_accel);
     qemu.args([
         "-machine",
         machine.as_str(),
@@ -400,7 +400,7 @@ fn main() {
     // Network configuration: BREENIX_NET_MODE controls the backend
     // - "slirp" (default): User-mode NAT networking, no host interface needed
     // - "vmnet": macOS vmnet-shared (requires sudo), creates real bridge interface
-    // - "socket_vmnet": Uses socket_vmnet daemon for host visibility WITHOUT sudo
+    // - "socket_vmnet": Uses the socket_vmnet daemon via its client wrapper
     // - "none": No explicit backend for default (QEMU auto-attaches e1000);
     //   other profiles use an explicit user backend to select their NIC.
     let net_mode = env::var("BREENIX_NET_MODE").unwrap_or_else(|_| "slirp".to_string());
@@ -445,15 +445,17 @@ fn main() {
             );
         }
         "none" => {
-            if profile != Profile::Default {
-                qemu.args([
-                    "-netdev",
-                    "user,id=net0",
-                    "-device",
-                    &format!("{},netdev=net0,mac=52:54:00:12:34:56", profile.nic_device()),
-                ]);
+            profile.add_none_network(&mut qemu);
+            if profile == Profile::Default {
+                eprintln!(
+                    "[qemu-uefi] Network: QEMU implicit user-mode e1000 (no host forwarding)"
+                );
+            } else {
+                eprintln!(
+                    "[qemu-uefi] Network: user-mode {} (no host forwarding)",
+                    profile.nic_device()
+                );
             }
-            eprintln!("[qemu-uefi] Network: disabled");
         }
         _ => {
             // Default: SLIRP user-mode networking
@@ -472,7 +474,7 @@ fn main() {
 
     // Optional packet capture: BREENIX_PCAP_FILE=/path/to/capture.pcap
     // Works with slirp and vmnet modes
-    if net_mode != "none" {
+    if net_mode != "none" || profile != Profile::Default {
         if let Ok(pcap_path) = env::var("BREENIX_PCAP_FILE") {
             qemu.args([
                 "-object",
