@@ -2054,9 +2054,9 @@ fn init_scheduler() {
             )
         } else {
             // Parallels: UEFI loader stack at 0x42000000 (phys), now at HHDM
-            // The stack grows down from 0x42000000, assume 2MB range
+            // The loader leaves the first 4KB of the 2MB region unmapped.
             const PARALLELS_STACK_TOP_PHYS: u64 = 0x4200_0000;
-            const PARALLELS_STACK_SIZE: u64 = 0x20_0000; // 2MB
+            const PARALLELS_STACK_SIZE: u64 = 0x20_0000 - 4096;
             (
                 VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS),
                 VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS - PARALLELS_STACK_SIZE),

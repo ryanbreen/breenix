@@ -144,10 +144,9 @@ pub(crate) unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_conf
         "isb",
 
         // Set up a temporary kernel stack in the identity-mapped region.
-        // Use a fixed address in RAM: 0x4200_0000 (top of first 2MB after kernel)
+        // The bottom page of this 2MB region is unmapped in both aliases.
         // The kernel will set up proper stacks during init.
-        "mov x4, #0x4200",
-        "lsl x4, x4, #16",        // x4 = 0x42000000
+        "ldr x4, ={boot_stack_top}",
         "mov sp, x4",
 
         // Quick check: breadcrumb '!' before 'J'
@@ -166,6 +165,7 @@ pub(crate) unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_conf
         "mov x0, x3",             // x0 = hw_config_ptr
         "br x2",                   // Jump to kernel_main
 
+        boot_stack_top = const page_tables::BOOT_STACK_TOP_PHYS,
         mair = const page_tables::MAIR_VALUE,
         tcr = const page_tables::TCR_VALUE,
         in("x0") ttbr0,

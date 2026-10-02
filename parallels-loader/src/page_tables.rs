@@ -135,7 +135,12 @@ pub const ECAM_REMAP_VA: u64 = 0x2000_0000;
 /// L2 (for device regions): 2 (for 0x00000000-0x3FFFFFFF)
 /// L2 (for L1[1] RAM): 2 (for 0x40000000-0x7FFFFFFF)
 /// L2 (for L1[2] RAM): 2 (for 0x80000000-0xBFFFFFFF)
+// One shared L3 table carves the boot-stack guard out of both RAM aliases.
 const MAX_PAGE_TABLES: usize = 12;
+
+/// Fixed loader boot stack: first page is a guard, the rest is usable stack.
+pub const BOOT_STACK_GUARD_PHYS: u64 = 0x41E0_0000;
+pub const BOOT_STACK_TOP_PHYS: u64 = 0x4200_0000;
 
 /// Configuration for platform-specific page table setup.
 pub struct PageTableConfig<'a> {
@@ -504,6 +509,22 @@ pub fn build_page_tables(
         write_entry(ttbr0_l1, 1, ttbr0_l2_ram | attr::TABLE_DESC);
         write_entry(ttbr1_l1, 1, ttbr1_l2_ram | attr::TABLE_DESC);
 
+        // The fixed boot stack must not overlap the loaded kernel, including BSS.
+        for segment in config.kernel_segments {
+            assert!(
+                segment.phys_end <= BOOT_STACK_GUARD_PHYS
+                    || segment.phys_start >= BOOT_STACK_TOP_PHYS,
+                "kernel ELF overlaps the loader boot stack"
+            );
+        }
+        let boot_stack_l3 = storage.alloc_table(config);
+        // Entry 0 stays invalid. Both identity and HHDM aliases use this table,
+        // so downward overflow faults rather than reaching the kernel's BSS.
+        for page in 1..512usize {
+            let phys = BOOT_STACK_GUARD_PHYS + page as u64 * PAGE_TABLE_SIZE as u64;
+            write_entry(boot_stack_l3, page, phys | attr::RAM_DATA_BLOCK | attr::PAGE);
+        }
+
         // Fill 512 × 2MB entries covering 0x40000000–0x7FFFFFFF.
         // Entry 128 = physical 0x50000000 (NC_DMA_BASE): Non-Cacheable for .dma section.
         // All other entries: Normal WB-WA cacheable.
@@ -518,8 +539,13 @@ pub fn build_page_tables(
                     non_kernel_ram_attr(phys, loader_phys, handoff_phys, vectors_phys)
                 })
             };
-            write_entry(ttbr0_l2_ram, i as usize, phys | block_attr);
-            write_entry(ttbr1_l2_ram, i as usize, phys | block_attr);
+            let entry = if phys == BOOT_STACK_GUARD_PHYS {
+                boot_stack_l3 | attr::TABLE_DESC
+            } else {
+                phys | block_attr
+            };
+            write_entry(ttbr0_l2_ram, i as usize, entry);
+            write_entry(ttbr1_l2_ram, i as usize, entry);
         }
     }
 
