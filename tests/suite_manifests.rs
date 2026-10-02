@@ -2,9 +2,9 @@
 //!
 //! Every manifest has the shape Vigil reads, with ids that are lowercase words joined by
 //! '-'. Each manifest's suite binary exists and is built and installed, and the
-//! categories and cases its source registers (the `suite(...)`, `category(...)` and
-//! `case(...)` calls in `userspace/programs/src/suite_<id>.rs`) are the manifest's, in the
-//! same order with the same titles. Every suite source has a manifest.
+//! categories and cases in the table its `main` runs (the `static` Suite in
+//! `userspace/programs/src/suite_<id>.rs`, read from the parsed source) are the
+//! manifest's, in the same order with the same titles. Every suite source has a manifest.
 
 use std::collections::HashSet;
 use std::fs;
@@ -16,10 +16,9 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Lowercase words of a-z and 0-9 joined by single '-', at most 40 bytes.
+/// Lowercase words of a-z and 0-9 joined by single '-'.
 fn is_id(id: &str) -> bool {
     !id.is_empty()
-        && id.len() <= 40
         && id
             .split('-')
             .all(|word| !word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
@@ -151,98 +150,163 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
     Some(Manifest { id, title, categories })
 }
 
-/// Parse a Rust string literal starting at `chars[*at]` (which must be `"`).
-fn string_literal(chars: &[char], at: &mut usize) -> Option<String> {
-    if chars.get(*at) != Some(&'"') {
-        return None;
+/// Why a suite source's table could not be read.
+fn table_error(what: &str) -> String {
+    format!(
+        "{what}; a suite's source must run its table from main as `NAME.run()` and declare it as \
+         `static NAME: Suite = suite(\"id\", \"Title\", &[category(\"id\", \"Title\", &[case(\"id\", \"Title\", function), ...]), ...])`, \
+         optionally followed by `.case_limit_ms(N)`, with no attributes inside it"
+    )
+}
+
+/// Whether `attrs` holds anything but doc comments (a `cfg` could drop the item).
+fn has_attributes(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| !attr.path().is_ident("doc"))
+}
+
+/// The call `name(args...)` that `expr` is, with its arguments.
+fn call<'a>(expr: &'a syn::Expr, name: &str) -> Result<Vec<&'a syn::Expr>, String> {
+    let syn::Expr::Call(call) = expr else {
+        return Err(table_error(&format!("expected a call to {name}(...)")));
+    };
+    let syn::Expr::Path(path) = &*call.func else {
+        return Err(table_error(&format!("expected a call to {name}(...)")));
+    };
+    if !call.attrs.is_empty() || path.path.segments.last().map(|segment| segment.ident.to_string()) != Some(name.to_string()) {
+        return Err(table_error(&format!("expected a call to {name}(...)")));
     }
-    *at += 1;
-    let mut out = String::new();
-    while let Some(&c) = chars.get(*at) {
-        *at += 1;
-        match c {
-            '"' => return Some(out),
-            '\\' => {
-                let escaped = *chars.get(*at)?;
-                *at += 1;
-                out.push(match escaped {
-                    'n' => '\n',
-                    't' => '\t',
-                    other => other,
-                });
+    Ok(call.args.iter().collect())
+}
+
+/// The string literal `expr` is.
+fn string(expr: &syn::Expr) -> Result<String, String> {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), attrs }) if attrs.is_empty() => Ok(text.value()),
+        _ => Err(table_error("expected a string literal")),
+    }
+}
+
+/// The elements of `&[a, b, ...]`.
+fn slice(expr: &syn::Expr) -> Result<Vec<&syn::Expr>, String> {
+    if let syn::Expr::Reference(reference) = expr {
+        if let syn::Expr::Array(array) = &*reference.expr {
+            if reference.attrs.is_empty() && array.attrs.is_empty() && reference.mutability.is_none() {
+                return Ok(array.elems.iter().collect());
             }
-            _ => out.push(c),
         }
     }
-    None
+    Err(table_error("expected a slice literal &[...]"))
 }
 
-fn skip_space(chars: &[char], at: &mut usize) {
-    while chars.get(*at).is_some_and(|c| c.is_whitespace()) {
-        *at += 1;
+/// An `(id, title)` pair from a call's first two arguments.
+fn id_and_title(args: &[&syn::Expr], name: &str, arity: usize) -> Result<Entry, String> {
+    if args.len() != arity {
+        return Err(table_error(&format!("{name}(...) takes {arity} arguments")));
     }
+    Ok(Entry { id: string(args[0])?, title: string(args[1])? })
 }
 
-/// Every `name("first", "second"` call in `source`, in order, as (name, first, second).
-/// Line comments are ignored.
-fn calls(source: &str, names: &[&str]) -> Vec<(String, String, String)> {
-    let code: String = source
+/// The suite id, title and categories in the table the suite's `main` runs:
+/// `main` must be `NAME.run()`, and `static NAME: Suite` is read from the parsed
+/// source, so comments, disabled code and calls outside the table play no part.
+fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
+    let file = syn::parse_file(source).map_err(|error| format!("does not parse as Rust: {error}"))?;
+    let main = file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == "main" => Some(function),
+            _ => None,
+        })
+        .ok_or_else(|| table_error("no fn main"))?;
+    let run_target = match main.block.stmts.as_slice() {
+        [syn::Stmt::Expr(syn::Expr::MethodCall(method), _)] if method.method == "run" && method.args.is_empty() => {
+            match &*method.receiver {
+                syn::Expr::Path(path) if path.path.get_ident().is_some() => path.path.get_ident().cloned(),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let name = run_target.ok_or_else(|| table_error("fn main is not `NAME.run()`"))?;
+    if has_attributes(&main.attrs) {
+        return Err(table_error("fn main has attributes"));
+    }
+    let table = file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Static(item) if item.ident == name => Some(item),
+            _ => None,
+        })
+        .ok_or_else(|| table_error(&format!("no static {name}")))?;
+    if has_attributes(&table.attrs) {
+        return Err(table_error(&format!("static {name} has attributes")));
+    }
+    let mut expr = &*table.expr;
+    while let syn::Expr::MethodCall(method) = expr {
+        if method.method != "case_limit_ms" || method.args.len() != 1 || !method.attrs.is_empty() {
+            return Err(table_error(&format!("unexpected method .{}(...)", method.method)));
+        }
+        expr = &method.receiver;
+    }
+    let suite_args = call(expr, "suite")?;
+    let suite = id_and_title(&suite_args, "suite", 3)?;
+    let mut categories = Vec::new();
+    for category_expr in slice(suite_args[2])? {
+        let args = call(category_expr, "category")?;
+        let entry = id_and_title(&args, "category", 3)?;
+        let mut cases = Vec::new();
+        for case_expr in slice(args[2])? {
+            let case_args = call(case_expr, "case")?;
+            cases.push(id_and_title(&case_args, "case", 3)?);
+        }
+        categories.push(Category { entry, cases });
+    }
+    Ok((suite, categories))
+}
+
+/// The `[[bin]]` tables in a Cargo.toml, as (name, path).
+fn cargo_bins(cargo_toml: &str) -> Vec<(String, String)> {
+    let mut bins = Vec::new();
+    let mut current: Option<(Option<String>, Option<String>)> = None;
+    let value = |line: &str, key: &str| {
+        let (k, v) = line.split_once('=')?;
+        (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
+    };
+    for line in cargo_toml.lines().map(|line| line.split('#').next().unwrap_or("").trim()) {
+        if line.starts_with('[') {
+            if let Some((Some(name), Some(path))) = current.take() {
+                bins.push((name, path));
+            }
+            if line == "[[bin]]" {
+                current = Some((None, None));
+            }
+        } else if let Some((name, path)) = current.as_mut() {
+            if let Some(found) = value(line, "name") {
+                *name = Some(found);
+            } else if let Some(found) = value(line, "path") {
+                *path = Some(found);
+            }
+        }
+    }
+    if let Some((Some(name), Some(path))) = current {
+        bins.push((name, path));
+    }
+    bins
+}
+
+/// The entries of build.sh's `STD_BINARIES=( ... )` array, unquoted.
+fn std_binaries(build_sh: &str) -> Vec<String> {
+    build_sh
         .lines()
-        .map(|line| if line.trim_start().starts_with("//") { "" } else { line })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let chars: Vec<char> = code.chars().collect();
-    let mut found = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let boundary = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '.');
-        let name = names.iter().find(|name| {
-            let len = name.chars().count();
-            boundary && chars[i..].iter().take(len).copied().eq(name.chars())
-        });
-        if let Some(name) = name {
-            let mut at = i + name.chars().count();
-            skip_space(&chars, &mut at);
-            if chars.get(at) == Some(&'(') {
-                at += 1;
-                skip_space(&chars, &mut at);
-                if let Some(first) = string_literal(&chars, &mut at) {
-                    skip_space(&chars, &mut at);
-                    if chars.get(at) == Some(&',') {
-                        at += 1;
-                        skip_space(&chars, &mut at);
-                        if let Some(second) = string_literal(&chars, &mut at) {
-                            found.push((name.to_string(), first, second));
-                            i = at;
-                            continue;
-                        }
-                    }
-                }
-            }
-        }
-        i += 1;
-    }
-    found
-}
-
-/// The suite id, title and categories a suite's source registers.
-fn source_suite(source: &str) -> (Vec<(String, String)>, Vec<Category>) {
-    let mut suites = Vec::new();
-    let mut categories: Vec<Category> = Vec::new();
-    for (name, id, title) in calls(source, &["suite", "category", "case"]) {
-        match name.as_str() {
-            "suite" => suites.push((id, title)),
-            "category" => categories.push(Category { entry: Entry { id, title }, cases: Vec::new() }),
-            _ => match categories.last_mut() {
-                Some(category) => category.cases.push(Entry { id, title }),
-                None => categories.push(Category {
-                    entry: Entry { id: String::from("(no category)"), title: String::new() },
-                    cases: vec![Entry { id, title }],
-                }),
-            },
-        }
-    }
-    (suites, categories)
+        .skip_while(|line| line.trim() != "STD_BINARIES=(")
+        .skip(1)
+        .take_while(|line| line.trim() != ")")
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .flat_map(|line| line.split_whitespace())
+        .map(|entry| entry.trim_matches('"').to_string())
+        .collect()
 }
 
 fn describe(categories: &[Category]) -> String {
@@ -260,8 +324,9 @@ fn describe(categories: &[Category]) -> String {
 #[test]
 fn suite_manifests_match_their_binaries() {
     let root = repo_root();
-    let cargo_toml = fs::read_to_string(root.join("userspace/programs/Cargo.toml")).unwrap();
-    let build_sh = fs::read_to_string(root.join("userspace/programs/build.sh")).unwrap();
+    let bins = cargo_bins(&fs::read_to_string(root.join("userspace/programs/Cargo.toml")).unwrap());
+    let binaries = std_binaries(&fs::read_to_string(root.join("userspace/programs/build.sh")).unwrap());
+    assert!(!binaries.is_empty(), "no STD_BINARIES=( ... ) array in userspace/programs/build.sh");
     let mut errors = Vec::new();
     let mut manifest_ids = HashSet::new();
 
@@ -286,19 +351,29 @@ fn suite_manifests_match_their_binaries() {
             errors.push(format!("{id}: no suite source at {source_rel}"));
             continue;
         };
-        let bin = format!("[[bin]]\nname = \"suite-{id}\"\npath = \"src/suite_{module}.rs\"");
-        if !cargo_toml.contains(&bin) {
-            errors.push(format!("{id}: userspace/programs/Cargo.toml has no binary:\n{bin}"));
+        let bin = (format!("suite-{id}"), format!("src/suite_{module}.rs"));
+        if !bins.contains(&bin) {
+            errors.push(format!(
+                "{id}: userspace/programs/Cargo.toml has no [[bin]] name = {:?}, path = {:?}",
+                bin.0, bin.1
+            ));
         }
-        if !build_sh.contains(&format!("\"suite-{id}\"")) {
-            errors.push(format!("{id}: \"suite-{id}\" is not in STD_BINARIES in userspace/programs/build.sh"));
+        let entry = format!("suite-{id}");
+        if !binaries.iter().any(|listed| *listed == entry || *listed == format!("{entry}:{entry}")) {
+            errors.push(format!("{id}: \"{entry}\" is not in STD_BINARIES in userspace/programs/build.sh"));
         }
 
-        let (suites, categories) = source_suite(&source);
-        if suites != [(id.clone(), manifest.title.clone())] {
+        let (suite, categories) = match source_suite(&source) {
+            Ok(table) => table,
+            Err(error) => {
+                errors.push(format!("{id}: {source_rel}: {error}"));
+                continue;
+            }
+        };
+        if suite != (Entry { id: id.clone(), title: manifest.title.clone() }) {
             errors.push(format!(
-                "{id}: {source_rel} must declare suite({id:?}, {:?}) once; found {suites:?}",
-                manifest.title
+                "{id}: {source_rel} runs suite({:?}, {:?}); the manifest says suite({id:?}, {:?})",
+                suite.id, suite.title, manifest.title
             ));
         }
         if categories != manifest.categories {
@@ -329,16 +404,18 @@ fn ids_are_lowercase_words_joined_by_dashes() {
     for good in ["smoke", "files-io", "ipc2", "a-b-c"] {
         assert!(is_id(good), "{good}");
     }
-    for bad in ["", "Files", "files_io", "files io", "-files", "files-", "a--b", &"x".repeat(41)] {
+    assert!(is_id(&"x".repeat(80)));
+    for bad in ["", "Files", "files_io", "files io", "-files", "files-", "a--b", "smoke\n"] {
         assert!(!is_id(bad), "{bad}");
     }
 }
 
 #[test]
-fn source_calls_are_read_in_order() {
+fn the_table_main_runs_is_read() {
     let source = r#"
         use libbreenix::suite::{case, category, suite};
-        // case("commented", "out")
+        // case("commented", "out", c)
+        /* category("block", "Comment", &[case("x", "y", x)]) */
         static S: Suite = suite("demo", "Demo", &[
             category("one", "First \"quoted\"", &[
                 case("a", "Case a", a),
@@ -349,14 +426,40 @@ fn source_calls_are_read_in_order() {
                 ),
             ]),
             category("two", "Second", &[ case("c", "Case c", c) ]),
-        ]);
-        fn not_a_case() { showcase("x", "y"); }
+        ]).case_limit_ms(500);
+        static UNUSED: Suite = suite("other", "Other", &[category("x", "X", &[case("y", "Y", y)])]);
+        fn not_a_case() { let _ = case("loose", "Loose", a); }
+        fn main() { S.run() }
     "#;
-    let (suites, categories) = source_suite(source);
-    assert_eq!(suites, [("demo".to_string(), "Demo".to_string())]);
+    let (suite, categories) = source_suite(source).unwrap();
+    assert_eq!(suite, Entry { id: "demo".to_string(), title: "Demo".to_string() });
     let ids: Vec<(&str, &str, Vec<&str>)> = categories
         .iter()
         .map(|c| (c.entry.id.as_str(), c.entry.title.as_str(), c.cases.iter().map(|k| k.id.as_str()).collect()))
         .collect();
     assert_eq!(ids, [("one", "First \"quoted\"", vec!["a", "b"]), ("two", "Second", vec!["c"])]);
+}
+
+#[test]
+fn tables_that_could_differ_from_what_runs_are_refused() {
+    for source in [
+        r#"#[cfg(any())] static S: Suite = suite("d", "D", &[]); fn main() { S.run() }"#,
+        r#"static S: Suite = suite("d", "D", &[#[cfg(any())] category("c", "C", &[])]); fn main() { S.run() }"#,
+        r#"static S: Suite = suite("d", "D", CATEGORIES); fn main() { S.run() }"#,
+        r#"static S: Suite = suite("d", "D", &[]); fn main() { if true { S.run() } }"#,
+        r#"static S: Suite = suite("d", "D", &[]); fn main() {}"#,
+    ] {
+        assert!(source_suite(source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn build_lists_are_parsed_exactly() {
+    let toml = "[[bin]]\nname = \"suite-smoke\"\npath = \"src/suite_smoke.rs\"\n\n[[bin]]\nname = \"x\" # c\npath = \"src/x.rs\"\n[dependencies]\nname = \"y\"\n";
+    assert_eq!(cargo_bins(toml), [
+        ("suite-smoke".to_string(), "src/suite_smoke.rs".to_string()),
+        ("x".to_string(), "src/x.rs".to_string()),
+    ]);
+    let build = "A=(\n\"suite-nope\"\n)\nSTD_BINARIES=(\n    # \"suite-commented\"\n    \"a:b\"\n    \"suite-smoke\"\n)\n\"suite-after\"\n";
+    assert_eq!(std_binaries(build), ["a:b", "suite-smoke"]);
 }
