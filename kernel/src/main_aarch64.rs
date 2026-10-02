@@ -1209,14 +1209,20 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             init_launch.path
         );
         match read_init_from_ext2(&init_launch.path) {
-            Ok(data) => {
-                serial_println!(
-                    "[boot] {} pre-loaded: {} bytes",
-                    init_launch.path,
-                    data.len()
-                );
-                Some(data)
-            }
+            Ok(data) => match kernel::boot::target::check_elf(&data) {
+                Ok(()) => {
+                    serial_println!(
+                        "[boot] {} pre-loaded: {} bytes",
+                        init_launch.path,
+                        data.len()
+                    );
+                    Some(data)
+                }
+                Err(e) => {
+                    serial_println!("[boot] {} is not a loadable ELF: {}", init_launch.path, e);
+                    None
+                }
+            },
             Err("init not found") => {
                 serial_println!("[boot] {} not found", init_launch.path);
                 None
@@ -1864,6 +1870,22 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             match init_launch.launch(elf_data) {
                 Err(e) => {
                     serial_println!("[boot] Failed to launch pre-loaded init: {}", e);
+                    // A probe, program or suite binary that would not launch: run
+                    // the default /sbin/init in its place.
+                    if runs_own_binary && boot_mode != BootMode::Default {
+                        serial_println!(
+                            "[boot] Ignoring boot mode {:?}: {} could not be launched; running /sbin/init",
+                            boot_mode.name(),
+                            init_launch.path
+                        );
+                        match read_init_from_ext2("/sbin/init") {
+                            Ok(elf_data) => match InitLaunch::default_init().launch(elf_data) {
+                                Err(e) => serial_println!("[boot] Failed to launch /sbin/init: {}", e),
+                                Ok(never) => match never {},
+                            },
+                            Err(e) => serial_println!("[boot] Failed to read /sbin/init: {}", e),
+                        }
+                    }
                     serial_println!("[boot] Loading userspace init_shell from test disk...");
                     match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
                         Err(e) => {
