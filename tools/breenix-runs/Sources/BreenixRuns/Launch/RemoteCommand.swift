@@ -69,7 +69,12 @@ public enum RemoteCommand {
         public var removeClone: ProcessRequest
     }
 
-    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil) -> Plan {
+    /// An effort-suite id: lowercase words of a-z and 0-9 joined by '-', at most 40 characters.
+    public static func isSuiteID(_ id: String) -> Bool {
+        id.range(of: "^[a-z0-9]+(-[a-z0-9]+)*$", options: .regularExpression) != nil && id.count <= 40
+    }
+
+    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil) -> Plan {
         Plan(
             sha: sha,
             boots: boots,
@@ -77,7 +82,7 @@ public enum RemoteCommand {
             timeoutSecs: timeoutSecs,
             paths: paths,
             prepareClone: prepareCloneRequest(sha: sha, paths: paths),
-            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile),
+            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite),
             pullEvidence: pullEvidenceRequest(paths: paths),
             removeClone: removeCloneRequest(paths: paths)
         )
@@ -103,14 +108,21 @@ public enum RemoteCommand {
     // gate-tmp/ must still exist so pullEvidenceRequest's tar never fails on
     // a missing directory - an evidence-pull failure must never be conflated
     // with a gate failure.
-    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil) -> ProcessRequest {
+    // A suite id (validated by `isSuiteID`, so safe unquoted) makes the gate boot the
+    // production kernel running /sbin/suite-<id>, with a QMP socket in gate-tmp for its screen.
+    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil) -> ProcessRequest {
+        let profileEnv: String = qemuProfile.map { " BREENIX_QEMU_PROFILE=\($0.rawValue)" } ?? ""
+        var suiteEnv = ""
+        if let suite, isSuiteID(suite) {
+            suiteEnv = " BREENIX_BOOT_SUITE=\(suite) BREENIX_QMP_SOCKET=\(paths.gateTmpPath)/qmp.sock"
+        }
         let script = "mkdir -p \(paths.gateTmpPath)"
             + " && source \(paths.cargoEnvPath)"
             + " && env BREENIX_GATE_TMP=\(paths.gateTmpPath)"
             + " BREENIX_REPO_DIR=\(paths.clonePath)"
             + " BREENIX_RUST_FORK=\(paths.rustForkPath)"
             + " BREENIX_GATE_TIMEOUT=\(timeoutSecs)"
-            + (qemuProfile.map { " BREENIX_QEMU_PROFILE=\($0.rawValue)" } ?? "")
+            + profileEnv + suiteEnv
             + " \(paths.clonePath)/docker/qemu/run-x86-gate.sh \(boots) \(mode.rawValue)"
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }

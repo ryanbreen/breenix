@@ -34,6 +34,8 @@ public enum X86HardwareProfile: String, CaseIterable, Sendable {
 
 public struct BeastLaunchOptions: Sendable {
     public var qemuProfile: X86HardwareProfile?
+    /// An effort-suite id: the gate boots the production kernel running /sbin/suite-<id>.
+    public var suite: String?
     public var boots: Int
     public var mode: RemoteGateMode
     public var sha: String
@@ -50,9 +52,11 @@ public struct BeastLaunchOptions: Sendable {
         tags: [String] = [],
         persist: Bool = true,
         runID: String? = nil,
-        qemuProfile: X86HardwareProfile? = nil
+        qemuProfile: X86HardwareProfile? = nil,
+        suite: String? = nil
     ) {
         self.qemuProfile = qemuProfile
+        self.suite = suite
         self.boots = boots
         self.mode = mode
         self.sha = sha
@@ -111,7 +115,8 @@ public struct BeastLauncher {
             mode: options.mode,
             timeoutSecs: timeoutSecs,
             paths: paths(forRunID: id),
-            qemuProfile: options.qemuProfile
+            qemuProfile: options.qemuProfile,
+            suite: options.suite
         )
     }
 
@@ -171,7 +176,12 @@ public struct BeastLauncher {
         let serialRefs = try harvestSerials(pullResult: pullResult, runDirectory: runDirectory)
         let gateStdoutBytes = fileSize(gateStdoutURL)
         let command = readableGateCommand(paths: planResult.paths, boots: options.boots, mode: options.mode)
-        let env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile)
+        let env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile, suite: options.suite)
+        var captures = [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutBytes)]
+        let screenURL = runDirectory.appendingPathComponent("screen.png")
+        if FileManager.default.fileExists(atPath: screenURL.path) {
+            captures.append(CaptureRef(name: "screen.png", path: "screen.png", bytes: fileSize(screenURL)))
+        }
 
         let gateStdoutText = String(decoding: try Data(contentsOf: gateStdoutURL), as: UTF8.self)
         let gateVerdictString: String
@@ -200,7 +210,7 @@ public struct BeastLauncher {
             verdict: verdict,
             verdictSource: .gateScript(command: command, exitCode: Int(gateResult.exitCode)),
             serials: serialRefs,
-            captures: [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutBytes)],
+            captures: captures,
             command: command,
             env: env,
             tags: options.tags,
@@ -281,12 +291,26 @@ public struct BeastLauncher {
                 arguments: ["-xzf", tarballURL.path, "-C", runDirectory.path]
             ))
             try mergeSerials(from: gateTmpURL, userURL: userURL, kernelURL: kernelURL)
+            keepScreen(from: gateTmpURL, runDirectory: runDirectory)
         }
 
         return [
             SerialRef(name: "serial_user.txt", path: "serial_user.txt", bytes: fileSize(userURL), stream: .com1),
             SerialRef(name: "serial_kernel.txt", path: "serial_kernel.txt", bytes: fileSize(kernelURL), stream: .com2)
         ]
+    }
+
+    /// A suite gate saves its final screen as breenix_gate_<n>/screen.png; keep the last one.
+    private func keepScreen(from gateTmp: URL, runDirectory: URL) {
+        let iterations = (try? FileManager.default.contentsOfDirectory(atPath: gateTmp.path)) ?? []
+        let screens = iterations.filter { $0.hasPrefix("breenix_gate_") }
+            .sorted { naturalSerialKey($0) < naturalSerialKey($1) }
+            .map { gateTmp.appendingPathComponent($0).appendingPathComponent("screen.png") }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard let screen = screens.last else { return }
+        let destination = runDirectory.appendingPathComponent("screen.png")
+        try? FileManager.default.removeItem(at: destination)
+        try? FileManager.default.copyItem(at: screen, to: destination)
     }
 
     private func mergeSerials(from gateTmp: URL, userURL: URL, kernelURL: URL) throws {
@@ -378,7 +402,7 @@ public struct BeastLauncher {
         ["\(paths.clonePath)/docker/qemu/run-x86-gate.sh", "\(boots)", mode.rawValue]
     }
 
-    private func gateEnvironment(paths: BeastPaths, timeoutSecs: Int, qemuProfile: X86HardwareProfile?) -> [String: String] {
+    private func gateEnvironment(paths: BeastPaths, timeoutSecs: Int, qemuProfile: X86HardwareProfile?, suite: String?) -> [String: String] {
         var environment = [
             "BREENIX_GATE_TMP": paths.gateTmpPath,
             "BREENIX_REPO_DIR": paths.clonePath,
@@ -386,6 +410,10 @@ public struct BeastLauncher {
             "BREENIX_GATE_TIMEOUT": "\(timeoutSecs)"
         ]
         environment["BREENIX_QEMU_PROFILE"] = (qemuProfile ?? .default).rawValue
+        if let suite {
+            environment["BREENIX_BOOT_SUITE"] = suite
+            environment["BREENIX_QMP_SOCKET"] = paths.gateTmpPath + "/qmp.sock"
+        }
         return environment
     }
 

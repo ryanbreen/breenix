@@ -32,6 +32,17 @@
 #                       beast VM keeps a real clone and needs the repoint. Not
 #                       committed, not required elsewhere.
 #   BREENIX_GATE_TIMEOUT per-boot timeout in seconds (default: 150)
+#   BREENIX_BOOT_SUITE  an effort-suite id (docs/suites/<id>.json). The gate then
+#                       builds the production kernel (no features, whatever the
+#                       mode argument says), boots it with /etc/breenix/boot-target
+#                       ("suite <id>") written onto a copy of the ext2 disk so the
+#                       kernel runs /sbin/suite-<id> as PID 1, stops the VM a few
+#                       seconds after the suite's `SUITE <id> DONE` line, and passes
+#                       when that line reports failed=0.
+#   BREENIX_QMP_SOCKET  if set, QEMU opens a QMP socket at this path (qemu-uefi.rs)
+#                       so a screendump can be taken while the VM runs. In suite
+#                       mode the gate also saves the final screen as screen.png in
+#                       the boot's output directory.
 #   BREENIX_GATE_TMP    base dir for boot output (default: /tmp). #797:
 #                       concurrent lanes on the shared beast container each
 #                       hardcoded /tmp/breenix_gate_$i, so one lane's rm -rf +
@@ -136,6 +147,19 @@ case "$MODE" in
     ;;
 esac
 
+# Suite mode: the production kernel (no features) runs /sbin/suite-<id> as PID 1.
+SUITE="${BREENIX_BOOT_SUITE:-}"
+if [ -n "$SUITE" ]; then
+  if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || [ "${#SUITE}" -gt 40 ]; then
+    echo "GATE: FAIL (BREENIX_BOOT_SUITE is not a suite id: $SUITE)"; exit 1
+  fi
+  MODE="suite"
+  FEATURES=""
+  echo "[gate] suite=$SUITE (production kernel, /sbin/suite-$SUITE as PID 1)"
+fi
+# Seconds the VM stays up after the suite's DONE line, so its final screen can be captured.
+SUITE_HOLD_SECS="${BREENIX_SUITE_HOLD:-5}"
+
 echo "[gate] === Building userspace ELFs ==="
 if ! ./userspace/programs/build.sh > /tmp/gate-userspace-build.log 2>&1; then
   echo "GATE: FAIL (userspace build failed) - see /tmp/gate-userspace-build.log"; exit 1
@@ -153,10 +177,24 @@ rm -f target/ext2.img
 if ! ./scripts/create_ext2_disk.sh > /tmp/gate-ext2-disk.log 2>&1; then
   echo "GATE: FAIL (ext2 disk creation failed) - see /tmp/gate-ext2-disk.log"; exit 1
 fi
+if [ -n "$SUITE" ]; then
+  if [ ! -f "userspace/programs/suite-$SUITE.elf" ]; then
+    echo "GATE: FAIL (no suite binary userspace/programs/suite-$SUITE.elf; is suite-$SUITE in userspace/programs/build.sh?)"; exit 1
+  fi
+  # The boot target goes on a copy: qemu-uefi.rs copies BREENIX_EXT2_SOURCE (default
+  # testdata/ext2.img) to target/ext2.img for each boot, and testdata/ext2.img stays clean.
+  cp testdata/ext2.img target/ext2-boot-target.img
+  if ! ./scripts/write-boot-target.sh target/ext2-boot-target.img "$SUITE"; then
+    echo "GATE: FAIL (could not write the boot target onto the ext2 disk)"; exit 1
+  fi
+  export BREENIX_EXT2_SOURCE="$REPO_DIR/target/ext2-boot-target.img"
+fi
 
-echo "[gate] === Building (release, features=$FEATURES) ==="
+echo "[gate] === Building (release, features=${FEATURES:-none}) ==="
 BUILD_START=$SECONDS
-if ! cargo build --release --features "$FEATURES" --bin qemu-uefi > /tmp/gate-build.log 2>&1; then
+FEATURE_ARGS=()
+[ -n "$FEATURES" ] && FEATURE_ARGS=(--features "$FEATURES")
+if ! cargo build --release ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --bin qemu-uefi > /tmp/gate-build.log 2>&1; then
   echo "GATE: FAIL (build failed) - see /tmp/gate-build.log"
   tail -40 /tmp/gate-build.log
   exit 1
@@ -205,7 +243,27 @@ for i in $(seq 1 "$COUNT"); do
   BREENIX_NET_MODE=none timeout "$TIMEOUT_SECS" ./target/release/qemu-uefi \
     -serial file:"$OUTDIR/serial_user.log" \
     -serial file:"$OUTDIR/serial_kernel.log" \
-    > "$OUTDIR/stdout.log" 2>&1
+    > "$OUTDIR/stdout.log" 2>&1 &
+  QEMU_TIMEOUT_PID=$!
+  if [ -n "$SUITE" ]; then
+    # A suite never exits (it is PID 1 and idles with its final panel up): stop the VM
+    # once its DONE line is out, after saving the screen and holding it briefly.
+    while kill -0 "$QEMU_TIMEOUT_PID" 2>/dev/null; do
+      if grep -qs "SUITE $SUITE DONE " "$OUTDIR"/serial_*.log; then
+        sleep 2
+        if [ -n "${BREENIX_QMP_SOCKET:-}" ] && \
+            python3 "$REPO_DIR/scripts/qmp-screendump.py" "$BREENIX_QMP_SOCKET" "$OUTDIR/screen.png" >/dev/null 2>&1; then
+          echo "  Final screen: $OUTDIR/screen.png"
+        fi
+        sleep "$SUITE_HOLD_SECS"
+        # timeout forwards TERM to its process group: qemu-uefi and QEMU itself.
+        kill -TERM "$QEMU_TIMEOUT_PID" 2>/dev/null
+        break
+      fi
+      sleep 1
+    done
+  fi
+  wait "$QEMU_TIMEOUT_PID"
 
   # Require enumeration to finish and match the selected profile's block
   # count and network floor. Default still requires 3 VirtIO block and >=1 NIC.
@@ -263,7 +321,21 @@ for i in $(seq 1 "$COUNT"); do
   # and the census reads whichever argument the markers are in -- it selects by
   # snapshot `seq`, not by argument order.
   # claim-lint:ok: #775 ruling R134 defines the census input contract.
-  if [ "$MODE" = "full" ]; then
+  if [ -n "$SUITE" ]; then
+    done_line=$(grep -h -o -E "SUITE $SUITE DONE passed=[0-9]+ failed=[0-9]+ skipped=[0-9]+ total=[0-9]+" \
+        "$OUTDIR"/serial_*.log 2>/dev/null | tail -1)
+    if [ -z "$done_line" ]; then
+      verdict_ok=false
+      verdict_reason="no 'SUITE $SUITE DONE' line; the last CASE line shows where it stopped (see $OUTDIR/serial_user.log)"
+    elif [[ "$done_line" =~ failed=0\  ]]; then
+      verdict_ok=true
+      verdict_reason=""
+      echo "  $done_line"
+    else
+      verdict_ok=false
+      verdict_reason="$done_line"
+    fi
+  elif [ "$MODE" = "full" ]; then
     # EXPECTED_EXITS is mandatory for the verdict script; 10 is the count for
     # this profile's userspace program set.
     if EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-10}" \
