@@ -558,7 +558,7 @@ fn arm64_kernel_stages() -> Vec<BootStage> {
             name: "Test binaries loaded",
             marker: "[test] Loaded",
             failure_meaning: "Test binary loading from ext2 did not complete - possible hang in ext2 reads or process creation",
-            check_hint: "Check load_test_binaries_from_ext2() - interrupts should be disabled during loading to prevent scheduler preemption",
+            check_hint: "Check load_test_binaries_from_ext2() runs in a schedulable kernel thread with interrupts enabled for block I/O completion",
         },
         BootStage {
             name: "Scheduler idle loop entered",

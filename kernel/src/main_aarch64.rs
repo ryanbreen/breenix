@@ -1071,7 +1071,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // setup_idle_return_locked redirects CPU 0 to idle_loop_arm64, abandoning
     // the boot sequence. Preventing preemption here keeps the boot CPU on its
     // boot stack until init is ready to run.
-    // Re-enabled in launch_init_from_elf before spawn_as_current.
+    // Re-enabled at the test-loader handoff or in launch_init_from_elf.
     kernel::per_cpu_aarch64::preempt_disable();
 
     // Initialize process manager
@@ -1760,26 +1760,29 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // conflicts with the 60+ test processes already in the ready queue.
     #[cfg(feature = "testing")]
     if device_count > 0 {
-        serial_println!("[test] Loading test binaries from ext2...");
-        load_test_binaries_from_ext2();
-        boot_screen::stage(Stage::StartingPid1);
-        serial_println!("[test] Test processes loaded - will run via timer interrupts");
-        serial_println!("[test] Entering scheduler idle loop");
-        // Print shell prompt to serial before enabling interrupts.
-        // Once interrupts are enabled, the scheduler takes over and the BSP
-        // (its idle thread) enters idle_loop_arm64 - it won't return here.
-        // The prompt signals to the test harness that boot is complete.
-        serial_print!("breenix> ");
-        // Enable interrupts - scheduler dispatches test processes via timer.
+        // Idle dispatch starts idle_loop_arm64 rather than restoring the boot
+        // continuation. A VirtIO completion can schedule away from its caller,
+        // so the loader must own a schedulable context and a separate stack.
+        kernel::task::kthread::kthread_run_on_cpu(
+            || {
+                kernel::task::softirqd::init_online_daemons();
+                serial_println!("[test] Loading test binaries from ext2...");
+                load_test_binaries_from_ext2();
+                boot_screen::stage(Stage::StartingPid1);
+                serial_println!("[test] Test processes loaded - will run via timer interrupts");
+                serial_println!("[test] Entering scheduler idle loop");
+                serial_print!("breenix> ");
+                // Returning exits the loader thread; only swapper owns idle.
+            },
+            "test-loader",
+            0,
+        )
+        .expect("could not spawn test loader");
+        kernel::per_cpu_aarch64::preempt_enable();
         unsafe {
             kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
         }
-        loop {
-            unsafe {
-                core::arch::asm!("wfi", options(nomem, nostack));
-            }
-            kernel::net::drain_loopback_from_idle();
-        }
+        kernel::arch_impl::aarch64::context_switch::idle_loop_arm64();
     }
 
     // Launch userspace init from the pre-loaded ELF (read before SMP bring-up).
@@ -1872,16 +1875,8 @@ fn load_test_binaries_from_ext2() {
     use alloc::format;
     use alloc::string::String;
 
-    // CRITICAL: Disable interrupts during the entire loading loop.
-    // With interrupts enabled, each create_user_process() adds a thread to the
-    // scheduler's ready queue. Timer interrupts (200Hz) then preempt this loading
-    // thread to run the newly created test processes. By binary #30, the loading
-    // thread competes with 30+ threads for CPU time and loading takes >90 seconds.
-    // With interrupts disabled, VirtIO block I/O still works (polling mode) and
-    // all binaries load in under a second.
-    unsafe {
-        kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts();
-    }
+    // Run with interrupts enabled: VirtIO block reads complete via IRQ, and
+    // this kernel thread can resume after another process has been dispatched.
 
     // Use the canonical shared test binary list (see boot::test_list)
     let test_binaries = kernel::boot::test_list::TEST_BINARIES;
@@ -1980,12 +1975,6 @@ fn load_test_binaries_from_ext2() {
             }
         }
     }
-
-    // NOTE: Interrupts remain DISABLED here. The caller is responsible for
-    // printing status messages and re-enabling interrupts before entering
-    // the idle loop. If we re-enable here, the scheduler immediately preempts
-    // the boot thread to run test processes, and subsequent serial_println!
-    // calls in the caller never execute.
 
     serial_println!(
         "[test] Loaded {}/{} test binaries ({} failed, {} not found)",
