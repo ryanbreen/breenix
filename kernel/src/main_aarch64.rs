@@ -1777,7 +1777,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         if let Err(e) = kernel::task::kthread::kthread_run(run_test_loader, "test-loader") {
             serial_println!("[test] Failed to start the test loader thread: {:?}", e);
         }
-        // CPU 0 can now run test processes.
+        // CPU 0 can now run test processes. Once the pin drops, a tick could
+        // switch this idle context away for good, so keep IRQs masked until
+        // CPU 0's softirq daemon has been published.
+        unsafe {
+            kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts();
+        }
         release_boot_preempt_pin();
         unsafe {
             kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
@@ -1882,7 +1887,13 @@ fn run_test_loader() {
     // shape as a syscall: the completion wait releases the pin while it
     // sleeps and retakes it on wake, on whichever CPU that is.
     kernel::per_cpu_aarch64::preempt_disable();
+    // Tests start running and exiting while later binaries are still being
+    // read, so the suite only counts as finished once loading has ended.
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::begin_loading();
     load_test_binaries_from_ext2();
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::end_loading();
     kernel::per_cpu_aarch64::preempt_enable();
     boot_screen::stage(Stage::StartingPid1);
     serial_println!("[test] Test processes loaded - will run via timer interrupts");
