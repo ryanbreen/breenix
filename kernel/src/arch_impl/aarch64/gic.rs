@@ -260,11 +260,11 @@ static DS_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Effective ICC_CTLR_EL1.EOImode read back after init; VMware requests mode 0
 /// because HVF rejects ICC_DIR_EL1, and Parallels ignores the mode-1 write
 /// (observed RAZ/WI).
-static SPLIT_DEACTIVATE_SUPPORTED: AtomicBool = AtomicBool::new(false);
+static EFFECTIVE_SPLIT_EOI: AtomicBool = AtomicBool::new(false);
 
 /// Tracks which group the last acknowledged interrupt came from.
 /// 0 = Group 0, 1 = Group 1 (normal). The group selects EOIR only when
-/// USE_GROUP0 && DS_ENABLED, a combination restricted to single-CPU operation.
+/// USE_GROUP0 && DS_ENABLED; boot skips secondary probing in that combination.
 /// Otherwise acknowledgements store Group 1 and EOIR1 is used, including on SMP.
 static LAST_ACK_GROUP: AtomicU32 = AtomicU32::new(0);
 
@@ -459,6 +459,12 @@ impl Gicv2 {
 ///
 /// Dispatches to GICv2 or GICv3 based on the detected version.
 pub fn init_cpu_interface_secondary() {
+    // LAST_ACK_GROUP is global: a second CPU must not acknowledge through
+    // both groups and race the boot CPU's choice of EOIR register.
+    assert!(
+        !(USE_GROUP0.load(Ordering::Acquire) && DS_ENABLED.load(Ordering::Acquire)),
+        "GIC dual-group acknowledgement requires single-CPU operation"
+    );
     let version = ACTIVE_GIC_VERSION.load(Ordering::Acquire);
     match version {
         2 => {
@@ -721,6 +727,13 @@ pub fn acknowledge_irq() -> Option<u32> {
     }
 }
 
+/// Whether init read back split priority-drop/deactivation mode.
+/// GICv2 leaves this false because it uses combined EOI/deactivation.
+#[inline]
+pub fn effective_split_eoi() -> bool {
+    EFFECTIVE_SPLIT_EOI.load(Ordering::Relaxed)
+}
+
 /// Drop active IRQ priority by ID.
 ///
 /// In effective mode 0 and on GICv2 this is a no-op: EOIR in deactivate_irq
@@ -734,7 +747,7 @@ pub fn acknowledge_irq() -> Option<u32> {
 pub fn priority_drop_irq(irq_id: u32) {
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
     if version >= 3 {
-        if SPLIT_DEACTIVATE_SUPPORTED.load(Ordering::Acquire) {
+        if EFFECTIVE_SPLIT_EOI.load(Ordering::Relaxed) {
             write_gicv3_eoir(irq_id);
         }
     }
@@ -745,7 +758,7 @@ pub fn priority_drop_irq(irq_id: u32) {
 pub fn deactivate_irq(irq_id: u32) {
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
     if version >= 3 {
-        if SPLIT_DEACTIVATE_SUPPORTED.load(Ordering::Acquire) {
+        if EFFECTIVE_SPLIT_EOI.load(Ordering::Relaxed) {
             unsafe {
                 core::arch::asm!("msr icc_dir_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
             }
@@ -1675,9 +1688,9 @@ fn init_gicv3_cpu_interface(boot_cpu: bool) {
         core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) effective_ctlr, options(nomem, nostack));
         let split_enabled = effective_ctlr & (1u64 << 1) != 0;
         if boot_cpu {
-            SPLIT_DEACTIVATE_SUPPORTED.store(split_enabled, Ordering::Release);
+            EFFECTIVE_SPLIT_EOI.store(split_enabled, Ordering::Release);
         } else {
-            let boot_split = SPLIT_DEACTIVATE_SUPPORTED.load(Ordering::Acquire);
+            let boot_split = EFFECTIVE_SPLIT_EOI.load(Ordering::Relaxed);
             assert_eq!(
                 split_enabled, boot_split,
                 "GIC secondary EOImode differs from boot CPU"
