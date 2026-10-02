@@ -193,11 +193,16 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
                 if !process.signals.get_handler(sig).is_default() {
                     process.signals.set_pending(sig);
                 }
-                return SyscallResult::Ok(0);
+            } else {
+                // Ignored signals are discarded at generation.
+                process.signals.set_pending(sig);
             }
 
-            // For other signals, queue them for delivery
-            process.signals.set_pending(sig);
+            // Resume above is unconditional for SIGCONT; all signal wakeups
+            // below require a pending, unblocked, non-ignored disposition.
+            if !process.signals.has_deliverable_signals() {
+                return SyscallResult::Ok(0);
+            }
             log::debug!(
                 "Signal {} ({}) queued for process {}",
                 sig,
@@ -1827,6 +1832,59 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
 #[cfg(target_arch = "aarch64")]
 const USER_SPACE_END: u64 = crate::memory::layout::USER_STACK_REGION_END;
 
+/// Sleep with the wait published before testing signal eligibility. A scheduler
+/// wakeup alone cannot complete pause/sigsuspend, and signals generated before
+/// publication are caught by the pending check. No manager lock crosses sleep.
+#[cfg(target_arch = "aarch64")]
+fn wait_for_deliverable_signal_aarch64(
+    thread_id: u64,
+    userspace_context: &crate::task::thread::CpuContext,
+) {
+    use crate::arch_impl::traits::CpuOps;
+
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_signal_with_context(Some(userspace_context.clone()));
+    });
+    crate::per_cpu::preempt_enable();
+
+    loop {
+        let eligible = {
+            // Contention must not masquerade as an absence of pending signals:
+            // a wakeup might already have happened before we publish this wait.
+            let manager_guard = manager();
+            manager_guard
+                .as_ref()
+                .and_then(|m| m.find_process_by_thread(thread_id))
+                .is_some_and(|(_, process)| process.signals.has_deliverable_signals())
+        };
+        if eligible {
+            crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    if thread.state == crate::task::thread::ThreadState::BlockedOnSignal {
+                        thread.set_ready();
+                    }
+                }
+            });
+            break;
+        }
+
+        crate::task::scheduler::yield_current();
+        Cpu::halt_with_interrupts();
+        // Re-publish after any spurious wakeup, then check before sleeping.
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current_for_signal_with_context(Some(userspace_context.clone()));
+        });
+    }
+
+    crate::per_cpu::preempt_disable();
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+            thread.saved_userspace_context = None;
+        }
+    });
+}
+
 /// pause() - Wait until a signal is delivered (with frame access) - ARM64 version
 ///
 /// pause() causes the calling process (or thread) to sleep until a signal
@@ -1839,8 +1897,6 @@ const USER_SPACE_END: u64 = crate::memory::layout::USER_STACK_REGION_END;
 pub fn sys_pause_with_frame_aarch64(
     frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
 ) -> SyscallResult {
-    use crate::arch_impl::traits::CpuOps;
-
     let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
     log::info!(
         "sys_pause_with_frame_aarch64: Thread {} blocking until signal arrives",
@@ -1870,91 +1926,7 @@ pub fn sys_pause_with_frame_aarch64(
         }
     }
 
-    // Check if signals are already pending BEFORE blocking.
-    // This handles the race where a signal arrives between fork() and pause():
-    // the child may send the signal before the parent enters BlockedOnSignal,
-    // so unblock_for_signal() would be a no-op. We must detect this case.
-    let already_pending = if let Some(mut manager_guard) = crate::process::try_manager() {
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-                crate::signal::delivery::has_deliverable_signals(process)
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
-    if !already_pending {
-        // Block the current thread until a signal arrives
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_for_signal_with_context(Some(userspace_context));
-        });
-
-        // Re-enable preemption before entering blocking loop
-        crate::per_cpu::preempt_enable();
-
-        // WFI loop - wait for interrupt which will switch to another thread
-        loop {
-            crate::task::scheduler::yield_current();
-            Cpu::halt_with_interrupts();
-
-            // Check if we were unblocked (signal arrived, or thread state changed)
-            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.state == crate::task::thread::ThreadState::BlockedOnSignal
-                } else {
-                    false
-                }
-            })
-            .unwrap_or(false);
-
-            if !still_blocked {
-                break;
-            }
-
-            // Also check for pending signals directly (belt and suspenders)
-            let has_pending = if let Some(mut mg) = crate::process::try_manager() {
-                if let Some(ref mut m) = *mg {
-                    if let Some((_, p)) = m.find_process_by_thread_mut(thread_id) {
-                        crate::signal::delivery::has_deliverable_signals(p)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            if has_pending {
-                // Signal arrived - unblock ourselves
-                crate::task::scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        if thread.state == crate::task::thread::ThreadState::BlockedOnSignal {
-                            thread.set_ready();
-                        }
-                    }
-                });
-                break;
-            }
-        }
-
-        // Re-disable preemption before returning
-        crate::per_cpu::preempt_disable();
-
-        // Clear the blocked_in_syscall flag
-        crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.blocked_in_syscall = false;
-                thread.saved_userspace_context = None;
-            }
-        });
-    }
+    wait_for_deliverable_signal_aarch64(thread_id, &userspace_context);
     SyscallResult::Err(4) // EINTR
 }
 
@@ -2123,8 +2095,6 @@ pub fn sys_sigsuspend_with_frame_aarch64(
     sigsetsize: u64,
     frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
 ) -> SyscallResult {
-    use crate::arch_impl::traits::CpuOps;
-
     // Validate sigsetsize
     if sigsetsize != 8 {
         log::warn!(
@@ -2231,92 +2201,6 @@ pub fn sys_sigsuspend_with_frame_aarch64(
         }
     }
 
-    // Check if signals are already pending BEFORE blocking.
-    // This handles the race where the child sends the signal before the parent
-    // enters sigsuspend: since the temp mask now allows the signal, we can
-    // detect it immediately and skip the WFI loop entirely.
-    let already_pending = if let Some(mut manager_guard) = crate::process::try_manager() {
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-                crate::signal::delivery::has_deliverable_signals(process)
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
-    if !already_pending {
-        // Block the current thread until a signal arrives
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_for_signal_with_context(Some(userspace_context));
-        });
-
-        // Re-enable preemption before entering blocking loop
-        crate::per_cpu::preempt_enable();
-
-        // WFI loop - wait for interrupt
-        loop {
-            crate::task::scheduler::yield_current();
-            Cpu::halt_with_interrupts();
-
-            // Check if we were unblocked
-            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.state == crate::task::thread::ThreadState::BlockedOnSignal
-                } else {
-                    false
-                }
-            })
-            .unwrap_or(false);
-
-            if !still_blocked {
-                break;
-            }
-
-            // Also check for pending signals directly (handles race where
-            // signal arrived after we checked but before we blocked)
-            let has_pending = if let Some(mut mg) = crate::process::try_manager() {
-                if let Some(ref mut m) = *mg {
-                    if let Some((_, p)) = m.find_process_by_thread_mut(thread_id) {
-                        crate::signal::delivery::has_deliverable_signals(p)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            if has_pending {
-                // Signal arrived - unblock ourselves
-                crate::task::scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        if thread.state == crate::task::thread::ThreadState::BlockedOnSignal {
-                            thread.set_ready();
-                        }
-                    }
-                });
-                break;
-            }
-        }
-
-        // Re-disable preemption before returning
-        crate::per_cpu::preempt_disable();
-    }
-
-    // Clear blocked_in_syscall flag
-    crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(thread) = sched.current_thread_mut() {
-            thread.blocked_in_syscall = false;
-            thread.saved_userspace_context = None;
-        }
-    });
-
+    wait_for_deliverable_signal_aarch64(thread_id, &userspace_context);
     SyscallResult::Err(4) // EINTR
 }

@@ -11,23 +11,14 @@ use super::constants::*;
 use super::types::*;
 use crate::process::{Process, ProcessState};
 
-/// Check whether there is pending signal work for the delivery path to process.
-///
-/// This includes ignored dispositions so delivery can clear them. Issue #493 motivated
-/// separating this from the EINTR predicate when a default-ignored SIGCHLD interrupted a
-/// blocking syscall despite never being observed by userspace.
-///
-/// This is a fast O(1) check suitable for the hot path in context_switch.rs.
+/// Check for pending, unblocked signals with an observable disposition.
+/// Ignored dispositions are filtered by SignalState's cached mask.
 #[inline]
 pub fn has_deliverable_signals(process: &Process) -> bool {
     process.signals.has_deliverable_signals()
 }
 
-/// Check whether a pending signal will actually be seen by userspace, so a blocking syscall
-/// must abort with EINTR.
-///
-/// Explicit and default-ignored dispositions do not count. Issue #493 was motivated by a
-/// default-ignored SIGCHLD incorrectly interrupting a blocking syscall.
+/// Interruptible waits use the same eligibility check as signal delivery.
 #[inline]
 pub fn has_interrupting_signals(process: &Process) -> bool {
     process.signals.has_interrupting_signals()
@@ -791,7 +782,10 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
             );
 
             // Get parent's main thread ID for unblocking
-            parent_process.main_thread.as_ref().map(|t| t.id)
+            parent_process
+                .main_thread
+                .as_ref()
+                .map(|t| (t.id, parent_process.signals.has_deliverable_signals()))
         } else {
             log::warn!(
                 "notify_parent_of_termination_deferred: parent process {} not found for child {}",
@@ -804,13 +798,15 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
     };
 
     // Unblock parent thread if it's waiting on waitpid or sigsuspend
-    if let Some(parent_tid) = parent_thread_id {
+    if let Some((parent_tid, signal_eligible)) = parent_thread_id {
         crate::task::scheduler::with_scheduler(|sched| {
             // Wake parent if blocked in waitpid (BlockedOnChildExit)
             sched.unblock_for_child_exit(parent_tid);
-            // Also wake parent if blocked in sigsuspend/pause (BlockedOnSignal)
-            // so SIGCHLD can be delivered
-            sched.unblock_for_signal(parent_tid);
+            // A child exit wakes waitpid even when SIGCHLD is ignored or blocked.
+            // Signal waits only wake when there is actual delivery work.
+            if signal_eligible {
+                sched.unblock_for_signal(parent_tid);
+            }
         });
         log::info!(
             "notify_parent_of_termination_deferred: unblocked parent thread {} for child {} termination",
