@@ -190,15 +190,31 @@ fn resume_pc_is_dispatchable(addr: u64) -> bool {
     let text_end = core::ptr::addr_of!(__kernel_text_end) as u64;
     let higher_alias = addr.wrapping_add(KERNEL_VIRT_OFFSET);
     let lower_alias = addr.wrapping_sub(KERNEL_VIRT_OFFSET);
+    let linked_start: u64;
+    unsafe {
+        core::arch::asm!(
+            "movz {0}, #:abs_g3:__kernel_text_start",
+            "movk {0}, #:abs_g2_nc:__kernel_text_start",
+            "movk {0}, #:abs_g1_nc:__kernel_text_start",
+            "movk {0}, #:abs_g0_nc:__kernel_text_start",
+            out(reg) linked_start,
+            options(pure, nomem, nostack, preserves_flags),
+        );
+    }
+    let linked_offset = addr.wrapping_sub(linked_start);
 
     // WHY: llvm-objdump shows a PC-relative ADR for the text start and an
     // ADRP+ADD pair for the text end, so both follow the mapping executing this
     // code. Saved PCs may still be spelled in the counterpart alias; admit it,
-    // but only through another text-sized window.
+    // but only through another text-sized window. On VMware the executing
+    // mapping is HHDM + the RAM-relocated physical address, while vtable and
+    // function-pointer calls run the same text at its link-time address, so
+    // that window is admitted too.
     addr & 0x3 == 0
         && ((addr >= text_start && addr < text_end)
             || (higher_alias >= text_start && higher_alias < text_end)
-            || (lower_alias >= text_start && lower_alias < text_end))
+            || (lower_alias >= text_start && lower_alias < text_end)
+            || linked_offset < text_end - text_start)
 }
 
 /// A saved userspace resume PC must be aligned, above the reserved low range,

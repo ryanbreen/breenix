@@ -1021,8 +1021,12 @@ secondary_el1_init:
     add x0, x0, x1
     mov sp, x0
 
-    // Switch to runtime exception vectors (high)
+    // Switch to runtime exception vectors (high). The relocation delta puts
+    // this CPU in the same high-half alias as CPU 0, which runs at HHDM + its
+    // load address: on VMware that is the link address + 0x40000000, and
+    // PC-relative statics and resume-PC windows must agree across CPUs.
     ldr x0, =exception_vectors
+    add x0, x0, x21          // relocate
     msr vbar_el1, x0
     isb
 
@@ -1030,6 +1034,7 @@ secondary_el1_init:
     // x19 still holds cpu_id
     mov x0, x19
     ldr x1, =secondary_cpu_entry_rust
+    add x1, x1, x21          // relocate
     br x1
 
 secondary_drop_to_el1:

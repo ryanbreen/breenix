@@ -6,8 +6,13 @@
 
 // \pc is left untouched. \s0 \s1 \s2 are scratch registers the caller
 // guarantees are dead. Branches to \ok when \pc names a 4-byte-aligned
-// address inside kernel text in any of the three mappings the Rust predicate
+// address inside kernel text in any of the four mappings the Rust predicate
 // admits; falls through otherwise.
+//
+// The first window is PC-relative, so it follows the mapping executing this
+// code. On VMware that is HHDM + the RAM-relocated physical address, while
+// vtable and function-pointer calls run the same text at its link-time
+// address; the last window admits that alias.
 .macro RESUME_PC_EL1_OK pc, s0, s1, s2, ok
     tst   \pc, #3
     b.ne  8888f
@@ -27,6 +32,13 @@
     mov   \s2, #KERNEL_VIRT_BASE
     sub   \s2, \pc, \s2              // lower alias
     sub   \s2, \s2, \s0
+    cmp   \s2, \s1
+    b.lo  \ok
+    movz  \s0, #:abs_g3:__kernel_text_start
+    movk  \s0, #:abs_g2_nc:__kernel_text_start
+    movk  \s0, #:abs_g1_nc:__kernel_text_start
+    movk  \s0, #:abs_g0_nc:__kernel_text_start
+    sub   \s2, \pc, \s0              // link-time alias
     cmp   \s2, \s1
     b.lo  \ok
 8888:
