@@ -24,7 +24,7 @@ PR-1 through PR-8 implement:
 
 ```bash
 breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
-breenix-runs run x86 [gate] [--boots N] [--sha SHA] [--mode kthread|full] [--host HOST] [--dry-run] [--tag T] [--no-store]
+breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full] [--host HOST] [--dry-run] [--tag T] [--no-store]
 breenix-runs list [--arch aarch64|x86_64] [--profile NAME] [--verdict pass|fail|attributed|running|unknown]
 breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
 breenix-runs facts <run-id|latest> [--json]
@@ -78,3 +78,11 @@ serial messages; PR-7 adds a third "Traces" tab rendering the same host-facts,
 `BXCAP`, and `FATAL_REGS` sections the CLI's `--traces` prints, each with its
 own "not present" empty state. PR-8 adds a Compare tab after choosing a second
 stored run. Launching runs remains in the CLI.
+
+For x86 runs, `--hardware` selects a name from `docs/x86-profiles.json` and records
+`BREENIX_QEMU_PROFILE` in the manifest environment. `list --profile gate` filters
+the run kind. `--gate-timeout` sets the remote per-boot timeout explicitly; the
+Mac shell's `BREENIX_GATE_TIMEOUT` is ignored. The x86 gate requires the virtio
+storage setting so it can attach all three disks (AHCI/NVMe profiles select their
+own disk devices). SMP4 configures four CPUs but currently brings only one online
+(see issue #629).

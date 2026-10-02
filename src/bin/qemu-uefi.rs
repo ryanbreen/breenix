@@ -6,7 +6,35 @@ use std::{
 
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 
+#[path = "qemu-uefi/profile.rs"]
+mod profile;
+use profile::Profile;
+
 fn main() {
+    let profile_name = env::var("BREENIX_QEMU_PROFILE").unwrap_or_else(|_| "default".into());
+    let profile = Profile::parse(&profile_name).unwrap_or_else(|error| {
+        eprintln!("[qemu-uefi] {error}");
+        process::exit(2);
+    });
+    eprintln!("[qemu-uefi] Profile: {}", profile.name());
+    let storage_mode = env::var("BREENIX_QEMU_STORAGE").unwrap_or_else(|_| "virtio".into());
+    if profile != Profile::Default && storage_mode != "virtio" {
+        eprintln!(
+            "[qemu-uefi] BREENIX_QEMU_STORAGE conflicts with profile {}",
+            profile.name()
+        );
+        process::exit(2);
+    }
+    // Gate preflight: report the attachment census without fetching firmware,
+    // building disks, or launching QEMU. Use the same profile as the boot.
+    if env::var("BREENIX_PRINT_QEMU_CENSUS").ok().as_deref() == Some("1") {
+        println!("{}", profile.census_line(&storage_mode));
+        return;
+    }
+    if env::var("BREENIX_PRINT_QEMU_PCI").ok().as_deref() == Some("1") {
+        println!("{}", profile.pci_census_lines());
+        return;
+    }
     // Allow overriding OVMF firmware paths via environment for CI/DEBUG builds
     let ovmf_code = if let Ok(path) = env::var("BREENIX_OVMF_CODE_PATH") {
         let p = PathBuf::from(path);
@@ -87,7 +115,7 @@ fn main() {
     qemu.args(["-pflash", &vars_dst.display().to_string()]);
     // Attach kernel disk image. Default to virtio; allow override via env.
     // On CI we export BREENIX_QEMU_STORAGE=ide to favor OVMF boot discovery.
-    let storage_mode = env::var("BREENIX_QEMU_STORAGE").unwrap_or_else(|_| "virtio".to_string());
+    profile.add_controllers(&mut qemu);
     match storage_mode.as_str() {
         "ide" => {
             // Minimal, known-good IDE attach; no explicit AHCI controller
@@ -101,8 +129,7 @@ fn main() {
             eprintln!("[qemu-uefi] Storage: IDE (index=0)");
         }
         _ => {
-            // Use disable-modern=on to force legacy (virtio 0.9) interface
-            // Our VirtIO driver only supports the legacy I/O port interface
+            // The default profile preserves the legacy virtio 0.9 interface.
             qemu.args([
                 "-drive",
                 &format!(
@@ -110,14 +137,21 @@ fn main() {
                     uefi_img.display()
                 ),
                 "-device",
-                "virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off",
+                &profile.disk_device("hd", 0, true),
             ]);
-            eprintln!("[qemu-uefi] Storage: virtio-blk (legacy mode)");
+            if profile == Profile::Default {
+                eprintln!("[qemu-uefi] Storage: virtio-blk (legacy mode)");
+            } else {
+                eprintln!(
+                    "[qemu-uefi] Storage: {}",
+                    profile.disk_device("hd", 0, true)
+                );
+            }
         }
     }
 
-    // Attach test binaries disk (second VirtIO device, index 1)
-    // MANDATORY - disk loading is always required
+    // Attach test binaries disk (second disk, index 1)
+    // Attach the test disk when using the virtio storage configuration.
     if storage_mode == "virtio" {
         // Determine project root by walking up from executable directory
         let exe_path = env::current_exe().expect("Failed to get executable path");
@@ -213,15 +247,15 @@ fn main() {
                 test_disk_path.display()
             ),
             "-device",
-            "virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off",
+            &profile.disk_device("testdisk", 1, false),
         ]);
         eprintln!(
-            "[qemu-uefi] Test disk: {} ({} bytes) [virtio-blk device index 1]",
+            "[qemu-uefi] Test disk: {} ({} bytes) [disk index 1]",
             test_disk_path.display(),
             disk_size
         );
 
-        // Attach ext2 filesystem disk (third VirtIO device, index 2)
+        // Attach ext2 filesystem disk (third disk, index 2)
         // Copy pristine image from testdata/ to target/ so tests can write without modifying the source
         let ext2_source_path = project_root.join("testdata/ext2.img");
         let ext2_disk_path = project_root.join("target/ext2.img");
@@ -241,10 +275,10 @@ fn main() {
                     ext2_disk_path.display()
                 ),
                 "-device",
-                "virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off",
+                &profile.disk_device("ext2disk", 2, false),
             ]);
             eprintln!(
-                "[qemu-uefi] Ext2 disk: {} -> {} ({} bytes) [virtio-blk device index 2]",
+                "[qemu-uefi] Ext2 disk: {} -> {} ({} bytes) [disk index 2]",
                 ext2_source_path.display(),
                 ext2_disk_path.display(),
                 ext2_size
@@ -267,14 +301,14 @@ fn main() {
         Ok("max") => "max",
         _ => "qemu64",
     };
-    let machine = format!("pc,accel={}", qemu_accel);
+    let machine = format!("{},accel={}", profile.machine(), qemu_accel);
     qemu.args([
         "-machine",
         machine.as_str(),
         "-cpu",
         qemu_cpu,
         "-smp",
-        "1",
+        profile.cpus(),
         "-m",
         "512",
     ]);
@@ -366,8 +400,9 @@ fn main() {
     // Network configuration: BREENIX_NET_MODE controls the backend
     // - "slirp" (default): User-mode NAT networking, no host interface needed
     // - "vmnet": macOS vmnet-shared (requires sudo), creates real bridge interface
-    // - "socket_vmnet": Uses socket_vmnet daemon for host visibility WITHOUT sudo
-    // - "none": No networking
+    // - "socket_vmnet": Uses the socket_vmnet daemon via its client wrapper
+    // - "none": No explicit backend for default (QEMU auto-attaches e1000);
+    //   other profiles use an explicit user backend to select their NIC.
     let net_mode = env::var("BREENIX_NET_MODE").unwrap_or_else(|_| "slirp".to_string());
 
     // For socket_vmnet mode, we need to track that we'll wrap QEMU with the client
@@ -383,7 +418,7 @@ fn main() {
                 "-netdev",
                 "vmnet-shared,id=net0",
                 "-device",
-                "e1000,netdev=net0,mac=52:54:00:12:34:56",
+                &format!("{},netdev=net0,mac=52:54:00:12:34:56", profile.nic_device()),
             ]);
             eprintln!("[qemu-uefi] Network: vmnet-shared (host bridge interface)");
             eprintln!("[qemu-uefi]   To observe traffic: sudo tcpdump -i bridge100 -nn icmp");
@@ -399,7 +434,7 @@ fn main() {
                 "-netdev",
                 "socket,id=net0,fd=3",
                 "-device",
-                "e1000,netdev=net0,mac=52:54:00:12:34:56",
+                &format!("{},netdev=net0,mac=52:54:00:12:34:56", profile.nic_device()),
             ]);
             eprintln!("[qemu-uefi] Network: socket_vmnet (host bridge via daemon)");
             eprintln!(
@@ -410,7 +445,17 @@ fn main() {
             );
         }
         "none" => {
-            eprintln!("[qemu-uefi] Network: disabled");
+            profile.add_none_network(&mut qemu);
+            if profile == Profile::Default {
+                eprintln!(
+                    "[qemu-uefi] Network: QEMU implicit user-mode e1000 (no host forwarding)"
+                );
+            } else {
+                eprintln!(
+                    "[qemu-uefi] Network: user-mode {} (no host forwarding)",
+                    profile.nic_device()
+                );
+            }
         }
         _ => {
             // Default: SLIRP user-mode networking
@@ -420,7 +465,7 @@ fn main() {
                 "-netdev",
                 "user,id=net0,hostfwd=tcp::2323-:2323",
                 "-device",
-                "e1000,netdev=net0,mac=52:54:00:12:34:56",
+                &format!("{},netdev=net0,mac=52:54:00:12:34:56", profile.nic_device()),
             ]);
             eprintln!("[qemu-uefi] Network: SLIRP user-mode (10.0.2.x internal)");
             eprintln!("[qemu-uefi]   Port forward: localhost:2323 -> guest:2323 (telnet)");
@@ -429,7 +474,7 @@ fn main() {
 
     // Optional packet capture: BREENIX_PCAP_FILE=/path/to/capture.pcap
     // Works with slirp and vmnet modes
-    if net_mode != "none" {
+    if net_mode != "none" || profile != Profile::Default {
         if let Ok(pcap_path) = env::var("BREENIX_PCAP_FILE") {
             qemu.args([
                 "-object",

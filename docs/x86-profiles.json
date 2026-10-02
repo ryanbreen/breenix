@@ -1,0 +1,56 @@
+[
+  {
+    "name": "default",
+    "title": "Default PC",
+    "summary": "Uses the existing PC hardware with one CPU and legacy VirtIO disks.",
+    "devices": "pc; OVMF; 3 legacy virtio-blk; e1000 (auto-attached in the gate); virtio-vga; 1 CPU"
+  },
+  {
+    "name": "q35",
+    "title": "Q35 PCIe",
+    "summary": "Moves the legacy disks and e1000 NIC behind a PCIe root port and PCI bridge on Q35.",
+    "devices": "q35; OVMF; PCIe root port + PCI bridge; 3 legacy virtio-blk; e1000; virtio-vga; 1 CPU"
+  },
+  {
+    "name": "e1000e",
+    "title": "Intel e1000e",
+    "summary": "Uses Q35 with an e1000e NIC behind its own PCIe root port.",
+    "devices": "q35; OVMF; PCIe root ports + PCI bridge; 3 legacy virtio-blk; e1000e; virtio-vga; 1 CPU"
+  },
+  {
+    "name": "rtl8139",
+    "title": "Realtek RTL8139",
+    "summary": "Replaces the e1000 NIC with a Realtek RTL8139 NIC.",
+    "devices": "pc; OVMF; 3 legacy virtio-blk; rtl8139; virtio-vga; 1 CPU"
+  },
+  {
+    "name": "virtio-net",
+    "title": "VirtIO network",
+    "summary": "Replaces the e1000 NIC with a legacy VirtIO network device.",
+    "devices": "pc; OVMF; 3 legacy virtio-blk; legacy virtio-net; virtio-vga; 1 CPU"
+  },
+  {
+    "name": "virtio-modern",
+    "title": "Modern VirtIO disks",
+    "summary": "Disables the legacy interface on all three VirtIO block devices.",
+    "devices": "pc; OVMF; 3 virtio-blk with disable-legacy=on; e1000; virtio-vga; 1 CPU"
+  },
+  {
+    "name": "ahci",
+    "title": "AHCI SATA disks",
+    "summary": "Attaches all three disks to an ICH9 AHCI SATA controller.",
+    "devices": "pc; OVMF; ICH9 AHCI + 3 SATA disks; e1000; virtio-vga; 1 CPU"
+  },
+  {
+    "name": "nvme",
+    "title": "NVMe disks",
+    "summary": "Attaches each of the three disks to its own NVMe controller.",
+    "devices": "pc; OVMF; 3 NVMe controllers; e1000; virtio-vga; 1 CPU"
+  },
+  {
+    "name": "smp4",
+    "title": "Four CPUs",
+    "summary": "Configures four CPUs; Breenix currently brings only the boot CPU online (issue #629).",
+    "devices": "pc; OVMF; 3 legacy virtio-blk; e1000; virtio-vga; 4 configured CPUs, 1 online"
+  }
+]

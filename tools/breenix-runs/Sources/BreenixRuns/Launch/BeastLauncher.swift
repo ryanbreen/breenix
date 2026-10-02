@@ -24,7 +24,16 @@ public enum X86Profile: String, CaseIterable, Sendable {
     case gate
 }
 
+/// Hardware selected by qemu-uefi; separate from the gate's test mode.
+public enum X86HardwareProfile: String, CaseIterable, Sendable {
+    case `default`, q35, e1000e, rtl8139
+    case virtioNet = "virtio-net"
+    case virtioModern = "virtio-modern"
+    case ahci, nvme, smp4
+}
+
 public struct BeastLaunchOptions: Sendable {
+    public var qemuProfile: X86HardwareProfile?
     public var boots: Int
     public var mode: RemoteGateMode
     public var sha: String
@@ -40,8 +49,10 @@ public struct BeastLaunchOptions: Sendable {
         gitDirty: Bool? = nil,
         tags: [String] = [],
         persist: Bool = true,
-        runID: String? = nil
+        runID: String? = nil,
+        qemuProfile: X86HardwareProfile? = nil
     ) {
+        self.qemuProfile = qemuProfile
         self.boots = boots
         self.mode = mode
         self.sha = sha
@@ -99,7 +110,8 @@ public struct BeastLauncher {
             boots: options.boots,
             mode: options.mode,
             timeoutSecs: timeoutSecs,
-            paths: paths(forRunID: id)
+            paths: paths(forRunID: id),
+            qemuProfile: options.qemuProfile
         )
     }
 
@@ -159,7 +171,7 @@ public struct BeastLauncher {
         let serialRefs = try harvestSerials(pullResult: pullResult, runDirectory: runDirectory)
         let gateStdoutBytes = fileSize(gateStdoutURL)
         let command = readableGateCommand(paths: planResult.paths, boots: options.boots, mode: options.mode)
-        let env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs)
+        let env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile)
 
         let gateStdoutText = String(decoding: try Data(contentsOf: gateStdoutURL), as: UTF8.self)
         let gateVerdictString: String
@@ -366,13 +378,15 @@ public struct BeastLauncher {
         ["\(paths.clonePath)/docker/qemu/run-x86-gate.sh", "\(boots)", mode.rawValue]
     }
 
-    private func gateEnvironment(paths: BeastPaths, timeoutSecs: Int) -> [String: String] {
-        [
+    private func gateEnvironment(paths: BeastPaths, timeoutSecs: Int, qemuProfile: X86HardwareProfile?) -> [String: String] {
+        var environment = [
             "BREENIX_GATE_TMP": paths.gateTmpPath,
             "BREENIX_REPO_DIR": paths.clonePath,
             "BREENIX_RUST_FORK": paths.rustForkPath,
             "BREENIX_GATE_TIMEOUT": "\(timeoutSecs)"
         ]
+        environment["BREENIX_QEMU_PROFILE"] = (qemuProfile ?? .default).rawValue
+        return environment
     }
 
     private func fileSize(_ url: URL) -> Int {

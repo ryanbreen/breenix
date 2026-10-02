@@ -25,7 +25,8 @@ final class CLIHelpTests: XCTestCase {
             XCTAssertEqual(process.terminationReason, .exit, output)
             XCTAssertEqual(process.terminationStatus, 0, output)
             for expected in ["Usage:", "Application Support/BreenixRuns", "BREENIX_RUNS_STORE",
-                             "breenix-runs import <dir>", "breenix-runs show latest --messages"] {
+                             "breenix-runs import <dir>", "breenix-runs show latest --messages",
+                             "--hardware NAME", "--gate-timeout SECONDS"] {
                 XCTAssertTrue(output.contains(expected), output)
             }
             XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["a-file"])

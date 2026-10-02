@@ -69,7 +69,7 @@ public enum RemoteCommand {
         public var removeClone: ProcessRequest
     }
 
-    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths) -> Plan {
+    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil) -> Plan {
         Plan(
             sha: sha,
             boots: boots,
@@ -77,7 +77,7 @@ public enum RemoteCommand {
             timeoutSecs: timeoutSecs,
             paths: paths,
             prepareClone: prepareCloneRequest(sha: sha, paths: paths),
-            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths),
+            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile),
             pullEvidence: pullEvidenceRequest(paths: paths),
             removeClone: removeCloneRequest(paths: paths)
         )
@@ -103,13 +103,14 @@ public enum RemoteCommand {
     // gate-tmp/ must still exist so pullEvidenceRequest's tar never fails on
     // a missing directory - an evidence-pull failure must never be conflated
     // with a gate failure.
-    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths) -> ProcessRequest {
+    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil) -> ProcessRequest {
         let script = "mkdir -p \(paths.gateTmpPath)"
             + " && source \(paths.cargoEnvPath)"
             + " && env BREENIX_GATE_TMP=\(paths.gateTmpPath)"
             + " BREENIX_REPO_DIR=\(paths.clonePath)"
             + " BREENIX_RUST_FORK=\(paths.rustForkPath)"
             + " BREENIX_GATE_TIMEOUT=\(timeoutSecs)"
+            + (qemuProfile.map { " BREENIX_QEMU_PROFILE=\($0.rawValue)" } ?? "")
             + " \(paths.clonePath)/docker/qemu/run-x86-gate.sh \(boots) \(mode.rawValue)"
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }

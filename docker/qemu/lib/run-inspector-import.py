@@ -27,7 +27,9 @@ def main():
                     startedAt=datetime.datetime.fromtimestamp(
                         int(start) / 1000, datetime.timezone.utc).isoformat(),
                     endedAt=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    command=command, serials=serials, captures=captures)
+                    command=command, serials=serials, captures=captures,
+                    env={key: os.environ[key] for key in ("BREENIX_QEMU_PROFILE",)
+                         if key in os.environ})
     sidecar = directory / "run-inspector.json"
     temporary = directory / ("run-inspector." + metadata["id"] + ".tmp")
     temporary.write_text(json.dumps(metadata) + "\n")
