@@ -1,0 +1,26 @@
+{
+  "id": "smoke",
+  "title": "Smoke",
+  "area": "Processes",
+  "summary": "The effort-suite machinery runs end to end: the suite boots as PID 1, runs each case, reports pass, fail and skip on serial and draws its panel.",
+  "binary": "/sbin/suite-smoke",
+  "categories": [
+    {
+      "id": "process",
+      "title": "Process and time",
+      "cases": [
+        { "id": "getpid", "title": "getpid returns a positive PID" },
+        { "id": "stdout-write", "title": "A write to stdout returns the byte count" },
+        { "id": "clock-read", "title": "The monotonic clock reads and does not go backwards" }
+      ]
+    },
+    {
+      "id": "memory",
+      "title": "Memory",
+      "cases": [
+        { "id": "brk", "title": "brk grows the program break" },
+        { "id": "mmap", "title": "An anonymous private mapping can be written and read back" }
+      ]
+    }
+  ]
+}

@@ -306,6 +306,9 @@ STD_BINARIES=(
     # Services
     "init"
     "probe"
+
+    # Effort suites, installed as /sbin/suite-<id>
+    "suite-smoke"
     "telnetd"
     "blogd"
 
