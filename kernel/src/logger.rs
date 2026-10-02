@@ -12,6 +12,8 @@ use crate::log_serial_println;
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 use conquer_once::spin::OnceCell;
 use core::fmt::{self, Write};
+#[cfg(not(feature = "interactive"))]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU64, Ordering};
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use noto_sans_mono_bitmap::{
@@ -20,6 +22,16 @@ use noto_sans_mono_bitmap::{
 use spin::Mutex;
 
 static LOG_FRAMEBUFFER: OnceCell<Mutex<LogFrameBuffer>> = OnceCell::uninit();
+
+/// The bootloader framebuffer's layout, readable without the log sink's lock.
+#[cfg(not(feature = "interactive"))]
+static DISPLAY_INFO: OnceCell<FrameBufferInfo> = OnceCell::uninit();
+
+/// Set once a userspace process takes the display (`sys_take_over_display`):
+/// from then on the log sink stops drawing on the framebuffer, so it cannot
+/// write over what that process shows. Serial logging is unaffected.
+#[cfg(not(feature = "interactive"))]
+static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
 
 /// Shell framebuffer for direct shell output (interactive mode only)
 #[cfg(feature = "interactive")]
@@ -963,6 +975,9 @@ impl CombinedLogger {
 /// is correct; deadlocking the machine to render a diagnostic is not.
 #[cfg(not(feature = "interactive"))]
 fn write_framebuffer_record(record: &Record) {
+    if DISPLAY_TAKEN.load(Ordering::Acquire) {
+        return;
+    }
     let Some(framebuffer) = LOG_FRAMEBUFFER.get() else {
         return;
     };
@@ -1127,6 +1142,9 @@ pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::F
             .get_or_init(|| Mutex::new(ShellFrameBuffer::new_direct(buffer_ptr, buffer_len, info)));
     }
 
+    #[cfg(not(feature = "interactive"))]
+    let _ = DISPLAY_INFO.get_or_init(|| info);
+
     // Initialize framebuffer logger (used for non-interactive mode)
     let _ = LOG_FRAMEBUFFER
         .get_or_init(|| Mutex::new(LogFrameBuffer::new(buffer_ptr, buffer_len, info)));
@@ -1135,6 +1153,73 @@ pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::F
     COMBINED_LOGGER.fully_ready();
 
     log::info!("Logger fully initialized - output to both framebuffer and serial");
+}
+
+/// The framebuffer's layout: width, height and stride in pixels, bytes per
+/// pixel, and whether pixels are BGR. `None` without a framebuffer, or one whose
+/// pixels are not 3- or 4-byte RGB or BGR.
+#[cfg(not(feature = "interactive"))]
+pub fn display_geometry() -> Option<(usize, usize, usize, usize, bool)> {
+    let info = DISPLAY_INFO.get()?;
+    let is_bgr = match info.pixel_format {
+        PixelFormat::Rgb => false,
+        PixelFormat::Bgr => true,
+        _ => return None,
+    };
+    if !(3..=4).contains(&info.bytes_per_pixel) {
+        return None;
+    }
+    Some((info.width, info.height, info.stride, info.bytes_per_pixel, is_bgr))
+}
+
+/// A userspace process has the display: stop drawing log records on it.
+#[cfg(not(feature = "interactive"))]
+pub fn take_display() {
+    DISPLAY_TAKEN.store(true, Ordering::Release);
+}
+
+/// Copy rows `rows` and columns `columns` of a pane that starts at x 0 onto the
+/// framebuffer. `pane` is the pane's first byte and `pane_stride` its row length
+/// in bytes; its pixels are in the framebuffer's own format. Returns false when
+/// the log sink holds the framebuffer (the caller reports EBUSY and the owner
+/// flushes again).
+///
+/// # Safety
+/// `pane` must point at `rows.end` readable rows of `pane_stride` bytes, each at
+/// least `columns.end` pixels wide.
+#[cfg(not(feature = "interactive"))]
+pub unsafe fn copy_to_display(
+    pane: *const u8,
+    pane_stride: usize,
+    rows: core::ops::Range<usize>,
+    columns: core::ops::Range<usize>,
+) -> bool {
+    let Some(framebuffer) = LOG_FRAMEBUFFER.get() else {
+        return false;
+    };
+    crate::arch_without_interrupts(|| {
+        let Some(framebuffer) = framebuffer.try_lock() else {
+            return false;
+        };
+        let bpp = framebuffer.info.bytes_per_pixel;
+        let row_bytes = framebuffer.info.stride * bpp;
+        let columns = columns.start.min(framebuffer.width())..columns.end.min(framebuffer.width());
+        let len = columns.len() * bpp;
+        for y in rows.start..rows.end.min(framebuffer.height()) {
+            let target = y * row_bytes + columns.start * bpp;
+            if len == 0 || target + len > framebuffer.buffer_len {
+                continue;
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    pane.add(y * pane_stride + columns.start * bpp),
+                    framebuffer.buffer_ptr.add(target),
+                    len,
+                );
+            }
+        }
+        true
+    })
 }
 
 /// Write raw text to framebuffer console (for shell output in interactive mode)

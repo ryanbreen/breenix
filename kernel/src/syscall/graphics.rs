@@ -45,12 +45,10 @@ pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::A
 /// (`sys_take_over_display`). One process owns the display at a time: a later
 /// take-over moves ownership there, and the earlier owner's whole-screen
 /// mapping can no longer draw.
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub(crate) static DISPLAY_OWNER_PID: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(u64::MAX);
 
 /// Whether `process` (whose PID is `pid`) owns the display now.
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 fn owns_display(
     pid: crate::process::process::ProcessId,
     process: &crate::process::process::Process,
@@ -568,7 +566,7 @@ impl WindowRegistry {
 
 /// Framebuffer info structure returned by sys_fbinfo.
 /// This matches the userspace FbInfo struct in libbreenix.
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct FbInfo {
     /// Width in pixels
@@ -685,11 +683,24 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-/// sys_fbinfo - Stub for non-interactive mode (returns ENODEV)
-#[cfg(not(any(target_arch = "aarch64", feature = "interactive")))]
-pub fn sys_fbinfo(_info_ptr: u64) -> SyscallResult {
-    // No framebuffer available in non-interactive mode
-    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+/// sys_fbinfo - production x86_64 form: the bootloader framebuffer the kernel
+/// logs to until a process takes the display.
+#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
+    let Some((width, height, stride, bpp, is_bgr)) = crate::logger::display_geometry() else {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    };
+    let info = FbInfo {
+        width: width as u64,
+        height: height as u64,
+        stride: stride as u64,
+        bytes_per_pixel: bpp as u64,
+        pixel_format: if is_bgr { 1 } else { 0 },
+    };
+    match crate::syscall::userptr::copy_to_user(info_ptr as *mut FbInfo, &info) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(_) => SyscallResult::Err(super::ErrorCode::Fault as u64),
+    }
 }
 
 /// Draw command operations for sys_fbdraw
@@ -719,7 +730,7 @@ pub enum FbDrawOp {
 
 /// Draw command structure passed from userspace.
 /// Must match the FbDrawCmd struct in libbreenix.
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct FbDrawCmd {
     /// Operation code (FbDrawOp)
@@ -2889,10 +2900,70 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-/// sys_fbdraw - Stub for non-interactive mode
-#[cfg(not(any(target_arch = "aarch64", feature = "interactive")))]
-pub fn sys_fbdraw(_cmd_ptr: u64) -> SyscallResult {
-    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+/// sys_fbdraw - production x86_64 form. Only Flush (op 6) is supported: it copies
+/// the display owner's whole-screen fb_mmap pane (or the rectangle p1-p4 of it,
+/// when p3 and p4 are non-zero) onto the screen. The drawing ops draw on the
+/// interactive kernel's shell framebuffer, which this kernel does not have.
+///
+/// # Returns
+/// * 0 on success
+/// * -EFAULT if cmd_ptr is invalid
+/// * -EINVAL for any op but Flush, or a caller with no fb_mmap pane
+/// * -EPERM if the caller does not own the display
+/// * -EBUSY if the kernel's log sink holds the framebuffer (flush again)
+#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
+    use crate::syscall::memory_common::get_current_thread_id;
+
+    let cmd: FbDrawCmd = match crate::syscall::userptr::copy_from_user(cmd_ptr as *const FbDrawCmd)
+    {
+        Ok(cmd) => cmd,
+        Err(_) => return SyscallResult::Err(super::ErrorCode::Fault as u64),
+    };
+    if cmd.op != 6 {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    }
+    let (fb_mmap, caller_owns_display) = match get_current_thread_id() {
+        Some(tid) => match *crate::process::manager() {
+            Some(ref mgr) => mgr
+                .find_process_by_thread(tid)
+                .map(|(pid, proc)| (proc.fb_mmap, owns_display(pid, proc)))
+                .unwrap_or((None, false)),
+            None => (None, false),
+        },
+        None => (None, false),
+    };
+    if !caller_owns_display {
+        return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
+    }
+    let Some(pane) = fb_mmap.filter(|pane| pane.whole_screen) else {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    };
+    let (rows, columns) = if cmd.p3 > 0 && cmd.p4 > 0 {
+        let (x, y) = (cmd.p1.max(0) as usize, cmd.p2.max(0) as usize);
+        (
+            y.min(pane.height)..(y + cmd.p4 as usize).min(pane.height),
+            x.min(pane.width)..(x + cmd.p3 as usize).min(pane.width),
+        )
+    } else {
+        (0..pane.height, 0..pane.width)
+    };
+    // SAFETY: the pane is the caller's own fb_mmap mapping, `pane.height` rows of
+    // `pane.user_stride` bytes, mapped with pre-allocated frames, and the copy is
+    // clipped to it.
+    let copied = unsafe {
+        crate::logger::copy_to_display(
+            pane.user_addr as *const u8,
+            pane.user_stride,
+            rows,
+            columns,
+        )
+    };
+    if copied {
+        SyscallResult::Ok(0)
+    } else {
+        SyscallResult::Err(super::ErrorCode::Busy as u64)
+    }
 }
 
 /// sys_get_mouse_pos - Get current mouse cursor position, button state, and scroll delta
@@ -2943,13 +3014,9 @@ pub fn sys_get_mouse_pos(_out_ptr: u64) -> SyscallResult {
 /// Allocates physical frames, maps them into the process as a compact buffer at
 /// x 0 (the whole screen for the display owner, the left half for everyone
 /// else), and returns the userspace pointer. Drawing then needs no syscall;
-/// only the flush requires one. On aarch64, when the argument `width_out` is not
-/// 0 it receives the pane width in pixels (the row stride is that width times
-/// bytes per pixel).
-///
-/// x86_64's syscall dispatch (`syscall/handler.rs`) passes FBMMAP no argument,
-/// so no width is reported there and the display owner, like other processes,
-/// gets the left half: the layout a caller assumes when no width is reported.
+/// only the flush requires one. When the argument `width_out` is not 0 it
+/// receives the pane width in pixels (the row stride is that width times bytes
+/// per pixel).
 ///
 /// # Returns
 /// * Userspace address of the mapped buffer on success
@@ -2962,12 +3029,11 @@ pub fn sys_fbmmap(width_out: u64) -> SyscallResult {
 }
 
 /// sys_fbmmap - x86_64 form; see the aarch64 form above.
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-pub fn sys_fbmmap() -> SyscallResult {
-    fbmmap(0)
+#[cfg(target_arch = "x86_64")]
+pub fn sys_fbmmap(width_out: u64) -> SyscallResult {
+    fbmmap(width_out)
 }
 
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 fn fbmmap(width_out: u64) -> SyscallResult {
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
@@ -3008,9 +3074,8 @@ fn fbmmap(width_out: u64) -> SyscallResult {
 
     // Get framebuffer dimensions.
     // The display owner (the process that called take_over_display) gets the
-    // whole screen on aarch64. Other processes, and on x86_64 the owner too, get
-    // the left half.
-    let whole_screen = cfg!(target_arch = "aarch64") && caller_owns_display;
+    // whole screen. Other processes get the left half.
+    let whole_screen = caller_owns_display;
     //
     // On ARM64, use the lock-free FbInfoCache to avoid contention with BWM's
     // fb_flush, which holds SHELL_FRAMEBUFFER for ~400μs during full-screen
@@ -3029,7 +3094,17 @@ fn fbmmap(width_out: u64) -> SyscallResult {
         (pane_width, cache.height, cache.bytes_per_pixel)
     };
 
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    let (pane_width, height, bpp) = {
+        let Some((width, height, _stride, bpp, _is_bgr)) = crate::logger::display_geometry()
+        else {
+            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+        };
+        let pane_width = if whole_screen { width } else { width / 2 };
+        (pane_width, height, bpp)
+    };
+
+    #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
     let (pane_width, height, bpp) = {
         let fb = match SHELL_FRAMEBUFFER.get() {
             Some(fb) => fb,
@@ -3219,8 +3294,3 @@ fn fbmmap(width_out: u64) -> SyscallResult {
     SyscallResult::Ok(start_addr)
 }
 
-/// sys_fbmmap - Stub for non-interactive mode
-#[cfg(not(any(target_arch = "aarch64", feature = "interactive")))]
-pub fn sys_fbmmap() -> SyscallResult {
-    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-}
