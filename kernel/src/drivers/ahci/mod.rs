@@ -301,6 +301,12 @@ fn next_cmd_num() -> u32 {
 static PORT_IO_IN_PROGRESS: [AtomicBool; MAX_AHCI_PORTS] =
     [const { AtomicBool::new(false) }; MAX_AHCI_PORTS];
 
+// A syscall holds the x86 preemption brake. Spinning on an owner that
+// sleeps for I/O prevents that owner from ever running to retire its request.
+#[cfg(target_arch = "x86_64")]
+static PORT_IO_WAITERS: [crate::task::waitqueue::WaitQueueHead; MAX_AHCI_PORTS] =
+    [const { crate::task::waitqueue::WaitQueueHead::new() }; MAX_AHCI_PORTS];
+
 #[inline]
 fn relax_port_io_wait() {
     #[cfg(target_arch = "aarch64")]
@@ -322,6 +328,19 @@ fn begin_port_io(port: usize) -> MutexGuard<'static, ()> {
             return guard;
         }
         drop(guard);
+        #[cfg(target_arch = "x86_64")]
+        if crate::task::scheduler::current_thread_id().is_some()
+            && crate::per_cpu::preempt_count() > 0
+            && PORT_IO_WAITERS[port]
+                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
+                .is_some()
+        {
+            if PORT_IO_IN_PROGRESS[port].load(Ordering::Acquire) {
+                crate::task::waitqueue::schedule_current_wait();
+            }
+            PORT_IO_WAITERS[port].finish_wait();
+            continue;
+        }
         relax_port_io_wait();
     }
 }
@@ -329,6 +348,8 @@ fn begin_port_io(port: usize) -> MutexGuard<'static, ()> {
 #[inline]
 fn end_port_io(port: usize) {
     PORT_IO_IN_PROGRESS[port].store(false, Ordering::Release);
+    #[cfg(target_arch = "x86_64")]
+    PORT_IO_WAITERS[port].wake_up_one();
 }
 
 // =============================================================================
