@@ -103,11 +103,17 @@ pub fn init_idt() {
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
-        unsafe {
-            idt.page_fault
-                .set_handler_fn(page_fault_handler)
-                .set_stack_index(gdt::PAGE_FAULT_IST_INDEX);
-        }
+        // #PF runs on the stack the CPU is already using, as #GP does: a user
+        // fault arrives on the thread's kernel stack (TSS.RSP0), and the kill
+        // path below ends the process there exactly as #GP's does. It used to
+        // run on an IST stack. That stack was 8 KiB with the double-fault stack
+        // directly below it and no guard page between, and the kill path for a
+        // faulting user process overran both into unmapped memory; any #PF
+        // taken inside the handler would also have restarted at the same IST
+        // top over the outer handler's frames. A kernel stack overflow, which
+        // cannot push a #PF frame, still reaches the double-fault handler on
+        // its own IST stack.
+        idt.page_fault.set_handler_fn(page_fault_handler);
 
         // Hardware interrupt handlers
         // Timer interrupt with proper interrupt return path handling
@@ -1265,7 +1271,7 @@ extern "x86-interrupt" fn page_fault_handler(
         return;
     }
 
-    crate::serial_println!("EXCEPTION: PAGE FAULT - Now using IST stack for reliable diagnostics");
+    crate::serial_println!("EXCEPTION: PAGE FAULT");
 
     // CRITICAL: Enhanced diagnostics for CR3 switch debugging
     unsafe {
