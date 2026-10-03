@@ -169,6 +169,14 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     trace_exit(result as i64);
     frame.set_return_value(result);
 
+    // A wait a signal interrupted, to be resumed (SA_RESTART): return to the
+    // `svc` with its first argument back in X0, so the syscall runs again after
+    // any handler. X8 and the other arguments are untouched.
+    if result == (-(crate::syscall::errno::ERESTARTSYS as i64)) as u64 {
+        frame.x0 = arg1;
+        frame.elr -= 4;
+    }
+
     // Check for pending signals before returning to userspace
     check_and_deliver_signals_aarch64(frame);
 

@@ -597,6 +597,31 @@ pub fn check_signals_for_eintr() -> Option<i32> {
     None
 }
 
+/// `check_signals_for_eintr` for a wait that SA_RESTART resumes: blocking
+/// read and write on pipes, FIFOs, sockets and terminals, wait4, accept, a
+/// blocking FIFO open and F_SETLKW. Returns Some(EINTR) when the interrupting
+/// signal will run a handler installed without SA_RESTART, and
+/// Some(ERESTARTSYS) otherwise, which the syscall return path turns into a
+/// re-execution of the syscall once any handler has run.
+pub fn check_signals_for_restartable_wait() -> Option<i32> {
+    let thread_id = crate::task::scheduler::current_thread_id()?;
+
+    let manager_guard = crate::process::manager();
+    let restarts = manager_guard.as_ref().and_then(|manager| {
+        let (_pid, process) = manager.find_process_by_thread(thread_id)?;
+        if crate::signal::delivery::has_interrupting_signals(process) {
+            Some(process.signals.interruption_restarts())
+        } else {
+            None
+        }
+    });
+    drop(manager_guard);
+    match restarts? {
+        true => Some(errno::ERESTARTSYS),
+        false => Some(errno::EINTR),
+    }
+}
+
 /// Initialize the system call infrastructure
 #[cfg(target_arch = "x86_64")]
 pub fn init() {

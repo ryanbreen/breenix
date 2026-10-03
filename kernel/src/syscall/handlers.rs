@@ -784,7 +784,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // When keyboard data arrives, the interrupt handler will unblock us
                         loop {
                             // Check for pending signals that should interrupt this syscall
-                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                                 // Signal pending - unblock and return EINTR
                                 crate::ipc::stdin::unregister_blocked_reader(thread_id);
                                 crate::task::scheduler::with_scheduler(|sched| {
@@ -936,7 +936,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // HLT loop - wait for data or EOF
                         loop {
                             // Check for pending signals that should interrupt this syscall
-                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                                 // Signal pending - clean up and return EINTR
                                 {
                                     let mut pipe = pipe_buffer_clone.lock();
@@ -1084,7 +1084,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // HLT loop - wait for data or EOF
                         loop {
                             // Check for pending signals that should interrupt this syscall
-                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                                 // Signal pending - clean up and return EINTR
                                 {
                                     let mut pipe = pipe_buffer_clone.lock();
@@ -1369,7 +1369,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 // HLT loop - wait for data to arrive
                 loop {
                     // Check for pending signals that should interrupt this syscall
-                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                    if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                         // Signal pending - clean up and return EINTR
                         crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
                         crate::task::scheduler::with_scheduler(|sched| {
@@ -1490,7 +1490,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 // HLT loop - wait for data to arrive
                 loop {
-                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                    if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                         pair.unregister_master_waiter(thread_id);
                         crate::task::scheduler::with_scheduler(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
@@ -1588,7 +1588,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 // HLT loop - wait for data to arrive
                 loop {
-                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                    if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                         pair.unregister_slave_waiter(thread_id);
                         crate::task::scheduler::with_scheduler(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
@@ -1704,7 +1704,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // HLT loop
                         loop {
                             // Check for pending signals that should interrupt this syscall
-                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                                 // Signal pending - clean up and return EINTR
                                 let socket = socket_clone.lock();
                                 socket.unregister_waiter(thread_id);
@@ -3467,7 +3467,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
 
             loop {
                 // Check for pending signals that should interrupt this syscall
-                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                     // Signal pending - clean up thread state and return EINTR
                     crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
@@ -3586,7 +3586,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
 
             loop {
                 // Check for pending signals that should interrupt this syscall
-                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                     // Signal pending - clean up thread state and return EINTR
                     crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
