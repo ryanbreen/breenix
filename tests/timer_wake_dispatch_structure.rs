@@ -11,9 +11,13 @@
 //!
 //! What is pinned here is the SHAPE, not a line number and not a diff:
 //!
-//! * inside `wake_expired_timers`, the ready-queue enqueue is `push_front`, and
-//!   no `push_back` survives in that function -- so a future edit that reverts
-//!   to a tail enqueue, or adds a second enqueue at the tail, reddens this;
+//! * inside `wake_expired_timers`, a late wake is enqueued with `push_front`,
+//!   and the promotion is bounded by `timer_wake_promotion_open`: a tail
+//!   `push_back` may appear only alongside that check. An unbounded head
+//!   enqueue starves the queue -- a thread that sleeps a millisecond in a loop
+//!   is late again on the next pass and goes back to the head -- so a future edit that
+//!   drops the bound reddens this, as does one that reverts to a plain tail
+//!   enqueue;
 //! * the `QUANTUM_TICKS` the #766 oracle prints its `quantum_ms` from equals the
 //!   `TIME_QUANTUM` literal in BOTH timer interrupt handlers, so the oracle's
 //!   reported bound cannot silently drift from the quantum the scheduler
@@ -83,15 +87,16 @@ fn code_lines_mentioning<'a>(body: &'a str, needle: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// The assertion body shared by the real-source test and its mutation leg.
+/// The assertion body shared by the real-source test and its mutation legs.
 fn assert_late_wakes_go_to_the_head(body: &str) {
+    let bounded = !code_lines_mentioning(body, "timer_wake_promotion_open(").is_empty();
     let tail = code_lines_mentioning(body, "push_back(");
     assert!(
-        tail.is_empty(),
-        "`wake_expired_timers` must not enqueue at the tail of a ready queue: every entry it \
-         pops has a deadline that already passed, and a tail enqueue makes the woken thread \
-         wait a full round robin behind threads that are not late at all (#766). \
-         Offending line(s): {tail:?}"
+        tail.is_empty() || bounded,
+        "`wake_expired_timers` must not enqueue at the tail of a ready queue except when \
+         `timer_wake_promotion_open` refuses a promotion: every entry it pops has a deadline \
+         that already passed, and a tail enqueue makes the woken thread wait a full round \
+         robin behind threads that are not late at all (#766). Offending line(s): {tail:?}"
     );
     let head = code_lines_mentioning(body, "push_front(");
     assert!(
@@ -99,6 +104,12 @@ fn assert_late_wakes_go_to_the_head(body: &str) {
         "`wake_expired_timers` must enqueue a late wake at the HEAD of its target ready queue \
          (#766); no `push_front(` call was found in it, so either the enqueue moved out of this \
          function or it stopped happening at all"
+    );
+    assert!(
+        bounded,
+        "`wake_expired_timers` must bound head promotion with `timer_wake_promotion_open`: an \
+         unbounded head enqueue lets threads that sleep briefly in a loop take every dispatch \
+         and starve every thread behind them in the queue"
     );
 }
 
@@ -238,6 +249,20 @@ const NO_ENQUEUE_BODY: &str = r#"    pub fn wake_expired_timers(&mut self) {
             let _ = tid;
         }
     }"#;
+
+const UNBOUNDED_HEAD_BODY: &str = r#"    pub fn wake_expired_timers(&mut self) {
+        while let Some(&Reverse((wake_time, tid))) = self.timer_heap.peek() {
+            if let Some(target) = self.find_target_cpu_for_wakeup(tid) {
+                self.per_cpu_queues[target].push_front(tid);
+            }
+        }
+    }"#;
+
+#[test]
+#[should_panic(expected = "must bound head promotion")]
+fn the_head_check_rejects_an_unbounded_head_enqueue() {
+    assert_late_wakes_go_to_the_head(UNBOUNDED_HEAD_BODY);
+}
 
 #[test]
 #[should_panic(expected = "must not enqueue at the tail")]

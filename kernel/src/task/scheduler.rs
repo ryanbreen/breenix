@@ -1870,6 +1870,13 @@ pub(crate) struct CpuSchedulerState {
     pub(crate) pending_next: Option<u64>,
     /// Most recent tick at which this CPU entered a scheduling path.
     pub(crate) last_schedule_ticks: u64,
+    /// Thread `wake_expired_timers` placed at the head of this CPU's queue and
+    /// that has not been dispatched since. At most one is outstanding.
+    pub(crate) promoted_wake: Option<u64>,
+    /// Whether the last thread dispatched on this CPU was `promoted_wake`.
+    /// While set, timer wakes go to the tail, so a queue-order thread runs
+    /// between any two promoted ones.
+    pub(crate) last_dispatch_promoted: bool,
 }
 
 /// The kernel scheduler
@@ -1959,6 +1966,8 @@ impl Scheduler {
             previous_thread: None,
             pending_next: None,
             last_schedule_ticks: 0,
+            promoted_wake: None,
+            last_dispatch_promoted: false,
         };
         let mut cpu_state = [EMPTY_STATE; MAX_CPUS];
         #[cfg(target_arch = "aarch64")]
@@ -1972,6 +1981,8 @@ impl Scheduler {
             previous_thread: None,
             pending_next: None,
             last_schedule_ticks: crate::time::get_ticks(),
+            promoted_wake: None,
+            last_dispatch_promoted: false,
         };
 
         // VecDeque::new() is not const, so we initialise via a helper array.
@@ -2134,6 +2145,35 @@ impl Scheduler {
     }
 
     /// Add a new thread to the scheduler
+    /// Whether a timer wake on `cpu` may jump to the head of its queue.
+    ///
+    /// #766 puts a late timer wake at the head so it waits for the current
+    /// quantum rather than a full round. Unbounded, that starves the queue: a
+    /// thread that sleeps a millisecond in a loop is late again by the next
+    /// `schedule()` pass, goes to the head again, runs briefly, and sleeps
+    /// again, and a few such threads take the dispatches while the threads
+    /// behind them stay Ready and do not run. So a promotion is open only when
+    /// no promoted thread is still waiting at this CPU's head and the last
+    /// dispatch here was not a promoted one: between two promoted dispatches
+    /// at least one thread runs in queue order.
+    fn timer_wake_promotion_open(&self, cpu: usize) -> bool {
+        let state = &self.cpu_state[cpu];
+        !state.last_dispatch_promoted
+            && state
+                .promoted_wake
+                .map_or(true, |tid| !self.per_cpu_queues[cpu].contains(&tid))
+    }
+
+    /// Record a dispatch on `cpu` for `timer_wake_promotion_open`.
+    fn note_dispatch_for_wake_promotion(&mut self, cpu: usize, thread_id: u64) {
+        let state = &mut self.cpu_state[cpu];
+        let promoted = state.promoted_wake == Some(thread_id);
+        if promoted {
+            state.promoted_wake = None;
+        }
+        state.last_dispatch_promoted = promoted;
+    }
+
     pub fn add_thread(&mut self, thread: Box<Thread>) {
         self.add_thread_inner(thread, false);
     }
@@ -2732,6 +2772,7 @@ impl Scheduler {
             next.set_running();
             next.run_start_ticks = crate::time::get_ticks();
         }
+        self.note_dispatch_for_wake_promotion(current_cpu, next_thread_id);
 
         // Get mutable reference to old thread and immutable to new
         // This is safe because we know they're different threads
@@ -3212,6 +3253,7 @@ impl Scheduler {
             next.set_running();
             next.run_start_ticks = crate::time::get_ticks();
         }
+        self.note_dispatch_for_wake_promotion(current_cpu, next_thread_id);
         self.cpu_state[current_cpu].pending_next = Some(next_thread_id);
         #[cfg(feature = "coreproof_component_h")]
         crate::proof_point!(IncomingHandoffCommit);
@@ -4503,11 +4545,15 @@ impl Scheduler {
                         //
                         // This does not change the quantum policy for ordinary
                         // preemption: the outgoing thread is still re-enqueued
-                        // at the TAIL by `schedule()`, and a thread promoted
-                        // here is preempted on the same quantum as everything
-                        // else, after which it too goes to the tail. Only
-                        // threads that actually slept are promoted, and only
-                        // once per wake.
+                        // at the TAIL by `schedule()`. A promoted thread that
+                        // runs out its quantum goes to the tail too, but one
+                        // that sleeps again at once is late again by the next
+                        // pass, so unbounded promotion let a few such threads
+                        // take the dispatches and starve the rest of the queue.
+                        // `timer_wake_promotion_open` bounds it: one promoted
+                        // thread at a time per CPU, and no two promoted
+                        // dispatches in a row. A wake that finds promotion
+                        // closed goes to the tail.
                         //
                         // Not claimed: deadline order among threads promoted in
                         // the SAME pass. The heap pops earliest-deadline-first
@@ -4519,11 +4565,17 @@ impl Scheduler {
                         // earliest-deadline dispatch is a different change with
                         // its own evidence.
                         //
-                        // Cost on the path: one `VecDeque::push_front` instead
-                        // of one `push_back` (both O(1) on a ring buffer, same
-                        // instruction count class) plus one relaxed increment.
-                        // No lock, no allocation, no formatting, no I/O.
-                        self.per_cpu_queues[target].push_front(tid);
+                        // Cost on the path: one `VecDeque::push_front` or
+                        // `push_back` (both O(1) on a ring buffer) plus one
+                        // relaxed increment and a scan of the target queue for
+                        // the outstanding promoted thread. No lock, no
+                        // allocation, no formatting, no I/O.
+                        if self.timer_wake_promotion_open(target) {
+                            self.per_cpu_queues[target].push_front(tid);
+                            self.cpu_state[target].promoted_wake = Some(tid);
+                        } else {
+                            self.per_cpu_queues[target].push_back(tid);
+                        }
                         ENQUEUE_TIMER_WAKE.fetch_add(1, Ordering::Relaxed);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     } else {
