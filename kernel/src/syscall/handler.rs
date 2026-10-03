@@ -519,6 +519,14 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         }
     }
 
+    // A wait a signal interrupted, to be resumed (SA_RESTART): return to the
+    // 2-byte `int 0x80` with the syscall number back in RAX, so the syscall
+    // runs again after any handler. The arguments are untouched.
+    if matches!(result, SyscallResult::Err(e) if e == super::errno::ERESTARTSYS as u64) {
+        frame.rax = syscall_num;
+        frame.rip -= 2;
+    }
+
     // CRITICAL: Check for pending signals before returning to userspace
     // This is required for POSIX compliance - signals must be delivered on syscall return.
     // Without this, a process that sends a signal to itself and then loops calling
@@ -598,8 +606,6 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
         None => return, // Lock held, skip signal check - will happen on next timer interrupt
     };
 
-    let mut terminated = false;
-    let mut notification = None;
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
         if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
@@ -610,6 +616,14 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
             // Check if there are any deliverable signals
             if !crate::signal::delivery::has_deliverable_signals(process) {
                 return;
+            }
+
+            // A default action that ends the process must take effect before
+            // Ring 3 runs again. It is carried out without the lock held and
+            // does not return.
+            if let Some(sig) = crate::signal::delivery::take_fatal_default_signal(process) {
+                drop(manager_guard);
+                crate::signal::delivery::exit_by_signal_on_syscall_return(sig);
             }
 
             // We have deliverable signals - need to set up signal frame
@@ -682,18 +696,16 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
             frame.r14 = saved_regs.r14;
             frame.r15 = saved_regs.r15;
 
-            if let crate::signal::delivery::SignalDeliveryResult::Terminated(parent) = signal_result
+            // Handle termination case
+            if let crate::signal::delivery::SignalDeliveryResult::Terminated(_notification) =
+                signal_result
             {
-                notification = Some(parent);
+                // Process was terminated by signal - switch to idle
+                crate::task::scheduler::set_need_resched();
+                crate::task::scheduler::switch_to_idle();
+                // Note: parent notification will happen through normal scheduler path
             }
-            terminated = process.is_terminated();
         }
-    }
-
-    // A terminated process must not run Ring 3 code again; this does not return.
-    drop(manager_guard);
-    if terminated {
-        crate::signal::delivery::park_after_syscall_termination(notification);
     }
 }
 
@@ -733,16 +745,11 @@ fn deliver_pending_signals_syscall(
 
         match action.handler {
             SIG_DFL => {
-                // Apply the default action now, as interrupt return does; a
-                // terminating signal must take effect before Ring 3 runs again.
-                use crate::signal::delivery::{DeliverResult, SignalDeliveryResult};
-                match crate::signal::delivery::deliver_default_action(process, sig) {
-                    DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
-                    DeliverResult::Terminated(notification) => {
-                        return SignalDeliveryResult::Terminated(notification)
-                    }
-                    DeliverResult::Ignored => {}
-                }
+                // Default action - delegate to main delivery code
+                // For simplicity, return NoAction and let timer interrupt handle it
+                // This avoids duplicating termination logic here
+                process.signals.set_pending(sig); // Re-queue for timer interrupt
+                return crate::signal::delivery::SignalDeliveryResult::NoAction;
             }
             SIG_IGN => {
                 // Signal ignored - continue to check for more signals
