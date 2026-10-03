@@ -79,7 +79,7 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
 
     // Read entry table (sectors 1-127)
     // Each entry is 64 bytes, so 8 entries per sector
-    let entries_needed = ((binary_count as usize + 7) / 8) as u64;
+    let entries_needed = (binary_count as usize + 7) / 8;
     let entries_needed = core::cmp::min(entries_needed, 127); // Max 127 sectors for entry table
 
     let mut entries_buffer = Vec::new();
@@ -150,7 +150,7 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
     binary_data.resize(entry.size_bytes as usize, 0u8);
 
     // Calculate how many sectors we need to read
-    let sectors_to_read = ((entry.size_bytes as usize + SECTOR_SIZE - 1) / SECTOR_SIZE) as u64;
+    let sectors_to_read = (entry.size_bytes as usize + SECTOR_SIZE - 1) / SECTOR_SIZE;
     let mut sector_buffer = Vec::new();
     sector_buffer.resize(sectors_to_read as usize * SECTOR_SIZE, 0u8);
 
