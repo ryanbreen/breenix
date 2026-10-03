@@ -46,10 +46,12 @@ impl FilePage {
         let mut data = Vec::new();
         data.try_reserve_exact(PAGE_SIZE)
             .map_err(|_| ENOMEM as u64)?;
-        for i in 0..PAGE_SIZE {
-            data.push(unsafe { self.ptr().add(i).read_volatile() });
-        }
-        let write = |fs: &mut ext2::Ext2Fs| -> Result<(), u64> {
+        let mut write = |fs: &mut ext2::Ext2Fs| -> Result<(), u64> {
+            // Snapshot under the filesystem write guard so a completed pwrite
+            // cannot be overwritten by an older mapping snapshot.
+            for i in 0..PAGE_SIZE {
+                data.push(unsafe { self.ptr().add(i).read_volatile() });
+            }
             let inode = fs
                 .read_inode(self.inode_num as u32)
                 .map_err(|_| EIO as u64)?;
@@ -63,7 +65,7 @@ impl FilePage {
                     .read_file_range(&inode, self.offset, len)
                     .map_err(|_| EIO as u64)?;
                 if existing == data[..len] {
-                    return Ok(());
+                    return fs.sync().map_err(|_| EIO as u64);
                 }
                 let written = fs
                     .write_file_range_uncached(self.inode_num as u32, self.offset, &data[..len])
@@ -72,7 +74,7 @@ impl FilePage {
                     return Err(EIO as u64);
                 }
             }
-            Ok(())
+            fs.sync().map_err(|_| EIO as u64)
         };
         if ext2::home_mount_id() == Some(self.mount_id) {
             write(ext2::home_fs_write().as_mut().ok_or(EIO as u64)?)

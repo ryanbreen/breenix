@@ -2769,10 +2769,41 @@ fn mmap_shared_peer() -> CaseResult {
         unsafe {
             p.write_volatile(b'X');
         }
-        let result = check(
-            unsafe { q.read_volatile() } == b'X',
-            "shared mappings did not share changes",
-        );
+        let result = (|| -> CaseResult {
+            check(
+                unsafe { q.read_volatile() } == b'X',
+                "shared mappings did not share changes",
+            )?;
+            match process::fork()? {
+                process::ForkResult::Child => {
+                    let result = (|| -> CaseResult {
+                        check(
+                            unsafe { p.read_volatile() } == b'X',
+                            "child did not inherit shared file bytes",
+                        )?;
+                        let peer = map(f.fd(), memory::MAP_SHARED, 0)?;
+                        check(
+                            unsafe { peer.read_volatile() } == b'X',
+                            "child's new mapping did not see the parent's store",
+                        )?;
+                        unsafe { peer.add(1).write_volatile(b'Y') };
+                        sync_mapping(peer)?;
+                        memory::munmap(peer, 4096)?;
+                        Ok(())
+                    })();
+                    process::exit(if result.is_ok() { 0 } else { 1 });
+                }
+                process::ForkResult::Parent(pid) => child_ok(
+                    wait_child(pid.raw() as i32)?,
+                    "child did not share and synchronize the file mapping",
+                )?,
+            }
+            check(
+                unsafe { p.add(1).read_volatile() == b'Y' && q.add(1).read_volatile() == b'Y' },
+                "parent mappings did not see the child's store",
+            )?;
+            contents(f.fd(), b"XYcdef")
+        })();
         memory::munmap(q, 4096)?;
         result
     })();
