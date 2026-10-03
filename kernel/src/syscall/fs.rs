@@ -213,6 +213,84 @@ impl Stat {
     }
 }
 
+/// Effective user and group IDs that file access checks are made against,
+/// and the file creation mask. A caller with no process (a kernel thread) is
+/// treated as root with no mask.
+#[derive(Clone, Copy)]
+struct FileCredentials {
+    euid: u32,
+    egid: u32,
+    umask: u32,
+}
+
+fn current_file_credentials() -> FileCredentials {
+    let root = FileCredentials {
+        euid: 0,
+        egid: 0,
+        umask: 0,
+    };
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return root;
+    };
+    let manager_guard = crate::process::manager();
+    match &*manager_guard {
+        Some(manager) => manager
+            .find_process_by_thread(thread_id)
+            .map(|(_, p)| FileCredentials {
+                euid: p.euid,
+                egid: p.egid,
+                umask: p.umask,
+            })
+            .unwrap_or(root),
+        None => root,
+    }
+}
+
+/// POSIX open access check: the access mode (and O_TRUNC) must be granted by
+/// the owner, group or other permission bits that apply to the caller. Root
+/// is granted read and write regardless of the mode bits.
+fn check_open_access(
+    inode: &crate::fs::ext2::Ext2Inode,
+    flags: u32,
+    cred: FileCredentials,
+) -> Result<(), SyscallResult> {
+    use super::errno::EACCES;
+
+    if cred.euid == 0 {
+        return Ok(());
+    }
+    let uid = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_uid)) } as u32;
+    let gid = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_gid)) } as u32;
+    let mode = inode.permissions() as u32;
+    let granted = if cred.euid == uid {
+        (mode >> 6) & 0o7
+    } else if cred.egid == gid {
+        (mode >> 3) & 0o7
+    } else {
+        mode & 0o7
+    };
+    let mut wanted = match flags & 0x3 {
+        O_RDONLY => 0o4,
+        O_WRONLY => 0o2,
+        _ => 0o6,
+    };
+    if flags & O_TRUNC != 0 {
+        wanted |= 0o2;
+    }
+    if granted & wanted == wanted {
+        Ok(())
+    } else {
+        Err(SyscallResult::Err(EACCES as u64))
+    }
+}
+
+/// Whether an open of this file type reaches the permission check. A
+/// directory opened for writing fails with EISDIR, and other non-regular
+/// types fail later in sys_open, so only these opens are checked here.
+fn open_is_access_checked(is_reg: bool, is_dir: bool, flags: u32) -> bool {
+    is_reg || (is_dir && flags & 0x3 == O_RDONLY)
+}
+
 /// sys_open - Open a file or directory
 ///
 /// Helper: sys_open write path (O_CREAT/O_TRUNC) — works on any Ext2Fs instance.
@@ -221,13 +299,16 @@ fn sys_open_write_path(
     fs: &mut crate::fs::ext2::Ext2Fs,
     fs_path: &str,
     display_path: &str,
-    want_creat: bool,
-    want_excl: bool,
-    want_trunc: bool,
+    flags: u32,
     mode: u32,
+    cred: FileCredentials,
 ) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize), SyscallResult> {
     use super::errno::{EEXIST, ENOENT, ENOSPC, ENOTDIR};
     use crate::fs::ext2::FileType as Ext2FileType;
+
+    let want_creat = (flags & O_CREAT) != 0;
+    let want_excl = (flags & O_EXCL) != 0;
+    let want_trunc = (flags & O_TRUNC) != 0;
 
     let resolve_result = fs.resolve_path(fs_path);
 
@@ -276,11 +357,9 @@ fn sys_open_write_path(
                     return Err(SyscallResult::Err(ENOTDIR as u64));
                 }
 
-                let file_mode = if mode == 0 {
-                    0o644
-                } else {
-                    (mode & 0o777) as u16
-                };
+                // The requested mode is used as given, less the umask: mode 0
+                // creates a file nobody but root may open.
+                let file_mode = (mode & 0o777 & !cred.umask) as u16;
                 match fs.create_file(parent_inode, filename, file_mode) {
                     Ok(new_inode) => {
                         log::info!(
@@ -323,6 +402,12 @@ fn sys_open_write_path(
     let is_dir = matches!(ft, Ext2FileType::Directory);
     let is_reg = matches!(ft, Ext2FileType::Regular);
 
+    // A file this open created is opened with the requested access whatever
+    // its new mode; an existing one must grant that access first.
+    if !file_created && open_is_access_checked(is_reg, is_dir, flags) {
+        check_open_access(&inode, flags, cred)?;
+    }
+
     if want_trunc && is_reg && !file_created {
         log::debug!("sys_open: truncating file inode {}", ino);
         if let Err(e) = fs.truncate_file(ino) {
@@ -339,6 +424,8 @@ fn sys_open_write_path(
 fn sys_open_read_path(
     fs: &crate::fs::ext2::Ext2Fs,
     fs_path: &str,
+    flags: u32,
+    cred: FileCredentials,
 ) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize), SyscallResult> {
     use super::errno::{ENOENT, ENOTDIR};
     use crate::fs::ext2::FileType as Ext2FileType;
@@ -368,6 +455,9 @@ fn sys_open_read_path(
     let ft = inode.file_type();
     let is_dir = matches!(ft, Ext2FileType::Directory);
     let is_reg = matches!(ft, Ext2FileType::Regular);
+    if open_is_access_checked(is_reg, is_dir, flags) {
+        check_open_access(&inode, flags, cred)?;
+    }
     let mid = fs.mount_id;
     Ok((ino, ft, is_dir, is_reg, mid))
 }
@@ -439,7 +529,6 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
 
     // Parse flags
     let want_creat = (flags & O_CREAT) != 0;
-    let want_excl = (flags & O_EXCL) != 0;
     let want_trunc = (flags & O_TRUNC) != 0;
     let wants_directory = (flags & O_DIRECTORY) != 0;
 
@@ -447,6 +536,9 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     // This allows concurrent exec, file reads, and directory listings without
     // being blocked by another process creating or writing files.
     let needs_write = want_creat || want_trunc;
+    // Read before taking a filesystem lock; the process manager is not
+    // acquired under one.
+    let cred = current_file_credentials();
 
     // Determine which filesystem to use based on path
     let is_home = ext2::is_home_path(&path);
@@ -461,9 +553,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         let result = if is_home {
             let mut fs_guard = ext2::home_fs_write();
             match fs_guard.as_mut() {
-                Some(fs) => {
-                    sys_open_write_path(fs, fs_path, &path, want_creat, want_excl, want_trunc, mode)
-                }
+                Some(fs) => sys_open_write_path(fs, fs_path, &path, flags, mode, cred),
                 None => {
                     log::error!("sys_open: ext2 home filesystem not mounted");
                     return SyscallResult::Err(ENOENT as u64);
@@ -472,9 +562,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         } else {
             let mut fs_guard = ext2::root_fs_write();
             match fs_guard.as_mut() {
-                Some(fs) => {
-                    sys_open_write_path(fs, fs_path, &path, want_creat, want_excl, want_trunc, mode)
-                }
+                Some(fs) => sys_open_write_path(fs, fs_path, &path, flags, mode, cred),
                 None => {
                     log::error!("sys_open: ext2 root filesystem not mounted");
                     return SyscallResult::Err(ENOENT as u64);
@@ -490,7 +578,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         let result = if is_home {
             let fs_guard = ext2::home_fs_read();
             match fs_guard.as_ref() {
-                Some(fs) => sys_open_read_path(fs, fs_path),
+                Some(fs) => sys_open_read_path(fs, fs_path, flags, cred),
                 None => {
                     log::error!("sys_open: ext2 home filesystem not mounted");
                     return SyscallResult::Err(ENOENT as u64);
@@ -499,7 +587,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         } else {
             let fs_guard = ext2::root_fs_read();
             match fs_guard.as_ref() {
-                Some(fs) => sys_open_read_path(fs, fs_path),
+                Some(fs) => sys_open_read_path(fs, fs_path, flags, cred),
                 None => {
                     log::error!("sys_open: ext2 root filesystem not mounted");
                     return SyscallResult::Err(ENOENT as u64);

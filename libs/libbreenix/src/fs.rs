@@ -177,12 +177,15 @@ impl Stat {
 /// ```
 #[inline]
 pub fn open(path: &str, flags: u32) -> Result<Fd, Error> {
+    // With O_CREAT a new file gets 0666 less the process umask, as creat()
+    // and C's fopen() give; use open_with_mode for any other mode.
+    const DEFAULT_CREATE_MODE: u64 = 0o666;
     let cpath = CPath::new(path)?;
     let ret = unsafe {
         #[cfg(target_arch = "x86_64")]
-        { raw::syscall3(nr::OPEN, cpath.as_u64(), flags as u64, 0) as i64 }
+        { raw::syscall3(nr::OPEN, cpath.as_u64(), flags as u64, DEFAULT_CREATE_MODE) as i64 }
         #[cfg(target_arch = "aarch64")]
-        { raw::syscall4(nr::OPENAT, AT_FDCWD, cpath.as_u64(), flags as u64, 0) as i64 }
+        { raw::syscall4(nr::OPENAT, AT_FDCWD, cpath.as_u64(), flags as u64, DEFAULT_CREATE_MODE) as i64 }
     };
     Error::from_syscall(ret).map(Fd::from_raw)
 }
