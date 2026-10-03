@@ -282,6 +282,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Phase 0: Log kernel layout inventory
     memory::layout::log_kernel_layout();
 
+    // Calibrate the TSC before device init: storage drivers measure their
+    // command deadlines on it. time::init() keeps this calibration.
+    time::tsc::calibrate();
+
     // Initialize PCI and enumerate devices (needed for disk I/O)
     let pci_device_count = drivers::init();
     log::info!(
