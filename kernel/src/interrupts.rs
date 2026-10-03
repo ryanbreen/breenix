@@ -593,6 +593,7 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
         crate::drivers::ahci::handle_interrupt();
     }
     dispatch_virtio_block_interrupts();
+    dispatch_nvme_interrupts();
     dispatch_virtio_sound_interrupts();
 
     // Dispatch to E1000 network if initialized
@@ -620,6 +621,7 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
         crate::drivers::ahci::handle_interrupt();
     }
     dispatch_virtio_block_interrupts();
+    dispatch_nvme_interrupts();
     dispatch_virtio_sound_interrupts();
 
     // Also check E1000 on IRQ 11 - some QEMU configurations route E1000 here
@@ -646,6 +648,13 @@ fn dispatch_virtio_block_interrupts() {
         };
         device.handle_interrupt();
     }
+}
+
+#[inline]
+fn dispatch_nvme_interrupts() {
+    // NVMe controllers share the same INTx lines; each drains its own
+    // completion queue, which also deasserts its pin.
+    crate::drivers::nvme::handle_interrupt();
 }
 
 #[inline]
