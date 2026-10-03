@@ -3,7 +3,6 @@
 //! This module provides the driver infrastructure for Breenix, including
 //! PCI enumeration and device-specific drivers.
 
-#[cfg(target_arch = "aarch64")]
 pub mod ahci;
 pub mod e1000;
 pub mod fw_cfg;
@@ -91,6 +90,12 @@ pub fn run_post_init_self_tests() {
     // virtio-blk disk on IRQ11 and additional VirtIO devices on IRQ10/IRQ11.
     crate::interrupts::enable_irq10();
     crate::interrupts::enable_virtio_irq();
+
+    // AHCI IDENTIFY needs a calibrated clock even before IRQ completions exist.
+    // This runs after time/PIC setup and before root mounting.
+    if let Err(e) = ahci::init() {
+        log::debug!("AHCI initialization: {}", e);
+    }
 
     if let Err(e) = virtio::block::test_read() {
         log::warn!("VirtIO block test failed: {}", e);

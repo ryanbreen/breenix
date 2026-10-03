@@ -236,6 +236,15 @@ impl Virtqueue {
         self.phys_addr
     }
 
+    /// Physical addresses of the available and used rings for modern PCI.
+    pub fn avail_phys_addr(&self) -> u64 {
+        self.phys_addr + (self.avail as u64 - self.desc as u64)
+    }
+
+    pub fn used_phys_addr(&self) -> u64 {
+        self.phys_addr + (self.used as u64 - self.desc as u64)
+    }
+
     /// Get the queue size
     #[allow(dead_code)] // Part of public virtqueue API
     pub fn queue_size(&self) -> u16 {

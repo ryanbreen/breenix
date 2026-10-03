@@ -59,11 +59,7 @@ fn virt_to_phys(virt: u64) -> u64 {
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        if virt >= HHDM_BASE {
-            virt - HHDM_BASE
-        } else {
-            virt
-        }
+        virt - crate::memory::physical_memory_offset().as_u64()
     }
 }
 
@@ -166,13 +162,13 @@ fn read_cntpct_and_freq() -> (u64, u64) {
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 fn read_cntpct() -> u64 {
-    0
+    crate::time::tsc::read_tsc()
 }
 
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 fn read_cntpct_and_freq() -> (u64, u64) {
-    (0, 1)
+    (read_cntpct(), crate::time::tsc::frequency_hz())
 }
 
 /// Maximum number of AHCI ports.
@@ -587,10 +583,12 @@ static PORT_DMA: Mutex<[Option<&'static mut PortDmaMem>; MAX_AHCI_PORTS]> =
 
 // We use a static array for DMA memory so we know the physical addresses.
 #[repr(C, align(4096))]
+#[cfg(target_arch = "aarch64")]
 struct PortDmaStorage {
     ports: [PortDmaMem; MAX_AHCI_PORTS],
 }
 
+#[cfg(target_arch = "aarch64")]
 #[link_section = ".dma"]
 static mut DMA_STORAGE: PortDmaStorage = unsafe { core::mem::zeroed() };
 
@@ -866,7 +864,23 @@ impl AhciController {
             return Err("AHCI: BAR5 not valid or not MMIO");
         }
 
+        #[cfg(target_arch = "aarch64")]
         let abar_virt = HHDM_BASE + bar5.address;
+        #[cfg(target_arch = "x86_64")]
+        let abar_virt = {
+            if bar5.address == 0 || bar5.size < 0x180 {
+                return Err("AHCI: invalid register aperture");
+            }
+            if crate::time::tsc::frequency_hz() == 0 {
+                return Err("AHCI: clock not calibrated");
+            }
+            if !matches!(pci_dev.interrupt_line, 10 | 11) {
+                return Err("AHCI: unsupported PCI interrupt line");
+            }
+            let offset = (bar5.address & 0xfff) as usize;
+            crate::memory::map_mmio(bar5.address & !0xfff, bar5.size as usize + offset)? as u64
+                + offset as u64
+        };
 
         // Enable PCI bus mastering and memory space
         pci_dev.enable_bus_master();
@@ -877,6 +891,14 @@ impl AhciController {
         // Set up MSI/MSI-X interrupt after the controller is running.
         #[cfg(target_arch = "aarch64")]
         setup_ahci_msi(pci_dev);
+        #[cfg(target_arch = "x86_64")]
+        {
+            AHCI_IRQ_EDGE.store(false, Ordering::Relaxed);
+            AHCI_IRQ.store(pci_dev.interrupt_line as u32, Ordering::Release);
+            pci_dev.enable_intx();
+            let ghc = hba_read(abar_virt, HBA_GHC);
+            hba_write(abar_virt, HBA_GHC, ghc | GHC_IE);
+        }
 
         Ok(controller)
     }
@@ -918,7 +940,10 @@ impl AhciController {
         // Enable AHCI mode and global interrupt enable.
         // GHC_IE (bit 1) allows the HBA to generate MSI/INTx completions.
         let ghc = hba_read(abar_virt, HBA_GHC);
+        #[cfg(target_arch = "aarch64")]
         hba_write(abar_virt, HBA_GHC, ghc | GHC_AE | GHC_IE);
+        #[cfg(target_arch = "x86_64")]
+        hba_write(abar_virt, HBA_GHC, (ghc | GHC_AE) & !GHC_IE);
 
         // Read capabilities
         let cap = hba_read(abar_virt, HBA_CAP);
@@ -937,12 +962,15 @@ impl AhciController {
         );
 
         // Initialize DMA memory references
-        let dma_storage_ptr = &raw mut DMA_STORAGE;
-        let mut dma_lock = PORT_DMA.lock();
-        for i in 0..MAX_AHCI_PORTS {
-            dma_lock[i] = Some(unsafe { &mut (*dma_storage_ptr).ports[i] });
+        #[cfg(target_arch = "aarch64")]
+        {
+            let dma_storage_ptr = &raw mut DMA_STORAGE;
+            let mut dma_lock = PORT_DMA.lock();
+            for i in 0..MAX_AHCI_PORTS {
+                dma_lock[i] = Some(unsafe { &mut (*dma_storage_ptr).ports[i] });
+            }
+            drop(dma_lock);
         }
-        drop(dma_lock);
 
         let mut controller = AhciController {
             abar_virt,
@@ -989,6 +1017,27 @@ impl AhciController {
         let ssts = port_read(abar, port_num, PORT_SSTS);
         if (ssts & SSTS_DET_MASK) != SSTS_DET_PRESENT {
             return None;
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            // Allocate RAM through the direct map rather than translating the PIE
+            // kernel's static .dma section. Every descriptor/buffer is contiguous.
+            const PAGES: usize = core::mem::size_of::<PortDmaMem>() / 4096;
+            let mut frames = [None; PAGES];
+            let frame =
+                crate::memory::frame_allocator::allocate_contiguous_frames(PAGES, &mut frames)?;
+            let phys = frame.start_address().as_u64();
+            if hba_read(abar, HBA_CAP) & (1 << 31) == 0
+                && phys + core::mem::size_of::<PortDmaMem>() as u64 > (1u64 << 32)
+            {
+                for frame in frames.into_iter().flatten() {
+                    crate::memory::frame_allocator::deallocate_frame(frame);
+                }
+                return None;
+            }
+            let virt = phys + crate::memory::physical_memory_offset().as_u64();
+            PORT_DMA.lock()[dma_index] = Some(unsafe { &mut *(virt as *mut PortDmaMem) });
         }
 
         // Stop command engine before reconfiguring
@@ -1754,7 +1803,10 @@ impl AhciController {
         // Issue the command
         self.issue_cmd_slot0(port)?;
 
-        // DSB SY: order PORT_CI completion against DMA buffer cache maintenance
+        // Order completion before consuming device-written data.
+        #[cfg(target_arch = "x86_64")]
+        core::sync::atomic::fence(Ordering::SeqCst);
+        #[cfg(target_arch = "aarch64")]
         unsafe {
             core::arch::asm!("dsb sy", options(nostack, preserves_flags));
         }
@@ -2325,8 +2377,8 @@ fn detect_completed_slots(active: u32, ci_after: u32, port_is: u32) -> u32 {
     completed
 }
 
-#[cfg(target_arch = "aarch64")]
 pub fn handle_interrupt() {
+    #[cfg(target_arch = "aarch64")]
     use crate::arch_impl::aarch64::gic;
 
     let irq = AHCI_IRQ.load(Ordering::Relaxed);
@@ -2485,6 +2537,7 @@ pub fn handle_interrupt() {
     // For edge-triggered MSI: clear the SPI pending bit to re-arm.
     // For level-triggered wired: the line de-asserted when we cleared
     // PORT_IS above; the GIC handles this via EOI in exception.rs.
+    #[cfg(target_arch = "aarch64")]
     if AHCI_IRQ_EDGE.load(Ordering::Relaxed) {
         gic::clear_spi_pending(irq);
     }
@@ -2620,7 +2673,6 @@ impl BlockDevice for AhciBlockDevice {
                             chunk as u16,
                         )
                         .map_err(|e| {
-                            #[cfg(target_arch = "aarch64")]
                             crate::serial_println!(
                                 "[ahci] read_blocks({}, {}) setup failed: {}",
                                 current_block,
@@ -2644,7 +2696,6 @@ impl BlockDevice for AhciBlockDevice {
 
             // PHASE 2: wait (NO locks held)
             let wait_result = wait_cmd_slot0(token).map_err(|e| {
-                #[cfg(target_arch = "aarch64")]
                 {
                     crate::serial_println!(
                         "[ahci] read_blocks({}, {}) wait failed: {}",

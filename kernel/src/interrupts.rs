@@ -589,6 +589,7 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
+    crate::drivers::ahci::handle_interrupt();
     dispatch_virtio_block_interrupts();
     dispatch_virtio_sound_interrupts();
 
@@ -613,6 +614,7 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
+    crate::drivers::ahci::handle_interrupt();
     dispatch_virtio_block_interrupts();
     dispatch_virtio_sound_interrupts();
 

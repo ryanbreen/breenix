@@ -20,6 +20,7 @@
 use crate::drivers::pci::{self, Device as PciDevice};
 
 /// HHDM base for memory-mapped access.
+#[cfg(target_arch = "aarch64")]
 const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
 
 // =============================================================================
@@ -230,7 +231,17 @@ impl VirtioPciDevice {
         let mut cap_ptr =
             pci::pci_read_config_byte(pci_dev.bus, pci_dev.device, pci_dev.function, 0x34);
 
+        #[cfg(target_arch = "x86_64")]
+        let mut visited = [false; 256];
         while cap_ptr != 0 {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if cap_ptr < 0x40 || cap_ptr > 0xec || cap_ptr & 3 != 0 || visited[cap_ptr as usize]
+                {
+                    return None;
+                }
+                visited[cap_ptr as usize] = true;
+            }
             let cap_id =
                 pci::pci_read_config_byte(pci_dev.bus, pci_dev.device, pci_dev.function, cap_ptr);
             let cap_next = pci::pci_read_config_byte(
@@ -262,6 +273,12 @@ impl VirtioPciDevice {
                     cap_ptr + 4,
                 ) as usize;
 
+                #[cfg(target_arch = "x86_64")]
+                if !(1..=4).contains(&cfg_type) {
+                    cap_ptr = cap_next;
+                    continue;
+                }
+
                 // Read offset and length as dwords
                 let offset = pci_read_cap_dword(&pci_dev, cap_ptr + 8);
                 let length = pci_read_cap_dword(&pci_dev, cap_ptr + 12);
@@ -270,7 +287,25 @@ impl VirtioPciDevice {
                 if bar_index < 6 {
                     let bar = &pci_dev.bars[bar_index];
                     if bar.is_valid() && !bar.is_io {
+                        #[cfg(target_arch = "aarch64")]
                         let virt_base = HHDM_BASE + bar.address + offset as u64;
+                        #[cfg(target_arch = "x86_64")]
+                        let virt_base = {
+                            if bar.address == 0
+                                || length == 0
+                                || (offset as u64).checked_add(length as u64)? > bar.size
+                            {
+                                return None;
+                            }
+                            let phys = bar.address.checked_add(offset as u64)?;
+                            let page_offset = (phys & 0xfff) as usize;
+                            let mapped = crate::memory::map_mmio(
+                                phys & !0xfff,
+                                (length as usize).checked_add(page_offset)?,
+                            )
+                            .ok()?;
+                            mapped as u64 + page_offset as u64
+                        };
                         let region = CapRegion { virt_base, length };
 
                         match cfg_type {
@@ -293,6 +328,15 @@ impl VirtioPciDevice {
 
         // We need at minimum the common config and notification regions
         if !common.is_valid() || !notify.is_valid() {
+            return None;
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if common.length < 56
+            || notify.length < 2
+            || isr.length < 1
+            || (virtio_device_id == 2 && device_cfg.length < 8)
+        {
             return None;
         }
 
@@ -361,6 +405,11 @@ impl VirtioPciDevice {
                 break;
             }
             core::hint::spin_loop();
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if self.read_status() != 0 {
+            return Err("VirtIO PCI reset timed out");
         }
 
         // ACKNOWLEDGE

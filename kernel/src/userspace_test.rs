@@ -28,22 +28,25 @@ struct BinaryEntry {
 
 const SECTOR_SIZE: usize = 512;
 
-/// Get the test disk device (second VirtIO block device at index 1)
-fn get_test_disk() -> Option<alloc::sync::Arc<crate::drivers::virtio::block::VirtioBlockDevice>> {
-    crate::drivers::virtio::block::get_device_by_index(1)
+/// Identify the external test disk by its format on any attached backend.
+fn get_test_disk() -> Option<alloc::boxed::Box<dyn crate::block::BlockDevice>> {
+    crate::block::devices().into_iter().find(|disk| {
+        let mut header = [0u8; SECTOR_SIZE];
+        disk.read_block(0, &mut header).is_ok() && &header[..8] == b"BXTEST\0\0"
+    })
 }
 
 /// Load a test binary from disk
 ///
 /// Searches for the binary by name in the test disk and returns the ELF bytes.
-/// The test disk is expected to be the second VirtIO block device (index 1).
+/// The test disk is expected to be the disk with a BXTEST header.
 pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
     // Get test disk device
-    let disk = get_test_disk().ok_or("No test disk found (index 1)")?;
+    let disk = get_test_disk().ok_or("No BXTEST disk found")?;
 
     // Read sector 0 (header)
     let mut header_buffer = [0u8; SECTOR_SIZE];
-    disk.read_sector(0, &mut header_buffer)
+    disk.read_block(0, &mut header_buffer)
         .map_err(|_| "Failed to read header sector")?;
 
     // Parse header safely using manual field extraction
@@ -82,7 +85,7 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
     let mut entries_buffer = Vec::new();
     entries_buffer.resize(entries_needed as usize * SECTOR_SIZE, 0u8);
 
-    disk.read_sectors(1, &mut entries_buffer)
+    disk.read_blocks(1, entries_needed, &mut entries_buffer)
         .map_err(|_| "Failed to read entry table")?;
 
     // Search for matching entry by parsing each entry safely
@@ -152,7 +155,7 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
     sector_buffer.resize(sectors_to_read as usize * SECTOR_SIZE, 0u8);
 
     // Read binary data sectors
-    disk.read_sectors(entry.sector_offset, &mut sector_buffer)
+    disk.read_blocks(entry.sector_offset, sectors_to_read, &mut sector_buffer)
         .map_err(|_| "Failed to read binary data")?;
 
     // Copy actual binary data (may be less than full sectors)

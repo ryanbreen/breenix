@@ -2142,7 +2142,18 @@ static ROOT_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// This should be called during kernel initialization after block
 /// device driver initialization.
 pub fn init_root_fs() -> Result<(), &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    let device = crate::block::devices()
+        .into_iter()
+        .find(|device| {
+            let mut superblock = [0u8; 512];
+            device.read_block(2, &mut superblock).is_ok()
+                && u16::from_le_bytes([superblock[56], superblock[57]]) == 0xEF53
+        })
+        .ok_or("No block device with ext2 filesystem")?;
+
     // Try VirtIO block devices first (works on both x86_64 and QEMU ARM64)
+    #[cfg(target_arch = "aarch64")]
     let device: alloc::boxed::Box<dyn BlockDevice> = {
         use crate::block::virtio::VirtioBlockWrapper;
         if let Some(dev) = VirtioBlockWrapper::new(2).or_else(|| VirtioBlockWrapper::new(0)) {
