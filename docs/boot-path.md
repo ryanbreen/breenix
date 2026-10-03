@@ -54,7 +54,10 @@ stage list and shown alongside, but does not block moving on.
   `BREENIX_BOOT_SUITE=ID docker/qemu/run-x86-gate.sh`: both write `/etc/breenix/boot-target`
   (one line, `suite ID`) onto a copy of the ext2 disk. The kernel takes the fw_cfg mode
   first (x86-64 QEMU reads fw_cfg too, for `default` and `suite`), then that file, else
-  `default`. Suite mode exercises the kernel milestones only.
+  `default`. Suite mode exercises the kernel milestones and the first userspace process: the
+  suite's `START` and `DONE` lines show PID 1 running in user mode and making syscalls.
+  The `default` boot (what Parallels and VMware run without `--suite`) measures that
+  milestone by init's `[init] Breenix init starting (PID 1)` and `[init] Boot script completed`.
 
 The non-test modes build the kernel with no features, exactly like the prod-profile gate,
 and pass the mode to it with `-fw_cfg name=opt/breenix/mode,string=MODE`. The kernel

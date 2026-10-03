@@ -275,6 +275,26 @@
             "name": "Memory mapping",
             "marker": "PROBE mmap OK"
           }
+        ],
+        "default": [
+          {
+            "name": "init started",
+            "marker": "[init] Breenix init starting (PID 1)"
+          },
+          {
+            "name": "init boot script completed",
+            "marker": "[init] Boot script completed"
+          }
+        ],
+        "suite": [
+          {
+            "name": "Suite started",
+            "marker": " START cases="
+          },
+          {
+            "name": "Suite finished",
+            "marker": " DONE passed="
+          }
         ]
       }
     },
