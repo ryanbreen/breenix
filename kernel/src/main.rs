@@ -282,6 +282,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Phase 0: Log kernel layout inventory
     memory::layout::log_kernel_layout();
 
+    // Calibrate the TSC before device init: storage drivers measure their
+    // command deadlines on it. time::init() keeps this calibration.
+    time::tsc::calibrate();
+
     // Initialize PCI and enumerate devices (needed for disk I/O)
     let pci_device_count = drivers::init();
     log::info!(
@@ -649,7 +653,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     #[cfg(feature = "fs_fault_inject")]
     kernel::fs::fault_inject::run_fs_fault_leg();
     // Initialize ext2 home filesystem only when the x86 home disk is attached.
-    if kernel::block::virtio::VirtioBlockWrapper::new(3).is_some() {
+    if kernel::block::disk(3).is_some() {
         match kernel::fs::ext2::init_home_fs() {
             Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
             Err(e) => log::warn!("No home filesystem: {}", e),

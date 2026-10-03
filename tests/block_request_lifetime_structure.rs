@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 /// Adding a driver completion wait is expected to force explicit review of this
 /// number rather than allowing a new interruptible wait to land silently.
-const DRIVER_COMPLETION_WAIT_POPULATION: usize = 8;
+const DRIVER_COMPLETION_WAIT_POPULATION: usize = 10;
 const INTERRUPTIBLE_WAIT: &str = ".wait_timeout(";
 const UNINTERRUPTIBLE_WAIT: &str = ".wait_timeout_uninterruptible(";
 const BLOCK_EINTR_ORACLE_PREFIX: &str = "[BLOCK_EINTR_ORACLE:";
@@ -399,14 +399,14 @@ const KEEP_LOCKED_IDENTIFIER: &str = "keep_locked";
 
 /// Adding a guard `wedge()` call site must force explicit review of every
 /// abandoned-request path rather than silently expanding the quarantine set.
-const DRIVER_GUARD_WEDGE_CALL_POPULATION: usize = 9;
+const DRIVER_GUARD_WEDGE_CALL_POPULATION: usize = 11;
 
 /// Every `release_on_drop = false` assignment marks an arm that intentionally keeps a driver
 /// gate locked past guard drop. Each such arm MUST also latch `wedged` in the same method body
 /// (via a `.wedged.store(` call) so a future locker is refused rather than hanging silently.
 /// Pinning this population forces explicit review of any new such arm, regardless of what the
 /// enclosing method is named.
-const DRIVER_RELEASE_ON_DROP_FALSE_POPULATION: usize = 4;
+const DRIVER_RELEASE_ON_DROP_FALSE_POPULATION: usize = 5;
 const RELEASE_ON_DROP_FALSE_ASSIGNMENT: &str = "release_on_drop = false";
 const WEDGED_STORE_CALL: &str = ".wedged.store(";
 

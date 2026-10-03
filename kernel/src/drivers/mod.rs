@@ -6,6 +6,8 @@
 pub mod ahci;
 pub mod e1000;
 pub mod fw_cfg;
+#[cfg(target_arch = "x86_64")]
+pub mod nvme;
 pub mod pci;
 #[cfg(target_arch = "aarch64")]
 pub mod usb;
@@ -49,6 +51,17 @@ pub fn init() -> usize {
         }
         Err(e) => {
             log::warn!("VirtIO block driver initialization failed: {}", e);
+        }
+    }
+
+    // Initialize the NVMe driver for any NVMe controllers. Its I/O completes
+    // on the same IRQ10/IRQ11 lines once interrupts are enabled.
+    match nvme::init() {
+        Ok(count) => {
+            log::info!("NVMe driver initialized: {} controller(s)", count);
+        }
+        Err(e) => {
+            log::info!("NVMe driver not initialized: {}", e);
         }
     }
 
@@ -99,6 +112,12 @@ pub fn run_post_init_self_tests() {
 
     if let Err(e) = virtio::block::test_read() {
         log::warn!("VirtIO block test failed: {}", e);
+    }
+
+    if nvme::controller_count() > 0 {
+        if let Err(e) = nvme::test_read() {
+            log::warn!("NVMe test failed: {}", e);
+        }
     }
 
     if virtio::sound::is_initialized() {

@@ -2157,7 +2157,6 @@ pub fn init_root_fs() -> Result<(), &'static str> {
             // Fall back to AHCI block devices (Parallels ARM64).
             // Try each SATA device looking for one with a valid ext2 superblock.
             // On Parallels, sata:0 is typically the FAT32 EFI boot disk.
-            #[cfg(target_arch = "aarch64")]
             {
                 crate::serial_println!("[ext2] No VirtIO block device, trying AHCI...");
                 let count = crate::drivers::ahci::sata_device_count();
@@ -2197,10 +2196,6 @@ pub fn init_root_fs() -> Result<(), &'static str> {
                     "No block device with ext2 filesystem (tried VirtIO and all AHCI devices)",
                 )?;
                 alloc::boxed::Box::new(ahci_dev)
-            }
-            #[cfg(not(target_arch = "aarch64"))]
-            {
-                return Err("No ext2 block device available (expected at device index 2 or 0)");
             }
         }
     };
@@ -2322,9 +2317,15 @@ static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// This is non-fatal — if no home disk is attached, /home falls through
 /// to the root ext2 filesystem (backward compatible).
 pub fn init_home_fs() -> Result<(), &'static str> {
-    // Try x86_64 layout first (device index 3), then ARM64 layout (device index 1).
-    use crate::block::virtio::VirtioBlockWrapper;
+    #[cfg(target_arch = "x86_64")]
+    let device: alloc::boxed::Box<dyn BlockDevice> = crate::block::disk(3)
+        .or_else(|| crate::block::disk(1))
+        .ok_or("No home block device available (expected at disk index 3 or 1)")?;
+
+    // Try device index 3, then the ARM64 layout's device index 1.
+    #[cfg(target_arch = "aarch64")]
     let device: alloc::boxed::Box<dyn BlockDevice> = {
+        use crate::block::virtio::VirtioBlockWrapper;
         let dev = VirtioBlockWrapper::new(3)
             .or_else(|| VirtioBlockWrapper::new(1))
             .ok_or("No home block device available (expected at device index 3 or 1)")?;
