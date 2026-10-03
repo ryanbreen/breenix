@@ -321,6 +321,16 @@ impl SignalState {
         }
     }
 
+    /// Signal state for a new thread of this one's thread group: the creating
+    /// thread's dispositions and mask, nothing pending and no alternate stack
+    /// (POSIX pthread_create).
+    pub fn new_thread(&self) -> Self {
+        SignalState {
+            alt_stack: AltStack::default(),
+            ..self.fork()
+        }
+    }
+
     /// Reset signal handlers to default after exec
     ///
     /// Per POSIX, caught signals are reset to SIG_DFL, ignored signals stay ignored

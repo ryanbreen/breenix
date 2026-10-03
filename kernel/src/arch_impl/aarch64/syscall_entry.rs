@@ -218,6 +218,8 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
     // Track if signal termination happened (for parent notification after lock release)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
     let mut terminated_child_pid: Option<u64> = None;
+    // A signal death ends the whole thread group (pid and exit status).
+    let mut group_death: Option<(crate::process::ProcessId, i32)> = None;
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
@@ -270,6 +272,9 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
                 // Save notification to notify parent after releasing lock
                 signal_termination_info = Some(notification);
             }
+            if let crate::process::ProcessState::Terminated(code) = process.state {
+                group_death = Some((process.id, code));
+            }
         }
     }
 
@@ -284,6 +289,10 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
     // Clean up window buffers so compositor stops reading freed pages
     if let Some(pid) = terminated_child_pid {
         crate::syscall::graphics::cleanup_windows_for_pid(pid);
+    }
+
+    if let Some((pid, exit_code)) = group_death {
+        crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
     }
 }
 

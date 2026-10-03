@@ -93,7 +93,7 @@ pub fn sys_clone(
     if !manager.admit_clone_into(parent_pid) {
         return SyscallResult::Err(super::errno::EAGAIN as u64);
     }
-    let (parent_cr3, parent_tg_id, parent_cwd, parent_lock_owner) = {
+    let (parent_cr3, parent_tg_id, parent_cwd, parent_lock_owner, parent_signals) = {
         let process = manager
             .get_process(parent_pid)
             .expect("admitted clone parent remains present under process-manager guard");
@@ -114,7 +114,13 @@ pub fn sys_clone(
         // Thread group ID: inherit from parent or use parent's pid
         let tg_id = process.thread_group_id.unwrap_or(parent_pid.as_u64());
 
-        (cr3, tg_id, process.cwd.clone(), process.lock_owner.clone())
+        (
+            cr3,
+            tg_id,
+            process.cwd.clone(),
+            process.lock_owner.clone(),
+            process.signals.new_thread(),
+        )
     };
 
     // P5b: refuse a CLONE_VM join into the designated init's thread group. This returns
@@ -266,6 +272,9 @@ pub fn sys_clone(
     // A thread shares its process's record locks (POSIX fcntl).
     child_process.lock_owner = parent_lock_owner;
     child_process.cwd = parent_cwd;
+    // Threads of a process share its signal dispositions (sys_sigaction keeps
+    // the group's copies in step) and start with the creator's signal mask.
+    child_process.signals = parent_signals;
 
     // Share file descriptors if CLONE_FILES
     if flags & CLONE_FILES != 0 {
