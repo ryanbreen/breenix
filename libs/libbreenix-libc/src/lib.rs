@@ -352,7 +352,8 @@ pub unsafe extern "C" fn fstat(fd: i32, buf: *mut u8) -> i32 {
 
 /// stat - get file status by path
 ///
-/// Implemented as open() + fstat() + close().
+/// Uses newfstatat rather than open() + fstat(): stat needs no read
+/// permission on the file, and opening a FIFO could block.
 #[no_mangle]
 pub unsafe extern "C" fn stat(path: *const u8, buf: *mut u8) -> i32 {
     if path.is_null() || buf.is_null() {
@@ -360,14 +361,15 @@ pub unsafe extern "C" fn stat(path: *const u8, buf: *mut u8) -> i32 {
         return -1;
     }
 
-    let fd = open(path, 0 /* O_RDONLY */, 0);
-    if fd < 0 {
-        return -1; // errno already set by open
-    }
-
-    let result = fstat(fd, buf);
-    close(fd);
-    result
+    const AT_FDCWD: i64 = -100;
+    let result = libbreenix::raw::syscall4(
+        libbreenix::syscall::nr::NEWFSTATAT,
+        AT_FDCWD as u64,
+        path as u64,
+        buf as u64,
+        0,
+    ) as i64;
+    syscall_result_to_c_int(result)
 }
 
 /// lstat - get file status by path (no symlink follow)

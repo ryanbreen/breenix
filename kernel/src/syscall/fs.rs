@@ -291,6 +291,18 @@ fn open_is_access_checked(is_reg: bool, is_dir: bool, flags: u32) -> bool {
     is_reg || (is_dir && flags & 0x3 == O_RDONLY)
 }
 
+/// The errno for an ext2 path lookup that failed with `e`.
+fn path_lookup_errno(e: &str) -> SyscallResult {
+    use super::errno::{EIO, ENOENT, ENOTDIR};
+    if e.contains("not found") {
+        SyscallResult::Err(ENOENT as u64)
+    } else if e.contains("Not a directory") {
+        SyscallResult::Err(ENOTDIR as u64)
+    } else {
+        SyscallResult::Err(EIO as u64)
+    }
+}
+
 /// sys_open - Open a file or directory
 ///
 /// Helper: sys_open write path (O_CREAT/O_TRUNC) — works on any Ext2Fs instance.
@@ -435,20 +447,13 @@ fn sys_open_read_path(
     flags: u32,
     cred: FileCredentials,
 ) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize), SyscallResult> {
-    use super::errno::{ENOENT, ENOTDIR};
     use crate::fs::ext2::FileType as Ext2FileType;
 
     let ino = match fs.resolve_path(fs_path) {
         Ok(ino) => ino,
         Err(e) => {
             log::debug!("sys_open: path resolution failed: {}", e);
-            if e.contains("not found") {
-                return Err(SyscallResult::Err(ENOENT as u64));
-            } else if e.contains("Not a directory") {
-                return Err(SyscallResult::Err(ENOTDIR as u64));
-            } else {
-                return Err(SyscallResult::Err(5)); // EIO
-            }
+            return Err(path_lookup_errno(e));
         }
     };
 
@@ -1104,15 +1109,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFSOCK | 0o755;
             stat.st_nlink = 1;
         }
-        FstatKind::Fifo => {
-            static FIFO_INODE_COUNTER: core::sync::atomic::AtomicU64 =
-                core::sync::atomic::AtomicU64::new(6000);
-            stat.st_dev = 0;
-            stat.st_ino = FIFO_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            stat.st_mode = S_IFIFO | 0o644;
-            stat.st_nlink = 1;
-            stat.st_size = 0;
-        }
+        FstatKind::Fifo => fill_fifo_stat(&mut stat),
         FstatKind::ProcfsFile { size } => {
             stat.st_dev = 0;
             stat.st_ino = 0;
@@ -1140,6 +1137,17 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     }
 
     SyscallResult::Ok(0)
+}
+
+/// What fstat and newfstatat report for a FIFO, which has no inode.
+fn fill_fifo_stat(stat: &mut Stat) {
+    static FIFO_INODE_COUNTER: core::sync::atomic::AtomicU64 =
+        core::sync::atomic::AtomicU64::new(6000);
+    stat.st_dev = 0;
+    stat.st_ino = FIFO_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    stat.st_mode = S_IFIFO | 0o644;
+    stat.st_nlink = 1;
+    stat.st_size = 0;
 }
 
 /// Helper to create device ID from major/minor numbers
@@ -3971,18 +3979,47 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
         return SyscallResult::Err(super::errno::ENOSYS as u64);
     }
 
-    // Resolve the path to a full path (handle CWD for relative paths)
+    // Resolve the path to a full path (handle CWD for relative paths), as
+    // sys_open does
     let full_path = if path.starts_with('/') {
         path.clone()
     } else {
         // Get CWD from current process
         let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
-        if cwd.ends_with('/') {
+        let absolute = if cwd.ends_with('/') {
             alloc::format!("{}{}", cwd, path)
         } else {
             alloc::format!("{}/{}", cwd, path)
-        }
+        };
+        normalize_path(&absolute)
     };
+
+    // Paths outside ext2 have no inode to read. A FIFO is described without
+    // opening it, since an open could block or release a waiting writer.
+    // devfs and procfs paths are described by the descriptor an open of them
+    // yields; those opens make no permission check.
+    if crate::ipc::fifo::FIFO_REGISTRY.exists(&full_path) {
+        let mut stat = Stat::zeroed();
+        stat.st_blksize = 4096;
+        fill_fifo_stat(&mut stat);
+        return match copy_to_user(statbuf as *mut Stat, &stat) {
+            Ok(()) => SyscallResult::Ok(0),
+            Err(errno) => SyscallResult::Err(errno),
+        };
+    }
+    if full_path == "/dev"
+        || full_path.starts_with("/dev/")
+        || full_path == "/proc"
+        || full_path.starts_with("/proc/")
+    {
+        let fd = match sys_open(pathname, O_RDONLY, 0) {
+            SyscallResult::Ok(fd) => fd as i32,
+            error => return error,
+        };
+        let result = sys_fstat(fd, statbuf);
+        let _ = super::pipe::sys_close(fd);
+        return result;
+    }
 
     // Determine which filesystem to use
     let is_home = ext2::is_home_path(&full_path);
@@ -4002,7 +4039,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
         let mid = fs.mount_id;
         match fs.resolve_path(fs_path) {
             Ok(inum) => (inum as u64, mid),
-            Err(_) => return SyscallResult::Err(ENOENT as u64),
+            Err(e) => return path_lookup_errno(e),
         }
     } else {
         let fs_guard = ext2::root_fs_read();
@@ -4013,7 +4050,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
         let mid = fs.mount_id;
         match fs.resolve_path(fs_path) {
             Ok(inum) => (inum as u64, mid),
-            Err(_) => return SyscallResult::Err(ENOENT as u64),
+            Err(e) => return path_lookup_errno(e),
         }
     };
 
