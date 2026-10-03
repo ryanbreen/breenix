@@ -348,6 +348,12 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             super::fs::sys_lseek(args.0 as i32, args.1 as i64, args.2 as i32)
         }
         Some(SyscallNumber::Fstat) => super::fs::sys_fstat(args.0 as i32, args.1),
+        Some(SyscallNumber::Fsync) => super::fs::sys_fsync(args.0 as i32),
+        Some(SyscallNumber::Fdatasync) => super::fs::sys_fsync(args.0 as i32),
+        Some(SyscallNumber::Truncate) => super::fs::sys_truncate(args.0, args.1 as i64),
+        Some(SyscallNumber::Ftruncate) => {
+            super::fs::sys_ftruncate(args.0 as i32, args.1 as i64)
+        }
         Some(SyscallNumber::Getdents64) => super::fs::sys_getdents64(args.0 as i32, args.1, args.2),
         Some(SyscallNumber::Rename) => super::fs::sys_rename(args.0, args.1),
         Some(SyscallNumber::Mkdir) => super::fs::sys_mkdir(args.0, args.1 as u32),
