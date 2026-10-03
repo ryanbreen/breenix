@@ -235,6 +235,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             let prot = args.2 as u32;
             super::mmap::sys_mprotect(addr, length, prot)
         }
+        Some(SyscallNumber::Msync) => super::mmap::sys_msync(args.0, args.1, args.2 as u32),
         Some(SyscallNumber::Munmap) => {
             let addr = args.0;
             let length = args.1;
