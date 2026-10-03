@@ -4366,14 +4366,11 @@ impl Scheduler {
                 } else if already_queued {
                     ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
-                // An equal-priority I/O wake joins the tail; it must not
-                // revoke a running thread's quantum. In particular, draining
-                // an ISR wake during schedule() must not re-arm a second
-                // switch for the thread we are about to dispatch.
-                let cpu = Self::current_cpu_id();
-                if !from_isr_buffer
-                    && self.cpu_state[cpu].current_thread == Some(self.cpu_state[cpu].idle_thread)
-                {
+                // The interrupt already requested this scheduling decision.
+                // On x86, draining its buffered wake must not request a second
+                // switch for the thread we are about to dispatch. Keep direct
+                // wakes and ARM64 completion rescheduling unchanged.
+                if !from_isr_buffer || cfg!(target_arch = "aarch64") {
                     set_need_resched();
                 }
             }
@@ -6642,23 +6639,8 @@ fn buffer_isr_wakeup(tid: u64) -> WakeOutcome {
 /// `schedule_deferred_requeue()` / `schedule()` call.
 pub fn isr_unblock_for_io(tid: u64) {
     let _ = buffer_isr_wakeup(tid);
-    #[cfg(target_arch = "aarch64")]
     set_need_resched();
-    #[cfg(target_arch = "x86_64")]
-    {
-        use crate::arch_impl::traits::PerCpuOps;
-        use crate::arch_impl::x86_64::percpu::X86PerCpu;
-
-        // A completion is runnable work, not a reason to preempt an
-        // equal-priority task. The next quantum expiry (or the current
-        // task's block/yield) drains the buffer. Idle has no quantum to
-        // preserve and must dispatch the waiter promptly. Compare pointers
-        // without dereferencing them or acquiring SCHEDULER in hard IRQ.
-        if X86PerCpu::current_thread_ptr() == X86PerCpu::idle_thread_ptr() {
-            set_need_resched();
-        }
-    }
-    // The current CPU drains the wake buffer at its next scheduling decision.
+    // The current CPU will drain the wake buffer on IRQ-return scheduling.
     // Avoid broadcasting reschedule SGIs from hard IRQ context; Linux's TTWU
     // path queues wake work to a selected target CPU rather than scanning idle CPUs.
 }
