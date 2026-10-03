@@ -470,10 +470,7 @@ fn virt_to_phys(virt: usize) -> usize {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        // On ARM64, the kernel is mapped within the HHDM region, so simple
-        // subtraction of the physical memory offset works.
-        let offset = crate::memory::physical_memory_offset().as_u64() as usize;
-        virt.wrapping_sub(offset)
+        crate::platform_config::kernel_va_to_ipa(virt as u64) as usize
     }
 }
 

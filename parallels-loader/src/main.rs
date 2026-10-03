@@ -112,7 +112,7 @@ fn main() -> Status {
     // The kernel linker script assumes physical RAM starts at 0x40000000.
     // On VMware Fusion, RAM starts at 0x80000000, so offset = 0x40000000.
     // On QEMU/Parallels, RAM starts at 0x40000000, so offset = 0.
-    let expected_ram_base: u64 = 0x4000_0000;
+    let expected_ram_base = arm64_boot_contract::LINKED_RAM_START;
     let actual_ram_base = if config.ram_region_count > 0 {
         config.ram_regions[0].base & !0x3FFF_FFFF // Round down to 1GB boundary
     } else {
@@ -123,6 +123,7 @@ fn main() -> Status {
     } else {
         0
     };
+    config.ram_base_offset = ram_base_offset;
     if ram_base_offset != 0 {
         log::info!(
             "RAM relocation: offset={:#x} (actual={:#x}, expected={:#x})",

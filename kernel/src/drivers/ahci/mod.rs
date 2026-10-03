@@ -50,29 +50,21 @@ impl core::ops::Deref for AlignedAtomicU32 {
 /// HHDM base for memory-mapped access.
 const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
 
-/// Convert a kernel virtual address to a physical address.
-///
-/// On ARM64, the kernel runs in the higher half (HHDM at 0xFFFF_0000_0000_0000).
-/// BSS statics are at VMA = HHDM + physical_address.
-///
-/// VMware maps the linked kernel/DMA range to relocated RAM as well as
-/// mapping actual RAM directly. Translate the linked alias before giving an
-/// address to the HBA; a pointer into actual RAM already names the correct IPA.
+/// Convert a kernel VA to the device-visible IPA, including the linked RAM alias.
 #[inline]
 fn virt_to_phys(virt: u64) -> u64 {
-    let flat = if virt >= HHDM_BASE {
-        virt - HHDM_BASE
-    } else {
-        virt // Already a physical address (identity-mapped kernel)
-    };
     #[cfg(target_arch = "aarch64")]
     {
-        let offset = crate::platform_config::ram_base_offset();
-        if offset != 0 && (0x4000_0000..0x6000_0000).contains(&flat) {
-            return flat + offset;
+        crate::platform_config::kernel_va_to_ipa(virt)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        if virt >= HHDM_BASE {
+            virt - HHDM_BASE
+        } else {
+            virt
         }
     }
-    flat
 }
 
 /// Clean (flush) a range of memory from CPU caches to the point of coherency.
@@ -1004,7 +996,7 @@ impl AhciController {
 
         // Compute DMA physical address from the PORT_DMA reference (not &raw const DMA_STORAGE).
         // The PORT_DMA reference was set up once during init_common. Translate
-        // that same reference for every HBA descriptor, including when it uses
+        // that reference for the HBA descriptor, including when it uses
         // VMware's linked alias of the relocated DMA storage.
         let dma_lock = PORT_DMA.lock();
         let dma_phys = if let Some(dma_mem) = &dma_lock[dma_index] {

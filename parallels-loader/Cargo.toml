@@ -10,6 +10,7 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
+arm64-boot-contract = { path = "../libs/arm64-boot-contract" }
 uefi = { version = "0.33", features = ["panic_handler", "global_allocator"] }
 acpi = "5.0"
 log = { version = "0.4", default-features = false }
