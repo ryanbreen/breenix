@@ -20,8 +20,9 @@
 //! When firmware routed the function's INTx pin to IRQ 10 or 11 (the lines
 //! the x86 IRQ handlers dispatch), the I/O completion queue is created with
 //! interrupts enabled and the submitter sleeps on a `Completion` that the IRQ
-//! handler signals. Before interrupts are enabled, or when the pin is routed
-//! anywhere else, the submitter polls the completion queue instead. Every
+//! handler signals. With no scheduler thread and interrupts masked (early
+//! boot), or when the pin is routed anywhere else, the submitter polls the
+//! completion queue instead. Every
 //! consumer of the I/O completion queue goes through `drain_io_cq()`, which
 //! always consumes new entries and rings the head doorbell so a level-triggered
 //! INTx line is deasserted.
@@ -687,8 +688,15 @@ impl NvmeController {
         }
     }
 
+    /// Whether the submitter can sleep until the IRQ handler completes the
+    /// command. A scheduler thread can, even with interrupts masked (a
+    /// syscall): the completion wait parks it and interrupts are serviced
+    /// while it sleeps, as for VirtIO block. Busy-polling there instead
+    /// would hold the only CPU with interrupts off for the whole command.
     fn irq_completion_available(&self) -> bool {
-        self.irq_driven && x86_64::instructions::interrupts::are_enabled()
+        self.irq_driven
+            && (crate::task::scheduler::current_thread_id().is_some()
+                || x86_64::instructions::interrupts::are_enabled())
     }
 
     /// Submit one I/O command and wait for it. The caller holds the gate and
