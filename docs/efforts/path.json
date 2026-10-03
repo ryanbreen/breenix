@@ -5,7 +5,7 @@
     {
       "id": "kernel-bring-up",
       "title": "Kernel bring-up",
-      "outcome": "Every platform boots to its first userspace process: the boot path's first six milestones pass on ARM64 QEMU, Parallels, VMware and x86-64.",
+      "outcome": "Every platform boots to its first userspace process: the boot path's first six milestones pass on ARM64 QEMU, Parallels, VMware and x86-64, and x86-64 reaches userspace on every hardware profile in docs/x86-profiles.json.",
       "subsystems": [
         1,
         2,
@@ -57,6 +57,13 @@
           "title": "First userspace process",
           "measure": {
             "bootPath": "first-userspace"
+          }
+        },
+        {
+          "id": "x86-hardware",
+          "title": "x86-64 hardware variants",
+          "measure": {
+            "profiles": "first-userspace"
           }
         }
       ]
