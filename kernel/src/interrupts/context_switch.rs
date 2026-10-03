@@ -1335,7 +1335,6 @@ fn restore_userspace_thread_context(
             process_manager_guard,
         ) {
             FirstUserspaceEntry::Installed => {
-                log::info!("First run: thread {} entering userspace", thread_id);
                 scheduler::with_thread_mut(thread_id, |thread| {
                     thread.has_started = true;
                 });
@@ -1634,14 +1633,6 @@ fn setup_first_userspace_entry(
             let flags_ptr =
                 &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
             *flags_ptr = 0x202; // Bit 1=1 (required), IF=1 (bit 9)
-
-            log::info!(
-                "RING3_ENTRY: RIP={:#x}, RSP={:#x}, CS={:#x}, SS={:#x}",
-                frame.instruction_pointer.as_u64(),
-                frame.stack_pointer.as_u64(),
-                frame.code_segment.0,
-                frame.stack_segment.0
-            );
         });
     }
 
@@ -1663,13 +1654,10 @@ fn setup_first_userspace_entry(
     saved_regs.r14 = 0;
     saved_regs.r15 = 0;
 
-    // DEBUG: Log that registers were zeroed for first entry
-    log::info!("FIRST_ENTRY t{}: zeroed all registers", thread_id);
-
-    log::info!(
-        "First userspace entry setup complete for thread {}",
-        thread_id
-    );
+    // No logging here: this runs on the interrupt-return dispatch path with
+    // interrupts masked, and every log byte is a synchronous UART write. The
+    // INFO lines that used to be here held each new process's first dispatch
+    // for the length of about 370 bytes of COM2 output (#1048).
     FirstUserspaceEntry::Installed
 }
 

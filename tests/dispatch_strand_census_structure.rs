@@ -106,16 +106,19 @@ fn the_surviving_record_census_in_the_dispatch_path_is_pinned() {
     // The 9 `trace` records are untouched: `CombinedLogger::log` returns before
     // taking any lock on a Trace record, so they emit 0 bytes today, and the
     // drain plan classifies them H3 and hands them to a later PR.
+    // Moved again by #1048, which deleted the 4 `info` records on the
+    // first-userspace-entry dispatch: each new process's first dispatch spent
+    // about 370 bytes of COM2 output there with interrupts masked. 14 -> 10,
+    // and the `info` row is gone.
     assert_eq!(
         records.len(),
-        14,
+        10,
         "context_switch.rs record census moved: {histogram:?}"
     );
     assert_eq!(
         histogram,
         vec![
             ("error".to_string(), 1),
-            ("info".to_string(), 4),
             ("trace".to_string(), 9),
         ],
         "context_switch.rs record level histogram moved"
