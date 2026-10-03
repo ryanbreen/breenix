@@ -3778,7 +3778,9 @@ fn complete_wait(
 ///
 /// Returns: new_fd on success, negative error code on failure
 pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
-    dup_to(old_fd, new_fd, false)
+    // The descriptors are 32-bit (`unsigned int`) in the syscall ABI; the
+    // register's upper half is not part of the argument.
+    dup_to(old_fd as u32, new_fd as u32, false)
 }
 
 /// sys_dup3 - dup2 with flags
@@ -3791,15 +3793,19 @@ pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
 pub fn sys_dup3(old_fd: u64, new_fd: u64, flags: u64) -> SyscallResult {
     use crate::ipc::fd::status_flags::O_CLOEXEC;
 
-    if flags & !(O_CLOEXEC as u64) != 0 || old_fd == new_fd {
+    // The ABI types are `unsigned int` descriptors and an `int` flags word.
+    // Take the 32-bit values before any check, so an upper register half can
+    // neither hide old_fd == new_fd nor count as an unknown flag.
+    let (old_fd, new_fd, flags) = (old_fd as u32, new_fd as u32, flags as u32);
+    if flags & !O_CLOEXEC != 0 || old_fd == new_fd {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-    dup_to(old_fd, new_fd, flags & O_CLOEXEC as u64 != 0)
+    dup_to(old_fd, new_fd, flags & O_CLOEXEC != 0)
 }
 
 /// Shared body of dup2 and dup3: duplicate old_fd onto new_fd, closing what
 /// new_fd held, with FD_CLOEXEC on new_fd set only when `set_cloexec`.
-fn dup_to(old_fd: u64, new_fd: u64, set_cloexec: bool) -> SyscallResult {
+fn dup_to(old_fd: u32, new_fd: u32, set_cloexec: bool) -> SyscallResult {
     log::debug!(
         "sys_dup2: old_fd={}, new_fd={}, cloexec={}",
         old_fd,

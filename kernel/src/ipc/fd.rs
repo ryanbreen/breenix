@@ -229,18 +229,20 @@ impl core::fmt::Debug for FileDescriptor {
 const SETTABLE_STATUS_FLAGS: u32 = status_flags::O_APPEND | status_flags::O_NONBLOCK;
 
 /// Access mode of a descriptor that is not created by open(2) from a caller's
-/// flags word: pipe and FIFO ends are one-way, listings are read-only, and the
-/// rest (stdio, sockets, PTYs, epoll) are read-write.
+/// flags word: pipe and FIFO ends and the stdio streams are one-way (stdin is
+/// read-only, stdout and stderr write-only, as read and write enforce),
+/// listings are read-only, and the rest (sockets, PTYs, epoll) are read-write.
 fn inherent_access_mode(kind: &FdKind) -> u32 {
     match kind {
-        FdKind::PipeRead(_)
+        FdKind::StdIo(STDIN)
+        | FdKind::PipeRead(_)
         | FdKind::FifoRead(_, _)
         | FdKind::Directory(_)
         | FdKind::DevfsDirectory { .. }
         | FdKind::DevptsDirectory { .. }
         | FdKind::ProcfsFile { .. }
         | FdKind::ProcfsDirectory { .. } => status_flags::O_RDONLY,
-        FdKind::PipeWrite(_) | FdKind::FifoWrite(_, _) => status_flags::O_WRONLY,
+        FdKind::StdIo(_) | FdKind::PipeWrite(_) | FdKind::FifoWrite(_, _) => status_flags::O_WRONLY,
         _ => status_flags::O_RDWR,
     }
 }
@@ -271,8 +273,7 @@ impl FileDescriptor {
         } else {
             0
         };
-        let word =
-            (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
+        let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
         FileDescriptor {
             kind,
             flags: fd_flags,
