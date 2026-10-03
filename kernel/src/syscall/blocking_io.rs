@@ -80,6 +80,9 @@ pub(crate) fn write_pipe(
                     continue;
                 }
                 Err(WriteAttempt::BrokenPipe) => {
+                    // SIGPIPE accompanies EPIPE even after partial progress.
+                    drop(pipe);
+                    super::signal::raise_sigpipe();
                     return progress_or_error(offset, errno::EPIPE);
                 }
                 Err(WriteAttempt::WouldBlock) => {
@@ -136,6 +139,8 @@ pub(crate) fn write_unix(
         let outcome = {
             let mut state = writer.state();
             if state.peer_closed() {
+                drop(state);
+                super::signal::raise_sigpipe();
                 return SyscallResult::Err(errno::EPIPE as u64);
             }
             let count = state.copy(data);

@@ -534,6 +534,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     log::warn!("sys_write: TCP write error: {}", e);
                     // Map error string to specific errno
                     if e.contains("shutdown") {
+                        super::signal::raise_sigpipe();
                         SyscallResult::Err(super::errno::EPIPE as u64)
                     } else if e.contains("not found") {
                         SyscallResult::Err(super::errno::EBADF as u64)

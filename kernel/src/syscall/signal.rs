@@ -142,6 +142,23 @@ fn check_target_exists(pid: i64) -> SyscallResult {
     }
 }
 
+/// Generate SIGPIPE for the calling thread's own process after a write to a
+/// pipe, FIFO or stream socket with no reader (POSIX write(), EPIPE). The
+/// writer is running, so nothing needs waking: the signal is acted on when
+/// this syscall returns. An ignored SIGPIPE is discarded and the caller sees
+/// only EPIPE. Must be called with no pipe or socket lock held.
+pub(crate) fn raise_sigpipe() {
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return;
+    };
+    let mut manager_guard = manager();
+    if let Some(ref mut manager) = *manager_guard {
+        if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+            process.signals.set_pending(SIGPIPE);
+        }
+    }
+}
+
 /// Send a signal to a specific process
 fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
     let mut manager_guard = manager();

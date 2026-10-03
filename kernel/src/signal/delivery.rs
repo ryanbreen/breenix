@@ -214,7 +214,7 @@ pub enum DeliverResult {
 
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
-fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+pub fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
     match default_action(sig) {
         SignalDefaultAction::Terminate => {
             crate::serial_println!(
@@ -739,6 +739,32 @@ fn deliver_to_user_handler_aarch64(
 pub struct ParentNotification {
     pub parent_pid: crate::process::ProcessId,
     pub child_pid: crate::process::ProcessId,
+}
+
+/// Finish an x86-64 syscall return whose signal delivery terminated the
+/// calling process: notify the parent, mark the calling thread terminated and
+/// wait, preemptible, for the scheduler to switch away from it. The syscall
+/// return path cannot switch threads itself (entry.asm sets PREEMPT_ACTIVE
+/// before its reschedule check), and returning would run Ring 3 code after
+/// the process died. The thread is never resumed.
+///
+/// Called with no process-manager lock held and with the syscall's single
+/// preempt_disable() still in force.
+#[cfg(target_arch = "x86_64")]
+pub fn park_after_syscall_termination(notification: Option<ParentNotification>) -> ! {
+    if let Some(notification) = notification {
+        notify_parent_of_termination_deferred(&notification);
+    }
+    crate::task::scheduler::with_scheduler(|scheduler| {
+        if let Some(thread) = scheduler.current_thread_mut() {
+            thread.set_terminated();
+        }
+    });
+    crate::task::scheduler::set_need_resched();
+    crate::per_cpu::preempt_enable();
+    loop {
+        crate::arch_halt_with_interrupts();
+    }
 }
 
 /// Notify parent process when a child process is terminated by signal
