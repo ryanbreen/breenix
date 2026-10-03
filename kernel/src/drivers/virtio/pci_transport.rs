@@ -163,6 +163,31 @@ impl CapRegion {
     }
 }
 
+// Own capability mappings during probe so every early return tears them down.
+#[cfg(target_arch = "x86_64")]
+#[derive(Default)]
+struct CapabilityMappings(alloc::vec::Vec<(usize, usize)>);
+
+#[cfg(target_arch = "x86_64")]
+impl Drop for CapabilityMappings {
+    fn drop(&mut self) {
+        use x86_64::structures::paging::{Mapper, Page, Size4KiB};
+        let mut mapper = unsafe {
+            crate::memory::paging::get_mapper_with_offset(crate::memory::physical_memory_offset())
+        };
+        for &(base, size) in &self.0 {
+            for offset in (0..size).step_by(4096) {
+                let page = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(
+                    (base + offset) as u64,
+                ));
+                if let Ok((_, flush)) = mapper.unmap(page) {
+                    flush.flush();
+                }
+            }
+        }
+    }
+}
+
 // =============================================================================
 // VirtIO PCI Device
 // =============================================================================
@@ -191,6 +216,25 @@ pub struct VirtioPciDevice {
     /// Cached queue notify virtual addresses (avoids 2 MMIO reads per notify).
     /// Populated by `cache_queue_notify_addr()` after queue setup.
     cached_notify_addrs: [u64; 4],
+    #[cfg(target_arch = "x86_64")]
+    mappings: CapabilityMappings,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Drop for VirtioPciDevice {
+    fn drop(&mut self) {
+        // An initialization failure must revoke enabled queues before teardown.
+        self.write_status(self.read_status() | STATUS_FAILED);
+        self.reset();
+        for _ in 0..10_000 {
+            if self.read_status() == 0 {
+                return;
+            }
+            core::hint::spin_loop();
+        }
+        // Keep the aperture mapped if a broken device refuses to reset.
+        core::mem::forget(core::mem::take(&mut self.mappings));
+    }
 }
 
 impl VirtioPciDevice {
@@ -215,6 +259,8 @@ impl VirtioPciDevice {
         pci_dev.enable_bus_master();
 
         // Walk PCI capabilities to find VirtIO capability structures
+        #[cfg(target_arch = "x86_64")]
+        let mut mappings = CapabilityMappings::default();
         let mut common = CapRegion::NONE;
         let mut notify = CapRegion::NONE;
         let mut notify_off_multiplier = 0u32;
@@ -320,11 +366,9 @@ impl VirtioPciDevice {
                             }
                             let phys = bar.address.checked_add(offset as u64)?;
                             let page_offset = (phys & 0xfff) as usize;
-                            let mapped = crate::memory::map_mmio(
-                                phys & !0xfff,
-                                (length as usize).checked_add(page_offset)?,
-                            )
-                            .ok()?;
+                            let size = (length as usize).checked_add(page_offset)?;
+                            let mapped = crate::memory::map_mmio(phys & !0xfff, size).ok()?;
+                            mappings.0.push((mapped, size.div_ceil(4096) * 4096));
                             mapped as u64 + page_offset as u64
                         };
                         let region = CapRegion { virt_base, length };
@@ -371,6 +415,8 @@ impl VirtioPciDevice {
             device_features: 0,
             virtio_device_id,
             cached_notify_addrs: [0; 4],
+            #[cfg(target_arch = "x86_64")]
+            mappings,
         })
     }
 

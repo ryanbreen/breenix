@@ -2002,7 +2002,9 @@ fn ext2_acquire_write(
         if let Some(w) = upgraded {
             return w;
         }
-        upgradeable = slot.take().expect("slot repopulated by cond on Mismatch/Queued");
+        upgradeable = slot
+            .take()
+            .expect("slot repopulated by cond on Mismatch/Queued");
 
         match outcome {
             crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
@@ -2134,24 +2136,12 @@ static ROOT_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// Initialize the root ext2 filesystem
 ///
 /// Mounts the ext2 disk as the root filesystem.
-/// Device layout:
-///   - x86_64: Device 0 UEFI boot disk, device 1 test binaries disk, device 2 ext2 disk
-///   - ARM64 (QEMU): Device 0 ext2 disk (VirtIO MMIO)
-///   - ARM64 (Parallels): AHCI SATA port 0
+/// x86 selects a mountable ext2 filesystem from 512-byte-sector block devices.
+/// ARM64 prefers VirtIO, then scans AHCI disks for an ext2 superblock.
 ///
 /// This should be called during kernel initialization after block
 /// device driver initialization.
 pub fn init_root_fs() -> Result<(), &'static str> {
-    #[cfg(target_arch = "x86_64")]
-    let device = crate::block::devices()
-        .into_iter()
-        .find(|device| {
-            let mut superblock = [0u8; 512];
-            device.read_block(2, &mut superblock).is_ok()
-                && u16::from_le_bytes([superblock[56], superblock[57]]) == 0xEF53
-        })
-        .ok_or("No block device with ext2 filesystem")?;
-
     // Try VirtIO block devices first (works on both x86_64 and QEMU ARM64)
     #[cfg(target_arch = "aarch64")]
     let device: alloc::boxed::Box<dyn BlockDevice> = {
@@ -2219,7 +2209,30 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     let mount_id = crate::fs::vfs::mount("/", "ext2");
 
     // Create the ext2 filesystem instance
+    #[cfg(target_arch = "aarch64")]
     let fs = Ext2Fs::new(device, mount_id)?;
+    #[cfg(target_arch = "x86_64")]
+    let fs = crate::block::devices()
+        .into_iter()
+        .find_map(|device| {
+            if device.block_size() != 512 {
+                return None;
+            }
+            let mut superblock = [0u8; 512];
+            if device.read_block(2, &mut superblock).is_err()
+                || u16::from_le_bytes([superblock[56], superblock[57]]) != 0xEF53
+            {
+                return None;
+            }
+            match Ext2Fs::new(device, mount_id) {
+                Ok(fs) => Some(fs),
+                Err(error) => {
+                    log::warn!("ext2: Root candidate mount failed: {}", error);
+                    None
+                }
+            }
+        })
+        .ok_or("No mountable 512-byte-sector ext2 block device")?;
 
     // Read packed struct fields safely before logging
     let blocks_count =

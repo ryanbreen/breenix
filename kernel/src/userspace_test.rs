@@ -28,12 +28,31 @@ struct BinaryEntry {
 
 const SECTOR_SIZE: usize = 512;
 
-/// Identify the external test disk by its format on any attached backend.
-fn get_test_disk() -> Option<alloc::boxed::Box<dyn crate::block::BlockDevice>> {
-    crate::block::devices().into_iter().find(|disk| {
-        let mut header = [0u8; SECTOR_SIZE];
-        disk.read_block(0, &mut header).is_ok() && &header[..8] == b"BXTEST\0\0"
+/// Identify the 512-byte-sector BXTEST disk once and retain its header.
+fn get_test_disk() -> Option<&'static (
+    alloc::boxed::Box<dyn crate::block::BlockDevice>,
+    [u8; SECTOR_SIZE],
+)> {
+    static DISK: spin::Once<
+        Option<(
+            alloc::boxed::Box<dyn crate::block::BlockDevice>,
+            [u8; SECTOR_SIZE],
+        )>,
+    > = spin::Once::new();
+    DISK.call_once(|| {
+        crate::block::devices().into_iter().find_map(|disk| {
+            let mut header = [0u8; SECTOR_SIZE];
+            if disk.block_size() == SECTOR_SIZE
+                && disk.read_block(0, &mut header).is_ok()
+                && &header[..8] == b"BXTEST\0\0"
+            {
+                Some((disk, header))
+            } else {
+                None
+            }
+        })
     })
+    .as_ref()
 }
 
 /// Load a test binary from disk
@@ -42,12 +61,7 @@ fn get_test_disk() -> Option<alloc::boxed::Box<dyn crate::block::BlockDevice>> {
 /// The test disk is expected to be the disk with a BXTEST header.
 pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
     // Get test disk device
-    let disk = get_test_disk().ok_or("No BXTEST disk found")?;
-
-    // Read sector 0 (header)
-    let mut header_buffer = [0u8; SECTOR_SIZE];
-    disk.read_block(0, &mut header_buffer)
-        .map_err(|_| "Failed to read header sector")?;
+    let (disk, header_buffer) = get_test_disk().ok_or("No 512-byte-sector BXTEST disk found")?;
 
     // Parse header safely using manual field extraction
     let magic: [u8; 8] = header_buffer[0..8]
@@ -83,7 +97,7 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
     let entries_needed = core::cmp::min(entries_needed, 127); // Max 127 sectors for entry table
 
     let mut entries_buffer = Vec::new();
-    entries_buffer.resize(entries_needed as usize * SECTOR_SIZE, 0u8);
+    entries_buffer.resize(entries_needed * SECTOR_SIZE, 0u8);
 
     disk.read_blocks(1, entries_needed, &mut entries_buffer)
         .map_err(|_| "Failed to read entry table")?;
@@ -152,7 +166,7 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
     // Calculate how many sectors we need to read
     let sectors_to_read = (entry.size_bytes as usize + SECTOR_SIZE - 1) / SECTOR_SIZE;
     let mut sector_buffer = Vec::new();
-    sector_buffer.resize(sectors_to_read as usize * SECTOR_SIZE, 0u8);
+    sector_buffer.resize(sectors_to_read * SECTOR_SIZE, 0u8);
 
     // Read binary data sectors
     disk.read_blocks(entry.sector_offset, sectors_to_read, &mut sector_buffer)
@@ -191,8 +205,8 @@ pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
                  ║                                                              ║\n\
                  ║  Disk loading is MANDATORY. There is NO fallback.           ║\n\
                  ║                                                              ║\n\
-                 ║  Ensure QEMU is configured with test disk as second         ║\n\
-                 ║  VirtIO device (index 1).                                   ║\n\
+                 ║  Ensure a disk with the BXTEST header is attached.          ║\n\
+                 ║  The loader supports 512-byte-sector block devices.        ║\n\
                  ╚══════════════════════════════════════════════════════════════╝",
                 name, e
             );

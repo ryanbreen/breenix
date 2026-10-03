@@ -303,15 +303,25 @@ pub fn map_mmio(phys_addr: u64, size: usize) -> Result<usize, &'static str> {
             | PageTableFlags::WRITE_THROUGH;
 
         unsafe {
-            mapper
-                .map_to(
-                    page,
-                    frame,
-                    flags,
-                    &mut frame_allocator::GlobalFrameAllocator,
-                )
-                .map_err(|_| "Failed to map MMIO page")?
-                .flush();
+            match mapper.map_to(
+                page,
+                frame,
+                flags,
+                &mut frame_allocator::GlobalFrameAllocator,
+            ) {
+                Ok(flush) => flush.flush(),
+                Err(_) => {
+                    for mapped_index in 0..i {
+                        let mapped_page = Page::<Size4KiB>::containing_address(VirtAddr::new(
+                            virt_addr + (mapped_index * 4096) as u64,
+                        ));
+                        if let Ok((_, flush)) = mapper.unmap(mapped_page) {
+                            flush.flush();
+                        }
+                    }
+                    return Err("Failed to map MMIO page");
+                }
+            }
         }
     }
 
