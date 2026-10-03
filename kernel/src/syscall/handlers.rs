@@ -321,9 +321,14 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 /// descriptor table has no such entry. Kernel threads have no descriptor table
 /// at all, so they keep whatever fallback their handler already applied.
 ///
+/// A regular file not opened for the transfer's direction (`for_write`) fails
+/// with `EBADF` too, as the ordinary path does.
+///
 /// This runs only on the degenerate path. The ordinary path already performs
 /// the same lookup, so no non-degenerate call gains work.
-fn validate_fd_for_degenerate_transfer(fd: i32) -> Result<(), u64> {
+fn validate_fd_for_degenerate_transfer(fd: i32, for_write: bool) -> Result<(), u64> {
+    use crate::ipc::FdKind;
+
     let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
         return Ok(());
     };
@@ -335,10 +340,22 @@ fn validate_fd_for_degenerate_transfer(fd: i32) -> Result<(), u64> {
         let Some((_pid, process)) = manager.find_process_by_thread(thread_id) else {
             return Ok(());
         };
-        if process.fd_table.get(fd).is_some() {
-            Ok(())
-        } else {
-            Err(super::errno::EBADF as u64)
+        match process.fd_table.get(fd).map(|entry| &entry.kind) {
+            Some(FdKind::RegularFile(file)) => {
+                let file = file.lock();
+                let permitted = if for_write {
+                    file.writable()
+                } else {
+                    file.readable()
+                };
+                if permitted {
+                    Ok(())
+                } else {
+                    Err(super::errno::EBADF as u64)
+                }
+            }
+            Some(_) => Ok(()),
+            None => Err(super::errno::EBADF as u64),
         }
     })
 }
@@ -357,7 +374,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     if buf_ptr == 0 || count == 0 {
         // Linux checks the descriptor before honouring a degenerate transfer
         // (#670): a zero-length operation on a bad descriptor is EBADF, not 0.
-        if let Err(e) = validate_fd_for_degenerate_transfer(fd as i32) {
+        if let Err(e) = validate_fd_for_degenerate_transfer(fd as i32, true) {
             return SyscallResult::Err(e);
         }
         return SyscallResult::Ok(0);
@@ -464,7 +481,10 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             },
             FdKind::UnixSocket(_) => WriteOperation::Enotconn, // Unconnected Unix socket
             FdKind::UnixListener(_) => WriteOperation::Enotconn, // Listener can't write
-            FdKind::RegularFile(file) => WriteOperation::RegularFile { file: file.clone() },
+            FdKind::RegularFile(file) if file.lock().writable() => {
+                WriteOperation::RegularFile { file: file.clone() }
+            }
+            FdKind::RegularFile(_) => WriteOperation::Ebadf, // not open for writing
             FdKind::Directory(_) => WriteOperation::Eisdir,
             FdKind::Device(device_type) => WriteOperation::Device {
                 device_type: device_type.clone(),
@@ -673,7 +693,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     if buf_ptr == 0 || count == 0 {
         // Linux checks the descriptor before honouring a degenerate transfer
         // (#670): a zero-length operation on a bad descriptor is EBADF, not 0.
-        if let Err(e) = validate_fd_for_degenerate_transfer(fd as i32) {
+        if let Err(e) = validate_fd_for_degenerate_transfer(fd as i32, false) {
             return SyscallResult::Err(e);
         }
         return SyscallResult::Ok(0);
@@ -1164,6 +1184,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let file_ref_owned = file_ref.clone();
             let (inode_num, position, file_mount_id) = {
                 let file = file_ref.lock();
+                if !file.readable() {
+                    return SyscallResult::Err(super::errno::EBADF as u64);
+                }
                 (file.inode_num, file.position, file.mount_id)
             };
             // Release PM lock now — disk I/O below needs IRQs enabled.
@@ -5264,7 +5287,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
     if buf_ptr == 0 || count == 0 {
         // Linux checks the descriptor before honouring a degenerate transfer
         // (#670): a zero-length operation on a bad descriptor is EBADF, not 0.
-        if let Err(e) = validate_fd_for_degenerate_transfer(fd) {
+        if let Err(e) = validate_fd_for_degenerate_transfer(fd, false) {
             return SyscallResult::Err(e);
         }
         return SyscallResult::Ok(0);
@@ -5287,6 +5310,9 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
                     match &fd_entry.kind {
                         FdKind::RegularFile(file_ref) => {
                             let file = file_ref.lock();
+                            if !file.readable() {
+                                return Err(super::errno::EBADF as u64);
+                            }
                             return Ok((file.inode_num, file.mount_id));
                         }
                         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
@@ -5357,7 +5383,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     if buf_ptr == 0 || count == 0 {
         // Linux checks the descriptor before honouring a degenerate transfer
         // (#670): a zero-length operation on a bad descriptor is EBADF, not 0.
-        if let Err(e) = validate_fd_for_degenerate_transfer(fd) {
+        if let Err(e) = validate_fd_for_degenerate_transfer(fd, true) {
             return SyscallResult::Err(e);
         }
         return SyscallResult::Ok(0);
@@ -5380,6 +5406,9 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
                     match &fd_entry.kind {
                         FdKind::RegularFile(file_ref) => {
                             let file = file_ref.lock();
+                            if !file.writable() {
+                                return Err(super::errno::EBADF as u64);
+                            }
                             return Ok((file.inode_num, file.mount_id));
                         }
                         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
