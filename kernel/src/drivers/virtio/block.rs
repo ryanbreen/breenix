@@ -17,6 +17,7 @@
 //! - seg_max (u32 at offset 12): Max number of segments
 //! - geometry (at offset 16): Disk geometry
 
+use super::pci_transport::VirtioPciDevice;
 use super::queue::Virtqueue;
 use super::VirtioDevice;
 use crate::drivers::pci::Device as PciDevice;
@@ -183,10 +184,32 @@ struct DmaBuffers {
     status: (u64, u64),
 }
 
+/// Both PCI interfaces share the same split queue, DMA buffers and completions.
+enum BlockTransport {
+    Legacy(VirtioDevice),
+    Modern(VirtioPciDevice),
+}
+
+impl BlockTransport {
+    fn notify_queue(&self, queue: u16) {
+        match self {
+            Self::Legacy(device) => device.notify_queue(queue),
+            Self::Modern(device) => device.notify_queue_fast(queue as u32),
+        }
+    }
+
+    fn read_isr(&self) -> u8 {
+        match self {
+            Self::Legacy(device) => device.read_isr(),
+            Self::Modern(device) => device.read_interrupt_status() as u8,
+        }
+    }
+}
+
 /// VirtIO block device driver
 pub struct VirtioBlockDevice {
     /// VirtIO device abstraction
-    device: VirtioDevice,
+    device: BlockTransport,
     /// Request virtqueue
     queue: Mutex<Virtqueue>,
     /// Serializes the shared DMA buffers without involving the IRQ handler.
@@ -213,88 +236,94 @@ pub struct VirtioBlockDevice {
 impl VirtioBlockDevice {
     /// Initialize a VirtIO block device from a PCI device
     pub fn new(pci_dev: &PciDevice) -> Result<Self, &'static str> {
-        // Get I/O port base from BAR0
-        let io_bar = pci_dev.get_io_bar().ok_or("No I/O BAR found")?;
-        let io_base = io_bar.address as u16;
-
-        log::info!(
-            "VirtIO block: Initializing device at I/O base {:#x}",
-            io_base
-        );
-
-        // Enable bus mastering for DMA
-        pci_dev.enable_bus_master();
-        pci_dev.enable_io_space();
+        let requested = features::SIZE_MAX | features::SEG_MAX | features::FLUSH;
         pci_dev.enable_intx();
+        let (device, queue, capacity, flush_supported) =
+            if pci_dev.device_id == crate::drivers::pci::VIRTIO_BLOCK_DEVICE_ID_MODERN {
+                #[cfg(target_arch = "x86_64")]
+                if !matches!(pci_dev.interrupt_line, 10 | 11) {
+                    return Err("Modern VirtIO block: unsupported PCI interrupt line");
+                }
+                const VERSION_1: u64 = 1 << 32;
+                let mut device = VirtioPciDevice::probe(pci_dev.clone())
+                    .ok_or("No modern VirtIO PCI transport")?;
+                if device.read_device_features() & VERSION_1 == 0 {
+                    return Err("Modern VirtIO requires VERSION_1");
+                }
+                device.init(VERSION_1 | requested as u64)?;
+                device.set_config_msix_vector(u16::MAX);
+                device.select_queue(0);
+                let max_size = device.get_queue_num_max();
+                if max_size < 4 {
+                    return Err("VirtIO block queue too small");
+                }
+                // Modern queue sizes are writable. Use a supported power of two.
+                let limit = max_size.min(256);
+                let queue_size = 1u16 << (31 - limit.leading_zeros());
+                device.set_queue_num(queue_size as u32);
+                let queue = Virtqueue::new(queue_size)?;
+                device.set_queue_desc(queue.phys_addr());
+                device.set_queue_avail(queue.avail_phys_addr());
+                device.set_queue_used(queue.used_phys_addr());
+                device.set_queue_msix_vector(u16::MAX);
+                device.set_queue_ready(true);
+                if !device.queue_notify_addr_valid(0) {
+                    return Err("VirtIO queue doorbell outside notify capability");
+                }
+                device.cache_queue_notify_addr(0);
+                // Capacity is a multiword config field; retry if its generation changes.
+                let mut capacity = None;
+                for _ in 0..100 {
+                    let generation = device.config_generation();
+                    let value = device.read_config_u64(0);
+                    if device.config_generation() == generation {
+                        capacity = Some(value);
+                        break;
+                    }
+                }
+                let capacity = capacity.ok_or("Unstable VirtIO block capacity")?;
+                let flush_supported = device.device_features() & features::FLUSH as u64 != 0;
+                device.driver_ok();
+                (
+                    BlockTransport::Modern(device),
+                    queue,
+                    capacity,
+                    flush_supported,
+                )
+            } else {
+                let io_bar = pci_dev.get_io_bar().ok_or("No I/O BAR found")?;
+                pci_dev.enable_bus_master();
+                pci_dev.enable_io_space();
+                let mut device = VirtioDevice::new(io_bar.address as u16);
+                device.init(requested)?;
+                let capacity = device.read_config_u64(0);
+                let flush_supported = device.read_device_features() & features::FLUSH != 0;
+                device.select_queue(0);
+                // The legacy queue-size register is read-only; use its exact size.
+                let queue = Virtqueue::new(device.get_queue_size())?;
+                device.set_queue_address(queue.phys_addr());
+                if device.get_queue_address() != (queue.phys_addr() / 4096) as u32 {
+                    log::error!(
+                        "VirtIO block queue address mismatch: expected {:#x}, actual {:#x}",
+                        queue.phys_addr() / 4096,
+                        device.get_queue_address()
+                    );
+                    return Err("Queue address was not set correctly");
+                }
+                device.driver_ok();
+                (
+                    BlockTransport::Legacy(device),
+                    queue,
+                    capacity,
+                    flush_supported,
+                )
+            };
 
-        // Create VirtIO device
-        let mut device = VirtioDevice::new(io_base);
-
-        // Initialize with requested features
-        let requested_features = features::SIZE_MAX | features::SEG_MAX | features::FLUSH;
-        device.init(requested_features)?;
-        let flush_supported = device.read_device_features() & features::FLUSH != 0;
-
-        // Read device capacity
-        let capacity = device.read_config_u64(0);
         log::info!(
-            "VirtIO block: Capacity = {} sectors ({} MB)",
+            "VirtIO block: capacity {} sectors ({} MiB)",
             capacity,
-            (capacity * SECTOR_SIZE as u64) / (1024 * 1024)
+            capacity / 2048
         );
-
-        // Set up the request queue (queue 0)
-        device.select_queue(0);
-        let queue_size = device.get_queue_size();
-
-        if queue_size == 0 {
-            return Err("Device reports queue size 0");
-        }
-
-        // In VirtIO legacy mode, we MUST use the device's queue size exactly.
-        // The QUEUE_SIZE register (0x0C) is read-only - the driver cannot negotiate
-        // a smaller size. QEMU uses vring.num to calculate avail/used ring offsets,
-        // so if we allocate a differently-sized queue, the offsets won't match.
-        log::info!(
-            "VirtIO block: Device queue size = {} (must use exactly)",
-            queue_size
-        );
-
-        // Allocate virtqueue
-        let queue = Virtqueue::new(queue_size)?;
-        let queue_phys = queue.phys_addr();
-
-        // Tell device about the queue
-        // NOTE: In legacy VirtIO, QUEUE_SIZE at offset 0x0C is read-only.
-        // We read it to get the device's queue size, but don't write back.
-        // We MUST allocate a queue of exactly that size because the device
-        // uses it to calculate avail/used ring offsets.
-        device.select_queue(0);
-        log::info!(
-            "VirtIO block: Setting queue address phys={:#x}, PFN={:#x}",
-            queue_phys,
-            queue_phys / 4096
-        );
-        device.set_queue_address(queue_phys);
-
-        // Read back and verify the queue address was set correctly
-        let readback_pfn = device.get_queue_address();
-        let expected_pfn = (queue_phys / 4096) as u32;
-        if readback_pfn != expected_pfn {
-            log::error!(
-                "VirtIO block: Queue address mismatch! Expected PFN={:#x}, got PFN={:#x}",
-                expected_pfn,
-                readback_pfn
-            );
-            return Err("Queue address was not set correctly");
-        }
-        log::info!(
-            "VirtIO block: Queue address verified: PFN={:#x}",
-            readback_pfn
-        );
-
-        // Device is ready
-        device.driver_ok();
 
         // Pre-allocate DMA buffers for I/O operations
         // These are reused for all read/write operations to prevent frame exhaustion

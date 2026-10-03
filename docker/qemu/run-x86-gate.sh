@@ -65,6 +65,9 @@
 
 set -uo pipefail
 
+: "${CARGO_BUILD_JOBS:=6}"
+export CARGO_BUILD_JOBS
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/run-inspector-import.sh" || :
 BREENIX_RUNS_GATE_ARGV=("$0" "$@")

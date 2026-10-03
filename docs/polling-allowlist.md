@@ -93,15 +93,15 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 - **Frequency:** Boot/init and platform IRQ probing; Site 4 can also run before runtime command issue as a required device readiness handshake.
 - **Status:** ALLOWLISTED — first P12 batch; not subject to polling-elimination conversion.
 
-## P12-Site-2: AHCI early-boot PORT_CI command-completion fallback (P18 analog)
+## P12-Site-2: AHCI PORT_CI completion before IRQ registration
 
-- **File:** `kernel/src/drivers/ahci/mod.rs:815-853` (fallback branch in `wait_cmd_slot0()` when scheduler-backed waiting is unavailable)
-- **Loop:** Bounded `loop` polling `PORT_CI` until slot 0 clears, exits on completion, taskfile error, or CNTPCT deadline.
-- **Justification:** This is the AHCI-specific analog of P18's `Completion::wait_timeout()` early-boot fallback (`kernel/src/task/completion.rs:415-446`). Runtime AHCI command completion uses the scheduler-backed `Completion::wait_timeout()` path when a thread can park; this branch is only used before that path is available during pre-scheduler boot.
-- **Linux precedent:** Runtime AHCI command completion is interrupt-driven through libata/AHCI completions such as `drivers/ata/libahci.c::ahci_port_intr`. Linux pre-scheduler and polling-mode paths use bounded polling primitives when no thread exists to park, matching the P18 fallback pattern.
-- **Bounded:** CNTPCT deadline `start + freq * AHCI_TIMEOUT_SECS`, with timeout dumping state and returning `AHCI: command timeout`.
-- **Frequency:** Early boot/pre-scheduler fallback only; runtime command completion remains IRQ-driven and scheduler-backed.
-- **Status:** ALLOWLISTED — AHCI-specific P18 analog; not subject to polling-elimination conversion.
+- **File:** `kernel/src/drivers/ahci/mod.rs`, polling branch of `wait_cmd_slot0()`.
+- **Loop:** Poll `PORT_CI` until slot 0 clears, taskfile error, or the counter deadline.
+- **Justification:** Runtime completion uses `Completion::wait_timeout()` when registered and parkable. ARM64 uses this fallback during early boot; x86 IDENTIFY uses it after scheduler initialization with CPU interrupts enabled and HBA global interrupts disabled, before INTx registration.
+- **Linux precedent:** libata/AHCI uses interrupt-driven runtime completions and bounded polling for controller setup.
+- **Bounded:** `AHCI_TIMEOUT_SECS` using CNTPCT on ARM64 and calibrated TSC on x86.
+- **Frequency:** Controller initialization or when scheduler-backed completion is unavailable.
+- **Status:** ALLOWLISTED.
 
 ## P12-Site-7: AHCI ISR PORT_IS/PORT_CI drain loop
 

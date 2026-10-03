@@ -28,23 +28,40 @@ struct BinaryEntry {
 
 const SECTOR_SIZE: usize = 512;
 
-/// Get the test disk device (second VirtIO block device at index 1)
-fn get_test_disk() -> Option<alloc::sync::Arc<crate::drivers::virtio::block::VirtioBlockDevice>> {
-    crate::drivers::virtio::block::get_device_by_index(1)
+/// Identify the 512-byte-sector BXTEST disk once and retain its header.
+fn get_test_disk() -> Option<&'static (
+    alloc::boxed::Box<dyn crate::block::BlockDevice>,
+    [u8; SECTOR_SIZE],
+)> {
+    static DISK: spin::Once<
+        Option<(
+            alloc::boxed::Box<dyn crate::block::BlockDevice>,
+            [u8; SECTOR_SIZE],
+        )>,
+    > = spin::Once::new();
+    DISK.call_once(|| {
+        crate::block::devices().into_iter().find_map(|disk| {
+            let mut header = [0u8; SECTOR_SIZE];
+            if disk.block_size() == SECTOR_SIZE
+                && disk.read_block(0, &mut header).is_ok()
+                && &header[..8] == b"BXTEST\0\0"
+            {
+                Some((disk, header))
+            } else {
+                None
+            }
+        })
+    })
+    .as_ref()
 }
 
 /// Load a test binary from disk
 ///
 /// Searches for the binary by name in the test disk and returns the ELF bytes.
-/// The test disk is expected to be the second VirtIO block device (index 1).
+/// The test disk is expected to be the disk with a BXTEST header.
 pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
     // Get test disk device
-    let disk = get_test_disk().ok_or("No test disk found (index 1)")?;
-
-    // Read sector 0 (header)
-    let mut header_buffer = [0u8; SECTOR_SIZE];
-    disk.read_sector(0, &mut header_buffer)
-        .map_err(|_| "Failed to read header sector")?;
+    let (disk, header_buffer) = get_test_disk().ok_or("No 512-byte-sector BXTEST disk found")?;
 
     // Parse header safely using manual field extraction
     let magic: [u8; 8] = header_buffer[0..8]
@@ -76,13 +93,13 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
 
     // Read entry table (sectors 1-127)
     // Each entry is 64 bytes, so 8 entries per sector
-    let entries_needed = ((binary_count as usize + 7) / 8) as u64;
+    let entries_needed = (binary_count as usize + 7) / 8;
     let entries_needed = core::cmp::min(entries_needed, 127); // Max 127 sectors for entry table
 
     let mut entries_buffer = Vec::new();
-    entries_buffer.resize(entries_needed as usize * SECTOR_SIZE, 0u8);
+    entries_buffer.resize(entries_needed * SECTOR_SIZE, 0u8);
 
-    disk.read_sectors(1, &mut entries_buffer)
+    disk.read_blocks(1, entries_needed, &mut entries_buffer)
         .map_err(|_| "Failed to read entry table")?;
 
     // Search for matching entry by parsing each entry safely
@@ -147,12 +164,12 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
     binary_data.resize(entry.size_bytes as usize, 0u8);
 
     // Calculate how many sectors we need to read
-    let sectors_to_read = ((entry.size_bytes as usize + SECTOR_SIZE - 1) / SECTOR_SIZE) as u64;
+    let sectors_to_read = (entry.size_bytes as usize + SECTOR_SIZE - 1) / SECTOR_SIZE;
     let mut sector_buffer = Vec::new();
-    sector_buffer.resize(sectors_to_read as usize * SECTOR_SIZE, 0u8);
+    sector_buffer.resize(sectors_to_read * SECTOR_SIZE, 0u8);
 
     // Read binary data sectors
-    disk.read_sectors(entry.sector_offset, &mut sector_buffer)
+    disk.read_blocks(entry.sector_offset, sectors_to_read, &mut sector_buffer)
         .map_err(|_| "Failed to read binary data")?;
 
     // Copy actual binary data (may be less than full sectors)
@@ -188,8 +205,8 @@ pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
                  ║                                                              ║\n\
                  ║  Disk loading is MANDATORY. There is NO fallback.           ║\n\
                  ║                                                              ║\n\
-                 ║  Ensure QEMU is configured with test disk as second         ║\n\
-                 ║  VirtIO device (index 1).                                   ║\n\
+                 ║  Ensure a disk with the BXTEST header is attached.          ║\n\
+                 ║  The loader supports 512-byte-sector block devices.        ║\n\
                  ╚══════════════════════════════════════════════════════════════╝",
                 name, e
             );

@@ -15,6 +15,17 @@ use x86_64::PhysAddr;
 /// Increased from 32 to 128 to handle UEFI's fragmented memory map
 const MAX_REGIONS: usize = 128;
 
+/// Whether a physical address belongs to allocator-managed RAM.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn is_usable_address(address: u64) -> bool {
+    MEMORY_INFO.get().is_some_and(|info| {
+        info.regions[..info.region_count]
+            .iter()
+            .flatten()
+            .any(|region| address >= region.start && address < region.end)
+    })
+}
+
 /// Low memory floor - we never allocate frames below 1MiB
 /// This avoids issues with:
 /// - Frame 0x0 (null pointer confusion)

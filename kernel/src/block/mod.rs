@@ -8,6 +8,24 @@ use core::fmt;
 
 pub mod virtio;
 
+/// Enumerate usable x86 disks in backend order. Consumers identify disk contents,
+/// rather than relying on PCI slots or a fixed index shared across transports.
+#[cfg(target_arch = "x86_64")]
+pub fn devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
+    let mut devices: alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> = alloc::vec::Vec::new();
+    let mut index = 0;
+    while let Some(device) = virtio::VirtioBlockWrapper::new(index) {
+        devices.push(alloc::boxed::Box::new(device));
+        index += 1;
+    }
+    for index in 0..crate::drivers::ahci::sata_device_count() {
+        if let Some(device) = crate::drivers::ahci::get_block_device_by_index(index) {
+            devices.push(alloc::boxed::Box::new(device));
+        }
+    }
+    devices
+}
+
 /// Generic block device interface
 ///
 /// This trait provides a uniform interface for block-based storage devices.

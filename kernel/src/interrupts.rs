@@ -581,7 +581,7 @@ extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackF
     crate::per_cpu::irq_exit();
 }
 
-/// IRQ 10 handler for E1000 network device
+/// IRQ 10 shared PCI handler (network, storage and sound)
 ///
 /// CRITICAL: This handler must be extremely fast. No logging, no allocations.
 /// Target: <1000 cycles total.
@@ -589,6 +589,9 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
+    if crate::drivers::ahci::ahci_irq() == 10 {
+        crate::drivers::ahci::handle_interrupt();
+    }
     dispatch_virtio_block_interrupts();
     dispatch_virtio_sound_interrupts();
 
@@ -605,7 +608,7 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
     crate::per_cpu::irq_exit();
 }
 
-/// IRQ 11 handler for VirtIO block devices
+/// IRQ 11 shared PCI handler (network, storage and sound)
 ///
 /// CRITICAL: This handler must be extremely fast. No logging, no allocations.
 /// Target: <1000 cycles total.
@@ -613,6 +616,9 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
+    if crate::drivers::ahci::ahci_irq() == 11 {
+        crate::drivers::ahci::handle_interrupt();
+    }
     dispatch_virtio_block_interrupts();
     dispatch_virtio_sound_interrupts();
 
