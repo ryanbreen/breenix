@@ -4366,7 +4366,13 @@ impl Scheduler {
                 } else if already_queued {
                     ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
-                set_need_resched();
+                // The interrupt already requested this scheduling decision.
+                // On x86, draining its buffered wake must not request a second
+                // switch for the thread we are about to dispatch. Keep direct
+                // wakes and ARM64 completion rescheduling unchanged.
+                if !from_isr_buffer || cfg!(target_arch = "aarch64") {
+                    set_need_resched();
+                }
             }
         }
         wake
