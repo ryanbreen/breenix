@@ -177,6 +177,10 @@ pub fn dispatch_syscall(
                 _ => SyscallResult::Err(super::errno::EINVAL as u64),
             }
         }
+        SyscallNumber::Fsync => super::fs::sys_fsync(arg1 as i32),
+        SyscallNumber::Fdatasync => super::fs::sys_fsync(arg1 as i32),
+        SyscallNumber::Truncate => super::fs::sys_truncate(arg1, arg2 as i64),
+        SyscallNumber::Ftruncate => super::fs::sys_ftruncate(arg1 as i32, arg2 as i64),
         // Filesystem: newfstatat
         SyscallNumber::Newfstatat => {
             super::fs::sys_newfstatat(arg1 as i32, arg2, arg3, arg4 as u32)

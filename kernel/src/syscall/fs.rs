@@ -293,11 +293,13 @@ fn open_is_access_checked(is_reg: bool, is_dir: bool, flags: u32) -> bool {
 
 /// The errno for an ext2 path lookup that failed with `e`.
 fn path_lookup_errno(e: &str) -> SyscallResult {
-    use super::errno::{EIO, ENOENT, ENOTDIR};
+    use super::errno::{EIO, ELOOP, ENOENT, ENOTDIR};
     if e.contains("not found") {
         SyscallResult::Err(ENOENT as u64)
     } else if e.contains("Not a directory") {
         SyscallResult::Err(ENOTDIR as u64)
+    } else if e.contains("Too many levels of symbolic links") {
+        SyscallResult::Err(ELOOP as u64)
     } else {
         SyscallResult::Err(EIO as u64)
     }
@@ -517,6 +519,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         normalize_path(&absolute)
     };
 
+    let path = normalize_path(&path);
     log::debug!("sys_open: resolved path={:?}", path);
 
     // Check for /dev directory itself
@@ -3914,7 +3917,7 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
 ///
 /// Linux syscall 262. Supports AT_FDCWD (-100) as dirfd to stat relative
 /// to the current working directory. Required by musl libc.
-pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> SyscallResult {
+pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> SyscallResult {
     use super::errno::{EFAULT, ENOENT};
     use super::userptr::{copy_cstr_from_user, copy_to_user};
     use crate::fs::ext2;
@@ -3998,7 +4001,11 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
             None => return SyscallResult::Err(ENOENT as u64),
         };
         let mid = fs.mount_id;
-        match fs.resolve_path(fs_path) {
+        match if flags & AT_SYMLINK_NOFOLLOW != 0 {
+            fs.resolve_path_no_follow(fs_path)
+        } else {
+            fs.resolve_path(fs_path)
+        } {
             Ok(inum) => (inum as u64, mid),
             Err(e) => return path_lookup_errno(e),
         }
@@ -4009,7 +4016,11 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
             None => return SyscallResult::Err(ENOENT as u64),
         };
         let mid = fs.mount_id;
-        match fs.resolve_path(fs_path) {
+        match if flags & AT_SYMLINK_NOFOLLOW != 0 {
+            fs.resolve_path_no_follow(fs_path)
+        } else {
+            fs.resolve_path(fs_path)
+        } {
             Ok(inum) => (inum as u64, mid),
             Err(e) => return path_lookup_errno(e),
         }
@@ -4354,4 +4365,171 @@ fn update_inode_timestamps(
             None => SyscallResult::Err(super::errno::EIO as u64),
         }
     }
+}
+
+/// Snapshot an ext2 file or directory descriptor before disk I/O, releasing the process
+/// lock (which masks IRQs) before waiting for device completion.
+fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize), u64> {
+    use super::errno::{EBADF, EINVAL};
+    crate::arch_without_interrupts(|| {
+        let thread = crate::task::scheduler::current_thread_id().ok_or(EBADF as u64)?;
+        let manager_guard = crate::process::manager();
+        let manager = manager_guard.as_ref().ok_or(EBADF as u64)?;
+        let (_, process) = manager.find_process_by_thread(thread).ok_or(EBADF as u64)?;
+        let entry = process.fd_table.get(fd).ok_or(EBADF as u64)?;
+        match &entry.kind {
+            FdKind::RegularFile(file) => {
+                let file = file.lock();
+                if writable && !entry.writable() {
+                    return Err(EINVAL as u64);
+                }
+                Ok((file.inode_num as u32, file.mount_id))
+            }
+            FdKind::Directory(dir) if !writable => {
+                let dir = dir.lock();
+                Ok((dir.inode_num as u32, dir.mount_id))
+            }
+            _ => Err(EINVAL as u64),
+        }
+    })
+}
+
+/// fsync/fdatasync: ext2 writes both data and metadata synchronously, so a
+/// device cache flush covers both requests (fdatasync may flush more metadata).
+pub fn sys_fsync(fd: i32) -> SyscallResult {
+    use crate::fs::ext2;
+    let (_, mount_id) = match ext2_fd_info(fd, false) {
+        Ok(info) => info,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
+    let guard = if is_home {
+        ext2::home_fs_read()
+    } else {
+        ext2::root_fs_read()
+    };
+    match guard.as_ref().map(|fs| fs.sync()) {
+        Some(Ok(())) => SyscallResult::Ok(0),
+        _ => SyscallResult::Err(super::errno::EIO as u64),
+    }
+}
+
+fn resize_inode(fs: &mut crate::fs::ext2::Ext2Fs, ino: u32, length: u64) -> SyscallResult {
+    use super::errno::{EFBIG, EINVAL, EIO, EISDIR};
+    match fs.read_inode(ino) {
+        Ok(inode) if inode.is_dir() => return SyscallResult::Err(EISDIR as u64),
+        Ok(inode) if !inode.is_file() => return SyscallResult::Err(EINVAL as u64),
+        Err(_) => return SyscallResult::Err(EIO as u64),
+        _ => {}
+    }
+    if length > fs.max_file_size() {
+        return SyscallResult::Err(EFBIG as u64);
+    }
+    match fs.resize_file(ino, length) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(_) => SyscallResult::Err(EIO as u64),
+    }
+}
+
+/// ftruncate changes the inode, leaving every open file description's offset alone.
+pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
+    use crate::fs::ext2;
+    if length < 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    let (ino, mount_id) = match ext2_fd_info(fd, true) {
+        Ok(info) => info,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
+    let mut guard = if is_home {
+        ext2::home_fs_write()
+    } else {
+        ext2::root_fs_write()
+    };
+    match guard.as_mut() {
+        Some(fs) => resize_inode(fs, ino, length as u64),
+        None => SyscallResult::Err(super::errno::EIO as u64),
+    }
+}
+
+/// truncate resolves the final symlink and resizes the same inode open FDs use.
+pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
+    use super::errno::{EINVAL, EIO, ENOENT};
+    use crate::fs::ext2;
+    if length < 0 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let path = match super::userptr::copy_cstr_from_user(pathname) {
+        Ok(path) => path,
+        Err(errno) => return SyscallResult::Err(errno as u64),
+    };
+    if path.is_empty() {
+        return SyscallResult::Err(ENOENT as u64);
+    }
+    let absolute = if path.starts_with('/') {
+        path
+    } else {
+        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
+        alloc::format!("{}/{}", cwd.trim_end_matches('/'), path)
+    };
+    let full_path = normalize_path(&absolute);
+    if crate::ipc::fifo::FIFO_REGISTRY.exists(&full_path) {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    if full_path == "/dev" || full_path == "/proc" {
+        return SyscallResult::Err(super::errno::EISDIR as u64);
+    }
+    if full_path.starts_with("/dev/") || full_path.starts_with("/proc/") {
+        // Resolve virtual paths through their filesystem before rejecting resize.
+        let fd = match sys_open(pathname, O_RDONLY, 0) {
+            SyscallResult::Ok(fd) => fd as i32,
+            error => return error,
+        };
+        let _ = super::pipe::sys_close(fd);
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let is_home = ext2::is_home_path(&full_path);
+    let fs_path = if is_home {
+        ext2::strip_home_prefix(&full_path)
+    } else {
+        &full_path
+    };
+    let cred = current_file_credentials();
+    let mut guard = if is_home {
+        ext2::home_fs_write()
+    } else {
+        ext2::root_fs_write()
+    };
+    let fs = match guard.as_mut() {
+        Some(fs) => fs,
+        None => return SyscallResult::Err(EIO as u64),
+    };
+    let ino = match fs.resolve_path(fs_path) {
+        Ok(ino) => ino,
+        Err(error) => return path_lookup_errno(error),
+    };
+    let inode = match fs.read_inode(ino) {
+        Ok(inode) => inode,
+        Err(_) => return SyscallResult::Err(EIO as u64),
+    };
+    if inode.is_file() {
+        if let Err(error) = check_open_access(&inode, O_WRONLY, cred) {
+            return error;
+        }
+    }
+    resize_inode(fs, ino, length as u64)
+}
+
+/// Record a successful nonempty read after releasing the read-side FS lock.
+pub(super) fn update_read_atime(ino: u32, mount_id: usize) -> Result<(), u64> {
+    use crate::fs::ext2;
+    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
+    let mut guard = if is_home {
+        ext2::home_fs_write()
+    } else {
+        ext2::root_fs_write()
+    };
+    let fs = guard.as_mut().ok_or(super::errno::EIO as u64)?;
+    fs.update_atime(ino).map_err(|_| super::errno::EIO as u64)
 }

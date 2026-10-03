@@ -146,6 +146,10 @@ pub enum SyscallNumber {
     Fstat,
     Getdents64,
     Newfstatat, // Path-based file stat (AT_FDCWD support)
+    Fsync,
+    Fdatasync,
+    Truncate,
+    Ftruncate,
     // *at variants (Linux ARM64 has these instead of legacy syscalls)
     Openat,     // openat(dirfd, path, flags, mode) - replacement for open
     Dup3,       // dup3(oldfd, newfd, flags) - replacement for dup2
@@ -266,6 +270,10 @@ impl SyscallNumber {
             62 => Some(Self::Kill),
             63 => Some(Self::Uname),
             72 => Some(Self::Fcntl),
+            74 => Some(Self::Fsync),
+            75 => Some(Self::Fdatasync),
+            76 => Some(Self::Truncate),
+            77 => Some(Self::Ftruncate),
             79 => Some(Self::Getcwd),
             80 => Some(Self::Chdir),
             82 => Some(Self::Rename),
@@ -369,6 +377,8 @@ impl SyscallNumber {
             36 => Some(Self::Symlinkat),
             37 => Some(Self::Linkat),
             38 => Some(Self::Renameat),
+            45 => Some(Self::Truncate),
+            46 => Some(Self::Ftruncate),
             48 => Some(Self::Faccessat),
             49 => Some(Self::Chdir),
             56 => Some(Self::Openat),
@@ -386,6 +396,8 @@ impl SyscallNumber {
             78 => Some(Self::Readlinkat),
             79 => Some(Self::Newfstatat),
             80 => Some(Self::Fstat),
+            82 => Some(Self::Fsync),
+            83 => Some(Self::Fdatasync),
             // Process management
             93 => Some(Self::Exit),
             94 => Some(Self::ExitGroup),

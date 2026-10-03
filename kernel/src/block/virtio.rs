@@ -101,9 +101,7 @@ impl BlockDevice for VirtioBlockWrapper {
     }
 
     fn flush(&self) -> Result<(), BlockError> {
-        // VirtIO driver currently doesn't implement flush
-        // Operations are synchronous, so data is already committed
-        Ok(())
+        self.device.flush().map_err(BlockError::from)
     }
 }
 
@@ -200,9 +198,7 @@ impl BlockDevice for VirtioBlockWrapper {
     }
 
     fn flush(&self) -> Result<(), BlockError> {
-        // VirtIO driver currently doesn't implement flush
-        // Operations are synchronous, so data is already committed
-        Ok(())
+        block_driver::flush(self.device_index).map_err(BlockError::from)
     }
 }
 

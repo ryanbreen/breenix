@@ -11,6 +11,10 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Files & I/O issue [#1015](https://github.com/ryanbreen/breenix/issues/1015):
+PR #1035 implements synchronization, ext2 resizing, final-symlink stat and relatime reads;
+file-backed mmap remains tracked by #1015.
+
 Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
 https://v0-breenix-dashboard.vercel.app/).

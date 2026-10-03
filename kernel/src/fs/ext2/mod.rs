@@ -250,6 +250,13 @@ impl Ext2Fs {
             return Ok(0);
         }
 
+        if offset
+            .checked_add(data.len() as u64)
+            .map_or(true, |end| end > self.max_file_size())
+        {
+            return Err("File too large");
+        }
+
         // Read the inode
         let mut inode = self.read_inode(inode_num)?;
 
@@ -394,83 +401,91 @@ impl Ext2Fs {
         Ok(new_inode_num)
     }
 
-    /// Truncate a file to zero length
-    ///
-    /// Frees all data blocks and sets the file size to 0.
-    ///
-    /// # Arguments
-    /// * `inode_num` - Inode number of the file to truncate
-    ///
-    /// # Returns
-    /// * `Ok(())` - File was successfully truncated
-    /// * `Err(msg)` - Error message if truncation failed
-    pub fn truncate_file(&mut self, inode_num: u32) -> Result<(), &'static str> {
-        // Read the inode
+    /// Synchronize this filesystem's synchronous data and metadata writes.
+    pub fn sync(&self) -> Result<(), &'static str> {
+        self.device
+            .flush()
+            .map_err(|_| "Failed to flush filesystem")
+    }
+
+    /// Bound addressing by the sector counter and LARGE_FILE feature.
+    pub fn max_file_size(&self) -> u64 {
+        let block_size = self.superblock.block_size() as u64;
+        let fanout = block_size / 4;
+        let addressable = 12 + fanout + fanout.pow(2) + fanout.pow(3);
+        // Reserve room for pointer blocks and an external ACL block.
+        let sector_limit = u32::MAX as u64 / (block_size / 512);
+        let pointer_blocks = 3 + 2 * fanout + fanout.pow(2);
+        let limit = addressable.min(sector_limit.saturating_sub(pointer_blocks + 1)) * block_size;
+        if self.superblock.s_rev_level == 0 || self.superblock.s_feature_ro_compat & 0x2 == 0 {
+            limit.min(i32::MAX as u64)
+        } else {
+            limit
+        }
+    }
+
+    /// Resize a regular file, preserving its prefix and zero-filling extension.
+    pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
         let mut inode = self.read_inode(inode_num)?;
-
-        // Verify it's a regular file
-        if !inode.is_file() {
-            return Err("Not a regular file");
+        if !inode.is_file() || length > self.max_file_size() {
+            return Err("Invalid file size or type");
         }
-
-        // Free all allocated data blocks before clearing pointers
-        // This prevents block leaks where blocks remain marked "in use" but are unreachable
-        let i_block = inode.i_block;
-
-        // Free direct blocks (0-11) and count how many were freed
-        let mut blocks_freed: u32 = 0;
-        for i in 0..12 {
-            if i_block[i] != 0 {
-                if block_group::free_block(
-                    self.device.as_ref(),
-                    i_block[i],
-                    &self.superblock,
-                    &mut self.block_groups,
-                )
-                .is_ok()
-                {
-                    blocks_freed += 1;
-                }
-            }
+        if length < inode.size() {
+            // Publish EOF before modifying any content that used to be visible.
+            let mut smaller = inode;
+            smaller.i_size = length as u32;
+            smaller.i_dir_acl = (length >> 32) as u32;
+            smaller.update_timestamps(false, true, true);
+            self.write_inode(inode_num, &smaller)?;
         }
-
-        // TODO: Free indirect blocks (single, double, triple) for large files
-        // For now, just handle direct blocks which covers files up to 12KB (1KB blocks)
-        // or 48KB (4KB blocks)
-
-        inode.i_size = 0;
-        inode.i_dir_acl = 0; // Clear high bits of size
-        inode.i_blocks = 0;
-
-        // Clear all block pointers
-        inode.i_block = [0; 15];
-
-        // Update modification and change timestamps
-        inode.update_timestamps(false, true, true);
-
-        // Write the modified inode back
-        inode
-            .write_to(
+        let reclaim = file::resize_file(self.device.as_ref(), &mut inode, &self.superblock, length)
+            .map_err(|_| "Failed to resize file")?;
+        // Persist removed pointers before returning blocks to the allocator:
+        // an I/O failure must never leave a live inode pointing at free blocks.
+        self.write_inode(inode_num, &inode)?;
+        let mut freed = 0;
+        let mut free_result = Ok(());
+        for block in reclaim {
+            if let Err(error) = block_group::free_block(
                 self.device.as_ref(),
-                inode_num,
+                block,
+                &self.superblock,
+                &mut self.block_groups,
+            ) {
+                free_result = Err(error);
+                continue;
+            }
+            freed += 1;
+        }
+        if freed > 0 {
+            self.superblock.increment_free_blocks(freed);
+            self.superblock
+                .write_to(self.device.as_ref())
+                .map_err(|_| "Failed to write superblock after resize")?;
+            Ext2BlockGroupDesc::write_table(
+                self.device.as_ref(),
                 &self.superblock,
                 &self.block_groups,
             )
-            .map_err(|_| "Failed to write truncated inode")?;
-
-        // Update superblock free block count so freed blocks can be reused
-        if blocks_freed > 0 {
-            self.superblock.increment_free_blocks(blocks_freed);
-            self.superblock
-                .write_to(self.device.as_ref())
-                .map_err(|_| "Failed to write superblock after truncate")?;
+            .map_err(|_| "Failed to write block groups after resize")?;
         }
+        free_result
+    }
 
-        log::debug!(
-            "ext2: truncated inode {} to zero length, freed {} blocks",
-            inode_num,
-            blocks_freed
-        );
+    /// Truncate a file to zero length, reclaiming data and indirect blocks.
+    pub fn truncate_file(&mut self, inode_num: u32) -> Result<(), &'static str> {
+        self.resize_file(inode_num, 0)
+    }
+
+    /// Relatime: update after modification/change or once a day. Reload under
+    /// the filesystem write lock rather than overwriting a reader's stale inode.
+    pub fn update_atime(&mut self, inode_num: u32) -> Result<(), &'static str> {
+        let mut inode = self.read_inode(inode_num)?;
+        let now = crate::time::current_unix_time() as u32;
+        if inode.needs_atime_update() {
+            inode.i_atime = now;
+            self.write_inode(inode_num, &inode)?;
+        }
         Ok(())
     }
 

@@ -71,6 +71,10 @@ pub mod nr {
     pub const WAIT4: u64 = 61;
     pub const KILL: u64 = 62;
     pub const FCNTL: u64 = 72;
+    pub const FSYNC: u64 = 74;
+    pub const FDATASYNC: u64 = 75;
+    pub const TRUNCATE: u64 = 76;
+    pub const FTRUNCATE: u64 = 77;
     pub const GETCWD: u64 = 79;
     pub const CHDIR: u64 = 80;
     pub const RENAME: u64 = 82;
@@ -167,6 +171,8 @@ pub mod nr {
     pub const SYMLINKAT: u64 = 36;
     pub const LINKAT: u64 = 37;
     pub const RENAMEAT: u64 = 38;
+    pub const TRUNCATE: u64 = 45;
+    pub const FTRUNCATE: u64 = 46;
     pub const FACCESSAT: u64 = 48;
     pub const CHDIR: u64 = 49;
     pub const OPENAT: u64 = 56;
@@ -185,6 +191,8 @@ pub mod nr {
     pub const READLINKAT: u64 = 78;
     pub const NEWFSTATAT: u64 = 79;
     pub const FSTAT: u64 = 80;
+    pub const FSYNC: u64 = 82;
+    pub const FDATASYNC: u64 = 83;
 
     // Process management
     pub const EXIT: u64 = 93;

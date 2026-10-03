@@ -501,6 +501,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
             single_indirect_ptr =
                 super::block_group::allocate_block(device, superblock, block_groups)
                     .map_err(|_| BlockError::IoError)?;
+            inode.i_blocks += (block_size / 512) as u32;
 
             // Update the inode's indirect block pointer
             unsafe {
@@ -533,6 +534,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
             double_indirect_ptr =
                 super::block_group::allocate_block(device, superblock, block_groups)
                     .map_err(|_| BlockError::IoError)?;
+            inode.i_blocks += (block_size / 512) as u32;
 
             // Update the inode's double indirect block pointer
             unsafe {
@@ -554,6 +556,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
             // Allocate a new second-level indirect block
             second_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
                 .map_err(|_| BlockError::IoError)?;
+            inode.i_blocks += (block_size / 512) as u32;
 
             // Update the first-level block with the new pointer
             first_level_blocks[first_level_index] = second_level_ptr;
@@ -577,6 +580,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
         // Allocate a new triple indirect block
         triple_indirect_ptr = super::block_group::allocate_block(device, superblock, block_groups)
             .map_err(|_| BlockError::IoError)?;
+        inode.i_blocks += (block_size / 512) as u32;
 
         // Update the inode's triple indirect block pointer
         unsafe {
@@ -599,6 +603,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
     if second_level_ptr == 0 {
         second_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
             .map_err(|_| BlockError::IoError)?;
+        inode.i_blocks += (block_size / 512) as u32;
 
         first_level_blocks[first_level_index] = second_level_ptr;
         write_indirect_block(device, triple_indirect_ptr, block_size, &first_level_blocks)?;
@@ -612,6 +617,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
     if third_level_ptr == 0 {
         third_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
             .map_err(|_| BlockError::IoError)?;
+        inode.i_blocks += (block_size / 512) as u32;
 
         second_level_blocks[second_level_index] = third_level_ptr;
         write_indirect_block(device, second_level_ptr, block_size, &second_level_blocks)?;
@@ -770,8 +776,7 @@ pub fn write_file_range<B: BlockDevice + ?Sized>(
             let size_ptr = core::ptr::addr_of_mut!(inode.i_size);
             core::ptr::write_unaligned(size_ptr, end_offset as u32);
         }
-        // For files > 4GB, we'd also need to update i_dir_acl
-        // but that's not common for typical use
+        inode.i_dir_acl = (end_offset >> 32) as u32;
     }
 
     // Update modification and change timestamps
@@ -812,6 +817,126 @@ fn write_indirect_block<B: BlockDevice + ?Sized>(
 
     write_ext2_block(device, block_num, block_size, &block_buf[..block_size])?;
     Ok(())
+}
+
+/// Remove blocks beyond `keep` in a direct or indirect subtree. Count retained
+/// data and pointer blocks so stat's sector count remains accurate after shrink.
+fn prune_blocks<B: BlockDevice + ?Sized>(
+    device: &B,
+    superblock: &Ext2Superblock,
+    pointer: u32,
+    depth: u32,
+    first: u64,
+    keep: u64,
+    reclaim: &mut Vec<u32>,
+) -> Result<(u32, u32), BlockError> {
+    if pointer == 0 {
+        return Ok((0, 0));
+    }
+    if depth == 0 {
+        if first < keep {
+            return Ok((pointer, 1));
+        }
+    } else {
+        let block_size = superblock.block_size();
+        let mut pointers = read_indirect_block(device, pointer, block_size)?;
+        let stride = (block_size as u64 / 4).pow(depth - 1);
+        let mut retained = 0;
+        let mut changed = false;
+        for (index, child) in pointers.iter_mut().enumerate() {
+            let (new_child, count) = prune_blocks(
+                device,
+                superblock,
+                *child,
+                depth - 1,
+                first + index as u64 * stride,
+                keep,
+                reclaim,
+            )?;
+            changed |= *child != new_child;
+            *child = new_child;
+            retained += count;
+        }
+        if retained > 0 {
+            if changed {
+                write_indirect_block(device, pointer, block_size, &pointers)?;
+            }
+            return Ok((pointer, retained + 1));
+        }
+    }
+    reclaim.push(pointer);
+    Ok((0, 0))
+}
+
+/// Resize a regular inode without allocating blocks for sparse extension.
+/// Zero the retained EOF block on shrink and the old EOF tail on growth so
+/// neither re-extension nor reads of newly exposed bytes reveal stale data.
+pub fn resize_file<B: BlockDevice + ?Sized>(
+    device: &B,
+    inode: &mut Ext2Inode,
+    superblock: &Ext2Superblock,
+    length: u64,
+) -> Result<Vec<u32>, BlockError> {
+    let old_size = inode.size();
+    let block_size = superblock.block_size();
+    let boundary = core::cmp::min(old_size, length);
+    let tail = (boundary % block_size as u64) as usize;
+    if old_size != length && tail != 0 {
+        if let Some(block) = get_block_num(
+            device,
+            inode,
+            superblock,
+            (boundary / block_size as u64) as u32,
+        )? {
+            let mut buf = [0u8; 4096];
+            read_ext2_block(device, block, block_size, &mut buf[..block_size])?;
+            buf[tail..block_size].fill(0);
+            write_ext2_block(device, block, block_size, &buf[..block_size])?;
+        }
+    }
+    let mut reclaim = Vec::new();
+    if length < old_size {
+        let keep = length.div_ceil(block_size as u64);
+        let mut pointers = inode.i_block;
+        let mut retained = 0;
+        for (index, pointer) in pointers[..12].iter_mut().enumerate() {
+            let (new_pointer, count) = prune_blocks(
+                device,
+                superblock,
+                *pointer,
+                0,
+                index as u64,
+                keep,
+                &mut reclaim,
+            )?;
+            *pointer = new_pointer;
+            retained += count;
+        }
+        let mut first = 12;
+        let fanout = block_size as u64 / 4;
+        for depth in 1..=3 {
+            let index = 11 + depth as usize;
+            let (pointer, count) = prune_blocks(
+                device,
+                superblock,
+                pointers[index],
+                depth,
+                first,
+                keep,
+                &mut reclaim,
+            )?;
+            pointers[index] = pointer;
+            retained += count;
+            first += fanout.pow(depth);
+        }
+        inode.i_block = pointers;
+        let acl_blocks = u32::from(inode.i_file_acl != 0);
+        inode.i_blocks = (retained + acl_blocks) * (block_size / 512) as u32;
+    }
+    inode.i_size = length as u32;
+    inode.i_dir_acl = (length >> 32) as u32;
+    inode.update_timestamps(false, true, true);
+    Ok(reclaim)
 }
 
 #[cfg(test)]

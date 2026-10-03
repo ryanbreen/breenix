@@ -63,6 +63,9 @@ pub const EMFILE: i32 = 24;
 /// Not a typewriter (inappropriate ioctl for device)
 pub const ENOTTY: i32 = 25;
 
+/// File too large
+pub const EFBIG: i32 = 27;
+
 /// No space left on device
 pub const ENOSPC: i32 = 28;
 
@@ -87,6 +90,9 @@ pub const ENOSYS: i32 = 38;
 
 /// Directory not empty
 pub const ENOTEMPTY: i32 = 39;
+
+/// Too many levels of symbolic links
+pub const ELOOP: i32 = 40;
 
 /// Value too large for its type (a record lock range past the largest offset)
 pub const EOVERFLOW: i32 = 75;

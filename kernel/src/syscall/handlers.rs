@@ -1188,7 +1188,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
             // Dispatch to correct filesystem based on mount_id
             let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
-            let data = if is_home {
+            let (data, update_atime) = if is_home {
                 let fs_guard = crate::fs::ext2::home_fs_read();
                 let fs = match fs_guard.as_ref() {
                     Some(fs) => fs,
@@ -1205,7 +1205,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                 };
                 match fs.read_file_range(&inode, position, count as usize) {
-                    Ok(data) => data,
+                    Ok(data) => (data, inode.needs_atime_update()),
                     Err(e) => {
                         log::error!("sys_read: Failed to read file data: {}", e);
                         return SyscallResult::Err(super::errno::EIO as u64);
@@ -1228,7 +1228,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                 };
                 match fs.read_file_range(&inode, position, count as usize) {
-                    Ok(data) => data,
+                    Ok(data) => (data, inode.needs_atime_update()),
                     Err(e) => {
                         log::error!("sys_read: Failed to read file data: {}", e);
                         return SyscallResult::Err(super::errno::EIO as u64);
@@ -1243,6 +1243,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 if copy_to_user(buf_ptr, data.as_ptr() as u64, bytes_read).is_err() {
                     return SyscallResult::Err(14); // EFAULT
                 }
+            }
+
+            if bytes_read > 0 && update_atime {
+                // Timestamp persistence must not turn a completed read into EIO.
+                let _ = super::fs::update_read_atime(inode_num as u32, file_mount_id);
             }
 
             // Update file position (use the owned Arc we cloned before dropping PM lock)
@@ -5369,7 +5374,8 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
 
     // Read from ext2 at the given offset (no process lock held)
     use crate::fs::ext2;
-    let read_fn = |fs: &ext2::Ext2Fs| -> SyscallResult {
+    let mut update_atime = false;
+    let mut read_fn = |fs: &ext2::Ext2Fs| -> SyscallResult {
         let inode = match fs.read_inode(inode_num as u32) {
             Ok(i) => i,
             Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
@@ -5385,6 +5391,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
                 unsafe {
                     core::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr as *mut u8, actual);
                 }
+                update_atime = inode.needs_atime_update();
                 SyscallResult::Ok(actual as u64)
             }
             Err(_) => SyscallResult::Err(super::errno::EIO as u64),
@@ -5392,7 +5399,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
     };
 
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    if is_home {
+    let result = if is_home {
         let fs_guard = ext2::home_fs_read();
         match fs_guard.as_ref() {
             Some(fs) => read_fn(fs),
@@ -5404,7 +5411,11 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
             Some(fs) => read_fn(fs),
             None => SyscallResult::Err(super::errno::EIO as u64),
         }
+    };
+    if update_atime && matches!(result, SyscallResult::Ok(n) if n > 0) {
+        let _ = super::fs::update_read_atime(inode_num as u32, mount_id);
     }
+    result
 }
 
 /// pwrite64 - Write to file at given offset without changing file position

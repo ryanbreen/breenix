@@ -736,7 +736,8 @@ fn init_device(
     }
 
     // Initialize the device (reset, ack, driver, features)
-    device.init(0)?; // No special features requested
+    // Leave FLUSH unnegotiated to preserve the device's writethrough mode.
+    device.init(0)?;
 
     // Get device features to check for read-only flag
     let device_features = device.device_features();
@@ -993,10 +994,7 @@ pub fn read_sector(
         return Err(e);
     }
 
-    if let Err(e) = completion.wait_for_completion(
-        completion_token,
-        "Block MMIO read timeout",
-    ) {
+    if let Err(e) = completion.wait_for_completion(completion_token, "Block MMIO read timeout") {
         request_guard.wedge();
         return Err(e);
     }
@@ -1122,16 +1120,19 @@ pub fn write_sector(
         return Err(e);
     }
 
-    if let Err(e) = completion.wait_for_completion(
-        completion_token,
-        "Block MMIO write timeout",
-    ) {
+    if let Err(e) = completion.wait_for_completion(completion_token, "Block MMIO write timeout") {
         request_guard.wedge();
         return Err(e);
     }
 
     finish_write_sector(device_index)?;
     drop(request_guard);
+    Ok(())
+}
+
+/// MMIO devices are initialized in writethrough mode, without FLUSH negotiation.
+pub fn flush(device_index: usize) -> Result<(), &'static str> {
+    block_device_state(device_index)?;
     Ok(())
 }
 
