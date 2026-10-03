@@ -236,7 +236,7 @@ impl VirtioPciDevice {
         while cap_ptr != 0 {
             #[cfg(target_arch = "x86_64")]
             {
-                if cap_ptr < 0x40 || cap_ptr > 0xec || cap_ptr & 3 != 0 || visited[cap_ptr as usize]
+                if cap_ptr < 0x40 || cap_ptr > 0xfc || cap_ptr & 3 != 0 || visited[cap_ptr as usize]
                 {
                     return None;
                 }
@@ -252,6 +252,27 @@ impl VirtioPciDevice {
             );
 
             if cap_id == PCI_CAP_ID_VNDR {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    let cap_len = pci::pci_read_config_byte(
+                        pci_dev.bus,
+                        pci_dev.device,
+                        pci_dev.function,
+                        cap_ptr + 2,
+                    );
+                    if cap_ptr > 0xf0 || cap_len < 16 || cap_ptr as usize + cap_len as usize > 256 {
+                        return None;
+                    }
+                    let cfg_type = pci::pci_read_config_byte(
+                        pci_dev.bus,
+                        pci_dev.device,
+                        pci_dev.function,
+                        cap_ptr + 3,
+                    );
+                    if cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG && cap_len < 20 {
+                        return None;
+                    }
+                }
                 // VirtIO PCI capability structure:
                 // +0: cap_vndr (0x09)
                 // +1: cap_next
@@ -552,6 +573,14 @@ impl VirtioPciDevice {
         let queue_notify_off = self.common.read_u16(COMMON_Q_NOFF) as u32;
         let offset = (queue_notify_off * self.notify_off_multiplier) as u64;
         self.cached_notify_addrs[queue as usize] = self.notify.virt_base + offset;
+    }
+
+    /// Check the queue doorbell fits the mapped notify capability before caching it.
+    #[cfg(target_arch = "x86_64")]
+    pub fn queue_notify_addr_valid(&self, queue: u32) -> bool {
+        self.select_queue(queue);
+        let offset = self.common.read_u16(COMMON_Q_NOFF) as u64 * self.notify_off_multiplier as u64;
+        offset + 2 <= self.notify.length as u64
     }
 
     /// Notify device using the cached notify address — single MMIO write.

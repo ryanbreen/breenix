@@ -262,6 +262,9 @@ impl VirtioBlockDevice {
             device.set_queue_used(queue.used_phys_addr());
             device.set_queue_msix_vector(u16::MAX);
             device.set_queue_ready(true);
+            if !device.queue_notify_addr_valid(0) {
+                return Err("VirtIO queue doorbell outside notify capability");
+            }
             device.cache_queue_notify_addr(0);
             // Capacity is a multiword config field; retry if its generation changes.
             let mut capacity = None;
