@@ -16,7 +16,10 @@ file from main and shows each milestone's state from live evidence; nothing in i
 
 A milestone has exactly one measure:
 
-- `{"bootPath": "<milestone id>"}`: the docs/boot-path.json milestone passes in the latest gate boot.
+- `{"bootPath": "<milestone id>"}`: the docs/boot-path.json milestone passes in the newest boot on every target
+  (ARM64 QEMU, Parallels, VMware, x86-64). On x86-64 only the full tests gate on the default PC counts.
+- `{"profiles": "<milestone id>"}`: that boot-path milestone passes in the newest full x86-64 gate on every
+  hardware profile in docs/x86-profiles.json.
 - `{"suite": "<id>", "categories": ["<category id>", ...]}`: every case in those categories of that suite
   passes. It is done when it passes on every target (ARM64 QEMU, Parallels, VMware, x86-64); until the suite
   has those categories the milestone is shown as not measured yet, which is the work of writing its cases.
