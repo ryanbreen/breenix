@@ -6,7 +6,7 @@ use census::{compact, function, lex, match_arms, read};
 fn mode_ok(handlers: &str) -> bool {
     match_arms(&lex(handlers), "FdKind").iter().any(|(names, body)| {
         names.iter().any(|n| n == "UnixStream")
-            && compact(body).contains("is_nonblocking:(fd_entry.status_flags&crate::ipc::fd::status_flags::O_NONBLOCK)!=0")
+            && compact(body).contains("is_nonblocking:(fd_entry.status_flags()&crate::ipc::fd::status_flags::O_NONBLOCK)!=0")
     })
 }
 fn drain_ok(unix: &str) -> bool {
@@ -35,7 +35,7 @@ fn descriptor_mode_drain_and_poll_are_connected() {
 fn mode_drain_and_poll_mutations_are_rejected_singly() {
     let handlers = read("kernel/src/syscall/handlers.rs");
     assert!(!mode_ok(
-        &handlers.replace("fd_entry.status_flags", "endpoint_flags")
+        &handlers.replace("fd_entry.status_flags()", "endpoint_flags()")
     ));
     let unix = read("kernel/src/socket/unix.rs");
     for changed in [

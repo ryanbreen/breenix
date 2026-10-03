@@ -313,8 +313,17 @@ fn all_function_bodies(nodes: &[Node], out: &mut Vec<(String, Vec<Node>)>) {
 #[test]
 fn dup_exec_and_row_drop_keep_cleanup_outside_pm() {
     let handlers = read("kernel/src/syscall/handlers.rs");
-    let dup = function(&handlers, "sys_dup2");
+    // dup2 and dup3 share one body, which owns the overwritten descriptor's
+    // cleanup; the walk follows lexical scopes, not calls, so it inspects
+    // that body and each entry point must reach it.
+    let dup = function(&handlers, "dup_to");
     assert!(no_pm_at_cleanup(&dup, &BTreeSet::new()).unwrap() > 0);
+    for entry in ["sys_dup2", "sys_dup3"] {
+        assert!(
+            contains(&function(&handlers, entry), "dup_to("),
+            "{entry} must duplicate through dup_to"
+        );
+    }
     let fd = read("kernel/src/ipc/fd.rs");
     for extract in ["dup2", "close_cloexec"] {
         let body = function(&fd, extract);

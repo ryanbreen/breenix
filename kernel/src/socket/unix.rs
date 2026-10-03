@@ -456,7 +456,7 @@ impl core::fmt::Debug for UnixSocket {
 /// to accept incoming connections.
 ///
 /// Note: Non-blocking mode is tracked via status_flags on the FileDescriptor,
-/// not on this struct. Use fd_entry.status_flags & O_NONBLOCK to check.
+/// not on this struct. Use fd_entry.status_flags() & O_NONBLOCK to check.
 pub struct UnixListener {
     /// Path this listener is bound to
     pub path: Vec<u8>,

@@ -6,6 +6,7 @@
 
 use crate::memory::slab::{SlabBox, FD_TABLE_SLAB};
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
 /// Maximum number of file descriptors per process
@@ -24,6 +25,14 @@ pub mod flags {
 
 /// File status flags (for F_GETFL/F_SETFL and open/pipe2)
 pub mod status_flags {
+    /// Access mode bits of an open(2) flags word
+    pub const O_ACCMODE: u32 = 0x3;
+    /// Open for reading only
+    pub const O_RDONLY: u32 = 0x0;
+    /// Open for writing only
+    pub const O_WRONLY: u32 = 0x1;
+    /// Open for reading and writing
+    pub const O_RDWR: u32 = 0x2;
     /// Non-blocking I/O mode
     pub const O_NONBLOCK: u32 = 0x800; // 2048
     /// Append mode (writes always append)
@@ -55,27 +64,14 @@ pub mod fcntl_cmd {
 }
 
 /// Regular file descriptor
+///
+/// The access mode and status flags (O_APPEND) of the open file description
+/// live on the `FileDescriptor`'s shared description word, not here.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Fields will be used when open/read/write are fully implemented
 pub struct RegularFile {
     pub inode_num: u64,
     pub mount_id: usize,
     pub position: u64,
-    pub flags: u32,
-}
-
-impl RegularFile {
-    /// Opened for reading (O_RDONLY or O_RDWR). read and pread on any other
-    /// descriptor fail with EBADF.
-    pub fn readable(&self) -> bool {
-        matches!(self.flags & 0x3, 0 | 2)
-    }
-
-    /// Opened for writing (O_WRONLY or O_RDWR). write and pwrite on any other
-    /// descriptor fail with EBADF.
-    pub fn writable(&self) -> bool {
-        matches!(self.flags & 0x3, 1 | 2)
-    }
 }
 
 /// Directory file descriptor (for getdents)
@@ -212,8 +208,11 @@ pub struct FileDescriptor {
     pub kind: FdKind,
     /// File descriptor flags (FD_CLOEXEC) - per-fd, not inherited on dup
     pub flags: u32,
-    /// File status flags (O_NONBLOCK, O_APPEND) - per-fd for pipes
-    pub status_flags: u32,
+    /// The open file description's flags word: the access mode (O_ACCMODE
+    /// bits) and the file status flags (O_APPEND, O_NONBLOCK). Cloning the
+    /// entry (dup, dup2, dup3, F_DUPFD, fork) shares the word, so F_SETFL on
+    /// one descriptor is seen through every descriptor for the description.
+    description: Arc<AtomicU32>,
 }
 
 impl core::fmt::Debug for FileDescriptor {
@@ -221,28 +220,98 @@ impl core::fmt::Debug for FileDescriptor {
         f.debug_struct("FileDescriptor")
             .field("kind", &self.kind)
             .field("flags", &self.flags)
-            .field("status_flags", &self.status_flags)
+            .field("status_flags", &self.status_flags())
             .finish()
     }
 }
 
+/// Status flags F_SETFL may change. The access mode is fixed at open.
+const SETTABLE_STATUS_FLAGS: u32 = status_flags::O_APPEND | status_flags::O_NONBLOCK;
+
+/// Access mode of a descriptor that is not created by open(2) from a caller's
+/// flags word: pipe and FIFO ends and the stdio streams are one-way (stdin is
+/// read-only, stdout and stderr write-only, as read and write enforce),
+/// listings are read-only, and the rest (sockets, PTYs, epoll) are read-write.
+fn inherent_access_mode(kind: &FdKind) -> u32 {
+    match kind {
+        FdKind::StdIo(STDIN)
+        | FdKind::PipeRead(_)
+        | FdKind::FifoRead(_, _)
+        | FdKind::Directory(_)
+        | FdKind::DevfsDirectory { .. }
+        | FdKind::DevptsDirectory { .. }
+        | FdKind::ProcfsFile { .. }
+        | FdKind::ProcfsDirectory { .. } => status_flags::O_RDONLY,
+        FdKind::StdIo(_) | FdKind::PipeWrite(_) | FdKind::FifoWrite(_, _) => status_flags::O_WRONLY,
+        _ => status_flags::O_RDWR,
+    }
+}
+
 impl FileDescriptor {
-    /// Create a new file descriptor
+    /// Create a new file descriptor with its kind's inherent access mode
     pub fn new(kind: FdKind) -> Self {
-        FileDescriptor {
-            kind,
-            flags: 0,
-            status_flags: 0,
-        }
+        Self::with_flags(kind, 0, 0)
     }
 
-    /// Create with specific flags (used by pipe2, etc.)
+    /// Create with specific flags (used by pipe2, etc.). The access mode is
+    /// the kind's inherent one; `status_flags` supplies O_APPEND/O_NONBLOCK.
     pub fn with_flags(kind: FdKind, flags: u32, status_flags: u32) -> Self {
+        let word = inherent_access_mode(&kind) | (status_flags & SETTABLE_STATUS_FLAGS);
         FileDescriptor {
             kind,
             flags,
-            status_flags,
+            description: Arc::new(AtomicU32::new(word)),
         }
+    }
+
+    /// Create the descriptor for a new open file description from an open(2)
+    /// flags word: its access mode and status flags, and FD_CLOEXEC from
+    /// O_CLOEXEC.
+    pub fn opened(kind: FdKind, open_flags: u32) -> Self {
+        let fd_flags = if open_flags & status_flags::O_CLOEXEC != 0 {
+            flags::FD_CLOEXEC
+        } else {
+            0
+        };
+        let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
+        FileDescriptor {
+            kind,
+            flags: fd_flags,
+            description: Arc::new(AtomicU32::new(word)),
+        }
+    }
+
+    /// The open file description's flags word (F_GETFL): access mode and
+    /// status flags.
+    pub fn status_flags(&self) -> u32 {
+        self.description.load(Ordering::Acquire)
+    }
+
+    /// Whether the open file description was opened for reading.
+    pub fn readable(&self) -> bool {
+        matches!(
+            self.status_flags() & status_flags::O_ACCMODE,
+            status_flags::O_RDONLY | status_flags::O_RDWR
+        )
+    }
+
+    /// Whether the open file description was opened for writing.
+    pub fn writable(&self) -> bool {
+        matches!(
+            self.status_flags() & status_flags::O_ACCMODE,
+            status_flags::O_WRONLY | status_flags::O_RDWR
+        )
+    }
+
+    /// F_SETFL: replace the settable status flags (O_APPEND, O_NONBLOCK) of the
+    /// open file description. The access mode and any other bit in `flags` are
+    /// ignored.
+    pub fn set_status_flags(&self, flags: u32) {
+        let _ = self
+            .description
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |word| {
+                Some((word & !SETTABLE_STATUS_FLAGS) | (flags & SETTABLE_STATUS_FLAGS))
+            });
     }
 }
 
@@ -415,8 +484,15 @@ impl FdTable {
     }
 
     /// Duplicate a file descriptor to a specific slot
-    /// Used for dup2() syscall
-    pub fn dup2(&mut self, old_fd: i32, new_fd: i32) -> Result<(i32, Option<FileDescriptor>), i32> {
+    /// Used for dup2() and dup3(). The new descriptor shares the open file
+    /// description; its FD_CLOEXEC is set only when `set_cloexec` (dup3's
+    /// O_CLOEXEC), never copied from `old_fd`.
+    pub fn dup2(
+        &mut self,
+        old_fd: i32,
+        new_fd: i32,
+        set_cloexec: bool,
+    ) -> Result<(i32, Option<FileDescriptor>), i32> {
         if old_fd < 0 || old_fd as usize >= MAX_FDS {
             return Err(9); // EBADF
         }
@@ -435,7 +511,8 @@ impl FdTable {
             return Ok((new_fd, None));
         }
 
-        let fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
+        let mut fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
+        fd_entry.flags = if set_cloexec { flags::FD_CLOEXEC } else { 0 };
 
         // Extract the overwritten descriptor under PM. Its caller closes it
         // after releasing PM, after the replacement reference is established.
@@ -580,9 +657,9 @@ impl FdTable {
         self.get_mut(fd).map(|e| e.flags = flags).ok_or(9) // EBADF
     }
 
-    /// Get file status flags (for F_GETFL)
+    /// Get the open file description's access mode and status flags (for F_GETFL)
     pub fn get_status_flags(&self, fd: i32) -> Result<u32, i32> {
-        self.get(fd).map(|e| e.status_flags).ok_or(9) // EBADF
+        self.get(fd).map(|e| e.status_flags()).ok_or(9) // EBADF
     }
 
     /// Count the number of open file descriptors
@@ -607,13 +684,11 @@ impl FdTable {
         }
     }
 
-    /// Set file status flags (for F_SETFL)
-    /// Only modifies O_NONBLOCK and O_APPEND; other flags are ignored
+    /// Set file status flags (for F_SETFL) on the open file description, so
+    /// every descriptor sharing it sees them. Only modifies O_NONBLOCK and
+    /// O_APPEND; the access mode and other flags are ignored.
     pub fn set_status_flags(&mut self, fd: i32, flags: u32) -> Result<(), i32> {
-        let fd_entry = self.get_mut(fd).ok_or(9)?; // EBADF
-                                                   // Only allow setting O_NONBLOCK and O_APPEND via F_SETFL
-        let settable = status_flags::O_NONBLOCK | status_flags::O_APPEND;
-        fd_entry.status_flags = (fd_entry.status_flags & !settable) | (flags & settable);
+        self.get(fd).ok_or(9)?.set_status_flags(flags); // EBADF
         Ok(())
     }
 }

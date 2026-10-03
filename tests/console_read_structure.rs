@@ -44,13 +44,16 @@ fn device_modes_poll_and_non_sleeping_device_api() {
         .split("FdKind::DevfsDirectory")
         .next()
         .unwrap();
-    assert!(arm.contains("fd_entry.status_flags&crate::ipc::fd::status_flags::O_NONBLOCK"));
+    assert!(arm.contains("fd_entry.status_flags()&crate::ipc::fd::status_flags::O_NONBLOCK"));
     assert!(
         arm.find("drop(manager_guard)").unwrap() < arm.find("blocking_io::read_console").unwrap()
     );
+    // Every devfs descriptor is built from the caller's open flags, and the
+    // constructor keeps O_NONBLOCK on the description and O_CLOEXEC as
+    // FD_CLOEXEC.
     let f = compact(&read("kernel/src/syscall/fs.rs"));
     assert_eq!(
-        f.matches("FdKind::Device(device.device_type),ifflags&O_CLOEXEC")
+        f.matches("FileDescriptor::opened(FdKind::Device(device.device_type),flags)")
             .count(),
         2
     );
@@ -61,16 +64,33 @@ fn device_modes_poll_and_non_sleeping_device_api() {
         .split("fnhandle_devpts_open(")
         .next()
         .unwrap();
+    assert_eq!(opens.matches("FileDescriptor::opened(").count(), 3);
     assert_eq!(
         opens
-            .matches("flags&crate::ipc::fd::status_flags::O_NONBLOCK")
-            .count(),
+            .matches("FileDescriptor::opened(FdKind::Device(device.device_type),flags)")
+            .count()
+            + opens
+                .matches("FileDescriptor::opened(FdKind::PtySlave(pty_num),flags)")
+                .count(),
         3
     );
     assert_eq!(
         opens.matches("fd_table.alloc_with_entry(fd_kind)").count(),
         2
     );
+    let fd = compact(&read("kernel/src/ipc/fd.rs"));
+    let opened = fd
+        .split("pubfnopened(kind:FdKind,open_flags:u32)->Self{")
+        .nth(1)
+        .unwrap()
+        .split("pubfnstatus_flags(")
+        .next()
+        .unwrap();
+    assert!(opened.contains("open_flags&status_flags::O_CLOEXEC!=0{flags::FD_CLOEXEC}"));
+    assert!(opened.contains("(open_flags&SETTABLE_STATUS_FLAGS)"));
+    assert!(fd.contains(
+        "constSETTABLE_STATUS_FLAGS:u32=status_flags::O_APPEND|status_flags::O_NONBLOCK;"
+    ));
     let p = compact(&read("kernel/src/ipc/poll.rs"));
     assert!(p.contains("(events&events::POLLIN)!=0&&crate::ipc::stdin::has_data()"));
     let d = compact(&read("kernel/src/fs/devfs/mod.rs"));
