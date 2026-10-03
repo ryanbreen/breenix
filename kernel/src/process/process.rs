@@ -298,6 +298,10 @@ pub struct Process {
     /// the same wait queue. None means use self.id.as_u64().
     pub thread_group_id: Option<u64>,
 
+    /// The POSIX record-lock owner this row belongs to. Every row of a thread
+    /// group shares one; a new process gets its own, whose id is its PID.
+    pub lock_owner: alloc::sync::Arc<crate::fs::locks::LockOwner>,
+
     /// Inherited CR3 value for CLONE_VM threads that share a parent's address space.
     /// When set, context_switch uses this CR3 instead of looking up page_table.
     pub inherited_cr3: Option<u64>,
@@ -382,6 +386,7 @@ impl Process {
             alarm_deadline: None,
             itimers: crate::signal::IntervalTimers::default(),
             thread_group_id: None,
+            lock_owner: crate::fs::locks::LockOwner::new(id.as_u64()),
             inherited_cr3: None,
             clear_child_tid: None,
             user_stack_bottom: 0,
@@ -474,6 +479,7 @@ impl Process {
         // Close all file descriptors before setting state to Terminated
         // This ensures pipe counts are properly decremented so readers get EOF
         self.close_all_fds();
+        self.leave_record_locks();
 
         // Clean up Copy-on-Write frame references
         // This decrements refcounts for all pages and deallocates frames that are no longer shared
@@ -508,6 +514,7 @@ impl Process {
         if matches!(self.state, ProcessState::Terminated(_)) {
             return;
         }
+        self.leave_record_locks();
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
         // Record at the terminated-state transition so fault and signal deaths
@@ -518,6 +525,31 @@ impl Process {
         if let Some(ref mut thread) = self.main_thread {
             thread.set_terminated();
         }
+    }
+
+    /// This row is terminating (POSIX fcntl record locks). A thread killed
+    /// while waiting for a lock gives up its wait, and the group's last row
+    /// releases the group's locks. Called once, from the terminated-state
+    /// transition; under PROCESS_MANAGER the lock table wakes waiters through
+    /// the deferred path.
+    fn leave_record_locks(&self) {
+        if let Some(ref thread) = self.main_thread {
+            crate::fs::locks::release_thread(thread.id);
+        }
+        self.lock_owner.leave();
+    }
+
+    /// An exec detached this row from its thread group, making it a process
+    /// of its own with its own lock owner. Record locks survive exec, so if
+    /// this was the group's last live row the group's locks move to the new
+    /// owner; otherwise they stay with the group's other rows.
+    pub fn detach_lock_owner(&mut self) {
+        let id = self.id.as_u64();
+        if self.lock_owner.id() == id {
+            return;
+        }
+        let own = crate::fs::locks::LockOwner::new(id);
+        core::mem::replace(&mut self.lock_owner, own).hand_over(id);
     }
 
     /// Extract all file descriptor entries for deferred cleanup outside PM lock.

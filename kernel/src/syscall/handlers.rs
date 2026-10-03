@@ -70,11 +70,11 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
     }
 
     let mut buffer = Vec::with_capacity(len);
-
-    unsafe {
-        let slice = core::slice::from_raw_parts(user_ptr as *const u8, len);
-        buffer.extend_from_slice(slice);
-    }
+    // An unmapped or unreadable user page is a failed copy, not a kernel fault.
+    super::userptr::read_user_bytes(buffer.as_mut_ptr(), user_ptr, len)
+        .map_err(|_| "unmapped userspace address")?;
+    // SAFETY: read_user_bytes wrote all `len` bytes of the reserved capacity.
+    unsafe { buffer.set_len(len) };
 
     Ok(buffer)
 }
@@ -117,7 +117,9 @@ fn copy_string_from_user(user_ptr: u64, max_len: usize) -> Result<Vec<u8>, &'sta
             return Err("unmapped userspace address");
         }
 
-        let byte = unsafe { *(addr as *const u8) };
+        let mut byte = 0u8;
+        super::userptr::read_user_bytes(&mut byte, addr, 1)
+            .map_err(|_| "unmapped userspace address")?;
         buffer.push(byte);
 
         if byte == 0 {
@@ -160,16 +162,10 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
 
     // CRITICAL: Access user memory WITHOUT switching CR3
     // This works because when we're in a syscall from userspace, we're already
-    // using the process's page table, which has both kernel and user mappings
-    unsafe {
-        // Directly copy the data - the memory should be accessible
-        // because we're already in the process's context
-        let dst = user_ptr as *mut u8;
-        let src = kernel_ptr as *const u8;
-        core::ptr::copy_nonoverlapping(src, dst, len);
-    }
-
-    Ok(())
+    // using the process's page table, which has both kernel and user mappings.
+    // An unmapped or read-only user page is a failed copy, not a kernel fault.
+    super::userptr::write_user_bytes(user_ptr, kernel_ptr as *const u8, len)
+        .map_err(|_| "unmapped or read-only userspace address")
 }
 
 /// sys_exit - Terminate the current process
@@ -3793,10 +3789,13 @@ pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
 
     // Call the fd_table's dup2 implementation
     let duplicated = process.fd_table.dup2(old_fd as i32, new_fd as i32);
+    let lock_owner = process.lock_owner.id();
     drop(manager_guard);
     match duplicated {
         Ok((fd, overwritten)) => {
             if let Some(entry) = overwritten {
+                // dup2 closes new_fd first, and that close drops record locks.
+                crate::fs::locks::release_closed(lock_owner, &entry.kind);
                 crate::task::process_task::close_extracted_fds(alloc::vec![(
                     new_fd as usize,
                     entry
@@ -3868,11 +3867,15 @@ pub fn sys_dup(old_fd: u64) -> SyscallResult {
 /// - F_SETFD: Set fd flags
 /// - F_GETFL: Get file status flags (O_NONBLOCK, etc.)
 /// - F_SETFL: Set file status flags
+/// - F_GETLK, F_SETLK, F_SETLKW: POSIX advisory record locks
 pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
     use crate::ipc::fd::fcntl_cmd::*;
 
     let fd = fd as i32;
     let cmd = cmd as i32;
+    // The record-lock commands take a `struct flock *`, so they see the whole
+    // argument; every other command takes an int.
+    let flock_ptr = arg;
     let arg = arg as i32;
 
     log::debug!("sys_fcntl: fd={}, cmd={}, arg={}", fd, cmd, arg);
@@ -3885,11 +3888,15 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
         }
     };
 
+    if matches!(cmd, F_GETLK | F_SETLK | F_SETLKW) {
+        return fcntl_record_lock(thread_id, fd, cmd, flock_ptr);
+    }
+
     // #796: this used to be `try_manager()` with an `EAGAIN` arm, which made a
     // momentarily contended process-manager lock look to userspace like an fcntl
     // error. POSIX permits `[EAGAIN]` from `fcntl()` only in the `F_SETLK`
-    // record-locking arm, which this kernel does not implement, so no command
-    // reachable through the dispatch below has a legal `EAGAIN`; the observed
+    // record-locking arm, which returns above, so no command reachable through
+    // the dispatch below has a legal `EAGAIN`; the observed
     // failure was `fcntl(F_SETFD)` reporting it before `set_fd_flags` -- whose
     // only error is `EBADF` -- was ever reached.
     //
@@ -4016,6 +4023,157 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
         _ => {
             log::warn!("sys_fcntl: Unknown command {}", cmd);
             SyscallResult::Err(22) // EINVAL
+        }
+    }
+}
+
+/// `struct flock`, identical on x86_64 and aarch64.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Flock {
+    l_type: i16,
+    l_whence: i16,
+    l_start: i64,
+    l_len: i64,
+    l_pid: i32,
+}
+
+/// fcntl `F_GETLK`, `F_SETLK` and `F_SETLKW` on a regular file.
+///
+/// The descriptor's file, lock owner (the thread group's) and access mode are
+/// read under PM; the lock table is used only after PM is released, because
+/// `F_SETLKW` sleeps. The `struct flock` is copied through the fault-tolerant
+/// user-copy routine, so a bad pointer is EFAULT.
+fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> SyscallResult {
+    use super::errno::{EBADF, EINVAL, EIO, EOVERFLOW};
+    use super::fs::{O_RDONLY, O_WRONLY, SEEK_CUR, SEEK_END, SEEK_SET};
+    use super::userptr::{copy_from_user, copy_to_user};
+    use crate::fs::locks::{self, FileKey, LockKind, F_RDLCK, F_UNLCK, F_WRLCK, OFFSET_MAX};
+    use crate::ipc::fd::fcntl_cmd::{F_GETLK, F_SETLKW};
+    use crate::ipc::FdKind;
+
+    let (owner, key, access, position) = {
+        let manager_guard = crate::process::manager();
+        let Some((_pid, process)) = manager_guard
+            .as_ref()
+            .and_then(|m| m.find_process_by_thread(thread_id))
+        else {
+            return SyscallResult::Err(EBADF as u64);
+        };
+        match process.fd_table.get(fd).map(|entry| &entry.kind) {
+            Some(FdKind::RegularFile(file)) => {
+                let file = file.lock();
+                (
+                    process.lock_owner.id(),
+                    FileKey {
+                        mount_id: file.mount_id,
+                        inode: file.inode_num,
+                    },
+                    file.flags & 3,
+                    file.position,
+                )
+            }
+            // A descriptor for anything but a regular file does not support locking.
+            Some(_) => return SyscallResult::Err(EINVAL as u64),
+            None => return SyscallResult::Err(EBADF as u64),
+        }
+    };
+
+    let user = flock_ptr as *mut Flock;
+    let mut flock = match copy_from_user(user as *const Flock) {
+        Ok(flock) => flock,
+        Err(e) => return SyscallResult::Err(e),
+    };
+
+    let kind = match flock.l_type {
+        F_RDLCK => Some(LockKind::Read),
+        F_WRLCK => Some(LockKind::Write),
+        F_UNLCK if cmd != F_GETLK => None,
+        _ => return SyscallResult::Err(EINVAL as u64),
+    };
+
+    let base = match flock.l_whence as i32 {
+        SEEK_SET => 0,
+        SEEK_CUR => match i64::try_from(position) {
+            Ok(position) => position,
+            Err(_) => return SyscallResult::Err(EOVERFLOW as u64),
+        },
+        SEEK_END => match super::fs::get_ext2_file_size_for_mount(key.inode, key.mount_id) {
+            Some(size) => size as i64,
+            None => return SyscallResult::Err(EIO as u64),
+        },
+        _ => return SyscallResult::Err(EINVAL as u64),
+    };
+    let range = match flock_range(base, flock.l_start, flock.l_len) {
+        Ok(range) => range,
+        Err(e) => return SyscallResult::Err(e as u64),
+    };
+
+    if cmd == F_GETLK {
+        let kind = kind.expect("F_GETLK rejected F_UNLCK above");
+        match locks::get(key, owner, kind, range) {
+            Some(conflict) => {
+                flock.l_type = conflict.kind.l_type();
+                flock.l_whence = SEEK_SET as i16;
+                flock.l_start = conflict.range.start;
+                flock.l_len = if conflict.range.end == OFFSET_MAX {
+                    0
+                } else {
+                    conflict.range.end - conflict.range.start + 1
+                };
+                flock.l_pid = conflict.owner as i32;
+            }
+            None => flock.l_type = F_UNLCK,
+        }
+        return match copy_to_user(user, &flock) {
+            Ok(()) => SyscallResult::Ok(0),
+            Err(e) => SyscallResult::Err(e),
+        };
+    }
+
+    // A read lock needs a descriptor open for reading, a write lock one open
+    // for writing.
+    let permitted = match kind {
+        Some(LockKind::Read) => access != O_WRONLY,
+        Some(LockKind::Write) => access != O_RDONLY,
+        None => true,
+    };
+    if !permitted {
+        return SyscallResult::Err(EBADF as u64);
+    }
+
+    match locks::set(key, owner, kind, range, cmd == F_SETLKW) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(e) => SyscallResult::Err(e as u64),
+    }
+}
+
+/// The inclusive byte range a `struct flock` names, from the offset its
+/// `l_whence` selects. `l_len` of 0 runs to the largest offset; a negative
+/// `l_len` names the bytes before `l_start`.
+fn flock_range(base: i64, l_start: i64, l_len: i64) -> Result<crate::fs::locks::Range, i32> {
+    use super::errno::{EINVAL, EOVERFLOW};
+    use crate::fs::locks::{Range, OFFSET_MAX};
+
+    let start = base.checked_add(l_start).ok_or(EOVERFLOW)?;
+    if start < 0 {
+        return Err(EINVAL);
+    }
+    if l_len > 0 {
+        let end = start.checked_add(l_len - 1).ok_or(EOVERFLOW)?;
+        Ok(Range { start, end })
+    } else if l_len == 0 {
+        Ok(Range {
+            start,
+            end: OFFSET_MAX,
+        })
+    } else {
+        match start.checked_add(l_len) {
+            Some(first) if first >= 0 => Ok(Range {
+                start: first,
+                end: start - 1,
+            }),
+            _ => Err(EINVAL),
         }
     }
 }

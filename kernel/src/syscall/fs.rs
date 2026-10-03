@@ -1109,7 +1109,7 @@ fn load_ext2_inode_stat_for_mount(inode_num: u64, mount_id: usize) -> Option<Ino
 }
 
 /// Get file size from ext2 inode, dispatching to correct mount
-fn get_ext2_file_size_for_mount(inode_num: u64, mount_id: usize) -> Option<u64> {
+pub(crate) fn get_ext2_file_size_for_mount(inode_num: u64, mount_id: usize) -> Option<u64> {
     use crate::fs::ext2;
 
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);

@@ -70,6 +70,10 @@ pub enum Errno {
     EMLINK = 31,
     /// Broken pipe
     EPIPE = 32,
+    /// Resource deadlock would occur
+    EDEADLK = 35,
+    /// No record locks available
+    ENOLCK = 37,
     /// Function not implemented
     ENOSYS = 38,
     /// Directory not empty
@@ -147,6 +151,8 @@ impl Errno {
             30 => Errno::EROFS,
             31 => Errno::EMLINK,
             32 => Errno::EPIPE,
+            35 => Errno::EDEADLK,
+            37 => Errno::ENOLCK,
             38 => Errno::ENOSYS,
             39 => Errno::ENOTEMPTY,
             95 => Errno::EOPNOTSUPP,

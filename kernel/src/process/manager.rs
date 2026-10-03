@@ -3430,6 +3430,7 @@ impl ProcessManager {
         process.vmas.clear();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
+        closes.release_record_locks(process.lock_owner.id());
         log::debug!(
             "exec_process: Reset signal/heap/mmap for process {}, heap_start={:#x}",
             pid.as_u64(),
@@ -3447,6 +3448,7 @@ impl ProcessManager {
         // makes that byte-identical claim true for a failed exec: it runs
         // before this point, so nothing here observes a sibling that still
         // holds the old root.
+        process.detach_lock_owner();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
 
@@ -3809,6 +3811,7 @@ impl ProcessManager {
 
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
+        closes.release_record_locks(process.lock_owner.id());
 
         // Replace the page table with the new one
         process.page_table = Some(new_page_table.publish());
@@ -3820,6 +3823,7 @@ impl ProcessManager {
         // pre-exec values. The live-sibling guard above (#721 B2) is what makes
         // that byte-identical claim true for a failed exec: it runs before this
         // point, so nothing here observes a sibling that still holds the old root.
+        process.detach_lock_owner();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
         let new_cr3 = process
@@ -4116,6 +4120,7 @@ impl ProcessManager {
 
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
+        closes.release_record_locks(process.lock_owner.id());
 
         process.page_table = Some(new_page_table.publish());
         // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
@@ -4128,6 +4133,7 @@ impl ProcessManager {
         // "unrelated" here, which was false — that guard is exactly what runs
         // before this point, so nothing here observes a sibling that still holds
         // the old root).
+        process.detach_lock_owner();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
         let new_ttbr0 = process
@@ -4436,6 +4442,7 @@ impl ProcessManager {
         process.vmas.clear();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
+        closes.release_record_locks(process.lock_owner.id());
         log::debug!(
             "exec_process [ARM64]: Reset signal/heap/mmap for process {}, heap_start={:#x}",
             pid.as_u64(),
@@ -4454,6 +4461,7 @@ impl ProcessManager {
         // "unrelated" here, which was false — that guard is exactly what runs
         // before this point, so nothing here observes a sibling that still holds
         // the old root).
+        process.detach_lock_owner();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
         let new_ttbr0 = process

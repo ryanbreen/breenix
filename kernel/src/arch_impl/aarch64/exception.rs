@@ -798,6 +798,17 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
             // Check if from userspace (EL0) - SPSR[3:0] indicates source EL
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+
+            // A kernel fault on a user address at one of the user-copy
+            // routine's unprivileged accesses is the syscall's bad pointer,
+            // not a kernel bug: resume at the routine's fault exit, which
+            // returns EFAULT to the syscall.
+            if !from_el0 {
+                if let Some(fixup) = crate::syscall::userptr::uaccess_fixup(frame_ref.elr, far) {
+                    frame_ref.elr = fixup;
+                    return;
+                }
+            }
             let fatal_uart_guard = if from_el0 {
                 None
             } else {

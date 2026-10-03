@@ -44,6 +44,12 @@ pub mod fcntl_cmd {
     pub const F_GETFL: i32 = 3;
     /// Set file status flags
     pub const F_SETFL: i32 = 4;
+    /// Report the first record lock that would block the described one
+    pub const F_GETLK: i32 = 5;
+    /// Set or clear a record lock, failing at once on a conflict
+    pub const F_SETLK: i32 = 6;
+    /// Set or clear a record lock, waiting out a conflict
+    pub const F_SETLKW: i32 = 7;
     /// Duplicate fd with close-on-exec set
     pub const F_DUPFD_CLOEXEC: i32 = 1030;
 }
@@ -755,6 +761,16 @@ impl Drop for FdTable {
 #[derive(Default)]
 pub struct DeferredFdCloses {
     entries: alloc::vec::Vec<(usize, FileDescriptor)>,
+}
+
+impl DeferredFdCloses {
+    /// Drop the record locks `owner` holds on the files these descriptors
+    /// referred to: closing any descriptor for a file releases them.
+    pub fn release_record_locks(&self, owner: u64) {
+        for (_, entry) in &self.entries {
+            crate::fs::locks::release_closed(owner, &entry.kind);
+        }
+    }
 }
 
 impl Drop for DeferredFdCloses {
