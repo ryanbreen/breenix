@@ -349,7 +349,6 @@ fn begin_port_io(port: usize) -> Result<MutexGuard<'static, ()>, BlockError> {
                 || idle != Some(false)
                 || crate::per_cpu::preempt_count() != 1
                 || crate::per_cpu::in_interrupt()
-                || !x86_64::instructions::interrupts::are_enabled()
             {
                 return Err(BlockError::DeviceNotReady);
             }
@@ -357,6 +356,8 @@ fn begin_port_io(port: usize) -> Result<MutexGuard<'static, ()>, BlockError> {
             if secs * 1_000_000_000 + nanos >= deadline {
                 return Err(BlockError::Timeout);
             }
+            // x86 syscall entry keeps IF clear; schedule_current_wait enables
+            // interrupts around HLT, so IF is not a prerequisite for parking.
             match PORT_IO_WAITERS[port].prepare_to_wait_checked(
                 crate::task::thread::ThreadState::BlockedOnIO,
                 Some(deadline),
