@@ -50,23 +50,20 @@ impl core::ops::Deref for AlignedAtomicU32 {
 /// HHDM base for memory-mapped access.
 const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
 
-/// Convert a kernel virtual address to a physical address.
-///
-/// On ARM64, the kernel runs in the higher half (HHDM at 0xFFFF_0000_0000_0000).
-/// BSS statics are at VMA = HHDM + physical_address.
-///
-/// On VMware Fusion, the kernel runs from the L1[2] identity-mapped region
-/// (VA 0x80xxxxxx → IPA 0x80xxxxxx), so HHDM addresses have the correct
-/// IPA after subtracting HHDM_BASE — no offset needed.
-///
-/// On Parallels/QEMU, the kernel runs from the L1[1] identity-mapped region
-/// (VA 0x40xxxxxx → IPA 0x40xxxxxx), same formula applies.
+/// Convert a kernel VA to the device-visible IPA, including the linked RAM alias.
 #[inline]
 fn virt_to_phys(virt: u64) -> u64 {
-    if virt >= HHDM_BASE {
-        virt - HHDM_BASE
-    } else {
-        virt // Already a physical address (identity-mapped kernel)
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::platform_config::kernel_va_to_ipa(virt)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        if virt >= HHDM_BASE {
+            virt - HHDM_BASE
+        } else {
+            virt
+        }
     }
 }
 
@@ -998,10 +995,9 @@ impl AhciController {
         self.stop_cmd(port_num);
 
         // Compute DMA physical address from the PORT_DMA reference (not &raw const DMA_STORAGE).
-        // On VMware ARM64, the kernel runs at VA 0x80xxxxxx (shifted from linker VA 0x40xxxxxx).
-        // &raw const DMA_STORAGE can produce inconsistent ADRP-based addresses depending on
-        // the inlining context. The PORT_DMA reference was set up once during init_common
-        // and has the correct runtime address.
+        // The PORT_DMA reference was set up once during init_common. Translate
+        // that reference for the HBA descriptor, including when it uses
+        // VMware's linked alias of the relocated DMA storage.
         let dma_lock = PORT_DMA.lock();
         let dma_phys = if let Some(dma_mem) = &dma_lock[dma_index] {
             let ptr = *dma_mem as *const PortDmaMem as *mut u8;

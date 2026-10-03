@@ -558,38 +558,11 @@ static HID_TRBS_QUEUED: AtomicBool = AtomicBool::new(false);
 // Memory Helpers
 // =============================================================================
 
-/// Convert a kernel virtual address to the IPA (Intermediate Physical Address)
-/// that DMA controllers need to access guest memory.
-///
-/// On QEMU/Parallels (RAM offset=0): VA 0xFFFF_0000_40xx → IPA 0x40xx.
-/// On VMware (RAM offset=0x40000000): VA 0xFFFF_0000_80xx → IPA 0x80xx.
-///
-/// The kernel binary uses PC-relative (ADRP) addressing for statics. On VMware,
-/// the kernel runs at VA 0xFFFF_0000_80XXXXXX (identity-mapped via L1[2]), so
-/// BSS statics have flat addresses in the 0x80XXXXXX range — already valid IPAs.
-/// Addresses in the linker-expected 0x40XXXXXX range (via L1[1] remapping) need
-/// the RAM base offset added to get the actual IPA.
+/// Convert a kernel VA to the DMA-visible IPA. VMware's linked high-half
+/// statics map to relocated RAM; direct RAM and device MMIO retain their IPA.
 #[inline]
 fn virt_to_phys(virt: u64) -> u64 {
-    if virt >= HHDM_BASE {
-        let flat = virt - HHDM_BASE;
-        let rbo = crate::platform_config::ram_base_offset();
-        let actual_ram_base = 0x4000_0000u64 + rbo;
-        if flat >= actual_ram_base {
-            // Already in the actual physical RAM range (identity-mapped on VMware
-            // via L1[2], or direct on QEMU/Parallels where rbo=0).
-            flat
-        } else if flat >= 0x4000_0000 {
-            // In the linker-expected range (L1[1] remapping on VMware).
-            flat + rbo
-        } else {
-            // Device MMIO (< 0x40000000): identity-mapped on all platforms.
-            flat
-        }
-    } else {
-        // Already a physical address (identity-mapped kernel on Parallels)
-        virt
-    }
+    crate::platform_config::kernel_va_to_ipa(virt)
 }
 
 /// Clean (flush) a range of memory from CPU caches to the point of coherency.

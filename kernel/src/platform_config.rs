@@ -438,6 +438,14 @@ pub fn ram_base_offset() -> u64 {
     RAM_BASE_OFFSET.load(Ordering::Relaxed)
 }
 
+/// Translate using the same linked-alias interval that the loader maps.
+/// Direct relocated RAM and device MMIO addresses retain their IPA.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn kernel_va_to_ipa(virt: u64) -> u64 {
+    arm64_boot_contract::kernel_va_to_ipa(virt, ram_base_offset())
+}
+
 /// Whether the parallels-loader already performed HCRST before ExitBootServices.
 /// If true, the kernel should skip HCRST in xhci::init to avoid destroying
 /// endpoint state that was created while the xHCI BAR was still active.
@@ -556,6 +564,7 @@ pub struct HardwareConfig {
     pub _pad6: u32,
     pub xhci_bar_phys: u64,
     pub boot_wall_time_utc: u64,
+    pub ram_base_offset: u64,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -591,7 +600,9 @@ const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58;
 /// the UEFI loader. Called very early in boot, before serial init.
 #[cfg(target_arch = "aarch64")]
 pub fn init_from_parallels(config: &HardwareConfig) -> bool {
-    if config.magic != HARDWARE_CONFIG_MAGIC {
+    if config.magic != HARDWARE_CONFIG_MAGIC
+        || config.version != arm64_boot_contract::HARDWARE_CONFIG_VERSION
+    {
         return false;
     }
 
@@ -623,30 +634,15 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
         PCI_MMIO_SIZE.store(config.pci_mmio_size, Ordering::Relaxed);
     }
 
-    // Compute frame allocator range from RAM regions.
-    // Find the largest RAM region starting at 0x4000_0000 (standard ARM64 RAM base).
-    // Reserve: kernel (16 MB) + per-CPU stacks (16 MB) at the start,
-    // and heap (32 MB) at the end.
+    RAM_BASE_OFFSET.store(config.ram_base_offset, Ordering::Relaxed);
+
+    // Use the first RAM region containing the loaded kernel to bound frames.
+    // Reserve the image and SMP stacks below the allocator, and DMA above it.
     if config.ram_region_count > 0 {
-        // Use the FIRST RAM region for ram_base_offset — this is the region
-        // containing the kernel (loaded by the UEFI loader at its base).
-        // On 8GB+ machines, UEFI splits RAM across a PCI hole: ~2GB at
-        // 0x40000000 and ~6GB above 4GB. The largest region is above 4GB,
-        // but the kernel lives in the first region. The loader uses
-        // ram_regions[0].base for its offset, so we must match.
+        // The loader owns the relocation calculation and publishes the value
+        // used for both ELF loading and its linked RAM page-table mapping.
         let first_base = config.ram_regions[0].base;
         let first_size = config.ram_regions[0].size;
-
-        // Compute RAM base offset for DMA address translation.
-        // The kernel linker script assumes physical RAM starts at 0x40000000.
-        // On VMware Fusion ARM64, RAM starts at 0x80000000, giving offset 0x40000000.
-        // On QEMU/Parallels, RAM starts at 0x40000000, giving offset 0.
-        let expected_ram_base: u64 = 0x4000_0000;
-        let actual_ram_base = first_base & !0x3FFF_FFFF; // Round down to 1GB boundary
-        if actual_ram_base > expected_ram_base {
-            let offset = actual_ram_base - expected_ram_base;
-            RAM_BASE_OFFSET.store(offset, Ordering::Relaxed);
-        }
 
         if first_size > 0 {
             // Frame allocator starts after kernel image + BSS + SMP stacks (64 MB from RAM base).

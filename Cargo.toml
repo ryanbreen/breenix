@@ -62,7 +62,8 @@ test = false
 members = [
     "kernel",
     "parallels-loader",
-    "xtask"
+    "xtask",
+    "libs/arm64-boot-contract"
 ]
 
 [dependencies]

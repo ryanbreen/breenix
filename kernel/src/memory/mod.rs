@@ -353,18 +353,10 @@ impl PhysAddrWrapper {
         // 2. Subtracting phys_offset gives a reasonable physical address (< 4GB typically)
         // 3. It's NOT in a known non-direct-mapped region (heap on x86_64, MMIO, stack, etc.)
         if !is_heap && (virt as u64) >= phys_offset.as_u64() {
-            #[allow(unused_mut)]
-            let mut candidate_phys = (virt as u64) - phys_offset.as_u64();
-            // On aarch64 with VMware, RAM starts at 0x80000000 (not 0x40000000).
-            // The HHDM L1[1] maps VA HHDM+0x40000000 → PA 0x80000000, so addresses
-            // in the RAM region need the ram_base_offset added.
+            #[cfg(target_arch = "x86_64")]
+            let candidate_phys = (virt as u64) - phys_offset.as_u64();
             #[cfg(target_arch = "aarch64")]
-            {
-                let offset = crate::platform_config::ram_base_offset();
-                if offset > 0 && candidate_phys >= 0x4000_0000 {
-                    candidate_phys += offset;
-                }
-            }
+            let candidate_phys = crate::platform_config::kernel_va_to_ipa(virt as u64);
             // Physical RAM is typically < 4GB in our setup
             if candidate_phys < 0x1_0000_0000 {
                 return candidate_phys;

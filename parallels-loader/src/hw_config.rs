@@ -49,7 +49,7 @@ pub struct FramebufferInfo {
 pub struct HardwareConfig {
     /// Magic number for validation: 0x4252_4E58 ("BRNX")
     pub magic: u32,
-    /// Version of this struct (currently 1)
+    /// Version of this struct (currently 2)
     pub version: u32,
 
     // --- UART ---
@@ -124,10 +124,13 @@ pub struct HardwareConfig {
     /// Wall clock time (Unix timestamp) read from UEFI GetTime() at boot.
     /// 0 if not available.
     pub boot_wall_time_utc: u64,
+
+    /// Relocation offset used to load the image and build the linked RAM alias.
+    pub ram_base_offset: u64,
 }
 
 pub const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58; // "BRNX"
-pub const HARDWARE_CONFIG_VERSION: u32 = 1;
+pub use arm64_boot_contract::HARDWARE_CONFIG_VERSION;
 
 impl HardwareConfig {
     /// Create a zeroed config with magic and version set.
@@ -176,6 +179,7 @@ impl HardwareConfig {
             _pad6: 0,
             xhci_bar_phys: 0,
             boot_wall_time_utc: 0,
+            ram_base_offset: 0,
         }
     }
 

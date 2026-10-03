@@ -471,9 +471,9 @@ pub fn build_page_tables(
         let fb_l2_end = (fb_l2_start + 8).min(512); // 16MB for framebuffer
 
         for i in 0..512usize {
-            let va = 0x4000_0000 + (i as u64) * L2_BLOCK_SIZE;
+            let va = arm64_boot_contract::LINKED_RAM_START + (i as u64) * L2_BLOCK_SIZE;
 
-            if i < 256 {
+            if (i as u64) * L2_BLOCK_SIZE < arm64_boot_contract::LINKED_RAM_SIZE {
                 // VA 0x40000000-0x5FFFFFFF: kernel code/data/BSS/heap/DMA
                 // Remap to IPA = VA + offset (e.g., 0x80000000+)
                 let ipa = va + ram_base_offset;

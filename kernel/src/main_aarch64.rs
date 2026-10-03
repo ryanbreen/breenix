@@ -574,77 +574,73 @@ use kernel::graphics::particles;
 #[cfg(target_arch = "aarch64")]
 use kernel::serial;
 
-/// Kernel entry point called from assembly boot code.
+// Enter Rust only after selecting the linked code mapping. The loader's SP is
+// already in its low linked alias (0x42000000, IPA 0x82000000 on VMware).
+// QEMU's boot.S has already selected both high-half code and stack addresses.
+// No Rust frame or callee-saved address survives this non-returning transition.
 #[cfg(target_arch = "aarch64")]
-///
-/// At this point:
-/// - We're running at EL1 (or need to drop from EL2)
-/// - Stack is set up
-/// - BSS is zeroed
-/// - MMU is already enabled by boot.S (high-half kernel)
-#[no_mangle]
+core::arch::global_asm!(
+    r#"
+    .section .text.kernel_entry, "ax"
+    .global kernel_main
+    .type kernel_main, %function
+kernel_main:
+    cbz x0, 1f
+    mov x8, #0xffff000000000000
+    add sp, sp, x8
+1:
+    movz x9, #:abs_g0_nc:kernel_main_linked
+    movk x9, #:abs_g1_nc:kernel_main_linked
+    movk x9, #:abs_g2_nc:kernel_main_linked
+    movk x9, #:abs_g3:kernel_main_linked
+    br x9
+    .size kernel_main, . - kernel_main
+    "#
+);
+
+#[cfg(target_arch = "aarch64")]
+#[export_name = "kernel_main_linked"]
+#[inline(never)]
 #[cfg_attr(feature = "kthread_test_only", allow(unreachable_code))]
 pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
-    // Early breadcrumbs: write to UART for boot diagnostics.
-    // Read uart_base_phys from HardwareConfig (offset 8) to use the correct UART.
-    if hw_config_ptr != 0 {
-        unsafe {
-            let uart_base = core::ptr::read_volatile((hw_config_ptr + 8) as *const u64);
-            core::ptr::write_volatile(uart_base as *mut u8, b'1');
-            core::ptr::write_volatile(uart_base as *mut u8, b'2');
-            core::ptr::write_volatile(uart_base as *mut u8, b'K');
-        }
+    // One-time check immediately after the mapping transition: ADRP must now
+    // agree with absolute linker relocations, including on relocated VMware RAM.
+    let relative_text: u64;
+    let absolute_text: u64;
+    unsafe {
+        core::arch::asm!(
+            "adrp {relative}, __kernel_text_start",
+            "add {relative}, {relative}, :lo12:__kernel_text_start",
+            "movz {absolute}, #:abs_g0_nc:__kernel_text_start",
+            "movk {absolute}, #:abs_g1_nc:__kernel_text_start",
+            "movk {absolute}, #:abs_g2_nc:__kernel_text_start",
+            "movk {absolute}, #:abs_g3:__kernel_text_start",
+            relative = out(reg) relative_text,
+            absolute = out(reg) absolute_text,
+            options(nostack, nomem, preserves_flags),
+        );
     }
-
-    // If the UEFI loader passed a HardwareConfig, use it to configure platform
-    // addresses before any hardware access. On QEMU (boot.S), x0 is 0.
-    if hw_config_ptr != 0 {
+    if relative_text != absolute_text && hw_config_ptr != 0 {
+        // Configure the UART on this failure path so the panic is readable on
+        // VMware too, before normal platform initialization has taken place.
         let config = unsafe { &*(hw_config_ptr as *const kernel::platform_config::HardwareConfig) };
         kernel::platform_config::init_from_parallels(config);
+    }
+    assert_eq!(
+        relative_text, absolute_text,
+        "ARM64 boot mapping mismatch: PC-relative and absolute __kernel_text_start differ"
+    );
 
-        // Breadcrumb: 'P' = platform config initialized
-        unsafe {
-            let uart_base = core::ptr::read_volatile((hw_config_ptr + 8) as *const u64);
-            core::ptr::write_volatile(uart_base as *mut u8, b'P');
-        }
+    // Configure platform addresses while the loader's HardwareConfig remains
+    // accessible through TTBR0, before any device or secondary CPU is started.
+    if hw_config_ptr != 0 {
+        let config = unsafe { &*(hw_config_ptr as *const kernel::platform_config::HardwareConfig) };
+        assert!(
+            kernel::platform_config::init_from_parallels(config),
+            "ARM64 boot: incompatible loader HardwareConfig"
+        );
 
-        // CRITICAL: Switch from identity-mapped physical addresses to HHDM.
-        //
-        // On Parallels, the UEFI loader jumps to kernel_main at a physical address
-        // (e.g., 0x400xxxxx). The CPU is executing through TTBR0 (identity map).
-        // TTBR1 also maps the same physical memory at HHDM addresses (0xFFFF_0000_...).
-        //
-        // Problem: if we continue at physical addresses, all ADRP-computed addresses
-        // (function pointers, statics, exception vectors) resolve to physical addresses.
-        // After TTBR0 is switched to a process page table, these addresses become
-        // inaccessible — timer IRQ vectors fault, kernel threads can't resume, etc.
-        //
-        // Solution: switch SP and PC to HHDM addresses now. After this, all code runs
-        // through TTBR1, which is never modified. This mirrors what boot.S does on QEMU
-        // (line 143-147: adds KERNEL_VIRT_BASE to SP and branches to high-half code).
-        unsafe {
-            core::arch::asm!(
-                // Add HHDM offset to SP (switch to HHDM stack)
-                "mov x8, #0xFFFF",
-                "lsl x8, x8, #48",        // x8 = 0xFFFF_0000_0000_0000
-                "add sp, sp, x8",          // SP now in HHDM
-
-                // Compute HHDM address of continuation label and branch there.
-                // ADR gives the physical address of the label (PC-relative).
-                // Adding x8 gives the HHDM address.
-                "adr x9, 1f",             // x9 = physical addr of label '1'
-                "add x9, x9, x8",         // x9 = HHDM addr of label '1'
-                "br x9",                   // Branch to HHDM
-                "1:",
-                // Now executing at HHDM address through TTBR1.
-                // All subsequent ADRP instructions will compute HHDM-relative addresses.
-                out("x8") _,
-                out("x9") _,
-                options(nostack),
-            );
-        }
-
-        // Breadcrumb: 'H' = HHDM switch complete (use HHDM address for UART)
+        // Breadcrumb: 'H' = linked HHDM entry and platform setup complete.
         unsafe {
             let uart_phys = kernel::platform_config::uart_base_phys();
             let uart_hhdm = (0xFFFF_0000_0000_0000u64 + uart_phys) as *mut u8;
