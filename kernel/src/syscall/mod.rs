@@ -73,6 +73,7 @@ pub enum SyscallNumber {
     Mmap,
     Mprotect,
     Munmap,
+    Msync,
     Brk,
     Sigaction,
     Sigprocmask,
@@ -240,6 +241,7 @@ impl SyscallNumber {
             23 => Some(Self::Select),
             24 => Some(Self::Yield),   // was Breenix 3
             25 => Some(Self::Mremap),  // NEW stub
+            26 => Some(Self::Msync),
             28 => Some(Self::Madvise), // NEW stub
             32 => Some(Self::Dup),
             33 => Some(Self::Dup2),
@@ -452,6 +454,7 @@ impl SyscallNumber {
             221 => Some(Self::Exec),
             222 => Some(Self::Mmap),
             226 => Some(Self::Mprotect),
+            227 => Some(Self::Msync),
             233 => Some(Self::Madvise),
             // Wait
             260 => Some(Self::Wait4),

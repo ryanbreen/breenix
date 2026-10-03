@@ -21,7 +21,7 @@ use crate::memory::arch_stub::{Page, PhysFrame, Size4KiB, VirtAddr};
 // Import common memory syscall helpers
 use crate::syscall::memory_common::{
     cleanup_mapped_pages, flush_tlb, get_current_thread_id, is_page_aligned, prot_to_page_flags,
-    round_down_to_page, round_up_to_page, PAGE_SIZE,
+    round_down_to_page, PAGE_SIZE,
 };
 
 extern crate alloc;
@@ -82,27 +82,21 @@ pub fn sys_mmap(
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
     }
 
-    // Round length up to page size
-    let length = round_up_to_page(length);
-
-    // Require MAP_ANONYMOUS (file-backed not yet supported)
-    if !flags.contains(MmapFlags::ANONYMOUS) {
-        log::warn!("sys_mmap: file-backed mappings not yet supported");
-        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
-    }
-
-    // Must specify exactly one of MAP_SHARED or MAP_PRIVATE
+    let length = match length.checked_add(PAGE_SIZE - 1) {
+        Some(n) => round_down_to_page(n),
+        None => return SyscallResult::Err(super::errno::ENOMEM as u64),
+    };
+    let is_anonymous = flags.contains(MmapFlags::ANONYMOUS);
     let is_shared = flags.contains(MmapFlags::SHARED);
     let is_private = flags.contains(MmapFlags::PRIVATE);
-    if !is_shared && !is_private {
-        log::warn!("sys_mmap: must specify MAP_SHARED or MAP_PRIVATE");
-        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+    if is_shared == is_private || (!is_anonymous && !is_page_aligned(offset)) {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-
-    // File descriptor should be -1 for anonymous mappings
-    if fd != -1 {
-        log::warn!("sys_mmap: fd must be -1 for MAP_ANONYMOUS");
-        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+    if is_anonymous && fd != -1 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    if !is_anonymous && (offset > i64::MAX as u64 || offset.checked_add(length).is_none()) {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
     }
 
     // Get current thread and process
@@ -113,6 +107,55 @@ pub fn sys_mmap(
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
+
+    // Snapshot the file identity/access mode, then load pages with IRQs enabled.
+    // No descriptor or position is retained: closing/reusing the fd is harmless.
+    let mut file_pages = alloc::vec::Vec::new();
+    let mut file_write_allowed = true;
+    if !is_anonymous {
+        let (mount_id, inode_num, open_flags) = {
+            let guard = crate::process::manager();
+            let manager = match guard.as_ref() {
+                Some(manager) => manager,
+                None => return SyscallResult::Err(super::errno::ESRCH as u64),
+            };
+            let (_, process) = match manager.find_process_by_thread(current_thread_id) {
+                Some(p) => p,
+                None => return SyscallResult::Err(super::errno::ESRCH as u64),
+            };
+            let entry = match i32::try_from(fd)
+                .ok()
+                .and_then(|fd| process.fd_table.get(fd))
+            {
+                Some(entry) => entry,
+                None => return SyscallResult::Err(super::errno::EBADF as u64),
+            };
+            match &entry.kind {
+                crate::ipc::FdKind::RegularFile(file) => {
+                    let file = file.lock();
+                    (file.mount_id, file.inode_num, entry.status_flags())
+                }
+                _ => return SyscallResult::Err(super::errno::ENODEV as u64),
+            }
+        };
+        let access = open_flags & 3;
+        file_write_allowed = is_private || access == 2;
+        if access == 1 || (is_shared && prot.contains(Protection::WRITE) && access != 2) {
+            return SyscallResult::Err(super::errno::EACCES as u64);
+        }
+        if file_pages
+            .try_reserve_exact((length / PAGE_SIZE) as usize)
+            .is_err()
+        {
+            return SyscallResult::Err(super::errno::ENOMEM as u64);
+        }
+        for page_offset in (0..length).step_by(PAGE_SIZE as usize) {
+            match crate::memory::file_mapping::get_page(mount_id, inode_num, offset + page_offset) {
+                Ok(page) => file_pages.push(page),
+                Err(errno) => return SyscallResult::Err(errno),
+            }
+        }
+    }
 
     // Phase 1: Acquire lock to read process metadata and get a raw pointer to the
     // page table.  We release the lock BEFORE the page-mapping loop so that we do
@@ -247,7 +290,10 @@ pub fn sys_mmap(
             }
         };
 
-        let page_flags = prot_to_page_flags(prot);
+        let mut page_flags = prot_to_page_flags(prot);
+        if !is_anonymous && is_private && prot.contains(Protection::WRITE) {
+            page_flags = crate::memory::process_memory::make_cow_flags(page_flags);
+        }
         // SAFETY: page_table lives inside a Box<ProcessPageTable> inside the process,
         // which remains valid for the duration of this syscall (see comment above).
         let page_table_ptr: *mut _ = &mut **page_table;
@@ -264,7 +310,11 @@ pub fn sys_mmap(
     let mut current_page = start_page;
 
     loop {
-        let frame = match crate::memory::frame_allocator::allocate_frame() {
+        let file_page = file_pages.get(mapped_pages.len());
+        let frame = match file_page
+            .map(|page| page.frame)
+            .or_else(|| crate::memory::frame_allocator::allocate_frame())
+        {
             Some(f) => f,
             None => {
                 log::error!(
@@ -286,15 +336,19 @@ pub fn sys_mmap(
                 current_page.start_address().as_u64(),
                 e
             );
-            crate::memory::frame_allocator::deallocate_frame(frame);
+            if is_anonymous {
+                crate::memory::frame_allocator::deallocate_frame(frame);
+            }
             cleanup_mapped_pages(page_table, &mapped_pages);
             return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
         }
 
         let phys_addr = frame.start_address().as_u64();
         let virt_ptr = (physical_memory_offset.as_u64() + phys_addr) as *mut u8;
-        unsafe {
-            core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
+        if is_anonymous {
+            unsafe {
+                core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
+            }
         }
 
         flush_tlb(current_page.start_address());
@@ -313,12 +367,14 @@ pub fn sys_mmap(
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
-                let vma = Vma::new(
+                let mut vma = Vma::new(
                     VirtAddr::new(start_addr),
                     VirtAddr::new(end_addr),
                     prot,
                     flags,
                 );
+                vma.file_pages = file_pages;
+                vma.file_write_allowed = file_write_allowed;
                 process.vmas.push(vma);
             }
         }
@@ -357,8 +413,10 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
     }
 
-    // Round length up to page size
-    let length = round_up_to_page(length);
+    let length = match length.checked_add(PAGE_SIZE - 1) {
+        Some(n) => round_down_to_page(n),
+        None => return SyscallResult::Err(super::errno::EINVAL as u64),
+    };
     let end_addr = match addr.checked_add(length) {
         Some(a) => a,
         None => {
@@ -414,6 +472,10 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         }
     };
 
+    if new_prot.contains(Protection::WRITE) && !process.vmas[vma_index].file_write_allowed {
+        return SyscallResult::Err(super::errno::EACCES as u64);
+    }
+
     // Get the process page table
     let page_table = match process.page_table.as_mut() {
         Some(pt) => pt,
@@ -430,7 +492,17 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
 
     let mut pages_updated = 0u32;
     for page in Page::range_inclusive(start_page, end_page) {
-        match page_table.update_page_flags(page, new_flags) {
+        let flags = if !process.vmas[vma_index].file_pages.is_empty()
+            && process.vmas[vma_index].flags.contains(MmapFlags::PRIVATE)
+            && new_prot.contains(Protection::WRITE)
+        {
+            // Reapplying CoW is safe even after a private copy: a sole-owner
+            // frame becomes writable again without another allocation.
+            crate::memory::process_memory::make_cow_flags(new_flags)
+        } else {
+            new_flags
+        };
+        match page_table.update_page_flags(page, flags) {
             Ok(()) => {
                 // Flush TLB for this page to ensure new flags take effect
                 flush_tlb(page.start_address());
@@ -477,8 +549,10 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
     }
 
-    // Round length up to page size
-    let length = round_up_to_page(length);
+    let length = match length.checked_add(PAGE_SIZE - 1) {
+        Some(n) => round_down_to_page(n),
+        None => return SyscallResult::Err(super::errno::EINVAL as u64),
+    };
     // `checked_add`, matching `sys_mmap`'s sibling computation above (PR
     // #744 review F8): an overflowing `addr + length` used to fall out as
     // EINVAL only incidentally, via the exact-match VMA lookup below never
@@ -501,6 +575,29 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
+
+    let vma = {
+        let guard = crate::process::manager();
+        let vma = guard
+            .as_ref()
+            .and_then(|m| m.find_process_by_thread(current_thread_id))
+            .and_then(|(_, p)| {
+                p.vmas
+                    .iter()
+                    .find(|v| v.start.as_u64() == addr && v.end.as_u64() == end_addr)
+            });
+        match vma {
+            Some(vma) => vma.clone(),
+            None => return SyscallResult::Err(super::errno::EINVAL as u64),
+        }
+    };
+    if vma.flags.contains(MmapFlags::SHARED) {
+        for page in &vma.file_pages {
+            if let Err(errno) = page.writeback() {
+                return SyscallResult::Err(errno);
+            }
+        }
+    }
 
     let mut manager_guard = crate::process::manager();
     let manager = match *manager_guard {
@@ -573,5 +670,57 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
     // Remove VMA from process
     process.vmas.remove(vma_index);
 
+    SyscallResult::Ok(0)
+}
+
+/// Flush shared file pages in the requested mapped range. Private mappings have
+/// no writeback. Like mmap/munmap, filesystem I/O runs outside PROCESS_MANAGER.
+pub fn sys_msync(addr: u64, length: u64, flags: u32) -> SyscallResult {
+    // MS_ASYNC=1, MS_INVALIDATE=2, MS_SYNC=4. Synchronous completion also
+    // satisfies MS_ASYNC; invalidation is unnecessary for coherent resident pages.
+    if !is_page_aligned(addr) || flags & !7 != 0 || flags & 5 == 5 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    let end = match length
+        .checked_add(PAGE_SIZE - 1)
+        .map(round_down_to_page)
+        .and_then(|len| addr.checked_add(len))
+    {
+        Some(end) => end,
+        None => return SyscallResult::Err(super::errno::ENOMEM as u64),
+    };
+    let thread_id = match get_current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(super::errno::ESRCH as u64),
+    };
+    let vmas = {
+        let guard = crate::process::manager();
+        match guard
+            .as_ref()
+            .and_then(|m| m.find_process_by_thread(thread_id))
+        {
+            Some((_, process)) => process.vmas.clone(),
+            None => return SyscallResult::Err(super::errno::ESRCH as u64),
+        }
+    };
+    let mut current = addr;
+    while current < end {
+        let vma = match vmas
+            .iter()
+            .find(|vma| vma.start.as_u64() <= current && current < vma.end.as_u64())
+        {
+            Some(vma) => vma,
+            None => return SyscallResult::Err(super::errno::ENOMEM as u64),
+        };
+        if vma.flags.contains(MmapFlags::SHARED) {
+            let index = ((current - vma.start.as_u64()) / PAGE_SIZE) as usize;
+            if let Some(page) = vma.file_pages.get(index) {
+                if let Err(errno) = page.writeback() {
+                    return SyscallResult::Err(errno);
+                }
+            }
+        }
+        current += PAGE_SIZE;
+    }
     SyscallResult::Ok(0)
 }

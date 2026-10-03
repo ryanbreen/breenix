@@ -1188,7 +1188,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
             // Dispatch to correct filesystem based on mount_id
             let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
-            let (data, update_atime) = if is_home {
+            let (mut data, update_atime) = if is_home {
                 let fs_guard = crate::fs::ext2::home_fs_read();
                 let fs = match fs_guard.as_ref() {
                     Some(fs) => fs,
@@ -1236,6 +1236,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             };
 
+            crate::memory::file_mapping::read_resident(file_mount_id, inode_num, position, &mut data);
             let bytes_read = data.len();
 
             // Copy data to userspace
@@ -5386,7 +5387,8 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
         }
         let to_read = core::cmp::min(count, file_size - file_offset) as usize;
         match fs.read_file_range(&inode, file_offset, to_read) {
-            Ok(data) => {
+            Ok(mut data) => {
+                crate::memory::file_mapping::read_resident(mount_id, inode_num, file_offset, &mut data);
                 let actual = core::cmp::min(data.len(), to_read);
                 unsafe {
                     core::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr as *mut u8, actual);

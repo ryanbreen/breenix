@@ -94,6 +94,10 @@ pub struct Vma {
     pub prot: Protection,
     /// Memory mapping flags
     pub flags: MmapFlags,
+    /// Retained file pages, independent of descriptor lifetime.
+    pub file_pages: Vec<alloc::sync::Arc<super::file_mapping::FilePage>>,
+    /// A shared file mapping cannot gain write permission from a read-only fd.
+    pub file_write_allowed: bool,
 }
 
 impl Vma {
@@ -104,6 +108,8 @@ impl Vma {
             end,
             prot,
             flags,
+            file_pages: Vec::new(),
+            file_write_allowed: true,
         }
     }
 

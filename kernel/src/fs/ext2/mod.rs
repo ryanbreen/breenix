@@ -246,6 +246,23 @@ impl Ext2Fs {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, &'static str> {
+        let written = self.write_file_range_uncached(inode_num, offset, data)?;
+        crate::memory::file_mapping::write_resident(
+            self.mount_id,
+            inode_num as u64,
+            offset,
+            &data[..written],
+        );
+        Ok(written)
+    }
+
+    /// Write a mapping snapshot without copying it back over newer mapped stores.
+    pub(crate) fn write_file_range_uncached(
+        &mut self,
+        inode_num: u32,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<usize, &'static str> {
         if data.is_empty() {
             return Ok(0);
         }

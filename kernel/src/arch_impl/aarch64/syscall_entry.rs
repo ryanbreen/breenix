@@ -490,6 +490,7 @@ fn dispatch_syscall_enum(
             arg5 as i64,
             arg6,
         )),
+        SyscallNumber::Msync => result_to_u64(crate::syscall::mmap::sys_msync(arg1, arg2, arg3 as u32)),
         SyscallNumber::Munmap => result_to_u64(crate::syscall::mmap::sys_munmap(arg1, arg2)),
         SyscallNumber::Mprotect => {
             result_to_u64(crate::syscall::mmap::sys_mprotect(arg1, arg2, arg3 as u32))

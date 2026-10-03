@@ -52,6 +52,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Mmap => {
             super::mmap::sys_mmap(arg1, arg2, arg3 as u32, arg4 as u32, arg5 as i64, arg6)
         }
+        SyscallNumber::Msync => super::mmap::sys_msync(arg1, arg2, arg3 as u32),
         SyscallNumber::Munmap => super::mmap::sys_munmap(arg1, arg2),
         SyscallNumber::Mprotect => super::mmap::sys_mprotect(arg1, arg2, arg3 as u32),
         SyscallNumber::Kill => super::signal::sys_kill(arg1 as i64, arg2 as i32),

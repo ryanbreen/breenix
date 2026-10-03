@@ -48,6 +48,9 @@ pub const EBUSY: i32 = 16;
 /// File exists
 pub const EEXIST: i32 = 17;
 
+/// Mapping is unsupported by this descriptor type
+pub const ENODEV: i32 = 19;
+
 /// Not a directory
 pub const ENOTDIR: i32 = 20;
 
