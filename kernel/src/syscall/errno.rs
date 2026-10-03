@@ -73,6 +73,9 @@ pub const ERANGE: i32 = 34;
 /// Resource deadlock would occur (a blocking record lock would wait forever)
 pub const EDEADLK: i32 = 35;
 
+/// No locks available (the record-lock table is full)
+pub const ENOLCK: i32 = 37;
+
 /// Function not implemented (used by syscall dispatcher)
 #[allow(dead_code)]
 pub const ENOSYS: i32 = 38;

@@ -5,8 +5,208 @@
 //! - Reading/writing kernel memory via malicious userspace pointers
 //! - Dereferencing unmapped addresses
 //! - Integer overflow attacks in pointer arithmetic
+//!
+//! This module's copies, and the byte-buffer copies in `handlers.rs`, go
+//! through `read_user_bytes` and `write_user_bytes`. They copy through a small
+//! assembly routine whose user-access instructions the page-fault (x86_64) and
+//! data-abort (aarch64) handlers recognise through `uaccess_fixup`: a fault
+//! there that the handler cannot resolve as it would for a user-mode access
+//! (a copy-on-write write, or x86_64 user-stack growth) resumes at the
+//! routine's fault exit, so a bad pointer becomes EFAULT instead of a kernel
+//! fault. On aarch64 the routine uses the unprivileged `ldtr`/`sttr` forms, so
+//! the page must also be readable or writable from EL0; on x86_64 CR0.WP makes
+//! a write to a read-only page fault.
 
 use super::SyscallResult;
+
+// x86_64: one routine serves both directions. `rep movsb` is restartable, so a
+// fault leaves RIP on it with RCX holding the bytes still to copy.
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    r#"
+    .pushsection .text.breenix_uaccess, "ax"
+    .global breenix_uaccess_copy
+    .global breenix_uaccess_insn
+    .global breenix_uaccess_fixup
+// breenix_uaccess_copy(dst: RDI, src: RSI, len: RDX) -> RAX (0 = copied, 1 = faulted)
+breenix_uaccess_copy:
+    mov rcx, rdx
+breenix_uaccess_insn:
+    rep movsb
+    xor eax, eax
+    ret
+breenix_uaccess_fixup:
+    mov eax, 1
+    ret
+    .popsection
+"#
+);
+
+// aarch64: the user side of each copy is a single unprivileged access, so only
+// those instructions are recognised; the kernel-side access is not. When both
+// pointers are 8-byte aligned the copy moves words, then the tail in bytes.
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    r#"
+    .pushsection .text.breenix_uaccess, "ax"
+    .global breenix_uaccess_read
+    .global breenix_uaccess_write
+    .global breenix_uaccess_load8
+    .global breenix_uaccess_load
+    .global breenix_uaccess_store8
+    .global breenix_uaccess_store
+    .global breenix_uaccess_fixup
+// breenix_uaccess_read(dst: x0 kernel, src: x1 user, len: x2) -> x0 (0 = copied, 1 = faulted)
+breenix_uaccess_read:
+    orr x4, x0, x1
+    tst x4, #7
+    b.ne 2f
+1:
+    cmp x2, #8
+    b.lo 2f
+breenix_uaccess_load8:
+    ldtr x3, [x1]
+    str x3, [x0], #8
+    add x1, x1, #8
+    sub x2, x2, #8
+    b 1b
+2:
+    cbz x2, 4f
+3:
+breenix_uaccess_load:
+    ldtrb w3, [x1]
+    strb w3, [x0], #1
+    add x1, x1, #1
+    subs x2, x2, #1
+    b.ne 3b
+4:
+    mov x0, #0
+    ret
+// breenix_uaccess_write(dst: x0 user, src: x1 kernel, len: x2) -> x0 (0 = copied, 1 = faulted)
+breenix_uaccess_write:
+    orr x4, x0, x1
+    tst x4, #7
+    b.ne 6f
+5:
+    cmp x2, #8
+    b.lo 6f
+    ldr x3, [x1], #8
+breenix_uaccess_store8:
+    sttr x3, [x0]
+    add x0, x0, #8
+    sub x2, x2, #8
+    b 5b
+6:
+    cbz x2, 8f
+7:
+    ldrb w3, [x1], #1
+breenix_uaccess_store:
+    sttrb w3, [x0]
+    add x0, x0, #1
+    subs x2, x2, #1
+    b.ne 7b
+8:
+    mov x0, #0
+    ret
+breenix_uaccess_fixup:
+    mov x0, #1
+    ret
+    .popsection
+"#
+);
+
+extern "C" {
+    #[cfg(target_arch = "x86_64")]
+    fn breenix_uaccess_copy(dst: *mut u8, src: *const u8, len: usize) -> usize;
+    #[cfg(target_arch = "x86_64")]
+    static breenix_uaccess_insn: u8;
+    #[cfg(target_arch = "aarch64")]
+    fn breenix_uaccess_read(dst: *mut u8, src: *const u8, len: usize) -> usize;
+    #[cfg(target_arch = "aarch64")]
+    fn breenix_uaccess_write(dst: *mut u8, src: *const u8, len: usize) -> usize;
+    #[cfg(target_arch = "aarch64")]
+    static breenix_uaccess_load8: u8;
+    #[cfg(target_arch = "aarch64")]
+    static breenix_uaccess_load: u8;
+    #[cfg(target_arch = "aarch64")]
+    static breenix_uaccess_store8: u8;
+    #[cfg(target_arch = "aarch64")]
+    static breenix_uaccess_store: u8;
+    static breenix_uaccess_fixup: u8;
+}
+
+/// Where a kernel-mode fault at `pc` on address `addr` resumes, if `pc` is one
+/// of the user-copy routine's user-access instructions and `addr` is a user
+/// address. Called from the fault handlers: no locks, no allocation, no output.
+pub fn uaccess_fixup(pc: u64, addr: u64) -> Option<u64> {
+    if addr >= crate::memory::layout::USER_STACK_REGION_END {
+        return None;
+    }
+    // Only the addresses of these assembly labels are taken.
+    #[cfg(target_arch = "x86_64")]
+    let hit = pc == core::ptr::addr_of!(breenix_uaccess_insn) as u64;
+    #[cfg(target_arch = "aarch64")]
+    let hit = [
+        core::ptr::addr_of!(breenix_uaccess_load8),
+        core::ptr::addr_of!(breenix_uaccess_load),
+        core::ptr::addr_of!(breenix_uaccess_store8),
+        core::ptr::addr_of!(breenix_uaccess_store),
+    ]
+    .iter()
+    .any(|&insn| pc == insn as u64);
+    hit.then(|| core::ptr::addr_of!(breenix_uaccess_fixup) as u64)
+}
+
+/// Copy `len` bytes from user address `src` into the kernel buffer `dst`. The
+/// user pointer needs no particular alignment.
+///
+/// `Err(14)` (EFAULT) if the range is not a legitimate user range, or any byte
+/// of it is unmapped or not readable by the process.
+pub fn read_user_bytes(dst: *mut u8, src: u64, len: usize) -> Result<(), u64> {
+    if len == 0 {
+        return Ok(());
+    }
+    if src == 0 || !crate::memory::layout::is_valid_user_range(src, len) {
+        return Err(14); // EFAULT
+    }
+    // SAFETY: `dst` is a kernel buffer of `len` bytes owned by the caller; the
+    // user side faults into the routine's fault exit rather than the kernel.
+    #[cfg(target_arch = "x86_64")]
+    let faulted = unsafe { breenix_uaccess_copy(dst, src as *const u8, len) };
+    #[cfg(target_arch = "aarch64")]
+    let faulted = unsafe { breenix_uaccess_read(dst, src as *const u8, len) };
+    if faulted == 0 {
+        Ok(())
+    } else {
+        Err(14) // EFAULT
+    }
+}
+
+/// Copy `len` bytes from the kernel buffer `src` to user address `dst`.
+///
+/// `Err(14)` (EFAULT) if the range is not a legitimate user range, or any byte
+/// of it is unmapped or not writable by the process. A copy-on-write page is
+/// copied by the fault handler and the write goes ahead. A fault part way
+/// through leaves the bytes before it written.
+pub fn write_user_bytes(dst: u64, src: *const u8, len: usize) -> Result<(), u64> {
+    if len == 0 {
+        return Ok(());
+    }
+    if dst == 0 || !crate::memory::layout::is_valid_user_range(dst, len) {
+        return Err(14); // EFAULT
+    }
+    // SAFETY: `src` is a kernel buffer of `len` bytes owned by the caller; the
+    // user side faults into the routine's fault exit rather than the kernel.
+    #[cfg(target_arch = "x86_64")]
+    let faulted = unsafe { breenix_uaccess_copy(dst as *mut u8, src, len) };
+    #[cfg(target_arch = "aarch64")]
+    let faulted = unsafe { breenix_uaccess_write(dst as *mut u8, src, len) };
+    if faulted == 0 {
+        Ok(())
+    } else {
+        Err(14) // EFAULT
+    }
+}
 
 /// Validate that a userspace pointer is safe to read from
 ///
@@ -80,16 +280,17 @@ pub fn copy_from_user<T: Copy>(ptr: *const T) -> Result<T, u64> {
     // Validate the pointer first
     validate_user_ptr_read(ptr)?;
 
-    // SAFETY: We just validated that:
-    // - ptr is not null
-    // - ptr is in userspace range
-    // - ptr + sizeof(T) doesn't overflow or cross into kernel space
-    // However, we can't guarantee the memory is mapped. A page fault
-    // will occur if userspace passed an unmapped address, which the
-    // kernel should handle gracefully.
-    let value = unsafe { core::ptr::read_volatile(ptr) };
-
-    Ok(value)
+    // Byte-wise, so the user pointer needs no alignment, and through the
+    // fault-tolerant routine, so an unmapped or unreadable page is EFAULT.
+    let mut value = core::mem::MaybeUninit::<T>::uninit();
+    read_user_bytes(
+        value.as_mut_ptr() as *mut u8,
+        ptr as u64,
+        core::mem::size_of::<T>(),
+    )?;
+    // SAFETY: every byte of `value` was just written. As before, callers only
+    // use this for plain-data types for which any byte pattern is valid.
+    Ok(unsafe { value.assume_init() })
 }
 
 /// Safely copy data from kernel to userspace
@@ -109,18 +310,13 @@ pub fn copy_to_user<T: Copy>(ptr: *mut T, value: &T) -> Result<(), u64> {
     // Validate the pointer first
     validate_user_ptr_write(ptr)?;
 
-    // SAFETY: We just validated that:
-    // - ptr is not null
-    // - ptr is in userspace range
-    // - ptr + sizeof(T) doesn't overflow or cross into kernel space
-    // However, we can't guarantee the memory is mapped. A page fault
-    // will occur if userspace passed an unmapped address, which the
-    // kernel should handle gracefully.
-    unsafe {
-        core::ptr::write_volatile(ptr, *value);
-    }
-
-    Ok(())
+    // Byte-wise, so the user pointer needs no alignment, and through the
+    // fault-tolerant routine, so an unmapped or read-only page is EFAULT.
+    write_user_bytes(
+        ptr as u64,
+        value as *const T as *const u8,
+        core::mem::size_of::<T>(),
+    )
 }
 
 /// Convert a validation error to a SyscallResult
@@ -205,9 +401,8 @@ pub fn copy_cstr_from_user(ptr: u64) -> Result<alloc::string::String, u64> {
             _ => return Err(14), // EFAULT - overflow or kernel address
         };
 
-        // Read the byte
-        // SAFETY: We validated that byte_addr is in userspace range
-        let byte = unsafe { core::ptr::read_volatile(byte_addr as *const u8) };
+        let mut byte = 0u8;
+        read_user_bytes(&mut byte, byte_addr, 1)?;
 
         if byte == 0 {
             // Found null terminator

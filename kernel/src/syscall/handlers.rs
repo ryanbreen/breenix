@@ -70,11 +70,11 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
     }
 
     let mut buffer = Vec::with_capacity(len);
-
-    unsafe {
-        let slice = core::slice::from_raw_parts(user_ptr as *const u8, len);
-        buffer.extend_from_slice(slice);
-    }
+    // An unmapped or unreadable user page is a failed copy, not a kernel fault.
+    super::userptr::read_user_bytes(buffer.as_mut_ptr(), user_ptr, len)
+        .map_err(|_| "unmapped userspace address")?;
+    // SAFETY: read_user_bytes wrote all `len` bytes of the reserved capacity.
+    unsafe { buffer.set_len(len) };
 
     Ok(buffer)
 }
@@ -117,7 +117,9 @@ fn copy_string_from_user(user_ptr: u64, max_len: usize) -> Result<Vec<u8>, &'sta
             return Err("unmapped userspace address");
         }
 
-        let byte = unsafe { *(addr as *const u8) };
+        let mut byte = 0u8;
+        super::userptr::read_user_bytes(&mut byte, addr, 1)
+            .map_err(|_| "unmapped userspace address")?;
         buffer.push(byte);
 
         if byte == 0 {
@@ -160,16 +162,10 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
 
     // CRITICAL: Access user memory WITHOUT switching CR3
     // This works because when we're in a syscall from userspace, we're already
-    // using the process's page table, which has both kernel and user mappings
-    unsafe {
-        // Directly copy the data - the memory should be accessible
-        // because we're already in the process's context
-        let dst = user_ptr as *mut u8;
-        let src = kernel_ptr as *const u8;
-        core::ptr::copy_nonoverlapping(src, dst, len);
-    }
-
-    Ok(())
+    // using the process's page table, which has both kernel and user mappings.
+    // An unmapped or read-only user page is a failed copy, not a kernel fault.
+    super::userptr::write_user_bytes(user_ptr, kernel_ptr as *const u8, len)
+        .map_err(|_| "unmapped or read-only userspace address")
 }
 
 /// sys_exit - Terminate the current process
@@ -3777,9 +3773,9 @@ pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
 
     // Get mutable access to process manager
     let mut manager_guard = crate::process::manager();
-    let (pid, process) = match &mut *manager_guard {
+    let process = match &mut *manager_guard {
         Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((pid, p)) => (pid, p),
+            Some((_pid, p)) => p,
             None => {
                 log::error!("sys_dup2: Thread {} not in any process", thread_id);
                 return SyscallResult::Err(9); // EBADF
@@ -3793,12 +3789,13 @@ pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
 
     // Call the fd_table's dup2 implementation
     let duplicated = process.fd_table.dup2(old_fd as i32, new_fd as i32);
+    let lock_owner = process.lock_owner.id();
     drop(manager_guard);
     match duplicated {
         Ok((fd, overwritten)) => {
             if let Some(entry) = overwritten {
                 // dup2 closes new_fd first, and that close drops record locks.
-                crate::fs::locks::release_closed(pid.as_u64(), &entry.kind);
+                crate::fs::locks::release_closed(lock_owner, &entry.kind);
                 crate::task::process_task::close_extracted_fds(alloc::vec![(
                     new_fd as usize,
                     entry
@@ -4043,8 +4040,10 @@ struct Flock {
 
 /// fcntl `F_GETLK`, `F_SETLK` and `F_SETLKW` on a regular file.
 ///
-/// The descriptor's file, owner and access mode are read under PM; the lock
-/// table is used only after PM is released, because `F_SETLKW` sleeps.
+/// The descriptor's file, lock owner (the thread group's) and access mode are
+/// read under PM; the lock table is used only after PM is released, because
+/// `F_SETLKW` sleeps. The `struct flock` is copied through the fault-tolerant
+/// user-copy routine, so a bad pointer is EFAULT.
 fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> SyscallResult {
     use super::errno::{EBADF, EINVAL, EIO, EOVERFLOW};
     use super::fs::{O_RDONLY, O_WRONLY, SEEK_CUR, SEEK_END, SEEK_SET};
@@ -4055,7 +4054,7 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
 
     let (owner, key, access, position) = {
         let manager_guard = crate::process::manager();
-        let Some((pid, process)) = manager_guard
+        let Some((_pid, process)) = manager_guard
             .as_ref()
             .and_then(|m| m.find_process_by_thread(thread_id))
         else {
@@ -4065,7 +4064,7 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
             Some(FdKind::RegularFile(file)) => {
                 let file = file.lock();
                 (
-                    pid.as_u64(),
+                    process.lock_owner.id(),
                     FileKey {
                         mount_id: file.mount_id,
                         inode: file.inode_num,

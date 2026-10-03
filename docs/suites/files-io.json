@@ -428,6 +428,30 @@
         {
           "id": "lock-owner",
           "title": "F_GETLK reports the conflicting lock owner PID"
+        },
+        {
+          "id": "lock-efault",
+          "title": "F_GETLK and F_SETLK reject an unmapped or read-only struct flock with EFAULT"
+        },
+        {
+          "id": "lockw-wait",
+          "title": "F_SETLKW waits for a conflicting lock and acquires it once released"
+        },
+        {
+          "id": "lockw-eintr",
+          "title": "A signal ends an F_SETLKW wait with EINTR"
+        },
+        {
+          "id": "lockw-deadlock",
+          "title": "F_SETLKW fails with EDEADLK instead of waiting into a deadlock"
+        },
+        {
+          "id": "lockw-woken",
+          "title": "A woken F_SETLKW waiter no longer counts toward deadlock detection"
+        },
+        {
+          "id": "lockw-killed",
+          "title": "Killing a process blocked in F_SETLKW releases its locks and its wait"
         }
       ]
     },

@@ -2,7 +2,7 @@
 //! Fixtures live on the writable root filesystem, not an in-memory mock. No
 //! unsupported operation is skipped: missing syscalls fail.
 use libbreenix::error::Error;
-use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
+use libbreenix::suite::{case, category, check, fail, suite, CaseError, CaseResult, Suite};
 use libbreenix::syscall::{nr, raw};
 use libbreenix::types::Fd;
 use libbreenix::{
@@ -367,6 +367,64 @@ fn lock_peer(f: &Fixture, owner: bool, available: bool) -> CaseResult {
         ),
     }
 }
+const F_GETLK: i32 = 5;
+const F_SETLK: i32 = 6;
+const F_SETLKW: i32 = 7;
+const F_WRLCK: i16 = 1;
+const F_UNLCK: i16 = 2;
+fn setlk(fd: Fd, cmd: i32, kind: i16, start: i64, len: i64) -> Result<i64, Error> {
+    let mut l = Flock {
+        kind,
+        whence: 0,
+        start,
+        len,
+        pid: 0,
+    };
+    lock(fd, cmd, &mut l)
+}
+/// Fork a child that opens `f`, takes a write lock on byte `held` if given,
+/// writes one byte to a pipe and then runs `wait`, exiting 0 if it returns
+/// `Ok`. The parent gets the child's PID once the child is blocked: it has
+/// sent its byte and is still running 200 ms later.
+fn fork_waiter(
+    f: &Fixture,
+    held: Option<i64>,
+    wait: impl FnOnce(Fd) -> CaseResult,
+) -> Result<i32, CaseError> {
+    let (r, w) = io::pipe()?;
+    match process::fork()? {
+        process::ForkResult::Child => {
+            let result = (|| -> CaseResult {
+                let d = f.open(O_RDWR)?;
+                if let Some(byte) = held {
+                    setlk(d, F_SETLK, F_WRLCK, byte, 1)?;
+                }
+                io::write(w, b"w")?;
+                wait(d)
+            })();
+            process::exit(if result.is_ok() { 0 } else { 1 });
+        }
+        process::ForkResult::Parent(pid) => {
+            let pid = pid.raw() as i32;
+            io::close(w)?;
+            let mut byte = [0u8; 1];
+            let n = io::read(r, &mut byte)?;
+            io::close(r)?;
+            if n != 1 {
+                return Err("the waiting child failed before it started to wait".into());
+            }
+            time::sleep_ms(200)?;
+            let mut status = 0;
+            let done = process::waitpid(pid, &mut status, process::WNOHANG)
+                .map_err(|e| format!("waitpid: {e}"))?;
+            if done.raw() != 0 {
+                return Err("F_SETLKW returned while a conflicting lock was held".into());
+            }
+            Ok(pid)
+        }
+    }
+}
+extern "C" fn ignore_signal(_: i32) {}
 fn pipe_sigpipe() -> CaseResult {
     let (r, w) = io::pipe()?;
     io::close(r)?;
@@ -1018,6 +1076,36 @@ static SUITE: Suite = suite(
                     "lock-owner",
                     "F_GETLK reports the conflicting lock owner PID",
                     fcntl_lock_owner,
+                ),
+                case(
+                    "lock-efault",
+                    "F_GETLK and F_SETLK reject an unmapped or read-only struct flock with EFAULT",
+                    fcntl_lock_efault,
+                ),
+                case(
+                    "lockw-wait",
+                    "F_SETLKW waits for a conflicting lock and acquires it once released",
+                    fcntl_lockw_wait,
+                ),
+                case(
+                    "lockw-eintr",
+                    "A signal ends an F_SETLKW wait with EINTR",
+                    fcntl_lockw_eintr,
+                ),
+                case(
+                    "lockw-deadlock",
+                    "F_SETLKW fails with EDEADLK instead of waiting into a deadlock",
+                    fcntl_lockw_deadlock,
+                ),
+                case(
+                    "lockw-woken",
+                    "A woken F_SETLKW waiter no longer counts toward deadlock detection",
+                    fcntl_lockw_woken,
+                ),
+                case(
+                    "lockw-killed",
+                    "Killing a process blocked in F_SETLKW releases its locks and its wait",
+                    fcntl_lockw_killed,
                 ),
             ],
         ),
@@ -2083,6 +2171,148 @@ fn fcntl_lock_conflict() -> CaseResult {
 fn fcntl_lock_owner() -> CaseResult {
     let f = Fixture::new(b"abcdef")?;
     lock_conflict(&f, true)
+}
+
+fn fcntl_lock_efault() -> CaseResult {
+    use libbreenix::memory::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+    let f = Fixture::new(b"abcdef")?;
+    let page = memory::mmap(
+        std::ptr::null_mut(),
+        4096,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    )?;
+    memory::munmap(page, 4096)?;
+    expect_errno(
+        io::fcntl(f.fd(), F_GETLK, page as i64),
+        14,
+        "F_GETLK with an unmapped struct flock",
+    )?;
+    expect_errno(
+        io::fcntl(f.fd(), F_SETLK, page as i64),
+        14,
+        "F_SETLK with an unmapped struct flock",
+    )?;
+    // A zeroed page reads as an F_RDLCK request, so F_GETLK must write the
+    // F_UNLCK answer back into a page it may not write.
+    let read_only = memory::mmap(
+        std::ptr::null_mut(),
+        4096,
+        PROT_READ,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    )?;
+    expect_errno(
+        io::fcntl(f.fd(), F_GETLK, read_only as i64),
+        14,
+        "F_GETLK into a read-only struct flock",
+    )
+}
+
+fn fcntl_lockw_wait() -> CaseResult {
+    let f = Fixture::new(b"abcdef")?;
+    setlk(f.fd(), F_SETLK, F_WRLCK, 0, 0).map_err(|e| format!("F_SETLK write lock: {e}"))?;
+    let pid = fork_waiter(&f, None, |d| {
+        setlk(d, F_SETLKW, F_WRLCK, 0, 0).map_err(|e| format!("F_SETLKW: {e}"))?;
+        Ok(())
+    })?;
+    setlk(f.fd(), F_SETLK, F_UNLCK, 0, 0).map_err(|e| format!("F_SETLK unlock: {e}"))?;
+    child_ok(
+        wait_child(pid)?,
+        "the waiting process did not acquire the lock once it was released",
+    )
+}
+
+fn fcntl_lockw_eintr() -> CaseResult {
+    let f = Fixture::new(b"abcdef")?;
+    setlk(f.fd(), F_SETLK, F_WRLCK, 0, 0).map_err(|e| format!("F_SETLK write lock: {e}"))?;
+    let pid = fork_waiter(&f, None, |d| {
+        signal::sigaction(
+            signal::SIGUSR1,
+            Some(&signal::Sigaction::new(ignore_signal)),
+            None,
+        )?;
+        match setlk(d, F_SETLKW, F_WRLCK, 0, 0) {
+            Err(Error::Os(libbreenix::Errno::EINTR)) => Ok(()),
+            other => fail(format!("F_SETLKW returned {other:?}, expected EINTR")),
+        }
+    })?;
+    signal::kill(pid, signal::SIGUSR1)?;
+    child_ok(wait_child(pid)?, "a signal did not end the wait with EINTR")
+}
+
+fn fcntl_lockw_deadlock() -> CaseResult {
+    let f = Fixture::new(b"abcdef")?;
+    setlk(f.fd(), F_SETLK, F_WRLCK, 0, 1).map_err(|e| format!("F_SETLK byte 0: {e}"))?;
+    // The child holds byte 1 and waits for byte 0, so waiting for byte 1
+    // here would wait for a process that waits for this one.
+    let pid = fork_waiter(&f, Some(1), |d| {
+        setlk(d, F_SETLKW, F_WRLCK, 0, 1).map_err(|e| format!("F_SETLKW byte 0: {e}"))?;
+        Ok(())
+    })?;
+    let deadlock = expect_errno(
+        setlk(f.fd(), F_SETLKW, F_WRLCK, 1, 1),
+        35,
+        "F_SETLKW that would deadlock",
+    );
+    setlk(f.fd(), F_SETLK, F_UNLCK, 0, 1).map_err(|e| format!("F_SETLK unlock: {e}"))?;
+    deadlock?;
+    child_ok(
+        wait_child(pid)?,
+        "the child did not acquire byte 0 once it was released",
+    )
+}
+
+fn fcntl_lockw_woken() -> CaseResult {
+    let f = Fixture::new(b"abcdef")?;
+    setlk(f.fd(), F_SETLK, F_WRLCK, 1, 1).map_err(|e| format!("F_SETLK byte 1: {e}"))?;
+    // The child holds byte 0 and waits for byte 1. Releasing byte 1 wakes it,
+    // so it no longer waits for this process: waiting here for byte 0 is not
+    // a deadlock, and the child releases byte 0 once it has byte 1.
+    let pid = fork_waiter(&f, Some(0), |d| {
+        setlk(d, F_SETLKW, F_WRLCK, 1, 1).map_err(|e| format!("F_SETLKW byte 1: {e}"))?;
+        setlk(d, F_SETLK, F_UNLCK, 0, 1).map_err(|e| format!("F_SETLK unlock byte 0: {e}"))?;
+        Ok(())
+    })?;
+    setlk(f.fd(), F_SETLK, F_UNLCK, 1, 1).map_err(|e| format!("F_SETLK unlock: {e}"))?;
+    setlk(f.fd(), F_SETLKW, F_WRLCK, 0, 1)
+        .map_err(|e| format!("F_SETLKW for the woken child's byte: {e}"))?;
+    child_ok(wait_child(pid)?, "the woken child did not acquire byte 1")
+}
+
+fn fcntl_lockw_killed() -> CaseResult {
+    let f = Fixture::new(b"abcdef")?;
+    setlk(f.fd(), F_SETLK, F_WRLCK, 0, 1).map_err(|e| format!("F_SETLK byte 0: {e}"))?;
+    let pid = fork_waiter(&f, Some(1), |d| {
+        setlk(d, F_SETLKW, F_WRLCK, 0, 1).map_err(|e| format!("F_SETLKW byte 0: {e}"))?;
+        Ok(())
+    })?;
+    signal::kill(pid, signal::SIGKILL)?;
+    let status = wait_child(pid)?;
+    check(
+        process::wifsignaled(status) && process::wtermsig(status) == signal::SIGKILL,
+        "the waiting child was not killed by SIGKILL",
+    )?;
+    let mut l = Flock {
+        kind: F_WRLCK,
+        whence: 0,
+        start: 1,
+        len: 1,
+        pid: 0,
+    };
+    lock(f.fd(), F_GETLK, &mut l).map_err(|e| format!("F_GETLK: {e}"))?;
+    check(
+        l.kind == F_UNLCK,
+        "the killed waiter's lock on byte 1 was not released",
+    )?;
+    // The killed waiter's wait is gone too: it no longer blocks or deadlocks
+    // anything, so this process can take its byte and give up its own.
+    setlk(f.fd(), F_SETLKW, F_WRLCK, 1, 1).map_err(|e| format!("F_SETLKW byte 1: {e}"))?;
+    setlk(f.fd(), F_SETLK, F_UNLCK, 0, 0).map_err(|e| format!("F_SETLK unlock: {e}"))?;
+    Ok(())
 }
 
 fn metadata_stat_type() -> CaseResult {

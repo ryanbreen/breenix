@@ -114,7 +114,7 @@ framebuffer (and stops drawing its own log there), so the panel shows on every p
 
 ## Files & I/O
 
-`files-io` has 151 syscall and descriptor cases. Stream stdio cases are deferred until
+`files-io` has 157 syscall and descriptor cases. Stream stdio cases are deferred until
 there is a musl-built helper; libbreenix-libc supplies Rust's runtime ABI and has no
 stdio implementation. Synchronization cases call the kernel's fsync/fdatasync ABI,
 so an unimplemented syscall fails with ENOSYS rather than passing a libc stub.
@@ -122,7 +122,7 @@ so an unimplemented syscall fails with ENOSYS rather than passing a libc stub.
 The suite uses the runner's default 10-second case deadline, including helper children;
 there is no shorter fork/exec deadline. This is a hang limit, not a performance target.
 A timeout reports a failure to finish, not the result of a POSIX assertion. Allow 1800
-seconds on x86 for 151 cases, their kill/reap allowance, boot and panel overhead:
+seconds on x86 for 157 cases, their kill/reap allowance, boot and panel overhead:
 
 ```bash
 BREENIX_BOOT_SUITE=files-io BREENIX_GATE_TIMEOUT=1800 docker/qemu/run-x86-gate.sh 1

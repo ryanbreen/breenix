@@ -152,13 +152,14 @@ pub fn sys_close(fd: i32) -> SyscallResult {
 
     // Close the file descriptor
     let closed = process.fd_table.close(fd);
+    let lock_owner = process.lock_owner.id();
     // #813: descriptor ownership escapes PM before any endpoint cleanup.
     drop(manager_guard);
     match closed {
         Ok(fd_entry) => {
             // Closing any descriptor for a file drops the process's record
             // locks on it (POSIX fcntl).
-            crate::fs::locks::release_closed(process_pid.as_u64(), &fd_entry.kind);
+            crate::fs::locks::release_closed(lock_owner, &fd_entry.kind);
             // Handle cleanup for specific fd types
             match fd_entry.kind {
                 FdKind::PipeRead(buffer) => {

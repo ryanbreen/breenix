@@ -1079,6 +1079,36 @@ extern "x86-interrupt" fn page_fault_handler(
     let is_potential_cow = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
         && error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
 
+    // A kernel fault inside the user-copy routine on a user address is the
+    // syscall's bad pointer, not a kernel bug: a copy-on-write write or a
+    // user-stack growth is resolved as it would be for a user-mode access and
+    // the copy retried; anything else resumes at the routine's fault exit,
+    // which returns EFAULT to the syscall.
+    if (stack_frame.code_segment.0 & 3) == 0 {
+        let rip = stack_frame.instruction_pointer.as_u64();
+        if let Some(fixup) = crate::syscall::userptr::uaccess_fixup(rip, cr2) {
+            crate::per_cpu::preempt_disable();
+            let addr = x86_64::VirtAddr::new(cr2);
+            let resolved = if is_potential_cow {
+                handle_cow_fault(addr, error_code, cr3)
+            } else {
+                !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+                    && handle_stack_growth(addr, cr3)
+            };
+            crate::per_cpu::preempt_enable();
+            if !resolved {
+                // SAFETY: redirects this kernel-mode frame to a label in the
+                // same routine, which returns to its caller with RAX = 1.
+                unsafe {
+                    stack_frame.as_mut().update(|frame| {
+                        frame.instruction_pointer = x86_64::VirtAddr::new(fixup);
+                    });
+                }
+            }
+            return;
+        }
+    }
+
     // Only print verbose diagnostics for non-CoW faults
     if !is_potential_cow {
         crate::serial_println!("[DIAG:PAGEFAULT] ==============================");
