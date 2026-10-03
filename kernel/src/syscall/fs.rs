@@ -360,7 +360,15 @@ fn sys_open_write_path(
                 // The requested mode is used as given, less the umask: mode 0
                 // creates a file nobody but root may open.
                 let file_mode = (mode & 0o777 & !cred.umask) as u16;
-                match fs.create_file(parent_inode, filename, file_mode) {
+                // The new file belongs to its creator (Linux: the effective
+                // uid and gid), so a restrictive mode still lets it reopen it.
+                match fs.create_file(
+                    parent_inode,
+                    filename,
+                    file_mode,
+                    cred.euid as u16,
+                    cred.egid as u16,
+                ) {
                     Ok(new_inode) => {
                         log::info!(
                             "sys_open: created file {} with inode {}",

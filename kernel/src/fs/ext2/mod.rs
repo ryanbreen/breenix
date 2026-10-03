@@ -305,6 +305,7 @@ impl Ext2Fs {
     /// * `parent_inode_num` - Inode number of the parent directory
     /// * `name` - Name of the new file
     /// * `mode` - File permission bits (0o644, 0o755, etc.)
+    /// * `uid`, `gid` - Owner and group of the new file
     ///
     /// # Returns
     /// * `Ok(inode_num)` - The inode number of the newly created file
@@ -314,6 +315,8 @@ impl Ext2Fs {
         parent_inode_num: u32,
         name: &str,
         mode: u16,
+        uid: u16,
+        gid: u16,
     ) -> Result<u32, &'static str> {
         // Validate name
         if name.is_empty() || name.len() > 255 {
@@ -345,7 +348,7 @@ impl Ext2Fs {
         )?;
 
         // Create the new inode structure
-        let new_inode = Ext2Inode::new_regular_file(mode);
+        let new_inode = Ext2Inode::new_regular_file(mode, uid, gid);
 
         // Write the new inode to disk
         new_inode

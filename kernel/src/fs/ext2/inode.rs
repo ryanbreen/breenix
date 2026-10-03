@@ -758,18 +758,19 @@ impl Ext2Inode {
     ///
     /// # Arguments
     /// * `mode` - File mode (permissions) - file type bits are added automatically
-    pub fn new_regular_file(mode: u16) -> Self {
+    /// * `uid`, `gid` - Owner and group (the creator's effective IDs)
+    pub fn new_regular_file(mode: u16, uid: u16, gid: u16) -> Self {
         let now = crate::time::current_unix_time() as u32;
 
         Self {
             i_mode: EXT2_S_IFREG | (mode & 0o777),
-            i_uid: 0, // root for now
+            i_uid: uid,
             i_size: 0,
             i_atime: now,
             i_ctime: now,
             i_mtime: now,
             i_dtime: 0,
-            i_gid: 0,         // root for now
+            i_gid: gid,
             i_links_count: 1, // One link from the directory entry
             i_blocks: 0,      // No data blocks allocated yet
             i_flags: 0,
