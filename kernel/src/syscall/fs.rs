@@ -613,8 +613,10 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
 
     // Handle directory vs file cases
     if is_directory {
-        if wants_directory || (flags & 0x3) == O_RDONLY {
-            // O_DIRECTORY flag is set, or opening with O_RDONLY - allow for getdents
+        if (flags & 0x3) == O_RDONLY {
+            // Read-only, for getdents. A directory opened for writing fails with
+            // EISDIR below whether or not O_DIRECTORY is given, as on Linux; the
+            // permission check relies on that.
             // Create DirectoryFile structure
             let dir_file = DirectoryFile {
                 inode_num: inode_num as u64,
