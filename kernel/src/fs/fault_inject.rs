@@ -264,12 +264,19 @@ const ARCH: &str = "x86";
 ///
 /// The leg never touches the mounted root filesystem: it builds its own `Ext2Fs`
 /// over its own device handle, so an injected fault cannot reach the mount the
-/// rest of the boot depends on. Device selection mirrors `ext2::init_root_fs`'s
-/// VirtIO arm (index 2 on x86_64, index 0 on AArch64 QEMU).
+/// rest of the boot depends on. Device selection mirrors `ext2::init_root_fs`
+/// (disk 2, else disk 0, on x86_64; VirtIO index 0 on AArch64 QEMU).
 fn open_ext2_device() -> Option<Box<dyn BlockDevice>> {
-    use crate::block::virtio::VirtioBlockWrapper;
-    let dev = VirtioBlockWrapper::new(2).or_else(|| VirtioBlockWrapper::new(0))?;
-    Some(Box::new(dev))
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::block::disk(2).or_else(|| crate::block::disk(0))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        use crate::block::virtio::VirtioBlockWrapper;
+        let dev = VirtioBlockWrapper::new(2).or_else(|| VirtioBlockWrapper::new(0))?;
+        Some(Box::new(dev))
+    }
 }
 
 /// Sector arithmetic for one inode record, mirroring `Ext2Inode::read_from`.

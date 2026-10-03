@@ -6,9 +6,12 @@
 
 use core::fmt;
 
+#[cfg(target_arch = "x86_64")]
+pub mod nvme;
 pub mod virtio;
 
-/// Enumerate usable x86 disks in backend order. Consumers identify disk contents,
+/// Enumerate usable x86 disks in backend order: VirtIO block devices, AHCI
+/// SATA disks, then NVMe namespaces. Consumers identify disk contents,
 /// rather than relying on PCI slots or a fixed index shared across transports.
 #[cfg(target_arch = "x86_64")]
 pub fn devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
@@ -23,7 +26,25 @@ pub fn devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
             devices.push(alloc::boxed::Box::new(device));
         }
     }
+    for index in 0..crate::drivers::nvme::controller_count() {
+        if let Some(device) = nvme::NvmeBlockDevice::new(index) {
+            devices.push(alloc::boxed::Box::new(device));
+        }
+    }
     devices
+}
+
+/// The x86-64 disk at `index` in `devices()` order.
+///
+/// The x86 launcher attaches every hardware profile's disks to one kind of
+/// controller in a fixed order (0 = UEFI boot image, 1 = test binaries,
+/// 2 = ext2 root, 3 = optional home disk), so the index names the same disk
+/// whichever controller carries it. The root and test disks are found by
+/// content through `devices()`; the home disk is an ext2 filesystem like the
+/// root, so it is found by its place in that order.
+#[cfg(target_arch = "x86_64")]
+pub fn disk(index: usize) -> Option<alloc::boxed::Box<dyn BlockDevice>> {
+    devices().into_iter().nth(index)
 }
 
 /// Generic block device interface
