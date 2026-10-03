@@ -1113,10 +1113,13 @@ pub static COMBINED_LOGGER: CombinedLogger = CombinedLogger::new();
 
 /// Initialize the logger early - can be called before serial is ready
 pub fn init_early() {
-    // Set up the combined logger with TRACE level
-    // The CombinedLogger already suppresses TRACE logs while preserving timing
+    // Records above INFO are compiled in but not emitted. A record is a
+    // polled write to COM2, and on a virtualized x86 host each byte costs a
+    // port-I/O exit, so DEBUG output (482 of 926 KB in a testing gate boot
+    // of 370a233b) set the pace of the boot. Raise this to LevelFilter::Debug
+    // locally when a debug trace is wanted.
     log::set_logger(&COMBINED_LOGGER).expect("Logger already set");
-    log::set_max_level(LevelFilter::Trace);
+    log::set_max_level(LevelFilter::Info);
 }
 
 /// Call after serial port is initialized
