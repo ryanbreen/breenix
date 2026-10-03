@@ -22,10 +22,14 @@
 //! interrupts enabled and the submitter sleeps on a `Completion` that the IRQ
 //! handler signals. With no scheduler thread and interrupts masked (early
 //! boot), or when the pin is routed anywhere else, the submitter polls the
-//! completion queue instead. Every
+//! completion queue instead; a scheduler thread polls briefly and then sleeps
+//! between polls, so the CPU keeps taking interrupts. Every
 //! consumer of the I/O completion queue goes through `drain_io_cq()`, which
 //! always consumes new entries and rings the head doorbell so a level-triggered
 //! INTx line is deasserted.
+//!
+//! Every wait is bounded by an elapsed-time deadline on the TSC monotonic
+//! clock, which `kernel_main` calibrates before drivers are initialized.
 
 use crate::drivers::pci::{self, Device as PciDevice};
 use crate::memory::frame_allocator;
@@ -54,10 +58,15 @@ const IO_QUEUE_ID: u16 = 1;
 
 const IO_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
 const EARLY_IO_COMPLETION_TIMEOUT_NS: u64 = 100_000_000_000;
-/// Poll iterations per admin or polled I/O command. Each iteration performs
-/// a port-0x80 write (about a microsecond), so this bounds a command at
-/// roughly five seconds.
-const POLL_ITERATIONS: u64 = 5_000_000;
+/// Admin commands run only during init; the bound matches Linux's.
+const ADMIN_COMMAND_TIMEOUT_NS: u64 = 60_000_000_000;
+/// CAP.TO is in units of 500 milliseconds.
+const READY_TIMEOUT_UNIT_NS: u64 = 500_000_000;
+/// A polled command is busy-polled this long before a scheduler thread
+/// starts sleeping between polls.
+const POLL_SPIN_NS: u64 = 100_000;
+/// Sleep between polls of a slow polled command (rounded up to a tick).
+const POLL_SLEEP_NS: u64 = 1_000_000;
 
 const NO_STATUS: u32 = u32::MAX;
 
@@ -193,13 +202,20 @@ fn completion_status(dw3: u32) -> u32 {
     (dw3 >> 17) & 0x7FFF
 }
 
-/// Short delay for polling loops: a write to the POST diagnostic port.
-#[inline]
-fn poll_delay() {
-    unsafe {
-        x86_64::instructions::port::Port::<u8>::new(0x80).write(0);
+/// Nanoseconds on the TSC monotonic clock.
+fn now_ns() -> u64 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs * 1_000_000_000 + nanos
+}
+
+/// Bound on an I/O command: longer before the scheduler runs, where early
+/// boot under emulation is slow and nothing else needs the CPU.
+fn io_timeout_ns() -> u64 {
+    if crate::task::scheduler::current_thread_id().is_some() {
+        IO_COMPLETION_TIMEOUT_NS
+    } else {
+        EARLY_IO_COMPLETION_TIMEOUT_NS
     }
-    core::hint::spin_loop();
 }
 
 /// Serializes the controller's single in-flight I/O command and its shared
@@ -407,7 +423,8 @@ impl NvmeController {
 
         let cap = ctrl.read32(reg::CAP) as u64 | ((ctrl.read32(reg::CAP + 4) as u64) << 32);
         let version = ctrl.read32(reg::VS);
-        let max_queue_entries = (cap & 0xFFFF) as u16 + 1;
+        // CAP.MQES is zero-based: 0xFFFF means 65,536 entries.
+        let max_queue_entries = (cap & 0xFFFF) as u32 + 1;
         let timeout_units = ((cap >> 24) & 0xFF) + 1;
         let doorbell_stride_shift = ((cap >> 32) & 0xF) as usize;
         let mps_min = (cap >> 48) & 0xF;
@@ -418,11 +435,11 @@ impl NvmeController {
         if !nvm_command_set {
             return Err("controller does not support the NVM command set");
         }
-        if max_queue_entries < ADMIN_QUEUE_DEPTH.max(IO_QUEUE_DEPTH) {
+        if max_queue_entries < ADMIN_QUEUE_DEPTH.max(IO_QUEUE_DEPTH) as u32 {
             return Err("controller queues are too small");
         }
         ctrl.doorbell_stride = 4 << doorbell_stride_shift;
-        let ready_polls = timeout_units * 500_000;
+        let ready_timeout_ns = timeout_units * READY_TIMEOUT_UNIT_NS;
 
         log::info!(
             "NVMe {:02x}:{:02x}.{}: version {}.{}, max queue entries {}, IRQ {} ({})",
@@ -440,7 +457,7 @@ impl NvmeController {
         if ctrl.read32(reg::CC) & cc::EN != 0 {
             ctrl.write32(reg::CC, ctrl.read32(reg::CC) & !cc::EN);
         }
-        ctrl.wait_ready(false, ready_polls)?;
+        ctrl.wait_ready(false, ready_timeout_ns)?;
 
         // Mask the pin while the admin queue is in use; it is polled.
         ctrl.write32(reg::INTMS, 1);
@@ -460,7 +477,7 @@ impl NvmeController {
         ctrl.write32(reg::ACQ, admin.cq.phys as u32);
         ctrl.write32(reg::ACQ + 4, (admin.cq.phys >> 32) as u32);
         ctrl.write32(reg::CC, cc::EN | cc::IOSQES_64 | cc::IOCQES_16);
-        ctrl.wait_ready(true, ready_polls)?;
+        ctrl.wait_ready(true, ready_timeout_ns)?;
 
         // The data page is idle until the I/O queues exist; Identify uses it.
         let identify = ctrl.data;
@@ -571,22 +588,32 @@ impl NvmeController {
         Ok(ctrl)
     }
 
-    fn wait_ready(&self, ready: bool, polls: u64) -> Result<(), &'static str> {
-        for _ in 0..polls {
+    /// Wait for CSTS.RDY to reach `ready`. A reset (`ready == false`) clears
+    /// a fatal status, so CFS is judged only once the reset has finished.
+    fn wait_ready(&self, ready: bool, timeout_ns: u64) -> Result<(), &'static str> {
+        let deadline = now_ns().saturating_add(timeout_ns);
+        loop {
             let status = self.read32(reg::CSTS);
-            if status & csts::CFS != 0 {
+            let fatal = status & csts::CFS != 0;
+            if (status & csts::RDY != 0) == ready {
+                return if fatal {
+                    Err("controller fatal status")
+                } else {
+                    Ok(())
+                };
+            }
+            if ready && fatal {
                 return Err("controller fatal status");
             }
-            if (status & csts::RDY != 0) == ready {
-                return Ok(());
+            if now_ns() >= deadline {
+                return Err(if ready {
+                    "controller did not become ready"
+                } else {
+                    "controller did not stop"
+                });
             }
-            poll_delay();
+            core::hint::spin_loop();
         }
-        Err(if ready {
-            "controller did not become ready"
-        } else {
-            "controller did not stop"
-        })
     }
 
     /// Submit one admin command and poll for its completion.
@@ -599,7 +626,8 @@ impl NvmeController {
         self.write32(self.sq_doorbell(0), admin.sq_tail as u32);
 
         let entry = admin.cq.virt as usize + admin.cq_head as usize * 16;
-        for _ in 0..POLL_ITERATIONS {
+        let deadline = now_ns().saturating_add(ADMIN_COMMAND_TIMEOUT_NS);
+        loop {
             let dw3 = unsafe { core::ptr::read_volatile((entry + 12) as *const u32) };
             if ((dw3 >> 16) & 1 != 0) == admin.cq_phase {
                 fence(Ordering::SeqCst);
@@ -625,9 +653,11 @@ impl NvmeController {
                 }
                 return Ok(());
             }
-            poll_delay();
+            if now_ns() >= deadline {
+                return Err("admin command timed out");
+            }
+            core::hint::spin_loop();
         }
-        Err("admin command timed out")
     }
 
     /// Consume every new I/O completion entry and ring the head doorbell.
@@ -699,6 +729,37 @@ impl NvmeController {
                 || x86_64::instructions::interrupts::are_enabled())
     }
 
+    /// Poll the I/O completion queue for the in-flight command until
+    /// `timeout_ns` passes. A scheduler thread busy-polls only for
+    /// `POLL_SPIN_NS` and then sleeps between polls: a syscall arrives with
+    /// interrupts masked, and polling there for the whole command would keep
+    /// the timer and every other interrupt off the CPU.
+    fn poll_io_completion(&self, token: u32, timeout_ns: u64) -> bool {
+        let start = now_ns();
+        let deadline = start.saturating_add(timeout_ns);
+        let can_sleep = crate::task::scheduler::current_thread_id().is_some();
+        loop {
+            self.drain_io_cq();
+            if self.completed_status.load(Ordering::Acquire) != NO_STATUS {
+                return true;
+            }
+            let now = now_ns();
+            if now >= deadline {
+                return false;
+            }
+            if can_sleep && now - start >= POLL_SPIN_NS {
+                // Only this wait's own timeout ends it: no interrupt
+                // completes a polled command. Its result is re-read from the
+                // queue on the next pass.
+                let _ = self
+                    .completion
+                    .wait_timeout_uninterruptible(token, POLL_SLEEP_NS.min(deadline - now));
+            } else {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
     /// Submit one I/O command and wait for it. The caller holds the gate and
     /// has staged any write data in the data page.
     fn execute_io<'a>(
@@ -720,30 +781,17 @@ impl NvmeController {
         fence(Ordering::SeqCst);
         self.write32(self.sq_doorbell(IO_QUEUE_ID), tail as u32);
 
+        // The command is already published to the device, so abandoning
+        // either wait would leave the data page live for DMA.
+        let timeout_ns = io_timeout_ns();
         let completed = if self.irq_completion_available() {
-            let timeout_ns = if crate::task::scheduler::current_thread_id().is_some() {
-                IO_COMPLETION_TIMEOUT_NS
-            } else {
-                EARLY_IO_COMPLETION_TIMEOUT_NS
-            };
-            // The command is already published to the device, so abandoning
-            // this wait would leave the data page live for DMA.
             matches!(
                 self.completion
                     .wait_timeout_uninterruptible(token, timeout_ns),
                 Ok(true)
             )
         } else {
-            let mut done = false;
-            for _ in 0..POLL_ITERATIONS {
-                self.drain_io_cq();
-                if self.completed_status.load(Ordering::Acquire) != NO_STATUS {
-                    done = true;
-                    break;
-                }
-                poll_delay();
-            }
-            done
+            self.poll_io_completion(token, timeout_ns)
         };
 
         self.pending_token.store(0, Ordering::Release);
@@ -867,6 +915,10 @@ fn is_nvme(dev: &PciDevice) -> bool {
 
 /// Attach every NVMe controller on the PCI bus. Returns the number attached.
 pub fn init() -> Result<usize, &'static str> {
+    if !crate::time::tsc::is_calibrated() {
+        CONTROLLERS.call_once(Vec::new);
+        return Err("TSC not calibrated; command deadlines cannot be measured");
+    }
     let candidates: Vec<PciDevice> = pci::get_devices()
         .unwrap_or_default()
         .into_iter()

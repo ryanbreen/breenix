@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 /// Adding a driver completion wait is expected to force explicit review of this
 /// number rather than allowing a new interruptible wait to land silently.
-const DRIVER_COMPLETION_WAIT_POPULATION: usize = 9;
+const DRIVER_COMPLETION_WAIT_POPULATION: usize = 10;
 const INTERRUPTIBLE_WAIT: &str = ".wait_timeout(";
 const UNINTERRUPTIBLE_WAIT: &str = ".wait_timeout_uninterruptible(";
 const BLOCK_EINTR_ORACLE_PREFIX: &str = "[BLOCK_EINTR_ORACLE:";
