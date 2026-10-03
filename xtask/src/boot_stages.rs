@@ -388,10 +388,10 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "per_cpu::current_thread() - verify returns Some(thread) with valid pointer",
         },
         BootStage {
-            name: "Precondition 7: Interrupts disabled",
-            marker: "PRECONDITION 7: Interrupts disabled \u{2713} PASS",
-            failure_meaning: "Interrupts already enabled - precondition validation should run with interrupts off",
-            check_hint: "interrupts::are_interrupts_enabled() - verify RFLAGS.IF is clear",
+            name: "Precondition 7: Preemption disabled",
+            marker: "PRECONDITION 7: Preemption disabled \u{2713} PASS",
+            failure_meaning: "Preemption is not disabled - the boot sequence's scheduling brake is not held, so the scheduler could switch away before boot finishes registering test processes",
+            check_hint: "per_cpu::preempt_count() - verify the unconditional preempt_disable() at the top of kernel_main_continue() in kernel/src/main.rs",
         },
         BootStage {
             name: "All preconditions passed",
@@ -1796,8 +1796,8 @@ fn x86_64_extra_stages() -> Vec<BootStage> {
         BootStage {
             name: "Softirq iteration limit test passed",
             marker: "SOFTIRQ_TEST: iteration limit passed",
-            failure_meaning: "Iteration limit test failed - ksoftirqd did not process deferred softirqs",
-            check_hint: "Check MAX_SOFTIRQ_RESTART limit and wakeup_ksoftirqd() in kernel/src/task/softirqd.rs",
+            failure_meaning: "Iteration limit test failed - do_softirq() did not stop at its restart limit, or ksoftirqd did not run the deferred work",
+            check_hint: "The [SOFTIRQ_DEFERRAL_ORACLE:...] line gives the verdict; check test_deferral() in kernel/src/task/softirq_tests.rs and MAX_SOFTIRQ_RESTART/wakeup_ksoftirqd() in kernel/src/task/softirqd.rs",
         },
         BootStage {
             name: "Softirq ksoftirqd verification passed",
