@@ -251,6 +251,15 @@ impl Ext2Inode {
         mode & EXT2_S_PERM_MASK
     }
 
+    /// Whether a successful read should refresh this inode under relatime.
+    pub fn needs_atime_update(&self) -> bool {
+        let now = crate::time::current_unix_time() as u32;
+        now > self.i_atime
+            && (self.i_atime <= self.i_mtime
+                || self.i_atime <= self.i_ctime
+                || now.saturating_sub(self.i_atime) >= 86400)
+    }
+
     /// Update timestamps on the inode
     ///
     /// # Arguments

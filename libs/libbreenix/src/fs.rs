@@ -97,7 +97,8 @@ pub const S_IFDIR: u32 = 0o040000;  // Directory
 pub const S_IFCHR: u32 = 0o020000;  // Character device
 pub const S_IFIFO: u32 = 0o010000;  // FIFO (pipe)
 
-/// stat structure (Linux x86_64 compatible)
+/// stat structure (Linux x86_64 ABI, 144 bytes)
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Stat {
@@ -121,6 +122,37 @@ pub struct Stat {
     _reserved: [i64; 3],
 }
 
+/// stat structure (Linux aarch64 ABI, 128 bytes).
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Stat {
+    pub st_dev: u64,
+    pub st_ino: u64,
+    pub st_mode: u32,
+    pub st_nlink: u32,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    pub st_rdev: u64,
+    _pad1: u64,
+    pub st_size: i64,
+    pub st_blksize: i32,
+    _pad2: i32,
+    pub st_blocks: i64,
+    pub st_atime: i64,
+    pub st_atime_nsec: i64,
+    pub st_mtime: i64,
+    pub st_mtime_nsec: i64,
+    pub st_ctime: i64,
+    pub st_ctime_nsec: i64,
+    _reserved: [u32; 2],
+}
+
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(core::mem::size_of::<Stat>() == 144);
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(core::mem::size_of::<Stat>() == 128);
+
 impl Stat {
     /// Create a zeroed Stat structure
     pub const fn new() -> Self {
@@ -131,7 +163,12 @@ impl Stat {
             st_mode: 0,
             st_uid: 0,
             st_gid: 0,
+            #[cfg(target_arch = "x86_64")]
             _pad0: 0,
+            #[cfg(target_arch = "aarch64")]
+            _pad1: 0,
+            #[cfg(target_arch = "aarch64")]
+            _pad2: 0,
             st_rdev: 0,
             st_size: 0,
             st_blksize: 0,
@@ -142,7 +179,10 @@ impl Stat {
             st_mtime_nsec: 0,
             st_ctime: 0,
             st_ctime_nsec: 0,
+            #[cfg(target_arch = "x86_64")]
             _reserved: [0; 3],
+            #[cfg(target_arch = "aarch64")]
+            _reserved: [0; 2],
         }
     }
 

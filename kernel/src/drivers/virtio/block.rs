@@ -139,6 +139,7 @@ mod request_type {
     pub const IN: u32 = 0; // Read from device
     #[allow(dead_code)] // Part of block device API, used by write_sector
     pub const OUT: u32 = 1; // Write to device
+    pub const FLUSH: u32 = 4; // Persist cached writes
 }
 
 /// VirtIO block status codes
@@ -202,6 +203,7 @@ pub struct VirtioBlockDevice {
     completed_status: AtomicU32,
     /// Disk capacity in sectors
     capacity: u64,
+    flush_supported: bool,
     /// Number of completed operations (for stats)
     ops_completed: AtomicU64,
     /// Cached DMA buffers (protected by queue mutex)
@@ -231,6 +233,7 @@ impl VirtioBlockDevice {
         // Initialize with requested features
         let requested_features = features::SIZE_MAX | features::SEG_MAX | features::FLUSH;
         device.init(requested_features)?;
+        let flush_supported = device.read_device_features() & features::FLUSH != 0;
 
         // Read device capacity
         let capacity = device.read_config_u64(0);
@@ -317,6 +320,7 @@ impl VirtioBlockDevice {
             completed_desc: AtomicU32::new(NO_COMPLETED_DESC),
             completed_status: AtomicU32::new(NO_COMPLETED_STATUS),
             capacity,
+            flush_supported,
             ops_completed: AtomicU64::new(0),
             dma_buffers,
         })
@@ -643,6 +647,60 @@ impl VirtioBlockDevice {
         self.ops_completed.fetch_add(1, Ordering::Relaxed);
         drop(request_guard);
 
+        Ok(())
+    }
+
+    /// Flush the device cache using a header/status-only request. A device
+    /// without FLUSH advertises writethrough operation by the VirtIO block ABI.
+    pub fn flush(&self) -> Result<(), &'static str> {
+        if !self.flush_supported {
+            return Ok(());
+        }
+        if !self.irq_completion_available() {
+            return Err("Block IRQ completion unavailable before interrupts are enabled");
+        }
+        let request_guard = self.request_gate.lock()?;
+        let token = self.prepare_completion_wait();
+        let (header_phys, header_virt) = self.dma_buffers.header;
+        let (status_phys, status_virt) = self.dma_buffers.status;
+        {
+            let mut queue = self.queue.lock();
+            unsafe {
+                core::ptr::write_volatile(
+                    header_virt as *mut VirtioBlkReq,
+                    VirtioBlkReq {
+                        type_: request_type::FLUSH,
+                        reserved: 0,
+                        sector: 0,
+                    },
+                );
+                core::ptr::write_volatile(status_virt as *mut u8, 0xff);
+            }
+            let buffers = [(header_phys, 16, false), (status_phys, 1, true)];
+            if queue.add_chain(&buffers).is_none() {
+                self.clear_completion_state();
+                return Err("Queue full");
+            }
+        }
+        core::sync::atomic::fence(Ordering::SeqCst);
+        self.device.notify_queue(0);
+        if let Err(error) = self.wait_for_completion(token) {
+            request_guard.wedge();
+            return Err(error);
+        }
+        let (desc, status) = match self.take_completed_request() {
+            Ok(completed) => completed,
+            Err(error) => {
+                self.clear_completion_state();
+                return Err(error);
+            }
+        };
+        self.queue.lock().free_chain(desc);
+        self.clear_completion_state();
+        if status != status_code::OK {
+            return Err("Device flush failed");
+        }
+        self.ops_completed.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 

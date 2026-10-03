@@ -350,34 +350,35 @@ pub unsafe extern "C" fn fstat(fd: i32, buf: *mut u8) -> i32 {
     syscall_result_to_c_int(result)
 }
 
-/// stat - get file status by path
+/// stat - get file status by path, following the final symlink.
 ///
 /// Uses newfstatat rather than open() + fstat(): stat needs no read
 /// permission on the file, and opening a FIFO could block.
 #[no_mangle]
 pub unsafe extern "C" fn stat(path: *const u8, buf: *mut u8) -> i32 {
+    stat_by_path(path, buf, 0)
+}
+
+unsafe fn stat_by_path(path: *const u8, buf: *mut u8, flags: u64) -> i32 {
     if path.is_null() || buf.is_null() {
         ERRNO = EFAULT;
         return -1;
     }
-
     const AT_FDCWD: i64 = -100;
     let result = libbreenix::raw::syscall4(
         libbreenix::syscall::nr::NEWFSTATAT,
         AT_FDCWD as u64,
         path as u64,
         buf as u64,
-        0,
+        flags,
     ) as i64;
     syscall_result_to_c_int(result)
 }
 
-/// lstat - get file status by path (no symlink follow)
-///
-/// Same as stat since we don't have symlink resolution yet.
+/// lstat - get the final symlink's own status.
 #[no_mangle]
 pub unsafe extern "C" fn lstat(path: *const u8, buf: *mut u8) -> i32 {
-    stat(path, buf)
+    stat_by_path(path, buf, 0x100)
 }
 
 /// fstat64 - same as fstat (64-bit is native on x86_64)
@@ -785,9 +786,20 @@ pub unsafe extern "C" fn getdents64(fd: i32, buf: *mut u8, count: usize) -> isiz
 
 /// ftruncate - truncate a file to a specified length
 #[no_mangle]
-pub unsafe extern "C" fn ftruncate(_fd: i32, _length: i64) -> i32 {
-    ERRNO = ENOSYS;
-    -1
+pub unsafe extern "C" fn ftruncate(fd: i32, length: i64) -> i32 {
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::FTRUNCATE, fd as u64, length as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// truncate - resize a file by path.
+#[no_mangle]
+pub unsafe extern "C" fn truncate(path: *const u8, length: i64) -> i32 {
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::TRUNCATE, path as u64, length as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
 }
 
 /// ftruncate64 - same as ftruncate on 64-bit
@@ -798,14 +810,20 @@ pub unsafe extern "C" fn ftruncate64(fd: i32, length: i64) -> i32 {
 
 /// fsync - synchronize file state with storage
 #[no_mangle]
-pub extern "C" fn fsync(_fd: i32) -> i32 {
-    0 // No-op for now
+pub extern "C" fn fsync(fd: i32) -> i32 {
+    let result = unsafe {
+        libbreenix::raw::syscall1(libbreenix::syscall::nr::FSYNC, fd as u64)
+    } as i64;
+    syscall_result_to_c_int(result)
 }
 
 /// fdatasync - synchronize file data with storage
 #[no_mangle]
-pub extern "C" fn fdatasync(_fd: i32) -> i32 {
-    0 // No-op for now
+pub extern "C" fn fdatasync(fd: i32) -> i32 {
+    let result = unsafe {
+        libbreenix::raw::syscall1(libbreenix::syscall::nr::FDATASYNC, fd as u64)
+    } as i64;
+    syscall_result_to_c_int(result)
 }
 
 /// fchmod - change file mode bits (by fd)

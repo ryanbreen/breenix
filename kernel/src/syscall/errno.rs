@@ -63,6 +63,9 @@ pub const EMFILE: i32 = 24;
 /// Not a typewriter (inappropriate ioctl for device)
 pub const ENOTTY: i32 = 25;
 
+/// File too large
+pub const EFBIG: i32 = 27;
+
 /// No space left on device
 pub const ENOSPC: i32 = 28;
 

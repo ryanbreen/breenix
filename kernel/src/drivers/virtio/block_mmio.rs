@@ -438,12 +438,14 @@ static COMPLETIONS: [BlockMmioCompletion; MAX_BLOCK_DEVICES] =
 mod request_type {
     pub const IN: u32 = 0; // Read from device
     pub const OUT: u32 = 1; // Write to device
+    pub const FLUSH: u32 = 4; // Persist cached writes
 }
 
 /// VirtIO block feature bits
 mod features {
     /// Device is read-only (VIRTIO_BLK_F_RO, bit 5)
     pub const RO: u64 = 1 << 5;
+    pub const FLUSH: u64 = 1 << 9;
 }
 
 /// VirtIO block status codes
@@ -736,7 +738,7 @@ fn init_device(
     }
 
     // Initialize the device (reset, ack, driver, features)
-    device.init(0)?; // No special features requested
+    device.init(features::FLUSH)?;
 
     // Get device features to check for read-only flag
     let device_features = device.device_features();
@@ -1132,6 +1134,63 @@ pub fn write_sector(
 
     finish_write_sector(device_index)?;
     drop(request_guard);
+    Ok(())
+}
+
+/// Persist cached writes through the same serialized, IRQ-completed request
+/// path as reads and writes. Devices without FLUSH operate in writethrough mode.
+pub fn flush(device_index: usize) -> Result<(), &'static str> {
+    let state = block_device_state(device_index)?;
+    if state.device_features & features::FLUSH == 0 {
+        return Ok(());
+    }
+    if !irq_completion_available() {
+        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
+    }
+    let request_guard = REQUEST_GATES[device_index].lock()?;
+    let completion = &COMPLETIONS[device_index];
+    let token = completion.prepare_wait();
+    let bufs = device_buffers(device_index);
+    let (_, req_const, _, status_const) = device_buffers_const(device_index);
+    unsafe {
+        (*bufs.req_header).req = VirtioBlkReq {
+            type_: request_type::FLUSH,
+            reserved: 0,
+            sector: 0,
+        };
+        (*bufs.status_buf).status = 0xff;
+        (*bufs.queue_mem).desc[0] = VirtqDesc {
+            addr: virt_to_phys(req_const as u64),
+            len: core::mem::size_of::<VirtioBlkReq>() as u32,
+            flags: DESC_F_NEXT,
+            next: 1,
+        };
+        (*bufs.queue_mem).desc[1] = VirtqDesc {
+            addr: virt_to_phys(status_const as u64),
+            len: 1,
+            flags: DESC_F_WRITE,
+            next: 0,
+        };
+        let index = (*bufs.queue_mem).avail.idx;
+        (*bufs.queue_mem).avail.ring[(index % 16) as usize] = 0;
+        fence(Ordering::SeqCst);
+        (*bufs.queue_mem).avail.idx = index.wrapping_add(1);
+        fence(Ordering::SeqCst);
+    }
+    dsb_sy();
+    let device = match VirtioMmioDevice::probe(state.base) {
+        Some(device) => device,
+        None => {
+            completion.clear();
+            return Err("Device disappeared");
+        }
+    };
+    device.notify_queue(0);
+    if let Err(error) = completion.wait_for_completion(token, "Block MMIO flush timeout") {
+        request_guard.wedge();
+        return Err(error);
+    }
+    finish_write_sector(device_index)?;
     Ok(())
 }
 
