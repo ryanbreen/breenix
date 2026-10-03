@@ -91,6 +91,9 @@ pub const ENOSYS: i32 = 38;
 /// Directory not empty
 pub const ENOTEMPTY: i32 = 39;
 
+/// Too many levels of symbolic links
+pub const ELOOP: i32 = 40;
+
 /// Value too large for its type (a record lock range past the largest offset)
 pub const EOVERFLOW: i32 = 75;
 

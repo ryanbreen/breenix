@@ -293,11 +293,13 @@ fn open_is_access_checked(is_reg: bool, is_dir: bool, flags: u32) -> bool {
 
 /// The errno for an ext2 path lookup that failed with `e`.
 fn path_lookup_errno(e: &str) -> SyscallResult {
-    use super::errno::{EIO, ENOENT, ENOTDIR};
+    use super::errno::{EIO, ELOOP, ENOENT, ENOTDIR};
     if e.contains("not found") {
         SyscallResult::Err(ENOENT as u64)
     } else if e.contains("Not a directory") {
         SyscallResult::Err(ENOTDIR as u64)
+    } else if e.contains("Too many levels of symbolic links") {
+        SyscallResult::Err(ELOOP as u64)
     } else {
         SyscallResult::Err(EIO as u64)
     }
@@ -517,6 +519,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         normalize_path(&absolute)
     };
 
+    let path = normalize_path(&path);
     log::debug!("sys_open: resolved path={:?}", path);
 
     // Check for /dev directory itself
@@ -3998,7 +4001,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
             None => return SyscallResult::Err(ENOENT as u64),
         };
         let mid = fs.mount_id;
-        match if flags & 0x100 != 0 {
+        match if flags & AT_SYMLINK_NOFOLLOW != 0 {
             fs.resolve_path_no_follow(fs_path)
         } else {
             fs.resolve_path(fs_path)
@@ -4013,7 +4016,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
             None => return SyscallResult::Err(ENOENT as u64),
         };
         let mid = fs.mount_id;
-        match if flags & 0x100 != 0 {
+        match if flags & AT_SYMLINK_NOFOLLOW != 0 {
             fs.resolve_path_no_follow(fs_path)
         } else {
             fs.resolve_path(fs_path)
@@ -4364,9 +4367,9 @@ fn update_inode_timestamps(
     }
 }
 
-/// Snapshot a regular file descriptor before disk I/O, releasing the process
+/// Snapshot an ext2 file or directory descriptor before disk I/O, releasing the process
 /// lock (which masks IRQs) before waiting for device completion.
-fn regular_fd_info(fd: i32, writable: bool) -> Result<(u32, usize), u64> {
+fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize), u64> {
     use super::errno::{EBADF, EINVAL};
     crate::arch_without_interrupts(|| {
         let thread = crate::task::scheduler::current_thread_id().ok_or(EBADF as u64)?;
@@ -4382,6 +4385,10 @@ fn regular_fd_info(fd: i32, writable: bool) -> Result<(u32, usize), u64> {
                 }
                 Ok((file.inode_num as u32, file.mount_id))
             }
+            FdKind::Directory(dir) if !writable => {
+                let dir = dir.lock();
+                Ok((dir.inode_num as u32, dir.mount_id))
+            }
             _ => Err(EINVAL as u64),
         }
     })
@@ -4391,7 +4398,7 @@ fn regular_fd_info(fd: i32, writable: bool) -> Result<(u32, usize), u64> {
 /// device cache flush covers both requests (fdatasync may flush more metadata).
 pub fn sys_fsync(fd: i32) -> SyscallResult {
     use crate::fs::ext2;
-    let (_, mount_id) = match regular_fd_info(fd, false) {
+    let (_, mount_id) = match ext2_fd_info(fd, false) {
         Ok(info) => info,
         Err(errno) => return SyscallResult::Err(errno),
     };
@@ -4430,7 +4437,7 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
     if length < 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-    let (ino, mount_id) = match regular_fd_info(fd, true) {
+    let (ino, mount_id) = match ext2_fd_info(fd, true) {
         Ok(info) => info,
         Err(errno) => return SyscallResult::Err(errno),
     };
@@ -4460,12 +4467,28 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
     if path.is_empty() {
         return SyscallResult::Err(ENOENT as u64);
     }
-    let full_path = if path.starts_with('/') {
+    let absolute = if path.starts_with('/') {
         path
     } else {
         let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
         alloc::format!("{}/{}", cwd.trim_end_matches('/'), path)
     };
+    let full_path = normalize_path(&absolute);
+    if crate::ipc::fifo::FIFO_REGISTRY.exists(&full_path) {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    if full_path == "/dev" || full_path == "/proc" {
+        return SyscallResult::Err(super::errno::EISDIR as u64);
+    }
+    if full_path.starts_with("/dev/") || full_path.starts_with("/proc/") {
+        // Resolve virtual paths through their filesystem before rejecting resize.
+        let fd = match sys_open(pathname, O_RDONLY, 0) {
+            SyscallResult::Ok(fd) => fd as i32,
+            error => return error,
+        };
+        let _ = super::pipe::sys_close(fd);
+        return SyscallResult::Err(EINVAL as u64);
+    }
     let is_home = ext2::is_home_path(&full_path);
     let fs_path = if is_home {
         ext2::strip_home_prefix(&full_path)

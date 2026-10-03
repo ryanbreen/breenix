@@ -250,6 +250,13 @@ impl Ext2Fs {
             return Ok(0);
         }
 
+        if offset
+            .checked_add(data.len() as u64)
+            .map_or(true, |end| end > self.max_file_size())
+        {
+            return Err("File too large");
+        }
+
         // Read the inode
         let mut inode = self.read_inode(inode_num)?;
 
@@ -401,10 +408,20 @@ impl Ext2Fs {
             .map_err(|_| "Failed to flush filesystem")
     }
 
-    /// Largest size addressable by ext2's direct and three indirect levels.
+    /// Bound addressing by the sector counter and LARGE_FILE feature.
     pub fn max_file_size(&self) -> u64 {
-        let fanout = self.superblock.block_size() as u64 / 4;
-        (12 + fanout + fanout.pow(2) + fanout.pow(3)) * self.superblock.block_size() as u64
+        let block_size = self.superblock.block_size() as u64;
+        let fanout = block_size / 4;
+        let addressable = 12 + fanout + fanout.pow(2) + fanout.pow(3);
+        // Reserve room for pointer blocks and an external ACL block.
+        let sector_limit = u32::MAX as u64 / (block_size / 512);
+        let pointer_blocks = 3 + 2 * fanout + fanout.pow(2);
+        let limit = addressable.min(sector_limit.saturating_sub(pointer_blocks + 1)) * block_size;
+        if self.superblock.s_rev_level == 0 || self.superblock.s_feature_ro_compat & 0x2 == 0 {
+            limit.min(i32::MAX as u64)
+        } else {
+            limit
+        }
     }
 
     /// Resize a regular file, preserving its prefix and zero-filling extension.
@@ -412,6 +429,14 @@ impl Ext2Fs {
         let mut inode = self.read_inode(inode_num)?;
         if !inode.is_file() || length > self.max_file_size() {
             return Err("Invalid file size or type");
+        }
+        if length < inode.size() {
+            // Publish EOF before modifying any content that used to be visible.
+            let mut smaller = inode;
+            smaller.i_size = length as u32;
+            smaller.i_dir_acl = (length >> 32) as u32;
+            smaller.update_timestamps(false, true, true);
+            self.write_inode(inode_num, &smaller)?;
         }
         let reclaim = file::resize_file(self.device.as_ref(), &mut inode, &self.superblock, length)
             .map_err(|_| "Failed to resize file")?;
@@ -428,7 +453,7 @@ impl Ext2Fs {
                 &mut self.block_groups,
             ) {
                 free_result = Err(error);
-                break;
+                continue;
             }
             freed += 1;
         }

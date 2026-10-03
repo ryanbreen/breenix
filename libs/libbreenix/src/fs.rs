@@ -56,6 +56,9 @@ impl CPath {
     }
 }
 
+/// Do not follow the final symlink in pathname metadata requests.
+pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+
 /// AT_FDCWD: Use current working directory for *at syscall variants (ARM64 Linux)
 #[cfg(target_arch = "aarch64")]
 const AT_FDCWD: u64 = (-100i64) as u64;

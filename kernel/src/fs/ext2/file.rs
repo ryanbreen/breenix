@@ -501,6 +501,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
             single_indirect_ptr =
                 super::block_group::allocate_block(device, superblock, block_groups)
                     .map_err(|_| BlockError::IoError)?;
+            inode.i_blocks += (block_size / 512) as u32;
 
             // Update the inode's indirect block pointer
             unsafe {
@@ -533,6 +534,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
             double_indirect_ptr =
                 super::block_group::allocate_block(device, superblock, block_groups)
                     .map_err(|_| BlockError::IoError)?;
+            inode.i_blocks += (block_size / 512) as u32;
 
             // Update the inode's double indirect block pointer
             unsafe {
@@ -554,6 +556,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
             // Allocate a new second-level indirect block
             second_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
                 .map_err(|_| BlockError::IoError)?;
+            inode.i_blocks += (block_size / 512) as u32;
 
             // Update the first-level block with the new pointer
             first_level_blocks[first_level_index] = second_level_ptr;
@@ -577,6 +580,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
         // Allocate a new triple indirect block
         triple_indirect_ptr = super::block_group::allocate_block(device, superblock, block_groups)
             .map_err(|_| BlockError::IoError)?;
+        inode.i_blocks += (block_size / 512) as u32;
 
         // Update the inode's triple indirect block pointer
         unsafe {
@@ -599,6 +603,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
     if second_level_ptr == 0 {
         second_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
             .map_err(|_| BlockError::IoError)?;
+        inode.i_blocks += (block_size / 512) as u32;
 
         first_level_blocks[first_level_index] = second_level_ptr;
         write_indirect_block(device, triple_indirect_ptr, block_size, &first_level_blocks)?;
@@ -612,6 +617,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
     if third_level_ptr == 0 {
         third_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
             .map_err(|_| BlockError::IoError)?;
+        inode.i_blocks += (block_size / 512) as u32;
 
         second_level_blocks[second_level_index] = third_level_ptr;
         write_indirect_block(device, second_level_ptr, block_size, &second_level_blocks)?;
@@ -770,8 +776,7 @@ pub fn write_file_range<B: BlockDevice + ?Sized>(
             let size_ptr = core::ptr::addr_of_mut!(inode.i_size);
             core::ptr::write_unaligned(size_ptr, end_offset as u32);
         }
-        // For files > 4GB, we'd also need to update i_dir_acl
-        // but that's not common for typical use
+        inode.i_dir_acl = (end_offset >> 32) as u32;
     }
 
     // Update modification and change timestamps
@@ -925,7 +930,8 @@ pub fn resize_file<B: BlockDevice + ?Sized>(
             first += fanout.pow(depth);
         }
         inode.i_block = pointers;
-        inode.i_blocks = retained * (block_size / 512) as u32;
+        let acl_blocks = u32::from(inode.i_file_acl != 0);
+        inode.i_blocks = (retained + acl_blocks) * (block_size / 512) as u32;
     }
     inode.i_size = length as u32;
     inode.i_dir_acl = (length >> 32) as u32;

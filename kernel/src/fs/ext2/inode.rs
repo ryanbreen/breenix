@@ -490,8 +490,12 @@ fn free_inode_blocks<B: BlockDevice + ?Sized>(
     block_groups: &mut [super::Ext2BlockGroupDesc],
     inode: &Ext2Inode,
 ) -> Result<u32, &'static str> {
+    if inode.is_symlink() && inode.i_blocks == 0 {
+        // Fast symlinks store their text in i_block, not block numbers.
+        return Ok(0);
+    }
     let block_size = superblock.block_size();
-    let _ptrs_per_block = block_size / 4; // Reserved for future full deallocation
+    let ptrs_per_block = block_size / 4;
     let mut blocks_freed = 0u32;
 
     // Read the i_block array safely from the packed struct
@@ -506,27 +510,41 @@ fn free_inode_blocks<B: BlockDevice + ?Sized>(
         }
     }
 
-    // 2. Free single indirect block (i_block[12])
-    // Note: We only free the indirect block pointer itself, not its contents.
-    // Full recursive deallocation requires heap allocations which exhaust the
-    // bump allocator. The data blocks remain allocated but inaccessible.
-    // TODO: Implement proper deallocation when we have a real allocator.
     let single_indirect = i_block[12];
     if single_indirect != 0 {
+        blocks_freed += free_indirect_block(
+            device,
+            superblock,
+            block_groups,
+            single_indirect,
+            block_size,
+        )?;
         free_block(device, single_indirect, superblock, block_groups)?;
         blocks_freed += 1;
     }
-
-    // 3. Free double indirect block (i_block[13])
     let double_indirect = i_block[13];
     if double_indirect != 0 {
+        blocks_freed += free_double_indirect_block(
+            device,
+            superblock,
+            block_groups,
+            double_indirect,
+            block_size,
+            ptrs_per_block,
+        )?;
         free_block(device, double_indirect, superblock, block_groups)?;
         blocks_freed += 1;
     }
-
-    // 4. Free triple indirect block (i_block[14])
     let triple_indirect = i_block[14];
     if triple_indirect != 0 {
+        blocks_freed += free_triple_indirect_block(
+            device,
+            superblock,
+            block_groups,
+            triple_indirect,
+            block_size,
+            ptrs_per_block,
+        )?;
         free_block(device, triple_indirect, superblock, block_groups)?;
         blocks_freed += 1;
     }

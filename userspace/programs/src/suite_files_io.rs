@@ -198,6 +198,7 @@ struct FileStat {
     st_nlink: u64,
     st_mode: u32,
     st_size: i64,
+    st_blocks: u64,
     st_atime: i64,
     st_atime_nsec: i64,
     st_mtime: i64,
@@ -226,6 +227,7 @@ impl FileStat {
             st_nlink: nlink,
             st_mode: mode,
             st_size: b[6] as i64,
+            st_blocks: b[8],
             st_atime: b[9] as i64,
             st_atime_nsec: b[10] as i64,
             st_mtime: b[11] as i64,
@@ -2426,7 +2428,77 @@ fn metadata_write_size() -> CaseResult {
 fn metadata_ftruncate_shrink() -> CaseResult {
     let f = Fixture::new(b"abcdef")?;
     truncate_fd(f.fd(), 3)?;
-    contents(f.fd(), b"abc")
+    contents(f.fd(), b"abc")?;
+    metadata_truncate_indirect()
+}
+
+// Sparse writes reach each pointer depth without constructing a huge fixture.
+fn metadata_truncate_indirect() -> CaseResult {
+    let f = Fixture::new(b"abcdef")?;
+    let sectors = fstat(f.fd())?.st_blocks;
+    check(sectors > 0, "fixture has no allocated block")?;
+    let block_size = sectors * 512;
+    let fanout = block_size / 4;
+    let single = 12 * block_size;
+    let double = (12 + fanout) * block_size;
+    let triple = (12 + fanout + fanout * fanout) * block_size;
+    for offset in [single, double, triple] {
+        check(
+            sc(
+                PWRITE,
+                f.fd().raw(),
+                b"X".as_ptr() as u64,
+                1,
+                offset + 5,
+                "sparse pwrite",
+            )? == 1,
+            "sparse pwrite returned wrong count",
+        )?;
+    }
+    check(
+        fstat(f.fd())?.st_blocks == 10 * sectors,
+        "write omitted indirect block accounting",
+    )?;
+    for (offset, blocks) in [(triple, 10), (double, 6), (single, 3)] {
+        truncate_fd(f.fd(), (offset + 6) as i64)?;
+        check(
+            fstat(f.fd())?.st_blocks == blocks * sectors,
+            "shrink has wrong block accounting",
+        )?;
+        let mut b = [0; 6];
+        check(
+            sc(
+                PREAD,
+                f.fd().raw(),
+                b.as_mut_ptr() as u64,
+                6,
+                offset,
+                "sparse pread",
+            )? == 6,
+            "retained indirect data is missing",
+        )?;
+        check(b == *b"     X", "shrink damaged retained indirect data")?;
+    }
+    truncate_fd(f.fd(), 3)?;
+    check(
+        fstat(f.fd())?.st_blocks == sectors,
+        "shrink did not reclaim pointer trees",
+    )?;
+    truncate_fd(f.fd(), 6)?;
+    contents(f.fd(), b"abc   ")?;
+    truncate_fd(f.fd(), 0)?;
+    check(
+        fstat(f.fd())?.st_blocks == 0,
+        "zero truncate retained allocated blocks",
+    )?;
+    sync_fd(f.fd(), false)?;
+    let reopened = f.open(O_RDONLY)?;
+    let result = check(
+        fstat(reopened)?.st_size == 0 && fstat(reopened)?.st_blocks == 0,
+        "resized inode did not persist on reopen",
+    );
+    io::close(reopened)?;
+    result
 }
 
 fn metadata_ftruncate_grow() -> CaseResult {
@@ -2463,7 +2535,38 @@ fn metadata_truncate() -> CaseResult {
     let f = Fixture::new(b"abcdef")?;
     let p = cpath(&f.path);
     sc(TRUNCATE, p.as_ptr() as u64, 2, 0, 0, "truncate")?;
-    contents(f.fd(), b"ab")
+    contents(f.fd(), b"ab")?;
+    let normalized = cpath(&format!("/tmp/../{}", f.path.trim_start_matches('/')));
+    sc(
+        TRUNCATE,
+        normalized.as_ptr() as u64,
+        1,
+        0,
+        0,
+        "normalized truncate",
+    )?;
+    contents(f.fd(), b"a")?;
+    let device = cpath("/dev/null");
+    expect_errno(
+        sc(TRUNCATE, device.as_ptr() as u64, 0, 0, 0, "device truncate"),
+        22,
+        "device truncate",
+    )?;
+    let link = f.extra("link");
+    fs::symlink(&link, &link)?;
+    let loop_path = cpath(&link);
+    expect_errno(
+        sc(
+            TRUNCATE,
+            loop_path.as_ptr() as u64,
+            0,
+            0,
+            0,
+            "loop truncate",
+        ),
+        40,
+        "loop truncate",
+    )
 }
 
 fn metadata_mtime_advances() -> CaseResult {
@@ -2747,6 +2850,10 @@ fn mmap_bad_fd() -> CaseResult {
 fn sync_fsync() -> CaseResult {
     let f = Fixture::new(b"abcdef")?;
     sync_fd(f.fd(), false)?;
+    let dir = fs::open_with_mode("/tmp", O_RDONLY | O_DIRECTORY, 0)?;
+    let result = sync_fd(dir, false);
+    io::close(dir)?;
+    result?;
     Ok(())
 }
 
