@@ -32,8 +32,8 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
         crate::task::scheduler::current_thread_id().expect("queued wait requires a current thread");
     crate::per_cpu::preempt_enable();
     let interrupted = loop {
-        if crate::syscall::check_signals_for_eintr().is_some() {
-            break true;
+        if let Some(error) = crate::syscall::check_signals_for_restartable_wait() {
+            break Some(error);
         }
         let waiting = crate::task::scheduler::with_scheduler(|sched| {
             sched
@@ -43,7 +43,7 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
         })
         .unwrap_or(false);
         if !waiting {
-            break false;
+            break None;
         }
         crate::task::scheduler::yield_current();
         crate::arch_halt_with_interrupts();
@@ -52,10 +52,9 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
 
     queue.take_waiter(tid);
     queue.finish_wait_for(tid);
-    if interrupted {
-        Err(errno::EINTR)
-    } else {
-        Ok(())
+    match interrupted {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -80,6 +79,9 @@ pub(crate) fn write_pipe(
                     continue;
                 }
                 Err(WriteAttempt::BrokenPipe) => {
+                    // SIGPIPE accompanies EPIPE even after partial progress.
+                    drop(pipe);
+                    super::signal::raise_sigpipe();
                     return progress_or_error(offset, errno::EPIPE);
                 }
                 Err(WriteAttempt::WouldBlock) => {
@@ -136,6 +138,8 @@ pub(crate) fn write_unix(
         let outcome = {
             let mut state = writer.state();
             if state.peer_closed() {
+                drop(state);
+                super::signal::raise_sigpipe();
                 return SyscallResult::Err(errno::EPIPE as u64);
             }
             let count = state.copy(data);

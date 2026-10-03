@@ -352,7 +352,8 @@ pub unsafe extern "C" fn fstat(fd: i32, buf: *mut u8) -> i32 {
 
 /// stat - get file status by path
 ///
-/// Implemented as open() + fstat() + close().
+/// Uses newfstatat rather than open() + fstat(): stat needs no read
+/// permission on the file, and opening a FIFO could block.
 #[no_mangle]
 pub unsafe extern "C" fn stat(path: *const u8, buf: *mut u8) -> i32 {
     if path.is_null() || buf.is_null() {
@@ -360,14 +361,15 @@ pub unsafe extern "C" fn stat(path: *const u8, buf: *mut u8) -> i32 {
         return -1;
     }
 
-    let fd = open(path, 0 /* O_RDONLY */, 0);
-    if fd < 0 {
-        return -1; // errno already set by open
-    }
-
-    let result = fstat(fd, buf);
-    close(fd);
-    result
+    const AT_FDCWD: i64 = -100;
+    let result = libbreenix::raw::syscall4(
+        libbreenix::syscall::nr::NEWFSTATAT,
+        AT_FDCWD as u64,
+        path as u64,
+        buf as u64,
+        0,
+    ) as i64;
+    syscall_result_to_c_int(result)
 }
 
 /// lstat - get file status by path (no symlink follow)
@@ -1684,10 +1686,34 @@ pub unsafe extern "C" fn epoll_pwait(
 // Signal Handling
 // =============================================================================
 
-/// signal - set signal handler (simple interface)
+/// signal - set a signal's disposition with BSD semantics (SA_RESTART), as
+/// glibc and musl do. Returns the previous handler, or SIG_ERR with errno set.
+///
+/// Rust's std runtime calls `signal(SIGPIPE, SIG_IGN)` at startup so that a
+/// write to a broken pipe returns EPIPE instead of killing the program.
 #[no_mangle]
-pub extern "C" fn signal(_signum: i32, _handler: usize) -> usize {
-    0 // SIG_DFL
+pub extern "C" fn signal(signum: i32, handler: usize) -> usize {
+    use libbreenix::signal::{Sigaction, SA_RESTART, SA_RESTORER, SIG_IGN};
+    const SIG_ERR: usize = usize::MAX;
+
+    let mut action = Sigaction {
+        handler: handler as u64,
+        mask: 0,
+        flags: SA_RESTART,
+        restorer: 0,
+    };
+    if action.handler > SIG_IGN {
+        action.flags |= SA_RESTORER;
+        action.restorer = libbreenix::signal::__restore_rt as u64;
+    }
+    let mut previous = Sigaction::default();
+    match libbreenix::signal::sigaction(signum, Some(&action), Some(&mut previous)) {
+        Ok(()) => previous.handler as usize,
+        Err(e) => {
+            set_errno_from_error(e);
+            SIG_ERR
+        }
+    }
 }
 
 /// sigaction - examine and change signal action

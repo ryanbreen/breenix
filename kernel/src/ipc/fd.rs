@@ -64,6 +64,20 @@ pub struct RegularFile {
     pub flags: u32,
 }
 
+impl RegularFile {
+    /// Opened for reading (O_RDONLY or O_RDWR). read and pread on any other
+    /// descriptor fail with EBADF.
+    pub fn readable(&self) -> bool {
+        matches!(self.flags & 0x3, 0 | 2)
+    }
+
+    /// Opened for writing (O_WRONLY or O_RDWR). write and pwrite on any other
+    /// descriptor fail with EBADF.
+    pub fn writable(&self) -> bool {
+        matches!(self.flags & 0x3, 1 | 2)
+    }
+}
+
 /// Directory file descriptor (for getdents)
 #[derive(Clone, Debug)]
 pub struct DirectoryFile {

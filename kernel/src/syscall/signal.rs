@@ -142,6 +142,40 @@ fn check_target_exists(pid: i64) -> SyscallResult {
     }
 }
 
+/// Generate SIGPIPE for the calling thread's own process after a write to a
+/// pipe, FIFO or stream socket with no reader (POSIX write(), EPIPE). The
+/// writer is running, so nothing needs waking: the signal is acted on when
+/// this syscall returns. An ignored SIGPIPE is discarded and the caller sees
+/// only EPIPE. Must be called with no pipe or socket lock held.
+pub(crate) fn raise_sigpipe() {
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return;
+    };
+    let mut manager_guard = manager();
+    if let Some(ref mut manager) = *manager_guard {
+        if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+            process.signals.set_pending(SIGPIPE);
+        }
+    }
+}
+
+/// Terminate `victim` at once with `exit_code`, whatever it is doing: its
+/// threads stop being scheduled, a CPU running one is told to switch away, and
+/// the row exits. SIGKILL's delivery, also used when a thread group dies with
+/// one of its members. Must be called with no process-manager lock held, from
+/// a thread that is not one of the victim's.
+pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
+    crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
+    crate::task::scheduler::with_scheduler(|scheduler| {
+        scheduler.terminate_process_threads(victim.as_u64());
+    });
+
+    let batch = crate::task::scheduler::GroupBatchId::for_single_victim(victim.as_u64());
+    crate::task::scheduler::Scheduler::send_exit_expedite_sgi(victim.as_u64(), batch);
+    let _ = crate::process::exit_process_and_retire(victim, exit_code);
+    crate::task::scheduler::set_need_resched();
+}
+
 /// Send a signal to a specific process
 fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
     let mut manager_guard = manager();
@@ -157,20 +191,7 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
             if sig == SIGKILL {
                 let victim_pid = process.id;
                 drop(manager_guard);
-
-                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-                crate::task::scheduler::with_scheduler(|scheduler| {
-                    scheduler.terminate_process_threads(victim_pid.as_u64());
-                });
-
-                let batch =
-                    crate::task::scheduler::GroupBatchId::for_single_victim(victim_pid.as_u64());
-                crate::task::scheduler::Scheduler::send_exit_expedite_sgi(
-                    victim_pid.as_u64(),
-                    batch,
-                );
-                let _ = crate::process::exit_process_and_retire(victim_pid, -9);
-                crate::task::scheduler::set_need_resched();
+                kill_process_now(victim_pid, -(SIGKILL as i32));
                 return SyscallResult::Ok(0);
             }
 
@@ -561,8 +582,8 @@ pub fn sys_sigaction(sig: i32, new_act: u64, old_act: u64, sigsetsize: u64) -> S
             }
         };
 
-        let (_, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-            Some(p) => p,
+        let pid = match manager.find_process_by_thread(current_thread_id) {
+            Some((pid, _)) => pid,
             None => {
                 log::error!(
                     "sys_sigaction: process not found for thread {}",
@@ -572,13 +593,21 @@ pub fn sys_sigaction(sig: i32, new_act: u64, old_act: u64, sigsetsize: u64) -> S
             }
         };
 
-        process.signals.set_handler(sig, sanitized_action);
+        // Dispositions belong to the process, so every thread of the group
+        // sees the change (each thread is its own row here).
+        let mut rows = manager.thread_group_peers(pid);
+        rows.push(pid);
+        for row in rows {
+            if let Some(process) = manager.get_process_mut(row) {
+                process.signals.set_handler(sig, sanitized_action);
+            }
+        }
         log::debug!(
             "Signal {} ({}) handler set to {:#x} for process {} (thread {})",
             sig,
             signal_name(sig),
             sanitized_action.handler,
-            process.id.as_u64(),
+            pid.as_u64(),
             current_thread_id
         );
     }

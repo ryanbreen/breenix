@@ -519,6 +519,14 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         }
     }
 
+    // A wait a signal interrupted, to be resumed (SA_RESTART): return to the
+    // 2-byte `int 0x80` with the syscall number back in RAX, so the syscall
+    // runs again after any handler. The arguments are untouched.
+    if matches!(result, SyscallResult::Err(e) if e == super::errno::ERESTARTSYS as u64) {
+        frame.rax = syscall_num;
+        frame.rip -= 2;
+    }
+
     // CRITICAL: Check for pending signals before returning to userspace
     // This is required for POSIX compliance - signals must be delivered on syscall return.
     // Without this, a process that sends a signal to itself and then loops calling
@@ -608,6 +616,14 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
             // Check if there are any deliverable signals
             if !crate::signal::delivery::has_deliverable_signals(process) {
                 return;
+            }
+
+            // A default action that ends the process must take effect before
+            // Ring 3 runs again. It is carried out without the lock held and
+            // does not return.
+            if let Some(sig) = crate::signal::delivery::take_fatal_default_signal(process) {
+                drop(manager_guard);
+                crate::signal::delivery::exit_by_signal_on_syscall_return(sig);
             }
 
             // We have deliverable signals - need to set up signal frame

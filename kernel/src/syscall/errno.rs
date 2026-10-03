@@ -15,6 +15,11 @@ pub const ESRCH: i32 = 3;
 /// Interrupted system call
 pub const EINTR: i32 = 4;
 
+/// Kernel-internal, never seen by userspace: a signal interrupted a wait that
+/// is to be resumed (SA_RESTART, or no handler runs). The syscall return path
+/// re-executes the syscall instead of returning this (Linux's ERESTARTSYS).
+pub const ERESTARTSYS: i32 = 512;
+
 /// I/O error
 pub const EIO: i32 = 5;
 

@@ -235,13 +235,16 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // Without this, the scheduler would keep scheduling the terminated thread!
             if let Some(ref thread) = process.main_thread {
                 let thread_id = thread.id();
-                crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                let marked = crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
                     sched_thread.set_terminated();
+                });
+                // Logged after the scheduler lock is released.
+                if marked.is_some() {
                     log::info!(
                         "Signal delivery: marked scheduler thread {} as Terminated",
                         thread_id
                     );
-                });
+                }
             }
 
             // Return notification info for parent - caller will notify after releasing lock
@@ -267,13 +270,16 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
             if let Some(ref thread) = process.main_thread {
                 let thread_id = thread.id();
-                crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                let marked = crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
                     sched_thread.set_terminated();
+                });
+                // Logged after the scheduler lock is released.
+                if marked.is_some() {
                     log::info!(
                         "Signal delivery: marked scheduler thread {} as Terminated (core dump)",
                         thread_id
                     );
-                });
+                }
             }
 
             // Return notification info for parent - caller will notify after releasing lock
@@ -739,6 +745,88 @@ fn deliver_to_user_handler_aarch64(
 pub struct ParentNotification {
     pub parent_pid: crate::process::ProcessId,
     pub child_pid: crate::process::ProcessId,
+}
+
+/// The exit status a death by `sig`'s default action reports, or None when
+/// that default action does not end the process.
+#[cfg(target_arch = "x86_64")]
+fn fatal_exit_code(sig: u32) -> Option<i32> {
+    match default_action(sig) {
+        SignalDefaultAction::Terminate => Some(-(sig as i32)),
+        SignalDefaultAction::CoreDump => Some(-((sig as i32) | 0x80)),
+        _ => None,
+    }
+}
+
+/// A signal's default action ends the whole process, not one thread: kill the
+/// other live threads of `pid`'s thread group with the status `pid` died with.
+/// Must be called with no process-manager lock held, from process context.
+pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i32) {
+    let peers = crate::process::with_process_manager(|manager| manager.thread_group_peers(pid))
+        .unwrap_or_default();
+    for peer in peers {
+        crate::syscall::signal::kill_process_now(peer, exit_code);
+    }
+}
+
+/// Take the calling process's next deliverable signal off its pending set
+/// when that signal has the default action and the action ends the process,
+/// returning its number. The x86-64 syscall return path calls this under the
+/// process-manager lock, so it does no logging, locking or allocation.
+#[cfg(target_arch = "x86_64")]
+pub fn take_fatal_default_signal(process: &mut Process) -> Option<u32> {
+    let sig = process.signals.next_deliverable_signal()?;
+    if !process.signals.get_handler(sig).is_default() || fatal_exit_code(sig).is_none() {
+        return None;
+    }
+    process.signals.clear_pending(sig);
+    Some(sig)
+}
+
+/// Finish an x86-64 syscall return whose pending signal `sig`, taken by
+/// `take_fatal_default_signal`, ends the calling process. The death runs
+/// through the exit path `sys_exit` uses, which closes descriptors and tells
+/// the parent outside the process-manager lock; the rest of the thread group
+/// dies with the same status. The thread then waits, preemptible, for the
+/// scheduler to switch away: the syscall return path cannot switch threads
+/// itself (entry.asm sets PREEMPT_ACTIVE before its reschedule check), and
+/// returning would run Ring 3 code after the process died. The thread is never
+/// resumed.
+///
+/// Called with no process-manager lock held and with the syscall's single
+/// preempt_disable() still in force.
+#[cfg(target_arch = "x86_64")]
+pub fn exit_by_signal_on_syscall_return(sig: u32) -> ! {
+    let exit_code = fatal_exit_code(sig).unwrap_or(-(sig as i32));
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        let row = crate::process::with_process_manager(|manager| {
+            manager
+                .find_process_by_thread(thread_id)
+                .map(|(pid, process)| (pid, process.name.clone()))
+        })
+        .flatten();
+        if let Some((pid, name)) = row {
+            crate::serial_println!(
+                "[signal] Process {} ({}) terminated by signal {} ({})",
+                pid.as_u64(),
+                name,
+                sig,
+                signal_name(sig)
+            );
+            terminate_thread_group_peers(pid, exit_code);
+        }
+        crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
+    }
+    crate::task::scheduler::with_scheduler(|scheduler| {
+        if let Some(thread) = scheduler.current_thread_mut() {
+            thread.set_terminated();
+        }
+    });
+    crate::task::scheduler::set_need_resched();
+    crate::per_cpu::preempt_enable();
+    loop {
+        crate::arch_halt_with_interrupts();
+    }
 }
 
 /// Notify parent process when a child process is terminated by signal

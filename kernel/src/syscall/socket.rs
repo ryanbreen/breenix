@@ -745,7 +745,7 @@ pub fn sys_recvfrom(
         // When packet arrives via softirq, enqueue_packet() will unblock us
         loop {
             // Check for pending signals that should interrupt this syscall
-            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                 // Signal pending - unblock and return EINTR
                 Cpu::without_interrupts(|| {
                     socket_ref.lock().unregister_waiter(thread_id);
@@ -1107,7 +1107,7 @@ fn sys_accept_tcp(
         // HLT loop - wait for SYN to arrive
         loop {
             // Check for pending signals that should interrupt this syscall
-            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                 // Signal pending - unblock and return EINTR
                 crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
                 crate::task::scheduler::with_scheduler(|sched| {
@@ -1270,7 +1270,7 @@ fn sys_accept_unix(
         // HLT loop - wait for connection to arrive
         loop {
             // Check for pending signals that should interrupt this syscall
-            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                 // Signal pending - unblock and return EINTR
                 {
                     let l = listener.lock();

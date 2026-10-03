@@ -204,6 +204,19 @@ impl SignalState {
         self.has_deliverable_signals()
     }
 
+    /// Whether a restartable wait this state's next deliverable signal
+    /// interrupts is resumed (SA_RESTART): it is unless that signal will run a
+    /// handler installed without SA_RESTART.
+    pub fn interruption_restarts(&self) -> bool {
+        match self.next_deliverable_signal() {
+            Some(sig) => {
+                let action = self.get_handler(sig);
+                !action.is_handler() || action.flags & SA_RESTART != 0
+            }
+            None => true,
+        }
+    }
+
     /// Get the next deliverable signal (lowest number first)
     ///
     /// Returns None if no signals are pending and unblocked
@@ -318,6 +331,16 @@ impl SignalState {
             ignored: self.ignored,
             alt_stack: self.alt_stack,   // Alt stack is inherited per POSIX
             sigsuspend_saved_mask: None, // Child doesn't inherit sigsuspend state
+        }
+    }
+
+    /// Signal state for a new thread of this one's thread group: the creating
+    /// thread's dispositions and mask, nothing pending and no alternate stack
+    /// (POSIX pthread_create).
+    pub fn new_thread(&self) -> Self {
+        SignalState {
+            alt_stack: AltStack::default(),
+            ..self.fork()
         }
     }
 
