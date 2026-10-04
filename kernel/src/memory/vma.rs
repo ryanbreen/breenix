@@ -82,8 +82,10 @@ impl MmapFlags {
     }
 }
 
-/// A Virtual Memory Area represents a contiguous mapped region
-#[derive(Debug, Clone)]
+/// A Virtual Memory Area represents a contiguous mapped region. Not `Clone`:
+/// a file VMA's binding is registered per address space (see
+/// `file_map::fork_vmas`).
+#[derive(Debug)]
 #[allow(dead_code)]
 pub struct Vma {
     /// Start address (page-aligned)
@@ -94,6 +96,8 @@ pub struct Vma {
     pub prot: Protection,
     /// Memory mapping flags
     pub flags: MmapFlags,
+    /// The file side of a file-backed mapping.
+    pub backing: Option<super::file_map::Binding>,
 }
 
 impl Vma {
@@ -104,6 +108,7 @@ impl Vma {
             end,
             prot,
             flags,
+            backing: None,
         }
     }
 

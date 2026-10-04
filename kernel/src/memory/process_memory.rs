@@ -95,7 +95,29 @@ pub struct ProcessPageTable {
     owned_root_slots: RootSlotOwnership,
     /// One allocation-derived custody record per user virtual page.
     leaves: OwnedLeafFrames,
+    /// Never-reused identity of this address space (see `address_space`).
+    space: u64,
 }
+
+static NEXT_ADDRESS_SPACE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+fn next_address_space() -> u64 {
+    NEXT_ADDRESS_SPACE.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+}
+
+/// What revoking one user page found.
+pub(crate) enum Revoked {
+    /// Neither a descriptor nor a custody record.
+    Absent,
+    /// Descriptor and record removed. Flush, then release.
+    Leaf(ReleasedLeaf),
+}
+
+/// Revocation found the descriptor and the custody record disagreeing. Any
+/// descriptor has been cleared and its TLB entry flushed, so the page is no
+/// longer reachable; the frame reference it may hold is kept, because without
+/// a record the reference cannot be accounted.
+pub(crate) struct RevokeFailed;
 
 const ROOT_SLOT_WORDS: usize = 8;
 
@@ -390,6 +412,7 @@ impl ProcessPageTable {
             tables: OwnedTableFrames::new(),
             owned_root_slots: RootSlotOwnership::new(),
             leaves: OwnedLeafFrames::new(),
+            space: next_address_space(),
         };
 
         log::debug!("ARM64: ProcessPageTable created successfully");
@@ -1124,6 +1147,7 @@ impl ProcessPageTable {
             tables,
             owned_root_slots,
             leaves: OwnedLeafFrames::new(),
+            space: next_address_space(),
         };
 
         // With global kernel page tables, all kernel stacks are automatically visible
@@ -1136,6 +1160,12 @@ impl ProcessPageTable {
     /// Get the physical frame of the level 4 page table
     pub fn level_4_frame(&self) -> PhysFrame {
         self.level_4_frame
+    }
+
+    /// Identity of this address space. Unlike the root frame or the owning
+    /// PID, it is never reused by a later table.
+    pub(crate) fn address_space(&self) -> u64 {
+        self.space
     }
 
     #[cfg(feature = "boot_tests")]
@@ -1590,6 +1620,83 @@ impl ProcessPageTable {
         let _ = flush;
         self.leaves.records.remove(record_index);
         Ok(ReleasedLeaf { record, frame })
+    }
+
+    /// Remove one user page's mapping, telling an absent page apart from one
+    /// whose descriptor and custody record disagree. The caller flushes and
+    /// releases a returned leaf, as for `unmap_page_deferred`.
+    pub(crate) fn revoke_page(&mut self, page: Page<Size4KiB>) -> Result<Revoked, RevokeFailed> {
+        let recorded = self.leaves.search(page.start_address().as_u64()).is_ok();
+        let mapped = self.mapper.translate_page(page).is_ok();
+        match (recorded, mapped) {
+            (false, false) => Ok(Revoked::Absent),
+            (true, true) => match self.unmap_page_deferred(page) {
+                Ok(leaf) => Ok(Revoked::Leaf(leaf)),
+                Err(_) => Err(self.break_descriptor(page)),
+            },
+            _ => Err(self.break_descriptor(page)),
+        }
+    }
+
+    /// Clear a descriptor that has no usable custody record, without touching
+    /// the frame it maps.
+    fn break_descriptor(&mut self, page: Page<Size4KiB>) -> RevokeFailed {
+        crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+        if self.mapper.unmap(page).is_ok() {
+            crate::memory::tlb::flush_page(page.start_address());
+        }
+        RevokeFailed
+    }
+
+    /// First page in `[start, end)` with a present 4 KiB leaf descriptor.
+    /// Absent intermediate tables are skipped whole, so the cost follows the
+    /// mapped part of the range rather than its length.
+    pub(crate) fn next_mapped_page(&self, start: u64, end: u64) -> Option<Page<Size4KiB>> {
+        fn skip(address: u64, shift: u32) -> u64 {
+            ((address >> shift) + 1)
+                .checked_shl(shift)
+                .unwrap_or(u64::MAX)
+        }
+        let phys_offset = crate::memory::physical_memory_offset();
+        let mut address = start & !0xfff;
+        while address < end {
+            // SAFETY: every table reached is a present table descriptor of this
+            // address space, read through the physical-memory offset mapping.
+            unsafe {
+                let table = |frame: PhysAddr| {
+                    &*((phys_offset + frame.as_u64()).as_ptr() as *const PageTable)
+                };
+                let absent = |flags: PageTableFlags| !flags.contains(PageTableFlags::PRESENT);
+                let l4 =
+                    &table(self.level_4_frame.start_address())[((address >> 39) & 0x1ff) as usize];
+                if l4.is_unused() || absent(l4.flags()) {
+                    address = skip(address, 39);
+                    continue;
+                }
+                let l3 = &table(l4.addr())[((address >> 30) & 0x1ff) as usize];
+                if l3.is_unused()
+                    || absent(l3.flags())
+                    || l3.flags().contains(PageTableFlags::HUGE_PAGE)
+                {
+                    address = skip(address, 30);
+                    continue;
+                }
+                let l2 = &table(l3.addr())[((address >> 21) & 0x1ff) as usize];
+                if l2.is_unused()
+                    || absent(l2.flags())
+                    || l2.flags().contains(PageTableFlags::HUGE_PAGE)
+                {
+                    address = skip(address, 21);
+                    continue;
+                }
+                let l1 = &table(l2.addr())[((address >> 12) & 0x1ff) as usize];
+                if !l1.is_unused() && !absent(l1.flags()) {
+                    return Some(Page::containing_address(VirtAddr::new(address)));
+                }
+            }
+            address += 4096;
+        }
+        None
     }
 
     fn release_leaf_record(record: LeafRecord, frame: PhysFrame) {

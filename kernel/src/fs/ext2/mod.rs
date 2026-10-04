@@ -106,6 +106,12 @@ impl Ext2Fs {
     fn finalize_inactive(&mut self) -> Finalize {
         let mut budget = RECLAIM_BUDGET;
         let mut outcome = self.finalize_shrinks(&mut budget);
+        let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
+        for object in self.live_inodes.evictions() {
+            if object.map.evict(&mut cache_budget) {
+                outcome = Finalize::More;
+            }
+        }
         for object in self.live_inodes.pending(self.finalization_cursor) {
             if !object.unused() { continue; }
             if budget == 0 {
@@ -371,6 +377,31 @@ impl Ext2Fs {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, &'static str> {
+        // Private mappings: reserve cache frames for bound holes before the
+        // disk changes; afterwards only apply what ext2 published.
+        let mapped = self.live_inodes.get(inode_num);
+        let prepared = match &mapped {
+            Some(object) => Some(object.map.prepare_write(offset, data.len())?),
+            None => None,
+        };
+        let result = self.write_file_range_disk(inode_num, offset, data);
+        if let (Some(object), Some(prepared)) = (mapped, prepared) {
+            object.map.transition(object.size.load(Ordering::Acquire));
+            match result {
+                Ok(written) => object.map.commit_write(offset, &data[..written], prepared),
+                Err(_) => object.map.invalidate(offset, data.len() as u64),
+            }
+            object.map.repair(self, inode_num);
+        }
+        result
+    }
+
+    fn write_file_range_disk(
+        &mut self,
+        inode_num: u32,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<usize, &'static str> {
         self.check_shrink(inode_num)?;
         if data.is_empty() {
             return Ok(0);
@@ -564,6 +595,24 @@ impl Ext2Fs {
 
     /// Resize a regular file, preserving its prefix and zero-filling extension.
     pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
+        let mapped = self.live_inodes.get(inode_num);
+        let before = mapped.as_ref().map(|object| object.size.load(Ordering::Acquire));
+        let result = self.resize_file_disk(inode_num, length);
+        if let (Some(object), Some(before)) = (mapped, before) {
+            // A shrink publishes its EOF before it can fail, so the published
+            // size is followed on failure too.
+            object.map.transition(object.size.load(Ordering::Acquire));
+            let boundary = before.min(length);
+            if result.is_err() && boundary % 4096 != 0 {
+                // The tail zeroing of the boundary block may not have landed.
+                object.map.invalidate(boundary, 1);
+            }
+            object.map.repair(self, inode_num);
+        }
+        result
+    }
+
+    fn resize_file_disk(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
         self.check_shrink(inode_num)?;
         let mut inode = self.read_inode(inode_num)?;
         if !inode.is_file() || length > self.max_file_size() {
@@ -2579,4 +2628,10 @@ pub fn strip_home_prefix(path: &str) -> &str {
 /// Check if a resolved path should be routed to the home filesystem.
 pub fn is_home_path(path: &str) -> bool {
     (path == "/home" || path.starts_with("/home/")) && is_home_mounted()
+}
+
+/// File-mapping cache pages became unbound: have the ext2 service retire them.
+/// Safe from binding drops, which can run under the process manager.
+pub(crate) fn request_map_eviction() {
+    writeback::request();
 }

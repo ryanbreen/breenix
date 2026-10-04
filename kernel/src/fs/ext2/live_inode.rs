@@ -51,6 +51,8 @@ pub struct LiveInode {
     pub mount: MountPin,
     pub size: AtomicU64,
     pub size_epoch: AtomicU64,
+    /// Cached pages and reverse map for private file mappings.
+    pub map: crate::memory::file_map::MapState,
     external_handles: AtomicUsize,
     pending: AtomicBool,
     pub(super) orphan: AtomicBool,
@@ -190,6 +192,7 @@ impl LiveInodes {
             // An entry kept while unused may predate a size change the caller
             // has just read under the guard.
             object.publish_size(size);
+            object.map.resync_unbound(size);
             object.clone()
         } else {
             let object = Arc::new(LiveInode {
@@ -201,6 +204,7 @@ impl LiveInodes {
                 mount,
                 size: AtomicU64::new(size),
                 size_epoch: AtomicU64::new(0),
+                map: crate::memory::file_map::MapState::new(size),
                 external_handles: AtomicUsize::new(0),
                 pending: AtomicBool::new(false),
                 orphan: AtomicBool::new(false),
@@ -209,6 +213,23 @@ impl LiveInodes {
             object
         };
         Ok(FileHandle::acquire(object))
+    }
+
+    /// The live entry for `inode`, if one exists.
+    pub fn get(&self, inode: u32) -> Option<Arc<LiveInode>> {
+        self.table.lock().objects.get(&inode).cloned()
+    }
+
+    /// Entries whose file-mapping cache holds pages no binding covers.
+    pub fn evictions(&self) -> alloc::vec::Vec<Arc<LiveInode>> {
+        self.table
+            .lock()
+            .objects
+            .values()
+            .filter(|object| object.map.eviction_pending())
+            .take(32)
+            .cloned()
+            .collect()
     }
 
     pub fn publish_size(&self, inode: u32, size: u64) {

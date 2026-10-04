@@ -752,6 +752,41 @@ fn handle_cow_fault(faulting_addr: VirtAddr, error_code: PageFaultErrorCode, cr3
     }
 }
 
+/// Resolve a fault in a private file mapping (`memory::file_map`). With
+/// `user_thread`, an access that cannot complete raises its signal in that
+/// thread's process. A fault taken inside a PROCESS_MANAGER section on this
+/// CPU cannot wait for it and is not a file fault.
+fn file_mapping_fault(
+    address: u64,
+    error_code: PageFaultErrorCode,
+    cr3: u64,
+    user_thread: Option<u64>,
+) -> crate::memory::file_map::FaultOutcome {
+    use crate::memory::file_map::{handle_fault, Access, FaultOutcome};
+    if error_code.contains(PageFaultErrorCode::MALFORMED_TABLE) {
+        return FaultOutcome::NotFile;
+    }
+    let access = if error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) {
+        Access::Execute
+    } else if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+        Access::Write
+    } else {
+        Access::Read
+    };
+    loop {
+        if let Some(mut guard) = crate::process::try_manager() {
+            return match guard.as_mut() {
+                Some(manager) => handle_fault(manager, cr3, address, access, user_thread),
+                None => FaultOutcome::NotFile,
+            };
+        }
+        if crate::process::pm_held_on_this_cpu().is_some() {
+            return FaultOutcome::NotFile;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// Handle CoW fault through the process manager (normal path)
 fn handle_cow_with_manager(
     guard: &mut crate::process::TryProcessManagerGuard,
@@ -1103,8 +1138,10 @@ extern "x86-interrupt" fn page_fault_handler(
             let resolved = if is_potential_cow {
                 handle_cow_fault(addr, error_code, cr3)
             } else {
-                !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
-                    && handle_stack_growth(addr, cr3)
+                (!error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+                    && handle_stack_growth(addr, cr3))
+                    || file_mapping_fault(cr2, error_code, cr3, None)
+                        == crate::memory::file_map::FaultOutcome::Resolved
             };
             crate::per_cpu::preempt_enable();
             if !resolved {
@@ -1116,6 +1153,25 @@ extern "x86-interrupt" fn page_fault_handler(
                     });
                 }
             }
+            return;
+        }
+    }
+
+    // A user access to a private file mapping is resolved from the file's
+    // page cache, or raises SIGSEGV/SIGBUS through the process's signal
+    // dispositions; either way the instruction is retried.
+    if (stack_frame.code_segment.0 & 3) == 3
+        && cr2 < crate::memory::layout::USER_STACK_REGION_END
+    {
+        crate::per_cpu::preempt_disable();
+        let outcome = file_mapping_fault(
+            cr2,
+            error_code,
+            cr3,
+            crate::per_cpu::current_thread_id_lock_free(),
+        );
+        crate::per_cpu::preempt_enable();
+        if outcome != crate::memory::file_map::FaultOutcome::NotFile {
             return;
         }
     }

@@ -71,7 +71,8 @@ pub fn sys_mmap(
     );
 
     // A file mapping names a descriptor, which is looked up before any other
-    // argument is checked: one that is not open is EBADF.
+    // argument is checked: one that is not open is EBADF. Argument errors
+    // (EINVAL) come next, and then the descriptor's kind and access mode.
     if !flags.contains(MmapFlags::ANONYMOUS) && !descriptor_is_open(fd as i32) {
         return SyscallResult::Err(crate::syscall::errno::EBADF as u64);
     }
@@ -82,14 +83,17 @@ pub fn sys_mmap(
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
     }
 
+    let file = if flags.contains(MmapFlags::ANONYMOUS) {
+        None
+    } else {
+        match file_mapping(fd as i32, length, flags, offset) {
+            Ok(handle) => Some(handle),
+            Err(errno) => return SyscallResult::Err(errno),
+        }
+    };
+
     // Round length up to page size
     let length = round_up_to_page(length);
-
-    // Require MAP_ANONYMOUS (file-backed not yet supported)
-    if !flags.contains(MmapFlags::ANONYMOUS) {
-        log::warn!("sys_mmap: file-backed mappings not yet supported");
-        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
-    }
 
     // Must specify exactly one of MAP_SHARED or MAP_PRIVATE
     let is_shared = flags.contains(MmapFlags::SHARED);
@@ -100,7 +104,7 @@ pub fn sys_mmap(
     }
 
     // File descriptor should be -1 for anonymous mappings
-    if fd != -1 {
+    if file.is_none() && fd != -1 {
         log::warn!("sys_mmap: fd must be -1 for MAP_ANONYMOUS");
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
     }
@@ -244,6 +248,21 @@ pub fn sys_mmap(
         (start_addr, end_addr, root)
     };
 
+    if let Some(handle) = file {
+        return map_file(
+            handle,
+            current_thread_id,
+            root,
+            Vma::new(
+                VirtAddr::new(start_addr),
+                VirtAddr::new(end_addr),
+                prot,
+                flags,
+            ),
+            offset / PAGE_SIZE,
+        );
+    }
+
     let page_count = ((end_addr - start_addr) / PAGE_SIZE) as usize;
     let Some(frames) = allocate_zeroed_frames(page_count) else {
         log::error!("sys_mmap: OOM allocating {} frames", page_count);
@@ -267,6 +286,102 @@ pub fn sys_mmap(
     }
 
     SyscallResult::Ok(start_addr)
+}
+
+/// The file handle for a file-backed mmap request, or its errno. The
+/// descriptor is known to be open and `length` nonzero.
+fn file_mapping(
+    fd: i32,
+    length: u64,
+    flags: MmapFlags,
+    offset: u64,
+) -> Result<crate::fs::ext2::live_inode::FileHandle, u64> {
+    use crate::syscall::errno::{EACCES, EINVAL, ENODEV, ENOMEM, EOVERFLOW};
+    // Shared file mappings (MAP_SHARED, and MAP_SHARED_VALIDATE = 3) are not
+    // supported yet; only MAP_PRIVATE is.
+    if flags.bits() & 3 != MmapFlags::PRIVATE.bits() || !is_page_aligned(offset) {
+        return Err(EINVAL as u64);
+    }
+    let pages = length.div_ceil(PAGE_SIZE);
+    if (offset / PAGE_SIZE).checked_add(pages).is_none() {
+        return Err(EOVERFLOW as u64);
+    }
+    if length.checked_add(PAGE_SIZE - 1).is_none() {
+        return Err(ENOMEM as u64);
+    }
+    if !crate::memory::file_map::local_invalidation_suffices() {
+        return Err(ENODEV as u64);
+    }
+    let thread_id = get_current_thread_id().ok_or(ErrorCode::NoSuchProcess as u64)?;
+    let manager_guard = crate::process::manager();
+    let (_pid, process) = manager_guard
+        .as_ref()
+        .and_then(|manager| manager.find_process_by_thread(thread_id))
+        .ok_or(ErrorCode::NoSuchProcess as u64)?;
+    let descriptor = process
+        .fd_table
+        .get(fd)
+        .ok_or(crate::syscall::errno::EBADF as u64)?;
+    let crate::ipc::FdKind::RegularFile(file) = &descriptor.kind else {
+        return Err(ENODEV as u64);
+    };
+    if !descriptor.readable() {
+        return Err(EACCES as u64);
+    }
+    let handle = file.lock().handle.clone();
+    Ok(handle)
+}
+
+/// Populate the cache for a file VMA under the mount's read guard, then
+/// register it in a short PROCESS_MANAGER section. Entries are installed by
+/// faults, not here.
+fn map_file(
+    handle: crate::fs::ext2::live_inode::FileHandle,
+    thread_id: u64,
+    root: u64,
+    mut vma: Vma,
+    pgoff: u64,
+) -> SyscallResult {
+    use crate::memory::file_map::{self, MapError};
+    let guard = match crate::fs::ext2::read_mount(handle.object.mount) {
+        Ok(guard) => guard,
+        Err(_) => return SyscallResult::Err(ErrorCode::IoError as u64),
+    };
+    let Some(fs) = guard.as_ref() else {
+        return SyscallResult::Err(ErrorCode::IoError as u64);
+    };
+    match file_map::populate(&handle, fs, pgoff, vma.size() / PAGE_SIZE) {
+        Ok(()) => {}
+        Err(MapError::NoMemory) => return SyscallResult::Err(ErrorCode::OutOfMemory as u64),
+        Err(MapError::Io) => return SyscallResult::Err(ErrorCode::IoError as u64),
+    }
+    let mut manager_guard = crate::process::manager();
+    let Some((pid, process)) = manager_guard
+        .as_mut()
+        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+    else {
+        return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+    };
+    if process.vmas.iter().any(|other| vma.overlaps(other)) {
+        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+    }
+    let Some(page_table) = process
+        .page_table
+        .as_deref()
+        .filter(|pt| pt.level_4_frame().start_address().as_u64() == root)
+    else {
+        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+    };
+    if process.vmas.try_reserve(1).is_err() {
+        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+    }
+    match file_map::bind(handle, pid, page_table, &vma, pgoff) {
+        Ok(binding) => vma.backing = Some(binding),
+        Err(_) => return SyscallResult::Err(ErrorCode::OutOfMemory as u64),
+    }
+    let start = vma.start.as_u64();
+    process.vmas.push(vma);
+    SyscallResult::Ok(start)
 }
 
 /// Syscall 10: mprotect - Change protection of memory region
@@ -336,6 +451,32 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
+
+    // A range within one file VMA is split out and changed on its own.
+    match crate::memory::file_map::isolate(&mut process.vmas, addr, end_addr) {
+        Ok(Some(index)) => {
+            let Some(page_table) = process.page_table.as_deref_mut() else {
+                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+            };
+            return match crate::memory::file_map::protect(
+                &mut process.vmas,
+                index,
+                page_table,
+                new_prot,
+            ) {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(_) => SyscallResult::Err(ErrorCode::OutOfMemory as u64),
+            };
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return SyscallResult::Err(if error.starts_with("Out of memory") {
+                ErrorCode::OutOfMemory as u64
+            } else {
+                ErrorCode::InvalidArgument as u64
+            });
+        }
+    }
 
     // Find the VMA that contains this address range
     // For simplicity, require exact match on start address
@@ -462,6 +603,28 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
+
+    // A range within one file VMA is split out and unmapped on its own. If an
+    // entry's custody disagrees, the VMA and its binding are kept.
+    match crate::memory::file_map::isolate(&mut process.vmas, addr, end_addr) {
+        Ok(Some(index)) => {
+            let Some(page_table) = process.page_table.as_deref_mut() else {
+                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+            };
+            return match crate::memory::file_map::unmap(&mut process.vmas, index, page_table) {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(_) => SyscallResult::Err(ErrorCode::OutOfMemory as u64),
+            };
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return SyscallResult::Err(if error.starts_with("Out of memory") {
+                ErrorCode::OutOfMemory as u64
+            } else {
+                ErrorCode::InvalidArgument as u64
+            });
+        }
+    }
 
     // Find overlapping VMAs
     // For simplicity, require exact match (don't support partial unmapping yet)
