@@ -3636,6 +3636,12 @@ impl ProcessManager {
         // - If exec() succeeds, it never returns (jumps to new program)
         // - If exec() fails, it returns an error to the original program
         // For now, we return the entry point for testing, but this violates POSIX
+        if let Some(process) = self.processes.live_row_mut(&pid) {
+            for old_pt in &mut process.pending_old_page_tables {
+                old_pt.release_exec_file_vmas();
+            }
+        }
+
         Ok(new_entry_point)
     }
 
@@ -3977,6 +3983,12 @@ impl ProcessManager {
             self.ready_queue.push(pid);
         }
 
+        if let Some(process) = self.processes.live_row_mut(&pid) {
+            for old_pt in &mut process.pending_old_page_tables {
+                old_pt.release_exec_file_vmas();
+            }
+        }
+
         Ok((new_entry_point, initial_rsp, sched_commit))
     }
 
@@ -4293,6 +4305,12 @@ impl ProcessManager {
 
         if !self.ready_queue.contains(&pid) {
             self.ready_queue.push(pid);
+        }
+
+        if let Some(process) = self.processes.live_row_mut(&pid) {
+            for old_pt in &mut process.pending_old_page_tables {
+                old_pt.release_exec_file_vmas();
+            }
         }
 
         Ok((new_entry_point, initial_rsp, sched_commit))
@@ -4654,6 +4672,12 @@ impl ProcessManager {
 
         // Lock-free trace: exec exit
         crate::tracing::providers::process::trace_exec_exit(pid.as_u64() as u32);
+
+        if let Some(process) = self.processes.live_row_mut(&pid) {
+            for old_pt in &mut process.pending_old_page_tables {
+                old_pt.release_exec_file_vmas();
+            }
+        }
 
         Ok((new_entry_point, sched_commit))
     }

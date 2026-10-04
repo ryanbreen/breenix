@@ -8,9 +8,9 @@ pub mod dir;
 pub mod file;
 pub mod inode;
 pub mod live_inode;
-pub mod writeback;
 mod reclaim;
 pub mod superblock;
+pub mod writeback;
 
 pub use block_group::*;
 pub use dir::*;
@@ -56,6 +56,16 @@ pub(super) enum Finalize {
     Retry,
 }
 
+impl Finalize {
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Retry, _) | (_, Self::Retry) => Self::Retry,
+            (Self::More, _) | (_, Self::More) => Self::More,
+            _ => Self::Idle,
+        }
+    }
+}
+
 impl Ext2Fs {
     /// Create a new ext2 filesystem instance from a block device
     ///
@@ -95,8 +105,11 @@ impl Ext2Fs {
     }
 
     /// The caller read this inode under the same FS guard that protects the pin.
-    pub(crate) fn pin_loaded_inode(&self, inode_num: u32, size: u64)
-        -> Result<live_inode::FileHandle, &'static str> {
+    pub(crate) fn pin_loaded_inode(
+        &self,
+        inode_num: u32,
+        size: u64,
+    ) -> Result<live_inode::FileHandle, &'static str> {
         self.live_inodes.pin(self.mount_pin, inode_num, size)
     }
 
@@ -110,36 +123,44 @@ impl Ext2Fs {
         let evictions = self.live_inodes.evictions();
         let mut write_budget = crate::memory::file_map::EVICT_BUDGET;
         for object in &evictions {
-            match object.map.service_writeback(self, object.key.inode, &mut write_budget) {
-                Ok(true) => outcome = Finalize::More,
+            match object
+                .map
+                .service_writeback(self, object.key.inode, &mut write_budget)
+            {
+                Ok(true) => outcome = outcome.merge(Finalize::More),
                 Err(_) => outcome = Finalize::Retry,
                 Ok(false) => {}
             }
             if object.map.evict(&mut cache_budget) {
-                outcome = Finalize::More;
+                outcome = outcome.merge(Finalize::More);
             }
         }
         // One pass takes a bounded batch of inodes; any left pending need
         // another pass even when every inode in this batch was emptied.
         if evictions.len() == live_inode::EVICTION_BATCH && self.live_inodes.evictions_pending() {
-            outcome = Finalize::More;
+            outcome = outcome.merge(Finalize::More);
         }
         for object in self.live_inodes.pending(self.finalization_cursor) {
-            if !object.unused() { continue; }
+            if !object.unused() {
+                continue;
+            }
             if budget == 0 {
-                return Finalize::More;
+                return outcome.merge(Finalize::More);
             }
             self.finalization_cursor = object.key.inode;
             match self.reclaim_orphan(&object, &mut budget) {
                 Ok(true) | Err(reclaim::ReclaimError::Abandon(_)) => {}
-                Ok(false) => return Finalize::More,
+                Ok(false) => return outcome.merge(Finalize::More),
                 Err(reclaim::ReclaimError::Retry) => outcome = Finalize::Retry,
             }
         }
         if matches!(outcome, Finalize::Idle)
-            && !self.live_inodes.pending(self.finalization_cursor).is_empty()
+            && !self
+                .live_inodes
+                .pending(self.finalization_cursor)
+                .is_empty()
         {
-            return Finalize::More;
+            return outcome.merge(Finalize::More);
         }
         outcome
     }
@@ -149,13 +170,17 @@ impl Ext2Fs {
         let inodes: Vec<u32> = self.shrink_reclaims.keys().copied().collect();
         let mut outcome = Finalize::Idle;
         for ino in inodes {
-            if *budget == 0 { return Finalize::More; }
+            if *budget == 0 {
+                return outcome.merge(Finalize::More);
+            }
             let mut progress = self.shrink_reclaims.remove(&ino).expect("queued shrink");
             match progress.finish(self, ino, budget) {
                 Ok(true) => {}
                 result => {
                     self.shrink_reclaims.insert(ino, progress);
-                    if matches!(result, Ok(false)) { return Finalize::More; }
+                    if matches!(result, Ok(false)) {
+                        return outcome.merge(Finalize::More);
+                    }
                     outcome = Finalize::Retry;
                 }
             }
@@ -203,7 +228,9 @@ impl Ext2Fs {
     pub fn check_shrink(&self, inode_num: u32) -> Result<(), &'static str> {
         if self.shrink_reclaims.contains_key(&inode_num) {
             Err("Unfinished ext2 shrink after I/O failure")
-        } else { Ok(()) }
+        } else {
+            Ok(())
+        }
     }
 
     /// Read an inode from the filesystem
@@ -375,8 +402,13 @@ impl Ext2Fs {
 
     /// External readers, including exec, use the resident inode cache while
     /// holding the same mount guard that protects the disk read.
-    pub fn read_file_range_coherent(&self, ino: u32, inode: &Ext2Inode, offset: u64,
-        length: usize) -> Result<Vec<u8>, &'static str> {
+    pub fn read_file_range_coherent(
+        &self,
+        ino: u32,
+        inode: &Ext2Inode,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, &'static str> {
         let mut bytes = self.read_file_range(inode, offset, length)?;
         if let Some(object) = self.live_inodes.get(ino) {
             object.map.overlay(offset, &mut bytes)?;
@@ -384,8 +416,11 @@ impl Ext2Fs {
         Ok(bytes)
     }
 
-    pub fn read_file_content_coherent(&self, ino: u32, inode: &Ext2Inode)
-        -> Result<Vec<u8>, &'static str> {
+    pub fn read_file_content_coherent(
+        &self,
+        ino: u32,
+        inode: &Ext2Inode,
+    ) -> Result<Vec<u8>, &'static str> {
         let mut bytes = self.read_file_content(inode)?;
         if let Some(object) = self.live_inodes.get(ino) {
             object.map.overlay(0, &mut bytes)?;
@@ -395,8 +430,12 @@ impl Ext2Fs {
 
     /// Raw writeback bypasses cache overlays and size transitions. The
     /// snapshot is clipped to EOF, so this never extends the inode.
-    pub(crate) fn write_mapped_range(&mut self, ino: u32, offset: u64, bytes: &[u8])
-        -> Result<usize, &'static str> {
+    pub(crate) fn write_mapped_range(
+        &mut self,
+        ino: u32,
+        offset: u64,
+        bytes: &[u8],
+    ) -> Result<usize, &'static str> {
         self.write_file_range_disk(ino, offset, bytes)
     }
 
@@ -463,8 +502,11 @@ impl Ext2Fs {
 
         // Allocation updates the group counters. Publish their aggregate and
         // the descriptors once per write, including partial allocation failure.
-        let free_before: u32 = self.block_groups.iter()
-            .map(|group| group.bg_free_blocks_count as u32).sum();
+        let free_before: u32 = self
+            .block_groups
+            .iter()
+            .map(|group| group.bg_free_blocks_count as u32)
+            .sum();
         let written = write_file_range(
             self.device.as_ref(),
             &mut inode,
@@ -473,14 +515,22 @@ impl Ext2Fs {
             offset,
             data,
         );
-        let free_after: u32 = self.block_groups.iter()
-            .map(|group| group.bg_free_blocks_count as u32).sum();
+        let free_after: u32 = self
+            .block_groups
+            .iter()
+            .map(|group| group.bg_free_blocks_count as u32)
+            .sum();
         if free_before != free_after || self.superblock.s_free_blocks_count != free_after {
             self.superblock.s_free_blocks_count = free_after;
-            self.superblock.write_to(self.device.as_ref())
+            self.superblock
+                .write_to(self.device.as_ref())
                 .map_err(|_| "Failed to persist allocation count")?;
-            Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
-                .map_err(|_| "Failed to persist allocation groups")?;
+            Ext2BlockGroupDesc::write_table(
+                self.device.as_ref(),
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to persist allocation groups")?;
         }
         written.map_err(|_| "Failed to write file data")?;
 
@@ -635,7 +685,9 @@ impl Ext2Fs {
     /// Resize a regular file, preserving its prefix and zero-filling extension.
     pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
         let mapped = self.live_inodes.get(inode_num);
-        let before = mapped.as_ref().map(|object| object.size.load(Ordering::Acquire));
+        let before = mapped
+            .as_ref()
+            .map(|object| object.size.load(Ordering::Acquire));
         if let (Some(object), Some(before)) = (&mapped, before) {
             object.map.prepare_resize(before, length)?;
         }
@@ -676,7 +728,9 @@ impl Ext2Fs {
         self.live_inodes.publish_size(inode_num, length);
         if shrinking {
             let mut progress = reclaim::Reclaim::shrink(
-                inode, length.div_ceil(self.superblock.block_size() as u64));
+                inode,
+                length.div_ceil(self.superblock.block_size() as u64),
+            );
             // Success is synchronous: stat and the allocator observe the completed
             // shrink when this syscall returns. Only I/O failure queues custody.
             let mut budget = usize::MAX;
@@ -784,8 +838,12 @@ impl Ext2Fs {
             )
             .map_err(|_| "Failed to write parent inode")?;
 
-        let links = decrement_inode_links(self.device.as_ref(), target_inode_num,
-            &self.superblock, &mut self.block_groups)?;
+        let links = decrement_inode_links(
+            self.device.as_ref(),
+            target_inode_num,
+            &self.superblock,
+            &mut self.block_groups,
+        )?;
         if links == 0 {
             handle.object.orphan.store(true, Ordering::Release);
             // With no descriptor observing it, reclaim the inode now under
@@ -2392,13 +2450,21 @@ fn pin_is_home(pin: live_inode::MountPin) -> Result<bool, &'static str> {
 /// Route only to an installed mount whose VFS ID and lifetime token match.
 /// Only the selected guard is taken, and it stays held for the caller.
 pub fn read_mount(pin: live_inode::MountPin) -> Result<Ext2ReadGuard, &'static str> {
-    let guard = if pin_is_home(pin)? { home_fs_read() } else { root_fs_read() };
+    let guard = if pin_is_home(pin)? {
+        home_fs_read()
+    } else {
+        root_fs_read()
+    };
     pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
     Ok(guard)
 }
 
 pub fn write_mount(pin: live_inode::MountPin) -> Result<Ext2WriteGuard, &'static str> {
-    let guard = if pin_is_home(pin)? { home_fs_write() } else { root_fs_write() };
+    let guard = if pin_is_home(pin)? {
+        home_fs_write()
+    } else {
+        root_fs_write()
+    };
     pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
     Ok(guard)
 }
@@ -2513,7 +2579,10 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 
     // Store globally
     let mut installed = ROOT_EXT2.write();
-    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty()) {
+    if installed
+        .as_ref()
+        .is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty())
+    {
         return Err("Root ext2 mount is pinned");
     }
     ROOT_MOUNT_ID.store(fs.mount_id, Ordering::Release);
@@ -2642,7 +2711,10 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 
     // Store globally
     let mut installed = HOME_EXT2.write();
-    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty()) {
+    if installed
+        .as_ref()
+        .is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty())
+    {
         return Err("Home ext2 mount is pinned");
     }
     HOME_MOUNT_ID.store(fs.mount_id, Ordering::Release);

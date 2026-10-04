@@ -14,8 +14,9 @@ log: `docs/planning/ralph-roadmap.html`.
 Files & I/O issue [#1015](https://github.com/ryanbreen/breenix/issues/1015):
 PR #1035 implements synchronization, ext2 resizing, final-symlink stat and relatime reads;
 Private file mappings landed in PR #1070. Shared mappings, coherent reads,
-dirty custody and msync/writeback are in progress as PR C of
-[#1038](https://github.com/ryanbreen/breenix/issues/1038), the remaining #1015 work.
+dirty custody and msync/writeback are implemented in PR #1073 for
+[#1038](https://github.com/ryanbreen/breenix/issues/1038). Device-failure
+injection coverage remains tracked in #1059.
 
 Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:

@@ -338,7 +338,7 @@ for i in $(seq 1 "$COUNT"); do
   # claim-lint:ok: #775 ruling R134 defines the census input contract.
   if [ -n "$SUITE" ]; then
     suite_verdict=$(python3 "$REPO_DIR/scripts/suite-verdict.py" "docs/suites/$SUITE.json" \
-        "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log" 2>&1)
+        "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log" --disk "$REPO_DIR/target/ext2.img" 2>&1)
     if [ $? -eq 0 ]; then
       verdict_ok=true
       verdict_reason=""

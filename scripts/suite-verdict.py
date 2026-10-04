@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score one effort-suite boot against its manifest (docs/suites/README.md).
 
-    scripts/suite-verdict.py MANIFEST RECORDS_LOG [OTHER_LOG ...]
+    scripts/suite-verdict.py MANIFEST RECORDS_LOG [OTHER_LOG ...] [--disk IMAGE]
 
 RECORDS_LOG is the serial the suite's stdout went to; every log given is also
 searched for fatal kernel output. The boot passes when the suite's records, each
@@ -10,10 +10,17 @@ per manifest case in manifest order, and one DONE whose counts match those CASE
 lines with failed=0; and no log shows a kernel panic, soft lockup or EL1 abort
 (`fatal` in docs/boot-path.json, plus x86-64's "KERNEL PANIC:").
 
+A manifest with diskChecks also requires --disk: debugfs reads the stopped
+VM image directly and compares the persisted bytes, bypassing the guest cache.
+
 Prints "PASS: <DONE line>" or "FAIL: <reason>" and exits 0 or 1.
 """
 
+import argparse
 import json
+import shutil
+import subprocess
+import tempfile
 import re
 import sys
 from pathlib import Path
@@ -90,12 +97,49 @@ def verdict(manifest, records_log, logs):
     return True, line
 
 
+def disk_verdict(checks, disk):
+    if not checks:
+        return True, ""
+    if not disk:
+        return False, "the manifest requires --disk for raw writeback checks"
+    debugfs = next((shutil.which(path) for path in (
+        "debugfs", "/usr/sbin/debugfs", "/sbin/debugfs",
+        "/opt/homebrew/opt/e2fsprogs/sbin/debugfs",
+        "/usr/local/opt/e2fsprogs/sbin/debugfs",
+    ) if shutil.which(path)), None)
+    if not debugfs:
+        return False, "raw disk checks require debugfs (e2fsprogs)"
+    with tempfile.TemporaryDirectory(prefix="suite-disk-") as directory:
+        for index, check in enumerate(checks):
+            output = Path(directory) / str(index)
+            try:
+                result = subprocess.run(
+                    [debugfs, "-R", f"dump {check['path']} {output}", str(disk)],
+                    capture_output=True, timeout=30, check=False,
+                )
+                if result.returncode or not output.exists():
+                    return False, f"raw disk file is missing: {check['path']}"
+                actual = output.read_bytes()
+            except (OSError, subprocess.TimeoutExpired) as error:
+                return False, f"raw disk read failed: {error}"
+            expected = bytes([check["byte"]]) * check["length"]
+            if actual != expected:
+                return False, f"raw disk bytes differ: {check['path']}"
+    return True, f"raw disk checks passed={len(checks)}"
+
+
 def main():
-    if len(sys.argv) < 3:
-        sys.stderr.write(__doc__)
-        return 2
-    manifest = json.loads(Path(sys.argv[1]).read_text())
-    ok, reason = verdict(manifest, sys.argv[2], sys.argv[2:])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("manifest")
+    parser.add_argument("logs", nargs="+")
+    parser.add_argument("--disk", help="stopped VM's raw ext2 image for manifest diskChecks")
+    args = parser.parse_args()
+    manifest = json.loads(Path(args.manifest).read_text())
+    ok, reason = verdict(manifest, args.logs[0], args.logs)
+    if ok:
+        ok, disk_reason = disk_verdict(manifest.get("diskChecks", []), args.disk)
+        if disk_reason:
+            reason = f"{reason}; {disk_reason}"
     print(f"{'PASS' if ok else 'FAIL'}: {reason}")
     return 0 if ok else 1
 

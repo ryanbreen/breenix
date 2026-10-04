@@ -1344,9 +1344,12 @@ static SUITE: Suite = suite(
                 ),
                 case(
                     "shared-writeback",
-                    "MAP_SHARED changes reach the file after msync",
+                    "Shared synchronization validates flags and coherent reads",
                     mmap_shared_writeback,
                 ),
+                case("msync-disk", "msync persists later stores across writeback batches", mmap_msync_disk),
+                case("fsync-disk", "fsync persists later stores across writeback batches", mmap_fsync_disk),
+                case("fdatasync-disk", "fdatasync persists later stores across writeback batches", mmap_fdatasync_disk),
                 case(
                     "shared-peer",
                     "MAP_SHARED changes are visible in another shared mapping",
@@ -2001,7 +2004,10 @@ fn descriptors_unlink_open() -> CaseResult {
     io::close(f.file.take().expect("fixture descriptor"))?;
     let result = (|| -> CaseResult {
         orphan_bytes(d, b"head")?;
-        check(fstat(d)?.st_ino == ino, "fstat of the unlinked file changed inode")?;
+        check(
+            fstat(d)?.st_ino == ino,
+            "fstat of the unlinked file changed inode",
+        )?;
         check(
             positioned(PWRITE, d, &mut *b"HEAD".to_vec(), 0)? == 4,
             "short write to the unlinked file",
@@ -2063,7 +2069,10 @@ fn descriptors_unlink_reclaim() -> CaseResult {
     for path in &kept {
         fs::unlink(path)?;
     }
-    check(reused, "the last close of an unlinked file did not free its inode")
+    check(
+        reused,
+        "the last close of an unlinked file did not free its inode",
+    )
 }
 
 fn descriptors_dup_clear_cloexec() -> CaseResult {
@@ -2683,9 +2692,16 @@ fn root_free_blocks() -> Result<u64, String> {
     io::close(fd).map_err(|e| e.to_string())?;
     let n = read.map_err(|e| e.to_string())?;
     let text = std::str::from_utf8(&buf[..n]).map_err(|e| e.to_string())?;
-    let root = text.lines().find(|l| l.starts_with("root ")).ok_or("missing root counters")?;
-    let counts = root.split_whitespace().skip(2).map(str::parse::<u64>)
-        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let root = text
+        .lines()
+        .find(|l| l.starts_with("root "))
+        .ok_or("missing root counters")?;
+    let counts = root
+        .split_whitespace()
+        .skip(2)
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
     if counts.len() != 4 || counts.iter().any(|c| *c != counts[0]) {
         return Err(format!("ext2 counters differ: {root}"));
     }
@@ -2698,12 +2714,21 @@ fn metadata_ftruncate_large() -> CaseResult {
         let original = fstat(fd)?;
         let block_size = original.st_size as usize / 129;
         let sectors = block_size as u64 / 512;
-        check(original.st_blocks == 130 * sectors, "large fixture block count")?;
+        check(
+            original.st_blocks == 130 * sectors,
+            "large fixture block count",
+        )?;
         let free = root_free_blocks()?;
         // Remove 128 suffix data blocks and their indirect block: 129 frees.
         truncate_fd(fd, 3)?;
-        check(fstat(fd)?.st_blocks == sectors, "large shrink retained suffix blocks")?;
-        check(root_free_blocks()? == free + 129, "large shrink free counts lag")?;
+        check(
+            fstat(fd)?.st_blocks == sectors,
+            "large shrink retained suffix blocks",
+        )?;
+        check(
+            root_free_blocks()? == free + 129,
+            "large shrink free counts lag",
+        )?;
         truncate_fd(fd, original.st_size)?;
         let mut expected = vec![0; original.st_size as usize];
         expected[..3].fill(0x5a);
@@ -2712,11 +2737,20 @@ fn metadata_ftruncate_large() -> CaseResult {
         write_all(fd, b"Z")?;
         expected[original.st_size as usize - 1] = b'Z';
         contents(fd, &expected)?;
-        check(fstat(fd)?.st_blocks == 3 * sectors, "large regrowth block count")?;
+        check(
+            fstat(fd)?.st_blocks == 3 * sectors,
+            "large regrowth block count",
+        )?;
         let free = root_free_blocks()?;
         truncate_fd(fd, 0)?;
-        check(fstat(fd)?.st_blocks == 0, "large zero truncate retained allocated blocks")?;
-        check(root_free_blocks()? == free + 3, "zero truncate free counts lag")
+        check(
+            fstat(fd)?.st_blocks == 0,
+            "large zero truncate retained allocated blocks",
+        )?;
+        check(
+            root_free_blocks()? == free + 3,
+            "zero truncate free counts lag",
+        )
     })();
     io::close(fd)?;
     result
@@ -2726,12 +2760,21 @@ fn metadata_ftruncate_large_open() -> CaseResult {
     let path = "/test/files-io-large-open";
     let original = stat(path, false)?;
     let block_size = original.st_size as u64 / 129;
-    check(original.st_blocks == 130 * (block_size / 512), "open truncate fixture block count")?;
+    check(
+        original.st_blocks == 130 * (block_size / 512),
+        "open truncate fixture block count",
+    )?;
     let free = root_free_blocks()?;
     let fd = fs::open(path, O_TRUNC | O_RDWR)?;
     let result = (|| -> CaseResult {
-        check(fstat(fd)?.st_blocks == 0, "open truncate retained allocated blocks")?;
-        check(root_free_blocks()? == free + 130, "open truncate free counts lag")?;
+        check(
+            fstat(fd)?.st_blocks == 0,
+            "open truncate retained allocated blocks",
+        )?;
+        check(
+            root_free_blocks()? == free + 130,
+            "open truncate free counts lag",
+        )?;
         write_all(fd, b"fresh")?;
         contents(fd, b"fresh")
     })();
@@ -2973,6 +3016,16 @@ fn mmap_read() -> CaseResult {
     memory::munmap(p, 4096).map_err(|e| format!("file-backed mmap failed: {e}"))?;
     result?;
 
+    for hint in [0x2000, 0x4000, 0x8000] {
+        let p = map(f.fd(), 3 | hint, 0)?;
+        memory::munmap(p, 4096)?;
+    }
+    expect_errno(
+        map(f.fd(), 3 | i32::MIN, 0),
+        95,
+        "unknown MAP_SHARED_VALIDATE flag",
+    )?;
+
     let readonly = f.open(O_RDONLY)?;
     expect_errno(
         map(readonly, memory::MAP_SHARED, 0),
@@ -3000,9 +3053,8 @@ fn mmap_read() -> CaseResult {
     let result = (|| -> CaseResult {
         truncate_fd(f.fd(), 0)?;
         truncate_fd(f.fd(), 6)?;
-        contents(f.fd(), &[0; 6]).map_err(|_| {
-            CaseError::from("truncate/regrow exposed discarded bytes through read")
-        })?;
+        contents(f.fd(), &[0; 6])
+            .map_err(|_| CaseError::from("truncate/regrow exposed discarded bytes through read"))?;
         check(
             unsafe { std::slice::from_raw_parts(p, 6) } == [0; 6],
             "truncate/regrow left discarded bytes visible through the surviving mapping",
@@ -3054,7 +3106,7 @@ fn mmap_shared_writeback() -> CaseResult {
         sync_mapping(p)?;
         contents(f.fd(), b"Xbcdef")?;
         unsafe { p.add(1).write_volatile(b'Y') };
-        sync_fd(f.fd(), false)?; // a live writer keeps the page dirty
+        sync_fd(f.fd(), false)?;
         contents(f.fd(), b"XYcdef")?;
         memory::mprotect(p, 4096, memory::PROT_NONE)?;
         memory::mprotect(p, 4096, memory::PROT_READ | memory::PROT_WRITE)?;
@@ -3071,7 +3123,72 @@ fn mmap_shared_writeback() -> CaseResult {
     })();
     memory::munmap(p, 4096).map_err(|e| format!("file-backed mmap failed: {e}"))?;
     result?;
-    contents(f.fd(), b"XYZdef")
+    contents(f.fd(), b"XYZdef")?;
+
+    Ok(())
+}
+
+fn mmap_msync_disk() -> CaseResult {
+    mmap_sync_disk("msync", None)
+}
+
+fn mmap_fsync_disk() -> CaseResult {
+    mmap_sync_disk("fsync", Some(false))
+}
+
+fn mmap_fdatasync_disk() -> CaseResult {
+    mmap_sync_disk("fdatasync", Some(true))
+}
+
+fn mmap_sync_disk(name: &str, data: Option<bool>) -> CaseResult {
+    // Keep the sync artifact for the host's raw ext2 inspection. fstat
+    // reads the disk inode, bypassing read()'s resident-cache overlay.
+    // A second store to the first page must survive the earlier writeback;
+    // the remaining pages cross the batch boundary in the same sync call.
+    const LENGTH: usize = 65 * 4096;
+    let path = format!("/tmp/files-io-writeback-{name}");
+    let fd = fs::open_with_mode(&path, O_CREAT | O_TRUNC | O_RDWR, 0o600)?;
+    truncate_fd(fd, LENGTH as i64)?;
+    check(
+        fstat(fd)?.st_blocks == 0,
+        "writeback fixture was not sparse",
+    )?;
+    let mapping = memory::mmap(
+        std::ptr::null_mut(),
+        LENGTH,
+        memory::PROT_READ | memory::PROT_WRITE,
+        memory::MAP_SHARED,
+        fd.raw() as i32,
+        0,
+    )?;
+    let result = (|| -> CaseResult {
+        for (length, value) in [(4096, b'A'), (LENGTH, b'B')] {
+            unsafe { std::ptr::write_bytes(mapping, value, length) };
+            match data {
+                None => {
+                    sc(
+                        MSYNC,
+                        mapping as u64,
+                        LENGTH as u64,
+                        4,
+                        0,
+                        "multi-batch msync",
+                    )?;
+                }
+                Some(data) => {
+                    sync_fd(fd, data)?;
+                }
+            }
+            check(
+                fstat(fd)?.st_blocks >= (length / 512) as u64,
+                "synchronization did not allocate the sparse disk blocks",
+            )?;
+        }
+        Ok(())
+    })();
+    memory::munmap(mapping, LENGTH)?;
+    io::close(fd)?;
+    result
 }
 
 fn mmap_shared_peer() -> CaseResult {
@@ -3744,9 +3861,8 @@ fn mmap_close_fd() -> CaseResult {
             "child did not store through its shared mapping",
         )?,
     }
-    contents(f.fd(), b"Xbcdef").map_err(|_| {
-        CaseError::from("exit without unmap lost the mapped store")
-    })
+    contents(f.fd(), b"Xbcdef")
+        .map_err(|_| CaseError::from("exit without unmap lost the mapped store"))
 }
 
 fn mmap_unaligned_offset() -> CaseResult {

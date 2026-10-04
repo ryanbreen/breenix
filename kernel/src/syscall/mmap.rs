@@ -334,7 +334,11 @@ fn file_mapping(
     if kind == 0 || !is_page_aligned(offset) {
         return Err(EINVAL as u64);
     }
-    if kind == 3 && flags.bits() & !(3 | MmapFlags::FIXED.bits()) != 0 {
+    // These Linux hints need no additional machinery: mmap populates the
+    // resident cache eagerly, physical pages are unswappable, and virtual
+    // address reservations do not commit anonymous backing here.
+    const SHARED_FLAGS: u32 = 3 | 0x10 | 0x2000 | 0x4000 | 0x8000;
+    if kind == 3 && flags.bits() & !SHARED_FLAGS != 0 {
         return Err(crate::syscall::errno::EOPNOTSUPP as u64);
     }
     let pages = length.div_ceil(PAGE_SIZE);
@@ -804,18 +808,7 @@ pub fn sys_msync(addr: u64, length: u64, flags: u32) -> SyscallResult {
             handle.object.map.request_writeback();
             continue;
         }
-        let mut guard = match crate::fs::ext2::write_mount(handle.object.mount) {
-            Ok(guard) => guard,
-            Err(_) => return SyscallResult::Err(EIO as u64),
-        };
-        let result = guard.as_mut().ok_or("Missing mount").and_then(|fs| {
-            let ino = handle.verify(fs)?;
-            handle
-                .object
-                .map
-                .writeback(fs, ino, first, last, usize::MAX)
-                .map(|_| ())
-        });
+        let result = crate::memory::file_map::sync_range(&handle, first, last);
         if result.is_err() {
             return SyscallResult::Err(EIO as u64);
         }

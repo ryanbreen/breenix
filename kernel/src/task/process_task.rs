@@ -502,9 +502,11 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
             drain_old_page_tables_counted(pid, &mut process.pending_old_page_tables, &mut budget);
     }
     #[cfg(target_arch = "aarch64")]
-    if let Some(page_table) = process.page_table.take() {
+    if let Some(mut page_table) = process.page_table.take() {
+        page_table.retain_file_vmas(&mut process.vmas);
         page_table.abandon(AbandonReason::NoProofPipeline);
     }
+    process.vmas.clear();
     #[cfg(target_arch = "x86_64")]
     debug_assert!(process.page_table.is_none());
     drop(process.stack.take());
@@ -793,9 +795,11 @@ impl ProcessScheduler {
                             // Preserve the single-CoW-decref invariant: external
                             // terminate() already walked these mappings, so raw-drop
                             // them without another reclaim/decref path.
-                            if let Some(page_table) = process.page_table.take() {
+                            if let Some(mut page_table) = process.page_table.take() {
+                                page_table.retain_file_vmas(&mut process.vmas);
                                 page_table.abandon(AbandonReason::AlreadyTerminated);
                             }
+                            process.vmas.clear();
                             drop(process.stack.take());
                             process.pending_old_page_tables.clear();
                             None

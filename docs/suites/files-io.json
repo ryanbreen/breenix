@@ -645,7 +645,19 @@
         },
         {
           "id": "shared-writeback",
-          "title": "MAP_SHARED changes reach the file after msync"
+          "title": "Shared synchronization validates flags and coherent reads"
+        },
+        {
+          "id": "msync-disk",
+          "title": "msync persists later stores across writeback batches"
+        },
+        {
+          "id": "fsync-disk",
+          "title": "fsync persists later stores across writeback batches"
+        },
+        {
+          "id": "fdatasync-disk",
+          "title": "fdatasync persists later stores across writeback batches"
         },
         {
           "id": "shared-peer",
@@ -747,5 +759,10 @@
         }
       ]
     }
+  ],
+  "diskChecks": [
+    {"path": "/tmp/files-io-writeback-msync", "length": 266240, "byte": 66},
+    {"path": "/tmp/files-io-writeback-fsync", "length": 266240, "byte": 66},
+    {"path": "/tmp/files-io-writeback-fdatasync", "length": 266240, "byte": 66}
   ]
 }
