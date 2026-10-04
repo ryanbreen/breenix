@@ -298,6 +298,12 @@ BSHRC
             touch /mnt/ext2/empty.txt  # Empty file for wc testing
             mkdir -p /mnt/ext2/test
             echo "Nested file content" > /mnt/ext2/test/nested.txt
+            # Dense shrink fixtures start allocated before the timed suite cases.
+            fixture_block_size=$(stat -f -c %S /mnt/ext2)
+            for fixture in files-io-large-shrink files-io-large-open; do
+                dd if=/dev/zero bs="$fixture_block_size" count=129 status=none |
+                    tr "\000" Z > "/mnt/ext2/test/$fixture"
+            done
 
             # Create additional test content
             mkdir -p /mnt/ext2/deep/path/to/file
@@ -578,6 +584,12 @@ BSHRC
     touch "$MOUNT_DIR/empty.txt"  # Empty file for wc testing
     mkdir -p "$MOUNT_DIR/test"
     echo "Nested file content" > "$MOUNT_DIR/test/nested.txt"
+    # Match the dense fixtures installed by the Docker path above.
+    fixture_block_size=$(stat -f -c %S "$MOUNT_DIR")
+    for fixture in files-io-large-shrink files-io-large-open; do
+        dd if=/dev/zero bs="$fixture_block_size" count=129 status=none |
+            tr "\000" Z > "$MOUNT_DIR/test/$fixture"
+    done
     mkdir -p "$MOUNT_DIR/deep/path/to/file"
     echo "Deep nested content" > "$MOUNT_DIR/deep/path/to/file/data.txt"
 
