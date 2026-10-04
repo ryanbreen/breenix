@@ -892,6 +892,16 @@ static SUITE: Suite = suite(
                     descriptors_separate_offset,
                 ),
                 case(
+                    "unlink-open",
+                    "An unlinked file stays usable until its last descriptor closes",
+                    descriptors_unlink_open,
+                ),
+                case(
+                    "unlink-reclaim",
+                    "The last close of an unlinked file frees its inode",
+                    descriptors_unlink_reclaim,
+                ),
+                case(
                     "dup-clear-cloexec",
                     "dup clears FD_CLOEXEC on the new descriptor",
                     descriptors_dup_clear_cloexec,
@@ -1892,6 +1902,105 @@ fn descriptors_separate_offset() -> CaseResult {
     )
 }
 
+/// Offset of an orphan fixture's second write: past the twelve direct
+/// blocks at every ext2 block size, so the file owns a single-indirect block
+/// while writing only two data blocks.
+const ORPHAN_TAIL: i64 = 61440;
+
+fn orphan_fixture() -> Result<Fixture, CaseError> {
+    let f = Fixture::new(b"head")?;
+    check(
+        positioned(PWRITE, f.fd(), &mut *b"tail".to_vec(), ORPHAN_TAIL)? == 4,
+        "short write to the fixture's indirect block",
+    )?;
+    Ok(f)
+}
+
+fn orphan_bytes(fd: Fd, head: &[u8; 4]) -> CaseResult {
+    let (mut first, mut last) = ([0; 4], [0; 4]);
+    check(
+        positioned(PREAD, fd, &mut first, 0)? == 4
+            && positioned(PREAD, fd, &mut last, ORPHAN_TAIL)? == 4
+            && &first == head
+            && &last == b"tail",
+        "the unlinked file's bytes changed",
+    )
+}
+
+fn descriptors_unlink_open() -> CaseResult {
+    let mut f = orphan_fixture()?;
+    let ino = fstat(f.fd())?.st_ino;
+    fs::unlink(&f.path)?;
+    expect_errno(stat(&f.path, false), 2, "stat of an unlinked path")?;
+    let d = io::dup(f.fd())?;
+    io::close(f.file.take().expect("fixture descriptor"))?;
+    let result = (|| -> CaseResult {
+        orphan_bytes(d, b"head")?;
+        check(fstat(d)?.st_ino == ino, "fstat of the unlinked file changed inode")?;
+        check(
+            positioned(PWRITE, d, &mut *b"HEAD".to_vec(), 0)? == 4,
+            "short write to the unlinked file",
+        )?;
+        orphan_bytes(d, b"HEAD")?;
+        let replacement = f.open(O_CREAT | O_EXCL | O_RDWR)?;
+        let result = (|| -> CaseResult {
+            check(
+                fstat(replacement)?.st_ino != ino,
+                "a new file reused the inode of an open unlinked file",
+            )?;
+            write_all(replacement, b"replacement")?;
+            orphan_bytes(d, b"HEAD")
+        })();
+        io::close(replacement)?;
+        result?;
+        let replacement = f.open(O_RDONLY)?;
+        let result = contents(replacement, b"replacement");
+        io::close(replacement)?;
+        result
+    })();
+    io::close(d)?;
+    result
+}
+
+fn descriptors_unlink_reclaim() -> CaseResult {
+    // The allocator hands out the lowest free inode, and the fixture took
+    // the lowest when it was created, so the orphan's inode is the next one
+    // handed out once its last close has freed it.
+    let mut f = orphan_fixture()?;
+    let ino = fstat(f.fd())?.st_ino;
+    fs::unlink(&f.path)?;
+    io::close(f.file.take().expect("fixture descriptor"))?;
+    // Reclamation after the last close runs in the kernel's finalizer, so
+    // allow it three seconds. Probes below the orphan's inode take inodes
+    // freed by earlier cases and are kept until the end.
+    let start = time::now_monotonic()?.tv_sec;
+    let mut kept = Vec::new();
+    let mut reused = false;
+    for attempt in 0.. {
+        let path = f.extra(&format!("probe{attempt}"));
+        let d = fs::open_with_mode(&path, O_CREAT | O_EXCL | O_RDWR, 0o600)?;
+        let got = fstat(d)?.st_ino;
+        io::close(d)?;
+        if got <= ino {
+            kept.push(path);
+            reused = got == ino;
+            if reused {
+                break;
+            }
+            continue;
+        }
+        fs::unlink(&path)?;
+        if time::now_monotonic()?.tv_sec - start >= 3 {
+            break;
+        }
+        time::sleep_ms(100)?;
+    }
+    for path in &kept {
+        fs::unlink(path)?;
+    }
+    check(reused, "the last close of an unlinked file did not free its inode")
+}
+
 fn descriptors_dup_clear_cloexec() -> CaseResult {
     let f = Fixture::new(b"abcdef")?;
     io::fcntl_setfd(f.fd(), 1)?;
@@ -2763,8 +2872,12 @@ fn mmap_read() -> CaseResult {
         truncate_fd(f.fd(), 0)?;
         truncate_fd(f.fd(), 6)?;
         contents(f.fd(), &[0; 6]).map_err(|_| {
-            CaseError::from("truncate/regrow exposed discarded mapped bytes")
-        })
+            CaseError::from("truncate/regrow exposed discarded bytes through read")
+        })?;
+        check(
+            unsafe { std::slice::from_raw_parts(p, 6) } == [0; 6],
+            "truncate/regrow left discarded bytes visible through the surviving mapping",
+        )
     })();
     memory::munmap(p, 4096)?;
     result?;
