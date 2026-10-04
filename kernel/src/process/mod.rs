@@ -75,6 +75,11 @@ pub struct ProcessManagerGuard {
     /// Saved DAIF register value (ARM64 only) - restored on drop to re-enable interrupts
     #[cfg(target_arch = "aarch64")]
     saved_daif: u64,
+    /// Whether `manager()` raised the preempt count (x86_64 only). It does so
+    /// whenever per-CPU data is up, so that a holder is never switched out
+    /// while it owns the lock; the guard drops the brake after the release.
+    #[cfg(target_arch = "x86_64")]
+    preempt_braked: bool,
 }
 
 /// Non-blocking process-manager guard with the same owner instrumentation as
@@ -156,6 +161,13 @@ impl Drop for ProcessManagerGuard {
                 in(reg) self.saved_daif,
                 options(nomem, nostack)
             );
+        }
+
+        // Same ordering on x86_64: the brake comes off only once the lock is
+        // out of this thread's hands.
+        #[cfg(target_arch = "x86_64")]
+        if self.preempt_braked {
+            crate::per_cpu::preempt_enable();
         }
     }
 }
@@ -320,6 +332,14 @@ pub fn init() {
 /// On ARM64, this disables interrupts before acquiring the lock to prevent
 /// single-CPU deadlocks where a timer interrupt tries to re-acquire the lock
 /// from the context switch path.
+///
+/// On x86_64 interrupts stay enabled, so this raises the preempt count before
+/// acquiring and the guard lowers it after releasing. The timer's return path
+/// does not switch away from kernel code with a non-zero count, so a holder is
+/// always running: nothing on this CPU can observe PROCESS_MANAGER held by a
+/// thread that has been switched out. `try_manager()` and
+/// `with_process_manager()` already hold the lock with interrupts masked,
+/// which gives them the same property.
 pub fn manager() -> ProcessManagerGuard {
     // #821. Recorded BEFORE the acquisition, so a call that wedges on a lock
     // this CPU already owns, and so does not return, is still counted.
@@ -338,14 +358,41 @@ pub fn manager() -> ProcessManagerGuard {
             saved_daif,
         }
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     {
+        let preempt_braked = crate::per_cpu::is_initialized();
+        if preempt_braked {
+            crate::per_cpu::preempt_disable();
+        }
         let guard = PROCESS_MANAGER.lock();
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
+            preempt_braked,
         }
     }
+}
+
+/// Proof that PROCESS_MANAGER is held on this CPU, by the code a fault
+/// interrupted, without a guard in hand. The only way to obtain one is
+/// `pm_held_on_this_cpu()`.
+///
+/// No x86_64 holder can be switched out (see `manager()`), so a lock owned by
+/// this CPU belongs to the code running on it when the fault was taken. That
+/// code is not always the per-CPU current thread: `switch_to_thread` installs
+/// the incoming thread and then delivers its signals, writing its user stack,
+/// under the lock the outgoing thread's dispatch took. A fault inside such a
+/// section cannot take the lock again, but it may edit the faulting process's
+/// page table, because the section the edit would otherwise wait for is the one
+/// it interrupted.
+#[cfg(target_arch = "x86_64")]
+pub struct PmHeldOnThisCpu(());
+
+/// Returns the proof that PROCESS_MANAGER is held on this CPU, or `None` when
+/// the lock is free or held on another CPU.
+#[cfg(target_arch = "x86_64")]
+pub fn pm_held_on_this_cpu() -> Option<PmHeldOnThisCpu> {
+    process_manager_held_on_current_cpu().then_some(PmHeldOnThisCpu(()))
 }
 
 /// Execute a function with the process manager while interrupts are disabled
