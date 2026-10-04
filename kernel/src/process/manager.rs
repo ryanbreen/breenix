@@ -3455,7 +3455,10 @@ impl ProcessManager {
             .processes
             .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
-        let old_page_table = process.page_table.take();
+        let old_page_table = process.page_table.take().map(|mut pt| {
+            pt.retain_file_vmas(&mut process.vmas);
+            pt
+        });
 
         // Use our manually calculated stack top
         let new_stack_top = stack_top;
@@ -3847,7 +3850,8 @@ impl ProcessManager {
         // fallible ELF/frame/argv work earlier in this function) exists to prevent. Deferring
         // immediately closes that window: from here on, a failure leaves the table safely
         // queued for later reclaim instead of owned by a local that is about to disappear.
-        if let Some(old_pt) = process.page_table.take() {
+        if let Some(mut old_pt) = process.page_table.take() {
+            old_pt.retain_file_vmas(&mut process.vmas);
             process.pending_old_page_tables.push(old_pt);
         }
 
@@ -4157,7 +4161,10 @@ impl ProcessManager {
             .processes
             .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
-        let old_page_table = process.page_table.take();
+        let old_page_table = process.page_table.take().map(|mut pt| {
+            pt.retain_file_vmas(&mut process.vmas);
+            pt
+        });
 
         if let Some(name) = program_name {
             process.name = String::from(name);
@@ -4481,7 +4488,10 @@ impl ProcessManager {
             .processes
             .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
-        let old_page_table = process.page_table.take();
+        let old_page_table = process.page_table.take().map(|mut pt| {
+            pt.retain_file_vmas(&mut process.vmas);
+            pt
+        });
 
         // Update the process with new program data
         if let Some(name) = program_name {

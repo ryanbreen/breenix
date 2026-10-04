@@ -8594,7 +8594,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
     }
 
     // Step 1d: Read the file content
-    let hello_content = match fs.read_file_content(&hello_inode) {
+    let hello_content = match fs.read_file_content_coherent(hello_inode_num, &hello_inode) {
         Ok(content) => content,
         Err(e) => {
             log::error!("Failed to read content of /hello.txt: {}", e);
@@ -8648,7 +8648,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
     };
 
     // Step 2c: Read and verify content
-    let nested_content = match fs.read_file_content(&nested_inode) {
+    let nested_content = match fs.read_file_content_coherent(nested_inode_num, &nested_inode) {
         Ok(content) => content,
         Err(e) => {
             log::error!("Failed to read content of /test/nested.txt: {}", e);
@@ -8688,7 +8688,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
         }
     };
 
-    let deep_content = match fs.read_file_content(&deep_inode) {
+    let deep_content = match fs.read_file_content_coherent(deep_inode_num, &deep_inode) {
         Ok(content) => content,
         Err(e) => {
             log::error!("Failed to read deep file content: {}", e);

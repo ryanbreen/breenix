@@ -20,8 +20,8 @@ use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 
 // Import common memory syscall helpers
 use crate::syscall::memory_common::{
-    allocate_zeroed_frames, flush_tlb, get_current_thread_id, is_page_aligned,
-    map_prepared_frames, prot_to_page_flags, round_down_to_page, round_up_to_page, PAGE_SIZE,
+    allocate_zeroed_frames, flush_tlb, get_current_thread_id, is_page_aligned, map_prepared_frames,
+    prot_to_page_flags, round_down_to_page, round_up_to_page, PAGE_SIZE,
 };
 
 extern crate alloc;
@@ -86,19 +86,22 @@ pub fn sys_mmap(
     let file = if flags.contains(MmapFlags::ANONYMOUS) {
         None
     } else {
-        match file_mapping(fd as i32, length, flags, offset) {
+        match file_mapping(fd as i32, length, prot, flags, offset) {
             Ok(handle) => Some(handle),
             Err(errno) => return SyscallResult::Err(errno),
         }
     };
 
     // Round length up to page size
-    let length = round_up_to_page(length);
+    let Some(rounded) = length.checked_add(PAGE_SIZE - 1) else {
+        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+    };
+    let length = rounded & !(PAGE_SIZE - 1);
 
     // Must specify exactly one of MAP_SHARED or MAP_PRIVATE
     let is_shared = flags.contains(MmapFlags::SHARED);
     let is_private = flags.contains(MmapFlags::PRIVATE);
-    if !is_shared && !is_private {
+    if (!is_shared && !is_private) || (file.is_none() && is_shared && is_private) {
         log::warn!("sys_mmap: must specify MAP_SHARED or MAP_PRIVATE");
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
     }
@@ -259,7 +262,7 @@ pub fn sys_mmap(
         SyscallResult::Err(errno)
     };
 
-    if let Some(handle) = file {
+    if let Some((handle, may_write)) = file {
         return match map_file(
             handle,
             current_thread_id,
@@ -271,6 +274,7 @@ pub fn sys_mmap(
                 flags,
             ),
             offset / PAGE_SIZE,
+            may_write,
         ) {
             Ok(start) => SyscallResult::Ok(start),
             Err(errno) => give_back(errno),
@@ -321,14 +325,17 @@ fn restore_mmap_hint(thread_id: u64, start: u64, hint: u64) {
 fn file_mapping(
     fd: i32,
     length: u64,
+    prot: Protection,
     flags: MmapFlags,
     offset: u64,
-) -> Result<crate::fs::ext2::live_inode::FileHandle, u64> {
+) -> Result<(crate::fs::ext2::live_inode::FileHandle, bool), u64> {
     use crate::syscall::errno::{EACCES, EINVAL, ENODEV, ENOMEM, EOVERFLOW};
-    // Shared file mappings (MAP_SHARED, and MAP_SHARED_VALIDATE = 3) are not
-    // supported yet; only MAP_PRIVATE is.
-    if flags.bits() & 3 != MmapFlags::PRIVATE.bits() || !is_page_aligned(offset) {
+    let kind = flags.bits() & 3;
+    if kind == 0 || !is_page_aligned(offset) {
         return Err(EINVAL as u64);
+    }
+    if kind == 3 && flags.bits() & !(3 | MmapFlags::FIXED.bits()) != 0 {
+        return Err(crate::syscall::errno::EOPNOTSUPP as u64);
     }
     let pages = length.div_ceil(PAGE_SIZE);
     if (offset / PAGE_SIZE).checked_add(pages).is_none() {
@@ -356,8 +363,12 @@ fn file_mapping(
     if !descriptor.readable() {
         return Err(EACCES as u64);
     }
+    let may_write = descriptor.writable();
+    if kind != 2 && prot.contains(Protection::WRITE) && !may_write {
+        return Err(EACCES as u64);
+    }
     let handle = file.lock().handle.clone();
-    Ok(handle)
+    Ok((handle, may_write))
 }
 
 /// Populate the cache for a file VMA under the mount's read guard, then
@@ -370,11 +381,22 @@ fn map_file(
     root: u64,
     mut vma: Vma,
     pgoff: u64,
+    may_write: bool,
 ) -> Result<u64, u64> {
     use crate::memory::file_map::{self, MapError};
     let guard =
         crate::fs::ext2::read_mount(handle.object.mount).map_err(|_| ErrorCode::IoError as u64)?;
     let fs = guard.as_ref().ok_or(ErrorCode::IoError as u64)?;
+    let ino = handle.verify(fs).map_err(|_| ErrorCode::IoError as u64)?;
+    let append_only = fs
+        .read_inode(ino)
+        .map_err(|_| ErrorCode::IoError as u64)?
+        .i_flags
+        & 0x20
+        != 0;
+    if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) && append_only {
+        return Err(crate::syscall::errno::EACCES as u64);
+    }
     file_map::populate(&handle, fs, pgoff, vma.size() / PAGE_SIZE).map_err(
         |error| match error {
             MapError::NoMemory => ErrorCode::OutOfMemory as u64,
@@ -406,7 +428,14 @@ fn map_file(
     if process.vmas.try_reserve(1).is_err() {
         return Err(abandon(ErrorCode::OutOfMemory));
     }
-    match file_map::bind(handle, pid, page_table, &vma, pgoff) {
+    match file_map::bind(
+        handle,
+        pid,
+        page_table,
+        &vma,
+        pgoff,
+        may_write && !append_only,
+    ) {
         Ok(binding) => vma.backing = Some(binding),
         Err(_) => return Err(abandon(ErrorCode::OutOfMemory)),
     }
@@ -420,6 +449,7 @@ fn map_file(
 /// disagreed, is ENOMEM.
 fn file_vma_errno(error: &'static str) -> u64 {
     match error {
+        "Permission denied" => crate::syscall::errno::EACCES as u64,
         "Range spans more than one VMA" | "Split point outside the VMA" => {
             ErrorCode::InvalidArgument as u64
         }
@@ -703,5 +733,92 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
     // Remove VMA from process
     process.vmas.remove(vma_index);
 
+    SyscallResult::Ok(0)
+}
+
+/// msync validates the complete virtual range before doing any filesystem
+/// work. Only covered shared file ranges enter the snapshot; no mount guard
+/// is acquired while PROCESS_MANAGER is held.
+pub fn sys_msync(addr: u64, length: u64, flags: u32) -> SyscallResult {
+    use super::errno::{EINVAL, EIO, ENOMEM};
+    const MS_ASYNC: u32 = 1;
+    const MS_INVALIDATE: u32 = 2;
+    const MS_SYNC: u32 = 4;
+    if !is_page_aligned(addr)
+        || flags & !(MS_ASYNC | MS_INVALIDATE | MS_SYNC) != 0
+        || flags & (MS_ASYNC | MS_SYNC) == (MS_ASYNC | MS_SYNC)
+    {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let Some(length) = length
+        .checked_add(PAGE_SIZE - 1)
+        .map(|n| n & !(PAGE_SIZE - 1))
+    else {
+        return SyscallResult::Err(ENOMEM as u64);
+    };
+    let Some(end) = addr.checked_add(length) else {
+        return SyscallResult::Err(ENOMEM as u64);
+    };
+    if length == 0 {
+        return SyscallResult::Ok(0);
+    }
+    let mut ranges = alloc::vec::Vec::new();
+    {
+        let thread = match get_current_thread_id() {
+            Some(thread) => thread,
+            None => return SyscallResult::Err(ENOMEM as u64),
+        };
+        let guard = crate::process::manager();
+        let Some((_, process)) = guard
+            .as_ref()
+            .and_then(|pm| pm.find_process_by_thread(thread))
+        else {
+            return SyscallResult::Err(ENOMEM as u64);
+        };
+        let mut cursor = addr;
+        while cursor < end {
+            let Some(vma) = process
+                .vmas
+                .iter()
+                .find(|vma| vma.start.as_u64() <= cursor && cursor < vma.end.as_u64())
+            else {
+                return SyscallResult::Err(ENOMEM as u64);
+            };
+            let stop = end.min(vma.end.as_u64());
+            if vma.flags.bits() & 3 != 2 {
+                if let Some(binding) = &vma.backing {
+                    if ranges.try_reserve(1).is_err() {
+                        return SyscallResult::Err(ENOMEM as u64);
+                    }
+                    match binding.sync_range(cursor, stop) {
+                        Ok(range) => ranges.push(range),
+                        Err(_) => return SyscallResult::Err(EIO as u64),
+                    }
+                }
+            }
+            cursor = stop;
+        }
+    }
+    for (handle, first, last) in ranges {
+        if flags & MS_SYNC == 0 {
+            handle.object.map.request_writeback();
+            continue;
+        }
+        let mut guard = match crate::fs::ext2::write_mount(handle.object.mount) {
+            Ok(guard) => guard,
+            Err(_) => return SyscallResult::Err(EIO as u64),
+        };
+        let result = guard.as_mut().ok_or("Missing mount").and_then(|fs| {
+            let ino = handle.verify(fs)?;
+            handle
+                .object
+                .map
+                .writeback(fs, ino, first, last, usize::MAX)
+                .map(|_| ())
+        });
+        if result.is_err() {
+            return SyscallResult::Err(EIO as u64);
+        }
+    }
     SyscallResult::Ok(0)
 }

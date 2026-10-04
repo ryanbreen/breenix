@@ -575,7 +575,10 @@ pub(crate) fn defer_process_resources(
     // the same row leaves the count at one after the first `record_reclaim`, and
     // the join refuses to remove a row with an obligation still outstanding.
     process.note_receipt_created();
-    let page_table = process.page_table.take();
+    let page_table = process.page_table.take().map(|mut pt| {
+        pt.retain_file_vmas(&mut process.vmas);
+        pt
+    });
     // The mappings go with the table; their file bindings must not outlive
     // the row's address space in a zombie.
     process.vmas.clear();

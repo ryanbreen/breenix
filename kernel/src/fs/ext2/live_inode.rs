@@ -159,7 +159,7 @@ impl Table {
             .take(PRUNE_PER_PIN)
         {
             self.prune_cursor = inode;
-            if object.unused() && !object.orphan.load(Ordering::Acquire) {
+            if object.unused() && !object.orphan.load(Ordering::Acquire) && !object.map.nonempty() {
                 stale[found] = inode;
                 found += 1;
             }
@@ -229,7 +229,7 @@ impl LiveInodes {
             .lock()
             .objects
             .values()
-            .filter(|object| object.map.eviction_pending())
+            .filter(|object| object.map.eviction_pending() || object.map.writeback_pending())
             .take(EVICTION_BATCH)
             .cloned()
             .collect()
@@ -241,7 +241,7 @@ impl LiveInodes {
             .lock()
             .objects
             .values()
-            .any(|object| object.map.eviction_pending())
+            .any(|object| object.map.eviction_pending() || object.map.writeback_pending())
     }
 
     pub fn publish_size(&self, inode: u32, size: u64) {
@@ -283,6 +283,6 @@ impl LiveInodes {
             .lock()
             .objects
             .values()
-            .any(|object| !object.unused() || object.orphan.load(Ordering::Acquire))
+            .any(|object| !object.unused() || object.orphan.load(Ordering::Acquire) || object.map.nonempty())
     }
 }

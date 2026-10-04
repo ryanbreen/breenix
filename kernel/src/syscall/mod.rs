@@ -644,3 +644,10 @@ pub fn init() {
 
     log::info!("System call infrastructure initialized");
 }
+
+/// msync has a guarded dispatch arm rather than an enum variant, allowing
+/// the x86 Tier 1 dispatcher change to be committed independently.
+#[cfg(target_arch = "x86_64")]
+pub const MSYNC_SYSCALL_NUMBER: u64 = 26;
+#[cfg(target_arch = "aarch64")]
+pub const MSYNC_SYSCALL_NUMBER: u64 = 227;

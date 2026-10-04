@@ -156,6 +156,9 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
             }
         }
         Some(syscall) => dispatch_syscall_enum(syscall, arg1, arg2, arg3, arg4, arg5, arg6, frame),
+        None if syscall_num == crate::syscall::MSYNC_SYSCALL_NUMBER => {
+            result_to_u64(crate::syscall::mmap::sys_msync(arg1, arg2, arg3 as u32))
+        }
         None => {
             crate::serial_println!(
                 "[syscall] Unknown ARM64 syscall {} - returning ENOSYS",
@@ -1459,7 +1462,7 @@ fn load_elf_from_ext2_inner(
     }
     super::trace::trace_exec(b'6');
 
-    let data = fs.read_file_content(&inode).map_err(|_| {
+    let data = fs.read_file_content_coherent(inode_num, &inode).map_err(|_| {
         super::trace::trace_exec(b'%');
         EIO
     })?;

@@ -16,6 +16,9 @@ pub fn dispatch_syscall(
     arg5: u64,
     arg6: u64,
 ) -> SyscallResult {
+    if syscall_num == super::MSYNC_SYSCALL_NUMBER {
+        return super::mmap::sys_msync(arg1, arg2, arg3 as u32);
+    }
     // Convert syscall number
     let syscall = match SyscallNumber::from_u64(syscall_num) {
         Some(s) => s,

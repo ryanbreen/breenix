@@ -108,7 +108,13 @@ impl Ext2Fs {
         let mut outcome = self.finalize_shrinks(&mut budget);
         let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
         let evictions = self.live_inodes.evictions();
+        let mut write_budget = crate::memory::file_map::EVICT_BUDGET;
         for object in &evictions {
+            match object.map.service_writeback(self, object.key.inode, &mut write_budget) {
+                Ok(true) => outcome = Finalize::More,
+                Err(_) => outcome = Finalize::Retry,
+                Ok(false) => {}
+            }
             if object.map.evict(&mut cache_budget) {
                 outcome = Finalize::More;
             }
@@ -345,13 +351,13 @@ impl Ext2Fs {
     }
 
     /// Read file content from an inode
-    pub fn read_file_content(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
+    fn read_file_content(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
         read_file(self.device.as_ref(), inode, &self.superblock)
             .map_err(|_| "Failed to read file content")
     }
 
     /// Read a range of file content from an inode
-    pub fn read_file_range(
+    pub(crate) fn read_file_range(
         &self,
         inode: &Ext2Inode,
         offset: u64,
@@ -365,6 +371,33 @@ impl Ext2Fs {
             length,
         )
         .map_err(|_| "Failed to read file range")
+    }
+
+    /// External readers, including exec, use the resident inode cache while
+    /// holding the same mount guard that protects the disk read.
+    pub fn read_file_range_coherent(&self, ino: u32, inode: &Ext2Inode, offset: u64,
+        length: usize) -> Result<Vec<u8>, &'static str> {
+        let mut bytes = self.read_file_range(inode, offset, length)?;
+        if let Some(object) = self.live_inodes.get(ino) {
+            object.map.overlay(offset, &mut bytes)?;
+        }
+        Ok(bytes)
+    }
+
+    pub fn read_file_content_coherent(&self, ino: u32, inode: &Ext2Inode)
+        -> Result<Vec<u8>, &'static str> {
+        let mut bytes = self.read_file_content(inode)?;
+        if let Some(object) = self.live_inodes.get(ino) {
+            object.map.overlay(0, &mut bytes)?;
+        }
+        Ok(bytes)
+    }
+
+    /// Raw writeback bypasses cache overlays and size transitions. The
+    /// snapshot is clipped to EOF, so this never extends the inode.
+    pub(crate) fn write_mapped_range(&mut self, ino: u32, offset: u64, bytes: &[u8])
+        -> Result<usize, &'static str> {
+        self.write_file_range_disk(ino, offset, bytes)
     }
 
     /// Write data to a file at the specified offset

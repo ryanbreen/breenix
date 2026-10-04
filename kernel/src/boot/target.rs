@@ -70,7 +70,7 @@ pub fn read() -> Result<Option<String>, String> {
         return Err(format!("it is {} bytes; expected one short line", size));
     }
     let bytes = fs
-        .read_file_content(&inode)
+        .read_file_content_coherent(inode_num, &inode)
         .map_err(|_| String::from("cannot read it"))?;
     drop(fs_guard);
     let text = core::str::from_utf8(&bytes).map_err(|_| String::from("it is not text"))?;

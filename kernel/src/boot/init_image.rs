@@ -40,7 +40,7 @@ pub fn read_init_from_ext2(path: &str) -> Result<Vec<u8>, &'static str> {
     }
 
     let elf_data = fs
-        .read_file_content(&inode)
+        .read_file_content_coherent(inode_num, &inode)
         .map_err(|_| "failed to read init")?;
 
     drop(fs_guard);
