@@ -272,6 +272,14 @@
           "title": "Independent opens have independent offsets"
         },
         {
+          "id": "unlink-open",
+          "title": "An unlinked file stays usable until its last descriptor closes"
+        },
+        {
+          "id": "unlink-reclaim",
+          "title": "The last close of an unlinked file frees its inode"
+        },
+        {
           "id": "dup-clear-cloexec",
           "title": "dup clears FD_CLOEXEC on the new descriptor"
         },

@@ -7,6 +7,9 @@ pub mod block_group;
 pub mod dir;
 pub mod file;
 pub mod inode;
+pub mod live_inode;
+pub mod writeback;
+mod reclaim;
 pub mod superblock;
 
 pub use block_group::*;
@@ -17,7 +20,7 @@ pub use superblock::*;
 
 use crate::block::BlockDevice;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::RwLock;
 
 /// A mounted ext2 filesystem instance
@@ -33,6 +36,23 @@ pub struct Ext2Fs {
     pub device: alloc::boxed::Box<dyn BlockDevice>,
     /// Mount ID for VFS integration
     pub mount_id: usize,
+    pub mount_pin: live_inode::MountPin,
+    live_inodes: live_inode::LiveInodes,
+    orphan_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
+    finalization_cursor: u32,
+}
+
+/// Bitmap transitions orphan reclamation performs per write-guard hold.
+const RECLAIM_BUDGET: usize = 128;
+
+/// What a finalizer pass left behind.
+pub(super) enum Finalize {
+    /// No queued orphan remains.
+    Idle,
+    /// The budget ran out; continue after releasing the guard.
+    More,
+    /// An I/O step failed; retry after the service's delay.
+    Retry,
 }
 
 impl Ext2Fs {
@@ -60,7 +80,81 @@ impl Ext2Fs {
             block_groups,
             device,
             mount_id,
+            mount_pin: live_inode::MountPin::new(mount_id)?,
+            live_inodes: live_inode::LiveInodes::new(),
+            orphan_reclaims: alloc::collections::BTreeMap::new(),
+            finalization_cursor: 0,
         })
+    }
+
+    pub fn pin_inode(&self, inode_num: u32) -> Result<live_inode::FileHandle, &'static str> {
+        let inode = self.read_inode(inode_num)?;
+        self.pin_loaded_inode(inode_num, inode.size())
+    }
+
+    /// The caller read this inode under the same FS guard that protects the pin.
+    pub(crate) fn pin_loaded_inode(&self, inode_num: u32, size: u64)
+        -> Result<live_inode::FileHandle, &'static str> {
+        self.live_inodes.pin(self.mount_pin, inode_num, size)
+    }
+
+    /// Advance queued orphans whose last observer has left, within one budget
+    /// of bitmap transitions, so the write guard is released between passes
+    /// however large the orphans are.
+    fn finalize_inactive(&mut self) -> Finalize {
+        let mut budget = RECLAIM_BUDGET;
+        let mut outcome = Finalize::Idle;
+        for object in self.live_inodes.pending(self.finalization_cursor) {
+            if !object.unused() { continue; }
+            if budget == 0 {
+                return Finalize::More;
+            }
+            self.finalization_cursor = object.key.inode;
+            match self.reclaim_orphan(&object, &mut budget) {
+                Ok(true) | Err(reclaim::ReclaimError::Abandon(_)) => {}
+                Ok(false) => return Finalize::More,
+                Err(reclaim::ReclaimError::Retry) => outcome = Finalize::Retry,
+            }
+        }
+        if matches!(outcome, Finalize::Idle)
+            && !self.live_inodes.pending(self.finalization_cursor).is_empty()
+        {
+            return Finalize::More;
+        }
+        outcome
+    }
+
+    /// Release an unobserved orphan's blocks and inode under the write guard,
+    /// spending at most `budget` bitmap transitions. Returns `Ok(false)` when
+    /// the budget ran out first; that and a retryable failure keep the staged
+    /// progress for the finalizer to resume.
+    fn reclaim_orphan(
+        &mut self,
+        object: &alloc::sync::Arc<live_inode::LiveInode>,
+        budget: &mut usize,
+    ) -> Result<bool, reclaim::ReclaimError> {
+        let ino = object.key.inode;
+        let prepared = match self.orphan_reclaims.remove(&ino) {
+            Some(progress) => Ok(progress),
+            None => reclaim::Reclaim::prepare(self, ino),
+        };
+        let result = prepared.and_then(|mut progress| {
+            let result = progress.finish(self, ino, budget);
+            if !matches!(result, Ok(true)) {
+                self.orphan_reclaims.insert(ino, progress);
+            }
+            result
+        });
+        match &result {
+            Ok(true) => self.live_inodes.remove(object),
+            Err(reclaim::ReclaimError::Abandon(reason)) => {
+                // The inode stays allocated on disk; stop retrying it.
+                log::warn!("ext2: leaving orphan inode {} allocated: {}", ino, reason);
+                self.live_inodes.remove(object);
+            }
+            Ok(false) | Err(reclaim::ReclaimError::Retry) => {}
+        }
+        result
     }
 
     /// Read an inode from the filesystem
@@ -287,6 +381,7 @@ impl Ext2Fs {
             return Err("Failed to write inode");
         }
 
+        self.live_inodes.publish_size(inode_num, inode.size());
         Ok(data.len())
     }
 
@@ -437,12 +532,14 @@ impl Ext2Fs {
             smaller.i_dir_acl = (length >> 32) as u32;
             smaller.update_timestamps(false, true, true);
             self.write_inode(inode_num, &smaller)?;
+            self.live_inodes.publish_size(inode_num, length);
         }
         let reclaim = file::resize_file(self.device.as_ref(), &mut inode, &self.superblock, length)
             .map_err(|_| "Failed to resize file")?;
         // Persist removed pointers before returning blocks to the allocator:
         // an I/O failure must never leave a live inode pointing at free blocks.
         self.write_inode(inode_num, &inode)?;
+        self.live_inodes.publish_size(inode_num, length);
         let mut freed = 0;
         let mut free_result = Ok(());
         for block in reclaim {
@@ -492,7 +589,8 @@ impl Ext2Fs {
     /// Unlink (delete) a file from the filesystem
     ///
     /// This removes the directory entry and decrements the inode's link count.
-    /// If the link count reaches 0, the inode and its data blocks are freed.
+    /// A zero-link inode remains allocated while external handles exist;
+    /// task-context finalization reclaims it after the last observer leaves.
     ///
     /// # Arguments
     /// * `path` - Absolute path to the file to unlink
@@ -539,21 +637,9 @@ impl Ext2Fs {
             return Err("Cannot unlink directory (use rmdir)");
         }
 
-        // Get the link count to determine if we'll be freeing the inode
-        let link_count =
-            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_links_count)) };
-
-        // Calculate how many blocks this file uses (if we're about to free it)
-        // i_blocks is in 512-byte sectors, so divide by (block_size / 512)
-        let blocks_to_free = if link_count == 1 {
-            let block_size = self.superblock.block_size();
-            let sectors_per_block = (block_size / 512) as u32;
-            let i_blocks =
-                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_blocks)) };
-            i_blocks / sectors_per_block
-        } else {
-            0
-        };
+        // Pin before dropping the directory entry; an open/mapped orphan
+        // keeps its allocation and incarnation until its last observer leaves.
+        let handle = self.pin_loaded_inode(target_inode_num, target_inode.size())?;
 
         // Remove the directory entry
         remove_entry(&mut dir_data, filename)?;
@@ -575,36 +661,28 @@ impl Ext2Fs {
             )
             .map_err(|_| "Failed to write parent inode")?;
 
-        // Decrement the inode link count (may free the inode and blocks if it reaches 0)
-        let new_links = decrement_inode_links(
-            self.device.as_ref(),
-            target_inode_num,
-            &self.superblock,
-            &mut self.block_groups,
-        )?;
-
-        // If the inode was freed, update the superblock's free counts
-        if new_links == 0 {
-            // Update superblock free inode count
-            self.superblock.increment_free_inodes();
-
-            // Update superblock free block count
-            if blocks_to_free > 0 {
-                self.superblock.increment_free_blocks(blocks_to_free);
+        let links = decrement_inode_links(self.device.as_ref(), target_inode_num,
+            &self.superblock, &mut self.block_groups)?;
+        if links == 0 {
+            handle.object.orphan.store(true, Ordering::Release);
+            // With no descriptor observing it, reclaim the inode now under
+            // this guard; otherwise its last observer queues it on close.
+            // A large orphan's remainder, or a retryable failure, goes to
+            // the finalizer so unlink holds the guard for one budget only.
+            match handle.release_sole() {
+                Ok(object) => {
+                    let mut budget = RECLAIM_BUDGET;
+                    if matches!(
+                        self.reclaim_orphan(&object, &mut budget),
+                        Ok(false) | Err(reclaim::ReclaimError::Retry)
+                    ) {
+                        object.defer();
+                    }
+                }
+                Err(handle) => drop(handle),
             }
-
-            // Write the updated superblock
-            self.superblock
-                .write_to(self.device.as_ref())
-                .map_err(|_| "Failed to write superblock")?;
-
-            // Write updated block group descriptors
-            Ext2BlockGroupDesc::write_table(
-                self.device.as_ref(),
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write block group descriptors")?;
+        } else {
+            drop(handle);
         }
 
         log::debug!("ext2: unlinked {} (inode {})", path, target_inode_num);
@@ -1092,7 +1170,7 @@ impl Ext2Fs {
         }
 
         // Decrement the directory's inode link count (which frees the inode)
-        decrement_inode_links(
+        reclaim_directory_inode(
             self.device.as_ref(),
             target_inode_num,
             &self.superblock,
@@ -2133,6 +2211,36 @@ static HOME_EXT2_WAITERS: crate::task::waitqueue::WaitQueueHead =
 /// I/O where a writer holding the lock blocks all readers.
 static ROOT_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 
+/// VFS mount IDs of the installed root and home filesystems, published under
+/// their install guards, so a handle's mount is chosen before any guard is
+/// taken. `usize::MAX` means not installed.
+static ROOT_MOUNT_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+static HOME_MOUNT_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+fn pin_is_home(pin: live_inode::MountPin) -> Result<bool, &'static str> {
+    if pin.mount_id == ROOT_MOUNT_ID.load(Ordering::Acquire) {
+        Ok(false)
+    } else if pin.mount_id == HOME_MOUNT_ID.load(Ordering::Acquire) {
+        Ok(true)
+    } else {
+        Err("Unknown ext2 mount")
+    }
+}
+
+/// Route only to an installed mount whose VFS ID and lifetime token match.
+/// Only the selected guard is taken, and it stays held for the caller.
+pub fn read_mount(pin: live_inode::MountPin) -> Result<Ext2ReadGuard, &'static str> {
+    let guard = if pin_is_home(pin)? { home_fs_read() } else { root_fs_read() };
+    pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
+    Ok(guard)
+}
+
+pub fn write_mount(pin: live_inode::MountPin) -> Result<Ext2WriteGuard, &'static str> {
+    let guard = if pin_is_home(pin)? { home_fs_write() } else { root_fs_write() };
+    pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
+    Ok(guard)
+}
+
 /// Initialize the root ext2 filesystem
 ///
 /// Mounts the ext2 disk as the root filesystem.
@@ -2242,7 +2350,12 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     );
 
     // Store globally
-    *ROOT_EXT2.write() = Some(fs);
+    let mut installed = ROOT_EXT2.write();
+    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned()) {
+        return Err("Root ext2 mount is pinned");
+    }
+    ROOT_MOUNT_ID.store(fs.mount_id, Ordering::Release);
+    *installed = Some(fs);
 
     Ok(())
 }
@@ -2348,7 +2461,12 @@ pub fn init_home_fs() -> Result<(), &'static str> {
     );
 
     // Store globally
-    *HOME_EXT2.write() = Some(fs);
+    let mut installed = HOME_EXT2.write();
+    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned()) {
+        return Err("Home ext2 mount is pinned");
+    }
+    HOME_MOUNT_ID.store(fs.mount_id, Ordering::Release);
+    *installed = Some(fs);
 
     Ok(())
 }

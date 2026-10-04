@@ -579,15 +579,16 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         WriteOperation::RegularFile { file, append } => {
             // Write to ext2 regular file
-            let (inode_num, position, file_mount_id) = {
+            let (handle, position, file_mount_id) = {
                 let file_guard = file.lock();
                 (
-                    file_guard.inode_num,
+                    file_guard.handle.clone(),
                     file_guard.position,
                     file_guard.mount_id,
                 )
             };
 
+            let inode_num = handle.object.key.inode;
             // Dispatch to correct filesystem based on mount_id
             let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
 
@@ -597,6 +598,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
                 };
+                if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
                 let wo = if append {
                     match fs.read_inode(inode_num as u32) {
                         Ok(inode) => inode.size(),
@@ -616,6 +618,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
                 };
+                if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
                 let wo = if append {
                     match fs.read_inode(inode_num as u32) {
                         Ok(inode) => inode.size(),
@@ -1179,10 +1182,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // IRQs, and AHCI completions arrive as interrupts — holding the lock
             // during disk I/O deadlocks the system.
             let file_ref_owned = file_ref.clone();
-            let (inode_num, position, file_mount_id) = {
+            let (handle, position, file_mount_id) = {
                 let file = file_ref.lock();
-                (file.inode_num, file.position, file.mount_id)
+                (file.handle.clone(), file.position, file.mount_id)
             };
+            let inode_num = handle.object.key.inode;
             // Release PM lock now — disk I/O below needs IRQs enabled.
             drop(manager_guard);
 
@@ -1197,6 +1201,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Err(super::errno::ENOSYS as u64);
                     }
                 };
+                if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
                 let inode = match fs.read_inode(inode_num as u32) {
                     Ok(inode) => inode,
                     Err(e) => {
@@ -1220,6 +1225,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Err(super::errno::ENOSYS as u64);
                     }
                 };
+                if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
                 let inode = match fs.read_inode(inode_num as u32) {
                     Ok(inode) => inode,
                     Err(e) => {
@@ -4110,7 +4116,7 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
     use crate::ipc::fd::fcntl_cmd::{F_GETLK, F_SETLKW};
     use crate::ipc::FdKind;
 
-    let (owner, key, access, position) = {
+    let (owner, key, access, position, handle) = {
         let manager_guard = crate::process::manager();
         let Some((_pid, process)) = manager_guard
             .as_ref()
@@ -4132,6 +4138,7 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
                     },
                     entry.status_flags() & crate::ipc::fd::status_flags::O_ACCMODE,
                     file.position,
+                    file.handle.clone(),
                 )
             }
             // A descriptor for anything but a regular file does not support locking.
@@ -4158,7 +4165,7 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
             Ok(position) => position,
             Err(_) => return SyscallResult::Err(EOVERFLOW as u64),
         },
-        SEEK_END => match super::fs::get_ext2_file_size_for_mount(key.inode, key.mount_id) {
+        SEEK_END => match super::fs::get_ext2_file_size_for_handle(&handle) {
             Some(size) => size as i64,
             None => return SyscallResult::Err(EIO as u64),
         },
@@ -5338,7 +5345,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
     };
 
     // Extract file info from fd table under process lock
-    let fd_result: Result<(u64, usize), u64> = crate::arch_without_interrupts(|| {
+    let fd_result: Result<crate::fs::ext2::live_inode::FileHandle, u64> = crate::arch_without_interrupts(|| {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
@@ -5349,7 +5356,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
                         }
                         FdKind::RegularFile(file_ref) => {
                             let file = file_ref.lock();
-                            return Ok((file.inode_num, file.mount_id));
+                            return Ok(file.handle.clone());
                         }
                         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
                             return Err(super::errno::ESPIPE as u64);
@@ -5365,17 +5372,20 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
         }
     });
 
-    let (inode_num, mount_id) = match fd_result {
-        Ok((ino, mid)) => (ino, mid),
+    let handle = match fd_result {
+        Ok(handle) => handle,
         Err(e) => return SyscallResult::Err(e),
     };
 
+    let inode_num = handle.object.key.inode;
+    let mount_id = handle.object.mount.mount_id;
     let file_offset = offset as u64;
 
     // Read from ext2 at the given offset (no process lock held)
     use crate::fs::ext2;
     let mut update_atime = false;
     let mut read_fn = |fs: &ext2::Ext2Fs| -> SyscallResult {
+        if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
         let inode = match fs.read_inode(inode_num as u32) {
             Ok(i) => i,
             Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
@@ -5440,7 +5450,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     };
 
     // Extract file info from fd table under process lock
-    let fd_result: Result<(u64, usize), u64> = crate::arch_without_interrupts(|| {
+    let fd_result: Result<crate::fs::ext2::live_inode::FileHandle, u64> = crate::arch_without_interrupts(|| {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
@@ -5451,7 +5461,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
                         }
                         FdKind::RegularFile(file_ref) => {
                             let file = file_ref.lock();
-                            return Ok((file.inode_num, file.mount_id));
+                            return Ok(file.handle.clone());
                         }
                         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
                             return Err(super::errno::ESPIPE as u64);
@@ -5467,11 +5477,13 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
         }
     });
 
-    let (inode_num, mount_id) = match fd_result {
-        Ok((ino, mid)) => (ino, mid),
+    let handle = match fd_result {
+        Ok(handle) => handle,
         Err(e) => return SyscallResult::Err(e),
     };
 
+    let inode_num = handle.object.key.inode;
+    let mount_id = handle.object.mount.mount_id;
     let file_offset = offset as u64;
 
     // Read user data (no process lock held)
@@ -5482,6 +5494,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
 
     use crate::fs::ext2;
     let write_fn = |fs: &mut ext2::Ext2Fs| -> SyscallResult {
+        if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
         match fs.write_file_range(inode_num as u32, file_offset, &data) {
             Ok(written) => SyscallResult::Ok(written as u64),
             Err(_) => SyscallResult::Err(super::errno::EIO as u64),

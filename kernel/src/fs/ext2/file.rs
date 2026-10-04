@@ -868,6 +868,92 @@ fn prune_blocks<B: BlockDevice + ?Sized>(
     Ok((0, 0))
 }
 
+/// One bounded step of orphan reclamation: the last allocations of an inode's
+/// block tree in tail order, the pointer blocks that still hold earlier
+/// children with those children cleared, and the inode's new pointers.
+pub(super) struct TailBatch {
+    pub blocks: Vec<u32>,
+    pub edits: Vec<(u32, Vec<u32>)>,
+    pub pointers: [u32; 15],
+}
+
+/// Detach at most `limit` allocations from the tail of a block tree. Nothing
+/// is written; only the boundary path's pointer blocks (at most three) change.
+pub(super) fn take_tail_blocks<B: BlockDevice + ?Sized>(
+    device: &B,
+    superblock: &Ext2Superblock,
+    pointers: [u32; 15],
+    limit: usize,
+) -> Result<TailBatch, BlockError> {
+    let mut batch = TailBatch {
+        blocks: Vec::with_capacity(limit),
+        edits: Vec::new(),
+        pointers,
+    };
+    let mut budget = limit;
+    for index in (0..15usize).rev() {
+        if budget == 0 {
+            break;
+        }
+        let depth = (index as u32).saturating_sub(11);
+        batch.pointers[index] =
+            trim_tail(device, superblock, pointers[index], depth, &mut budget, &mut batch)?;
+    }
+    Ok(batch)
+}
+
+fn trim_tail<B: BlockDevice + ?Sized>(
+    device: &B,
+    superblock: &Ext2Superblock,
+    pointer: u32,
+    depth: u32,
+    budget: &mut usize,
+    batch: &mut TailBatch,
+) -> Result<u32, BlockError> {
+    if pointer == 0 {
+        return Ok(0);
+    }
+    let (first, count) = (superblock.s_first_data_block, superblock.s_blocks_count);
+    if pointer < first || pointer >= count {
+        // A wild pointer names no block of this filesystem; drop it unfreed.
+        log::warn!("ext2: dropping out-of-range block pointer {}", pointer);
+        return Ok(0);
+    }
+    if depth > 0 {
+        let mut children = read_indirect_block(device, pointer, superblock.block_size())?;
+        let mut changed = false;
+        for child in children.iter_mut().rev() {
+            if *budget == 0 {
+                break;
+            }
+            let trimmed = trim_tail(device, superblock, *child, depth - 1, budget, batch)?;
+            changed |= trimmed != *child;
+            *child = trimmed;
+        }
+        if *budget == 0 || children.iter().any(|child| *child != 0) {
+            if changed {
+                batch.edits.push((pointer, children));
+            }
+            return Ok(pointer);
+        }
+    }
+    batch.blocks.push(pointer);
+    *budget -= 1;
+    Ok(0)
+}
+
+/// Write the pointer blocks a tail batch rewrote.
+pub(super) fn write_pointer_blocks<B: BlockDevice + ?Sized>(
+    device: &B,
+    block_size: usize,
+    edits: &[(u32, Vec<u32>)],
+) -> Result<(), BlockError> {
+    for (block, pointers) in edits {
+        write_indirect_block(device, *block, block_size, pointers)?;
+    }
+    Ok(())
+}
+
 /// Resize a regular inode without allocating blocks for sparse extension.
 /// Zero the retained EOF block on shrink and the old EOF tail on growth so
 /// neither re-extension nor reads of newly exposed bytes reveal stale data.

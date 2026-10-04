@@ -316,7 +316,7 @@ fn sys_open_write_path(
     flags: u32,
     mode: u32,
     cred: FileCredentials,
-) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize), SyscallResult> {
+) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize, Option<crate::fs::ext2::live_inode::FileHandle>), SyscallResult> {
     use super::errno::{EEXIST, ENOENT, ENOSPC, ENOTDIR};
     use crate::fs::ext2::FileType as Ext2FileType;
 
@@ -439,7 +439,11 @@ fn sys_open_write_path(
     }
 
     let mid = fs.mount_id;
-    Ok((ino, ft, is_dir, is_reg, mid))
+    let handle = if is_reg {
+        Some(fs.pin_loaded_inode(ino, if want_trunc && !file_created { 0 } else { inode.size() })
+            .map_err(|_| SyscallResult::Err(super::errno::EIO as u64))?)
+    } else { None };
+    Ok((ino, ft, is_dir, is_reg, mid, handle))
 }
 
 /// Helper: sys_open read path — works on any Ext2Fs instance.
@@ -448,7 +452,7 @@ fn sys_open_read_path(
     fs_path: &str,
     flags: u32,
     cred: FileCredentials,
-) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize), SyscallResult> {
+) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize, Option<crate::fs::ext2::live_inode::FileHandle>), SyscallResult> {
     use crate::fs::ext2::FileType as Ext2FileType;
 
     let ino = match fs.resolve_path(fs_path) {
@@ -474,7 +478,11 @@ fn sys_open_read_path(
         check_open_access(&inode, flags, cred)?;
     }
     let mid = fs.mount_id;
-    Ok((ino, ft, is_dir, is_reg, mid))
+    let handle = if is_reg {
+        Some(fs.pin_loaded_inode(ino, inode.size())
+            .map_err(|_| SyscallResult::Err(super::errno::EIO as u64))?)
+    } else { None };
+    Ok((ino, ft, is_dir, is_reg, mid, handle))
 }
 
 /// # Arguments
@@ -564,7 +572,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         &path
     };
 
-    let (inode_num, file_type, is_directory, is_regular, mount_id) = if needs_write {
+    let (inode_num, file_type, is_directory, is_regular, mount_id, handle) = if needs_write {
         // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
         let result = if is_home {
             let mut fs_guard = ext2::home_fs_write();
@@ -698,6 +706,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         // Regular file
         // Create RegularFile structure
         let regular_file = RegularFile {
+            handle: handle.expect("regular inode pinned during open"),
             inode_num: inode_num as u64,
             mount_id,
             position: 0,
@@ -778,7 +787,7 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
     // do the disk read unlocked, then re-acquire to update the position.
     if whence == SEEK_END {
         // Phase 1: extract file metadata under PM lock
-        let (inode_num, mount_id, current_position) = {
+        let (handle, current_position) = {
             let mut manager_guard = crate::process::manager();
             let process = match &mut *manager_guard {
                 Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
@@ -794,7 +803,7 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
             match &fd_entry.kind {
                 FdKind::RegularFile(file) => {
                     let f = file.lock();
-                    (f.inode_num, f.mount_id, f.position)
+                    (f.handle.clone(), f.position)
                 }
                 FdKind::Directory(_) => return SyscallResult::Err(21), // EISDIR
                 _ => return SyscallResult::Err(29),                    // ESPIPE
@@ -803,10 +812,10 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
         };
 
         // Phase 2: disk read WITHOUT any lock held
-        let file_size = match get_ext2_file_size_for_mount(inode_num, mount_id) {
+        let file_size = match get_ext2_file_size_for_handle(&handle) {
             Some(size) => size as i64,
             None => {
-                log::error!("sys_lseek: cannot get file size for inode {}", inode_num);
+                log::error!("sys_lseek: cannot get pinned inode size");
                 return SyscallResult::Err(5); // EIO
             }
         };
@@ -918,7 +927,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         StdIo(i32),
         Pipe,
         UdpSocket,
-        RegularFile { inode_num: u64, mount_id: usize },
+        RegularFile { inode_num: u64, mount_id: usize, handle: crate::fs::ext2::live_inode::FileHandle },
         Directory { inode_num: u64, mount_id: usize },
         Device { inode: u64, rdev: u64 },
         DevfsDirectory,
@@ -962,6 +971,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FstatKind::RegularFile {
                     inode_num: file_guard.inode_num,
                     mount_id: file_guard.mount_id,
+                    handle: file_guard.handle.clone(),
                 }
             }
             FdKind::Directory(dir) => {
@@ -1034,13 +1044,18 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         FstatKind::RegularFile {
             inode_num,
             mount_id,
+            handle,
         } => {
             // Disk I/O happens here — PM lock is NOT held.
             stat.st_dev = mount_id as u64;
             stat.st_ino = inode_num;
             stat.st_mode = S_IFREG | 0o644;
             stat.st_nlink = 1;
-            if let Some(inode_stat) = load_ext2_inode_stat_for_mount(inode_num, mount_id) {
+            let inode_stat = match load_ext2_inode_stat_for_handle(&handle) {
+                Some(stat) => stat,
+                None => return SyscallResult::Err(super::errno::EIO as u64),
+            };
+            {
                 stat.st_mode = inode_stat.mode;
                 stat.st_uid = inode_stat.uid;
                 stat.st_gid = inode_stat.gid;
@@ -1203,6 +1218,13 @@ fn load_inode_stat_from_inode(inode: &crate::fs::ext2::Ext2Inode) -> Option<Inod
     })
 }
 
+fn load_ext2_inode_stat_for_handle(handle: &crate::fs::ext2::live_inode::FileHandle) -> Option<InodeStat> {
+    let guard = crate::fs::ext2::read_mount(handle.object.mount).ok()?;
+    let fs = guard.as_ref()?;
+    let inode = fs.read_inode(handle.verify(fs).ok()?).ok()?;
+    load_inode_stat_from_inode(&inode)
+}
+
 /// Load inode metadata from ext2 filesystem, dispatching to correct mount
 ///
 /// Returns None if the ext2 filesystem is not available or inode cannot be read.
@@ -1214,32 +1236,22 @@ fn load_ext2_inode_stat_for_mount(inode_num: u64, mount_id: usize) -> Option<Ino
     if is_home {
         let fs_guard = ext2::home_fs_read();
         let fs = fs_guard.as_ref()?;
-        let inode = fs.read_inode(inode_num as u32).ok()?;
+        if fs.mount_id != mount_id { return None; }
+    let inode = fs.read_inode(inode_num as u32).ok()?;
         return load_inode_stat_from_inode(&inode);
     }
 
     let fs_guard = ext2::root_fs_read();
     let fs = fs_guard.as_ref()?;
+    if fs.mount_id != mount_id { return None; }
     let inode = fs.read_inode(inode_num as u32).ok()?;
     load_inode_stat_from_inode(&inode)
 }
 
-/// Get file size from ext2 inode, dispatching to correct mount
-pub(crate) fn get_ext2_file_size_for_mount(inode_num: u64, mount_id: usize) -> Option<u64> {
-    use crate::fs::ext2;
-
-    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    if is_home {
-        let fs_guard = ext2::home_fs_read();
-        let fs = fs_guard.as_ref()?;
-        let inode = fs.read_inode(inode_num as u32).ok()?;
-        return Some(inode.size());
-    }
-
-    let fs_guard = ext2::root_fs_read();
-    let fs = fs_guard.as_ref()?;
-    let inode = fs.read_inode(inode_num as u32).ok()?;
-    Some(inode.size())
+pub(crate) fn get_ext2_file_size_for_handle(handle: &crate::fs::ext2::live_inode::FileHandle) -> Option<u64> {
+    let guard = crate::fs::ext2::read_mount(handle.object.mount).ok()?;
+    let fs = guard.as_ref()?;
+    Some(fs.read_inode(handle.verify(fs).ok()?).ok()?.size())
 }
 
 /// Convert ext2 file type to Linux dirent d_type
@@ -4238,7 +4250,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
                     if let Some(fd_entry) = process.fd_table.get(dirfd) {
                         if let FdKind::RegularFile(file_ref) = &fd_entry.kind {
                             let file = file_ref.lock();
-                            return Some((file.inode_num as u32, file.mount_id));
+                            return Some(file.handle.clone());
                         }
                     }
                 }
@@ -4246,12 +4258,12 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             None
         });
 
-        let (inode_num, mount_id) = match fd_info {
-            Some((ino, mid)) => (ino, mid),
+        let handle = match fd_info {
+            Some(handle) => handle,
             None => return SyscallResult::Err(super::errno::EBADF as u64),
         };
 
-        return update_inode_timestamps(inode_num, mount_id, set_atime, set_mtime);
+        return update_inode_timestamps(&handle, set_atime, set_mtime);
     }
 
     // Path-based: resolve path
@@ -4285,7 +4297,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
     let no_follow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
 
     // Resolve path first (read lock), then update timestamps (write lock)
-    let (inode_num, mount_id) = if is_home {
+    let handle = if is_home {
         let fs_guard = ext2::home_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(f) => f,
@@ -4297,7 +4309,10 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             fs.resolve_path(fs_path)
         };
         match ino {
-            Ok(n) => (n, fs.mount_id),
+            Ok(n) => match fs.pin_inode(n) {
+                Ok(handle) => handle,
+                Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+            },
             Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
         }
     } else {
@@ -4312,26 +4327,30 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             fs.resolve_path(fs_path)
         };
         match ino {
-            Ok(n) => (n, fs.mount_id),
+            Ok(n) => match fs.pin_inode(n) {
+                Ok(handle) => handle,
+                Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+            },
             Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
         }
     };
 
-    update_inode_timestamps(inode_num, mount_id, set_atime, set_mtime)
+    update_inode_timestamps(&handle, set_atime, set_mtime)
 }
 
 /// Helper: update an inode's atime/mtime on the ext2 filesystem
 fn update_inode_timestamps(
-    inode_num: u32,
-    mount_id: usize,
+    handle: &crate::fs::ext2::live_inode::FileHandle,
     set_atime: Option<u32>,
     set_mtime: Option<u32>,
 ) -> SyscallResult {
     use crate::fs::ext2;
 
-    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-
     let do_update = |fs: &mut ext2::Ext2Fs| -> SyscallResult {
+        let inode_num = match handle.verify(fs) {
+            Ok(ino) => ino,
+            Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+        };
         let mut inode = match fs.read_inode(inode_num) {
             Ok(i) => i,
             Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
@@ -4352,24 +4371,19 @@ fn update_inode_timestamps(
         }
     };
 
-    if is_home {
-        let mut fs_guard = ext2::home_fs_write();
-        match fs_guard.as_mut() {
-            Some(fs) => do_update(fs),
-            None => SyscallResult::Err(super::errno::EIO as u64),
-        }
-    } else {
-        let mut fs_guard = ext2::root_fs_write();
-        match fs_guard.as_mut() {
-            Some(fs) => do_update(fs),
-            None => SyscallResult::Err(super::errno::EIO as u64),
-        }
+    let mut fs_guard = match ext2::write_mount(handle.object.mount) {
+        Ok(guard) => guard,
+        Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+    };
+    match fs_guard.as_mut() {
+        Some(fs) => do_update(fs),
+        None => SyscallResult::Err(super::errno::EIO as u64),
     }
 }
 
 /// Snapshot an ext2 file or directory descriptor before disk I/O, releasing the process
 /// lock (which masks IRQs) before waiting for device completion.
-fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize), u64> {
+fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize, Option<crate::fs::ext2::live_inode::FileHandle>), u64> {
     use super::errno::{EBADF, EINVAL};
     crate::arch_without_interrupts(|| {
         let thread = crate::task::scheduler::current_thread_id().ok_or(EBADF as u64)?;
@@ -4383,11 +4397,11 @@ fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize), u64> {
                 if writable && !entry.writable() {
                     return Err(EINVAL as u64);
                 }
-                Ok((file.inode_num as u32, file.mount_id))
+                Ok((file.inode_num as u32, file.mount_id, Some(file.handle.clone())))
             }
             FdKind::Directory(dir) if !writable => {
                 let dir = dir.lock();
-                Ok((dir.inode_num as u32, dir.mount_id))
+                Ok((dir.inode_num as u32, dir.mount_id, None))
             }
             _ => Err(EINVAL as u64),
         }
@@ -4398,7 +4412,7 @@ fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize), u64> {
 /// device cache flush covers both requests (fdatasync may flush more metadata).
 pub fn sys_fsync(fd: i32) -> SyscallResult {
     use crate::fs::ext2;
-    let (_, mount_id) = match ext2_fd_info(fd, false) {
+    let (_, mount_id, handle) = match ext2_fd_info(fd, false) {
         Ok(info) => info,
         Err(errno) => return SyscallResult::Err(errno),
     };
@@ -4408,6 +4422,14 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
     } else {
         ext2::root_fs_read()
     };
+    if guard.as_ref().is_none_or(|fs| fs.mount_id != mount_id) {
+        return SyscallResult::Err(super::errno::EIO as u64);
+    }
+    if let Some(handle) = handle {
+        if guard.as_ref().is_none_or(|fs| handle.verify(fs).is_err()) {
+            return SyscallResult::Err(super::errno::EIO as u64);
+        }
+    }
     match guard.as_ref().map(|fs| fs.sync()) {
         Some(Ok(())) => SyscallResult::Ok(0),
         _ => SyscallResult::Err(super::errno::EIO as u64),
@@ -4437,19 +4459,18 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
     if length < 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-    let (ino, mount_id) = match ext2_fd_info(fd, true) {
+    let (ino, _, handle) = match ext2_fd_info(fd, true) {
         Ok(info) => info,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    let mut guard = if is_home {
-        ext2::home_fs_write()
-    } else {
-        ext2::root_fs_write()
+    let Some(handle) = handle else { return SyscallResult::Err(super::errno::EINVAL as u64); };
+    let mut guard = match ext2::write_mount(handle.object.mount) {
+        Ok(guard) => guard,
+        Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
     };
     match guard.as_mut() {
-        Some(fs) => resize_inode(fs, ino, length as u64),
-        None => SyscallResult::Err(super::errno::EIO as u64),
+        Some(fs) if handle.verify(fs).is_ok() => resize_inode(fs, ino, length as u64),
+        _ => SyscallResult::Err(super::errno::EIO as u64),
     }
 }
 

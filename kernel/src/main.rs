@@ -609,6 +609,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 
     // Initialize workqueue subsystem (depends on kthread infrastructure)
     task::workqueue::init_workqueue();
+    kernel::fs::ext2::writeback::init().expect("ext2 finalization service");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::WORKQUEUE_INIT);
 
