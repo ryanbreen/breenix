@@ -696,6 +696,10 @@
           "title": "munmap and mprotect of part of a private mapping split it"
         },
         {
+          "id": "private-syscall-store",
+          "title": "System calls store into private mapping pages nothing has touched"
+        },
+        {
           "id": "close-fd",
           "title": "A mapping stays valid after its file descriptor closes"
         },

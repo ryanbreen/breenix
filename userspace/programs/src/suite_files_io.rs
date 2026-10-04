@@ -1408,6 +1408,11 @@ static SUITE: Suite = suite(
                     mmap_private_split,
                 ),
                 case(
+                    "private-syscall-store",
+                    "System calls store into private mapping pages nothing has touched",
+                    mmap_private_syscall_store,
+                ),
+                case(
                     "close-fd",
                     "A mapping stays valid after its file descriptor closes",
                     mmap_close_fd,
@@ -3626,6 +3631,43 @@ fn mmap_private_split() -> CaseResult {
         // Pages the case already unmapped report EINVAL here.
         let _ = memory::munmap(page(i), 4096);
     }
+    result
+}
+
+fn mmap_private_syscall_store() -> CaseResult {
+    let f = Fixture::new(&[b'a'; 8192])?;
+    let source = Fixture::new(b"XYZ")?;
+    let p = private_map(&f, 8192, memory::PROT_READ | memory::PROT_WRITE)?;
+    let result = (|| -> CaseResult {
+        // Neither page has been touched, so each store below is the first
+        // access to it.
+        check(
+            positioned(
+                PREAD,
+                source.fd(),
+                unsafe { std::slice::from_raw_parts_mut(p, 3) },
+                0,
+            )? == 3,
+            "pread into an untouched private page returned a short count",
+        )?;
+        fs::lseek(source.fd(), 0, SEEK_SET)?;
+        check(
+            io::read(source.fd(), unsafe {
+                std::slice::from_raw_parts_mut(p.add(4096), 3)
+            })? == 3,
+            "read into an untouched private page returned a short count",
+        )?;
+        let mapped = mapped_bytes(p, 8192);
+        check(
+            &mapped[..3] == b"XYZ"
+                && &mapped[4096..4099] == b"XYZ"
+                && mapped[3..4096].iter().all(|&b| b == b'a')
+                && mapped[4099..].iter().all(|&b| b == b'a'),
+            "system call stores into a private mapping landed wrongly",
+        )?;
+        contents(f.fd(), &[b'a'; 8192])
+    })();
+    memory::munmap(p, 8192)?;
     result
 }
 
