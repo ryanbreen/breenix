@@ -1465,8 +1465,11 @@ extern "x86-interrupt" fn page_fault_handler(
             let mut faulting_thread_id: Option<u64> = None;
             let mut faulting_process_id: Option<crate::process::ProcessId> = None;
 
+            let mut fault_signal = 11;
+
             crate::process::with_process_manager(|pm| {
                 if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
+                    fault_signal = crate::memory::file_map::user_fault_signal(process, cr2);
                     let name = process.name.clone();
                     // Get the thread ID before we exit the process
                     faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
@@ -1486,7 +1489,7 @@ extern "x86-interrupt" fn page_fault_handler(
             });
 
             if let Some(pid) = faulting_process_id {
-                let _ = crate::process::exit_process_and_retire(pid, -11);
+                let _ = crate::process::exit_process_and_retire(pid, -fault_signal);
             }
 
             // Mark thread as terminated by setting it not runnable
