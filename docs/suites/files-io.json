@@ -660,6 +660,42 @@
           "title": "MAP_PRIVATE writes remain readable in that mapping"
         },
         {
+          "id": "private-eof",
+          "title": "Private mappings revoke pages past EOF with SIGBUS and zero regrowth"
+        },
+        {
+          "id": "private-write-growth",
+          "title": "Writes that grow a file appear in its private mapping"
+        },
+        {
+          "id": "private-two-mappings",
+          "title": "Two private mappings of one file follow its writes and truncation"
+        },
+        {
+          "id": "private-orphan",
+          "title": "A private mapping keeps an unlinked, closed file's bytes"
+        },
+        {
+          "id": "private-exec",
+          "title": "exec with a live private mapping leaves the file and the parent's mapping intact"
+        },
+        {
+          "id": "private-exec-code",
+          "title": "An executable private mapping runs the file's current code"
+        },
+        {
+          "id": "private-fork-hidden",
+          "title": "fork keeps a PROT_NONE mapping's private copy for parent and child"
+        },
+        {
+          "id": "private-fault-signals",
+          "title": "Private mapping faults check permissions before EOF and reach signal handlers"
+        },
+        {
+          "id": "private-split",
+          "title": "munmap and mprotect of part of a private mapping split it"
+        },
+        {
           "id": "close-fd",
           "title": "A mapping stays valid after its file descriptor closes"
         },
@@ -670,6 +706,10 @@
         {
           "id": "bad-fd",
           "title": "File-backed mmap rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "argument-order",
+          "title": "mmap reports EBADF, then EINVAL, then the descriptor's kind and mode"
         }
       ]
     },
