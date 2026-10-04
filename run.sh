@@ -527,6 +527,9 @@ if [ "$PARALLELS" = true ]; then
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     prlctl start "$PARALLELS_VM"
 
+    # Vigil shows the boot while this script runs and scores it when it ends (does nothing without Vigil).
+    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels default "$SUITE" "$SERIAL_LOG")
+    trap '"$BREENIX_ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" $?' EXIT
     echo ""
     echo "========================================="
     echo "Breenix running on Parallels"
@@ -883,6 +886,9 @@ VMXEOF
         }
     fi
 
+    # Vigil shows the boot while this script runs and scores it when it ends (does nothing without Vigil).
+    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware default "$SUITE" "$SERIAL_LOG")
+    trap '"$BREENIX_ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" $?' EXIT
     echo ""
     echo "========================================="
     echo "Breenix running on VMware Fusion"
