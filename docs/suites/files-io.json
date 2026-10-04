@@ -528,6 +528,10 @@
           "title": "ftruncate shrinks the file and preserves its prefix"
         },
         {
+          "id": "ftruncate-large",
+          "title": "Large shrink completes accounting before regrowth or write"
+        },
+        {
           "id": "ftruncate-grow",
           "title": "ftruncate grows the file with zero-filled bytes"
         },

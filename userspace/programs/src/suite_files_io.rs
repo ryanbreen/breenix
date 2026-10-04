@@ -1201,6 +1201,11 @@ static SUITE: Suite = suite(
                     metadata_ftruncate_shrink,
                 ),
                 case(
+                    "ftruncate-large",
+                    "Large shrink completes accounting before regrowth or write",
+                    metadata_ftruncate_large,
+                ),
+                case(
                     "ftruncate-grow",
                     "ftruncate grows the file with zero-filled bytes",
                     metadata_ftruncate_grow,
@@ -2607,6 +2612,63 @@ fn metadata_truncate_indirect() -> CaseResult {
         "resized inode did not persist on reopen",
     );
     io::close(reopened)?;
+    result
+}
+
+// Read the root mount's in-memory and persisted allocation counters.
+fn root_free_blocks() -> Result<u64, String> {
+    let fd = fs::open("/proc/breenix/ext2", O_RDONLY).map_err(|e| e.to_string())?;
+    let mut buf = [0u8; 512];
+    let read = io::read(fd, &mut buf);
+    io::close(fd).map_err(|e| e.to_string())?;
+    let n = read.map_err(|e| e.to_string())?;
+    let text = std::str::from_utf8(&buf[..n]).map_err(|e| e.to_string())?;
+    let root = text.lines().find(|l| l.starts_with("root ")).ok_or("missing root counters")?;
+    let counts = root.split_whitespace().skip(2).map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    if counts.len() != 4 || counts.iter().any(|c| *c != counts[0]) {
+        return Err(format!("ext2 counters differ: {root}"));
+    }
+    Ok(counts[0])
+}
+
+fn metadata_ftruncate_large() -> CaseResult {
+    let f = Fixture::new(b"X")?;
+    let sectors = fstat(f.fd())?.st_blocks;
+    let block_size = (sectors * 512) as usize;
+    // 257 data blocks plus a single-indirect block crosses the former 128
+    // transition limit on both the 1 KiB and 4 KiB filesystem formats.
+    let bytes = vec![0x5a; block_size * 257];
+    fs::lseek(f.fd(), 0, SEEK_SET)?;
+    write_all(f.fd(), &bytes)?;
+    check(fstat(f.fd())?.st_blocks == 258 * sectors, "large fixture block count")?;
+    let free = root_free_blocks()?;
+    truncate_fd(f.fd(), 3)?;
+    check(fstat(f.fd())?.st_blocks == sectors, "large shrink retained suffix blocks")?;
+    check(root_free_blocks()? == free + 257, "large shrink free counts lag")?;
+    truncate_fd(f.fd(), bytes.len() as i64)?;
+    let mut expected = vec![0; bytes.len()];
+    expected[..3].fill(0x5a);
+    contents(f.fd(), &expected)?;
+    fs::lseek(f.fd(), (bytes.len() - 1) as i64, SEEK_SET)?;
+    write_all(f.fd(), b"Z")?;
+    expected[bytes.len() - 1] = b'Z';
+    contents(f.fd(), &expected)?;
+    check(fstat(f.fd())?.st_blocks == 3 * sectors, "large regrowth block count")?;
+    let free = root_free_blocks()?;
+    truncate_fd(f.fd(), 0)?;
+    check(fstat(f.fd())?.st_blocks == 0, "large zero truncate retained allocated blocks")?;
+    check(root_free_blocks()? == free + 3, "zero truncate free counts lag")?;
+    // Exercise open(O_TRUNC) followed immediately by a write as well.
+    fs::lseek(f.fd(), 0, SEEK_SET)?;
+    write_all(f.fd(), &bytes)?;
+    let truncated = f.open(O_TRUNC | O_RDWR)?;
+    let result = (|| -> CaseResult {
+        check(fstat(truncated)?.st_blocks == 0, "open truncate retained allocated blocks")?;
+        write_all(truncated, b"fresh")?;
+        contents(truncated, b"fresh")
+    })();
+    io::close(truncated)?;
     result
 }
 

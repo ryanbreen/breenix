@@ -819,6 +819,41 @@ fn write_indirect_block<B: BlockDevice + ?Sized>(
     Ok(())
 }
 
+/// Count allocated data and pointer blocks in a retained inode tree.
+pub(super) fn count_tree_blocks<B: BlockDevice + ?Sized>(
+    device: &B,
+    superblock: &Ext2Superblock,
+    pointers: [u32; 15],
+) -> Result<u32, BlockError> {
+    fn count<B: BlockDevice + ?Sized>(
+        device: &B,
+        sb: &Ext2Superblock,
+        pointer: u32,
+        depth: u32,
+    ) -> Result<u32, BlockError> {
+        if pointer == 0 || pointer < sb.s_first_data_block || pointer >= sb.s_blocks_count {
+            return Ok(0);
+        }
+        let mut total = 1;
+        if depth != 0 {
+            for child in read_indirect_block(device, pointer, sb.block_size())? {
+                total += count(device, sb, child, depth - 1)?;
+            }
+        }
+        Ok(total)
+    }
+    let mut total = 0;
+    for (index, pointer) in pointers.into_iter().enumerate() {
+        total += count(
+            device,
+            superblock,
+            pointer,
+            (index as u32).saturating_sub(11),
+        )?;
+    }
+    Ok(total)
+}
+
 /// One bounded step of suffix reclamation: the last allocations of an inode's
 /// block tree in tail order, the pointer blocks that still hold earlier
 /// children with those children cleared, and the inode's new pointers.
@@ -1037,7 +1072,11 @@ mod tests {
                 let original = pointers;
                 let mut freed = Vec::new();
                 loop {
+                    let before = dev.bytes.lock().clone();
+                    let writes = dev.io.lock().1;
                     let batch = take_tail_blocks(&dev, &sb, pointers, 64, keep).unwrap();
+                    assert_eq!(*dev.bytes.lock(), before);
+                    assert_eq!(dev.io.lock().1, writes);
                     assert!(batch.blocks.len() <= 64);
                     assert!(batch.edits.len() <= 3);
                     // Planning alone performs no writes to the live tree.
@@ -1056,7 +1095,7 @@ mod tests {
                     ..Ext2Inode::new_regular_file(0o600, 0, 0) };
                 assert_eq!(get_block_num(&dev, &inode, &sb, (first + 1) as u32).unwrap(), Some(102));
                 assert_eq!(get_block_num(&dev, &inode, &sb, (first + 2) as u32).unwrap(), None);
-                // Unlink still removes the retained data and every pointer block.
+                // Unlink still removes the retained data and its pointer blocks.
                 let rest = take_tail_blocks(&dev, &sb, pointers, 64, 0).unwrap();
                 assert_eq!(rest.blocks.len(), 3 + depth as usize);
                 assert_eq!(rest.pointers, [0; 15]);

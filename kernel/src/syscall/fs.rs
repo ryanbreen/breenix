@@ -4412,15 +4412,15 @@ fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize, Option<crate::fs
 /// device cache flush covers both requests (fdatasync may flush more metadata).
 pub fn sys_fsync(fd: i32) -> SyscallResult {
     use crate::fs::ext2;
-    let (_, mount_id, handle) = match ext2_fd_info(fd, false) {
+    let (inode_num, mount_id, handle) = match ext2_fd_info(fd, false) {
         Ok(info) => info,
         Err(errno) => return SyscallResult::Err(errno),
     };
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     let guard = if is_home {
-        ext2::home_fs_write()
+        ext2::home_fs_read()
     } else {
-        ext2::root_fs_write()
+        ext2::root_fs_read()
     };
     if guard.as_ref().is_none_or(|fs| fs.mount_id != mount_id) {
         return SyscallResult::Err(super::errno::EIO as u64);
@@ -4430,7 +4430,7 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
             return SyscallResult::Err(super::errno::EIO as u64);
         }
     }
-    match guard.as_ref().map(|fs| fs.sync()) {
+    match guard.as_ref().map(|fs| fs.check_shrink(inode_num).and_then(|()| fs.sync())) {
         Some(Ok(())) => SyscallResult::Ok(0),
         _ => SyscallResult::Err(super::errno::EIO as u64),
     }

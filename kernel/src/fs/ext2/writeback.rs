@@ -25,7 +25,7 @@ pub fn init() -> Result<(), &'static str> {
 fn wait(waiters: &WaitQueueHead, deadline: Option<u64>, condition: impl FnOnce() -> bool) {
     match waiters.prepare_to_wait_checked(ThreadState::BlockedOnIO, deadline, condition) {
         PrepareOutcome::Mismatch => return,
-        PrepareOutcome::PublishFailed => panic!("Finalizer lost its scheduler thread"),
+        PrepareOutcome::PublishFailed => panic!("Ext2 wait could not publish its scheduler thread"),
         PrepareOutcome::Queued => {}
     }
     #[cfg(target_arch = "x86_64")]
@@ -34,8 +34,7 @@ fn wait(waiters: &WaitQueueHead, deadline: Option<u64>, condition: impl FnOnce()
     waiters.finish_wait();
 }
 
-/// Called with the same single preemption brake as a syscall. Every caller
-/// has released its filesystem guard before giving another writer a turn.
+/// The service releases its filesystem guard before giving a writer a turn.
 pub(super) fn pause(nanoseconds: u64) {
     let waiters = WaitQueueHead::new();
     let (seconds, nanos) = crate::time::get_monotonic_time_ns();
@@ -47,7 +46,7 @@ pub(super) fn pause(nanoseconds: u64) {
 fn service() {
     loop {
         // Device waits release this syscall-style brake while blocked and
-        // restore it on return. Restore the kthread's zero count each pass.
+        // restore it on return. Restore the kthread's preemption state each pass.
         #[cfg(target_arch = "aarch64")]
         crate::per_cpu_aarch64::preempt_disable();
         #[cfg(target_arch = "x86_64")]

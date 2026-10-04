@@ -105,11 +105,7 @@ impl Ext2Fs {
     /// however large the orphans are.
     fn finalize_inactive(&mut self) -> Finalize {
         let mut budget = RECLAIM_BUDGET;
-        match self.finalize_shrinks(&mut budget) {
-            Finalize::Idle => {}
-            outcome => return outcome,
-        }
-        let mut outcome = Finalize::Idle;
+        let mut outcome = self.finalize_shrinks(&mut budget);
         for object in self.live_inodes.pending(self.finalization_cursor) {
             if !object.unused() { continue; }
             if budget == 0 {
@@ -130,20 +126,23 @@ impl Ext2Fs {
         outcome
     }
 
-    /// Complete published shrinks before any subsequent writer can expose the
-    /// old suffix through growth. Each hold frees at most one shared budget.
+    /// Retry failed shrinks without preventing work on other inodes.
     fn finalize_shrinks(&mut self, budget: &mut usize) -> Finalize {
-        while let Some((&ino, _)) = self.shrink_reclaims.first_key_value() {
+        let inodes: Vec<u32> = self.shrink_reclaims.keys().copied().collect();
+        let mut outcome = Finalize::Idle;
+        for ino in inodes {
+            if *budget == 0 { return Finalize::More; }
             let mut progress = self.shrink_reclaims.remove(&ino).expect("queued shrink");
             match progress.finish(self, ino, budget) {
                 Ok(true) => {}
                 result => {
                     self.shrink_reclaims.insert(ino, progress);
-                    return if matches!(result, Ok(false)) { Finalize::More } else { Finalize::Retry };
+                    if matches!(result, Ok(false)) { return Finalize::More; }
+                    outcome = Finalize::Retry;
                 }
             }
         }
-        Finalize::Idle
+        outcome
     }
 
     /// Release an unobserved orphan's blocks and inode under the write guard,
@@ -156,6 +155,9 @@ impl Ext2Fs {
         budget: &mut usize,
     ) -> Result<bool, reclaim::ReclaimError> {
         let ino = object.key.inode;
+        if self.shrink_reclaims.contains_key(&ino) {
+            return Err(reclaim::ReclaimError::Retry);
+        }
         let prepared = match self.orphan_reclaims.remove(&ino) {
             Some(progress) => Ok(progress),
             None => reclaim::Reclaim::prepare(self, ino),
@@ -179,9 +181,11 @@ impl Ext2Fs {
         result
     }
 
-    fn check_shrinks(&self) -> Result<(), &'static str> {
-        if self.shrink_reclaims.is_empty() { Ok(()) }
-        else { Err("Unfinished ext2 shrink after I/O failure") }
+    /// Failed shrink custody belongs to this inode; unrelated files remain usable.
+    pub fn check_shrink(&self, inode_num: u32) -> Result<(), &'static str> {
+        if self.shrink_reclaims.contains_key(&inode_num) {
+            Err("Unfinished ext2 shrink after I/O failure")
+        } else { Ok(()) }
     }
 
     /// Read an inode from the filesystem
@@ -367,7 +371,7 @@ impl Ext2Fs {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, &'static str> {
-        self.check_shrinks()?;
+        self.check_shrink(inode_num)?;
         if data.is_empty() {
             return Ok(0);
         }
@@ -387,17 +391,28 @@ impl Ext2Fs {
             return Err("Not a regular file");
         }
 
-        // Write the data
-        if let Err(_) = write_file_range(
+        // Allocation updates the group counters. Publish their aggregate and
+        // the descriptors once per write, including partial allocation failure.
+        let free_before: u32 = self.block_groups.iter()
+            .map(|group| group.bg_free_blocks_count as u32).sum();
+        let written = write_file_range(
             self.device.as_ref(),
             &mut inode,
             &self.superblock,
             &mut self.block_groups,
             offset,
             data,
-        ) {
-            return Err("Failed to write file data");
+        );
+        let free_after: u32 = self.block_groups.iter()
+            .map(|group| group.bg_free_blocks_count as u32).sum();
+        if free_before != free_after || self.superblock.s_free_blocks_count != free_after {
+            self.superblock.s_free_blocks_count = free_after;
+            self.superblock.write_to(self.device.as_ref())
+                .map_err(|_| "Failed to persist allocation count")?;
+            Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
+                .map_err(|_| "Failed to persist allocation groups")?;
         }
+        written.map_err(|_| "Failed to write file data")?;
 
         // Write the modified inode back to disk
         if let Err(_) = inode.write_to(
@@ -419,7 +434,6 @@ impl Ext2Fs {
     /// * `inode_num` - The inode number to write
     /// * `inode` - The modified inode data
     pub fn write_inode(&mut self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
-        self.check_shrinks()?;
         inode
             .write_to(
                 self.device.as_ref(),
@@ -449,7 +463,6 @@ impl Ext2Fs {
         uid: u16,
         gid: u16,
     ) -> Result<u32, &'static str> {
-        self.check_shrinks()?;
         // Validate name
         if name.is_empty() || name.len() > 255 {
             return Err("Invalid filename length");
@@ -528,7 +541,6 @@ impl Ext2Fs {
 
     /// Synchronize this filesystem's synchronous data and metadata writes.
     pub fn sync(&self) -> Result<(), &'static str> {
-        self.check_shrinks()?;
         self.device
             .flush()
             .map_err(|_| "Failed to flush filesystem")
@@ -552,7 +564,7 @@ impl Ext2Fs {
 
     /// Resize a regular file, preserving its prefix and zero-filling extension.
     pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
-        self.check_shrinks()?;
+        self.check_shrink(inode_num)?;
         let mut inode = self.read_inode(inode_num)?;
         if !inode.is_file() || length > self.max_file_size() {
             return Err("Invalid file size or type");
@@ -574,15 +586,15 @@ impl Ext2Fs {
         if shrinking {
             let mut progress = reclaim::Reclaim::shrink(
                 inode, length.div_ceil(self.superblock.block_size() as u64));
-            let mut budget = RECLAIM_BUDGET;
+            // Success is synchronous: stat and the allocator observe the completed
+            // shrink when this syscall returns. Only I/O failure queues custody.
+            let mut budget = usize::MAX;
             match progress.finish(self, inode_num, &mut budget) {
                 Ok(true) => {}
-                result => {
+                _ => {
                     self.shrink_reclaims.insert(inode_num, progress);
                     writeback::request();
-                    if !matches!(result, Ok(false)) {
-                        return Err("Failed to reclaim resized suffix");
-                    }
+                    return Err("Failed to reclaim resized suffix");
                 }
             }
         }
@@ -597,7 +609,6 @@ impl Ext2Fs {
     /// Relatime: update after modification/change or once a day. Reload under
     /// the filesystem write lock rather than overwriting a reader's stale inode.
     pub fn update_atime(&mut self, inode_num: u32) -> Result<(), &'static str> {
-        self.check_shrinks()?;
         let mut inode = self.read_inode(inode_num)?;
         let now = crate::time::current_unix_time() as u32;
         if inode.needs_atime_update() {
@@ -620,7 +631,6 @@ impl Ext2Fs {
     /// * `Ok(())` - File was successfully unlinked
     /// * `Err(msg)` - Error message
     pub fn unlink_file(&mut self, path: &str) -> Result<(), &'static str> {
-        self.check_shrinks()?;
         // Must start with "/"
         if !path.starts_with('/') {
             return Err("Path must be absolute");
@@ -725,7 +735,6 @@ impl Ext2Fs {
     /// * `Ok(())` - Rename was successful
     /// * `Err(msg)` - Error message
     pub fn rename_file(&mut self, oldpath: &str, newpath: &str) -> Result<(), &'static str> {
-        self.check_shrinks()?;
         // Both paths must be absolute
         if !oldpath.starts_with('/') || !newpath.starts_with('/') {
             return Err("Paths must be absolute");
@@ -918,7 +927,6 @@ impl Ext2Fs {
     /// * `Ok(inode_num)` - The inode number of the newly created directory
     /// * `Err(msg)` - Error message if creation failed
     pub fn create_directory(&mut self, path: &str, mode: u16) -> Result<u32, &'static str> {
-        self.check_shrinks()?;
         // Must be an absolute path
         if !path.starts_with('/') {
             return Err("Path must be absolute");
@@ -1105,7 +1113,6 @@ impl Ext2Fs {
     /// * "Directory not empty" - Directory contains entries other than "." and ".."
     /// * "Path component not found" - Part of the path doesn't exist
     pub fn remove_directory(&mut self, path: &str) -> Result<(), &'static str> {
-        self.check_shrinks()?;
         // Must start with "/"
         if !path.starts_with('/') {
             return Err("Path must be absolute");
@@ -1241,7 +1248,6 @@ impl Ext2Fs {
     /// * Destination parent directory not found
     /// * No space in destination directory
     pub fn create_hard_link(&mut self, oldpath: &str, newpath: &str) -> Result<(), &'static str> {
-        self.check_shrinks()?;
         // Both paths must be absolute
         if !oldpath.starts_with('/') || !newpath.starts_with('/') {
             return Err("Paths must be absolute");
@@ -1343,7 +1349,6 @@ impl Ext2Fs {
     /// * `Ok(())` - Symlink was created successfully
     /// * `Err(msg)` - Error message
     pub fn create_symlink(&mut self, target: &str, linkpath: &str) -> Result<(), &'static str> {
-        self.check_shrinks()?;
         // linkpath must be absolute
         if !linkpath.starts_with('/') {
             return Err("Path must be absolute");
@@ -2419,8 +2424,7 @@ pub fn root_fs_write() -> Ext2WriteGuard {
     fs_write(false)
 }
 
-/// Finalizer-only acquisition: permits advancing unfinished shrinks without
-/// recursively draining them. Ordinary writers use `fs_write` below.
+/// Acquire exclusive access without performing another inode's reclamation.
 fn fs_write_raw(home: bool) -> Ext2WriteGuard {
     let (lock, waiters, name) = if home {
         (&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write")
@@ -2432,24 +2436,7 @@ fn fs_write_raw(home: bool) -> Ext2WriteGuard {
 }
 
 fn fs_write(home: bool) -> Ext2WriteGuard {
-    loop {
-        let mut guard = fs_write_raw(home);
-        let mut budget = RECLAIM_BUDGET;
-        let outcome = guard.as_mut().map(|fs| fs.finalize_shrinks(&mut budget));
-        // A failed step retains custody. Return the guard so mutations report
-        // EIO through check_shrinks rather than parking forever on a bad disk.
-        if matches!(outcome, Some(Finalize::Retry)) || budget == RECLAIM_BUDGET {
-            return guard;
-        }
-        // Even a completed shrink spent part of this hold's budget. Start a
-        // fresh hold before handing the guard to another mutating operation.
-        drop(guard);
-        // No filesystem guard crosses the pause. Non-sleepable boot callers
-        // have no pending shrinks; keep the existing spin fallback if needed.
-        if ext2_lock_can_sleep() {
-            writeback::pause(1_000_000);
-        }
-    }
+    fs_write_raw(home)
 }
 
 /// Check if the root filesystem is mounted

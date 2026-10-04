@@ -84,6 +84,8 @@ pub enum ProcEntryType {
     BreenixDir,
     /// /proc/breenix/testing - whether testing mode is active
     BreenixTesting,
+    /// /proc/breenix/ext2 - mounted ext2 allocation counters
+    Ext2,
     /// /proc/pids - list of all process IDs
     Pids,
     /// /proc/kmsg - kernel log messages
@@ -125,6 +127,7 @@ impl ProcEntryType {
             ProcEntryType::Mounts => "mounts",
             ProcEntryType::BreenixDir => "breenix",
             ProcEntryType::BreenixTesting => "testing",
+            ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
             ProcEntryType::XhciDir => "xhci",
@@ -159,6 +162,7 @@ impl ProcEntryType {
             ProcEntryType::Mounts => "/proc/mounts",
             ProcEntryType::BreenixDir => "/proc/breenix",
             ProcEntryType::BreenixTesting => "/proc/breenix/testing",
+            ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
             ProcEntryType::XhciDir => "/proc/xhci",
@@ -195,6 +199,7 @@ impl ProcEntryType {
             ProcEntryType::Mounts => 8,
             ProcEntryType::BreenixDir => 200,
             ProcEntryType::BreenixTesting => 201,
+            ProcEntryType::Ext2 => 202,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
             ProcEntryType::XhciDir => 300,
@@ -277,6 +282,7 @@ pub fn init() {
         .entries
         .push(ProcEntry::new(ProcEntryType::BreenixTesting));
 
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
 
@@ -515,9 +521,10 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         ProcEntryType::XhciTrace => Ok(String::from("")),
         #[cfg(not(target_arch = "aarch64"))]
         ProcEntryType::XhciCounters => Ok(String::from("")),
+        ProcEntryType::Ext2 => generate_ext2(),
         ProcEntryType::BreenixDir => {
             // Directory listing
-            Ok(String::from("testing\n"))
+            Ok(String::from("testing\next2\n"))
         }
         ProcEntryType::BreenixTesting => {
             #[cfg(feature = "testing")]
@@ -559,6 +566,29 @@ pub fn read_file(path: &str) -> Result<String, i32> {
 // =============================================================================
 // Content Generators for Standard Entries
 // =============================================================================
+
+/// Snapshot mounted ext2 counters and their persisted counterparts under a
+/// read guard. Disk failures are returned to the reader instead of hidden.
+fn generate_ext2() -> Result<String, i32> {
+    use crate::fs::ext2::{self, Ext2BlockGroupDesc, Ext2Superblock};
+    use core::fmt::Write;
+    let mut text = String::new();
+    for home in [false, true] {
+        let guard = if home { ext2::home_fs_read() } else { ext2::root_fs_read() };
+        let name = if home { "home" } else { "root" };
+        if let Some(fs) = guard.as_ref() {
+            let disk = Ext2Superblock::read_from(fs.device.as_ref()).map_err(|_| 5)?;
+            let groups = Ext2BlockGroupDesc::read_table(fs.device.as_ref(), &disk).map_err(|_| 5)?;
+            let free = fs.superblock.s_free_blocks_count;
+            let disk_free = disk.s_free_blocks_count;
+            let group_free: u64 = fs.block_groups.iter().map(|g| g.bg_free_blocks_count as u64).sum();
+            let disk_group_free: u64 = groups.iter().map(|g| g.bg_free_blocks_count as u64).sum();
+            writeln!(text, "{} {} {} {} {} {}", name, fs.superblock.block_size(),
+                free, disk_free, group_free, disk_group_free).map_err(|_| 5)?;
+        }
+    }
+    Ok(text)
+}
 
 /// Generate /proc/uptime content
 fn generate_uptime() -> String {

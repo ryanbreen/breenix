@@ -1,4 +1,4 @@
-//! Retry custody for zero-link inodes. Reclamation walks the block tree from
+//! Retry custody for suffixes and zero-link inodes. Reclamation walks the block tree from
 //! its tail in bounded batches, so memory does not grow with file size. A
 //! batch's bits stay excluded from allocation until its deletion metadata and
 //! counts have been written.
@@ -11,6 +11,8 @@ use spin::Mutex;
 
 /// Allocations detached and released per batch.
 const BATCH_BLOCKS: usize = 64;
+/// Synchronous shrink amortizes metadata publication over a larger bounded batch.
+const SHRINK_BATCH_BLOCKS: usize = 1024;
 
 static QUARANTINE: Mutex<BTreeSet<(usize, bool, u32)>> = Mutex::new(BTreeSet::new());
 
@@ -83,8 +85,8 @@ impl Reclaim {
     }
 
     /// The shortened inode is already on disk. Keep its prefix and its inode
-    /// allocation; write-guard acquisition finishes this suffix before allowing
-    /// another mutation to regrow or reuse any of its pointers.
+    /// allocation. The truncating syscall completes it inline; failed I/O leaves
+    /// custody here and prevents this inode's data writes or resizing.
     pub fn shrink(inode: Ext2Inode, keep: u64) -> Self {
         Self {
             inode,
@@ -99,7 +101,8 @@ impl Reclaim {
     }
 
     /// Advance reclamation by at most `budget` bitmap transitions. Returns
-    /// `Ok(true)` once the inode is free and every count is written.
+    /// `Ok(true)` after the suffix counts persist, and for an orphan after its
+    /// inode allocation is released as well.
     pub fn finish(
         &mut self,
         fs: &mut Ext2Fs,
@@ -107,13 +110,22 @@ impl Reclaim {
         budget: &mut usize,
     ) -> Result<bool, ReclaimError> {
         let key = device_key(fs.device.as_ref());
+        if !self.free_inode {
+            // Namespace and timestamp changes may occur while a failed shrink
+            // awaits retry. Preserve them when publishing subsequent batches.
+            self.inode = fs.read_inode(ino).map_err(|_| ReclaimError::Retry)?;
+        }
         while !self.tree_done {
             if self.batch.is_none() {
                 let tail = super::file::take_tail_blocks(
                     fs.device.as_ref(),
                     &fs.superblock,
                     self.inode.i_block,
-                    BATCH_BLOCKS,
+                    if self.free_inode {
+                        BATCH_BLOCKS
+                    } else {
+                        SHRINK_BATCH_BLOCKS
+                    },
                     self.keep,
                 )
                 .map_err(|_| ReclaimError::Retry)?;
@@ -134,10 +146,14 @@ impl Reclaim {
                 write_attempted,
                 ..
             } = self;
-            let batch = batch.as_mut().expect("orphan batch staged");
+            let batch = batch.as_mut().expect("reclamation batch staged");
             let old_pointers = inode.i_block;
-            if !batch.published && (!self.inode_published
-                || !batch.tail.blocks.is_empty() || batch.tail.pointers != old_pointers) {
+            if !batch.published
+                && (!self.inode_published
+                    || !batch.tail.blocks.is_empty()
+                    || batch.tail.pointers != old_pointers
+                    || !batch.tail.edits.is_empty())
+            {
                 // No bitmap bit is freed until no disk pointer names it.
                 super::file::write_pointer_blocks(
                     fs.device.as_ref(),
@@ -151,7 +167,8 @@ impl Reclaim {
                 published.i_blocks = published
                     .i_blocks
                     .saturating_sub(batch.tail.blocks.len() as u32 * sectors);
-                published.write_to(fs.device.as_ref(), ino, &fs.superblock, &fs.block_groups)
+                published
+                    .write_to(fs.device.as_ref(), ino, &fs.superblock, &fs.block_groups)
                     .map_err(|_| ReclaimError::Retry)?;
                 *inode = published;
                 self.inode_published = true;
@@ -174,7 +191,11 @@ impl Reclaim {
                     fs.superblock.increment_free_blocks(1);
                 } else {
                     // A duplicate or out-of-range pointer: not ours to count.
-                    log::warn!("ext2: orphan inode {} block {} was not allocated", ino, block);
+                    log::warn!(
+                        "ext2: reclaiming inode {} block {} was not allocated",
+                        ino,
+                        block
+                    );
                 }
                 *write_attempted = false;
                 batch.next += 1;
@@ -191,6 +212,19 @@ impl Reclaim {
             self.batch = None;
         }
         if !self.free_inode {
+            // Rebuild from the retained tree rather than preserving historical
+            // i_blocks drift or charging pointers dropped as out of range.
+            let retained = super::file::count_tree_blocks(
+                fs.device.as_ref(),
+                &fs.superblock,
+                self.inode.i_block,
+            )
+            .map_err(|_| ReclaimError::Retry)?;
+            self.inode.i_blocks = (retained + u32::from(self.inode.i_file_acl != 0))
+                * (fs.superblock.block_size() / 512) as u32;
+            self.inode
+                .write_to(fs.device.as_ref(), ino, &fs.superblock, &fs.block_groups)
+                .map_err(|_| ReclaimError::Retry)?;
             return Ok(true);
         }
         if !self.inode_freed {
