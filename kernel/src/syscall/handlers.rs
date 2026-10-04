@@ -1213,7 +1213,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Err(super::errno::EIO as u64);
                     }
                 };
-                match fs.read_file_range(&inode, position, count as usize) {
+                match fs.read_file_range_coherent(inode_num, &inode, position, count as usize) {
                     Ok(data) => (data, inode.needs_atime_update()),
                     Err(e) => {
                         log::error!("sys_read: Failed to read file data: {}", e);
@@ -1237,7 +1237,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Err(super::errno::EIO as u64);
                     }
                 };
-                match fs.read_file_range(&inode, position, count as usize) {
+                match fs.read_file_range_coherent(inode_num, &inode, position, count as usize) {
                     Ok(data) => (data, inode.needs_atime_update()),
                     Err(e) => {
                         log::error!("sys_read: Failed to read file data: {}", e);
@@ -2389,7 +2389,7 @@ fn load_elf_from_ext2_fs(fs: &crate::fs::ext2::Ext2Fs, path: &str) -> Result<Vec
         return Err(EACCES);
     }
 
-    let data = fs.read_file_content(&inode).map_err(|_| EIO)?;
+    let data = fs.read_file_content_coherent(inode_num, &inode).map_err(|_| EIO)?;
     Ok(data)
 }
 
@@ -5399,7 +5399,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
             return SyscallResult::Ok(0);
         }
         let to_read = core::cmp::min(count, file_size - file_offset) as usize;
-        match fs.read_file_range(&inode, file_offset, to_read) {
+        match fs.read_file_range_coherent(inode_num, &inode, file_offset, to_read) {
             Ok(data) => {
                 let actual = core::cmp::min(data.len(), to_read);
                 unsafe {

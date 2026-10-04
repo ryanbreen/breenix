@@ -61,7 +61,7 @@ fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> 
     }
 
     let elf_data = fs
-        .read_file_content(&inode)
+        .read_file_content_coherent(inode_num, &inode)
         .map_err(|_| "failed to read init")?;
 
     drop(fs_guard);
@@ -2054,7 +2054,7 @@ fn load_test_binaries_from_ext2() {
                 }
             };
 
-            match fs.read_file_content(&inode) {
+            match fs.read_file_content_coherent(inode_num, &inode) {
                 Ok(data) => data,
                 Err(e) => {
                     serial_println!("[test] Failed to read {}: {}", resolved_path, e);

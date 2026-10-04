@@ -3022,15 +3022,56 @@ fn mmap_shared_writeback() -> CaseResult {
             unsafe { std::slice::from_raw_parts(p, 6) } == b"abcdef",
             "file mapping did not expose the original file bytes",
         )?;
-        unsafe {
-            p.write_volatile(b'X');
-        }
+        expect_errno(
+            sc(MSYNC, p as u64 + 1, 4096, 4, 0, "unaligned msync"),
+            22,
+            "unaligned msync",
+        )?;
+        expect_errno(
+            sc(MSYNC, p as u64, 4096, 5, 0, "conflicting msync flags"),
+            22,
+            "conflicting msync flags",
+        )?;
+        expect_errno(
+            sc(MSYNC, p as u64, 4096, 8, 0, "unknown msync flags"),
+            22,
+            "unknown msync flags",
+        )?;
+        expect_errno(
+            sc(MSYNC, p as u64, u64::MAX, 4, 0, "overflowing msync"),
+            12,
+            "overflowing msync",
+        )?;
+        // The preceding page is a hole in the mmap arena. Validation must
+        // reject it before starting writeback of the covered second page.
+        expect_errno(
+            sc(MSYNC, p as u64 - 4096, 8192, 4, 0, "msync across a hole"),
+            12,
+            "msync across a hole",
+        )?;
+        unsafe { p.write_volatile(b'X') };
+        contents(f.fd(), b"Xbcdef")?; // coherent before any writeback
         sync_mapping(p)?;
-        contents(f.fd(), b"Xbcdef")
+        contents(f.fd(), b"Xbcdef")?;
+        unsafe { p.add(1).write_volatile(b'Y') };
+        sync_fd(f.fd(), false)?; // a live writer keeps the page dirty
+        contents(f.fd(), b"XYcdef")?;
+        memory::mprotect(p, 4096, memory::PROT_NONE)?;
+        memory::mprotect(p, 4096, memory::PROT_READ | memory::PROT_WRITE)?;
+        check(
+            unsafe { p.read_volatile() } == b'X',
+            "mprotect lost shared dirty bytes",
+        )?;
+        unsafe { p.add(2).write_volatile(b'Z') };
+        sc(MSYNC, p as u64, 4096, 1, 0, "msync MS_ASYNC")?;
+        sc(MSYNC, p as u64, 4096, 0, 0, "msync flags zero")?;
+        sc(MSYNC, p as u64, 4096, 6, 0, "msync MS_SYNC | MS_INVALIDATE")?;
+        sync_fd(f.fd(), true)?;
+        contents(f.fd(), b"XYZdef")
     })();
     memory::munmap(p, 4096).map_err(|e| format!("file-backed mmap failed: {e}"))?;
     result?;
-    contents(f.fd(), b"Xbcdef")
+    contents(f.fd(), b"XYZdef")
 }
 
 fn mmap_shared_peer() -> CaseResult {
