@@ -2014,8 +2014,10 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     for i in 0..old_num_pages {
         let page_addr = old_vaddr + (i as u64) * PAGE_SIZE;
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
-        let _ = page_table.unmap_page(page);
-        flush_tlb(VirtAddr::new(page_addr));
+        if let Ok(leaf) = page_table.unmap_page_deferred(page) {
+            flush_tlb(VirtAddr::new(page_addr));
+            leaf.release();
+        }
     }
 
     // Remove old VMA

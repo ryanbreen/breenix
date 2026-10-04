@@ -157,6 +157,22 @@ struct LeafRecord {
     mapping: LeafMapping,
 }
 
+/// A user leaf removed from its page table whose frame reference has not been
+/// dropped yet. Call `release()` once the page's TLB entry has been flushed;
+/// dropping it without that keeps the reference, so the frame is never freed.
+#[must_use = "release the leaf after the TLB flush, or its frame is never freed"]
+pub struct ReleasedLeaf {
+    record: LeafRecord,
+    frame: PhysFrame,
+}
+
+impl ReleasedLeaf {
+    /// Drop the leaf's frame reference, freeing the frame at zero.
+    pub fn release(self) {
+        ProcessPageTable::release_leaf_record(self.record, self.frame);
+    }
+}
+
 struct OwnedLeafFrames {
     records: Vec<LeafRecord>,
     released: bool,
@@ -1520,12 +1536,27 @@ impl ProcessPageTable {
         }
     }
 
-    /// Unmap a page in this process's address space
-    #[allow(dead_code)]
+    /// Unmap a page in this process's address space and release its frame at
+    /// once. Only for a table no CPU can be translating through (unpublished,
+    /// or being retired); a live table uses `unmap_page_deferred`.
     pub fn unmap_page(
         &mut self,
         page: Page<Size4KiB>,
     ) -> Result<PhysFrame<Size4KiB>, &'static str> {
+        let leaf = self.unmap_page_deferred(page)?;
+        let frame = leaf.frame;
+        leaf.release();
+        Ok(frame)
+    }
+
+    /// Remove a page's descriptor and custody record, keeping the frame's
+    /// reference in the returned `ReleasedLeaf`. The caller flushes the page's
+    /// TLB entry and only then calls `ReleasedLeaf::release()`, so the frame
+    /// cannot be freed while a stale translation can still reach it.
+    pub fn unmap_page_deferred(
+        &mut self,
+        page: Page<Size4KiB>,
+    ) -> Result<ReleasedLeaf, &'static str> {
         let page_addr = page.start_address().as_u64();
         let record_index = self.leaves.search(page_addr).map_err(|_| {
             crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
@@ -1536,11 +1567,10 @@ impl ProcessPageTable {
             .mapper
             .unmap(page)
             .map_err(|_| "Failed to unmap page")?;
-        // Don't flush immediately - same reasoning as map_page
+        // The caller flushes, before releasing the leaf.
         let _ = flush;
         self.leaves.records.remove(record_index);
-        Self::release_leaf_record(record, frame);
-        Ok(frame)
+        Ok(ReleasedLeaf { record, frame })
     }
 
     fn release_leaf_record(record: LeafRecord, frame: PhysFrame) {

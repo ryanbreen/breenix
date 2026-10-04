@@ -2469,16 +2469,20 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
         core::ptr::copy_nonoverlapping(src, dst, 4096);
     }
 
-    // Unmap old page and map new one with write permissions
+    // Unmap old page and map new one with write permissions. The old leaf's
+    // frame reference is dropped only after the TLBI below: a racing release
+    // by the other sharer can make it the last one.
     let new_flags = make_private_flags(old_flags);
-    if page_table.unmap_page(page).is_err() {
-        let _ = deallocate_leaf_frame(new_frame);
-        return false;
-    }
-    if page_table.map_page(page, new_frame, new_flags).is_err() {
+    let old_leaf = match page_table.unmap_page_deferred(page) {
+        Ok(leaf) => leaf,
+        Err(_) => {
+            let _ = deallocate_leaf_frame(new_frame);
+            return false;
+        }
+    };
+    let copied = page_table.map_page(page, new_frame, new_flags).is_ok();
+    if !copied {
         let _ = page_table.map_page(page, old_frame, old_flags);
-        let _ = deallocate_leaf_frame(new_frame);
-        return false;
     }
 
     // Flush TLB for the CoW-copied page
@@ -2492,6 +2496,11 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
             in(reg) va_for_tlbi,
             options(nostack)
         );
+    }
+    old_leaf.release();
+    if !copied {
+        let _ = deallocate_leaf_frame(new_frame);
+        return false;
     }
 
     cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);

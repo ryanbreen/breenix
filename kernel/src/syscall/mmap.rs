@@ -551,10 +551,11 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
 
     let mut pages_unmapped = 0u32;
     for page in Page::range_inclusive(start_page, end_page) {
-        match page_table.unmap_page(page) {
-            Ok(_) => {
-                // Flush TLB for this page
+        match page_table.unmap_page_deferred(page) {
+            Ok(leaf) => {
+                // The frame is released only once no TLB can still reach it.
                 flush_tlb(page.start_address());
+                leaf.release();
                 pages_unmapped += 1;
             }
             Err(e) => {
