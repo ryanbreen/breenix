@@ -1035,7 +1035,9 @@ pub(crate) fn isolate(
         });
         head.pages = pages;
     }
-    vmas[index].end = VirtAddr::new(cuts[0]);
+    if let Some(&first) = cuts.first() {
+        vmas[index].end = VirtAddr::new(first);
+    }
     for (slot, &at) in cuts.iter().enumerate() {
         let Some(mut rec) = tails[slot].take() else {
             continue;
