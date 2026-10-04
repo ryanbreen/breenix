@@ -660,6 +660,10 @@
           "title": "MAP_PRIVATE writes remain readable in that mapping"
         },
         {
+          "id": "private-eof",
+          "title": "Private mappings revoke pages past EOF with SIGBUS and zero regrowth"
+        },
+        {
           "id": "close-fd",
           "title": "A mapping stays valid after its file descriptor closes"
         },

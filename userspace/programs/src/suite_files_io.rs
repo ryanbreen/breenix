@@ -1363,6 +1363,11 @@ static SUITE: Suite = suite(
                     mmap_private_readback,
                 ),
                 case(
+                    "private-eof",
+                    "Private mappings revoke pages past EOF with SIGBUS and zero regrowth",
+                    mmap_private_eof,
+                ),
+                case(
                     "close-fd",
                     "A mapping stays valid after its file descriptor closes",
                     mmap_close_fd,
@@ -3119,6 +3124,52 @@ fn mmap_private_readback() -> CaseResult {
         )
     })();
     memory::munmap(p, 4096).map_err(|e| format!("file-backed mmap failed: {e}"))?;
+    result
+}
+
+fn mmap_private_eof() -> CaseResult {
+    let mut bytes = vec![b'a'; 8192];
+    bytes[4096..].fill(b'b');
+    let f = Fixture::new(&bytes)?;
+    let p = memory::mmap(
+        std::ptr::null_mut(), 8192, memory::PROT_READ, memory::MAP_PRIVATE,
+        f.fd().raw() as i32, 0,
+    )?;
+    let result = (|| -> CaseResult {
+        for detached in [false, true] {
+            if detached {
+                memory::mprotect(p, 8192, memory::PROT_READ | memory::PROT_WRITE)?;
+                unsafe { p.add(4096).write_volatile(b'X'); }
+                memory::mprotect(p, 8192, memory::PROT_NONE)?;
+                memory::mprotect(p, 8192, memory::PROT_READ | memory::PROT_WRITE)?;
+                check(unsafe { p.add(4096).read_volatile() } == b'X',
+                    "PROT_NONE discarded a detached private copy")?;
+            }
+            truncate_fd(f.fd(), 100)?;
+            check(unsafe { p.add(99).read_volatile() == b'a' && p.add(100).read_volatile() == 0 },
+                "shrink did not preserve prefix and zero the resident boundary tail")?;
+            match process::fork()? {
+                process::ForkResult::Child => {
+                    // A volatile access must execute; reaching exit is a failure.
+                    unsafe { p.add(4096).read_volatile(); }
+                    process::exit(0);
+                }
+                process::ForkResult::Parent(child) => {
+                    let status = wait_child(child.raw() as i32)?;
+                    check(process::wifsignaled(status) && process::wtermsig(status) == signal::SIGBUS,
+                        "access past private mapping EOF did not terminate with SIGBUS")?;
+                }
+            }
+            truncate_fd(f.fd(), 8192)?;
+            check(unsafe { p.add(4096).read_volatile() } == 0,
+                "regrowth exposed a revoked page's discarded bytes")?;
+            let mut expected = vec![0; 8192];
+            expected[..100].fill(b'a');
+            contents(f.fd(), &expected)?;
+        }
+        Ok(())
+    })();
+    memory::munmap(p, 8192)?;
     result
 }
 
