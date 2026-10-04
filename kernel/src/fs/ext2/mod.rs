@@ -2111,6 +2111,39 @@ fn ext2_acquire<T>(
     spin_fallback()
 }
 
+/// How long a thread a kill has claimed parks between checks of its claim.
+const EXT2_KILL_CLAIM_RECHECK_NS: u64 = 1_000_000;
+
+/// Open the calling thread's kill custody before it acquires an ext2 mount
+/// lock (#1025). A thread a kill has already claimed must not acquire the
+/// lock at all: its termination discards its kernel continuation, guard
+/// included, and the lock would stay held. On SMP the claim can land while
+/// the thread runs on another CPU, so it waits here, parked on the mount's
+/// queue, until either the termination takes it off the CPU for good or the
+/// claim is withdrawn because the kill was deferred.
+fn ext2_kill_custody(
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+) -> crate::task::thread::KillCustody {
+    loop {
+        if let Some(custody) = crate::task::thread::KillCustody::try_enter() {
+            return custody;
+        }
+        if !ext2_lock_can_sleep() {
+            core::hint::spin_loop();
+            continue;
+        }
+        let outcome = waiters.prepare_to_wait_checked(
+            crate::task::thread::ThreadState::BlockedOnIO,
+            Some(ext2_now_ns() + EXT2_KILL_CLAIM_RECHECK_NS),
+            || true,
+        );
+        if let crate::task::waitqueue::PrepareOutcome::Queued = outcome {
+            ext2_schedule_current_wait();
+            waiters.finish_wait();
+        }
+    }
+}
+
 /// Write-acquisition variant of `ext2_acquire`: acquires the upgradeable
 /// slot via `ext2_acquire` (park-capable, generic), then parks waiting for
 /// the upgrade itself while *continuing to hold* the upgradeable guard
@@ -2195,6 +2228,9 @@ fn ext2_acquire_write(
 pub struct Ext2ReadGuard {
     inner: Option<spin::RwLockReadGuard<'static, Option<Ext2Fs>>>,
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
+    /// Opened before the acquisition and closed after `Drop` releases the
+    /// lock, so a SIGKILL never abandons a holder or a queued waiter (#1025).
+    _custody: crate::task::thread::KillCustody,
 }
 
 impl core::ops::Deref for Ext2ReadGuard {
@@ -2249,6 +2285,9 @@ impl Drop for Ext2ReadGuard {
 pub struct Ext2WriteGuard {
     inner: Option<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>>,
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
+    /// Opened before the acquisition and closed after `Drop` releases the
+    /// lock, so a SIGKILL never abandons a holder or a queued waiter (#1025).
+    _custody: crate::task::thread::KillCustody,
 }
 
 impl core::ops::Deref for Ext2WriteGuard {
@@ -2455,6 +2494,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 /// Multiple readers can hold this lock concurrently, allowing parallel
 /// exec, file reads, getdents, and stat operations without contention.
 pub fn root_fs_read() -> Ext2ReadGuard {
+    let custody = ext2_kill_custody(&ROOT_EXT2_WAITERS);
     let inner = ext2_acquire(
         &ROOT_EXT2_WAITERS,
         "ROOT_EXT2_read",
@@ -2464,6 +2504,7 @@ pub fn root_fs_read() -> Ext2ReadGuard {
     Ext2ReadGuard {
         inner: Some(inner),
         waiters: &ROOT_EXT2_WAITERS,
+        _custody: custody,
     }
 }
 
@@ -2489,8 +2530,13 @@ fn fs_write_raw(home: bool) -> Ext2WriteGuard {
     } else {
         (&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write")
     };
+    let custody = ext2_kill_custody(waiters);
     let inner = ext2_acquire_write(lock, waiters, name);
-    Ext2WriteGuard { inner: Some(inner), waiters }
+    Ext2WriteGuard {
+        inner: Some(inner),
+        waiters,
+        _custody: custody,
+    }
 }
 
 fn fs_write(home: bool) -> Ext2WriteGuard {
@@ -2574,6 +2620,7 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 
 /// Access the home ext2 filesystem for read-only operations
 pub fn home_fs_read() -> Ext2ReadGuard {
+    let custody = ext2_kill_custody(&HOME_EXT2_WAITERS);
     let inner = ext2_acquire(
         &HOME_EXT2_WAITERS,
         "HOME_EXT2_read",
@@ -2583,6 +2630,7 @@ pub fn home_fs_read() -> Ext2ReadGuard {
     Ext2ReadGuard {
         inner: Some(inner),
         waiters: &HOME_EXT2_WAITERS,
+        _custody: custody,
     }
 }
 

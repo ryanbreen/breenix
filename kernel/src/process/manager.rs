@@ -1432,6 +1432,7 @@ impl ProcessManager {
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1512,6 +1513,7 @@ impl ProcessManager {
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1591,6 +1593,7 @@ impl ProcessManager {
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1676,6 +1679,7 @@ impl ProcessManager {
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -3191,6 +3195,7 @@ impl ProcessManager {
                 owner_pid: Some(child_pid.as_u64()),
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+                kill_custody: core::sync::atomic::AtomicU64::new(0),
                 // A pin is not inherited, on either child-creation path. A
                 // `per_cpu_worker` pin is a claim about servicing one CPU's
                 // per-CPU state and a child services none of it; a hold-pen pin

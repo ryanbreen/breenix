@@ -4681,6 +4681,29 @@ impl Scheduler {
     }
 
     /// Make every scheduler-owned thread for a process non-runnable.
+    /// Claim every thread of `owner_pid` for an immediate kill, or none of
+    /// them: when one is inside a kill-custody section (`KillCustody`) the
+    /// kill must wait for that section to close, and nothing is claimed.
+    pub fn claim_process_threads_for_kill(&mut self, owner_pid: u64) -> bool {
+        let owned = |thread: &&Box<Thread>| thread.owner_pid == Some(owner_pid);
+        if self.threads.iter().filter(owned).any(|thread| thread.in_kill_custody()) {
+            return false;
+        }
+        // A thread running on another CPU can still open a section between
+        // the check and its claim; that claim fails and the others are undone.
+        let mut claimed = 0;
+        for thread in self.threads.iter().filter(owned) {
+            if !thread.claim_for_kill() {
+                for thread in self.threads.iter().filter(owned).take(claimed) {
+                    thread.release_kill_claim();
+                }
+                return false;
+            }
+            claimed += 1;
+        }
+        true
+    }
+
     pub fn terminate_process_threads(&mut self, owner_pid: u64) {
         crate::tracing::providers::teardown::record_quarantine(owner_pid);
         if crate::process::process_manager_held_on_current_cpu() {

@@ -159,12 +159,29 @@ pub(crate) fn raise_sigpipe() {
     }
 }
 
-/// Terminate `victim` at once with `exit_code`, whatever it is doing: its
-/// threads stop being scheduled, a CPU running one is told to switch away, and
-/// the row exits. SIGKILL's delivery, also used when a thread group dies with
-/// one of its members. Must be called with no process-manager lock held, from
-/// a thread that is not one of the victim's.
+/// Terminate `victim` at once with `exit_code`: its threads stop being
+/// scheduled, a CPU running one is told to switch away, and the row exits.
+/// SIGKILL's delivery, also used when a thread group dies with one of its
+/// members. Must be called with no process-manager lock held, from a thread
+/// that is not one of the victim's.
+///
+/// A victim thread inside a kill-custody section holds, or is queued for, a
+/// lock that dying would leave held for every other thread (#1025). Then the
+/// kill is left pending as SIGKILL instead: the thread finishes the section,
+/// and its return to user mode ends the process.
 pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
+    let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
+        scheduler.claim_process_threads_for_kill(victim.as_u64())
+    })
+    .unwrap_or(true);
+    if !claimed {
+        crate::process::with_process_manager(|manager| {
+            if let Some(process) = manager.get_process_mut(victim) {
+                process.signals.set_pending(SIGKILL);
+            }
+        });
+        return;
+    }
     crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
     crate::task::scheduler::with_scheduler(|scheduler| {
         scheduler.terminate_process_threads(victim.as_u64());
