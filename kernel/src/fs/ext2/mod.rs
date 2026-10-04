@@ -106,6 +106,10 @@ impl Ext2Fs {
     fn finalize_inactive(&mut self) -> Finalize {
         let mut budget = RECLAIM_BUDGET;
         let mut outcome = self.finalize_shrinks(&mut budget);
+        let mut cache_budget = 64;
+        for object in self.live_inodes.evictions() {
+            if object.map.evict(&mut cache_budget) { outcome = Finalize::More; }
+        }
         for object in self.live_inodes.pending(self.finalization_cursor) {
             if !object.unused() { continue; }
             if budget == 0 {
@@ -170,7 +174,7 @@ impl Ext2Fs {
             result
         });
         match &result {
-            Ok(true) => self.live_inodes.remove(object),
+            Ok(true) => { object.map.clear(); self.live_inodes.remove(object); },
             Err(reclaim::ReclaimError::Abandon(reason)) => {
                 // The inode stays allocated on disk; stop retrying it.
                 log::warn!("ext2: leaving orphan inode {} allocated: {}", ino, reason);
@@ -425,6 +429,9 @@ impl Ext2Fs {
         }
 
         self.live_inodes.publish_size(inode_num, inode.size());
+        if let Some(object) = self.live_inodes.get(inode_num) {
+            object.map.overlay_write(offset, data);
+        }
         Ok(data.len())
     }
 
@@ -2009,6 +2016,8 @@ fn ext2_acquire<T>(
     mut try_acquire: impl FnMut() -> Option<T>,
     spin_fallback: impl FnOnce() -> T,
 ) -> T {
+    assert!(!crate::process::process_manager_held_on_current_cpu(),
+        "Ext2 acquisition while PROCESS_MANAGER is held");
     if let Some(v) = try_acquire() {
         return v;
     }
@@ -2580,3 +2589,6 @@ pub fn strip_home_prefix(path: &str) -> &str {
 pub fn is_home_path(path: &str) -> bool {
     (path == "/home" || path.starts_with("/home/")) && is_home_mounted()
 }
+
+/// Binding drops enqueue clean-cache retirement without I/O.
+pub(crate) fn request_map_eviction() { writeback::request(); }

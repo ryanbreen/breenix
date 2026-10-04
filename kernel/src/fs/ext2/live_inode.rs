@@ -51,6 +51,7 @@ pub struct LiveInode {
     pub mount: MountPin,
     pub size: AtomicU64,
     pub size_epoch: AtomicU64,
+    pub map: crate::memory::file_map::MapState,
     external_handles: AtomicUsize,
     pending: AtomicBool,
     pub(super) orphan: AtomicBool,
@@ -155,7 +156,7 @@ impl Table {
             .take(PRUNE_PER_PIN)
         {
             self.prune_cursor = inode;
-            if object.unused() && !object.orphan.load(Ordering::Acquire) {
+            if object.unused() && !object.orphan.load(Ordering::Acquire) && object.map.is_empty() {
                 stale[found] = inode;
                 found += 1;
             }
@@ -201,6 +202,7 @@ impl LiveInodes {
                 mount,
                 size: AtomicU64::new(size),
                 size_epoch: AtomicU64::new(0),
+                map: crate::memory::file_map::MapState::new(size),
                 external_handles: AtomicUsize::new(0),
                 pending: AtomicBool::new(false),
                 orphan: AtomicBool::new(false),
@@ -209,6 +211,16 @@ impl LiveInodes {
             object
         };
         Ok(FileHandle::acquire(object))
+    }
+
+    pub fn get(&self, inode: u32) -> Option<Arc<LiveInode>> {
+        self.table.lock().objects.get(&inode).cloned()
+    }
+
+    pub fn evictions(&self) -> alloc::vec::Vec<Arc<LiveInode>> {
+        self.table.lock().objects.values()
+            .filter(|object| object.map.eviction_pending.load(Ordering::Acquire))
+            .take(32).cloned().collect()
     }
 
     pub fn publish_size(&self, inode: u32, size: u64) {
@@ -250,6 +262,6 @@ impl LiveInodes {
             .lock()
             .objects
             .values()
-            .any(|object| !object.unused() || object.orphan.load(Ordering::Acquire))
+            .any(|object| !object.unused() || object.orphan.load(Ordering::Acquire) || !object.map.is_empty())
     }
 }

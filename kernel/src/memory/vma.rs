@@ -83,7 +83,7 @@ impl MmapFlags {
 }
 
 /// A Virtual Memory Area represents a contiguous mapped region
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[allow(dead_code)]
 pub struct Vma {
     /// Start address (page-aligned)
@@ -94,6 +94,7 @@ pub struct Vma {
     pub prot: Protection,
     /// Memory mapping flags
     pub flags: MmapFlags,
+    pub backing: Option<alloc::sync::Arc<super::file_map::Binding>>,
 }
 
 impl Vma {
@@ -104,6 +105,7 @@ impl Vma {
             end,
             prot,
             flags,
+            backing: None,
         }
     }
 

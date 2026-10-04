@@ -1921,6 +1921,7 @@ impl ProcessManager {
                 // Preserve the single-CoW-decref invariant: external terminate()
                 // already walked these mappings, so raw-drop them without ever
                 // routing the page table through another reclaim/decref path.
+                process.vmas.clear();
                 if let Some(page_table) = process.page_table.take() {
                     page_table.abandon(AbandonReason::AlreadyTerminated);
                 }
@@ -2207,6 +2208,8 @@ impl ProcessManager {
         return_rip: Option<u64>,
         mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
+        let child_pid = self.allocate_ordinary_pid();
+
         // Get the parent process info we need (including page table for memory copying)
         let (
             parent_name,
@@ -2244,15 +2247,14 @@ impl ProcessManager {
                 parent.heap_start,
                 parent.heap_end,
                 parent.mmap_hint,
-                parent.vmas.clone(),
+                crate::memory::file_map::fork_vmas(&parent.vmas, child_pid, child_page_table.as_mut())?,
                 parent.memory_usage.code_size,
                 parent.memory_usage.heap_size,
                 parent.memory_usage.stack_size,
             )
         };
 
-        // Allocate a new PID for the child
-        let child_pid = self.allocate_ordinary_pid();
+        // Child PID was allocated before copying its bindings.
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",
@@ -2365,6 +2367,8 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
 
+        let child_pid = self.allocate_ordinary_pid();
+
         // Get the parent process info we need (including page table for memory copying)
         let (
             parent_name,
@@ -2402,15 +2406,14 @@ impl ProcessManager {
                 parent.heap_start,
                 parent.heap_end,
                 parent.mmap_hint,
-                parent.vmas.clone(),
+                crate::memory::file_map::fork_vmas(&parent.vmas, child_pid, child_page_table.as_mut())?,
                 parent.memory_usage.code_size,
                 parent.memory_usage.heap_size,
                 parent.memory_usage.stack_size,
             )
         };
 
-        // Allocate a new PID for the child
-        let child_pid = self.allocate_ordinary_pid();
+        // Child PID was allocated before copying its bindings.
 
         // Create child process name
         let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
@@ -2499,6 +2502,8 @@ impl ProcessManager {
         // Lock-free trace: fork entry
         crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
 
+        let child_pid = self.allocate_ordinary_pid();
+
         // Get the parent process info
         let (
             parent_name,
@@ -2535,15 +2540,14 @@ impl ProcessManager {
                 parent.heap_start,
                 parent.heap_end,
                 parent.mmap_hint,
-                parent.vmas.clone(),
+                crate::memory::file_map::fork_vmas(&parent.vmas, child_pid, child_page_table.as_mut())?,
                 parent.memory_usage.code_size,
                 parent.memory_usage.heap_size,
                 parent.memory_usage.stack_size,
             )
         };
 
-        // Allocate a new PID for the child
-        let child_pid = self.allocate_ordinary_pid();
+        // Child PID was allocated before copying its bindings.
 
         // NOTE: No logging in this function — it runs under PM lock which disables
         // interrupts on ARM64. Acquiring the logger lock here can deadlock if another
@@ -2756,6 +2760,7 @@ impl ProcessManager {
         }
 
         // Insert the child process into the process table
+        crate::memory::file_map::reconcile_process(&mut child_process)?;
         self.processes.insert(child_pid, child_process);
 
         // Lock-free trace: fork exit with child PID
@@ -2945,6 +2950,7 @@ impl ProcessManager {
         }
 
         // Insert the child process into the process table
+        crate::memory::file_map::reconcile_process(&mut child_process)?;
         self.processes.insert(child_pid, child_process);
 
         // Lock-free trace: fork exit with child PID
@@ -3007,7 +3013,6 @@ impl ProcessManager {
         let parent_heap_start = parent.heap_start;
         let parent_heap_end = parent.heap_end;
         let parent_mmap_hint = parent.mmap_hint;
-        let parent_vmas = parent.vmas.clone();
         let parent_code_size = parent.memory_usage.code_size;
         let parent_heap_size = parent.memory_usage.heap_size;
         let parent_stack_size = parent.memory_usage.stack_size;
@@ -3024,6 +3029,9 @@ impl ProcessManager {
         let mut child_page_table =
             Box::new(child_page_table_result.map_err(|_| "Failed to create child page table")?);
         log::debug!("fork_process: Child page table created successfully");
+        let parent_vmas = crate::memory::file_map::fork_vmas(
+            &self.processes.live_row(&parent_pid).ok_or("Parent process not found")?.vmas,
+            child_pid, child_page_table.as_mut())?;
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
         {
@@ -3206,7 +3214,8 @@ impl ProcessManager {
             }
 
             // Add the child process to the process table
-            self.processes.insert(child_pid, child_process);
+            crate::memory::file_map::reconcile_process(&mut child_process)?;
+        self.processes.insert(child_pid, child_process);
 
             // Add the child to the ready queue so it can be scheduled
             self.ready_queue.push(child_pid);

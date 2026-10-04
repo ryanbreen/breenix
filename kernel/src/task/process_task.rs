@@ -576,6 +576,7 @@ pub(crate) fn defer_process_resources(
     // the join refuses to remove a row with an obligation still outstanding.
     process.note_receipt_created();
     let page_table = process.page_table.take();
+    process.vmas.clear();
     #[cfg(target_arch = "x86_64")]
     if let Some(page_table) = page_table.as_ref() {
         clear_shadow_root(page_table.level_4_frame().start_address().as_u64());

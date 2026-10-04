@@ -95,6 +95,8 @@ pub struct ProcessPageTable {
     owned_root_slots: RootSlotOwnership,
     /// One allocation-derived custody record per user virtual page.
     leaves: OwnedLeafFrames,
+    pub(crate) file_bindings: Vec<alloc::sync::Arc<super::file_map::Binding>>,
+    file_reserved_pages: usize,
 }
 
 const ROOT_SLOT_WORDS: usize = 8;
@@ -390,6 +392,8 @@ impl ProcessPageTable {
             tables: OwnedTableFrames::new(),
             owned_root_slots: RootSlotOwnership::new(),
             leaves: OwnedLeafFrames::new(),
+            file_bindings: Vec::new(),
+            file_reserved_pages: 0,
         };
 
         log::debug!("ARM64: ProcessPageTable created successfully");
@@ -1124,6 +1128,8 @@ impl ProcessPageTable {
             tables,
             owned_root_slots,
             leaves: OwnedLeafFrames::new(),
+            file_bindings: Vec::new(),
+            file_reserved_pages: 0,
         };
 
         // With global kernel page tables, all kernel stacks are automatically visible
@@ -1358,12 +1364,72 @@ impl ProcessPageTable {
         Ok(page_count)
     }
 
+    /// Reserve the absent hierarchy and leaf custody for a complete file VMA.
+    /// Caller holds PROCESS_MANAGER. No temporary user leaf is published.
+    pub(crate) fn reserve_file_range(&mut self, start: u64, pages: usize) -> Result<(), &'static str> {
+        let reserved = self.file_reserved_pages.checked_add(pages)
+            .ok_or("File mapping reservation overflow")?;
+        self.leaves.records.try_reserve(reserved).map_err(|_| "Failed to reserve file leaves")?;
+        for index in 0..pages {
+            let address = start + index as u64 * 4096;
+            let custody = self.root_slot_custody(address);
+            if custody == RootSlotCustody::Inherited {
+                return Err("Cannot reserve inherited user hierarchy");
+            }
+            let mut table_frame = self.level_4_frame;
+            for shift in [39, 30, 21] {
+                unsafe {
+                    let table = &mut *((crate::memory::physical_memory_offset()
+                        + table_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
+                    let entry = &mut table[((address >> shift) & 511) as usize];
+                    if entry.is_unused() {
+                        self.tables.leases.try_reserve(1).map_err(|_| "Failed to reserve table custody")?;
+                        let frame = TableRecorder(&mut self.tables).allocate_frame()
+                            .ok_or("Failed to allocate file page table")?;
+                        let ptr = (crate::memory::physical_memory_offset() + frame.start_address().as_u64())
+                            .as_mut_ptr() as *mut PageTable;
+                        core::ptr::write_bytes(ptr as *mut u8, 0, 4096);
+                        #[cfg(target_arch = "aarch64")]
+                        entry.set_table(frame.start_address());
+                        #[cfg(target_arch = "x86_64")]
+                        entry.set_addr(frame.start_address(), PageTableFlags::PRESENT
+                            | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+                        if shift == 39 {
+                            self.owned_root_slots.insert(((address >> 39) & 511) as usize);
+                        }
+                    } else if entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                        return Err("File mapping overlaps a huge page");
+                    }
+                    table_frame = PhysFrame::containing_address(entry.addr());
+                }
+            }
+        }
+        self.file_reserved_pages = reserved;
+        Ok(())
+    }
+
+    pub(crate) fn release_file_reservation(&mut self, pages: usize) {
+        self.file_reserved_pages -= pages;
+    }
+
     /// Map a page in this process's address space
     pub fn map_page(
         &mut self,
         page: Page<Size4KiB>,
         frame: PhysFrame<Size4KiB>,
         flags: PageTableFlags,
+    ) -> Result<(), &'static str> {
+        self.map_page_inner(page, frame, flags, false)
+    }
+
+    pub(crate) fn map_file_page(
+        &mut self, page: Page<Size4KiB>, frame: PhysFrame<Size4KiB>, flags: PageTableFlags,
+    ) -> Result<(), &'static str> {
+        self.map_page_inner(page, frame, flags, true)
+    }
+
+    fn map_page_inner(
+        &mut self, page: Page<Size4KiB>, frame: PhysFrame<Size4KiB>, flags: PageTableFlags, reserved: bool,
     ) -> Result<(), &'static str> {
         log::trace!(
             "ProcessPageTable::map_page called for page {:#x}",
@@ -1444,10 +1510,14 @@ impl ProcessPageTable {
                         return Err("Leaf custody record exists without a mapped descriptor");
                     }
                     Err(index) => {
-                        self.leaves
-                            .records
-                            .try_reserve(1)
-                            .map_err(|_| "Failed to reserve leaf custody")?;
+                        if reserved {
+                            if self.leaves.records.len() == self.leaves.records.capacity() {
+                                return Err("Missing reserved file leaf custody");
+                            }
+                        } else {
+                            self.leaves.records.try_reserve(self.file_reserved_pages + 1)
+                                .map_err(|_| "Failed to reserve leaf custody")?;
+                        }
                         let mapping = match acquire_leaf_mapping(frame) {
                             Ok(LeafMappingClass::Owned) => LeafMapping::Owned,
                             Ok(LeafMappingClass::External) => LeafMapping::External,
