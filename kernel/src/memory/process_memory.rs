@@ -1167,6 +1167,13 @@ impl ProcessPageTable {
         self.retired_vmas = core::mem::take(vmas);
     }
 
+    /// A committed exec cannot return to the superseded image. Installed
+    /// leaves retain their own frame references until root reclamation, so
+    /// release its file bindings without retaining inode or writer custody.
+    pub(crate) fn release_exec_file_vmas(&mut self) {
+        self.retired_vmas.clear();
+    }
+
     /// Get the physical frame of the level 4 page table
     pub fn level_4_frame(&self) -> PhysFrame {
         self.level_4_frame

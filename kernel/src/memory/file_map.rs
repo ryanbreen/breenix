@@ -19,8 +19,9 @@
 //! and the poison set are sorted vectors for that reason: inserting into
 //! reserved capacity, draining a range and truncating never allocate.
 //!
-//! Lock order: ext2 mount guard, PROCESS_MANAGER, `MapState`, frame ledger and
-//! allocator. No disk I/O runs under PROCESS_MANAGER or `MapState`. No path
+//! Lock order: ext2 mount guard, PROCESS_MANAGER, live-inode table, `MapState`,
+//! frame ledger and allocator. The inode table may take `MapState` without PM.
+//! No disk I/O runs under PROCESS_MANAGER or `MapState`. No path
 //! takes an ext2 guard with PROCESS_MANAGER held: faults never touch the
 //! filesystem, and mmap releases PROCESS_MANAGER before taking the mount guard.
 
@@ -47,6 +48,55 @@ const PAGE_SIZE: u64 = 4096;
 const REVOKE_WINDOW: u64 = 64;
 /// Unbound cache pages one eviction pass retires.
 pub(crate) const EVICT_BUDGET: usize = 64;
+/// Pages copied by one writeback batch.
+const WRITEBACK_PAGES: usize = 64;
+
+fn writeback_buffer() -> Result<Vec<u8>, &'static str> {
+    let mut bytes = Vec::new();
+    let capacity = WRITEBACK_PAGES * PAGE_SIZE as usize;
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| "Out of memory for writeback")?;
+    bytes.resize(capacity, 0);
+    Ok(bytes)
+}
+
+/// Synchronous writeback walks the requested range once, reusing a bounded
+/// copy buffer and releasing the mount guard between batches. A live writer
+/// can keep earlier pages dirty without causing this call to loop over them.
+pub(crate) fn sync_range(
+    handle: &FileHandle,
+    mut first: u64,
+    last: u64,
+) -> Result<(), &'static str> {
+    let mut bytes = writeback_buffer()?;
+    let mut wrote = false;
+    loop {
+        let next = {
+            let mut guard = crate::fs::ext2::write_mount(handle.object.mount)?;
+            let fs = guard.as_mut().ok_or("Missing mount")?;
+            let ino = handle.verify(fs)?;
+            fs.check_shrink(ino)?;
+            let next =
+                handle
+                    .object
+                    .map
+                    .writeback(fs, ino, first, last, WRITEBACK_PAGES, &mut bytes)?;
+            if next.is_none() && !wrote {
+                fs.sync()?;
+            }
+            next
+        };
+        let Some(next) = next else {
+            return Ok(());
+        };
+        wrote = true;
+        if next >= last {
+            return Ok(());
+        }
+        first = next;
+    }
+}
 
 const SIGBUS: u32 = crate::signal::constants::SIGBUS;
 const SIGSEGV: u32 = crate::signal::constants::SIGSEGV;
@@ -154,13 +204,6 @@ impl<T> PageVec<T> {
         let low = self.lower_bound(first);
         let high = self.lower_bound(last).max(low);
         &self.entries[low..high]
-    }
-
-    /// Drop the entries with index in `[first, last)`, in place.
-    fn remove_range(&mut self, first: u64, last: u64) {
-        let low = self.lower_bound(first);
-        let high = self.lower_bound(last).max(low);
-        self.entries.drain(low..high);
     }
 
     /// Drop the entries at and after `index`, in place.
@@ -317,8 +360,8 @@ impl Drop for CachePage {
 }
 
 /// The file side of one file VMA. Exec and exit transfer the VMA to its
-/// retired page table, so dropping it removes the binding only after that
-/// root stops executing. Drop queues work and never performs filesystem I/O.
+/// retired page table. A committed exec releases its old bindings; exit
+/// retains them until root retirement. Drop queues work without filesystem I/O.
 #[derive(Debug)]
 pub struct Binding {
     id: u64,
@@ -425,7 +468,10 @@ impl MapInner {
     /// made.
     fn poison(&mut self, first: u64, last: u64) {
         let MapInner {
-            poisoned, bindings, ..
+            poisoned,
+            bindings,
+            pages,
+            ..
         } = self;
         let sorted = poisoned.len();
         bound_runs(bindings, first, last, |low, high| {
@@ -433,7 +479,10 @@ impl MapInner {
                 let present = poisoned.entries[..sorted]
                     .binary_search_by_key(&index, |(key, _)| *key)
                     .is_ok();
-                if !present && poisoned.spare() > 0 {
+                if !present
+                    && !pages.get(index).is_some_and(|page| page.dirty)
+                    && poisoned.spare() > 0
+                {
                     poisoned.entries.push((index, ()));
                 }
             }
@@ -527,9 +576,8 @@ impl MapState {
         Ok(())
     }
 
-    /// One snapshot, contiguous writes, then one device flush. Every buffer
-    /// and snapshot slot is reserved before the first disk mutation. On any
-    /// error all snapshot pages remain dirty. No PTEs are changed here.
+    /// One bounded snapshot, contiguous writes, then a device flush. Errors
+    /// leave the snapshot dirty. No PTEs are changed here.
     pub(crate) fn writeback(
         &self,
         fs: &mut Ext2Fs,
@@ -537,8 +585,12 @@ impl MapState {
         first: u64,
         last: u64,
         limit: usize,
+        bytes: &mut [u8],
     ) -> Result<Option<u64>, &'static str> {
-        let result = self.writeback_snapshot(fs, ino, first, last, limit);
+        let limit = limit
+            .min(WRITEBACK_PAGES)
+            .min(bytes.len() / PAGE_SIZE as usize);
+        let result = self.writeback_snapshot(fs, ino, first, last, limit, bytes);
         if result.is_err() {
             self.request_writeback();
         }
@@ -552,6 +604,7 @@ impl MapState {
         first: u64,
         last: u64,
         limit: usize,
+        bytes: &mut [u8],
     ) -> Result<Option<u64>, &'static str> {
         let (snapshot, writable) = {
             let inner = self.inner.lock();
@@ -577,16 +630,11 @@ impl MapState {
             }
             (snapshot, inner.writable_shared)
         };
+        if snapshot.is_empty() {
+            return Ok(None);
+        }
+        fs.check_shrink(ino)?;
         let size = fs.read_inode(ino)?.size();
-        let capacity = snapshot
-            .len()
-            .checked_mul(PAGE_SIZE as usize)
-            .ok_or("Out of memory for writeback")?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(capacity)
-            .map_err(|_| "Out of memory for writeback")?;
-        bytes.resize(capacity, 0);
         let mut cursor = 0;
         while cursor < snapshot.len() {
             let start = cursor;
@@ -662,7 +710,8 @@ impl MapState {
                 .take(*budget)
                 .count()
         };
-        let next = self.writeback(fs, ino, first, u64::MAX, *budget)?;
+        let mut bytes = writeback_buffer()?;
+        let next = self.writeback(fs, ino, first, u64::MAX, *budget, &mut bytes)?;
         *budget -= count;
         let mut inner = self.inner.lock();
         let next = next.unwrap_or(u64::MAX);
@@ -677,7 +726,6 @@ impl MapState {
         // either side of this check either changes the generation or sets the
         // flag after it; neither wake can be lost.
         if self.writeback_requests.load(Ordering::Acquire) != request {
-            inner.writeback_cursor = 0;
             self.writeback_pending.store(true, Ordering::Release);
             return Ok(true);
         }
@@ -833,17 +881,16 @@ impl MapState {
     }
 
     /// A mutation failed after it may have changed the bytes of `[offset,
-    /// offset + len)`. The cache no longer knows them: poison the bound pages
-    /// there, remove every entry that maps a cache page there, then drop
-    /// those cache pages. Private copies are the process's own bytes and
-    /// stay. Uses the poison room the mutation reserved; allocates nothing.
+    /// offset + len)`. Poison and revoke clean pages whose disk bytes are
+    /// unknown. Dirty pages hold mapping stores in custody and remain mapped
+    /// for retry. Private copies stay. Uses reserved room; allocates nothing.
     pub(crate) fn invalidate(&self, offset: u64, len: u64) {
         let first = offset / PAGE_SIZE;
         let last = pages(offset.saturating_add(len));
         let cached = {
             let mut inner = self.inner.lock();
-            // Faults check poison before the cache, so from here no fault
-            // maps these cache pages; an unbound one no fault reaches.
+            // Dirty cache pages are authoritative even if the disk mutation
+            // failed; poison only pages that lack dirty custody.
             inner.poison(first, last);
             self.resident.store(
                 !inner.pages.is_empty() || !inner.poisoned.is_empty(),
@@ -854,7 +901,10 @@ impl MapState {
         if cached {
             self.revoke(first, last, true);
             let mut inner = self.inner.lock();
-            inner.pages.remove_range(first, last);
+            inner
+                .pages
+                .entries
+                .retain(|(index, page)| *index < first || *index >= last || page.dirty);
             self.refresh(&inner);
         }
     }
@@ -995,6 +1045,9 @@ impl MapState {
                         from = page.start_address().as_u64() + PAGE_SIZE;
                         if aliases {
                             let index = rec.index(page.start_address().as_u64());
+                            if inner.pages.get(index).is_some_and(|page| page.dirty) {
+                                continue;
+                            }
                             let mapped = pt.get_page_info(page).map(|(frame, _)| frame);
                             let cached = inner.pages.get(index).map(|page| page.frame);
                             if mapped.is_none() || cached != mapped {

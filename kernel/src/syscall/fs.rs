@@ -4418,15 +4418,7 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     if let Some(handle) = handle.as_ref().filter(|handle| handle.object.map.has_dirty()) {
-        let mut guard = match ext2::write_mount(handle.object.mount) {
-            Ok(guard) => guard,
-            Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-        };
-        let result = guard.as_mut().ok_or("Missing mount").and_then(|fs| {
-            let ino = handle.verify(fs)?;
-            fs.check_shrink(ino)?;
-            handle.object.map.writeback(fs, ino, 0, u64::MAX, usize::MAX).map(|_| ())
-        });
+        let result = crate::memory::file_map::sync_range(handle, 0, u64::MAX);
         return match result {
             Ok(()) => SyscallResult::Ok(0),
             Err(_) => SyscallResult::Err(super::errno::EIO as u64),

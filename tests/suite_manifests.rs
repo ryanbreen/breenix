@@ -101,7 +101,33 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
         errors.push(format!("{at}: must be a JSON object"));
         return None;
     };
-    keys(object, &["id", "title", "area", "summary", "binary", "categories"], &at, errors);
+    let mut expected = vec!["id", "title", "area", "summary", "binary", "categories"];
+    if let Some(checks) = object.get("diskChecks") {
+        expected.push("diskChecks");
+        match checks.as_array() {
+            Some(checks) if !checks.is_empty() => {
+                let mut paths = HashSet::new();
+                for check in checks {
+                    let Some(check) = check.as_object() else {
+                        errors.push(format!("{at}: disk check must be an object"));
+                        continue;
+                    };
+                    keys(check, &["path", "length", "byte"], &at, errors);
+                    let path = text(check, "path", &at, errors);
+                    if !path.starts_with('/') || !paths.insert(path) {
+                        errors.push(format!("{at}: disk check needs a unique absolute guest path"));
+                    }
+                    if !check.get("length").and_then(Value::as_u64).is_some_and(|n| n > 0)
+                        || !check.get("byte").and_then(Value::as_u64).is_some_and(|n| n <= 255)
+                    {
+                        errors.push(format!("{at}: disk check needs a positive length and a byte"));
+                    }
+                }
+            }
+            _ => errors.push(format!("{at}: diskChecks must be a nonempty array")),
+        }
+    }
+    keys(object, &expected, &at, errors);
     let id = text(object, "id", &at, errors).to_string();
     if !id.is_empty() && !is_id(&id) {
         errors.push(format!("{at}: suite id {id:?} is not lowercase words joined by '-'"));
