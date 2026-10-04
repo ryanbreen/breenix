@@ -40,9 +40,10 @@ pub struct Ext2Fs {
     live_inodes: live_inode::LiveInodes,
     orphan_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
     finalization_cursor: u32,
+    shrink_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
 }
 
-/// Bitmap transitions orphan reclamation performs per write-guard hold.
+/// Bitmap transitions suffix/orphan reclamation performs per write-guard hold.
 const RECLAIM_BUDGET: usize = 128;
 
 /// What a finalizer pass left behind.
@@ -84,6 +85,7 @@ impl Ext2Fs {
             live_inodes: live_inode::LiveInodes::new(),
             orphan_reclaims: alloc::collections::BTreeMap::new(),
             finalization_cursor: 0,
+            shrink_reclaims: alloc::collections::BTreeMap::new(),
         })
     }
 
@@ -103,7 +105,7 @@ impl Ext2Fs {
     /// however large the orphans are.
     fn finalize_inactive(&mut self) -> Finalize {
         let mut budget = RECLAIM_BUDGET;
-        let mut outcome = Finalize::Idle;
+        let mut outcome = self.finalize_shrinks(&mut budget);
         for object in self.live_inodes.pending(self.finalization_cursor) {
             if !object.unused() { continue; }
             if budget == 0 {
@@ -124,6 +126,25 @@ impl Ext2Fs {
         outcome
     }
 
+    /// Retry failed shrinks without preventing work on other inodes.
+    fn finalize_shrinks(&mut self, budget: &mut usize) -> Finalize {
+        let inodes: Vec<u32> = self.shrink_reclaims.keys().copied().collect();
+        let mut outcome = Finalize::Idle;
+        for ino in inodes {
+            if *budget == 0 { return Finalize::More; }
+            let mut progress = self.shrink_reclaims.remove(&ino).expect("queued shrink");
+            match progress.finish(self, ino, budget) {
+                Ok(true) => {}
+                result => {
+                    self.shrink_reclaims.insert(ino, progress);
+                    if matches!(result, Ok(false)) { return Finalize::More; }
+                    outcome = Finalize::Retry;
+                }
+            }
+        }
+        outcome
+    }
+
     /// Release an unobserved orphan's blocks and inode under the write guard,
     /// spending at most `budget` bitmap transitions. Returns `Ok(false)` when
     /// the budget ran out first; that and a retryable failure keep the staged
@@ -134,6 +155,9 @@ impl Ext2Fs {
         budget: &mut usize,
     ) -> Result<bool, reclaim::ReclaimError> {
         let ino = object.key.inode;
+        if self.shrink_reclaims.contains_key(&ino) {
+            return Err(reclaim::ReclaimError::Retry);
+        }
         let prepared = match self.orphan_reclaims.remove(&ino) {
             Some(progress) => Ok(progress),
             None => reclaim::Reclaim::prepare(self, ino),
@@ -155,6 +179,13 @@ impl Ext2Fs {
             Ok(false) | Err(reclaim::ReclaimError::Retry) => {}
         }
         result
+    }
+
+    /// Failed shrink custody belongs to this inode; unrelated files remain usable.
+    pub fn check_shrink(&self, inode_num: u32) -> Result<(), &'static str> {
+        if self.shrink_reclaims.contains_key(&inode_num) {
+            Err("Unfinished ext2 shrink after I/O failure")
+        } else { Ok(()) }
     }
 
     /// Read an inode from the filesystem
@@ -340,6 +371,7 @@ impl Ext2Fs {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, &'static str> {
+        self.check_shrink(inode_num)?;
         if data.is_empty() {
             return Ok(0);
         }
@@ -359,17 +391,28 @@ impl Ext2Fs {
             return Err("Not a regular file");
         }
 
-        // Write the data
-        if let Err(_) = write_file_range(
+        // Allocation updates the group counters. Publish their aggregate and
+        // the descriptors once per write, including partial allocation failure.
+        let free_before: u32 = self.block_groups.iter()
+            .map(|group| group.bg_free_blocks_count as u32).sum();
+        let written = write_file_range(
             self.device.as_ref(),
             &mut inode,
             &self.superblock,
             &mut self.block_groups,
             offset,
             data,
-        ) {
-            return Err("Failed to write file data");
+        );
+        let free_after: u32 = self.block_groups.iter()
+            .map(|group| group.bg_free_blocks_count as u32).sum();
+        if free_before != free_after || self.superblock.s_free_blocks_count != free_after {
+            self.superblock.s_free_blocks_count = free_after;
+            self.superblock.write_to(self.device.as_ref())
+                .map_err(|_| "Failed to persist allocation count")?;
+            Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
+                .map_err(|_| "Failed to persist allocation groups")?;
         }
+        written.map_err(|_| "Failed to write file data")?;
 
         // Write the modified inode back to disk
         if let Err(_) = inode.write_to(
@@ -521,6 +564,7 @@ impl Ext2Fs {
 
     /// Resize a regular file, preserving its prefix and zero-filling extension.
     pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
+        self.check_shrink(inode_num)?;
         let mut inode = self.read_inode(inode_num)?;
         if !inode.is_file() || length > self.max_file_size() {
             return Err("Invalid file size or type");
@@ -534,39 +578,27 @@ impl Ext2Fs {
             self.write_inode(inode_num, &smaller)?;
             self.live_inodes.publish_size(inode_num, length);
         }
-        let reclaim = file::resize_file(self.device.as_ref(), &mut inode, &self.superblock, length)
+        let shrinking = length < inode.size();
+        file::resize_file(self.device.as_ref(), &mut inode, &self.superblock, length)
             .map_err(|_| "Failed to resize file")?;
-        // Persist removed pointers before returning blocks to the allocator:
-        // an I/O failure must never leave a live inode pointing at free blocks.
         self.write_inode(inode_num, &inode)?;
         self.live_inodes.publish_size(inode_num, length);
-        let mut freed = 0;
-        let mut free_result = Ok(());
-        for block in reclaim {
-            if let Err(error) = block_group::free_block(
-                self.device.as_ref(),
-                block,
-                &self.superblock,
-                &mut self.block_groups,
-            ) {
-                free_result = Err(error);
-                continue;
+        if shrinking {
+            let mut progress = reclaim::Reclaim::shrink(
+                inode, length.div_ceil(self.superblock.block_size() as u64));
+            // Success is synchronous: stat and the allocator observe the completed
+            // shrink when this syscall returns. Only I/O failure queues custody.
+            let mut budget = usize::MAX;
+            match progress.finish(self, inode_num, &mut budget) {
+                Ok(true) => {}
+                _ => {
+                    self.shrink_reclaims.insert(inode_num, progress);
+                    writeback::request();
+                    return Err("Failed to reclaim resized suffix");
+                }
             }
-            freed += 1;
         }
-        if freed > 0 {
-            self.superblock.increment_free_blocks(freed);
-            self.superblock
-                .write_to(self.device.as_ref())
-                .map_err(|_| "Failed to write superblock after resize")?;
-            Ext2BlockGroupDesc::write_table(
-                self.device.as_ref(),
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write block groups after resize")?;
-        }
-        free_result
+        Ok(())
     }
 
     /// Truncate a file to zero length, reclaiming data and indirect blocks.
@@ -2351,7 +2383,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 
     // Store globally
     let mut installed = ROOT_EXT2.write();
-    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned()) {
+    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty()) {
         return Err("Root ext2 mount is pinned");
     }
     ROOT_MOUNT_ID.store(fs.mount_id, Ordering::Release);
@@ -2389,11 +2421,22 @@ pub fn root_fs_read() -> Ext2ReadGuard {
 /// the UPGRADED bit, which causes try_read() to reject new readers. The writer
 /// then only waits for existing readers to drain, guaranteeing forward progress.
 pub fn root_fs_write() -> Ext2WriteGuard {
-    let inner = ext2_acquire_write(&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write");
-    Ext2WriteGuard {
-        inner: Some(inner),
-        waiters: &ROOT_EXT2_WAITERS,
-    }
+    fs_write(false)
+}
+
+/// Acquire exclusive access without performing another inode's reclamation.
+fn fs_write_raw(home: bool) -> Ext2WriteGuard {
+    let (lock, waiters, name) = if home {
+        (&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write")
+    } else {
+        (&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write")
+    };
+    let inner = ext2_acquire_write(lock, waiters, name);
+    Ext2WriteGuard { inner: Some(inner), waiters }
+}
+
+fn fs_write(home: bool) -> Ext2WriteGuard {
+    fs_write_raw(home)
 }
 
 /// Check if the root filesystem is mounted
@@ -2462,7 +2505,7 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 
     // Store globally
     let mut installed = HOME_EXT2.write();
-    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned()) {
+    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty()) {
         return Err("Home ext2 mount is pinned");
     }
     HOME_MOUNT_ID.store(fs.mount_id, Ordering::Release);
@@ -2489,11 +2532,7 @@ pub fn home_fs_read() -> Ext2ReadGuard {
 ///
 /// Uses upgradeable_read() + upgrade() to prevent writer starvation (same as root_fs_write).
 pub fn home_fs_write() -> Ext2WriteGuard {
-    let inner = ext2_acquire_write(&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write");
-    Ext2WriteGuard {
-        inner: Some(inner),
-        waiters: &HOME_EXT2_WAITERS,
-    }
+    fs_write(true)
 }
 
 /// Check if the home filesystem is mounted

@@ -357,7 +357,8 @@ mod tests {
             sb.is_valid(),
             "Superblock should be valid with correct magic 0xEF53"
         );
-        assert_eq!(sb.s_magic, 0xEF53, "Magic number should be 0xEF53");
+        let s_magic = sb.s_magic;
+        assert_eq!(s_magic, 0xEF53, "Magic number should be 0xEF53");
     }
 
     #[test]
@@ -480,16 +481,22 @@ mod tests {
         let bytes = create_mock_superblock_bytes();
         let sb = Ext2Superblock::from_bytes(&bytes).expect("Failed to parse superblock");
 
-        assert_eq!(sb.s_inodes_count, 1024, "Inodes count should be 1024");
-        assert_eq!(sb.s_blocks_count, 8192, "Blocks count should be 8192");
+        let s_inodes_count = sb.s_inodes_count;
+
+        assert_eq!(s_inodes_count, 1024, "Inodes count should be 1024");
+        let s_blocks_count = sb.s_blocks_count;
+        assert_eq!(s_blocks_count, 8192, "Blocks count should be 8192");
+        let s_blocks_per_group = sb.s_blocks_per_group;
         assert_eq!(
-            sb.s_blocks_per_group, 8192,
+            s_blocks_per_group, 8192,
             "Blocks per group should be 8192"
         );
+        let s_inodes_per_group = sb.s_inodes_per_group;
         assert_eq!(
-            sb.s_inodes_per_group, 1024,
+            s_inodes_per_group, 1024,
             "Inodes per group should be 1024"
         );
-        assert_eq!(sb.s_first_ino, 11, "First non-reserved inode should be 11");
+        let s_first_ino = sb.s_first_ino;
+        assert_eq!(s_first_ino, 11, "First non-reserved inode should be 11");
     }
 }

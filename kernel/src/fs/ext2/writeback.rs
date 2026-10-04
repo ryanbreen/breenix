@@ -1,11 +1,20 @@
-//! Task-context inode finalization. Unlink reclaims an unobserved orphan
-//! itself, up to one budget; this service finishes larger orphans, handles
-//! orphans whose last descriptor closes later and retries failed reclamation. A handle drop only sets an atomic hint, so
-//! the service takes no filesystem guard unless an orphan is queued.
+//! Task-context suffix and orphan finalization. Idle waits are event driven;
+//! only a spent guard budget or an I/O failure needs a timed retry.
 
 use crate::task::thread::ThreadState;
 use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static PENDING: AtomicBool = AtomicBool::new(false);
+static WORK: WaitQueueHead = WaitQueueHead::new();
+
+/// Publish before waking. Handle drops can run under the process manager, so
+/// deliver the wake through the deferred I/O path rather than locking the
+/// scheduler inline. No filesystem guard or disk I/O belongs in this path.
+pub(super) fn request() {
+    PENDING.store(true, Ordering::Release);
+    WORK.wake_up_deferred();
+}
 
 pub fn init() -> Result<(), &'static str> {
     crate::task::kthread::kthread_run(service, "ext2-writeback")
@@ -13,64 +22,58 @@ pub fn init() -> Result<(), &'static str> {
         .map_err(|_| "Failed to start ext2 finalization service")
 }
 
-fn service() {
+fn wait(waiters: &WaitQueueHead, deadline: Option<u64>, condition: impl FnOnce() -> bool) {
+    match waiters.prepare_to_wait_checked(ThreadState::BlockedOnIO, deadline, condition) {
+        PrepareOutcome::Mismatch => return,
+        PrepareOutcome::PublishFailed => panic!("Ext2 wait could not publish its scheduler thread"),
+        PrepareOutcome::Queued => {}
+    }
+    #[cfg(target_arch = "x86_64")]
+    crate::task::scheduler::yield_current();
+    crate::task::waitqueue::schedule_current_wait();
+    waiters.finish_wait();
+}
+
+/// The service releases its filesystem guard before giving a writer a turn.
+pub(super) fn pause(nanoseconds: u64) {
     let waiters = WaitQueueHead::new();
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    let deadline = (seconds as u64).saturating_mul(1_000_000_000)
+        .saturating_add(nanos as u64).saturating_add(nanoseconds);
+    wait(&waiters, Some(deadline), || true);
+}
+
+fn service() {
     loop {
-        // ext2/device wait helpers expect the same single scheduling brake as
-        // a syscall. They release it when blocking and restore it on return.
-        // This kthread arrives with count zero and must restore that count at
-        // the end of each iteration. IRQs remain enabled throughout the work.
+        // Device waits release this syscall-style brake while blocked and
+        // restore it on return. Restore the kthread's preemption state each pass.
         #[cfg(target_arch = "aarch64")]
         crate::per_cpu_aarch64::preempt_disable();
         #[cfg(target_arch = "x86_64")]
         crate::per_cpu::preempt_disable();
 
         let mut more = false;
-        if super::live_inode::FINALIZATION_PENDING.swap(false, Ordering::AcqRel) {
-            let mut rearm = false;
+        let mut retry = false;
+        if PENDING.swap(false, Ordering::AcqRel) {
             for home in [false, true] {
-                let mut guard = if home {
-                    super::home_fs_write()
-                } else {
-                    super::root_fs_write()
-                };
+                let mut guard = super::fs_write_raw(home);
                 if let Some(fs) = guard.as_mut() {
                     match fs.finalize_inactive() {
                         super::Finalize::Idle => {}
                         super::Finalize::More => more = true,
-                        super::Finalize::Retry => rearm = true,
+                        super::Finalize::Retry => retry = true,
                     }
                 }
             }
-            if more || rearm {
-                super::live_inode::FINALIZATION_PENDING.store(true, Ordering::Release);
-            }
         }
-
-        // No FS/index guard crosses this timed scheduler wait. Completion's
-        // count-zero fallback is boot polling, so it is not an idle-kthread
-        // timer. Parking here also gives persistent I/O failures a retry delay;
-        // a pass that only ran out of budget parks for one millisecond, which
-        // lets waiting filesystem users take the guard before it continues.
-        let (seconds, nanos) = crate::time::get_monotonic_time_ns();
-        let deadline = (seconds as u64)
-            .saturating_mul(1_000_000_000)
-            .saturating_add(nanos as u64)
-            .saturating_add(if more { 1_000_000 } else { 100_000_000 });
-        let prepared =
-            waiters.prepare_to_wait_checked(ThreadState::BlockedOnIO, Some(deadline), || true);
-        assert_eq!(
-            prepared,
-            PrepareOutcome::Queued,
-            "Finalizer lost its scheduler thread"
-        );
-        // x86 switches a halting waiter out only once need_resched is set.
-        // Without this request the parked service keeps the CPU until its
-        // quantum expires, on every pass, while ready threads wait.
-        #[cfg(target_arch = "x86_64")]
-        crate::task::scheduler::yield_current();
-        crate::task::waitqueue::schedule_current_wait();
-        waiters.finish_wait();
+        if more || retry {
+            PENDING.store(true, Ordering::Release);
+            pause(if more { 1_000_000 } else { 100_000_000 });
+        } else {
+            // The condition and publication are serialized with request's
+            // wake under WORK's lock, closing both sides of the sleep race.
+            wait(&WORK, None, || !PENDING.load(Ordering::Acquire));
+        }
 
         #[cfg(target_arch = "aarch64")]
         crate::per_cpu_aarch64::preempt_enable();

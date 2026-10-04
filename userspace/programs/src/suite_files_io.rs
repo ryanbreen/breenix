@@ -1201,6 +1201,16 @@ static SUITE: Suite = suite(
                     metadata_ftruncate_shrink,
                 ),
                 case(
+                    "ftruncate-large",
+                    "Large shrink completes accounting before regrowth or write",
+                    metadata_ftruncate_large,
+                ),
+                case(
+                    "ftruncate-large-open",
+                    "Large open truncate reclaims blocks before the following write",
+                    metadata_ftruncate_large_open,
+                ),
+                case(
                     "ftruncate-grow",
                     "ftruncate grows the file with zero-filled bytes",
                     metadata_ftruncate_grow,
@@ -2607,6 +2617,70 @@ fn metadata_truncate_indirect() -> CaseResult {
         "resized inode did not persist on reopen",
     );
     io::close(reopened)?;
+    result
+}
+
+// Read the root mount's in-memory and persisted allocation counters.
+fn root_free_blocks() -> Result<u64, String> {
+    let fd = fs::open("/proc/breenix/ext2", O_RDONLY).map_err(|e| e.to_string())?;
+    let mut buf = [0u8; 512];
+    let read = io::read(fd, &mut buf);
+    io::close(fd).map_err(|e| e.to_string())?;
+    let n = read.map_err(|e| e.to_string())?;
+    let text = std::str::from_utf8(&buf[..n]).map_err(|e| e.to_string())?;
+    let root = text.lines().find(|l| l.starts_with("root ")).ok_or("missing root counters")?;
+    let counts = root.split_whitespace().skip(2).map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    if counts.len() != 4 || counts.iter().any(|c| *c != counts[0]) {
+        return Err(format!("ext2 counters differ: {root}"));
+    }
+    Ok(counts[0])
+}
+
+fn metadata_ftruncate_large() -> CaseResult {
+    let fd = fs::open("/test/files-io-large-shrink", O_RDWR)?;
+    let result = (|| -> CaseResult {
+        let original = fstat(fd)?;
+        let block_size = original.st_size as usize / 129;
+        let sectors = block_size as u64 / 512;
+        check(original.st_blocks == 130 * sectors, "large fixture block count")?;
+        let free = root_free_blocks()?;
+        // Remove 128 suffix data blocks and their indirect block: 129 frees.
+        truncate_fd(fd, 3)?;
+        check(fstat(fd)?.st_blocks == sectors, "large shrink retained suffix blocks")?;
+        check(root_free_blocks()? == free + 129, "large shrink free counts lag")?;
+        truncate_fd(fd, original.st_size)?;
+        let mut expected = vec![0; original.st_size as usize];
+        expected[..3].fill(0x5a);
+        contents(fd, &expected)?;
+        fs::lseek(fd, original.st_size - 1, SEEK_SET)?;
+        write_all(fd, b"Z")?;
+        expected[original.st_size as usize - 1] = b'Z';
+        contents(fd, &expected)?;
+        check(fstat(fd)?.st_blocks == 3 * sectors, "large regrowth block count")?;
+        let free = root_free_blocks()?;
+        truncate_fd(fd, 0)?;
+        check(fstat(fd)?.st_blocks == 0, "large zero truncate retained allocated blocks")?;
+        check(root_free_blocks()? == free + 3, "zero truncate free counts lag")
+    })();
+    io::close(fd)?;
+    result
+}
+
+fn metadata_ftruncate_large_open() -> CaseResult {
+    let path = "/test/files-io-large-open";
+    let original = stat(path, false)?;
+    let block_size = original.st_size as u64 / 129;
+    check(original.st_blocks == 130 * (block_size / 512), "open truncate fixture block count")?;
+    let free = root_free_blocks()?;
+    let fd = fs::open(path, O_TRUNC | O_RDWR)?;
+    let result = (|| -> CaseResult {
+        check(fstat(fd)?.st_blocks == 0, "open truncate retained allocated blocks")?;
+        check(root_free_blocks()? == free + 130, "open truncate free counts lag")?;
+        write_all(fd, b"fresh")?;
+        contents(fd, b"fresh")
+    })();
+    io::close(fd)?;
     result
 }
 

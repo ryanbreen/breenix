@@ -8,7 +8,6 @@ use spin::Mutex;
 
 static NEXT_MOUNT: AtomicU64 = AtomicU64::new(1);
 static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(1);
-pub(super) static FINALIZATION_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FileKey {
@@ -65,7 +64,7 @@ impl LiveInode {
     /// Queue this orphan for the finalizer service.
     pub(super) fn defer(&self) {
         self.pending.store(true, Ordering::Release);
-        FINALIZATION_PENDING.store(true, Ordering::Release);
+        super::writeback::request();
     }
 
     pub(super) fn publish_size(&self, size: u64) {

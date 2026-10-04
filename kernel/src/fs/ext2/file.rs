@@ -819,56 +819,42 @@ fn write_indirect_block<B: BlockDevice + ?Sized>(
     Ok(())
 }
 
-/// Remove blocks beyond `keep` in a direct or indirect subtree. Count retained
-/// data and pointer blocks so stat's sector count remains accurate after shrink.
-fn prune_blocks<B: BlockDevice + ?Sized>(
+/// Count allocated data and pointer blocks in a retained inode tree.
+pub(super) fn count_tree_blocks<B: BlockDevice + ?Sized>(
     device: &B,
     superblock: &Ext2Superblock,
-    pointer: u32,
-    depth: u32,
-    first: u64,
-    keep: u64,
-    reclaim: &mut Vec<u32>,
-) -> Result<(u32, u32), BlockError> {
-    if pointer == 0 {
-        return Ok((0, 0));
-    }
-    if depth == 0 {
-        if first < keep {
-            return Ok((pointer, 1));
+    pointers: [u32; 15],
+) -> Result<u32, BlockError> {
+    fn count<B: BlockDevice + ?Sized>(
+        device: &B,
+        sb: &Ext2Superblock,
+        pointer: u32,
+        depth: u32,
+    ) -> Result<u32, BlockError> {
+        if pointer == 0 || pointer < sb.s_first_data_block || pointer >= sb.s_blocks_count {
+            return Ok(0);
         }
-    } else {
-        let block_size = superblock.block_size();
-        let mut pointers = read_indirect_block(device, pointer, block_size)?;
-        let stride = (block_size as u64 / 4).pow(depth - 1);
-        let mut retained = 0;
-        let mut changed = false;
-        for (index, child) in pointers.iter_mut().enumerate() {
-            let (new_child, count) = prune_blocks(
-                device,
-                superblock,
-                *child,
-                depth - 1,
-                first + index as u64 * stride,
-                keep,
-                reclaim,
-            )?;
-            changed |= *child != new_child;
-            *child = new_child;
-            retained += count;
-        }
-        if retained > 0 {
-            if changed {
-                write_indirect_block(device, pointer, block_size, &pointers)?;
+        let mut total = 1;
+        if depth != 0 {
+            for child in read_indirect_block(device, pointer, sb.block_size())? {
+                total += count(device, sb, child, depth - 1)?;
             }
-            return Ok((pointer, retained + 1));
         }
+        Ok(total)
     }
-    reclaim.push(pointer);
-    Ok((0, 0))
+    let mut total = 0;
+    for (index, pointer) in pointers.into_iter().enumerate() {
+        total += count(
+            device,
+            superblock,
+            pointer,
+            (index as u32).saturating_sub(11),
+        )?;
+    }
+    Ok(total)
 }
 
-/// One bounded step of orphan reclamation: the last allocations of an inode's
+/// One bounded step of suffix reclamation: the last allocations of an inode's
 /// block tree in tail order, the pointer blocks that still hold earlier
 /// children with those children cleared, and the inode's new pointers.
 pub(super) struct TailBatch {
@@ -884,6 +870,7 @@ pub(super) fn take_tail_blocks<B: BlockDevice + ?Sized>(
     superblock: &Ext2Superblock,
     pointers: [u32; 15],
     limit: usize,
+    keep: u64,
 ) -> Result<TailBatch, BlockError> {
     let mut batch = TailBatch {
         blocks: Vec::with_capacity(limit),
@@ -891,13 +878,17 @@ pub(super) fn take_tail_blocks<B: BlockDevice + ?Sized>(
         pointers,
     };
     let mut budget = limit;
+    let fanout = superblock.block_size() as u64 / 4;
+    let firsts = [12, 12 + fanout, 12 + fanout + fanout.pow(2)];
     for index in (0..15usize).rev() {
         if budget == 0 {
             break;
         }
         let depth = (index as u32).saturating_sub(11);
         batch.pointers[index] =
-            trim_tail(device, superblock, pointers[index], depth, &mut budget, &mut batch)?;
+            trim_tail(device, superblock, pointers[index], depth,
+                if index < 12 { index as u64 } else { firsts[index - 12] },
+                keep, &mut budget, &mut batch)?;
     }
     Ok(batch)
 }
@@ -907,14 +898,20 @@ fn trim_tail<B: BlockDevice + ?Sized>(
     superblock: &Ext2Superblock,
     pointer: u32,
     depth: u32,
+    first: u64,
+    keep: u64,
     budget: &mut usize,
     batch: &mut TailBatch,
 ) -> Result<u32, BlockError> {
     if pointer == 0 {
         return Ok(0);
     }
-    let (first, count) = (superblock.s_first_data_block, superblock.s_blocks_count);
-    if pointer < first || pointer >= count {
+    let stride = (superblock.block_size() as u64 / 4).pow(depth);
+    if first + stride <= keep {
+        return Ok(pointer);
+    }
+    let (first_block, count) = (superblock.s_first_data_block, superblock.s_blocks_count);
+    if pointer < first_block || pointer >= count {
         // A wild pointer names no block of this filesystem; drop it unfreed.
         log::warn!("ext2: dropping out-of-range block pointer {}", pointer);
         return Ok(0);
@@ -922,11 +919,13 @@ fn trim_tail<B: BlockDevice + ?Sized>(
     if depth > 0 {
         let mut children = read_indirect_block(device, pointer, superblock.block_size())?;
         let mut changed = false;
-        for child in children.iter_mut().rev() {
+        for (index, child) in children.iter_mut().enumerate().rev() {
             if *budget == 0 {
                 break;
             }
-            let trimmed = trim_tail(device, superblock, *child, depth - 1, budget, batch)?;
+            let trimmed = trim_tail(device, superblock, *child, depth - 1,
+                first + index as u64 * (stride / (superblock.block_size() as u64 / 4)),
+                keep, budget, batch)?;
             changed |= trimmed != *child;
             *child = trimmed;
         }
@@ -962,7 +961,7 @@ pub fn resize_file<B: BlockDevice + ?Sized>(
     inode: &mut Ext2Inode,
     superblock: &Ext2Superblock,
     length: u64,
-) -> Result<Vec<u32>, BlockError> {
+) -> Result<(), BlockError> {
     let old_size = inode.size();
     let block_size = superblock.block_size();
     let boundary = core::cmp::min(old_size, length);
@@ -980,54 +979,129 @@ pub fn resize_file<B: BlockDevice + ?Sized>(
             write_ext2_block(device, block, block_size, &buf[..block_size])?;
         }
     }
-    let mut reclaim = Vec::new();
-    if length < old_size {
-        let keep = length.div_ceil(block_size as u64);
-        let mut pointers = inode.i_block;
-        let mut retained = 0;
-        for (index, pointer) in pointers[..12].iter_mut().enumerate() {
-            let (new_pointer, count) = prune_blocks(
-                device,
-                superblock,
-                *pointer,
-                0,
-                index as u64,
-                keep,
-                &mut reclaim,
-            )?;
-            *pointer = new_pointer;
-            retained += count;
-        }
-        let mut first = 12;
-        let fanout = block_size as u64 / 4;
-        for depth in 1..=3 {
-            let index = 11 + depth as usize;
-            let (pointer, count) = prune_blocks(
-                device,
-                superblock,
-                pointers[index],
-                depth,
-                first,
-                keep,
-                &mut reclaim,
-            )?;
-            pointers[index] = pointer;
-            retained += count;
-            first += fanout.pow(depth);
-        }
-        inode.i_block = pointers;
-        let acl_blocks = u32::from(inode.i_file_acl != 0);
-        inode.i_blocks = (retained + acl_blocks) * (block_size / 512) as u32;
-    }
     inode.i_size = length as u32;
     inode.i_dir_acl = (length >> 32) as u32;
     inode.update_timestamps(false, true, true);
-    Ok(reclaim)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Disk {
+        bytes: spin::Mutex<Vec<u8>>,
+        io: spin::Mutex<(usize, usize)>,
+    }
+
+    impl BlockDevice for Disk {
+        fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+            self.io.lock().0 += 1;
+            let at = block as usize * 512;
+            buf.copy_from_slice(&self.bytes.lock()[at..at + buf.len()]);
+            Ok(())
+        }
+        fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
+            self.io.lock().1 += 1;
+            let at = block as usize * 512;
+            self.bytes.lock()[at..at + buf.len()].copy_from_slice(buf);
+            Ok(())
+        }
+        fn block_size(&self) -> usize { 512 }
+        fn num_blocks(&self) -> u64 { (self.bytes.lock().len() / 512) as u64 }
+        fn flush(&self) -> Result<(), BlockError> { Ok(()) }
+    }
+
+    fn disk(block_size: usize) -> (Disk, Ext2Superblock) {
+        let mut bytes = [0u8; 1024];
+        bytes[0..4].copy_from_slice(&128u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&512u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&u32::from(block_size == 1024).to_le_bytes());
+        bytes[24..28].copy_from_slice(&(block_size.trailing_zeros() - 10).to_le_bytes());
+        bytes[32..36].copy_from_slice(&512u32.to_le_bytes());
+        bytes[40..44].copy_from_slice(&128u32.to_le_bytes());
+        bytes[56..58].copy_from_slice(&0xEF53u16.to_le_bytes());
+        let sb = Ext2Superblock::from_bytes(&bytes).unwrap();
+        (Disk { bytes: spin::Mutex::new(alloc::vec![0xa5; block_size * 512]),
+                io: spin::Mutex::new((0, 0)) }, sb)
+    }
+
+    #[test]
+    fn inode_io_preserves_neighbors_and_touches_one_sector() {
+        for block_size in [1024, 4096] {
+            let (dev, mut sb) = disk(block_size);
+            sb.s_rev_level = 1;
+            sb.s_inode_size = 256;
+            let mut group: super::super::Ext2BlockGroupDesc = unsafe { core::mem::zeroed() };
+            group.bg_inode_table = 8;
+            let before = dev.bytes.lock().clone();
+            let inode = Ext2Inode::new_regular_file(0o640, 42, 7);
+            inode.write_to(&dev, 8, &sb, &[group]).unwrap();
+            let loaded = Ext2Inode::read_from(&dev, 8, &sb, &[group]).unwrap();
+            assert_eq!(loaded.permissions(), 0o640);
+            let uid = loaded.i_uid;
+            assert_eq!(uid, 42);
+            assert_eq!(*dev.io.lock(), (2, 1));
+            let at = block_size * 8 + 7 * 256;
+            let after = dev.bytes.lock();
+            assert_eq!(&before[..at], &after[..at]);
+            assert_eq!(&before[at + 128..], &after[at + 128..]);
+        }
+    }
+
+    #[test]
+    fn bounded_suffix_batches_preserve_prefix_at_every_indirection_depth() {
+        for block_size in [1024, 4096] {
+            for depth in 1u32..=3 {
+                let (dev, sb) = disk(block_size);
+                let fanout = block_size as u64 / 4;
+                let mut pointers = [0; 15];
+                pointers[0] = 100;
+                pointers[11 + depth as usize] = 8;
+                for level in 0..depth {
+                    let mut children = alloc::vec![0; block_size / 4];
+                    if level + 1 < depth { children[0] = 9 + level; }
+                    else { for (i, child) in children[..130].iter_mut().enumerate() {
+                        *child = 101 + i as u32;
+                    } }
+                    write_indirect_block(&dev, 8 + level, block_size, &children).unwrap();
+                }
+                let first = 12 + if depth >= 2 { fanout } else { 0 }
+                    + if depth == 3 { fanout.pow(2) } else { 0 };
+                let keep = first + 2;
+                let original = pointers;
+                let mut freed = Vec::new();
+                loop {
+                    let before = dev.bytes.lock().clone();
+                    let writes = dev.io.lock().1;
+                    let batch = take_tail_blocks(&dev, &sb, pointers, 64, keep).unwrap();
+                    assert_eq!(*dev.bytes.lock(), before);
+                    assert_eq!(dev.io.lock().1, writes);
+                    assert!(batch.blocks.len() <= 64);
+                    assert!(batch.edits.len() <= 3);
+                    // Planning alone performs no writes to the live tree.
+                    let inode = Ext2Inode { i_block: pointers,
+                        ..Ext2Inode::new_regular_file(0o600, 0, 0) };
+                    assert_eq!(get_block_num(&dev, &inode, &sb, first as u32).unwrap(), Some(101));
+                    write_pointer_blocks(&dev, block_size, &batch.edits).unwrap();
+                    pointers = batch.pointers;
+                    if batch.blocks.is_empty() { break; }
+                    freed.extend(batch.blocks);
+                }
+                freed.sort_unstable();
+                assert_eq!(freed, (103..231).collect::<Vec<_>>());
+                assert_eq!(pointers, original);
+                let inode = Ext2Inode { i_block: pointers,
+                    ..Ext2Inode::new_regular_file(0o600, 0, 0) };
+                assert_eq!(get_block_num(&dev, &inode, &sb, (first + 1) as u32).unwrap(), Some(102));
+                assert_eq!(get_block_num(&dev, &inode, &sb, (first + 2) as u32).unwrap(), None);
+                // Unlink still removes the retained data and its pointer blocks.
+                let rest = take_tail_blocks(&dev, &sb, pointers, 64, 0).unwrap();
+                assert_eq!(rest.blocks.len(), 3 + depth as usize);
+                assert_eq!(rest.pointers, [0; 15]);
+            }
+        }
+    }
 
     #[test]
     fn test_direct_block_ranges() {

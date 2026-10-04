@@ -170,9 +170,12 @@ impl Ext2Inode {
         let device_blocks_per_ext2_block = ext2_block_size as usize / device_block_size;
         let start_device_block = (target_ext2_block as usize) * device_blocks_per_ext2_block;
 
-        // Read all device blocks that make up this ext2 block
-        let mut block_buf = [0u8; 4096]; // Support up to 4KB block size
-        for i in 0..device_blocks_per_ext2_block {
+        // Only the device sectors containing the 128-byte inode are needed.
+        // Keep the surrounding bytes for the matching read-modify-write path.
+        let first_sector = offset_in_ext2_block / device_block_size;
+        let sector_end = (offset_in_ext2_block + 128).div_ceil(device_block_size);
+        let mut block_buf = [0u8; 4096];
+        for i in first_sector..sector_end {
             device.read_block(
                 (start_device_block + i) as u64,
                 &mut block_buf[i * device_block_size..(i + 1) * device_block_size],
@@ -269,6 +272,8 @@ impl Ext2Inode {
     ///
     /// # Example
     /// ```
+    /// # use kernel::fs::ext2::Ext2Inode;
+    /// # let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
     /// // After writing to a file
     /// inode.update_timestamps(false, true, true);
     ///
@@ -794,9 +799,12 @@ impl Ext2Inode {
         let device_blocks_per_ext2_block = ext2_block_size as usize / device_block_size;
         let start_device_block = (target_ext2_block as usize) * device_blocks_per_ext2_block;
 
-        // Read all device blocks that make up this ext2 block
-        let mut block_buf = [0u8; 4096]; // Support up to 4KB block size
-        for i in 0..device_blocks_per_ext2_block {
+        // Preserve neighboring inodes and extended inode fields, but do not
+        // read or rewrite sectors this inode does not occupy.
+        let first_sector = offset_in_ext2_block / device_block_size;
+        let sector_end = (offset_in_ext2_block + 128).div_ceil(device_block_size);
+        let mut block_buf = [0u8; 4096];
+        for i in first_sector..sector_end {
             device.read_block(
                 (start_device_block + i) as u64,
                 &mut block_buf[i * device_block_size..(i + 1) * device_block_size],
@@ -809,8 +817,8 @@ impl Ext2Inode {
             unsafe { core::slice::from_raw_parts(self as *const Ext2Inode as *const u8, 128) };
         block_buf[offset_in_ext2_block..offset_in_ext2_block + 128].copy_from_slice(inode_bytes);
 
-        // Write all device blocks back
-        for i in 0..device_blocks_per_ext2_block {
+        // Write back only the sectors containing this inode.
+        for i in first_sector..sector_end {
             device.write_block(
                 (start_device_block + i) as u64,
                 &block_buf[i * device_block_size..(i + 1) * device_block_size],
@@ -1294,14 +1302,14 @@ mod tests {
         // Verify direct blocks [0-11]
         for i in 0..12 {
             // Safety: reading from packed struct
-            let block = unsafe { core::ptr::read_unaligned(&inode.i_block[i]) };
+            let block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block[i])) };
             assert_eq!(block, 100 + i as u32, "Direct block {} mismatch", i);
         }
 
         // Verify indirect block pointers
-        let single_indirect = unsafe { core::ptr::read_unaligned(&inode.i_block[12]) };
-        let double_indirect = unsafe { core::ptr::read_unaligned(&inode.i_block[13]) };
-        let triple_indirect = unsafe { core::ptr::read_unaligned(&inode.i_block[14]) };
+        let single_indirect = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block[12])) };
+        let double_indirect = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block[13])) };
+        let triple_indirect = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block[14])) };
 
         assert_eq!(single_indirect, 200, "Single indirect block mismatch");
         assert_eq!(double_indirect, 300, "Double indirect block mismatch");
@@ -1318,8 +1326,8 @@ mod tests {
         let inode = Ext2Inode::from_bytes(&buf);
 
         // Safety: reading from packed struct
-        let uid = unsafe { core::ptr::read_unaligned(&inode.i_uid) };
-        let gid = unsafe { core::ptr::read_unaligned(&inode.i_gid) };
+        let uid = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_uid)) };
+        let gid = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_gid)) };
 
         assert_eq!(uid, 1000);
         assert_eq!(gid, 500);
@@ -1335,7 +1343,7 @@ mod tests {
         let inode = Ext2Inode::from_bytes(&buf);
 
         // Safety: reading from packed struct
-        let links = unsafe { core::ptr::read_unaligned(&inode.i_links_count) };
+        let links = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) };
         assert_eq!(links, 5);
     }
 
