@@ -548,8 +548,9 @@ mod tests {
         // This test verifies the fix in commit d190da5
 
         let superblock = create_1kb_superblock();
+        let s_first_data_block = superblock.s_first_data_block;
         assert_eq!(
-            superblock.s_first_data_block, 1,
+            s_first_data_block, 1,
             "1KB blocks should have s_first_data_block = 1"
         );
 
@@ -582,8 +583,9 @@ mod tests {
         // This is the simpler case
 
         let superblock = create_4kb_superblock();
+        let s_first_data_block = superblock.s_first_data_block;
         assert_eq!(
-            superblock.s_first_data_block, 0,
+            s_first_data_block, 0,
             "4KB blocks should have s_first_data_block = 0"
         );
 
@@ -635,7 +637,7 @@ mod tests {
         // return block 296 (not 295)
 
         let superblock = create_1kb_superblock();
-        let device = MockBlockDevice::new(64 * 1024, 1024);
+        let device = MockBlockDevice::new(512 * 1024, 1024);
 
         // Set all bitmap bytes 0-36 to 0xFF (bits 0-295 used)
         // Bitmap at ext2 block 3 starts at byte 3072

@@ -40,9 +40,10 @@ pub struct Ext2Fs {
     live_inodes: live_inode::LiveInodes,
     orphan_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
     finalization_cursor: u32,
+    shrink_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
 }
 
-/// Bitmap transitions orphan reclamation performs per write-guard hold.
+/// Bitmap transitions suffix/orphan reclamation performs per write-guard hold.
 const RECLAIM_BUDGET: usize = 128;
 
 /// What a finalizer pass left behind.
@@ -84,6 +85,7 @@ impl Ext2Fs {
             live_inodes: live_inode::LiveInodes::new(),
             orphan_reclaims: alloc::collections::BTreeMap::new(),
             finalization_cursor: 0,
+            shrink_reclaims: alloc::collections::BTreeMap::new(),
         })
     }
 
@@ -103,6 +105,10 @@ impl Ext2Fs {
     /// however large the orphans are.
     fn finalize_inactive(&mut self) -> Finalize {
         let mut budget = RECLAIM_BUDGET;
+        match self.finalize_shrinks(&mut budget) {
+            Finalize::Idle => {}
+            outcome => return outcome,
+        }
         let mut outcome = Finalize::Idle;
         for object in self.live_inodes.pending(self.finalization_cursor) {
             if !object.unused() { continue; }
@@ -122,6 +128,22 @@ impl Ext2Fs {
             return Finalize::More;
         }
         outcome
+    }
+
+    /// Complete published shrinks before any subsequent writer can expose the
+    /// old suffix through growth. Each hold frees at most one shared budget.
+    fn finalize_shrinks(&mut self, budget: &mut usize) -> Finalize {
+        while let Some((&ino, _)) = self.shrink_reclaims.first_key_value() {
+            let mut progress = self.shrink_reclaims.remove(&ino).expect("queued shrink");
+            match progress.finish(self, ino, budget) {
+                Ok(true) => {}
+                result => {
+                    self.shrink_reclaims.insert(ino, progress);
+                    return if matches!(result, Ok(false)) { Finalize::More } else { Finalize::Retry };
+                }
+            }
+        }
+        Finalize::Idle
     }
 
     /// Release an unobserved orphan's blocks and inode under the write guard,
@@ -155,6 +177,11 @@ impl Ext2Fs {
             Ok(false) | Err(reclaim::ReclaimError::Retry) => {}
         }
         result
+    }
+
+    fn check_shrinks(&self) -> Result<(), &'static str> {
+        if self.shrink_reclaims.is_empty() { Ok(()) }
+        else { Err("Unfinished ext2 shrink after I/O failure") }
     }
 
     /// Read an inode from the filesystem
@@ -340,6 +367,7 @@ impl Ext2Fs {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, &'static str> {
+        self.check_shrinks()?;
         if data.is_empty() {
             return Ok(0);
         }
@@ -391,6 +419,7 @@ impl Ext2Fs {
     /// * `inode_num` - The inode number to write
     /// * `inode` - The modified inode data
     pub fn write_inode(&mut self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
+        self.check_shrinks()?;
         inode
             .write_to(
                 self.device.as_ref(),
@@ -420,6 +449,7 @@ impl Ext2Fs {
         uid: u16,
         gid: u16,
     ) -> Result<u32, &'static str> {
+        self.check_shrinks()?;
         // Validate name
         if name.is_empty() || name.len() > 255 {
             return Err("Invalid filename length");
@@ -498,6 +528,7 @@ impl Ext2Fs {
 
     /// Synchronize this filesystem's synchronous data and metadata writes.
     pub fn sync(&self) -> Result<(), &'static str> {
+        self.check_shrinks()?;
         self.device
             .flush()
             .map_err(|_| "Failed to flush filesystem")
@@ -521,6 +552,7 @@ impl Ext2Fs {
 
     /// Resize a regular file, preserving its prefix and zero-filling extension.
     pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
+        self.check_shrinks()?;
         let mut inode = self.read_inode(inode_num)?;
         if !inode.is_file() || length > self.max_file_size() {
             return Err("Invalid file size or type");
@@ -534,39 +566,27 @@ impl Ext2Fs {
             self.write_inode(inode_num, &smaller)?;
             self.live_inodes.publish_size(inode_num, length);
         }
-        let reclaim = file::resize_file(self.device.as_ref(), &mut inode, &self.superblock, length)
+        let shrinking = length < inode.size();
+        file::resize_file(self.device.as_ref(), &mut inode, &self.superblock, length)
             .map_err(|_| "Failed to resize file")?;
-        // Persist removed pointers before returning blocks to the allocator:
-        // an I/O failure must never leave a live inode pointing at free blocks.
         self.write_inode(inode_num, &inode)?;
         self.live_inodes.publish_size(inode_num, length);
-        let mut freed = 0;
-        let mut free_result = Ok(());
-        for block in reclaim {
-            if let Err(error) = block_group::free_block(
-                self.device.as_ref(),
-                block,
-                &self.superblock,
-                &mut self.block_groups,
-            ) {
-                free_result = Err(error);
-                continue;
+        if shrinking {
+            let mut progress = reclaim::Reclaim::shrink(
+                inode, length.div_ceil(self.superblock.block_size() as u64));
+            let mut budget = RECLAIM_BUDGET;
+            match progress.finish(self, inode_num, &mut budget) {
+                Ok(true) => {}
+                result => {
+                    self.shrink_reclaims.insert(inode_num, progress);
+                    writeback::request();
+                    if !matches!(result, Ok(false)) {
+                        return Err("Failed to reclaim resized suffix");
+                    }
+                }
             }
-            freed += 1;
         }
-        if freed > 0 {
-            self.superblock.increment_free_blocks(freed);
-            self.superblock
-                .write_to(self.device.as_ref())
-                .map_err(|_| "Failed to write superblock after resize")?;
-            Ext2BlockGroupDesc::write_table(
-                self.device.as_ref(),
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write block groups after resize")?;
-        }
-        free_result
+        Ok(())
     }
 
     /// Truncate a file to zero length, reclaiming data and indirect blocks.
@@ -577,6 +597,7 @@ impl Ext2Fs {
     /// Relatime: update after modification/change or once a day. Reload under
     /// the filesystem write lock rather than overwriting a reader's stale inode.
     pub fn update_atime(&mut self, inode_num: u32) -> Result<(), &'static str> {
+        self.check_shrinks()?;
         let mut inode = self.read_inode(inode_num)?;
         let now = crate::time::current_unix_time() as u32;
         if inode.needs_atime_update() {
@@ -599,6 +620,7 @@ impl Ext2Fs {
     /// * `Ok(())` - File was successfully unlinked
     /// * `Err(msg)` - Error message
     pub fn unlink_file(&mut self, path: &str) -> Result<(), &'static str> {
+        self.check_shrinks()?;
         // Must start with "/"
         if !path.starts_with('/') {
             return Err("Path must be absolute");
@@ -703,6 +725,7 @@ impl Ext2Fs {
     /// * `Ok(())` - Rename was successful
     /// * `Err(msg)` - Error message
     pub fn rename_file(&mut self, oldpath: &str, newpath: &str) -> Result<(), &'static str> {
+        self.check_shrinks()?;
         // Both paths must be absolute
         if !oldpath.starts_with('/') || !newpath.starts_with('/') {
             return Err("Paths must be absolute");
@@ -895,6 +918,7 @@ impl Ext2Fs {
     /// * `Ok(inode_num)` - The inode number of the newly created directory
     /// * `Err(msg)` - Error message if creation failed
     pub fn create_directory(&mut self, path: &str, mode: u16) -> Result<u32, &'static str> {
+        self.check_shrinks()?;
         // Must be an absolute path
         if !path.starts_with('/') {
             return Err("Path must be absolute");
@@ -1081,6 +1105,7 @@ impl Ext2Fs {
     /// * "Directory not empty" - Directory contains entries other than "." and ".."
     /// * "Path component not found" - Part of the path doesn't exist
     pub fn remove_directory(&mut self, path: &str) -> Result<(), &'static str> {
+        self.check_shrinks()?;
         // Must start with "/"
         if !path.starts_with('/') {
             return Err("Path must be absolute");
@@ -1216,6 +1241,7 @@ impl Ext2Fs {
     /// * Destination parent directory not found
     /// * No space in destination directory
     pub fn create_hard_link(&mut self, oldpath: &str, newpath: &str) -> Result<(), &'static str> {
+        self.check_shrinks()?;
         // Both paths must be absolute
         if !oldpath.starts_with('/') || !newpath.starts_with('/') {
             return Err("Paths must be absolute");
@@ -1317,6 +1343,7 @@ impl Ext2Fs {
     /// * `Ok(())` - Symlink was created successfully
     /// * `Err(msg)` - Error message
     pub fn create_symlink(&mut self, target: &str, linkpath: &str) -> Result<(), &'static str> {
+        self.check_shrinks()?;
         // linkpath must be absolute
         if !linkpath.starts_with('/') {
             return Err("Path must be absolute");
@@ -2351,7 +2378,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 
     // Store globally
     let mut installed = ROOT_EXT2.write();
-    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned()) {
+    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty()) {
         return Err("Root ext2 mount is pinned");
     }
     ROOT_MOUNT_ID.store(fs.mount_id, Ordering::Release);
@@ -2389,10 +2416,37 @@ pub fn root_fs_read() -> Ext2ReadGuard {
 /// the UPGRADED bit, which causes try_read() to reject new readers. The writer
 /// then only waits for existing readers to drain, guaranteeing forward progress.
 pub fn root_fs_write() -> Ext2WriteGuard {
-    let inner = ext2_acquire_write(&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write");
-    Ext2WriteGuard {
-        inner: Some(inner),
-        waiters: &ROOT_EXT2_WAITERS,
+    fs_write(false)
+}
+
+/// Finalizer-only acquisition: permits advancing unfinished shrinks without
+/// recursively draining them. Ordinary writers use `fs_write` below.
+fn fs_write_raw(home: bool) -> Ext2WriteGuard {
+    let (lock, waiters, name) = if home {
+        (&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write")
+    } else {
+        (&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write")
+    };
+    let inner = ext2_acquire_write(lock, waiters, name);
+    Ext2WriteGuard { inner: Some(inner), waiters }
+}
+
+fn fs_write(home: bool) -> Ext2WriteGuard {
+    loop {
+        let mut guard = fs_write_raw(home);
+        let mut budget = RECLAIM_BUDGET;
+        let outcome = guard.as_mut().map(|fs| fs.finalize_shrinks(&mut budget));
+        // A failed step retains custody. Return the guard so mutations report
+        // EIO through check_shrinks rather than parking forever on a bad disk.
+        if matches!(outcome, None | Some(Finalize::Idle | Finalize::Retry)) {
+            return guard;
+        }
+        drop(guard);
+        // No filesystem guard crosses the pause. Non-sleepable boot callers
+        // have no pending shrinks; keep the existing spin fallback if needed.
+        if ext2_lock_can_sleep() {
+            writeback::pause(1_000_000);
+        }
     }
 }
 
@@ -2462,7 +2516,7 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 
     // Store globally
     let mut installed = HOME_EXT2.write();
-    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned()) {
+    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty()) {
         return Err("Home ext2 mount is pinned");
     }
     HOME_MOUNT_ID.store(fs.mount_id, Ordering::Release);
@@ -2489,11 +2543,7 @@ pub fn home_fs_read() -> Ext2ReadGuard {
 ///
 /// Uses upgradeable_read() + upgrade() to prevent writer starvation (same as root_fs_write).
 pub fn home_fs_write() -> Ext2WriteGuard {
-    let inner = ext2_acquire_write(&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write");
-    Ext2WriteGuard {
-        inner: Some(inner),
-        waiters: &HOME_EXT2_WAITERS,
-    }
+    fs_write(true)
 }
 
 /// Check if the home filesystem is mounted

@@ -4418,9 +4418,9 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
     };
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     let guard = if is_home {
-        ext2::home_fs_read()
+        ext2::home_fs_write()
     } else {
-        ext2::root_fs_read()
+        ext2::root_fs_write()
     };
     if guard.as_ref().is_none_or(|fs| fs.mount_id != mount_id) {
         return SyscallResult::Err(super::errno::EIO as u64);

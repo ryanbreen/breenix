@@ -41,6 +41,9 @@ pub(super) struct Reclaim {
     inode: Ext2Inode,
     batch: Option<Batch>,
     tree_done: bool,
+    keep: u64,
+    free_inode: bool,
+    inode_published: bool,
     inode_freed: bool,
     /// Set immediately before a bitmap write, cleared once that allocation is
     /// posted. A clear bit is evidence of an earlier write only when set.
@@ -71,9 +74,28 @@ impl Reclaim {
             inode,
             batch: None,
             tree_done: false,
+            keep: 0,
+            free_inode: true,
+            inode_published: false,
             inode_freed: false,
             write_attempted: false,
         })
+    }
+
+    /// The shortened inode is already on disk. Keep its prefix and its inode
+    /// allocation; write-guard acquisition finishes this suffix before allowing
+    /// another mutation to regrow or reuse any of its pointers.
+    pub fn shrink(inode: Ext2Inode, keep: u64) -> Self {
+        Self {
+            inode,
+            batch: None,
+            tree_done: false,
+            keep,
+            free_inode: false,
+            inode_published: true,
+            inode_freed: false,
+            write_attempted: false,
+        }
     }
 
     /// Advance reclamation by at most `budget` bitmap transitions. Returns
@@ -92,6 +114,7 @@ impl Reclaim {
                     &fs.superblock,
                     self.inode.i_block,
                     BATCH_BLOCKS,
+                    self.keep,
                 )
                 .map_err(|_| ReclaimError::Retry)?;
                 let mut quarantine = QUARANTINE.lock();
@@ -112,7 +135,9 @@ impl Reclaim {
                 ..
             } = self;
             let batch = batch.as_mut().expect("orphan batch staged");
-            if !batch.published {
+            let old_pointers = inode.i_block;
+            if !batch.published && (!self.inode_published
+                || !batch.tail.blocks.is_empty() || batch.tail.pointers != old_pointers) {
                 // No bitmap bit is freed until no disk pointer names it.
                 super::file::write_pointer_blocks(
                     fs.device.as_ref(),
@@ -126,9 +151,10 @@ impl Reclaim {
                 published.i_blocks = published
                     .i_blocks
                     .saturating_sub(batch.tail.blocks.len() as u32 * sectors);
-                fs.write_inode(ino, &published)
+                published.write_to(fs.device.as_ref(), ino, &fs.superblock, &fs.block_groups)
                     .map_err(|_| ReclaimError::Retry)?;
                 *inode = published;
+                self.inode_published = true;
                 batch.published = true;
             }
             while let Some(&block) = batch.tail.blocks.get(batch.next) {
@@ -163,6 +189,9 @@ impl Reclaim {
             drop(quarantine);
             self.tree_done = batch.tail.blocks.is_empty();
             self.batch = None;
+        }
+        if !self.free_inode {
+            return Ok(true);
         }
         if !self.inode_freed {
             if *budget == 0 {
