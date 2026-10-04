@@ -426,26 +426,29 @@ pub fn increment_inode_links<B: BlockDevice + ?Sized>(
     Ok(new_links)
 }
 
-/// Clear an orphan inode's bitmap bit and post it to its group. Returns
-/// `false`, writing nothing, when the bit is already clear.
+/// Clear an orphan inode's bitmap bit and post it to its group. Same
+/// contract as `release_orphan_block`, including `write_attempted`.
 pub(super) fn release_orphan_inode<B: BlockDevice + ?Sized>(
     device: &B, ino: u32, superblock: &super::Ext2Superblock, groups: &mut [super::Ext2BlockGroupDesc],
+    write_attempted: &mut bool,
 ) -> Result<bool, &'static str> {
-    let adjusted = ino.checked_sub(1).ok_or("Invalid orphan inode")?;
-    let group = groups.get_mut((adjusted / superblock.s_inodes_per_group) as usize).ok_or("Invalid inode group")?;
+    let Some(adjusted) = ino.checked_sub(1) else { return Ok(false) };
+    let Some(group) = groups.get_mut((adjusted / superblock.s_inodes_per_group) as usize) else { return Ok(false) };
     let local = adjusted % superblock.s_inodes_per_group;
     let size = superblock.block_size();
-    if local as usize / 8 >= size { return Err("Invalid inode bitmap index"); }
+    if local as usize / 8 >= size { return Ok(false); }
     let mut bitmap = [0u8; 4096];
     read_ext2_block(device, group.bg_inode_bitmap, size, &mut bitmap[..size])
         .map_err(|_| "Failed to read inode bitmap")?;
     let bit = 1 << (local % 8);
-    if bitmap[local as usize / 8] & bit == 0 {
+    if bitmap[local as usize / 8] & bit != 0 {
+        bitmap[local as usize / 8] &= !bit;
+        *write_attempted = true;
+        write_ext2_block(device, group.bg_inode_bitmap, size, &bitmap[..size])
+            .map_err(|_| "Failed to write inode bitmap")?;
+    } else if !*write_attempted {
         return Ok(false);
     }
-    bitmap[local as usize / 8] &= !bit;
-    write_ext2_block(device, group.bg_inode_bitmap, size, &bitmap[..size])
-        .map_err(|_| "Failed to write inode bitmap")?;
     group.bg_free_inodes_count += 1;
     Ok(true)
 }

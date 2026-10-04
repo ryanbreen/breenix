@@ -132,24 +132,65 @@ impl Drop for FileHandle {
     }
 }
 
+/// Unused linked entries one pin examines for retirement.
+const PRUNE_PER_PIN: usize = 2;
+
+struct Table {
+    objects: BTreeMap<u32, Arc<LiveInode>>,
+    prune_cursor: u32,
+}
+
+impl Table {
+    /// Retire unused linked entries from a rotating window, so a pin costs a
+    /// bounded number of lookups however many entries the table holds. A pin
+    /// examines more entries than it can add, so stale entries do not pile up.
+    fn prune(&mut self) {
+        use core::ops::Bound::{Excluded, Included, Unbounded};
+        let mut stale = [0u32; PRUNE_PER_PIN];
+        let mut found = 0;
+        let cursor = self.prune_cursor;
+        for (&inode, object) in self
+            .objects
+            .range((Excluded(cursor), Unbounded))
+            .chain(self.objects.range((Unbounded, Included(cursor))))
+            .take(PRUNE_PER_PIN)
+        {
+            self.prune_cursor = inode;
+            if object.unused() && !object.orphan.load(Ordering::Acquire) {
+                stale[found] = inode;
+                found += 1;
+            }
+        }
+        for inode in &stale[..found] {
+            self.objects.remove(inode);
+        }
+    }
+}
+
 pub(super) struct LiveInodes {
-    objects: Mutex<BTreeMap<u32, Arc<LiveInode>>>,
+    table: Mutex<Table>,
 }
 
 impl LiveInodes {
     pub fn new() -> Self {
         Self {
-            objects: Mutex::new(BTreeMap::new()),
+            table: Mutex::new(Table {
+                objects: BTreeMap::new(),
+                prune_cursor: 0,
+            }),
         }
     }
 
     /// Caller holds the selected filesystem guard through path lookup and pin.
     pub fn pin(&self, mount: MountPin, inode: u32, size: u64) -> Result<FileHandle, &'static str> {
-        let mut table = self.objects.lock();
+        let mut table = self.table.lock();
         // A count can only rise from zero here, under this lock, so unused
         // linked entries are safe to drop; orphans stay until reclaimed.
-        table.retain(|_, object| !object.unused() || object.orphan.load(Ordering::Acquire));
-        let object = if let Some(object) = table.get(&inode) {
+        table.prune();
+        let object = if let Some(object) = table.objects.get(&inode) {
+            // An entry kept while unused may predate a size change the caller
+            // has just read under the guard.
+            object.publish_size(size);
             object.clone()
         } else {
             let object = Arc::new(LiveInode {
@@ -165,23 +206,25 @@ impl LiveInodes {
                 pending: AtomicBool::new(false),
                 orphan: AtomicBool::new(false),
             });
-            table.insert(inode, object.clone());
+            table.objects.insert(inode, object.clone());
             object
         };
         Ok(FileHandle::acquire(object))
     }
 
     pub fn publish_size(&self, inode: u32, size: u64) {
-        if let Some(object) = self.objects.lock().get(&inode) {
+        if let Some(object) = self.table.lock().objects.get(&inode) {
             object.publish_size(size);
         }
     }
 
     pub fn pending(&self, after: u32) -> alloc::vec::Vec<Arc<LiveInode>> {
         use core::ops::Bound::{Excluded, Included, Unbounded};
-        let table = self.objects.lock();
-        table.range((Excluded(after), Unbounded))
-            .chain(table.range((Unbounded, Included(after))))
+        let table = self.table.lock();
+        table
+            .objects
+            .range((Excluded(after), Unbounded))
+            .chain(table.objects.range((Unbounded, Included(after))))
             .map(|(_, object)| object)
             .filter(|object| object.unused() && object.pending.load(Ordering::Acquire))
             .take(32)
@@ -190,17 +233,24 @@ impl LiveInodes {
     }
 
     pub fn remove(&self, object: &Arc<LiveInode>) {
-        let mut table = self.objects.lock();
+        let mut table = self.table.lock();
         if object.unused()
             && table
+                .objects
                 .get(&object.key.inode)
                 .is_some_and(|entry| Arc::ptr_eq(entry, object))
         {
-            table.remove(&object.key.inode);
+            table.objects.remove(&object.key.inode);
         }
     }
 
+    /// Whether an external handle or an unreclaimed orphan still depends on
+    /// this mount. Unused linked entries awaiting pruning do not count.
     pub fn is_pinned(&self) -> bool {
-        !self.objects.lock().is_empty()
+        self.table
+            .lock()
+            .objects
+            .values()
+            .any(|object| !object.unused() || object.orphan.load(Ordering::Acquire))
     }
 }

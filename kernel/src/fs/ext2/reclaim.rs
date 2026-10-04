@@ -1,11 +1,16 @@
-//! Retry custody for zero-link inodes. Detached allocation bits stay excluded
-//! from allocation until deletion metadata and counts have completed.
+//! Retry custody for zero-link inodes. Reclamation walks the block tree from
+//! its tail in bounded batches, so memory does not grow with file size. A
+//! batch's bits stay excluded from allocation until its deletion metadata and
+//! counts have been written.
 
+use super::file::TailBatch;
 use super::{Ext2Fs, Ext2Inode};
 use crate::block::BlockDevice;
 use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
 use spin::Mutex;
+
+/// Allocations detached and released per batch.
+const BATCH_BLOCKS: usize = 64;
 
 static QUARANTINE: Mutex<BTreeSet<(usize, bool, u32)>> = Mutex::new(BTreeSet::new());
 
@@ -19,113 +24,177 @@ pub(super) fn quarantined<B: BlockDevice + ?Sized>(device: &B, inode: bool, numb
         .contains(&(device_key(device), inode, number))
 }
 
-pub(super) struct Reclaim {
-    inode: Ext2Inode,
-    blocks: Vec<u32>,
+pub(super) enum ReclaimError {
+    /// An I/O step failed; the staged progress resumes on the next attempt.
+    Retry,
+    /// The inode cannot be reclaimed; it stays allocated on disk.
+    Abandon(&'static str),
+}
+
+struct Batch {
+    tail: TailBatch,
     published: bool,
     next: usize,
+}
+
+pub(super) struct Reclaim {
+    inode: Ext2Inode,
+    batch: Option<Batch>,
+    tree_done: bool,
     inode_freed: bool,
-    block_attempted: bool,
-    inode_attempted: bool,
+    /// Set immediately before a bitmap write, cleared once that allocation is
+    /// posted. A clear bit is evidence of an earlier write only when set.
+    write_attempted: bool,
 }
 
 impl Reclaim {
-    pub fn prepare(fs: &Ext2Fs, ino: u32) -> Result<Self, &'static str> {
-        let mut inode = fs.read_inode(ino)?;
+    pub fn prepare(fs: &Ext2Fs, ino: u32) -> Result<Self, ReclaimError> {
+        let mut inode = fs.read_inode(ino).map_err(|_| ReclaimError::Retry)?;
         if inode.i_links_count != 0 {
-            return Err("Cannot reclaim linked inode");
+            return Err(ReclaimError::Abandon("inode is linked"));
         }
-        // External ACL/xattr blocks may be shared. Their reference-count
-        // transaction is separate; retain the orphan on an unsupported layout.
-        if inode.i_file_acl != 0 {
-            return Err("Shared ext2 ACL reclamation is unsupported");
+        // Fast symlinks keep their target in i_block, and device, FIFO and
+        // socket inodes own no blocks; none of their words are pointers.
+        if !(inode.is_file() || inode.is_dir() || (inode.is_symlink() && inode.i_blocks != 0)) {
+            inode.i_block = [0; 15];
         }
-        let blocks =
-            super::file::detach_inode_blocks(fs.device.as_ref(), &mut inode, &fs.superblock)
-                .map_err(|_| "Failed to collect orphan blocks")?;
+        // An external ACL/xattr block may be shared and its reference count
+        // is not maintained here, so the block is left allocated.
+        inode.i_file_acl = 0;
+        inode.i_size = 0;
+        inode.i_dir_acl = 0;
         inode.i_dtime = crate::time::current_unix_time() as u32;
-        let key = device_key(fs.device.as_ref());
-        let mut quarantine = QUARANTINE.lock();
-        quarantine.insert((key, true, ino));
-        for block in &blocks {
-            quarantine.insert((key, false, *block));
-        }
+        QUARANTINE
+            .lock()
+            .insert((device_key(fs.device.as_ref()), true, ino));
         Ok(Self {
             inode,
-            blocks,
-            published: false,
-            next: 0,
+            batch: None,
+            tree_done: false,
             inode_freed: false,
-            block_attempted: false,
-            inode_attempted: false,
+            write_attempted: false,
         })
     }
 
-    pub fn finish(&mut self, fs: &mut Ext2Fs, ino: u32) -> Result<bool, &'static str> {
-        if !self.published {
-            // No bitmap bit is freed until the disk inode has no block pointers.
-            fs.write_inode(ino, &self.inode)?;
-            self.published = true;
-        }
-        // One bitmap transition per call; the caller loops until done. The
-        // per-step state lets a retry after a reported I/O error resume here
-        // without freeing a block twice.
-        if let Some(&block) = self.blocks.get(self.next) {
-            let retry = self.block_attempted;
-            self.block_attempted = true;
-            if !super::block_group::release_orphan_block(
-                fs.device.as_ref(),
-                block,
-                &fs.superblock,
-                &mut fs.block_groups,
-            )? {
-                if !retry {
-                    return Err("Orphan block was already free");
+    /// Advance reclamation by at most `budget` bitmap transitions. Returns
+    /// `Ok(true)` once the inode is free and every count is written.
+    pub fn finish(
+        &mut self,
+        fs: &mut Ext2Fs,
+        ino: u32,
+        budget: &mut usize,
+    ) -> Result<bool, ReclaimError> {
+        let key = device_key(fs.device.as_ref());
+        while !self.tree_done {
+            if self.batch.is_none() {
+                let tail = super::file::take_tail_blocks(
+                    fs.device.as_ref(),
+                    &fs.superblock,
+                    self.inode.i_block,
+                    BATCH_BLOCKS,
+                )
+                .map_err(|_| ReclaimError::Retry)?;
+                let mut quarantine = QUARANTINE.lock();
+                for block in &tail.blocks {
+                    quarantine.insert((key, false, *block));
                 }
-                // An earlier bitmap write reported an error after clearing the
-                // bit. Quarantine prevented reuse; its count still needs posting.
-                let group = ((block - fs.superblock.s_first_data_block)
-                    / fs.superblock.s_blocks_per_group) as usize;
-                fs.block_groups[group].bg_free_blocks_count += 1;
+                drop(quarantine);
+                self.batch = Some(Batch {
+                    tail,
+                    published: false,
+                    next: 0,
+                });
             }
-            fs.superblock.increment_free_blocks(1);
-            self.next += 1;
-            self.block_attempted = false;
-            return Ok(false);
+            let Self {
+                inode,
+                batch,
+                write_attempted,
+                ..
+            } = self;
+            let batch = batch.as_mut().expect("orphan batch staged");
+            if !batch.published {
+                // No bitmap bit is freed until no disk pointer names it.
+                super::file::write_pointer_blocks(
+                    fs.device.as_ref(),
+                    fs.superblock.block_size(),
+                    &batch.tail.edits,
+                )
+                .map_err(|_| ReclaimError::Retry)?;
+                let mut published = *inode;
+                published.i_block = batch.tail.pointers;
+                let sectors = (fs.superblock.block_size() / 512) as u32;
+                published.i_blocks = published
+                    .i_blocks
+                    .saturating_sub(batch.tail.blocks.len() as u32 * sectors);
+                fs.write_inode(ino, &published)
+                    .map_err(|_| ReclaimError::Retry)?;
+                *inode = published;
+                batch.published = true;
+            }
+            while let Some(&block) = batch.tail.blocks.get(batch.next) {
+                if *budget == 0 {
+                    return Ok(false);
+                }
+                *budget -= 1;
+                if super::block_group::release_orphan_block(
+                    fs.device.as_ref(),
+                    block,
+                    &fs.superblock,
+                    &mut fs.block_groups,
+                    write_attempted,
+                )
+                .map_err(|_| ReclaimError::Retry)?
+                {
+                    fs.superblock.increment_free_blocks(1);
+                } else {
+                    // A duplicate or out-of-range pointer: not ours to count.
+                    log::warn!("ext2: orphan inode {} block {} was not allocated", ino, block);
+                }
+                *write_attempted = false;
+                batch.next += 1;
+            }
+            if !batch.tail.blocks.is_empty() {
+                persist_counts(fs)?;
+            }
+            let mut quarantine = QUARANTINE.lock();
+            for block in &batch.tail.blocks {
+                quarantine.remove(&(key, false, *block));
+            }
+            drop(quarantine);
+            self.tree_done = batch.tail.blocks.is_empty();
+            self.batch = None;
         }
         if !self.inode_freed {
-            let retry = self.inode_attempted;
-            self.inode_attempted = true;
-            if !super::inode::release_orphan_inode(
+            if *budget == 0 {
+                return Ok(false);
+            }
+            *budget -= 1;
+            if super::inode::release_orphan_inode(
                 fs.device.as_ref(),
                 ino,
                 &fs.superblock,
                 &mut fs.block_groups,
-            )? {
-                if !retry {
-                    return Err("Orphan inode was already free");
-                }
-                let group = ((ino - 1) / fs.superblock.s_inodes_per_group) as usize;
-                fs.block_groups[group].bg_free_inodes_count += 1;
+                &mut self.write_attempted,
+            )
+            .map_err(|_| ReclaimError::Retry)?
+            {
+                fs.superblock.increment_free_inodes();
+            } else {
+                log::warn!("ext2: orphan inode {} was not allocated", ino);
             }
-            fs.superblock.increment_free_inodes();
+            self.write_attempted = false;
             self.inode_freed = true;
         }
-        fs.superblock
-            .write_to(fs.device.as_ref())
-            .map_err(|_| "Failed to persist deletion counts")?;
-        super::Ext2BlockGroupDesc::write_table(
-            fs.device.as_ref(),
-            &fs.superblock,
-            &fs.block_groups,
-        )
-        .map_err(|_| "Failed to persist deletion groups")?;
-        let key = device_key(fs.device.as_ref());
-        let mut quarantine = QUARANTINE.lock();
-        quarantine.remove(&(key, true, ino));
-        for block in &self.blocks {
-            quarantine.remove(&(key, false, *block));
-        }
+        persist_counts(fs)?;
+        QUARANTINE.lock().remove(&(key, true, ino));
         Ok(true)
     }
+}
+
+fn persist_counts(fs: &Ext2Fs) -> Result<(), ReclaimError> {
+    fs.superblock
+        .write_to(fs.device.as_ref())
+        .map_err(|_| ReclaimError::Retry)?;
+    super::Ext2BlockGroupDesc::write_table(fs.device.as_ref(), &fs.superblock, &fs.block_groups)
+        .map_err(|_| ReclaimError::Retry)
 }

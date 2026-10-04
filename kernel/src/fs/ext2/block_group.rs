@@ -265,25 +265,31 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
 }
 
 /// Clear an orphan block's bitmap bit and post it to its group. Returns
-/// `false`, writing nothing, when the bit is already clear.
+/// `false`, writing nothing, when the block is out of range or its bit is
+/// already clear and no earlier write of this release was attempted.
+/// `write_attempted` is set immediately before the bitmap write, so after a
+/// reported write error a clear bit on retry is that write having landed.
 pub(super) fn release_orphan_block<B: BlockDevice + ?Sized>(
     device: &B, block: u32, superblock: &Ext2Superblock, groups: &mut [Ext2BlockGroupDesc],
+    write_attempted: &mut bool,
 ) -> Result<bool, &'static str> {
-    let adjusted = block.checked_sub(superblock.s_first_data_block).ok_or("Invalid orphan block")?;
-    let group = groups.get_mut((adjusted / superblock.s_blocks_per_group) as usize).ok_or("Invalid orphan group")?;
+    let Some(adjusted) = block.checked_sub(superblock.s_first_data_block) else { return Ok(false) };
+    let Some(group) = groups.get_mut((adjusted / superblock.s_blocks_per_group) as usize) else { return Ok(false) };
     let local = adjusted % superblock.s_blocks_per_group;
     let size = superblock.block_size();
-    if local as usize / 8 >= size { return Err("Invalid orphan bitmap index"); }
+    if local as usize / 8 >= size { return Ok(false); }
     let mut bitmap = [0u8; 4096];
     read_ext2_block(device, group.bg_block_bitmap, size, &mut bitmap[..size])
         .map_err(|_| "Failed to read orphan bitmap")?;
     let bit = 1 << (local % 8);
-    if bitmap[local as usize / 8] & bit == 0 {
+    if bitmap[local as usize / 8] & bit != 0 {
+        bitmap[local as usize / 8] &= !bit;
+        *write_attempted = true;
+        write_ext2_block(device, group.bg_block_bitmap, size, &bitmap[..size])
+            .map_err(|_| "Failed to write orphan bitmap")?;
+    } else if !*write_attempted {
         return Ok(false);
     }
-    bitmap[local as usize / 8] &= !bit;
-    write_ext2_block(device, group.bg_block_bitmap, size, &bitmap[..size])
-        .map_err(|_| "Failed to write orphan bitmap")?;
     group.bg_free_blocks_count += 1;
     Ok(true)
 }
