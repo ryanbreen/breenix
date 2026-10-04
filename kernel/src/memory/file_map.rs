@@ -24,6 +24,7 @@ const PAGE_SIZE: u64 = 4096;
 pub struct MapState {
     inner: Mutex<MapInner>,
     resident: AtomicUsize,
+    fault_size: AtomicU64,
     pub(crate) eviction_pending: AtomicBool,
 }
 #[derive(Debug)]
@@ -107,6 +108,7 @@ impl MapState {
                 bindings: Vec::new(),
             }),
             resident: AtomicUsize::new(0),
+            fault_size: AtomicU64::new(size),
             eviction_pending: AtomicBool::new(false),
         }
     }
@@ -189,6 +191,12 @@ fn page_at(rec: BindingRec, index: u64) -> Page<Size4KiB> {
     Page::containing_address(VirtAddr::new(rec.va + (index - rec.pgoff) * PAGE_SIZE))
 }
 fn revoke(pt: &mut ProcessPageTable, page: Page<Size4KiB>) {
+    #[cfg(target_arch = "x86_64")]
+    assert_eq!(
+        crate::arch_impl::x86_64::smp::cpus_online(),
+        1,
+        "File mapping revocation requires x86 TLB shootdown before SMP"
+    );
     if let Ok(leaf) = pt.unmap_page_deferred(page) {
         leaf.flush().release();
     }
@@ -257,6 +265,7 @@ pub(crate) fn populate(
     }
     let mut inner = map.inner.lock();
     inner.mapped_size = size;
+    map.fault_size.store(size, Ordering::Release);
     for (index, page) in prepared {
         inner.pages.entry(index).or_insert(page);
     }
@@ -303,10 +312,10 @@ fn register(
     pt.file_bindings
         .try_reserve(1)
         .map_err(|_| "Out of memory for file binding")?;
-    pt.reserve_file_range(vma.start.as_u64(), pages as usize)?;
     let id = NEXT_BINDING
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .map_err(|_| "File binding identity exhausted")?;
+    pt.reserve_file_range(vma.start.as_u64(), pages as usize)?;
     let rec = BindingRec {
         id,
         pid,
@@ -423,4 +432,186 @@ pub(crate) fn reconcile_process(process: &mut Process) -> Result<(), &'static st
         }
     }
     Ok(())
+}
+
+/// Data frames are reserved and initialized before a mutator touches disk.
+/// The binding's hierarchy and leaf slots were reserved at mmap/fork time.
+pub(crate) struct Growth {
+    pages: Vec<(u64, CachePage)>,
+}
+impl MapState {
+    pub(crate) fn prepare_growth(
+        &self,
+        size: u64,
+        write: Option<(u64, &[u8])>,
+    ) -> Result<Growth, &'static str> {
+        let indices: alloc::collections::BTreeSet<u64> = {
+            let inner = self.inner.lock();
+            inner
+                .bindings
+                .iter()
+                .flat_map(|rec| {
+                    (rec.pgoff.max(inner.mapped_size.div_ceil(PAGE_SIZE))
+                        ..(rec.pgoff + rec.pages).min(size.div_ceil(PAGE_SIZE)))
+                        .filter(|index| !inner.pages.contains_key(index))
+                })
+                .collect()
+        };
+        let mut pages = Vec::new();
+        pages
+            .try_reserve(indices.len())
+            .map_err(|_| "Out of memory for file growth")?;
+        for index in indices {
+            let page = CachePage::allocate()?;
+            if let Some((offset, bytes)) = write {
+                let start = offset.max(index * PAGE_SIZE);
+                let end = (offset + bytes.len() as u64).min((index + 1) * PAGE_SIZE);
+                if start < end {
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            bytes.as_ptr().add((start - offset) as usize),
+                            page.ptr().add((start % PAGE_SIZE) as usize),
+                            (end - start) as usize,
+                        );
+                    }
+                }
+            }
+            pages.push((index, page));
+        }
+        Ok(Growth { pages })
+    }
+
+    /// FS write guard, after disk mutation, on success or failure. The live
+    /// inode's published EOF is authoritative even if suffix freeing failed.
+    pub(crate) fn transition(&self, size: u64, growth: Growth) {
+        let mut guard = crate::process::manager();
+        let mut inner = self.inner.lock();
+        let old_size = inner.mapped_size;
+        if size == old_size {
+            return;
+        }
+        if size < old_size {
+            // Cache references can be dropped here: present/hidden/retired
+            // leaves own separate references, released after their invalidation.
+            inner
+                .pages
+                .retain(|index, _| *index < size.div_ceil(PAGE_SIZE));
+        } else {
+            if old_size % PAGE_SIZE != 0 {
+                if let Some(page) = inner.pages.get(&(old_size / PAGE_SIZE)) {
+                    unsafe {
+                        core::ptr::write_bytes(
+                            page.ptr().add((old_size % PAGE_SIZE) as usize),
+                            0,
+                            (PAGE_SIZE - old_size % PAGE_SIZE) as usize,
+                        );
+                    }
+                }
+            }
+            for (index, page) in growth.pages {
+                if index < size.div_ceil(PAGE_SIZE) {
+                    inner.pages.entry(index).or_insert(page);
+                }
+            }
+        }
+        if size % PAGE_SIZE != 0 {
+            if let Some(page) = inner.pages.get(&(size / PAGE_SIZE)) {
+                unsafe {
+                    core::ptr::write_bytes(
+                        page.ptr().add((size % PAGE_SIZE) as usize),
+                        0,
+                        (PAGE_SIZE - size % PAGE_SIZE) as usize,
+                    );
+                }
+            }
+        }
+        inner.mapped_size = size;
+        self.fault_size.store(size, Ordering::Release);
+        self.resident.store(inner.pages.len(), Ordering::Release);
+        if let Some(manager) = guard.as_mut() {
+            for rec in inner.bindings.iter().copied() {
+                let Some(process) = manager.get_process_mut(rec.pid) else {
+                    continue;
+                };
+                let Some(pt) = process
+                    .page_table
+                    .as_mut()
+                    .filter(|pt| pt.level_4_frame().start_address().as_u64() == rec.root)
+                else {
+                    continue;
+                };
+                let binding = pt
+                    .file_bindings
+                    .iter()
+                    .find(|binding| binding.rec.id == rec.id)
+                    .expect("live table owns its reverse-map binding")
+                    .clone();
+                reconcile(pt, rec, &inner, &mut binding.hidden.lock())
+                    .expect("file growth has reserved frames and page-table custody");
+                // pt owns another Arc, so dropping this temporary cannot run Binding::drop.
+            }
+        }
+    }
+
+    /// Recover visibility of partial within-EOF writes when the disk writer
+    /// reports failure after modifying data. Reads use the same FS write guard.
+    pub(crate) fn refresh(
+        &self,
+        fs: &Ext2Fs,
+        ino: u32,
+        offset: u64,
+        length: usize,
+    ) -> Result<(), &'static str> {
+        if self.resident.load(Ordering::Acquire) == 0 {
+            return Ok(());
+        }
+        let indices: Vec<u64> = self
+            .inner
+            .lock()
+            .pages
+            .range(offset / PAGE_SIZE..(offset + length as u64).div_ceil(PAGE_SIZE))
+            .map(|(&index, _)| index)
+            .collect();
+        let inode = fs.read_inode(ino)?;
+        for index in indices {
+            let bytes = fs.read_file_range(&inode, index * PAGE_SIZE, PAGE_SIZE as usize)?;
+            let inner = self.inner.lock();
+            if let Some(page) = inner.pages.get(&index) {
+                unsafe {
+                    core::ptr::write_bytes(page.ptr(), 0, PAGE_SIZE as usize);
+                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), page.ptr(), bytes.len());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Synchronous fault classification, without filesystem access or allocation.
+/// Architecture termination paths consume this API in the following commits.
+#[allow(dead_code)]
+pub(crate) fn user_fault_signal(process: &Process, address: u64) -> i32 {
+    for vma in &process.vmas {
+        if address >= vma.start.as_u64()
+            && address < vma.end.as_u64()
+            && vma.prot != Protection::NONE
+        {
+            if let Some(binding) = &vma.backing {
+                let size = binding.handle.object.map.fault_size.load(Ordering::Acquire);
+                let index = binding.rec.pgoff + (address - vma.start.as_u64()) / PAGE_SIZE;
+                if index >= size.div_ceil(PAGE_SIZE) {
+                    return 7;
+                }
+            }
+        }
+    }
+    11
+}
+
+pub(crate) fn mutation_errno(error: &'static str) -> u64 {
+    if error.starts_with("Out of memory") {
+        crate::syscall::errno::ENOMEM as u64
+    } else {
+        crate::syscall::errno::EIO as u64
+    }
 }

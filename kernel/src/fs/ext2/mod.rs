@@ -375,6 +375,25 @@ impl Ext2Fs {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, &'static str> {
+        let object = self.live_inodes.get(inode_num).filter(|object| !object.map.is_empty());
+        let growth = match object.as_ref() {
+            Some(object) => Some(object.map.prepare_growth(
+                offset.checked_add(data.len() as u64).ok_or("File too large")?, Some((offset, data)))?),
+            None => None,
+        };
+        let result = self.write_file_range_disk(inode_num, offset, data);
+        if let (Some(object), Some(growth)) = (object, growth) {
+            object.map.transition(object.size.load(Ordering::Acquire), growth);
+            if let Ok(written) = result {
+                object.map.overlay_write(offset, &data[..written]);
+            } else {
+                object.map.refresh(self, inode_num, offset, data.len())?;
+            }
+        }
+        result
+    }
+
+    fn write_file_range_disk(&mut self, inode_num: u32, offset: u64, data: &[u8]) -> Result<usize, &'static str> {
         self.check_shrink(inode_num)?;
         if data.is_empty() {
             return Ok(0);
@@ -429,9 +448,6 @@ impl Ext2Fs {
         }
 
         self.live_inodes.publish_size(inode_num, inode.size());
-        if let Some(object) = self.live_inodes.get(inode_num) {
-            object.map.overlay_write(offset, data);
-        }
         Ok(data.len())
     }
 
@@ -571,6 +587,19 @@ impl Ext2Fs {
 
     /// Resize a regular file, preserving its prefix and zero-filling extension.
     pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
+        let object = self.live_inodes.get(inode_num).filter(|object| !object.map.is_empty());
+        let growth = match object.as_ref() {
+            Some(object) => Some(object.map.prepare_growth(length, None)?),
+            None => None,
+        };
+        let result = self.resize_file_disk(inode_num, length);
+        if let (Some(object), Some(growth)) = (object, growth) {
+            object.map.transition(object.size.load(Ordering::Acquire), growth);
+        }
+        result
+    }
+
+    fn resize_file_disk(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
         self.check_shrink(inode_num)?;
         let mut inode = self.read_inode(inode_num)?;
         if !inode.is_file() || length > self.max_file_size() {

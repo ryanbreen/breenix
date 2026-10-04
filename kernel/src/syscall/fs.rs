@@ -4449,7 +4449,7 @@ fn resize_inode(fs: &mut crate::fs::ext2::Ext2Fs, ino: u32, length: u64) -> Sysc
     }
     match fs.resize_file(ino, length) {
         Ok(()) => SyscallResult::Ok(0),
-        Err(_) => SyscallResult::Err(EIO as u64),
+        Err(error) => SyscallResult::Err(crate::memory::file_map::mutation_errno(error)),
     }
 }
 
