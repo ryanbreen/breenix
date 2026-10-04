@@ -217,11 +217,11 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
         return;
     }
 
-    // Try to acquire process manager lock (non-blocking)
-    let mut manager_guard = match crate::process::try_manager() {
-        Some(guard) => guard,
-        None => return, // Lock held, skip - will happen on next interrupt
-    };
+    // A syscall return must complete signal delivery before allowing EL0 to
+    // run: pause/sigsuspend have promised a caught handler, and a default fatal
+    // signal must precede an immediate exit syscall. Contention is not absence
+    // of a signal. This task-context check runs after the syscall's guards drop.
+    let mut manager_guard = crate::process::manager();
 
     // Track if signal termination happened (for parent notification after lock release)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
