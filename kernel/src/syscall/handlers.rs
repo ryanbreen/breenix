@@ -609,7 +609,9 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 };
                 let bw = match fs.write_file_range(inode_num as u32, wo, &buffer) {
                     Ok(n) => n,
-                    Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+                    Err(error) => {
+                        return SyscallResult::Err(crate::memory::file_map::mutation_errno(error))
+                    }
                 };
                 (wo, bw)
             } else {
@@ -629,7 +631,9 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 };
                 let bw = match fs.write_file_range(inode_num as u32, wo, &buffer) {
                     Ok(n) => n,
-                    Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+                    Err(error) => {
+                        return SyscallResult::Err(crate::memory::file_map::mutation_errno(error))
+                    }
                 };
                 (wo, bw)
             };
@@ -5497,7 +5501,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
         if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
         match fs.write_file_range(inode_num as u32, file_offset, &data) {
             Ok(written) => SyscallResult::Ok(written as u64),
-            Err(_) => SyscallResult::Err(super::errno::EIO as u64),
+            Err(error) => SyscallResult::Err(crate::memory::file_map::mutation_errno(error)),
         }
     };
 

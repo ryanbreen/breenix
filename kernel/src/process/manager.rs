@@ -1921,6 +1921,9 @@ impl ProcessManager {
                 // Preserve the single-CoW-decref invariant: external terminate()
                 // already walked these mappings, so raw-drop them without ever
                 // routing the page table through another reclaim/decref path.
+                // File bindings leave with the mappings, so a zombie row does
+                // not keep their files open.
+                process.vmas.clear();
                 if let Some(page_table) = process.page_table.take() {
                     page_table.abandon(AbandonReason::AlreadyTerminated);
                 }
@@ -2218,7 +2221,6 @@ impl ProcessManager {
             parent_heap_start,
             parent_heap_end,
             parent_mmap_hint,
-            parent_vmas,
             parent_code_size,
             parent_heap_size,
             parent_stack_size,
@@ -2244,7 +2246,6 @@ impl ProcessManager {
                 parent.heap_start,
                 parent.heap_end,
                 parent.mmap_hint,
-                parent.vmas.clone(),
                 parent.memory_usage.code_size,
                 parent.memory_usage.heap_size,
                 parent.memory_usage.stack_size,
@@ -2253,6 +2254,17 @@ impl ProcessManager {
 
         // Allocate a new PID for the child
         let child_pid = self.allocate_ordinary_pid();
+
+        // Each file VMA needs its own binding in the child's address space.
+        let parent_vmas = crate::memory::file_map::fork_vmas(
+            &self
+                .processes
+                .live_row(&parent_pid)
+                .ok_or("Parent process not found")?
+                .vmas,
+            child_pid,
+            &child_page_table,
+        )?;
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",
@@ -2376,7 +2388,6 @@ impl ProcessManager {
             parent_heap_start,
             parent_heap_end,
             parent_mmap_hint,
-            parent_vmas,
             parent_code_size,
             parent_heap_size,
             parent_stack_size,
@@ -2402,7 +2413,6 @@ impl ProcessManager {
                 parent.heap_start,
                 parent.heap_end,
                 parent.mmap_hint,
-                parent.vmas.clone(),
                 parent.memory_usage.code_size,
                 parent.memory_usage.heap_size,
                 parent.memory_usage.stack_size,
@@ -2411,6 +2421,17 @@ impl ProcessManager {
 
         // Allocate a new PID for the child
         let child_pid = self.allocate_ordinary_pid();
+
+        // Each file VMA needs its own binding in the child's address space.
+        let parent_vmas = crate::memory::file_map::fork_vmas(
+            &self
+                .processes
+                .live_row(&parent_pid)
+                .ok_or("Parent process not found")?
+                .vmas,
+            child_pid,
+            &child_page_table,
+        )?;
 
         // Create child process name
         let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
@@ -2510,7 +2531,6 @@ impl ProcessManager {
             parent_heap_start,
             parent_heap_end,
             parent_mmap_hint,
-            parent_vmas,
             parent_code_size,
             parent_heap_size,
             parent_stack_size,
@@ -2535,7 +2555,6 @@ impl ProcessManager {
                 parent.heap_start,
                 parent.heap_end,
                 parent.mmap_hint,
-                parent.vmas.clone(),
                 parent.memory_usage.code_size,
                 parent.memory_usage.heap_size,
                 parent.memory_usage.stack_size,
@@ -2544,6 +2563,17 @@ impl ProcessManager {
 
         // Allocate a new PID for the child
         let child_pid = self.allocate_ordinary_pid();
+
+        // Each file VMA needs its own binding in the child's address space.
+        let parent_vmas = crate::memory::file_map::fork_vmas(
+            &self
+                .processes
+                .live_row(&parent_pid)
+                .ok_or("Parent process not found")?
+                .vmas,
+            child_pid,
+            &child_page_table,
+        )?;
 
         // NOTE: No logging in this function — it runs under PM lock which disables
         // interrupts on ARM64. Acquiring the logger lock here can deadlock if another
@@ -3007,7 +3037,6 @@ impl ProcessManager {
         let parent_heap_start = parent.heap_start;
         let parent_heap_end = parent.heap_end;
         let parent_mmap_hint = parent.mmap_hint;
-        let parent_vmas = parent.vmas.clone();
         let parent_code_size = parent.memory_usage.code_size;
         let parent_heap_size = parent.memory_usage.heap_size;
         let parent_stack_size = parent.memory_usage.stack_size;
@@ -3024,6 +3053,17 @@ impl ProcessManager {
         let mut child_page_table =
             Box::new(child_page_table_result.map_err(|_| "Failed to create child page table")?);
         log::debug!("fork_process: Child page table created successfully");
+
+        // Each file VMA needs its own binding in the child's address space.
+        let parent_vmas = crate::memory::file_map::fork_vmas(
+            &self
+                .processes
+                .live_row(&parent_pid)
+                .ok_or("Parent process not found")?
+                .vmas,
+            child_pid,
+            &child_page_table,
+        )?;
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
         {

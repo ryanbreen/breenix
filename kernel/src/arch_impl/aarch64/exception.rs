@@ -799,6 +799,24 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // Check if from userspace (EL0) - SPSR[3:0] indicates source EL
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
 
+            // A private file mapping: an EL0 access, or a kernel access to a
+            // user address (the user-copy routine or a raw user pointer), is
+            // resolved from the file's page cache and retried. An EL0 access
+            // that cannot complete raises SIGSEGV/SIGBUS through the process's
+            // signal dispositions and is retried until the signal is taken.
+            if from_el0 || far < crate::memory::layout::USER_STACK_REGION_END {
+                let access = if (iss >> 6) & 1 == 1 {
+                    crate::memory::file_map::Access::Write
+                } else {
+                    crate::memory::file_map::Access::Read
+                };
+                match file_mapping_fault(far, iss, access, from_el0) {
+                    crate::memory::file_map::FaultOutcome::NotFile => {}
+                    crate::memory::file_map::FaultOutcome::Signal(_) if !from_el0 => {}
+                    _ => return,
+                }
+            }
+
             // A kernel fault on a user address at one of the user-copy
             // routine's unprivileged accesses is the syscall's bad pointer,
             // not a kernel bug: resume at the routine's fault exit, which
@@ -1102,6 +1120,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let frame_ref = unsafe { &mut *frame };
             let ifsc = (iss & 0x3F) as u16;
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            // An EL0 fetch from a private file mapping, as for data aborts.
+            if from_el0
+                && file_mapping_fault(far, iss, crate::memory::file_map::Access::Execute, true)
+                    != crate::memory::file_map::FaultOutcome::NotFile
+            {
+                return;
+            }
             if from_el0 {
                 EL0_INSTRUCTION_FAULTS.fetch_add(1, Ordering::Relaxed);
             }
@@ -2344,30 +2369,39 @@ fn exception_class_name(ec: u32) -> &'static str {
     }
 }
 
-/// Make a page just written through HHDM safe to execute from a user VA:
-/// clean its data cache lines to the point of unification, then invalidate
-/// every CPU's instruction cache. Like the ELF loader, this invalidates the
-/// whole I-cache, because per-line `ic ivau` on the HHDM alias need not hit
-/// the user VA's sets on a VIPT I-cache.
-///
-/// # Safety
-/// `page_va` must be the page-aligned HHDM address of a mapped frame.
-unsafe fn sync_icache_for_copied_page(page_va: u64) {
-    let ctr: u64;
-    core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack));
-    let line = 4u64 << ((ctr >> 16) & 0xF);
-    let mut addr = page_va;
-    while addr < page_va + 4096 {
-        core::arch::asm!("dc cvau, {}", in(reg) addr, options(nostack, preserves_flags));
-        addr += line;
+/// Resolve a fault in a private file mapping (`memory::file_map`). Only
+/// translation, access-flag and permission faults can be a missing or
+/// insufficient file-page entry. An EL0 access that cannot complete raises its
+/// signal in the faulting thread's process. A user-copy fault taken inside a
+/// PROCESS_MANAGER section on this CPU cannot wait for it.
+fn file_mapping_fault(
+    far: u64,
+    iss: u32,
+    access: crate::memory::file_map::Access,
+    from_el0: bool,
+) -> crate::memory::file_map::FaultOutcome {
+    use crate::memory::file_map::{handle_fault, FaultOutcome};
+    if !(0x04..=0x0F).contains(&(iss & 0x3F))
+        || (!from_el0 && crate::process::process_manager_held_on_current_cpu())
+    {
+        return FaultOutcome::NotFile;
     }
-    core::arch::asm!(
-        "dsb ish",
-        "ic ialluis",
-        "dsb ish",
-        "isb",
-        options(nostack, preserves_flags)
-    );
+    let ttbr0: u64;
+    // SAFETY: reading TTBR0_EL1 has no side effects.
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+    let root = ttbr0 & !0xFFFF_0000_0000_0FFF;
+    let thread = if from_el0 {
+        crate::syscall::memory_common::get_current_thread_id()
+    } else {
+        None
+    };
+    let mut guard = crate::process::manager();
+    match guard.as_mut() {
+        Some(manager) => handle_fault(manager, root, far, access, thread),
+        None => FaultOutcome::NotFile,
+    }
 }
 
 /// Handle CoW (Copy-on-Write) page fault for ARM64
@@ -2495,7 +2529,7 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     unsafe {
         core::ptr::copy_nonoverlapping(src, dst, 4096);
         if !new_flags.contains(PageTableFlags::NO_EXECUTE) {
-            sync_icache_for_copied_page(dst as u64);
+            super::cache::sync_user_page(dst as u64);
         }
     }
 

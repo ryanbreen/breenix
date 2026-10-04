@@ -1363,6 +1363,56 @@ static SUITE: Suite = suite(
                     mmap_private_readback,
                 ),
                 case(
+                    "private-eof",
+                    "Private mappings revoke pages past EOF with SIGBUS and zero regrowth",
+                    mmap_private_eof,
+                ),
+                case(
+                    "private-write-growth",
+                    "Writes that grow a file appear in its private mapping",
+                    mmap_private_write_growth,
+                ),
+                case(
+                    "private-two-mappings",
+                    "Two private mappings of one file follow its writes and truncation",
+                    mmap_private_two_mappings,
+                ),
+                case(
+                    "private-orphan",
+                    "A private mapping keeps an unlinked, closed file's bytes",
+                    mmap_private_orphan,
+                ),
+                case(
+                    "private-exec",
+                    "exec with a live private mapping leaves the file and the parent's mapping intact",
+                    mmap_private_exec,
+                ),
+                case(
+                    "private-exec-code",
+                    "An executable private mapping runs the file's current code",
+                    mmap_private_exec_code,
+                ),
+                case(
+                    "private-fork-hidden",
+                    "fork keeps a PROT_NONE mapping's private copy for parent and child",
+                    mmap_private_fork_hidden,
+                ),
+                case(
+                    "private-fault-signals",
+                    "Private mapping faults check permissions before EOF and reach signal handlers",
+                    mmap_private_fault_signals,
+                ),
+                case(
+                    "private-split",
+                    "munmap and mprotect of part of a private mapping split it",
+                    mmap_private_split,
+                ),
+                case(
+                    "private-syscall-store",
+                    "System calls store into private mapping pages nothing has touched",
+                    mmap_private_syscall_store,
+                ),
+                case(
                     "close-fd",
                     "A mapping stays valid after its file descriptor closes",
                     mmap_close_fd,
@@ -1376,6 +1426,11 @@ static SUITE: Suite = suite(
                     "bad-fd",
                     "File-backed mmap rejects an invalid descriptor with EBADF",
                     mmap_bad_fd,
+                ),
+                case(
+                    "argument-order",
+                    "mmap reports EBADF, then EINVAL, then the descriptor's kind and mode",
+                    mmap_argument_order,
                 ),
             ],
         ),
@@ -3122,6 +3177,500 @@ fn mmap_private_readback() -> CaseResult {
     result
 }
 
+fn in_child(body: impl FnOnce() -> i32) -> Result<i32, String> {
+    match process::fork().map_err(|e| format!("fork: {e}"))? {
+        process::ForkResult::Child => process::exit(body()),
+        process::ForkResult::Parent(pid) => wait_child(pid.raw() as i32),
+    }
+}
+
+fn signalled(status: i32, sig: i32, why: &str) -> CaseResult {
+    check(
+        process::wifsignaled(status) && process::wtermsig(status) == sig,
+        why,
+    )
+}
+
+/// A load the compiler must perform; reaching the next statement after a
+/// load that should fault is the failure.
+fn touch(p: *mut u8) {
+    unsafe { p.read_volatile() };
+}
+
+fn mapped_bytes(p: *mut u8, len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|i| unsafe { p.add(i).read_volatile() })
+        .collect()
+}
+
+fn private_map(f: &Fixture, len: usize, prot: i32) -> Result<*mut u8, Error> {
+    memory::mmap(
+        std::ptr::null_mut(),
+        len,
+        prot,
+        memory::MAP_PRIVATE,
+        f.fd().raw() as i32,
+        0,
+    )
+}
+
+fn mmap_private_eof() -> CaseResult {
+    let mut bytes = vec![b'a'; 8192];
+    bytes[4096..].fill(b'b');
+    let f = Fixture::new(&bytes)?;
+    let p = private_map(&f, 8192, memory::PROT_READ)?;
+    let result = (|| -> CaseResult {
+        for detached in [false, true] {
+            if detached {
+                memory::mprotect(p, 8192, memory::PROT_READ | memory::PROT_WRITE)?;
+                unsafe {
+                    p.add(200).write_volatile(b'Y');
+                    p.add(4096).write_volatile(b'X');
+                }
+                memory::mprotect(p, 8192, memory::PROT_NONE)?;
+                memory::mprotect(p, 8192, memory::PROT_READ | memory::PROT_WRITE)?;
+                check(
+                    unsafe {
+                        p.add(200).read_volatile() == b'Y' && p.add(4096).read_volatile() == b'X'
+                    },
+                    "PROT_NONE discarded a detached private copy",
+                )?;
+            }
+            let before = mapped_bytes(p, 4096);
+            truncate_fd(f.fd(), 100)?;
+            let after = mapped_bytes(p, 4096);
+            if detached {
+                // As on Linux, a private copy of the boundary page keeps its bytes.
+                check(
+                    after == before,
+                    "shrink changed a private copy of the boundary page",
+                )?;
+            } else {
+                check(
+                    after[..100].iter().all(|&b| b == b'a') && after[100..].iter().all(|&b| b == 0),
+                    "shrink did not keep the prefix and zero the whole boundary-page tail",
+                )?;
+            }
+            signalled(
+                in_child(|| {
+                    touch(unsafe { p.add(4096) });
+                    0
+                })?,
+                signal::SIGBUS,
+                "access past private mapping EOF did not terminate with SIGBUS",
+            )?;
+            truncate_fd(f.fd(), 8192)?;
+            check(
+                mapped_bytes(unsafe { p.add(4096) }, 4096)
+                    .iter()
+                    .all(|&b| b == 0),
+                "regrowth exposed a revoked page's discarded bytes",
+            )?;
+            let mut expected = vec![0; 8192];
+            expected[..100].fill(b'a');
+            contents(f.fd(), &expected)?;
+        }
+        Ok(())
+    })();
+    memory::munmap(p, 8192)?;
+    result
+}
+
+fn mmap_private_write_growth() -> CaseResult {
+    let f = Fixture::new(&[b'a'; 100])?;
+    let p = private_map(&f, 12288, memory::PROT_READ)?;
+    let result = (|| -> CaseResult {
+        signalled(
+            in_child(|| {
+                touch(unsafe { p.add(4096) });
+                0
+            })?,
+            signal::SIGBUS,
+            "access past EOF before growth did not raise SIGBUS",
+        )?;
+        fs::lseek(f.fd(), 0, SEEK_END)?;
+        write_all(f.fd(), &[b'w'; 6000])?;
+        positioned(PWRITE, f.fd(), &mut *b"zzzz".to_vec(), 9000)?;
+        let append = f.open(O_WRONLY | O_APPEND)?;
+        let appended = write_all(append, b"q");
+        io::close(append)?;
+        appended?;
+        let mut expected = vec![0u8; 9005];
+        expected[..100].fill(b'a');
+        expected[100..6100].fill(b'w');
+        expected[9000..9004].copy_from_slice(b"zzzz");
+        expected[9004] = b'q';
+        contents(f.fd(), &expected)?;
+        let mapped = mapped_bytes(p, 12288);
+        check(
+            mapped[..9005] == expected[..] && mapped[9005..].iter().all(|&b| b == 0),
+            "a private mapping did not show the bytes that write growth added",
+        )
+    })();
+    memory::munmap(p, 12288)?;
+    result
+}
+
+fn mmap_private_two_mappings() -> CaseResult {
+    let mut bytes = vec![b'a'; 8192];
+    bytes[4096..].fill(b'b');
+    let f = Fixture::new(&bytes)?;
+    let p = private_map(&f, 8192, memory::PROT_READ | memory::PROT_WRITE)?;
+    let q = match private_map(&f, 8192, memory::PROT_READ) {
+        Ok(q) => q,
+        Err(e) => {
+            memory::munmap(p, 8192)?;
+            return Err(e.into());
+        }
+    };
+    let result = (|| -> CaseResult {
+        unsafe { p.write_volatile(b'X') };
+        check(
+            unsafe { q.read_volatile() } == b'a',
+            "a store through one private mapping reached another",
+        )?;
+        positioned(PWRITE, f.fd(), &mut *b"MN".to_vec(), 4096)?;
+        positioned(PWRITE, f.fd(), &mut *b"Q".to_vec(), 1)?;
+        check(
+            unsafe {
+                p.add(4096).read_volatile() == b'M'
+                    && q.add(4097).read_volatile() == b'N'
+                    && q.add(1).read_volatile() == b'Q'
+            },
+            "private mappings did not follow writes to pages they had not copied",
+        )?;
+        check(
+            unsafe { p.read_volatile() == b'X' && p.add(1).read_volatile() == b'a' },
+            "a write to the file changed a private copy",
+        )?;
+        truncate_fd(f.fd(), 4096)?;
+        for m in [p, q] {
+            signalled(
+                in_child(|| {
+                    touch(unsafe { m.add(4096) });
+                    0
+                })?,
+                signal::SIGBUS,
+                "a shrink did not revoke a page past EOF in every mapping",
+            )?;
+        }
+        truncate_fd(f.fd(), 0)?;
+        signalled(
+            in_child(|| {
+                touch(p);
+                0
+            })?,
+            signal::SIGBUS,
+            "truncation to zero left a private copy readable",
+        )
+    })();
+    memory::munmap(p, 8192)?;
+    memory::munmap(q, 8192)?;
+    result
+}
+
+fn mmap_private_orphan() -> CaseResult {
+    let mut orphan = Fixture::new(b"abcdef")?;
+    let p = private_map(&orphan, 4096, memory::PROT_READ)?;
+    let result = (|| -> CaseResult {
+        fs::unlink(&orphan.path)?;
+        io::close(orphan.file.take().expect("orphan descriptor"))?;
+        let replacement = orphan.open(O_CREAT | O_EXCL | O_RDWR)?;
+        let written = write_all(replacement, b"UVWXYZ");
+        io::close(replacement)?;
+        written?;
+        let mapped = mapped_bytes(p, 4096);
+        check(
+            &mapped[..6] == b"abcdef" && mapped[6..].iter().all(|&b| b == 0),
+            "an unlinked, closed file's private mapping changed",
+        )
+    })();
+    memory::munmap(p, 4096)?;
+    result
+}
+
+fn mmap_private_exec() -> CaseResult {
+    let f = Fixture::new(b"abcdef")?;
+    let p = private_map(&f, 4096, memory::PROT_READ | memory::PROT_WRITE)?;
+    let result = (|| -> CaseResult {
+        unsafe { p.write_volatile(b'X') };
+        let fd = f.open(O_RDONLY)?;
+        // The child inherits the mapping, makes its own copy of the page and
+        // execs with it live; the helper then reads the unchanged file.
+        let status = match process::fork()? {
+            process::ForkResult::Child => {
+                unsafe { p.add(1).write_volatile(b'Y') };
+                let descriptor = cpath(&fd.raw().to_string());
+                let args = [
+                    b"files-io-exec_test\0".as_ptr(),
+                    descriptor.as_ptr(),
+                    b"open\0".as_ptr(),
+                    std::ptr::null(),
+                ];
+                let _ = process::execv(b"/usr/local/test/bin/files-io-exec_test\0", args.as_ptr());
+                process::exit(99);
+            }
+            process::ForkResult::Parent(pid) => wait_child(pid.raw() as i32),
+        };
+        io::close(fd)?;
+        child_ok(
+            status?,
+            "exec with a live private mapping failed or saw a changed file (exit 99 means exec failed)",
+        )?;
+        check(
+            unsafe { p.read_volatile() == b'X' && p.add(1).read_volatile() == b'b' },
+            "the child's copy or exec changed the parent's mapping",
+        )?;
+        contents(f.fd(), b"abcdef")?;
+        truncate_fd(f.fd(), 0)?;
+        signalled(
+            in_child(|| {
+                touch(p);
+                0
+            })?,
+            signal::SIGBUS,
+            "truncation after the child's exec did not reach the parent's mapping",
+        )
+    })();
+    memory::munmap(p, 4096)?;
+    result
+}
+
+/// A function returning `value`, as machine code.
+#[cfg(target_arch = "x86_64")]
+fn return_code(value: u8) -> Vec<u8> {
+    vec![0xB8, value, 0, 0, 0, 0xC3]
+}
+
+/// A function returning `value`, as machine code.
+#[cfg(target_arch = "aarch64")]
+fn return_code(value: u8) -> Vec<u8> {
+    let mut code = (0x5280_0000u32 | ((value as u32) << 5))
+        .to_le_bytes()
+        .to_vec();
+    code.extend_from_slice(&0xD65F_03C0u32.to_le_bytes());
+    code
+}
+
+fn mmap_private_exec_code() -> CaseResult {
+    let f = Fixture::new(&return_code(1))?;
+    let p = private_map(&f, 4096, memory::PROT_READ | memory::PROT_EXEC)?;
+    let run = || unsafe { core::mem::transmute::<*mut u8, extern "C" fn() -> i32>(p)() };
+    let result = (|| -> CaseResult {
+        check(
+            run() == 1,
+            "an executable private mapping did not run the file's code",
+        )?;
+        positioned(PWRITE, f.fd(), &mut return_code(2), 0)?;
+        check(
+            run() == 2,
+            "an executable private mapping ran stale code after a write",
+        )?;
+        truncate_fd(f.fd(), 0)?;
+        positioned(PWRITE, f.fd(), &mut return_code(3), 0)?;
+        check(
+            run() == 3,
+            "an executable private mapping ran stale code after truncation and rewrite",
+        )
+    })();
+    memory::munmap(p, 4096)?;
+    result
+}
+
+fn mmap_private_fork_hidden() -> CaseResult {
+    let f = Fixture::new(&[b'a'; 4096])?;
+    let p = private_map(&f, 4096, memory::PROT_READ | memory::PROT_WRITE)?;
+    let result = (|| -> CaseResult {
+        unsafe { p.write_volatile(b'X') };
+        memory::mprotect(p, 4096, memory::PROT_NONE)?;
+        let status = in_child(|| {
+            if memory::mprotect(p, 4096, memory::PROT_READ | memory::PROT_WRITE).is_err() {
+                return 2;
+            }
+            let kept = unsafe { p.read_volatile() } == b'X';
+            unsafe { p.write_volatile(b'C') };
+            if kept {
+                0
+            } else {
+                1
+            }
+        })?;
+        child_ok(
+            status,
+            "a forked child lost its parent's hidden private copy",
+        )?;
+        memory::mprotect(p, 4096, memory::PROT_READ)?;
+        check(
+            unsafe { p.read_volatile() } == b'X',
+            "the parent lost its hidden private copy, or saw the child's store",
+        )?;
+        contents(f.fd(), &[b'a'; 4096])
+    })();
+    memory::munmap(p, 4096)?;
+    result
+}
+
+extern "C" fn exit_on_sigbus(_: i32) {
+    process::exit(42);
+}
+
+fn mmap_private_fault_signals() -> CaseResult {
+    let f = Fixture::new(&[b'a'; 100])?;
+    let p = private_map(&f, 8192, memory::PROT_READ)?;
+    let past = unsafe { p.add(4096) };
+    let result = (|| -> CaseResult {
+        signalled(
+            in_child(|| {
+                unsafe { past.write_volatile(1) };
+                0
+            })?,
+            signal::SIGSEGV,
+            "a store to a read-only mapping past EOF did not raise SIGSEGV",
+        )?;
+        signalled(
+            in_child(|| {
+                touch(past);
+                0
+            })?,
+            signal::SIGBUS,
+            "a load past EOF did not raise SIGBUS",
+        )?;
+        let status = in_child(|| {
+            let action = signal::Sigaction::new(exit_on_sigbus);
+            if signal::sigaction(signal::SIGBUS, Some(&action), None).is_err() {
+                return 2;
+            }
+            touch(past);
+            1
+        })?;
+        check(
+            process::wifexited(status) && process::wexitstatus(status) == 42,
+            "an installed SIGBUS handler did not run for a fault past EOF",
+        )?;
+        let status = in_child(|| {
+            let mask = 1u64 << (signal::SIGBUS - 1);
+            if signal::sigprocmask(signal::SIG_BLOCK, Some(&mask), None).is_err() {
+                return 2;
+            }
+            touch(past);
+            1
+        })?;
+        signalled(
+            status,
+            signal::SIGBUS,
+            "a blocked SIGBUS let a fault past EOF continue",
+        )?;
+        let status = in_child(|| {
+            if signal::sigaction(signal::SIGBUS, Some(&signal::Sigaction::ignore()), None).is_err()
+            {
+                return 2;
+            }
+            touch(past);
+            1
+        })?;
+        signalled(
+            status,
+            signal::SIGBUS,
+            "an ignored SIGBUS let a fault past EOF continue",
+        )
+    })();
+    memory::munmap(p, 8192)?;
+    result
+}
+
+fn mmap_private_split() -> CaseResult {
+    let bytes: Vec<u8> = (0..12288).map(|i| b'a' + (i / 4096) as u8).collect();
+    let f = Fixture::new(&bytes)?;
+    let p = private_map(&f, 12288, memory::PROT_READ | memory::PROT_WRITE)?;
+    let page = |i: usize| unsafe { p.add(i * 4096) };
+    let result = (|| -> CaseResult {
+        unsafe { page(1).write_volatile(b'X') };
+        memory::mprotect(page(1), 4096, memory::PROT_READ)?;
+        check(
+            unsafe { page(1).read_volatile() == b'X' && page(1).add(1).read_volatile() == b'b' },
+            "mprotect of the middle page lost its private copy",
+        )?;
+        signalled(
+            in_child(|| {
+                unsafe { page(1).write_volatile(b'Z') };
+                0
+            })?,
+            signal::SIGSEGV,
+            "the middle page stayed writable after mprotect",
+        )?;
+        unsafe {
+            page(0).write_volatile(b'Y');
+            page(2).write_volatile(b'W');
+        }
+        memory::munmap(page(2), 4096)?;
+        signalled(
+            in_child(|| {
+                touch(page(2));
+                0
+            })?,
+            signal::SIGSEGV,
+            "an unmapped tail page stayed readable",
+        )?;
+        memory::munmap(page(0), 4096)?;
+        check(
+            unsafe { page(1).read_volatile() } == b'X',
+            "unmapping a neighbour changed the middle page",
+        )?;
+        truncate_fd(f.fd(), 0)?;
+        signalled(
+            in_child(|| {
+                touch(page(1));
+                0
+            })?,
+            signal::SIGBUS,
+            "truncation did not reach a split-off mapping",
+        )?;
+        contents(f.fd(), &[])
+    })();
+    for i in 0..3 {
+        // Pages the case already unmapped report EINVAL here.
+        let _ = memory::munmap(page(i), 4096);
+    }
+    result
+}
+
+fn mmap_private_syscall_store() -> CaseResult {
+    let f = Fixture::new(&[b'a'; 8192])?;
+    let source = Fixture::new(b"XYZ")?;
+    let p = private_map(&f, 8192, memory::PROT_READ | memory::PROT_WRITE)?;
+    let result = (|| -> CaseResult {
+        // Neither page has been touched, so each store below is the first
+        // access to it.
+        check(
+            positioned(
+                PREAD,
+                source.fd(),
+                unsafe { std::slice::from_raw_parts_mut(p, 3) },
+                0,
+            )? == 3,
+            "pread into an untouched private page returned a short count",
+        )?;
+        fs::lseek(source.fd(), 0, SEEK_SET)?;
+        check(
+            io::read(source.fd(), unsafe {
+                std::slice::from_raw_parts_mut(p.add(4096), 3)
+            })? == 3,
+            "read into an untouched private page returned a short count",
+        )?;
+        let mapped = mapped_bytes(p, 8192);
+        check(
+            &mapped[..3] == b"XYZ"
+                && &mapped[4096..4099] == b"XYZ"
+                && mapped[3..4096].iter().all(|&b| b == b'a')
+                && mapped[4099..].iter().all(|&b| b == b'a'),
+            "system call stores into a private mapping landed wrongly",
+        )?;
+        contents(f.fd(), &[b'a'; 8192])
+    })();
+    memory::munmap(p, 8192)?;
+    result
+}
+
 fn mmap_close_fd() -> CaseResult {
     let f = Fixture::new(b"abcdef")?;
     let d = f.open(O_RDWR)?;
@@ -3170,6 +3719,52 @@ fn mmap_unaligned_offset() -> CaseResult {
 
 fn mmap_bad_fd() -> CaseResult {
     expect_errno(map(BAD, memory::MAP_PRIVATE, 0), 9, "mmap invalid fd")
+}
+
+fn mmap_argument_order() -> CaseResult {
+    let f = Fixture::new(b"abcdef")?;
+    let file = f.fd().raw() as i32;
+    let bad = BAD.raw() as i32;
+    let call = |len: usize, flags: i32, fd: i32, off: i64| {
+        memory::mmap(std::ptr::null_mut(), len, memory::PROT_READ, flags, fd, off)
+    };
+    expect_errno(
+        call(0, memory::MAP_PRIVATE, bad, 0),
+        9,
+        "zero-length mmap of a closed descriptor",
+    )?;
+    expect_errno(
+        call(4096, memory::MAP_PRIVATE, bad, 1),
+        9,
+        "unaligned mmap of a closed descriptor",
+    )?;
+    expect_errno(
+        call(0, memory::MAP_PRIVATE, file, 0),
+        22,
+        "zero-length file mmap",
+    )?;
+    expect_errno(
+        call(4096, 0, file, 0),
+        22,
+        "file mmap without a mapping type",
+    )?;
+    let (r, w) = io::pipe()?;
+    let piped = expect_errno(
+        call(4096, memory::MAP_PRIVATE, r.raw() as i32, 0),
+        19,
+        "mmap of a pipe",
+    );
+    io::close(r)?;
+    io::close(w)?;
+    piped?;
+    let writeonly = f.open(O_WRONLY)?;
+    let result = expect_errno(
+        call(4096, memory::MAP_PRIVATE, writeonly.raw() as i32, 0),
+        13,
+        "mmap of a write-only descriptor",
+    );
+    io::close(writeonly)?;
+    result
 }
 
 fn sync_fsync() -> CaseResult {

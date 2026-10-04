@@ -11,6 +11,7 @@ pub mod boot;
 // HAL modules define complete APIs - not all items are used yet
 #[allow(unused_imports)]
 pub mod constants;
+pub mod cache;
 pub mod context;
 pub mod context_switch;
 pub mod cpu;
