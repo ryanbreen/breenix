@@ -55,6 +55,11 @@ fn service() {
             PrepareOutcome::Queued,
             "Finalizer lost its scheduler thread"
         );
+        // x86 switches a halting waiter out only once need_resched is set.
+        // Without this request the parked service keeps the CPU until its
+        // quantum expires, on every pass, while ready threads wait.
+        #[cfg(target_arch = "x86_64")]
+        crate::task::scheduler::yield_current();
         crate::task::waitqueue::schedule_current_wait();
         waiters.finish_wait();
 
