@@ -4447,7 +4447,9 @@ impl Scheduler {
             let is_timed_wait = if let Some(thread) = self.get_thread(tid) {
                 (matches!(thread.state, ThreadState::BlockedOnTimer)
                     || (thread.state == ThreadState::BlockedOnIO && thread.wake_time_ns.is_some()))
-                    && thread.wake_time_ns.is_some()
+                    // A completed wait leaves its old heap entry behind. It
+                    // cannot expire a subsequent wait on the same thread.
+                    && thread.wake_time_ns == Some(wake_time)
             } else {
                 false
             };
