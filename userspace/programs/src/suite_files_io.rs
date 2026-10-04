@@ -3145,6 +3145,12 @@ fn mmap_sync_disk(name: &str, data: Option<bool>) -> CaseResult {
     // reads the disk inode, bypassing read()'s resident-cache overlay.
     // A second store to the first page must survive the earlier writeback;
     // the remaining pages cross the batch boundary in the same sync call.
+    //
+    // A holder process maps the file, stores and synchronizes, then keeps the
+    // mapping and its descriptor and never exits. Nothing else then asks for
+    // the file's pages to be written: no munmap or exit destroys the binding
+    // and no later store dirties it. The bytes the host reads from the
+    // stopped VM's disk are the ones the last synchronous call left there.
     const LENGTH: usize = 65 * 4096;
     let path = format!("/tmp/files-io-writeback-{name}");
     let fd = fs::open_with_mode(&path, O_CREAT | O_TRUNC | O_RDWR, 0o600)?;
@@ -3153,42 +3159,68 @@ fn mmap_sync_disk(name: &str, data: Option<bool>) -> CaseResult {
         fstat(fd)?.st_blocks == 0,
         "writeback fixture was not sparse",
     )?;
-    let mapping = memory::mmap(
-        std::ptr::null_mut(),
-        LENGTH,
-        memory::PROT_READ | memory::PROT_WRITE,
-        memory::MAP_SHARED,
-        fd.raw() as i32,
-        0,
-    )?;
-    let result = (|| -> CaseResult {
-        for (length, value) in [(4096, b'A'), (LENGTH, b'B')] {
-            unsafe { std::ptr::write_bytes(mapping, value, length) };
-            match data {
-                None => {
-                    sc(
-                        MSYNC,
-                        mapping as u64,
-                        LENGTH as u64,
-                        4,
-                        0,
-                        "multi-batch msync",
+    let (r, w) = io::pipe()?;
+    match process::fork()? {
+        process::ForkResult::Child => {
+            let _ = io::close(r);
+            let result = (|| -> CaseResult {
+                let mapping = memory::mmap(
+                    std::ptr::null_mut(),
+                    LENGTH,
+                    memory::PROT_READ | memory::PROT_WRITE,
+                    memory::MAP_SHARED,
+                    fd.raw() as i32,
+                    0,
+                )?;
+                for (length, value) in [(4096, b'A'), (LENGTH, b'B')] {
+                    unsafe { std::ptr::write_bytes(mapping, value, length) };
+                    match data {
+                        None => {
+                            sc(
+                                MSYNC,
+                                mapping as u64,
+                                LENGTH as u64,
+                                4,
+                                0,
+                                "multi-batch msync",
+                            )?;
+                        }
+                        Some(data) => {
+                            sync_fd(fd, data)?;
+                        }
+                    }
+                    check(
+                        fstat(fd)?.st_blocks >= (length / 512) as u64,
+                        "synchronization did not allocate the sparse disk blocks",
                     )?;
                 }
-                Some(data) => {
-                    sync_fd(fd, data)?;
-                }
+                Ok(())
+            })();
+            let report = match result {
+                Ok(()) => String::from("ok"),
+                Err(CaseError::Fail(msg) | CaseError::Skip(msg)) => msg,
+            };
+            let _ = io::write(w, report.as_bytes());
+            if report != "ok" {
+                process::exit(1);
             }
-            check(
-                fstat(fd)?.st_blocks >= (length / 512) as u64,
-                "synchronization did not allocate the sparse disk blocks",
-            )?;
+            loop {
+                let _ = time::sleep_ms(3_600_000);
+            }
         }
-        Ok(())
-    })();
-    memory::munmap(mapping, LENGTH)?;
-    io::close(fd)?;
-    result
+        process::ForkResult::Parent(_) => {
+            io::close(w)?;
+            io::close(fd)?;
+            let mut report = [0u8; 256];
+            let n = io::read(r, &mut report)?;
+            io::close(r)?;
+            match &report[..n] {
+                b"ok" => Ok(()),
+                b"" => fail("the mapping holder ended before it reported"),
+                msg => fail(String::from_utf8_lossy(msg)),
+            }
+        }
+    }
 }
 
 fn mmap_shared_peer() -> CaseResult {
