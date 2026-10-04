@@ -4366,13 +4366,16 @@ impl Scheduler {
                 } else if already_queued {
                     ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
-                // The interrupt already requested this scheduling decision.
-                // On x86, draining its buffered wake must not request a second
-                // switch for the thread we are about to dispatch. Keep direct
-                // wakes and ARM64 completion rescheduling unchanged.
-                if !from_isr_buffer || cfg!(target_arch = "aarch64") {
-                    set_need_resched();
-                }
+                // Request a reschedule for buffered ISR wakes too, on both
+                // arches. The completion interrupt's own request is consumed
+                // by the schedule() pass that drains the buffer, and that pass
+                // may dispatch a thread queued ahead of the waiter. On x86 a
+                // kernel thread that parks on a raw halt while Running (the
+                // console executor) can then only be switched out on
+                // need_resched or quantum expiry, so without this request a
+                // completion whose waiter is queued behind it can wait up to
+                // a full quantum.
+                set_need_resched();
             }
         }
         wake
