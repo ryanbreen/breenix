@@ -1137,6 +1137,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Initialize workqueue subsystem (depends on kthread infrastructure)
     kernel::task::workqueue::init_workqueue();
+    kernel::fs::ext2::writeback::init().expect("ext2 finalization service");
     serial_println!("[boot] Workqueue subsystem initialized");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::WORKQUEUE_INIT);

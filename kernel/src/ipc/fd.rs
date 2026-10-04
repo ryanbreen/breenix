@@ -69,6 +69,7 @@ pub mod fcntl_cmd {
 /// live on the `FileDescriptor`'s shared description word, not here.
 #[derive(Clone, Debug)]
 pub struct RegularFile {
+    pub handle: crate::fs::ext2::live_inode::FileHandle,
     pub inode_num: u64,
     pub mount_id: usize,
     pub position: u64,

@@ -227,7 +227,8 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
                 break; // Bitmap doesn't cover this block
             }
 
-            if (bitmap_buf[byte_index] & (1 << bit_index)) == 0 {
+            if (bitmap_buf[byte_index] & (1 << bit_index)) == 0
+                && !super::reclaim::quarantined(device, false, global_block) {
                 // Found a free block - mark it as used
                 bitmap_buf[byte_index] |= 1 << bit_index;
 
@@ -277,6 +278,20 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
 /// # Returns
 /// * `Ok(())` - Block was successfully freed
 /// * `Err(msg)` - Error message if operation failed
+pub(super) fn block_is_allocated<B: BlockDevice + ?Sized>(
+    device: &B, block: u32, superblock: &Ext2Superblock, groups: &[Ext2BlockGroupDesc],
+) -> Result<bool, &'static str> {
+    let adjusted = block.checked_sub(superblock.s_first_data_block).ok_or("Invalid orphan block")?;
+    let group = groups.get((adjusted / superblock.s_blocks_per_group) as usize).ok_or("Invalid orphan group")?;
+    let local = adjusted % superblock.s_blocks_per_group;
+    let size = superblock.block_size();
+    if local as usize / 8 >= size { return Err("Invalid orphan bitmap index"); }
+    let mut bitmap = [0u8; 4096];
+    read_ext2_block(device, group.bg_block_bitmap, size, &mut bitmap[..size])
+        .map_err(|_| "Failed to read orphan bitmap")?;
+    Ok(bitmap[local as usize / 8] & (1 << (local % 8)) != 0)
+}
+
 pub fn free_block<B: BlockDevice + ?Sized>(
     device: &B,
     block_num: u32,

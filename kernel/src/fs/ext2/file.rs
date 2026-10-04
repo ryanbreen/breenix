@@ -868,6 +868,29 @@ fn prune_blocks<B: BlockDevice + ?Sized>(
     Ok((0, 0))
 }
 
+/// Collect an orphan's allocations without returning any bitmap bits. With
+/// keep=0 prune_blocks only reads indirect trees; no live pointer is modified.
+pub(super) fn detach_inode_blocks<B: BlockDevice + ?Sized>(
+    device: &B, inode: &mut Ext2Inode, superblock: &Ext2Superblock,
+) -> Result<Vec<u32>, BlockError> {
+    let mut reclaim = Vec::new();
+    if !(inode.is_symlink() && inode.i_blocks == 0) {
+        let pointers = inode.i_block;
+        for pointer in &pointers[..12] {
+            prune_blocks(device, superblock, *pointer, 0, 0, 0, &mut reclaim)?;
+        }
+        for depth in 1..=3 {
+            prune_blocks(device, superblock, pointers[11 + depth as usize], depth, 0, 0, &mut reclaim)?;
+        }
+    }
+    inode.i_block = [0; 15];
+    inode.i_file_acl = 0;
+    inode.i_blocks = 0;
+    inode.i_size = 0;
+    inode.i_dir_acl = 0;
+    Ok(reclaim)
+}
+
 /// Resize a regular inode without allocating blocks for sparse extension.
 /// Zero the retained EOF block on shrink and the old EOF tail on growth so
 /// neither re-extension nor reads of newly exposed bytes reveal stale data.

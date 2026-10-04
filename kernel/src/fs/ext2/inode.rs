@@ -307,13 +307,13 @@ pub const EXT2_BAD_INO: u32 = 1;
 /// First non-reserved inode (ext2 uses 11 for rev 0, s_first_ino for rev 1+)
 pub const EXT2_FIRST_INO: u32 = 11;
 
-/// Decrement inode link count and optionally free the inode if it reaches 0
+/// Persist a decreased link count without freeing the inode allocation.
 ///
 /// This function:
 /// 1. Reads the inode from disk
 /// 2. Decrements the link count
-/// 3. If link count reaches 0, marks inode as deleted and frees its resources
-/// 4. Writes the updated inode back to disk
+/// 3. Updates ctime and writes the inode back to disk.
+/// Zero-link reclamation is a separate task-context operation.
 ///
 /// # Arguments
 /// * `device` - The block device
@@ -325,6 +325,20 @@ pub const EXT2_FIRST_INO: u32 = 11;
 /// * `Ok(new_link_count)` - The new link count after decrement
 /// * `Err(msg)` - Error message
 pub fn decrement_inode_links<B: BlockDevice + ?Sized>(
+    device: &B, inode_num: u32, superblock: &super::Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+) -> Result<u16, &'static str> {
+    let mut inode = Ext2Inode::read_from(device, inode_num, superblock, block_groups)
+        .map_err(|_| "Failed to read inode")?;
+    if inode.i_links_count == 0 { return Err("Inode already unlinked"); }
+    inode.i_links_count -= 1;
+    inode.update_timestamps(false, false, true);
+    inode.write_to(device, inode_num, superblock, block_groups)
+        .map_err(|_| "Failed to persist link count")?;
+    Ok(inode.i_links_count)
+}
+
+pub(super) fn reclaim_directory_inode<B: BlockDevice + ?Sized>(
     device: &B,
     inode_num: u32,
     superblock: &super::Ext2Superblock,
@@ -416,7 +430,21 @@ pub fn increment_inode_links<B: BlockDevice + ?Sized>(
 ///
 /// Marks the inode as free in the inode bitmap and updates the
 /// free inode count in the block group descriptor.
-fn free_inode_bitmap<B: BlockDevice + ?Sized>(
+pub(super) fn inode_is_allocated<B: BlockDevice + ?Sized>(
+    device: &B, ino: u32, superblock: &super::Ext2Superblock, groups: &[super::Ext2BlockGroupDesc],
+) -> Result<bool, &'static str> {
+    let adjusted = ino.checked_sub(1).ok_or("Invalid orphan inode")?;
+    let group = groups.get((adjusted / superblock.s_inodes_per_group) as usize).ok_or("Invalid inode group")?;
+    let local = adjusted % superblock.s_inodes_per_group;
+    let size = superblock.block_size();
+    if local as usize / 8 >= size { return Err("Invalid inode bitmap index"); }
+    let mut bitmap = [0u8; 4096];
+    read_ext2_block(device, group.bg_inode_bitmap, size, &mut bitmap[..size])
+        .map_err(|_| "Failed to read inode bitmap")?;
+    Ok(bitmap[local as usize / 8] & (1 << (local % 8)) != 0)
+}
+
+pub(super) fn free_inode_bitmap<B: BlockDevice + ?Sized>(
     device: &B,
     inode_num: u32,
     superblock: &super::Ext2Superblock,
@@ -966,7 +994,8 @@ pub fn allocate_inode<B: BlockDevice + ?Sized>(
                 break; // Bitmap doesn't cover this inode
             }
 
-            if (bitmap_buf[byte_index] & (1 << bit_index)) == 0 {
+            if (bitmap_buf[byte_index] & (1 << bit_index)) == 0
+                && !super::reclaim::quarantined(device, true, global_inode) {
                 // Found a free inode - mark it as used
                 bitmap_buf[byte_index] |= 1 << bit_index;
 
