@@ -2346,32 +2346,6 @@ fn exception_class_name(ec: u32) -> &'static str {
     }
 }
 
-/// Make a page just written through HHDM safe to execute from a user VA:
-/// clean its data cache lines to the point of unification, then invalidate
-/// every CPU's instruction cache. Like the ELF loader, this invalidates the
-/// whole I-cache, because per-line `ic ivau` on the HHDM alias need not hit
-/// the user VA's sets on a VIPT I-cache.
-///
-/// # Safety
-/// `page_va` must be the page-aligned HHDM address of a mapped frame.
-unsafe fn sync_icache_for_copied_page(page_va: u64) {
-    let ctr: u64;
-    core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack));
-    let line = 4u64 << ((ctr >> 16) & 0xF);
-    let mut addr = page_va;
-    while addr < page_va + 4096 {
-        core::arch::asm!("dc cvau, {}", in(reg) addr, options(nostack, preserves_flags));
-        addr += line;
-    }
-    core::arch::asm!(
-        "dsb ish",
-        "ic ialluis",
-        "dsb ish",
-        "isb",
-        options(nostack, preserves_flags)
-    );
-}
-
 /// Handle CoW (Copy-on-Write) page fault for ARM64
 ///
 /// Returns true if the fault was handled (page was copied or made writable)
@@ -2497,7 +2471,7 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     unsafe {
         core::ptr::copy_nonoverlapping(src, dst, 4096);
         if !new_flags.contains(PageTableFlags::NO_EXECUTE) {
-            sync_icache_for_copied_page(dst as u64);
+            super::cache::sync_user_page(dst as u64);
         }
     }
 

@@ -170,7 +170,28 @@ impl MapState {
                     (stop - start) as usize,
                 );
             }
+            sync_resident_page(&inner, index, page);
         }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn sync_executable_page(frame: PhysFrame, prot: Protection) {
+    if prot.contains(Protection::EXEC) {
+        let address = super::physical_memory_offset().as_u64() + frame.start_address().as_u64();
+        unsafe {
+            crate::arch_impl::aarch64::cache::sync_user_page(address);
+        }
+    }
+}
+#[cfg(target_arch = "x86_64")]
+fn sync_executable_page(_: PhysFrame, _: Protection) {}
+
+fn sync_resident_page(inner: &MapInner, index: u64, page: &CachePage) {
+    if inner.bindings.iter().any(|rec| {
+        rec.prot.contains(Protection::EXEC) && index >= rec.pgoff && index - rec.pgoff < rec.pages
+    }) {
+        sync_executable_page(page.frame, Protection::EXEC);
     }
 }
 
@@ -232,6 +253,7 @@ fn reconcile(
                 .ok_or("Missing resident file page")?;
             let frame = hidden.get(&index).map_or(cache.frame, |copy| copy.frame);
             let cow = frame == cache.frame || super::frame_metadata::frame_is_shared(frame);
+            sync_executable_page(frame, rec.prot);
             pt.map_file_page(page, frame, flags(rec.prot, cow))?;
             hidden.remove(&index);
             crate::syscall::memory_common::flush_tlb(page.start_address());
@@ -372,6 +394,7 @@ pub(crate) fn protect(
                     .get(&index)
                     .is_some_and(|cache| cache.frame == frame)
                     || super::frame_metadata::frame_is_shared(frame);
+                sync_executable_page(frame, prot);
                 pt.update_page_flags(page, flags(prot, cow))?;
                 crate::syscall::memory_common::flush_tlb(page.start_address());
             }
@@ -525,6 +548,11 @@ impl MapState {
                 }
             }
         }
+        for index in [old_size / PAGE_SIZE, size / PAGE_SIZE] {
+            if let Some(page) = inner.pages.get(&index) {
+                sync_resident_page(&inner, index, page);
+            }
+        }
         inner.mapped_size = size;
         self.fault_size.store(size, Ordering::Release);
         self.resident.store(inner.pages.len(), Ordering::Release);
@@ -581,6 +609,7 @@ impl MapState {
                     core::ptr::write_bytes(page.ptr(), 0, PAGE_SIZE as usize);
                     core::ptr::copy_nonoverlapping(bytes.as_ptr(), page.ptr(), bytes.len());
                 }
+                sync_resident_page(&inner, index, page);
             }
         }
         Ok(())
@@ -588,8 +617,6 @@ impl MapState {
 }
 
 /// Synchronous fault classification, without filesystem access or allocation.
-/// Architecture termination paths consume this API in the following commits.
-#[allow(dead_code)]
 pub(crate) fn user_fault_signal(process: &Process, address: u64) -> i32 {
     for vma in &process.vmas {
         if address >= vma.start.as_u64()
