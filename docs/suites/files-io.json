@@ -756,6 +756,10 @@
         {
           "id": "fdatasync-pipe",
           "title": "fdatasync rejects a pipe with EINVAL"
+        },
+        {
+          "id": "killed-writer",
+          "title": "Processes killed holding and awaiting the filesystem lock leave it usable"
         }
       ]
     }

@@ -1471,6 +1471,11 @@ static SUITE: Suite = suite(
                     "fdatasync rejects a pipe with EINVAL",
                     sync_fdatasync_pipe,
                 ),
+                case(
+                    "killed-writer",
+                    "Processes killed holding and awaiting the filesystem lock leave it usable",
+                    sync_killed_writer,
+                ),
             ],
         ),
     ],
@@ -3988,6 +3993,77 @@ fn sync_fdatasync_bad_fd() -> CaseResult {
 fn sync_fdatasync_pipe() -> CaseResult {
     let (r, _w) = io::pipe()?;
     expect_errno(sync_fd(r, true), 22, "fdatasync on pipe")
+}
+
+fn sync_killed_writer() -> CaseResult {
+    // Two children write and fsync their own files on the root filesystem,
+    // so they contend for its lock: at the kill one is normally inside an
+    // operation holding it and the other queued to acquire it. Both must
+    // die by SIGKILL, and a file must still be creatable afterwards. The
+    // rounds vary how far into the writing the kills land.
+    for delay_ms in [20, 60, 120] {
+        let mut writers: Vec<(i32, Fixture)> = Vec::new();
+        let result = (|| -> CaseResult {
+            for _ in 0..2 {
+                writers.push(spawn_killable_writer()?);
+            }
+            time::sleep_ms(delay_ms)?;
+            Ok(())
+        })();
+        let mut kill_error = None;
+        for (pid, _) in &writers {
+            if let Err(error) = signal::kill(*pid, signal::SIGKILL) {
+                kill_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = kill_error {
+            return Err(format!("kill: {error}").into());
+        }
+        for (pid, _) in &writers {
+            let status = wait_child(*pid)?;
+            check(
+                process::wifsignaled(status) && process::wtermsig(status) == signal::SIGKILL,
+                "a writing child was not killed by SIGKILL",
+            )?;
+        }
+        result?;
+        let after = Fixture::new(b"after")
+            .map_err(|e| format!("file creation after the kills ({delay_ms} ms): {e}"))?;
+        contents(after.fd(), b"after")?;
+    }
+    Ok(())
+}
+
+/// Fork a child that writes and fsyncs its own fixture until it is killed,
+/// returning once it has started.
+fn spawn_killable_writer() -> Result<(i32, Fixture), String> {
+    let f = Fixture::new(b"")?;
+    let (r, w) = io::pipe().map_err(|e| format!("pipe: {e}"))?;
+    match process::fork().map_err(|e| format!("fork: {e}"))? {
+        process::ForkResult::Child => {
+            let result = (|| -> CaseResult {
+                let block = [0x5a; 16384];
+                io::write(w, b"w")?;
+                loop {
+                    fs::lseek(f.fd(), 0, SEEK_SET)?;
+                    write_all(f.fd(), &block)?;
+                    sync_fd(f.fd(), false)?;
+                }
+            })();
+            process::exit(if result.is_ok() { 0 } else { 1 });
+        }
+        process::ForkResult::Parent(pid) => {
+            let pid = pid.raw() as i32;
+            io::close(w).map_err(|e| format!("close: {e}"))?;
+            let mut byte = [0u8; 1];
+            let n = io::read(r, &mut byte).map_err(|e| format!("read: {e}"))?;
+            io::close(r).map_err(|e| format!("close: {e}"))?;
+            if n != 1 {
+                return Err("a writing child failed before it started to write".into());
+            }
+            Ok((pid, f))
+        }
+    }
 }
 
 fn main() {
