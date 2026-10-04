@@ -13,6 +13,12 @@
 //! therefore never needs I/O: it maps the resident page, inserts and maps a
 //! zero page, or raises SIGBUS for a poisoned page.
 //!
+//! Allocation: every hook that runs after the disk changes (commit, failed
+//! write invalidation, the EOF transition and revocation) uses capacity the
+//! write or resize reserved before it, so none of them allocates. The cache
+//! and the poison set are sorted vectors for that reason: inserting into
+//! reserved capacity, draining a range and truncating never allocate.
+//!
 //! Lock order: ext2 mount guard, PROCESS_MANAGER, `MapState`, frame ledger and
 //! allocator. No disk I/O runs under PROCESS_MANAGER or `MapState`. No path
 //! takes an ext2 guard with PROCESS_MANAGER held: faults never touch the
@@ -26,10 +32,7 @@ use crate::memory::{
     vma::{Protection, Vma},
 };
 use crate::process::{Process, ProcessId, ProcessManager};
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    vec::Vec,
-};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
@@ -39,7 +42,8 @@ use x86_64::{
 };
 
 const PAGE_SIZE: u64 = 4096;
-/// File pages one PROCESS_MANAGER section revokes per binding.
+/// File pages one PROCESS_MANAGER section revokes, all in one binding. A
+/// section also passes over at most this many bindings that miss the range.
 const REVOKE_WINDOW: u64 = 64;
 /// Unbound cache pages one eviction pass retires.
 pub(crate) const EVICT_BUDGET: usize = 64;
@@ -64,10 +68,148 @@ struct MapInner {
     /// The EOF the bindings honour. Equal to the inode's published size
     /// except while a size transition is between publication and this update.
     mapped_size: u64,
-    pages: BTreeMap<u64, CachePage>,
-    /// Page indices whose file bytes are unknown after a failed mutation.
-    poisoned: BTreeSet<u64>,
+    pages: PageVec<CachePage>,
+    /// Bound page indices whose file bytes are unknown after a failed mutation.
+    poisoned: PageVec<()>,
+    /// Sorted by id: ids are issued under this lock, in increasing order.
     bindings: Vec<BindingRec>,
+}
+
+/// Values keyed by file page index, sorted by index.
+#[derive(Debug)]
+struct PageVec<T> {
+    entries: Vec<(u64, T)>,
+}
+
+impl<T> PageVec<T> {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn find(&self, index: u64) -> Result<usize, usize> {
+        self.entries.binary_search_by_key(&index, |(key, _)| *key)
+    }
+
+    fn contains(&self, index: u64) -> bool {
+        self.find(index).is_ok()
+    }
+
+    fn get(&self, index: u64) -> Option<&T> {
+        self.find(index).ok().map(|slot| &self.entries[slot].1)
+    }
+
+    /// Slot of the first entry at or after `index`.
+    fn lower_bound(&self, index: u64) -> usize {
+        self.entries.partition_point(|(key, _)| *key < index)
+    }
+
+    fn try_reserve(&mut self, additional: usize) -> Result<(), &'static str> {
+        self.entries
+            .try_reserve(additional)
+            .map_err(|_| "Out of memory for file mapping")
+    }
+
+    fn spare(&self) -> usize {
+        self.entries.capacity() - self.entries.len()
+    }
+
+    /// Insert, reserving room first; fails with the map unchanged. An index
+    /// already present keeps its value.
+    fn try_insert(&mut self, index: u64, value: T) -> Result<(), &'static str> {
+        if let Err(slot) = self.find(index) {
+            self.try_reserve(1)?;
+            self.entries.insert(slot, (index, value));
+        }
+        Ok(())
+    }
+
+    fn remove(&mut self, index: u64) -> Option<T> {
+        self.find(index)
+            .ok()
+            .map(|slot| self.entries.remove(slot).1)
+    }
+
+    /// Entries with index in `[first, last)`.
+    fn range(&self, first: u64, last: u64) -> &[(u64, T)] {
+        let low = self.lower_bound(first);
+        let high = self.lower_bound(last).max(low);
+        &self.entries[low..high]
+    }
+
+    /// Drop the entries with index in `[first, last)`, in place.
+    fn remove_range(&mut self, first: u64, last: u64) {
+        let low = self.lower_bound(first);
+        let high = self.lower_bound(last).max(low);
+        self.entries.drain(low..high);
+    }
+
+    /// Drop the entries at and after `index`, in place.
+    fn truncate_from(&mut self, index: u64) {
+        let slot = self.lower_bound(index);
+        self.entries.truncate(slot);
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(u64) -> bool) {
+        self.entries.retain(|(index, _)| keep(*index));
+    }
+
+    fn keys(&self) -> impl Iterator<Item = u64> + '_ {
+        self.entries.iter().map(|(index, _)| *index)
+    }
+
+    /// Merge `new`, sorted and unique, using reserved capacity. Indices
+    /// already present keep their value.
+    fn merge_reserved(&mut self, mut new: Vec<(u64, T)>) {
+        new.retain(|(index, _)| !self.contains(*index));
+        debug_assert!(self.spare() >= new.len());
+        self.entries.append(&mut new);
+        self.entries.sort_unstable_by_key(|(index, _)| *index);
+    }
+}
+
+/// Call `run` for each maximal run `[low, high)` of page indices in
+/// `[first, last)` that some binding covers, in increasing order.
+fn bound_runs(bindings: &[BindingRec], first: u64, last: u64, mut run: impl FnMut(u64, u64)) {
+    let mut cursor = first;
+    while cursor < last {
+        // The run starts at the lowest covered index at or after the cursor
+        // and extends over every binding that overlaps or abuts it.
+        let Some(low) = bindings
+            .iter()
+            .filter(|rec| rec.pgoff + rec.pages > cursor && rec.pgoff < last)
+            .map(|rec| rec.pgoff.max(cursor))
+            .min()
+        else {
+            return;
+        };
+        let mut high = low;
+        loop {
+            let reach = bindings
+                .iter()
+                .filter(|rec| rec.pgoff <= high && rec.pgoff + rec.pages > high)
+                .map(|rec| rec.pgoff + rec.pages)
+                .max();
+            match reach {
+                Some(end) => high = end.min(last),
+                None => break,
+            }
+            if high == last {
+                break;
+            }
+        }
+        run(low, high);
+        cursor = high;
+    }
 }
 
 #[derive(Debug)]
@@ -169,7 +311,7 @@ impl Drop for Binding {
                 .bindings
                 .iter()
                 .position(|rec| rec.id == self.id)
-                .map(|slot| inner.bindings.swap_remove(slot));
+                .map(|slot| inner.bindings.remove(slot));
             (
                 removed,
                 !inner.pages.is_empty() || !inner.poisoned.is_empty(),
@@ -186,6 +328,8 @@ impl Drop for Binding {
     }
 }
 
+/// A new binding id. Called under the map lock of the inode the binding
+/// joins, so each inode's bindings are pushed in increasing id order.
 fn next_binding() -> u64 {
     NEXT_BINDING.fetch_add(1, Ordering::Relaxed)
 }
@@ -208,7 +352,7 @@ impl MapInner {
     /// Cache bytes changed through the HHDM alias: make them visible to
     /// instruction fetch through any executable binding.
     fn sync_if_executable(&self, index: u64) {
-        if let Some(page) = self.pages.get(&index) {
+        if let Some(page) = self.pages.get(index) {
             if self
                 .bindings
                 .iter()
@@ -217,6 +361,57 @@ impl MapInner {
                 sync_executable(page.frame);
             }
         }
+    }
+
+    /// Visit, in increasing order, the pages of `[first, last)` that a
+    /// binding covers and the cache neither holds nor has poisoned, and
+    /// return how many there are.
+    fn holes(&self, first: u64, last: u64, mut visit: impl FnMut(u64)) -> usize {
+        let mut holes = 0usize;
+        bound_runs(&self.bindings, first, last, |low, high| {
+            for index in low..high {
+                if !self.pages.contains(index) && !self.poisoned.contains(index) {
+                    visit(index);
+                    holes += 1;
+                }
+            }
+        });
+        holes
+    }
+
+    /// Room in the poison set for every bound page of `[first, last)` that
+    /// is not yet poisoned. Bindings made later without the filesystem guard
+    /// come from fork and VMA splits, which cover only pages already bound,
+    /// so the room still suffices when `poison` runs after the disk changes.
+    fn reserve_poison(&mut self, first: u64, last: u64) -> Result<(), &'static str> {
+        let mut wanted = 0usize;
+        bound_runs(&self.bindings, first, last, |low, high| {
+            wanted += (high - low) as usize - self.poisoned.range(low, high).len();
+        });
+        if wanted > self.poisoned.spare() {
+            self.poisoned.try_reserve(wanted)?;
+        }
+        Ok(())
+    }
+
+    /// Poison the bound pages of `[first, last)`, in room `reserve_poison`
+    /// made.
+    fn poison(&mut self, first: u64, last: u64) {
+        let MapInner {
+            poisoned, bindings, ..
+        } = self;
+        let sorted = poisoned.len();
+        bound_runs(bindings, first, last, |low, high| {
+            for index in low..high {
+                let present = poisoned.entries[..sorted]
+                    .binary_search_by_key(&index, |(key, _)| *key)
+                    .is_ok();
+                if !present && poisoned.spare() > 0 {
+                    poisoned.entries.push((index, ()));
+                }
+            }
+        });
+        poisoned.entries.sort_unstable_by_key(|(index, _)| *index);
     }
 
     fn rec_mut(&mut self, id: u64) -> Option<&mut BindingRec> {
@@ -229,8 +424,8 @@ impl MapState {
         Self {
             inner: Mutex::new(MapInner {
                 mapped_size: size,
-                pages: BTreeMap::new(),
-                poisoned: BTreeSet::new(),
+                pages: PageVec::new(),
+                poisoned: PageVec::new(),
                 bindings: Vec::new(),
             }),
             eviction_pending: AtomicBool::new(false),
@@ -247,10 +442,24 @@ impl MapState {
                 return;
             }
             inner.mapped_size = size;
-            inner.poisoned.clear();
-            core::mem::take(&mut inner.pages)
+            inner.poisoned = PageVec::new();
+            core::mem::replace(&mut inner.pages, PageVec::new())
         };
         drop(stale);
+    }
+
+    /// mmap failed after `populate`: pages it read that no binding covers
+    /// are left for the ext2 service to retire.
+    pub(crate) fn abandon_population(&self) {
+        let unbound = {
+            let inner = self.inner.lock();
+            let unbound = inner.pages.keys().any(|index| !inner.bound(index));
+            unbound
+        };
+        if unbound {
+            self.eviction_pending.store(true, Ordering::Release);
+            crate::fs::ext2::request_map_eviction();
+        }
     }
 
     pub(crate) fn eviction_pending(&self) -> bool {
@@ -260,82 +469,80 @@ impl MapState {
     /// Retire cache pages no binding covers. The filesystem write guard
     /// excludes population and every mutation hook.
     pub(crate) fn evict(&self, budget: &mut usize) -> bool {
-        let mut retired = Vec::new();
-        let more = {
-            let mut inner = self.inner.lock();
-            let MapInner {
-                pages,
-                poisoned,
-                bindings,
-                ..
-            } = &mut *inner;
-            let unbound = |index: &u64| !bindings.iter().any(|rec| rec.covers(*index));
-            poisoned.retain(|index| !unbound(index));
-            let victims: Vec<u64> = pages
-                .keys()
-                .copied()
-                .filter(|index| unbound(index))
-                .take(*budget)
-                .collect();
-            for index in victims {
-                if let Some(page) = pages.remove(&index) {
-                    retired.push(page);
-                    *budget -= 1;
-                }
+        let mut inner = self.inner.lock();
+        let MapInner {
+            pages,
+            poisoned,
+            bindings,
+            ..
+        } = &mut *inner;
+        let unbound = |index: u64| !bindings.iter().any(|rec| rec.covers(index));
+        poisoned.retain(|index| !unbound(index));
+        // Retired frames are released in place: the frame allocator follows
+        // the map lock in the lock order.
+        pages.retain(|index| {
+            if *budget == 0 || !unbound(index) {
+                return true;
             }
-            let more = pages.keys().any(|index| unbound(index));
-            self.eviction_pending.store(more, Ordering::Release);
-            more
-        };
-        drop(retired);
+            *budget -= 1;
+            false
+        });
+        let more = pages.keys().any(unbound);
+        self.eviction_pending.store(more, Ordering::Release);
         more
     }
 
-    /// Before a write: zero frames for the pages it touches that a binding
-    /// covers but the cache does not hold. Fails before the disk changes.
-    pub(crate) fn prepare_write(&self, offset: u64, len: usize) -> Result<Prepared, &'static str> {
+    /// Before a write of `len` bytes at `offset`, while the disk is
+    /// unchanged: put zero frames in the cache for the bound holes the write
+    /// fills, so `commit_write` only copies bytes, and reserve the poison
+    /// room `invalidate` needs if the write fails. A hole's file bytes are
+    /// zero (see the module invariant), so its zero frame is already
+    /// correct; past EOF no fault maps it.
+    pub(crate) fn prepare_write(&self, offset: u64, len: usize) -> Result<(), &'static str> {
         let end = offset.checked_add(len as u64).ok_or("File too large")?;
-        let wanted: Vec<u64> = {
-            let inner = self.inner.lock();
+        let (first, last) = (offset / PAGE_SIZE, pages(end));
+        let wanted = {
+            let mut inner = self.inner.lock();
             if inner.bindings.is_empty() {
-                return Ok(Prepared { pages: Vec::new() });
+                return Ok(());
             }
-            (offset / PAGE_SIZE..pages(end))
-                .filter(|index| {
-                    !inner.pages.contains_key(index)
-                        && !inner.poisoned.contains(index)
-                        && inner.bound(*index)
-                })
-                .collect()
+            inner.reserve_poison(first, last)?;
+            inner.holes(first, last, |_| {})
         };
+        if wanted == 0 {
+            return Ok(());
+        }
         let mut prepared = Vec::new();
         prepared
-            .try_reserve(wanted.len())
+            .try_reserve(wanted)
             .map_err(|_| "Out of memory for file mapping")?;
-        for index in wanted {
-            prepared.push((index, CachePage::allocate()?));
+        for _ in 0..wanted {
+            prepared.push((0, CachePage::allocate()?));
         }
-        Ok(Prepared { pages: prepared })
+        let mut inner = self.inner.lock();
+        inner.pages.try_reserve(prepared.len())?;
+        // The lock was released while frames were allocated. Faults may have
+        // filled holes meanwhile, and nothing makes new ones, so the holes
+        // left are at most `wanted`; the frames left over are released.
+        let mut filled = 0;
+        inner.holes(first, last, |index| {
+            if let Some(slot) = prepared.get_mut(filled) {
+                slot.0 = index;
+                filled += 1;
+            }
+        });
+        prepared.truncate(filled);
+        inner.pages.merge_reserved(prepared);
+        Ok(())
     }
 
     /// After a successful write of `bytes` at `offset`: the cache takes the
     /// written bytes, so every binding that maps a cache page sees them.
-    pub(crate) fn commit_write(&self, offset: u64, bytes: &[u8], prepared: Prepared) {
+    /// Copies into pages already in the cache; allocates nothing.
+    pub(crate) fn commit_write(&self, offset: u64, bytes: &[u8]) {
         let end = offset + bytes.len() as u64;
-        let mut inner = self.inner.lock();
-        for (index, page) in prepared.pages {
-            // A fault may have inserted a zero page meanwhile; it is overlaid below.
-            if !inner.pages.contains_key(&index) && !inner.poisoned.contains(&index) {
-                inner.pages.insert(index, page);
-            }
-        }
-        let touched: Vec<u64> = inner
-            .pages
-            .range(offset / PAGE_SIZE..pages(end))
-            .map(|(&index, _)| index)
-            .collect();
-        for index in touched {
-            let page = &inner.pages[&index];
+        let inner = self.inner.lock();
+        for (index, page) in inner.pages.range(offset / PAGE_SIZE, pages(end)) {
             let start = offset.max(index * PAGE_SIZE);
             let stop = end.min((index + 1) * PAGE_SIZE);
             // SAFETY: the cache holds the frame; the range lies within the
@@ -347,43 +554,47 @@ impl MapState {
                     (stop - start) as usize,
                 );
             }
-            inner.sync_if_executable(index);
+            inner.sync_if_executable(*index);
         }
     }
 
+    /// Before a resize from `before` to `length`: reserve the poison room
+    /// `invalidate` needs for the boundary page if the resize fails.
+    pub(crate) fn prepare_resize(&self, before: u64, length: u64) -> Result<(), &'static str> {
+        let boundary = before.min(length);
+        self.inner
+            .lock()
+            .reserve_poison(boundary / PAGE_SIZE, pages(boundary.saturating_add(1)))
+    }
+
     /// A mutation failed after it may have changed the bytes of `[offset,
-    /// offset + len)`. The cache no longer knows them: drop its pages there,
-    /// mark the range poisoned and remove every entry that maps a dropped
-    /// cache page. Private copies are the process's own bytes and stay.
+    /// offset + len)`. The cache no longer knows them: poison the bound pages
+    /// there, remove every entry that maps a cache page there, then drop
+    /// those cache pages. Private copies are the process's own bytes and
+    /// stay. Uses the poison room the mutation reserved; allocates nothing.
     pub(crate) fn invalidate(&self, offset: u64, len: u64) {
         let first = offset / PAGE_SIZE;
         let last = pages(offset.saturating_add(len));
-        let dropped = {
+        let cached = {
             let mut inner = self.inner.lock();
-            let mut dropped = inner.pages.split_off(&first);
-            let mut kept = dropped.split_off(&last);
-            inner.pages.append(&mut kept);
-            for index in first..last {
-                inner.poisoned.insert(index);
-            }
-            dropped
+            // Faults check poison before the cache, so from here no fault
+            // maps these cache pages; an unbound one no fault reaches.
+            inner.poison(first, last);
+            !inner.pages.range(first, last).is_empty()
         };
-        if !dropped.is_empty() {
-            let frames: BTreeMap<u64, PhysFrame> = dropped
-                .iter()
-                .map(|(&index, page)| (index, page.frame))
-                .collect();
-            self.revoke(first, last, Some(&frames));
+        if cached {
+            self.revoke(first, last, true);
+            self.inner.lock().pages.remove_range(first, last);
         }
-        drop(dropped);
     }
 
     /// Bring the cache to `size`, the EOF ext2 published, on success or
     /// failure of the mutation. Growth only moves the EOF: the new pages are
-    /// holes, which faults fill with zero pages. A shrink drops the cache and
-    /// parked copies past the new EOF and removes every entry there.
+    /// holes, which faults fill with zero pages. A shrink drops the cache,
+    /// poison and parked copies past the new EOF, in place, and removes every
+    /// entry there. Allocates nothing.
     pub(crate) fn transition(&self, size: u64) {
-        let (old, dropped) = {
+        let old = {
             let mut inner = self.inner.lock();
             let old = inner.mapped_size;
             if size == old {
@@ -392,7 +603,7 @@ impl MapState {
             inner.mapped_size = size;
             let boundary = old.min(size);
             if boundary % PAGE_SIZE != 0 {
-                if let Some(page) = inner.pages.get(&(boundary / PAGE_SIZE)) {
+                if let Some(page) = inner.pages.get(boundary / PAGE_SIZE) {
                     page.zero_from(boundary % PAGE_SIZE);
                 }
                 inner.sync_if_executable(boundary / PAGE_SIZE);
@@ -405,18 +616,21 @@ impl MapState {
                 let cut = rec.parked.partition_point(|(index, _)| *index < keep);
                 rec.parked.truncate(cut);
             }
-            (old, inner.pages.split_off(&keep))
+            // Entries hold their own frame references, so the cache's may go
+            // first. Bytes past EOF read as zero once the file grows again.
+            inner.pages.truncate_from(keep);
+            inner.poisoned.truncate_from(keep);
+            old
         };
-        // Entries hold their own frame references, so the cache's may go first.
-        drop(dropped);
-        self.revoke(pages(size), pages(old), None);
+        self.revoke(pages(size), pages(old), false);
     }
 
     /// Re-read poisoned pages that a binding covers and that lie within EOF.
     /// Runs under the filesystem write guard, after a mutation. A page that
-    /// still cannot be read stays poisoned and faults on it raise SIGBUS.
+    /// still cannot be read, or for which no memory is left, stays poisoned
+    /// and faults on it raise SIGBUS.
     pub(crate) fn repair(&self, fs: &Ext2Fs, ino: u32) {
-        let wanted: Vec<u64> = {
+        {
             let mut inner = self.inner.lock();
             if inner.poisoned.is_empty() {
                 return;
@@ -424,17 +638,29 @@ impl MapState {
             let MapInner {
                 poisoned, bindings, ..
             } = &mut *inner;
-            poisoned.retain(|index| bindings.iter().any(|rec| rec.covers(*index)));
-            let valid = pages(inner.mapped_size);
-            inner.poisoned.range(..valid).copied().collect()
-        };
-        if wanted.is_empty() {
-            return;
+            poisoned.retain(|index| bindings.iter().any(|rec| rec.covers(index)));
+            if poisoned.is_empty() {
+                return;
+            }
         }
         let Ok(inode) = fs.read_inode(ino) else {
             return;
         };
-        for index in wanted {
+        let mut cursor = 0;
+        loop {
+            let next = {
+                let inner = self.inner.lock();
+                let valid = pages(inner.mapped_size);
+                inner
+                    .poisoned
+                    .range(cursor, valid)
+                    .first()
+                    .map(|(index, _)| *index)
+            };
+            let Some(index) = next else {
+                return;
+            };
+            cursor = index + 1;
             let Ok(page) = CachePage::allocate() else {
                 return;
             };
@@ -445,66 +671,74 @@ impl MapState {
             // SAFETY: a fresh cache frame; `bytes` is at most one page.
             unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), page.ptr(), bytes.len()) };
             let mut inner = self.inner.lock();
-            if inner.poisoned.remove(&index) && !inner.pages.contains_key(&index) {
-                inner.pages.insert(index, page);
+            if inner.poisoned.contains(index)
+                && !inner.pages.contains(index)
+                && inner.pages.try_insert(index, page).is_ok()
+            {
+                inner.poisoned.remove(index);
             }
         }
     }
 
     /// Remove the entries for file pages `[first, last)` in every binding
-    /// whose address space is live, a bounded window per PROCESS_MANAGER
-    /// section. With `aliases`, only entries that map the given cache frames.
-    /// A binding created between sections is covered by the later windows.
-    fn revoke(&self, first: u64, last: u64, aliases: Option<&BTreeMap<u64, PhysFrame>>) {
-        let mut cursor = first;
-        while cursor < last {
+    /// whose address space is live. With `aliases`, only entries that map
+    /// the cache page at their index. Bindings are visited in id order, one
+    /// at a time: a PROCESS_MANAGER section revokes at most `REVOKE_WINDOW`
+    /// pages of one binding and passes over at most `REVOKE_WINDOW` bindings
+    /// that miss the range. A binding created between sections has a larger
+    /// id than the cursor, so a later section covers it. Allocates nothing.
+    fn revoke(&self, first: u64, last: u64, aliases: bool) {
+        // The next section resumes at binding `id`, file page `resume`.
+        let (mut id, mut resume) = (0u64, first);
+        loop {
             let mut guard = crate::process::manager();
             let Some(manager) = guard.as_mut() else {
                 return;
             };
             let inner = self.inner.lock();
-            let Some(start) = inner
-                .bindings
-                .iter()
-                .filter_map(|rec| {
-                    let start = cursor.max(rec.pgoff);
-                    (start < last.min(rec.pgoff + rec.pages)).then_some(start)
-                })
-                .min()
-            else {
-                return;
-            };
-            let end = last.min(start + REVOKE_WINDOW);
-            for rec in &inner.bindings {
-                let (low, high) = (start.max(rec.pgoff), end.min(rec.pgoff + rec.pages));
-                if low >= high {
-                    continue;
-                }
-                let Some(pt) = live_table(manager, rec) else {
-                    continue;
+            let mut slot = inner.bindings.partition_point(|rec| rec.id < id);
+            let mut passed = 0;
+            let (rec, low, high) = loop {
+                let Some(rec) = inner.bindings.get(slot) else {
+                    return;
                 };
-                let stop = rec.page(high - 1).start_address().as_u64() + PAGE_SIZE;
-                let mut from = rec.page(low).start_address().as_u64();
-                while let Some(page) = pt.next_mapped_page(from, stop) {
-                    from = page.start_address().as_u64() + PAGE_SIZE;
-                    if let Some(aliases) = aliases {
-                        let index = rec.index(page.start_address().as_u64());
-                        let mapped = pt.get_page_info(page).map(|(frame, _)| frame);
-                        if mapped.is_none() || aliases.get(&index).copied() != mapped {
-                            continue;
+                let from = if rec.id == id { resume } else { first };
+                let (low, high) = (from.max(rec.pgoff), last.min(rec.pgoff + rec.pages));
+                if low < high {
+                    break (rec, low, high);
+                }
+                slot += 1;
+                passed += 1;
+                if passed == REVOKE_WINDOW {
+                    break (rec, high, high);
+                }
+            };
+            let stop = high.min(low + REVOKE_WINDOW);
+            if low < stop {
+                if let Some(pt) = live_table(manager, rec) {
+                    let end = rec.page(stop - 1).start_address().as_u64() + PAGE_SIZE;
+                    let mut from = rec.page(low).start_address().as_u64();
+                    while let Some(page) = pt.next_mapped_page(from, end) {
+                        from = page.start_address().as_u64() + PAGE_SIZE;
+                        if aliases {
+                            let index = rec.index(page.start_address().as_u64());
+                            let mapped = pt.get_page_info(page).map(|(frame, _)| frame);
+                            let cached = inner.pages.get(index).map(|page| page.frame);
+                            if mapped.is_none() || cached != mapped {
+                                continue;
+                            }
                         }
+                        revoke_entry(pt, page);
                     }
-                    revoke_entry(pt, page);
                 }
             }
-            cursor = end;
+            if stop < high {
+                (id, resume) = (rec.id, stop);
+            } else {
+                (id, resume) = (rec.id + 1, first);
+            }
         }
     }
-}
-
-/// Frames allocated before a write for the bound holes it fills.
-pub(crate) struct Prepared {
-    pages: Vec<(u64, CachePage)>,
 }
 
 /// The table a binding maps into, if it is still its process's live table.
@@ -575,20 +809,25 @@ pub(crate) fn populate(
     let map = &handle.object.map;
     let size = handle.object.size.load(Ordering::Acquire);
     let last = first.saturating_add(count).min(pages(size));
-    let missing: Vec<u64> = {
+    let wanted = {
         let inner = map.inner.lock();
         (first..last)
-            .filter(|index| !inner.pages.contains_key(index))
-            .collect()
+            .filter(|index| !inner.pages.contains(*index))
+            .count()
     };
-    if missing.is_empty() {
+    if wanted == 0 {
         return Ok(());
     }
     let inode = fs.read_inode(ino).map_err(|_| MapError::Io)?;
     let mut read = Vec::new();
-    read.try_reserve(missing.len())
-        .map_err(|_| MapError::NoMemory)?;
-    for index in missing {
+    read.try_reserve(wanted).map_err(|_| MapError::NoMemory)?;
+    for index in first..last {
+        if map.inner.lock().pages.contains(index) {
+            continue;
+        }
+        if read.len() == read.capacity() {
+            read.try_reserve(1).map_err(|_| MapError::NoMemory)?;
+        }
         let page = CachePage::allocate().map_err(|_| MapError::NoMemory)?;
         let bytes = fs
             .read_file_range(&inode, index * PAGE_SIZE, PAGE_SIZE as usize)
@@ -598,10 +837,14 @@ pub(crate) fn populate(
         read.push((index, page));
     }
     let mut inner = map.inner.lock();
-    for (index, page) in read {
-        inner.poisoned.remove(&index);
-        inner.pages.entry(index).or_insert(page);
+    inner
+        .pages
+        .try_reserve(read.len())
+        .map_err(|_| MapError::NoMemory)?;
+    for (index, _) in &read {
+        inner.poisoned.remove(*index);
     }
+    inner.pages.merge_reserved(read);
     Ok(())
 }
 
@@ -614,13 +857,13 @@ pub(crate) fn bind(
     vma: &Vma,
     pgoff: u64,
 ) -> Result<Binding, &'static str> {
-    let id = next_binding();
-    {
+    let id = {
         let mut inner = handle.object.map.inner.lock();
         inner
             .bindings
             .try_reserve(1)
             .map_err(|_| "Out of memory for file binding")?;
+        let id = next_binding();
         inner.bindings.push(BindingRec {
             id,
             pid,
@@ -631,7 +874,8 @@ pub(crate) fn bind(
             prot: vma.prot,
             parked: Vec::new(),
         });
-    }
+        id
+    };
     Ok(Binding { id, handle })
 }
 
@@ -658,7 +902,6 @@ pub(crate) fn fork_vmas(
 
 impl Binding {
     fn fork(&self, pid: ProcessId, pt: &ProcessPageTable) -> Result<Binding, &'static str> {
-        let id = next_binding();
         let mut inner = self.handle.object.map.inner.lock();
         inner
             .bindings
@@ -676,6 +919,7 @@ impl Binding {
         for (index, page) in &parent.parked {
             parked.push((*index, CachePage::retain(page.frame)?));
         }
+        let id = next_binding();
         let rec = BindingRec {
             id,
             pid,
@@ -695,89 +939,120 @@ impl Binding {
     }
 }
 
-/// Split the file VMA `vmas[index]` so that a VMA starts at `at`. Either
-/// completes or changes nothing. PROCESS_MANAGER held.
-pub(crate) fn split_vma(vmas: &mut Vec<Vma>, index: usize, at: u64) -> Result<(), &'static str> {
-    let (start, end, prot, flags) = {
-        let vma = &vmas[index];
-        (vma.start.as_u64(), vma.end, vma.prot, vma.flags)
-    };
-    if at <= start || at >= end.as_u64() || at % PAGE_SIZE != 0 {
-        return Err("Split point outside the VMA");
-    }
-    let (head_id, handle) = match &vmas[index].backing {
-        Some(binding) => (binding.id, binding.handle.clone()),
-        None => return Err("Not a file VMA"),
-    };
-    vmas.try_reserve(1)
-        .map_err(|_| "Out of memory for VMA split")?;
-    let id = next_binding();
-    {
-        let mut inner = handle.object.map.inner.lock();
-        inner
-            .bindings
-            .try_reserve(1)
-            .map_err(|_| "Out of memory for VMA split")?;
-        let head = inner
-            .rec_mut(head_id)
-            .ok_or("File binding missing from its reverse map")?;
-        let head_pages = (at - head.va) / PAGE_SIZE;
-        let cut = head
-            .parked
-            .partition_point(|(page, _)| *page < head.pgoff + head_pages);
-        let mut parked = Vec::new();
-        parked
-            .try_reserve(head.parked.len() - cut)
-            .map_err(|_| "Out of memory for VMA split")?;
-        parked.extend(head.parked.drain(cut..));
-        let tail = BindingRec {
-            id,
-            pid: head.pid,
-            space: head.space,
-            va: at,
-            pages: head.pages - head_pages,
-            pgoff: head.pgoff + head_pages,
-            prot: head.prot,
-            parked,
-        };
-        head.pages = head_pages;
-        inner.bindings.push(tail);
-    }
-    let mut tail = Vma::new(VirtAddr::new(at), end, prot, flags);
-    tail.backing = Some(Binding { id, handle });
-    vmas[index].end = VirtAddr::new(at);
-    vmas.insert(index + 1, tail);
-    Ok(())
-}
-
 /// Index of the file VMA that is exactly `[start, end)`, after splitting the
-/// VMA containing it. The range must lie within one file VMA; ranges that
-/// span VMAs return EINVAL, as for anonymous memory.
+/// VMA containing it at `start`, at `end`, or at both. The range must lie
+/// within one file VMA; ranges that span VMAs return EINVAL, as for anonymous
+/// memory. The isolated VMA's binding gets room to park `extra_parked` more
+/// private copies. Everything that can fail runs before the first change, so
+/// on error the VMAs and bindings are as they were. PROCESS_MANAGER held.
 pub(crate) fn isolate(
     vmas: &mut Vec<Vma>,
     start: u64,
     end: u64,
+    extra_parked: usize,
 ) -> Result<Option<usize>, &'static str> {
-    let Some(mut index) = vmas
+    let Some(index) = vmas
         .iter()
         .position(|vma| vma.start.as_u64() <= start && start < vma.end.as_u64())
     else {
         return Ok(None);
     };
-    if vmas[index].backing.is_none() {
+    let (vma_start, vma_end, prot, flags) = {
+        let vma = &vmas[index];
+        (vma.start.as_u64(), vma.end.as_u64(), vma.prot, vma.flags)
+    };
+    let Some(binding) = vmas[index].backing.as_ref() else {
         return Ok(None);
-    }
-    if end > vmas[index].end.as_u64() {
+    };
+    if end > vma_end {
         return Err("Range spans more than one VMA");
     }
-    if start > vmas[index].start.as_u64() {
-        split_vma(vmas, index, start)?;
-        index += 1;
+    if start % PAGE_SIZE != 0 || end % PAGE_SIZE != 0 {
+        return Err("Split point outside the VMA");
     }
-    if end < vmas[index].end.as_u64() {
-        split_vma(vmas, index, end)?;
+    // The new VMAs, in address order, each starting at a split point.
+    let cuts: &[u64] = match (start > vma_start, end < vma_end) {
+        (false, false) => &[],
+        (true, false) => &[start],
+        (false, true) => &[end],
+        (true, true) => &[start, end],
+    };
+    let (head_id, handle) = (binding.id, binding.handle.clone());
+    vmas.try_reserve(cuts.len())
+        .map_err(|_| "Out of memory for VMA split")?;
+    let mut inner = handle.object.map.inner.lock();
+    inner
+        .bindings
+        .try_reserve(cuts.len())
+        .map_err(|_| "Out of memory for VMA split")?;
+    let head = inner
+        .rec_mut(head_id)
+        .ok_or("File binding missing from its reverse map")?;
+    let index_of = |at: u64| head.pgoff + (at - head.va) / PAGE_SIZE;
+    // Room for each new binding's parked copies, and for the isolated one's
+    // extra copies: the first new binding when the range starts after the
+    // VMA, else the head.
+    let mut parked: [Vec<(u64, CachePage)>; 2] = [Vec::new(), Vec::new()];
+    for (slot, &at) in cuts.iter().enumerate() {
+        let low = index_of(at);
+        let high = cuts.get(slot + 1).map_or(u64::MAX, |&next| index_of(next));
+        let mut count = head
+            .parked
+            .iter()
+            .filter(|(page, _)| (low..high).contains(page))
+            .count();
+        if slot == 0 && at == start {
+            count += extra_parked;
+        }
+        parked[slot]
+            .try_reserve(count)
+            .map_err(|_| "Out of memory for VMA split")?;
     }
-    Ok(Some(index))
+    if start == vma_start {
+        head.parked
+            .try_reserve(extra_parked)
+            .map_err(|_| "Out of memory for VMA split")?;
+    }
+    // Commit: nothing below allocates or fails. The last split is made first,
+    // so each one moves a suffix of the head's parked copies.
+    let mut tails: [Option<BindingRec>; 2] = [None, None];
+    for (slot, &at) in cuts.iter().enumerate().rev() {
+        let pages = (at - head.va) / PAGE_SIZE;
+        let cut = head
+            .parked
+            .partition_point(|(page, _)| *page < head.pgoff + pages);
+        let mut moved = core::mem::take(&mut parked[slot]);
+        moved.extend(head.parked.drain(cut..));
+        tails[slot] = Some(BindingRec {
+            id: 0,
+            pid: head.pid,
+            space: head.space,
+            va: at,
+            pages: head.pages - pages,
+            pgoff: head.pgoff + pages,
+            prot: head.prot,
+            parked: moved,
+        });
+        head.pages = pages;
+    }
+    vmas[index].end = VirtAddr::new(cuts[0]);
+    for (slot, &at) in cuts.iter().enumerate() {
+        let Some(mut rec) = tails[slot].take() else {
+            continue;
+        };
+        rec.id = next_binding();
+        let next = cuts.get(slot + 1).copied().unwrap_or(vma_end);
+        let mut vma = Vma::new(VirtAddr::new(at), VirtAddr::new(next), prot, flags);
+        vma.backing = Some(Binding {
+            id: rec.id,
+            handle: handle.clone(),
+        });
+        inner.bindings.push(rec);
+        vmas.insert(index + 1 + slot, vma);
+    }
+    drop(inner);
+    // The range is the VMA that starts at `start`.
+    Ok(Some(if start > vma_start { index + 1 } else { index }))
 }
 
 /// munmap of the whole file VMA `vmas[index]`. If an entry cannot be removed,
@@ -802,60 +1077,84 @@ pub(crate) fn unmap(
     Ok(())
 }
 
-/// mprotect of the whole file VMA `vmas[index]`. Every entry is removed, and
-/// faults install them again under the new protection; a private copy is
-/// parked in its binding instead of being lost. Everything that can fail runs
-/// before the first change, so on error the PTEs, binding and VMA still agree.
+/// mprotect of `[start, end)`, which must lie within one file VMA; returns
+/// `Ok(false)` when `start` is not in a file VMA. The range is split out and
+/// every entry in it removed, and faults install them again under the new
+/// protection; a private copy is parked in its binding instead of being
+/// lost. Everything that can fail, the private copies' references and the
+/// split with room to park them, runs before the first change, so on error
+/// the PTEs, bindings and VMAs are as they were. If an entry's custody
+/// disagrees, its descriptor is still cleared, the old protection is kept and
+/// the error is returned, as munmap does. PROCESS_MANAGER held.
 pub(crate) fn protect(
-    vmas: &mut [Vma],
-    index: usize,
+    vmas: &mut Vec<Vma>,
     pt: &mut ProcessPageTable,
+    start: u64,
+    end: u64,
     prot: Protection,
-) -> Result<(), &'static str> {
-    let (start, end) = (vmas[index].start.as_u64(), vmas[index].end.as_u64());
-    let binding = vmas[index].backing.as_ref().ok_or("Not a file VMA")?;
-    let mut inner = binding.handle.object.map.inner.lock();
-    let MapInner {
-        pages: cache,
-        bindings,
-        ..
-    } = &mut *inner;
-    let rec = bindings
-        .iter_mut()
-        .find(|rec| rec.id == binding.id)
-        .ok_or("File binding missing from its reverse map")?;
+) -> Result<bool, &'static str> {
+    let Some(binding) = vmas
+        .iter()
+        .find(|vma| vma.start.as_u64() <= start && start < vma.end.as_u64())
+        .and_then(|vma| vma.backing.as_ref())
+    else {
+        return Ok(false);
+    };
+    let handle = binding.handle.clone();
+    // Private copies are the entries that do not map their cache page.
     let mut copies = Vec::new();
-    let mut from = start;
-    while let Some(page) = pt.next_mapped_page(from, end) {
-        from = page.start_address().as_u64() + PAGE_SIZE;
-        let index = rec.index(page.start_address().as_u64());
-        if let Some((frame, _)) = pt.get_page_info(page) {
-            if cache.get(&index).map(|page| page.frame) != Some(frame) {
-                copies
-                    .try_reserve(1)
-                    .map_err(|_| "Out of memory for mprotect")?;
-                copies.push((index, CachePage::retain(frame)?));
+    {
+        let inner = handle.object.map.inner.lock();
+        let rec = inner
+            .bindings
+            .iter()
+            .find(|rec| rec.id == binding.id)
+            .ok_or("File binding missing from its reverse map")?;
+        let mut from = start;
+        while let Some(page) = pt.next_mapped_page(from, end) {
+            from = page.start_address().as_u64() + PAGE_SIZE;
+            let index = rec.index(page.start_address().as_u64());
+            if let Some((frame, _)) = pt.get_page_info(page) {
+                if inner.pages.get(index).map(|page| page.frame) != Some(frame) {
+                    copies
+                        .try_reserve(1)
+                        .map_err(|_| "Out of memory for mprotect")?;
+                    copies.push((index, CachePage::retain(frame)?));
+                }
             }
         }
     }
-    rec.parked
-        .try_reserve(copies.len())
-        .map_err(|_| "Out of memory for mprotect")?;
-    // Commit: nothing below allocates or fails. PROCESS_MANAGER is held
-    // throughout, so no fault observes the binding and the VMA apart.
-    rec.prot = prot;
+    let index = isolate(vmas, start, end, copies.len())?.ok_or("Not a file VMA")?;
+    let binding = vmas[index].backing.as_ref().ok_or("Not a file VMA")?;
+    // Commit: nothing below allocates. PROCESS_MANAGER is held throughout,
+    // so no fault observes the binding and the VMA apart.
+    let mut inner = binding.handle.object.map.inner.lock();
+    let valid = pages(inner.mapped_size);
+    let rec = inner
+        .rec_mut(binding.id)
+        .ok_or("File binding missing from its reverse map")?;
+    let mut clean = true;
     let mut from = start;
     while let Some(page) = pt.next_mapped_page(from, end) {
         from = page.start_address().as_u64() + PAGE_SIZE;
-        revoke_entry(pt, page);
+        clean &= revoke_entry(pt, page);
     }
+    // Every entry is gone either way, so the copies are parked for the next
+    // fault to map again. A shrink may have dropped the parked copies past
+    // its EOF since they were taken; those are released.
     for (index, page) in copies {
-        let slot = rec.parked.partition_point(|(parked, _)| *parked < index);
-        rec.parked.insert(slot, (index, page));
+        if index < valid {
+            let slot = rec.parked.partition_point(|(parked, _)| *parked < index);
+            rec.parked.insert(slot, (index, page));
+        }
     }
+    if !clean {
+        return Err("File mapping entry custody disagreed");
+    }
+    rec.prot = prot;
     drop(inner);
     vmas[index].prot = prot;
-    Ok(())
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -977,16 +1276,18 @@ pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access)
         drop(parked);
         return FaultOutcome::Resolved;
     }
-    if inner.poisoned.contains(&index) {
+    if inner.poisoned.contains(index) {
         return FaultOutcome::Signal(SIGBUS);
     }
-    let frame = match inner.pages.get(&index) {
+    let frame = match inner.pages.get(index) {
         Some(page) => page.frame,
         None => match CachePage::allocate() {
             // A hole: its file bytes are zero (see the module invariant).
             Ok(page) => {
                 let frame = page.frame;
-                inner.pages.insert(index, page);
+                if inner.pages.try_insert(index, page).is_err() {
+                    return FaultOutcome::Signal(SIGBUS);
+                }
                 frame
             }
             Err(_) => return FaultOutcome::Signal(SIGBUS),

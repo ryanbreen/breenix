@@ -135,6 +135,8 @@ impl Drop for FileHandle {
 
 /// Unused linked entries one pin examines for retirement.
 const PRUNE_PER_PIN: usize = 2;
+/// Inodes one ext2 service pass evicts file-mapping cache pages from.
+pub const EVICTION_BATCH: usize = 32;
 
 struct Table {
     objects: BTreeMap<u32, Arc<LiveInode>>,
@@ -220,16 +222,26 @@ impl LiveInodes {
         self.table.lock().objects.get(&inode).cloned()
     }
 
-    /// Entries whose file-mapping cache holds pages no binding covers.
+    /// Up to `EVICTION_BATCH` entries whose file-mapping cache holds pages
+    /// no binding covers.
     pub fn evictions(&self) -> alloc::vec::Vec<Arc<LiveInode>> {
         self.table
             .lock()
             .objects
             .values()
             .filter(|object| object.map.eviction_pending())
-            .take(32)
+            .take(EVICTION_BATCH)
             .cloned()
             .collect()
+    }
+
+    /// Whether any entry's file-mapping cache still awaits eviction.
+    pub fn evictions_pending(&self) -> bool {
+        self.table
+            .lock()
+            .objects
+            .values()
+            .any(|object| object.map.eviction_pending())
     }
 
     pub fn publish_size(&self, inode: u32, size: u64) {

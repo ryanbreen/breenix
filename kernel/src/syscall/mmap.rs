@@ -123,6 +123,9 @@ pub fn sys_mmap(
     // under the lock a chunk at a time, re-checking the region and the page
     // table in each section. Holding the lock (IRQs off on ARM64) across
     // hundreds of allocations starved every other CPU spinning in manager().
+    // The hint before this call chose an address below it; a mapping that
+    // then fails gives the address back.
+    let mut previous_hint = None;
     let (start_addr, end_addr, root) = {
         let mut manager_guard = crate::process::manager();
         let manager = match *manager_guard {
@@ -153,6 +156,7 @@ pub fn sys_mmap(
             addr
         } else {
             let hint = process.mmap_hint;
+            previous_hint = Some(hint);
             let new_addr = round_down_to_page(hint.saturating_sub(length));
             // The floor is `MMAP_REGION_START` itself -- the same constant
             // `is_valid_user_range`'s mmap arm polices -- not a second,
@@ -248,8 +252,15 @@ pub fn sys_mmap(
         (start_addr, end_addr, root)
     };
 
+    let give_back = |errno: u64| {
+        if let Some(hint) = previous_hint {
+            restore_mmap_hint(current_thread_id, start_addr, hint);
+        }
+        SyscallResult::Err(errno)
+    };
+
     if let Some(handle) = file {
-        return map_file(
+        return match map_file(
             handle,
             current_thread_id,
             root,
@@ -260,13 +271,16 @@ pub fn sys_mmap(
                 flags,
             ),
             offset / PAGE_SIZE,
-        );
+        ) {
+            Ok(start) => SyscallResult::Ok(start),
+            Err(errno) => give_back(errno),
+        };
     }
 
     let page_count = ((end_addr - start_addr) / PAGE_SIZE) as usize;
     let Some(frames) = allocate_zeroed_frames(page_count) else {
         log::error!("sys_mmap: OOM allocating {} frames", page_count);
-        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        return give_back(ErrorCode::OutOfMemory as u64);
     };
     let vma = Vma::new(
         VirtAddr::new(start_addr),
@@ -282,10 +296,24 @@ pub fn sys_mmap(
         prot_to_page_flags(prot),
         vma,
     ) {
-        return SyscallResult::Err(error as u64);
+        return give_back(error as u64);
     }
 
     SyscallResult::Ok(start_addr)
+}
+
+/// A failed mmap that took the address below `hint` gives it back, unless a
+/// later mmap has already moved the hint on.
+fn restore_mmap_hint(thread_id: u64, start: u64, hint: u64) {
+    let mut manager_guard = crate::process::manager();
+    if let Some((_, process)) = manager_guard
+        .as_mut()
+        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+    {
+        if process.mmap_hint == start {
+            process.mmap_hint = hint;
+        }
+    }
 }
 
 /// The file handle for a file-backed mmap request, or its errno. The
@@ -334,54 +362,69 @@ fn file_mapping(
 
 /// Populate the cache for a file VMA under the mount's read guard, then
 /// register it in a short PROCESS_MANAGER section. Entries are installed by
-/// faults, not here.
+/// faults, not here. If registration fails, the pages population read are
+/// left for the ext2 service to retire.
 fn map_file(
     handle: crate::fs::ext2::live_inode::FileHandle,
     thread_id: u64,
     root: u64,
     mut vma: Vma,
     pgoff: u64,
-) -> SyscallResult {
+) -> Result<u64, u64> {
     use crate::memory::file_map::{self, MapError};
-    let guard = match crate::fs::ext2::read_mount(handle.object.mount) {
-        Ok(guard) => guard,
-        Err(_) => return SyscallResult::Err(ErrorCode::IoError as u64),
+    let guard =
+        crate::fs::ext2::read_mount(handle.object.mount).map_err(|_| ErrorCode::IoError as u64)?;
+    let fs = guard.as_ref().ok_or(ErrorCode::IoError as u64)?;
+    file_map::populate(&handle, fs, pgoff, vma.size() / PAGE_SIZE).map_err(
+        |error| match error {
+            MapError::NoMemory => ErrorCode::OutOfMemory as u64,
+            MapError::Io => ErrorCode::IoError as u64,
+        },
+    )?;
+    let object = handle.object.clone();
+    let abandon = |errno: ErrorCode| {
+        object.map.abandon_population();
+        errno as u64
     };
-    let Some(fs) = guard.as_ref() else {
-        return SyscallResult::Err(ErrorCode::IoError as u64);
-    };
-    match file_map::populate(&handle, fs, pgoff, vma.size() / PAGE_SIZE) {
-        Ok(()) => {}
-        Err(MapError::NoMemory) => return SyscallResult::Err(ErrorCode::OutOfMemory as u64),
-        Err(MapError::Io) => return SyscallResult::Err(ErrorCode::IoError as u64),
-    }
     let mut manager_guard = crate::process::manager();
     let Some((pid, process)) = manager_guard
         .as_mut()
         .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
     else {
-        return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+        return Err(abandon(ErrorCode::NoSuchProcess));
     };
     if process.vmas.iter().any(|other| vma.overlaps(other)) {
-        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        return Err(abandon(ErrorCode::OutOfMemory));
     }
     let Some(page_table) = process
         .page_table
         .as_deref()
         .filter(|pt| pt.level_4_frame().start_address().as_u64() == root)
     else {
-        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        return Err(abandon(ErrorCode::OutOfMemory));
     };
     if process.vmas.try_reserve(1).is_err() {
-        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        return Err(abandon(ErrorCode::OutOfMemory));
     }
     match file_map::bind(handle, pid, page_table, &vma, pgoff) {
         Ok(binding) => vma.backing = Some(binding),
-        Err(_) => return SyscallResult::Err(ErrorCode::OutOfMemory as u64),
+        Err(_) => return Err(abandon(ErrorCode::OutOfMemory)),
     }
     let start = vma.start.as_u64();
     process.vmas.push(vma);
-    SyscallResult::Ok(start)
+    Ok(start)
+}
+
+/// errno for a failed munmap or mprotect of a file VMA: a range that does not
+/// fit one VMA is EINVAL; running out of memory, or an entry whose custody
+/// disagreed, is ENOMEM.
+fn file_vma_errno(error: &'static str) -> u64 {
+    match error {
+        "Range spans more than one VMA" | "Split point outside the VMA" => {
+            ErrorCode::InvalidArgument as u64
+        }
+        _ => ErrorCode::OutOfMemory as u64,
+    }
 }
 
 /// Syscall 10: mprotect - Change protection of memory region
@@ -453,28 +496,17 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
     };
 
     // A range within one file VMA is split out and changed on its own.
-    match crate::memory::file_map::isolate(&mut process.vmas, addr, end_addr) {
-        Ok(Some(index)) => {
-            let Some(page_table) = process.page_table.as_deref_mut() else {
-                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-            };
-            return match crate::memory::file_map::protect(
-                &mut process.vmas,
-                index,
-                page_table,
-                new_prot,
-            ) {
-                Ok(()) => SyscallResult::Ok(0),
-                Err(_) => SyscallResult::Err(ErrorCode::OutOfMemory as u64),
-            };
-        }
-        Ok(None) => {}
-        Err(error) => {
-            return SyscallResult::Err(if error.starts_with("Out of memory") {
-                ErrorCode::OutOfMemory as u64
-            } else {
-                ErrorCode::InvalidArgument as u64
-            });
+    if let Some(page_table) = process.page_table.as_deref_mut() {
+        match crate::memory::file_map::protect(
+            &mut process.vmas,
+            page_table,
+            addr,
+            end_addr,
+            new_prot,
+        ) {
+            Ok(true) => return SyscallResult::Ok(0),
+            Ok(false) => {}
+            Err(error) => return SyscallResult::Err(file_vma_errno(error)),
         }
     }
 
@@ -606,24 +638,18 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
 
     // A range within one file VMA is split out and unmapped on its own. If an
     // entry's custody disagrees, the VMA and its binding are kept.
-    match crate::memory::file_map::isolate(&mut process.vmas, addr, end_addr) {
+    match crate::memory::file_map::isolate(&mut process.vmas, addr, end_addr, 0) {
         Ok(Some(index)) => {
             let Some(page_table) = process.page_table.as_deref_mut() else {
                 return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
             };
             return match crate::memory::file_map::unmap(&mut process.vmas, index, page_table) {
                 Ok(()) => SyscallResult::Ok(0),
-                Err(_) => SyscallResult::Err(ErrorCode::OutOfMemory as u64),
+                Err(error) => SyscallResult::Err(file_vma_errno(error)),
             };
         }
         Ok(None) => {}
-        Err(error) => {
-            return SyscallResult::Err(if error.starts_with("Out of memory") {
-                ErrorCode::OutOfMemory as u64
-            } else {
-                ErrorCode::InvalidArgument as u64
-            });
-        }
+        Err(error) => return SyscallResult::Err(file_vma_errno(error)),
     }
 
     // Find overlapping VMAs

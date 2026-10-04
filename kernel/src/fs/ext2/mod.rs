@@ -107,10 +107,16 @@ impl Ext2Fs {
         let mut budget = RECLAIM_BUDGET;
         let mut outcome = self.finalize_shrinks(&mut budget);
         let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
-        for object in self.live_inodes.evictions() {
+        let evictions = self.live_inodes.evictions();
+        for object in &evictions {
             if object.map.evict(&mut cache_budget) {
                 outcome = Finalize::More;
             }
+        }
+        // One pass takes a bounded batch of inodes; any left pending need
+        // another pass even when every inode in this batch was emptied.
+        if evictions.len() == live_inode::EVICTION_BATCH && self.live_inodes.evictions_pending() {
+            outcome = Finalize::More;
         }
         for object in self.live_inodes.pending(self.finalization_cursor) {
             if !object.unused() { continue; }
@@ -377,18 +383,18 @@ impl Ext2Fs {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, &'static str> {
-        // Private mappings: reserve cache frames for bound holes before the
-        // disk changes; afterwards only apply what ext2 published.
+        // Private mappings: give bound holes cache frames and reserve poison
+        // room before the disk changes; afterwards only apply what ext2
+        // published, which allocates nothing.
         let mapped = self.live_inodes.get(inode_num);
-        let prepared = match &mapped {
-            Some(object) => Some(object.map.prepare_write(offset, data.len())?),
-            None => None,
-        };
+        if let Some(object) = &mapped {
+            object.map.prepare_write(offset, data.len())?;
+        }
         let result = self.write_file_range_disk(inode_num, offset, data);
-        if let (Some(object), Some(prepared)) = (mapped, prepared) {
+        if let Some(object) = mapped {
             object.map.transition(object.size.load(Ordering::Acquire));
             match result {
-                Ok(written) => object.map.commit_write(offset, &data[..written], prepared),
+                Ok(written) => object.map.commit_write(offset, &data[..written]),
                 Err(_) => object.map.invalidate(offset, data.len() as u64),
             }
             object.map.repair(self, inode_num);
@@ -597,6 +603,9 @@ impl Ext2Fs {
     pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
         let mapped = self.live_inodes.get(inode_num);
         let before = mapped.as_ref().map(|object| object.size.load(Ordering::Acquire));
+        if let (Some(object), Some(before)) = (&mapped, before) {
+            object.map.prepare_resize(before, length)?;
+        }
         let result = self.resize_file_disk(inode_num, length);
         if let (Some(object), Some(before)) = (mapped, before) {
             // A shrink publishes its EOF before it can fail, so the published
