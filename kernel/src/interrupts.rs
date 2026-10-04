@@ -1157,22 +1157,30 @@ extern "x86-interrupt" fn page_fault_handler(
         }
     }
 
-    // A user access to a private file mapping is resolved from the file's
-    // page cache, or raises SIGSEGV/SIGBUS through the process's signal
-    // dispositions; either way the instruction is retried.
-    if (stack_frame.code_segment.0 & 3) == 3
-        && cr2 < crate::memory::layout::USER_STACK_REGION_END
-    {
+    // An access to a private file mapping is resolved from the file's page
+    // cache and retried. That includes kernel stores and loads through raw
+    // user pointers outside the user-copy routine. A user access that cannot
+    // complete raises SIGSEGV/SIGBUS through the process's signal
+    // dispositions and is retried until the signal is taken; a kernel one
+    // continues below as before.
+    if cr2 < crate::memory::layout::USER_STACK_REGION_END {
+        let from_user = (stack_frame.code_segment.0 & 3) == 3;
         crate::per_cpu::preempt_disable();
         let outcome = file_mapping_fault(
             cr2,
             error_code,
             cr3,
-            crate::per_cpu::current_thread_id_lock_free(),
+            if from_user {
+                crate::per_cpu::current_thread_id_lock_free()
+            } else {
+                None
+            },
         );
         crate::per_cpu::preempt_enable();
-        if outcome != crate::memory::file_map::FaultOutcome::NotFile {
-            return;
+        match outcome {
+            crate::memory::file_map::FaultOutcome::NotFile => {}
+            crate::memory::file_map::FaultOutcome::Signal(_) if !from_user => {}
+            _ => return,
         }
     }
 

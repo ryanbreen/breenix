@@ -799,11 +799,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // Check if from userspace (EL0) - SPSR[3:0] indicates source EL
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
 
-            // A private file mapping: an EL0 access or a user-copy access is
+            // A private file mapping: an EL0 access, or a kernel access to a
+            // user address (the user-copy routine or a raw user pointer), is
             // resolved from the file's page cache and retried. An EL0 access
             // that cannot complete raises SIGSEGV/SIGBUS through the process's
             // signal dispositions and is retried until the signal is taken.
-            if from_el0 || crate::syscall::userptr::uaccess_fixup(frame_ref.elr, far).is_some() {
+            if from_el0 || far < crate::memory::layout::USER_STACK_REGION_END {
                 let access = if (iss >> 6) & 1 == 1 {
                     crate::memory::file_map::Access::Write
                 } else {
