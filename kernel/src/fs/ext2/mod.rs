@@ -85,35 +85,43 @@ impl Ext2Fs {
         self.live_inodes.pin(self.mount_pin, inode_num, size)
     }
 
+    /// Reclaim every queued orphan whose last observer has left.
     fn finalize_inactive(&mut self) -> Result<(), &'static str> {
         let mut failed = false;
-        for object in self.live_inodes.pending(self.finalization_cursor).into_iter().take(1) {
+        for object in self.live_inodes.pending(self.finalization_cursor) {
             if !object.unused() { continue; }
-            let ino = object.key.inode;
-            self.finalization_cursor = ino;
-            let outcome = (|| {
-                if !self.orphan_reclaims.contains_key(&ino) {
-                    if !object.orphan.load(Ordering::Acquire) { return Ok(true); }
-                    let reclaim = reclaim::Reclaim::prepare(self, ino)?;
-                    self.orphan_reclaims.insert(ino, reclaim);
-                }
-                let mut progress = self.orphan_reclaims.remove(&ino).expect("orphan progress");
-                match progress.finish(self, ino) {
-                    Ok(true) => Ok(true),
-                    Ok(false) => { self.orphan_reclaims.insert(ino, progress); Ok(false) },
-                    Err(error) => { self.orphan_reclaims.insert(ino, progress); Err(error) }
-                }
-            })();
-            match outcome {
-                Ok(true) => self.live_inodes.remove(&object),
-                Ok(false) => {},
-                Err(_) => failed = true,
+            self.finalization_cursor = object.key.inode;
+            if self.reclaim_orphan(&object).is_err() {
+                failed = true;
             }
         }
         if !self.live_inodes.pending(self.finalization_cursor).is_empty() {
             live_inode::FINALIZATION_PENDING.store(true, Ordering::Release);
         }
         if failed { Err("ext2 finalization needs retry") } else { Ok(()) }
+    }
+
+    /// Release an unobserved orphan's blocks and inode under the write guard.
+    /// A failure keeps the staged progress for the finalizer to resume.
+    fn reclaim_orphan(&mut self, object: &alloc::sync::Arc<live_inode::LiveInode>)
+        -> Result<(), &'static str> {
+        let ino = object.key.inode;
+        let mut progress = match self.orphan_reclaims.remove(&ino) {
+            Some(progress) => progress,
+            None => reclaim::Reclaim::prepare(self, ino)?,
+        };
+        loop {
+            match progress.finish(self, ino) {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(error) => {
+                    self.orphan_reclaims.insert(ino, progress);
+                    return Err(error);
+                }
+            }
+        }
+        self.live_inodes.remove(object);
+        Ok(())
     }
 
     /// Read an inode from the filesystem
@@ -598,7 +606,7 @@ impl Ext2Fs {
 
         // Pin before dropping the directory entry; an open/mapped orphan
         // keeps its allocation and incarnation until its last observer leaves.
-        let handle = self.pin_inode(target_inode_num)?;
+        let handle = self.pin_loaded_inode(target_inode_num, target_inode.size())?;
 
         // Remove the directory entry
         remove_entry(&mut dir_data, filename)?;
@@ -622,8 +630,21 @@ impl Ext2Fs {
 
         let links = decrement_inode_links(self.device.as_ref(), target_inode_num,
             &self.superblock, &mut self.block_groups)?;
-        if links == 0 { handle.object.orphan.store(true, Ordering::Release); }
-        drop(handle);
+        if links == 0 {
+            handle.object.orphan.store(true, Ordering::Release);
+            // With no descriptor observing it, reclaim the inode now under
+            // this guard; otherwise its last observer queues it on close.
+            match handle.release_sole() {
+                Ok(object) => {
+                    if self.reclaim_orphan(&object).is_err() {
+                        object.defer();
+                    }
+                }
+                Err(handle) => drop(handle),
+            }
+        } else {
+            drop(handle);
+        }
 
         log::debug!("ext2: unlinked {} (inode {})", path, target_inode_num);
         Ok(())

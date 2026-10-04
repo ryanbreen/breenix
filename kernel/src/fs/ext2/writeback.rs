@@ -1,5 +1,7 @@
-//! Task-context inode finalization. Metadata drops only set an atomic hint;
-//! the service owns retries and never runs inside process/root reclamation.
+//! Task-context inode finalization. Unlink reclaims an unobserved orphan
+//! itself; this service handles orphans whose last descriptor closes later
+//! and retries failed reclamation. A handle drop only sets an atomic hint, so
+//! the service takes no filesystem guard unless an orphan is queued.
 
 use crate::task::thread::ThreadState;
 use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};

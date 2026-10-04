@@ -62,6 +62,12 @@ impl LiveInode {
         self.external_handles.load(Ordering::Acquire) == 0
     }
 
+    /// Queue this orphan for the finalizer service.
+    pub(super) fn defer(&self) {
+        self.pending.store(true, Ordering::Release);
+        FINALIZATION_PENDING.store(true, Ordering::Release);
+    }
+
     pub(super) fn publish_size(&self, size: u64) {
         if self.size.swap(size, Ordering::AcqRel) != size {
             self.size_epoch.fetch_add(1, Ordering::Release);
@@ -89,6 +95,23 @@ impl FileHandle {
         // No resident/identity index lock belongs on the empty-cache I/O path.
         Ok(self.object.key.inode)
     }
+
+    /// Give up the only external handle without deferring it. The caller
+    /// holds the filesystem write guard and reclaims the orphan itself; no
+    /// other handle can appear because an unlinked inode has no path.
+    pub(super) fn release_sole(self) -> Result<Arc<LiveInode>, Self> {
+        if self
+            .object
+            .external_handles
+            .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(self);
+        }
+        let handle = core::mem::ManuallyDrop::new(self);
+        // SAFETY: the handle is never dropped, so its Arc is moved out once.
+        Ok(unsafe { core::ptr::read(&handle.object) })
+    }
 }
 
 impl Clone for FileHandle {
@@ -99,9 +122,12 @@ impl Clone for FileHandle {
 
 impl Drop for FileHandle {
     fn drop(&mut self) {
-        if self.object.external_handles.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.object.pending.store(true, Ordering::Release);
-            FINALIZATION_PENDING.store(true, Ordering::Release);
+        // Only an orphan's last observer leaves work behind. Unused linked
+        // inodes are pruned by the next pin and never wake the finalizer.
+        if self.object.external_handles.fetch_sub(1, Ordering::AcqRel) == 1
+            && self.object.orphan.load(Ordering::Acquire)
+        {
+            self.object.defer();
         }
     }
 }
@@ -120,6 +146,9 @@ impl LiveInodes {
     /// Caller holds the selected filesystem guard through path lookup and pin.
     pub fn pin(&self, mount: MountPin, inode: u32, size: u64) -> Result<FileHandle, &'static str> {
         let mut table = self.objects.lock();
+        // A count can only rise from zero here, under this lock, so unused
+        // linked entries are safe to drop; orphans stay until reclaimed.
+        table.retain(|_, object| !object.unused() || object.orphan.load(Ordering::Acquire));
         let object = if let Some(object) = table.get(&inode) {
             object.clone()
         } else {

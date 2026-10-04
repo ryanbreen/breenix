@@ -264,6 +264,30 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
     Err("No free blocks available")
 }
 
+/// Clear an orphan block's bitmap bit and post it to its group. Returns
+/// `false`, writing nothing, when the bit is already clear.
+pub(super) fn release_orphan_block<B: BlockDevice + ?Sized>(
+    device: &B, block: u32, superblock: &Ext2Superblock, groups: &mut [Ext2BlockGroupDesc],
+) -> Result<bool, &'static str> {
+    let adjusted = block.checked_sub(superblock.s_first_data_block).ok_or("Invalid orphan block")?;
+    let group = groups.get_mut((adjusted / superblock.s_blocks_per_group) as usize).ok_or("Invalid orphan group")?;
+    let local = adjusted % superblock.s_blocks_per_group;
+    let size = superblock.block_size();
+    if local as usize / 8 >= size { return Err("Invalid orphan bitmap index"); }
+    let mut bitmap = [0u8; 4096];
+    read_ext2_block(device, group.bg_block_bitmap, size, &mut bitmap[..size])
+        .map_err(|_| "Failed to read orphan bitmap")?;
+    let bit = 1 << (local % 8);
+    if bitmap[local as usize / 8] & bit == 0 {
+        return Ok(false);
+    }
+    bitmap[local as usize / 8] &= !bit;
+    write_ext2_block(device, group.bg_block_bitmap, size, &bitmap[..size])
+        .map_err(|_| "Failed to write orphan bitmap")?;
+    group.bg_free_blocks_count += 1;
+    Ok(true)
+}
+
 /// Free a data block in the block bitmap
 ///
 /// Marks the block as free in the block bitmap and updates the
@@ -278,20 +302,6 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
 /// # Returns
 /// * `Ok(())` - Block was successfully freed
 /// * `Err(msg)` - Error message if operation failed
-pub(super) fn block_is_allocated<B: BlockDevice + ?Sized>(
-    device: &B, block: u32, superblock: &Ext2Superblock, groups: &[Ext2BlockGroupDesc],
-) -> Result<bool, &'static str> {
-    let adjusted = block.checked_sub(superblock.s_first_data_block).ok_or("Invalid orphan block")?;
-    let group = groups.get((adjusted / superblock.s_blocks_per_group) as usize).ok_or("Invalid orphan group")?;
-    let local = adjusted % superblock.s_blocks_per_group;
-    let size = superblock.block_size();
-    if local as usize / 8 >= size { return Err("Invalid orphan bitmap index"); }
-    let mut bitmap = [0u8; 4096];
-    read_ext2_block(device, group.bg_block_bitmap, size, &mut bitmap[..size])
-        .map_err(|_| "Failed to read orphan bitmap")?;
-    Ok(bitmap[local as usize / 8] & (1 << (local % 8)) != 0)
-}
-
 pub fn free_block<B: BlockDevice + ?Sized>(
     device: &B,
     block_num: u32,

@@ -67,33 +67,26 @@ impl Reclaim {
             fs.write_inode(ino, &self.inode)?;
             self.published = true;
         }
-        // One bitmap transition per pass. The service drops the filesystem
-        // guard and parks before continuing, so foreground I/O can run between
-        // steps even when a large orphan has many allocated blocks.
+        // One bitmap transition per call; the caller loops until done. The
+        // per-step state lets a retry after a reported I/O error resume here
+        // without freeing a block twice.
         if let Some(&block) = self.blocks.get(self.next) {
-            let allocated = super::block_group::block_is_allocated(
+            let retry = self.block_attempted;
+            self.block_attempted = true;
+            if !super::block_group::release_orphan_block(
                 fs.device.as_ref(),
                 block,
                 &fs.superblock,
-                &fs.block_groups,
-            )?;
-            let retry = self.block_attempted;
-            self.block_attempted = true;
-            if allocated {
-                super::block_group::free_block(
-                    fs.device.as_ref(),
-                    block,
-                    &fs.superblock,
-                    &mut fs.block_groups,
-                )?;
-            } else if retry {
+                &mut fs.block_groups,
+            )? {
+                if !retry {
+                    return Err("Orphan block was already free");
+                }
                 // An earlier bitmap write reported an error after clearing the
                 // bit. Quarantine prevented reuse; its count still needs posting.
                 let group = ((block - fs.superblock.s_first_data_block)
                     / fs.superblock.s_blocks_per_group) as usize;
                 fs.block_groups[group].bg_free_blocks_count += 1;
-            } else {
-                return Err("Orphan block was already free");
             }
             fs.superblock.increment_free_blocks(1);
             self.next += 1;
@@ -101,26 +94,19 @@ impl Reclaim {
             return Ok(false);
         }
         if !self.inode_freed {
-            let allocated = super::inode::inode_is_allocated(
+            let retry = self.inode_attempted;
+            self.inode_attempted = true;
+            if !super::inode::release_orphan_inode(
                 fs.device.as_ref(),
                 ino,
                 &fs.superblock,
-                &fs.block_groups,
-            )?;
-            let retry = self.inode_attempted;
-            self.inode_attempted = true;
-            if allocated {
-                super::inode::free_inode_bitmap(
-                    fs.device.as_ref(),
-                    ino,
-                    &fs.superblock,
-                    &mut fs.block_groups,
-                )?;
-            } else if retry {
+                &mut fs.block_groups,
+            )? {
+                if !retry {
+                    return Err("Orphan inode was already free");
+                }
                 let group = ((ino - 1) / fs.superblock.s_inodes_per_group) as usize;
                 fs.block_groups[group].bg_free_inodes_count += 1;
-            } else {
-                return Err("Orphan inode was already free");
             }
             fs.superblock.increment_free_inodes();
             self.inode_freed = true;
@@ -134,7 +120,6 @@ impl Reclaim {
             &fs.block_groups,
         )
         .map_err(|_| "Failed to persist deletion groups")?;
-        fs.sync()?;
         let key = device_key(fs.device.as_ref());
         let mut quarantine = QUARANTINE.lock();
         quarantine.remove(&(key, true, ino));
