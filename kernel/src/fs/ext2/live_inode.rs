@@ -148,10 +148,12 @@ impl LiveInodes {
         }
     }
 
-    pub fn pending(&self) -> alloc::vec::Vec<Arc<LiveInode>> {
-        self.objects
-            .lock()
-            .values()
+    pub fn pending(&self, after: u32) -> alloc::vec::Vec<Arc<LiveInode>> {
+        use core::ops::Bound::{Excluded, Included, Unbounded};
+        let table = self.objects.lock();
+        table.range((Excluded(after), Unbounded))
+            .chain(table.range((Unbounded, Included(after))))
+            .map(|(_, object)| object)
             .filter(|object| object.unused() && object.pending.load(Ordering::Acquire))
             .take(32)
             .cloned()

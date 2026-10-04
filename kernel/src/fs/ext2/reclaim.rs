@@ -61,13 +61,16 @@ impl Reclaim {
         })
     }
 
-    pub fn finish(&mut self, fs: &mut Ext2Fs, ino: u32) -> Result<(), &'static str> {
+    pub fn finish(&mut self, fs: &mut Ext2Fs, ino: u32) -> Result<bool, &'static str> {
         if !self.published {
             // No bitmap bit is freed until the disk inode has no block pointers.
             fs.write_inode(ino, &self.inode)?;
             self.published = true;
         }
-        while let Some(&block) = self.blocks.get(self.next) {
+        // One bitmap transition per pass. The service drops the filesystem
+        // guard and parks before continuing, so foreground I/O can run between
+        // steps even when a large orphan has many allocated blocks.
+        if let Some(&block) = self.blocks.get(self.next) {
             let allocated = super::block_group::block_is_allocated(
                 fs.device.as_ref(),
                 block,
@@ -95,6 +98,7 @@ impl Reclaim {
             fs.superblock.increment_free_blocks(1);
             self.next += 1;
             self.block_attempted = false;
+            return Ok(false);
         }
         if !self.inode_freed {
             let allocated = super::inode::inode_is_allocated(
@@ -137,6 +141,6 @@ impl Reclaim {
         for block in &self.blocks {
             quarantine.remove(&(key, false, *block));
         }
-        Ok(())
+        Ok(true)
     }
 }

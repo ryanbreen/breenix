@@ -39,6 +39,7 @@ pub struct Ext2Fs {
     pub mount_pin: live_inode::MountPin,
     live_inodes: live_inode::LiveInodes,
     orphan_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
+    finalization_cursor: u32,
 }
 
 impl Ext2Fs {
@@ -69,35 +70,47 @@ impl Ext2Fs {
             mount_pin: live_inode::MountPin::new(mount_id)?,
             live_inodes: live_inode::LiveInodes::new(),
             orphan_reclaims: alloc::collections::BTreeMap::new(),
+            finalization_cursor: 0,
         })
     }
 
     pub fn pin_inode(&self, inode_num: u32) -> Result<live_inode::FileHandle, &'static str> {
         let inode = self.read_inode(inode_num)?;
-        self.live_inodes.pin(self.mount_pin, inode_num, inode.size())
+        self.pin_loaded_inode(inode_num, inode.size())
+    }
+
+    /// The caller read this inode under the same FS guard that protects the pin.
+    pub(crate) fn pin_loaded_inode(&self, inode_num: u32, size: u64)
+        -> Result<live_inode::FileHandle, &'static str> {
+        self.live_inodes.pin(self.mount_pin, inode_num, size)
     }
 
     fn finalize_inactive(&mut self) -> Result<(), &'static str> {
         let mut failed = false;
-        for object in self.live_inodes.pending() {
+        for object in self.live_inodes.pending(self.finalization_cursor).into_iter().take(1) {
             if !object.unused() { continue; }
             let ino = object.key.inode;
+            self.finalization_cursor = ino;
             let outcome = (|| {
                 if !self.orphan_reclaims.contains_key(&ino) {
-                    if !object.orphan.load(Ordering::Acquire) { return Ok(()); }
+                    if !object.orphan.load(Ordering::Acquire) { return Ok(true); }
                     let reclaim = reclaim::Reclaim::prepare(self, ino)?;
                     self.orphan_reclaims.insert(ino, reclaim);
                 }
                 let mut progress = self.orphan_reclaims.remove(&ino).expect("orphan progress");
                 match progress.finish(self, ino) {
-                    Ok(()) => Ok(()),
+                    Ok(true) => Ok(true),
+                    Ok(false) => { self.orphan_reclaims.insert(ino, progress); Ok(false) },
                     Err(error) => { self.orphan_reclaims.insert(ino, progress); Err(error) }
                 }
             })();
-            if outcome.is_ok() { self.live_inodes.remove(&object); }
-            else { failed = true; }
+            match outcome {
+                Ok(true) => self.live_inodes.remove(&object),
+                Ok(false) => {},
+                Err(_) => failed = true,
+            }
         }
-        if !self.live_inodes.pending().is_empty() {
+        if !self.live_inodes.pending(self.finalization_cursor).is_empty() {
             live_inode::FINALIZATION_PENDING.store(true, Ordering::Release);
         }
         if failed { Err("ext2 finalization needs retry") } else { Ok(()) }

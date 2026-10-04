@@ -440,7 +440,8 @@ fn sys_open_write_path(
 
     let mid = fs.mount_id;
     let handle = if is_reg {
-        Some(fs.pin_inode(ino).map_err(|_| SyscallResult::Err(super::errno::EIO as u64))?)
+        Some(fs.pin_loaded_inode(ino, if want_trunc && !file_created { 0 } else { inode.size() })
+            .map_err(|_| SyscallResult::Err(super::errno::EIO as u64))?)
     } else { None };
     Ok((ino, ft, is_dir, is_reg, mid, handle))
 }
@@ -478,7 +479,8 @@ fn sys_open_read_path(
     }
     let mid = fs.mount_id;
     let handle = if is_reg {
-        Some(fs.pin_inode(ino).map_err(|_| SyscallResult::Err(super::errno::EIO as u64))?)
+        Some(fs.pin_loaded_inode(ino, inode.size())
+            .map_err(|_| SyscallResult::Err(super::errno::EIO as u64))?)
     } else { None };
     Ok((ino, ft, is_dir, is_reg, mid, handle))
 }
