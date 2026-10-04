@@ -157,16 +157,36 @@ struct LeafRecord {
     mapping: LeafMapping,
 }
 
-/// A user leaf removed from its page table whose frame reference has not been
-/// dropped yet. Call `release()` once the page's TLB entry has been flushed;
-/// dropping it without that keeps the reference, so the frame is never freed.
-#[must_use = "release the leaf after the TLB flush, or its frame is never freed"]
+/// A user leaf removed from its page table whose TLB entry may still be
+/// cached. Its only operation is `flush()`, so the frame reference cannot be
+/// dropped before the invalidation; dropping it keeps the reference, so the
+/// frame is never freed.
+#[must_use = "flush and release the leaf, or its frame is never freed"]
 pub struct ReleasedLeaf {
     record: LeafRecord,
     frame: PhysFrame,
 }
 
 impl ReleasedLeaf {
+    /// Invalidate the page's TLB entry. The descriptor is already invalid, so
+    /// a replacement mapped after this call is break-before-make.
+    pub fn flush(self) -> FlushedLeaf {
+        crate::memory::tlb::flush_page(VirtAddr::new(self.record.page));
+        FlushedLeaf {
+            record: self.record,
+            frame: self.frame,
+        }
+    }
+}
+
+/// A removed user leaf whose TLB entry has been invalidated.
+#[must_use = "release the leaf, or its frame is never freed"]
+pub struct FlushedLeaf {
+    record: LeafRecord,
+    frame: PhysFrame,
+}
+
+impl FlushedLeaf {
     /// Drop the leaf's frame reference, freeing the frame at zero.
     pub fn release(self) {
         ProcessPageTable::release_leaf_record(self.record, self.frame);
@@ -1544,15 +1564,14 @@ impl ProcessPageTable {
         page: Page<Size4KiB>,
     ) -> Result<PhysFrame<Size4KiB>, &'static str> {
         let leaf = self.unmap_page_deferred(page)?;
-        let frame = leaf.frame;
-        leaf.release();
-        Ok(frame)
+        Self::release_leaf_record(leaf.record, leaf.frame);
+        Ok(leaf.frame)
     }
 
     /// Remove a page's descriptor and custody record, keeping the frame's
-    /// reference in the returned `ReleasedLeaf`. The caller flushes the page's
-    /// TLB entry and only then calls `ReleasedLeaf::release()`, so the frame
-    /// cannot be freed while a stale translation can still reach it.
+    /// reference in the returned `ReleasedLeaf`. Only `ReleasedLeaf::flush()`
+    /// leads to `FlushedLeaf::release()`, so the frame cannot be freed while
+    /// a stale translation can still reach it.
     pub fn unmap_page_deferred(
         &mut self,
         page: Page<Size4KiB>,

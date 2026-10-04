@@ -16,7 +16,6 @@ use x86_64::VirtAddr;
 ///
 /// This is more efficient than flushing the entire TLB when only
 /// a single page mapping has changed.
-#[allow(dead_code)]
 #[inline]
 pub fn flush_page(addr: VirtAddr) {
     tlb::flush(addr);

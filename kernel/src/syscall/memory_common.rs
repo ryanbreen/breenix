@@ -94,9 +94,7 @@ pub fn cleanup_mapped_pages(
     for (page, _) in mapped_pages.iter() {
         match page_table.unmap_page_deferred(*page) {
             Ok(leaf) => {
-                // The frame is released only once no TLB can still reach it.
-                flush_tlb(page.start_address());
-                leaf.release();
+                leaf.flush().release();
             }
             Err(e) => {
                 log::error!(
@@ -141,15 +139,18 @@ pub fn allocate_zeroed_frames(count: usize) -> Option<alloc::vec::Vec<PhysFrame<
 
 /// Map `frames` at consecutive pages from `start` into the page table of the
 /// process whose main thread is `thread_id`, holding PROCESS_MANAGER for each
-/// `MAP_CHUNK_PAGES` pages and never across allocation. Each section re-checks
+/// `MAP_CHUNK_PAGES` pages. The leaf frames are allocated and zeroed before
+/// this call, with no lock held; under the lock `map_page()` still reserves
+/// leaf-record storage and allocates any missing intermediate table frames,
+/// and the last section's VMA push can grow `vmas`. Each section re-checks
 /// that the process still owns the table whose root is `root` and that no VMA
 /// overlaps the range; the last one pushes `vma`.
 ///
 /// New descriptors replace invalid ones, so no TLB entry needs flushing. On
-/// failure the pages this call mapped are unmapped (flushed, then released)
-/// while the table is still the process's, and every frame left unmapped is
-/// freed. A table that stopped being the process's keeps the pages it got in
-/// its own leaf custody, which its retirement releases.
+/// failure every frame left unmapped is freed and the pages this call mapped
+/// are unmapped by `unmap_prepared_prefix`, in sections of the same size. A
+/// table that stopped being the process's keeps the pages it got in its own
+/// leaf custody, which its retirement releases.
 pub fn map_prepared_frames(
     thread_id: u64,
     root: u64,
@@ -203,23 +204,45 @@ pub fn map_prepared_frames(
             }
         }
         if failed {
-            for index in 0..mapped {
-                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
-                    start + (index as u64) * PAGE_SIZE,
-                ));
-                if let Ok(leaf) = page_table.unmap_page_deferred(page) {
-                    flush_tlb(page.start_address());
-                    leaf.release();
-                }
-            }
             drop(manager_guard);
             free_from(mapped);
+            unmap_prepared_prefix(thread_id, root, start, mapped);
             return Err(ErrorCode::OutOfMemory);
         }
         if mapped == frames.len() {
             process.vmas.push(vma);
             return Ok(());
         }
+    }
+}
+
+/// Unmap the first `count` pages `map_prepared_frames` mapped from `start`,
+/// holding PROCESS_MANAGER for each `MAP_CHUNK_PAGES` pages. Each page is
+/// flushed before its frame is released. Stops once the process no longer
+/// owns the table whose root is `root`; that table's retirement releases the
+/// rest.
+fn unmap_prepared_prefix(thread_id: u64, root: u64, start: u64, count: usize) {
+    let mut unmapped = 0usize;
+    while unmapped < count {
+        let mut manager_guard = crate::process::manager();
+        let Some(page_table) = manager_guard
+            .as_mut()
+            .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+            .and_then(|(_, process)| process.page_table.as_mut())
+            .filter(|page_table| page_table.level_4_frame().start_address().as_u64() == root)
+        else {
+            return;
+        };
+        let chunk_end = (unmapped + MAP_CHUNK_PAGES).min(count);
+        for index in unmapped..chunk_end {
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
+                start + (index as u64) * PAGE_SIZE,
+            ));
+            if let Ok(leaf) = page_table.unmap_page_deferred(page) {
+                leaf.flush().release();
+            }
+        }
+        unmapped = chunk_end;
     }
 }
 
