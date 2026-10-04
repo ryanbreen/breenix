@@ -14,6 +14,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use crate::task::thread::{TimerPop, TimerPopRecord};
 use crate::tracing::output::Line;
 
 /// The grep anchor. Present exactly when a timed futex wait arbitrated to
@@ -37,10 +38,11 @@ pub struct TimedWaitRecord {
     pub user_deadline_ns: u64,
     /// The monotonic clock read that the deadline comparison used.
     pub now_ns: u64,
-    /// What `wake_expired_timers` saw when it popped this thread's timer-heap
-    /// entry: `Some(true)` still set, `Some(false)` already cleared - a no-op
-    /// pop - and `None` if no entry for this wait was ever popped.
-    pub timer_pop_wake_time_set: Option<bool>,
+    /// What `wake_expired_timers` did with this wait's timer-heap entries:
+    /// whether its own entry was popped with `wake_time_ns` still set or
+    /// already cleared (a no-op pop), and how many entries left by earlier
+    /// waits expired during it and were discarded.
+    pub timer_pop: Option<TimerPopRecord>,
     /// The errno this wait is about to return, or 0 for a success return.
     pub errno: u64,
 }
@@ -67,11 +69,16 @@ pub fn record(record: &TimedWaitRecord) {
     line.text(" now_ns=");
     line.dec(record.now_ns);
     line.text(" timer_pop=");
-    line.text(match record.timer_pop_wake_time_set {
-        Some(true) => "wake_time_set",
-        Some(false) => "wake_time_cleared",
-        None => "never_popped",
+    let own_entry = record
+        .timer_pop
+        .map_or(TimerPop::NotPopped, |pops| pops.own_entry);
+    line.text(match own_entry {
+        TimerPop::WakeTimeSet => "wake_time_set",
+        TimerPop::WakeTimeCleared => "wake_time_cleared",
+        TimerPop::NotPopped => "never_popped",
     });
+    line.text(" stale_entries=");
+    line.dec(record.timer_pop.map_or(0, |pops| pops.stale_entries as u64));
     line.text(" errno=");
     line.dec(record.errno);
     line.text(" seen=");

@@ -7659,6 +7659,79 @@ fn test_workqueue_operational() -> TestResult {
     TestResult::Pass
 }
 
+/// A timed wait that completes early leaves its entry in the timer heap. That
+/// entry must not end the thread's next timed wait, and the next wait's own
+/// deadline must.
+///
+/// Wait A is a timed I/O wait completed before it parks, the shape of a disk
+/// completion that lands at once. Wait B is a timer sleep whose deadline is
+/// 100 ms after A's, so A's entry expires while B is blocked. B must stay
+/// blocked until its own deadline, and the record must attribute the ending
+/// pop to B's entry and count A's as discarded.
+fn test_stale_timer_entry_cannot_end_later_wait() -> TestResult {
+    use crate::task::thread::{ThreadState, TimerPop};
+
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return TestResult::Fail("no current thread");
+    };
+
+    let deadline_a = monotonic_now_ns().saturating_add(20_000_000);
+    let deadline_b = deadline_a.saturating_add(100_000_000);
+
+    let completed_early = crate::task::scheduler::with_scheduler(|sched| {
+        if !sched.block_current_for_io_with_timeout(Some(deadline_a)) {
+            return false;
+        }
+        sched.unblock_for_io(tid);
+        sched
+            .get_thread(tid)
+            .is_some_and(|thread| thread.state != ThreadState::BlockedOnIO)
+    })
+    .unwrap_or(false);
+    if !completed_early {
+        return TestResult::Fail("wait A did not complete before its deadline");
+    }
+
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_timer(deadline_b);
+    });
+    crate::task::scheduler::yield_current();
+
+    loop {
+        crate::arch_halt_with_interrupts();
+        let blocked = crate::task::scheduler::with_scheduler(|sched| {
+            sched
+                .get_thread(tid)
+                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
+        })
+        .unwrap_or(false);
+        if !blocked {
+            break;
+        }
+    }
+    let woke_at = monotonic_now_ns();
+
+    if woke_at < deadline_b {
+        return TestResult::Fail("wait A's expired entry ended wait B before its deadline");
+    }
+
+    let record = crate::task::scheduler::with_scheduler(|sched| {
+        sched.get_thread(tid).and_then(|thread| thread.timer_pop)
+    })
+    .flatten();
+    let Some(record) = record else {
+        return TestResult::Fail("wait B has no timer-pop record");
+    };
+    if record.deadline_ns != deadline_b || record.own_entry != TimerPop::WakeTimeSet {
+        return TestResult::Fail("wait B was not ended by the pop of its own entry");
+    }
+    if record.stale_entries == 0 {
+        return TestResult::Fail("wait A's entry was not counted as discarded during wait B");
+    }
+
+    TestResult::Pass
+}
+
 // =============================================================================
 // ProcessContext Stage Tests
 // =============================================================================
@@ -10716,6 +10789,7 @@ static SYSCALL_TESTS: &[TestDef] = &[
 /// PostScheduler stage tests (run after kthreads are working):
 /// - kthread_spawn_verify: Verify kthread spawning works
 /// - workqueue_operational: Verify workqueue is operational
+/// - stale_timer_entry_cannot_end_later_wait: An earlier wait's expired entry cannot end a later wait
 static SCHEDULER_TESTS: &[TestDef] = &[
     TestDef {
         name: "wakes_are_placed_on_online_cpus",
@@ -10756,6 +10830,13 @@ static SCHEDULER_TESTS: &[TestDef] = &[
     TestDef {
         name: "workqueue_operational",
         func: test_workqueue_operational,
+        arch: Arch::Any,
+        timeout_ms: 10000,
+        stage: TestStage::PostScheduler,
+    },
+    TestDef {
+        name: "stale_timer_entry_cannot_end_later_wait",
+        func: test_stale_timer_entry_cannot_end_later_wait,
         arch: Arch::Any,
         timeout_ms: 10000,
         stage: TestStage::PostScheduler,
