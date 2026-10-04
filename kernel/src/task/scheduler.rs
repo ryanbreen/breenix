@@ -5791,9 +5791,15 @@ pub fn spawn_front(thread: Box<Thread>) {
 }
 
 pub fn reclaim_terminated_threads() {
-    // Two masked regions, deliberately, with the scheduler lock held in neither
-    // of the frees: the harvest under the lock, then the release. Splitting them
-    // keeps the second window covering the free and nothing else.
+    // x86 resumes idle at its entry point after a dispatch, abandoning the
+    // interrupted continuation. Keep custody of detached threads through their
+    // destruction so idle cannot abandon a stack teardown while holding a lock.
+    #[cfg(target_arch = "x86_64")]
+    crate::per_cpu::preempt_disable();
+
+    // Harvest with interrupts masked, then release outside the scheduler lock.
+    // ARM64 also masks interrupts during release; x86 keeps them available
+    // throughout the page teardown while preemption remains disabled.
     let reclaimed_threads = without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
@@ -5803,6 +5809,8 @@ pub fn reclaim_terminated_threads() {
         }
     });
     release_reclaimed_threads(reclaimed_threads);
+    #[cfg(target_arch = "x86_64")]
+    crate::per_cpu::preempt_enable();
 }
 
 /// Free reclaimed control blocks with interrupts MASKED.
