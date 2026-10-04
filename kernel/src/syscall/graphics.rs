@@ -1702,13 +1702,12 @@ pub struct WindowCompositeInfo {
 fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> SyscallResult {
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
-        flush_tlb, get_current_thread_id, prot_to_page_flags, round_down_to_page, PAGE_SIZE,
+        allocate_zeroed_frames, get_current_thread_id, map_prepared_frames, prot_to_page_flags,
+        round_down_to_page, PAGE_SIZE,
     };
 
     #[cfg(not(target_arch = "x86_64"))]
-    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
-    #[cfg(target_arch = "x86_64")]
-    use x86_64::structures::paging::{Page, PhysFrame, Size4KiB};
+    use crate::memory::arch_stub::VirtAddr;
     #[cfg(target_arch = "x86_64")]
     use x86_64::VirtAddr;
 
@@ -1731,10 +1730,9 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
         }
     };
 
-    // Phase 1: Acquire lock, extract metadata + raw page table pointer, release lock.
-    // See sys_mmap for rationale: holding PROCESS_MANAGER across the page-mapping
-    // loop (IRQs disabled) causes priority inversion on SMP.
-    let (pid_u64, new_addr, total_size, page_table_ptr) = {
+    // Choose the region under PROCESS_MANAGER, then map prepared frames a
+    // chunk at a time, as sys_mmap does.
+    let (pid_u64, new_addr, total_size, root) = {
         let mut manager_guard = crate::process::manager();
         let manager = match *manager_guard {
             Some(ref mut m) => m,
@@ -1774,64 +1772,34 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
             None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
         };
 
-        // SAFETY: process lives as long as this syscall; no other CPU touches its page table.
-        let page_table_ptr: *mut _ = &mut **page_table;
-        (pid.as_u64(), new_addr, total_size, page_table_ptr)
-        // manager_guard drops here, releasing PROCESS_MANAGER before the loop
+        let root = page_table.level_4_frame().start_address().as_u64();
+        (pid.as_u64(), new_addr, total_size, root)
     };
 
-    // Phase 2: Map pages WITHOUT holding PROCESS_MANAGER.
-    let page_flags = prot_to_page_flags(Protection::from_bits_truncate(3)); // READ | WRITE
-    let mut first_phys: u64 = 0;
-    let mut page_phys_addrs = alloc::vec::Vec::with_capacity(num_pages);
-
-    for i in 0..num_pages {
-        let frame = match crate::memory::frame_allocator::allocate_frame() {
-            Some(f) => f,
-            None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
-        };
-
-        let frame_phys = frame.start_address().as_u64();
-        page_phys_addrs.push(frame_phys);
-
-        if i == 0 {
-            first_phys = frame_phys;
-        }
-
-        let page_addr = new_addr + (i as u64) * PAGE_SIZE;
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
-
-        // SAFETY: page_table_ptr is valid for the lifetime of this syscall.
-        let page_table = unsafe { &mut *page_table_ptr };
-        if page_table.map_page(page, frame, page_flags).is_err() {
-            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
-        }
-
-        let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
-        unsafe {
-            core::ptr::write_bytes(
-                (phys_mem_offset + frame_phys) as *mut u8,
-                0,
-                PAGE_SIZE as usize,
-            );
-        }
-        flush_tlb(VirtAddr::new(page_addr));
-    }
-
-    // Phase 3: Re-acquire lock to register VMA and get process pid for logging.
-    {
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
-                let vma = Vma::new(
-                    VirtAddr::new(new_addr),
-                    VirtAddr::new(new_addr + total_size),
-                    Protection::from_bits_truncate(3),
-                    MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
-                );
-                process.vmas.push(vma);
-            }
-        }
+    let Some(frames) = allocate_zeroed_frames(num_pages) else {
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+    };
+    let page_phys_addrs: alloc::vec::Vec<u64> = frames
+        .iter()
+        .map(|frame| frame.start_address().as_u64())
+        .collect();
+    let first_phys = page_phys_addrs.first().copied().unwrap_or(0);
+    let prot = Protection::from_bits_truncate(3); // READ | WRITE
+    let vma = Vma::new(
+        VirtAddr::new(new_addr),
+        VirtAddr::new(new_addr + total_size),
+        prot,
+        MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
+    );
+    if let Err(error) = map_prepared_frames(
+        current_thread_id,
+        root,
+        new_addr,
+        frames,
+        prot_to_page_flags(prot),
+        vma,
+    ) {
+        return SyscallResult::Err(error as u64);
     }
 
     // Register in window buffer table

@@ -11,17 +11,17 @@ use crate::syscall::{ErrorCode, SyscallResult};
 
 // Conditional imports based on architecture
 #[cfg(target_arch = "x86_64")]
-use x86_64::structures::paging::{Page, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{Page, Size4KiB};
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
 #[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{Page, PhysFrame, Size4KiB, VirtAddr};
+use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 
 // Import common memory syscall helpers
 use crate::syscall::memory_common::{
-    cleanup_mapped_pages, flush_tlb, get_current_thread_id, is_page_aligned, prot_to_page_flags,
-    round_down_to_page, round_up_to_page, PAGE_SIZE,
+    allocate_zeroed_frames, flush_tlb, get_current_thread_id, is_page_aligned,
+    map_prepared_frames, prot_to_page_flags, round_down_to_page, round_up_to_page, PAGE_SIZE,
 };
 
 extern crate alloc;
@@ -114,19 +114,12 @@ pub fn sys_mmap(
         }
     };
 
-    // Phase 1: Acquire lock to read process metadata and get a raw pointer to the
-    // page table.  We release the lock BEFORE the page-mapping loop so that we do
-    // not hold PROCESS_MANAGER (IRQs disabled) across hundreds of frame allocations
-    // and TLB flushes — that caused system-wide priority inversion on SMP: other
-    // CPUs spinning in manager() never made progress because the holder had IRQs
-    // off the entire time.
-    //
-    // Safety: the raw pointer is valid for the lifetime of this syscall because
-    // (a) the process cannot be freed while one of its threads is executing a syscall,
-    // (b) no other CPU modifies this process's page table concurrently (user
-    //     processes are single-threaded in the current scheduler model), and
-    // (c) we re-acquire the lock in Phase 3 before touching process.vmas.
-    let (start_addr, end_addr, page_flags, page_table_ptr) = {
+    // Choose the region under PROCESS_MANAGER, then release it: the frames are
+    // allocated and zeroed with no lock held, and map_prepared_frames maps them
+    // under the lock a chunk at a time, re-checking the region and the page
+    // table in each section. Holding the lock (IRQs off on ARM64) across
+    // hundreds of allocations starved every other CPU spinning in manager().
+    let (start_addr, end_addr, root) = {
         let mut manager_guard = crate::process::manager();
         let manager = match *manager_guard {
             Some(ref mut m) => m,
@@ -247,81 +240,30 @@ pub fn sys_mmap(
             }
         };
 
-        let page_flags = prot_to_page_flags(prot);
-        // SAFETY: page_table lives inside a Box<ProcessPageTable> inside the process,
-        // which remains valid for the duration of this syscall (see comment above).
-        let page_table_ptr: *mut _ = &mut **page_table;
-        (start_addr, end_addr, page_flags, page_table_ptr)
-        // manager_guard drops here, releasing PROCESS_MANAGER before the loop
+        let root = page_table.level_4_frame().start_address().as_u64();
+        (start_addr, end_addr, root)
     };
 
-    // Phase 2: Map pages WITHOUT holding PROCESS_MANAGER.
-    let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(start_addr));
-    let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr - 1));
-    let physical_memory_offset = crate::memory::physical_memory_offset();
-    let mut mapped_pages: alloc::vec::Vec<(Page<Size4KiB>, PhysFrame<Size4KiB>)> =
-        alloc::vec::Vec::new();
-    let mut current_page = start_page;
-
-    loop {
-        let frame = match crate::memory::frame_allocator::allocate_frame() {
-            Some(f) => f,
-            None => {
-                log::error!(
-                    "sys_mmap: OOM allocating frame for page {:#x}",
-                    current_page.start_address().as_u64()
-                );
-                // SAFETY: same page_table_ptr lifetime argument as above.
-                let page_table = unsafe { &mut *page_table_ptr };
-                cleanup_mapped_pages(page_table, &mapped_pages);
-                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-            }
-        };
-
-        // SAFETY: see comment above — page_table is valid for this syscall's lifetime.
-        let page_table = unsafe { &mut *page_table_ptr };
-        if let Err(e) = page_table.map_page(current_page, frame, page_flags) {
-            log::error!(
-                "sys_mmap: map_page failed for {:#x}: {}",
-                current_page.start_address().as_u64(),
-                e
-            );
-            crate::memory::frame_allocator::deallocate_frame(frame);
-            cleanup_mapped_pages(page_table, &mapped_pages);
-            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-        }
-
-        let phys_addr = frame.start_address().as_u64();
-        let virt_ptr = (physical_memory_offset.as_u64() + phys_addr) as *mut u8;
-        unsafe {
-            core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
-        }
-
-        flush_tlb(current_page.start_address());
-        mapped_pages.push((current_page, frame));
-
-        if current_page >= end_page {
-            break;
-        }
-        current_page += 1;
-    }
-
-    log::trace!("sys_mmap: Successfully mapped {} pages", mapped_pages.len());
-
-    // Phase 3: Re-acquire lock to register the VMA in the process.
-    {
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
-                let vma = Vma::new(
-                    VirtAddr::new(start_addr),
-                    VirtAddr::new(end_addr),
-                    prot,
-                    flags,
-                );
-                process.vmas.push(vma);
-            }
-        }
+    let page_count = ((end_addr - start_addr) / PAGE_SIZE) as usize;
+    let Some(frames) = allocate_zeroed_frames(page_count) else {
+        log::error!("sys_mmap: OOM allocating {} frames", page_count);
+        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+    };
+    let vma = Vma::new(
+        VirtAddr::new(start_addr),
+        VirtAddr::new(end_addr),
+        prot,
+        flags,
+    );
+    if let Err(error) = map_prepared_frames(
+        current_thread_id,
+        root,
+        start_addr,
+        frames,
+        prot_to_page_flags(prot),
+        vma,
+    ) {
+        return SyscallResult::Err(error as u64);
     }
 
     SyscallResult::Ok(start_addr)
