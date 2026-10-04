@@ -7499,13 +7499,26 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     }
 
     let unmap = function_body(process_memory, "unmap_page");
+    let unmap_deferred = function_body(process_memory, "unmap_page_deferred");
+    let released_leaf = process_memory
+        .find("impl ReleasedLeaf")
+        .ok_or(())?;
+    let flush_leaf = function_body(&process_memory[released_leaf..], "flush");
+    let flushed_leaf = process_memory
+        .find("impl FlushedLeaf")
+        .ok_or(())?;
+    let release_leaf = function_body(&process_memory[flushed_leaf..], "release");
     let release = function_body(process_memory, "release_leaf_record");
     let drain = function_body(process_memory, "release_mapped_leaves");
     if !process_memory.contains("struct LeafRecord")
         || !process_memory.contains("page: u64")
         || !process_memory.contains("binary_search_by_key(&page")
-        || !unmap.contains("self.leaves.search(page_addr)")
-        || !unmap.contains("Self::release_leaf_record(record, frame)")
+        || !unmap.contains("self.unmap_page_deferred(page)?")
+        || !unmap.contains("Self::release_leaf_record(leaf.record, leaf.frame);")
+        || !unmap_deferred.contains("self.leaves.search(page_addr)")
+        || !unmap_deferred.contains("Ok(ReleasedLeaf { record, frame })")
+        || !flush_leaf.contains("tlb::flush_page(")
+        || !release_leaf.contains("ProcessPageTable::release_leaf_record(self.record, self.frame)")
         || !release.contains("frame_decref(frame)")
         || !release.contains("deallocate_leaf_frame(frame) == ReturnOutcome::Returned")
         || !drain.contains("self.walk_mapped_pages(")

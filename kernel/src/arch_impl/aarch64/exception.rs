@@ -2344,12 +2344,38 @@ fn exception_class_name(ec: u32) -> &'static str {
     }
 }
 
+/// Make a page just written through HHDM safe to execute from a user VA:
+/// clean its data cache lines to the point of unification, then invalidate
+/// every CPU's instruction cache. Like the ELF loader, this invalidates the
+/// whole I-cache, because per-line `ic ivau` on the HHDM alias need not hit
+/// the user VA's sets on a VIPT I-cache.
+///
+/// # Safety
+/// `page_va` must be the page-aligned HHDM address of a mapped frame.
+unsafe fn sync_icache_for_copied_page(page_va: u64) {
+    let ctr: u64;
+    core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack));
+    let line = 4u64 << ((ctr >> 16) & 0xF);
+    let mut addr = page_va;
+    while addr < page_va + 4096 {
+        core::arch::asm!("dc cvau, {}", in(reg) addr, options(nostack, preserves_flags));
+        addr += line;
+    }
+    core::arch::asm!(
+        "dsb ish",
+        "ic ialluis",
+        "dsb ish",
+        "isb",
+        options(nostack, preserves_flags)
+    );
+}
+
 /// Handle CoW (Copy-on-Write) page fault for ARM64
 ///
 /// Returns true if the fault was handled (page was copied or made writable)
 /// Returns false if this wasn't a CoW fault or couldn't be handled
 fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
-    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
+    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
     use crate::memory::cow_stats;
     use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
     use crate::memory::frame_metadata::frame_is_shared;
@@ -2465,33 +2491,37 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     let src = (hhdm_base + old_frame.start_address().as_u64()) as *const u8;
     let dst = (hhdm_base + new_frame.start_address().as_u64()) as *mut u8;
 
+    let new_flags = make_private_flags(old_flags);
     unsafe {
         core::ptr::copy_nonoverlapping(src, dst, 4096);
+        if !new_flags.contains(PageTableFlags::NO_EXECUTE) {
+            sync_icache_for_copied_page(dst as u64);
+        }
     }
 
-    // Unmap old page and map new one with write permissions
-    let new_flags = make_private_flags(old_flags);
-    if page_table.unmap_page(page).is_err() {
-        let _ = deallocate_leaf_frame(new_frame);
-        return false;
-    }
-    if page_table.map_page(page, new_frame, new_flags).is_err() {
+    // Break before make: unmap the old page and invalidate its TLB entry on
+    // every CPU while the descriptor is invalid, then map the copy. The old
+    // leaf's frame reference is dropped only after the replacement is in
+    // place: a racing release by the other sharer can make it the last one.
+    let old_leaf = match page_table.unmap_page_deferred(page) {
+        Ok(leaf) => leaf.flush(),
+        Err(_) => {
+            let _ = deallocate_leaf_frame(new_frame);
+            return false;
+        }
+    };
+    let copied = page_table.map_page(page, new_frame, new_flags).is_ok();
+    if !copied {
         let _ = page_table.map_page(page, old_frame, old_flags);
+    }
+    // Make the new descriptor visible to the table walker before EL0 resumes.
+    unsafe {
+        core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
+    }
+    old_leaf.release();
+    if !copied {
         let _ = deallocate_leaf_frame(new_frame);
         return false;
-    }
-
-    // Flush TLB for the CoW-copied page
-    unsafe {
-        let va_for_tlbi = faulting_addr.as_u64() >> 12;
-        core::arch::asm!(
-            "dsb ishst",
-            "tlbi vale1is, {0}",
-            "dsb ish",
-            "isb",
-            in(reg) va_for_tlbi,
-            options(nostack)
-        );
     }
 
     cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
