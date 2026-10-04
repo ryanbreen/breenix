@@ -449,7 +449,7 @@ func main() -> Int32 {
                     timeoutSecs: runArgs.gateTimeout,
                     pathsTemplate: BeastPaths(host: runArgs.host, clonePath: "")
                 )
-                let options = BeastLaunchOptions(
+                var options = BeastLaunchOptions(
                     boots: runArgs.boots,
                     mode: runArgs.mode,
                     sha: sha,
@@ -464,7 +464,27 @@ func main() -> Int32 {
                     return 0
                 }
 
-                let result = try launcher.runX86(options: options)
+                // Vigil shows a full gate or suite run as running from now, and scores it once its serials arrive.
+                let runID = RunManifest.makeID(startedAt: Date(), arch: .x86_64, profile: "gate")
+                options.runID = runID
+                let directory = store.runDirectory(id: runID)
+                let vigilID = runArgs.persist && runArgs.mode == .full ? VigilRegistration.start(
+                    root: root, platform: "beast", mode: "tests", suite: runArgs.suite,
+                    serial: directory.appendingPathComponent("serial_kernel.txt").path,
+                    userSerial: directory.appendingPathComponent("serial_user.txt").path,
+                    profile: runArgs.qemuProfile?.rawValue, id: runID, commit: sha) : nil
+                let result: BeastLaunchResult
+                do {
+                    result = try launcher.runX86(options: options)
+                } catch {
+                    VigilRegistration.finish(root: root, id: vigilID, exitStatus: 1)
+                    throw error
+                }
+                if case .gateScript(_, let exitCode) = result.manifest.verdict {
+                    VigilRegistration.finish(root: root, id: vigilID, exitStatus: exitCode)
+                } else {
+                    VigilRegistration.finish(root: root, id: vigilID, exitStatus: 0)
+                }
                 print("")
                 let records = (try? store.readBootFacts(manifest: result.manifest)) ?? []
                 printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: records)

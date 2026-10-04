@@ -146,6 +146,8 @@ cp "$DISK" "$WRITABLE"
 source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
 qemu_host_lock_acquire
 
+# Vigil shows the boot while it runs and scores it when it ends (does nothing without Vigil).
+VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG")
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
 [ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $QMP_SOCKET out.png)"
 # Without job control a background job's stdin is /dev/null, so hand it the terminal explicitly.
@@ -190,3 +192,4 @@ code=$?
 set -e
 echo
 echo "==> VM stopped (qemu exit $code)"
+"$ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" "$code"
