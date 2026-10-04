@@ -428,7 +428,8 @@ fn defer_current_user_thread_sigsegv_exit(
 /// Resolve an EL0 fault victim and record whether the CR3 and dispatched-TID
 /// evidence agree. The dispatched TID is read from the existing lock-free
 /// per-CPU dispatch record so this exception path never acquires SCHEDULER.
-fn resolve_el0_fault_victim(page_table_phys: u64) -> Option<(crate::process::ProcessId, bool)> {
+fn resolve_el0_fault_victim(page_table_phys: u64, fault_address: Option<u64>)
+    -> Option<(crate::process::ProcessId, bool, i32)> {
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     let dispatched_tid =
         crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id);
@@ -437,7 +438,8 @@ fn resolve_el0_fault_victim(page_table_phys: u64) -> Option<(crate::process::Pro
             .and_then(|tid| pm.find_process_by_thread(tid).map(|(pid, _process)| pid));
         let cr3_victim = pm
             .find_process_by_cr3_mut(page_table_phys)
-            .map(|(pid, process)| (pid, process.is_terminated()));
+            .map(|(pid, process)| (pid, process.is_terminated(), fault_address
+                .map_or(11, |address| crate::memory::file_map::user_fault_signal(process, address))));
         (tid_owner, cr3_victim)
     });
 
@@ -447,13 +449,13 @@ fn resolve_el0_fault_victim(page_table_phys: u64) -> Option<(crate::process::Pro
     }
 
     match (tid_owner, cr3_victim) {
-        (Some(tid_pid), Some((cr3_pid, was_terminated))) => {
+        (Some(tid_pid), Some((cr3_pid, was_terminated, signal))) => {
             if tid_pid != cr3_pid {
                 crate::trace_count!(
                     crate::tracing::providers::teardown::TEARDOWN_VICTIM_DIVERGENCE
                 );
             }
-            Some((cr3_pid, was_terminated))
+            Some((cr3_pid, was_terminated, signal))
         }
         (None, Some(victim)) => Some(victim),
         (Some(_), None) => None,
@@ -1012,8 +1014,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // across the scheduler-side non-runnable transition.
                 let mut terminated = false;
                 let mut already_terminated = false;
-                let victim = resolve_el0_fault_victim(page_table_phys);
-                if let Some((pid, was_terminated)) = victim {
+                let victim = resolve_el0_fault_victim(page_table_phys, Some(far));
+                if let Some((pid, was_terminated, signal)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
                     });
@@ -1023,8 +1025,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
                         crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch);
                         crate::tracing::providers::process::trace_process_exit(
-                            pid.as_u64() as u16, (-11i16) as u16);
-                        let _ = crate::process::exit_process_and_retire(pid, -11);
+                            pid.as_u64() as u16, (-signal as i16) as u16);
+                        let _ = crate::process::exit_process_and_retire(pid, -signal);
                         terminated = true;
                     }
                 }
@@ -1407,8 +1409,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 let mut terminated = false;
                 let mut already_terminated = false;
                 let mut killed_pid: u64 = 0;
-                let victim = resolve_el0_fault_victim(page_table_phys);
-                if let Some((pid, was_terminated)) = victim {
+                let victim = resolve_el0_fault_victim(page_table_phys, Some(far));
+                if let Some((pid, was_terminated, signal)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
                     });
@@ -1419,8 +1421,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
                         crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch);
                         crate::tracing::providers::process::trace_process_exit(
-                            pid.as_u64() as u16, (-11i16) as u16);
-                        let _ = crate::process::exit_process_and_retire(pid, -11);
+                            pid.as_u64() as u16, (-signal as i16) as u16);
+                        let _ = crate::process::exit_process_and_retire(pid, -signal);
                         terminated = true;
                     }
                 }
@@ -1534,8 +1536,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
                 super::quiesce_ttbr0_for_exit();
-                let victim = resolve_el0_fault_victim(page_table_phys);
-                if let Some((pid, was_terminated)) = victim {
+                let victim = resolve_el0_fault_victim(page_table_phys, None);
+                if let Some((pid, was_terminated, _)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
                     }); if !was_terminated { let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()); crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch); }
@@ -1661,8 +1663,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
                 super::quiesce_ttbr0_for_exit();
-                let victim = resolve_el0_fault_victim(page_table_phys);
-                if let Some((pid, was_terminated)) = victim {
+                let victim = resolve_el0_fault_victim(page_table_phys, None);
+                if let Some((pid, was_terminated, _)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
                     }); if !was_terminated { let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()); crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch); }
