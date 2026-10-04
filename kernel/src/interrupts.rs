@@ -714,9 +714,13 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
 ///
 /// Returns true if the fault was handled (was a CoW fault), false otherwise.
 ///
-/// IMPORTANT: This function uses try_manager() to avoid deadlock when called
-/// during signal delivery (which holds the process manager lock). If the lock
-/// is held, we handle the CoW fault directly by manipulating page tables via CR3.
+/// Every page-table edit here happens under PROCESS_MANAGER. No x86 holder can be
+/// switched out (`manager()` holds a preempt brake, the other acquisitions mask
+/// interrupts), so when the lock is held on this CPU the fault interrupted the
+/// holding section itself (a kernel write to user memory under PM, such as
+/// signal-frame setup during a dispatch), and the edit runs on that section's
+/// behalf through `handle_cow_direct`. Otherwise the holder is running on
+/// another CPU, and the fault waits for it.
 /// Copy-on-Write statistics - re-export from architecture-independent module
 pub use crate::memory::cow_stats;
 
@@ -731,34 +735,20 @@ fn handle_cow_fault(faulting_addr: VirtAddr, error_code: PageFaultErrorCode, cr3
         return false;
     }
 
-    // Track CoW fault count for debugging
-    let fault_num = cow_stats::TOTAL_FAULTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    if fault_num < 20 {
-        crate::serial_println!(
-            "[COW FAULT #{}] addr={:#x} cr3={:#x}",
-            fault_num,
-            faulting_addr.as_u64(),
-            cr3
-        );
-    }
+    cow_stats::TOTAL_FAULTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    // Try to acquire process manager lock. If it's held (e.g., by signal delivery),
-    // we'll handle the CoW fault directly via CR3 to avoid deadlock.
-    match crate::process::try_manager() {
-        Some(mut guard) => {
-            // Lock acquired, proceed with normal CoW handling via ProcessPageTable
+    loop {
+        if let Some(mut guard) = crate::process::try_manager() {
             cow_stats::MANAGER_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            handle_cow_with_manager(&mut guard, faulting_addr, cr3)
+            return handle_cow_with_manager(&mut guard, faulting_addr, cr3);
         }
-        None => {
-            // Lock is held - handle CoW directly via CR3 to avoid deadlock
-            // This can happen during signal delivery which writes to user stack
+        // The lock is held. If it is held on this CPU, the fault interrupted
+        // the holding section, which cannot be waited for.
+        if let Some(held) = crate::process::pm_held_on_this_cpu() {
             cow_stats::DIRECT_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if fault_num < 20 {
-                crate::serial_println!("[COW FAULT #{}] lock held, using direct path", fault_num);
-            }
-            handle_cow_direct(faulting_addr, cr3)
+            return handle_cow_direct(&held, faulting_addr, cr3);
         }
+        core::hint::spin_loop();
     }
 }
 
@@ -844,11 +834,17 @@ fn handle_cow_with_manager(
     true
 }
 
-/// Handle CoW fault directly via CR3 (used when process manager lock is held)
+/// Handle CoW fault directly via CR3, on behalf of the PM section the fault
+/// interrupted.
 ///
-/// This function walks the page table manually and modifies entries directly,
-/// avoiding the need to acquire the process manager lock.
-fn handle_cow_direct(faulting_addr: VirtAddr, cr3: u64) -> bool {
+/// This function walks the page table manually and modifies entries directly.
+/// It runs under PROCESS_MANAGER, held by the section this fault interrupted;
+/// the `_held` proof is what makes that true, so it cannot be called otherwise.
+fn handle_cow_direct(
+    _held: &crate::process::PmHeldOnThisCpu,
+    faulting_addr: VirtAddr,
+    cr3: u64,
+) -> bool {
     use crate::memory::frame_allocator::{
         acquire_leaf_mapping, allocate_frame, deallocate_leaf_frame, LeafMappingClass,
         ReturnOutcome,
