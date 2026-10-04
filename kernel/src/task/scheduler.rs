@@ -55,7 +55,7 @@
 #[cfg(feature = "boot_tests")]
 use super::thread::ThreadPrivilege;
 use super::thread::{CpuContext, VirtAddr};
-use super::thread::{Thread, ThreadState};
+use super::thread::{Thread, ThreadState, TimerPop, TimerPopRecord};
 use crate::log_serial_println;
 use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
 use core::cmp::Reverse;
@@ -4096,6 +4096,7 @@ impl Scheduler {
 
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(wake_time_ns);
+                thread.timer_pop = Some(TimerPopRecord::armed(wake_time_ns));
                 // #775 round 4: `blocked_in_syscall` means "parked inside a
                 // syscall of an owning process", and the x86 context-switch
                 // path acts on exactly that reading: with the flag set and
@@ -4158,7 +4159,7 @@ impl Scheduler {
         thread.wake_time_ns = wake_time_ns;
         // The observation belongs to this wait, not to whatever the thread did
         // before it.
-        thread.timer_pop_wake_time_set = None;
+        thread.timer_pop = wake_time_ns.map(TimerPopRecord::armed);
         // Mark blocked_in_syscall so the context switch path resumes
         // inside the syscall (wait_timeout loop) rather than restoring
         // stale userspace context.
@@ -4399,6 +4400,7 @@ impl Scheduler {
 
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(timeout_ns);
+                thread.timer_pop = Some(TimerPopRecord::armed(timeout_ns));
                 thread.blocked_in_syscall = true;
             }
             // Insert into timer heap for O(1) expiry detection
@@ -4431,14 +4433,27 @@ impl Scheduler {
             }
             self.timer_heap.pop();
 
-            // Record what this pop saw before deciding anything with it. A
-            // popped entry whose thread has already had wake_time_ns cleared
-            // makes the pop a no-op, and a timed wait that was relying on it
-            // stays blocked with its deadline in the past. That is the fact
-            // the futex timed-wait record needs (#608 F4); the store is a
-            // single Option<bool> and costs nothing on the reschedule path.
+            // Record what this pop saw before deciding anything with it,
+            // against the wait whose deadline the entry carries. A popped
+            // entry for the current wait whose wake_time_ns has already been
+            // cleared makes the pop a no-op, and a timed wait that was relying
+            // on it stays blocked with its deadline in the past. That is the
+            // fact the futex timed-wait record needs (#608 F4). An entry with
+            // any other deadline was left by an earlier wait and is only
+            // counted.
             if let Some(thread) = self.get_thread_mut(tid) {
-                thread.timer_pop_wake_time_set = Some(thread.wake_time_ns.is_some());
+                let wake_time_set = thread.wake_time_ns == Some(wake_time);
+                if let Some(record) = thread.timer_pop.as_mut() {
+                    if record.deadline_ns == wake_time {
+                        record.own_entry = if wake_time_set {
+                            TimerPop::WakeTimeSet
+                        } else {
+                            TimerPop::WakeTimeCleared
+                        };
+                    } else {
+                        record.stale_entries = record.stale_entries.saturating_add(1);
+                    }
+                }
             }
 
             // Validate: thread might have been woken already (by ISR, signal, etc.)

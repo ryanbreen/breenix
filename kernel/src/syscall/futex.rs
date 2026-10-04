@@ -303,10 +303,10 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
             #[cfg(feature = "boot_tests")]
             let mut oracle_parked = false;
             let mut signal_pending = false;
-            // What the timer heap's pop of this wait saw, carried out of the
+            // What the timer heap's pops of this wait saw, carried out of the
             // loop for the record below (#608 F4). It is a plain field read
             // taken inside the scheduler access this loop already performs.
-            let mut timer_pop_wake_time_set: Option<bool> = None;
+            let mut timer_pop: Option<crate::task::thread::TimerPopRecord> = None;
             loop {
                 if crate::syscall::check_signals_for_eintr().is_some() {
                     signal_pending = true;
@@ -321,7 +321,7 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                             .map(|thread| {
                                 (
                                     thread.state == ThreadState::BlockedOnIO,
-                                    thread.timer_pop_wake_time_set,
+                                    thread.timer_pop,
                                 )
                             })
                             .unwrap_or((false, None))
@@ -329,7 +329,7 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                     .unwrap_or((false, None));
 
                 if pop_observation.is_some() {
-                    timer_pop_wake_time_set = pop_observation;
+                    timer_pop = pop_observation;
                 }
 
                 if !still_waiting {
@@ -433,7 +433,7 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                             signal_pending,
                             user_deadline_ns: deadline,
                             now_ns,
-                            timer_pop_wake_time_set,
+                            timer_pop,
                             errno: match result {
                                 SyscallResult::Err(errno) => errno,
                                 SyscallResult::Ok(_) => 0,
