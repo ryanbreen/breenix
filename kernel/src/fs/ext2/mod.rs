@@ -2438,9 +2438,11 @@ fn fs_write(home: bool) -> Ext2WriteGuard {
         let outcome = guard.as_mut().map(|fs| fs.finalize_shrinks(&mut budget));
         // A failed step retains custody. Return the guard so mutations report
         // EIO through check_shrinks rather than parking forever on a bad disk.
-        if matches!(outcome, None | Some(Finalize::Idle | Finalize::Retry)) {
+        if matches!(outcome, Some(Finalize::Retry)) || budget == RECLAIM_BUDGET {
             return guard;
         }
+        // Even a completed shrink spent part of this hold's budget. Start a
+        // fresh hold before handing the guard to another mutating operation.
         drop(guard);
         // No filesystem guard crosses the pause. Non-sleepable boot callers
         // have no pending shrinks; keep the existing spin fallback if needed.
