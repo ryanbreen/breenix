@@ -1555,8 +1555,15 @@ fn permissions_umask_return() -> CaseResult {
     Error::from_syscall(unsafe { raw::syscall5(nr::FCHOWNAT, AT_FDCWD,
         empty.as_ptr() as u64, 1001, 1001, 0x1000) } as i64)?;
     check(stat(".", false)?.st_uid == 1001, "empty-path chown did not select cwd")?;
+    let cwd_fd = File::open(&f.root, O_RDONLY | O_DIRECTORY)?;
     request(ABI[4], [1001, 0, 0, 0])?;
     request(ABI[3], [1001, 0, 0, 0])?;
+    request(nr::FCHMOD, [cwd_fd.fd().raw(), 0, 0, 0])?;
+    // SAFETY: empty is NUL-terminated and alive through the syscall. No
+    // pathname search is permitted here; ownership still authorizes the change.
+    Error::from_syscall(unsafe { raw::syscall5(nr::FCHOWNAT, AT_FDCWD,
+        empty.as_ptr() as u64, u32::MAX as u64, 1001, 0x1000) } as i64)?;
+    request(nr::FCHMOD, [cwd_fd.fd().raw(), 0o777, 0, 0])?;
     umask(0o027)?;
     let path = b"/usr/local/test/bin/umask_exec_test\0";
     let arg = b"unprivileged\0";

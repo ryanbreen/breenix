@@ -132,10 +132,9 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
         Ok(path) => path,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    if empty && path.is_empty() && fd != AT_FDCWD {
-        return by_fd(fd, change);
+    if empty && path.is_empty() {
+        return if fd == AT_FDCWD { by_cwd(change) } else { by_fd(fd, change) };
     }
-    let path = if empty && path.is_empty() { "." } else { path.as_str() };
     let cred = Credentials::current(false);
     let resolved = match resolve_at(fd, &path, follow, &cred) {
         Ok(r) => r,
@@ -154,6 +153,28 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
         Some(fs) => update(fs, ino, change, &cred),
         None => SyscallResult::Err(EIO as u64),
     }
+}
+
+// AT_EMPTY_PATH selects the held object, without searching a pathname.
+fn by_cwd(change: Change) -> SyscallResult {
+    let cred = Credentials::current(false);
+    let (mount, handle) = match namei::current_working_dir() {
+        namei::WorkingDir::Root => (namei::Mount::Root, None),
+        namei::WorkingDir::Ext2 { mount, dir } => (mount, Some(dir)),
+        namei::WorkingDir::Virtual(_) => return SyscallResult::Err(EOPNOTSUPP as u64),
+    };
+    let mut guard = mount.write();
+    let Some(fs) = guard.as_mut() else {
+        return SyscallResult::Err(EIO as u64);
+    };
+    let ino = match handle.as_ref() {
+        Some(handle) => match handle.verify(fs) {
+            Ok(ino) => ino,
+            Err(_) => return SyscallResult::Err(EIO as u64),
+        },
+        None => ext2::EXT2_ROOT_INO,
+    };
+    update(fs, ino, change, &cred)
 }
 
 fn by_fd(fd: i32, change: Change) -> SyscallResult {
