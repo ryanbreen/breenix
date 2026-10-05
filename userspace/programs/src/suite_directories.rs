@@ -465,6 +465,67 @@ impl Directory {
         self.seekdir(0)
     }
 }
+/// Every record one getdents64 call returns, each with its d_off: the cookie
+/// for the position after it. The buffer admits names of any length.
+fn dirents(fd: Fd) -> Result<Vec<(Entry, u64)>, libbreenix::suite::CaseError> {
+    let mut b = [0u8; 4096];
+    let n = fs::getdents64(fd, &mut b)?;
+    check(n <= b.len(), "invalid getdents64 length")?;
+    let mut records = Vec::new();
+    let mut at = 0;
+    while at < n {
+        check(at + 24 <= n, "truncated dirent")?;
+        let len = u16::from_ne_bytes([b[at + 16], b[at + 17]]) as usize;
+        check(len >= 24 && at + len <= n, "invalid dirent length")?;
+        let end = b[at + 19..at + len]
+            .iter()
+            .position(|v| *v == 0)
+            .ok_or("dirent lacks NUL")?
+            + at
+            + 19;
+        let name = String::from_utf8(b[at + 19..end].to_vec()).map_err(|e| e.to_string())?;
+        let ino = u64::from_ne_bytes(b[at..at + 8].try_into().unwrap());
+        let off = i64::from_ne_bytes(b[at + 8..at + 16].try_into().unwrap());
+        check(off >= 0, "negative d_off")?;
+        records.push((Entry { name, ino }, off as u64));
+        at += len;
+    }
+    Ok(records)
+}
+/// The first entry at a cookie, read by seeking a descriptor to it.
+fn entry_at(fd: Fd, cookie: u64) -> Result<Option<Entry>, libbreenix::suite::CaseError> {
+    check(
+        fs::lseek(fd, cookie as i64, SEEK_SET)? == cookie,
+        "directory seek returned a different cookie",
+    )?;
+    Ok(dirents(fd)?.into_iter().next().map(|(e, _)| e))
+}
+/// The filesystem's free inode and block counts, from fstatfs.
+fn free_counts(fd: Fd) -> Result<(u64, u64), Error> {
+    let s = fs::fstatfs(fd)?;
+    Ok((s.f_ffree, s.f_bfree))
+}
+/// Free counts once nothing is releasing inodes or blocks: the same pair on
+/// five reads 20 ms apart, so an earlier case's deferred reclamation is not
+/// mistaken for this case's.
+fn settled_counts(fd: Fd) -> Result<(u64, u64), libbreenix::suite::CaseError> {
+    let mut last = free_counts(fd)?;
+    let mut same = 0;
+    for _ in 0..150 {
+        time::sleep_ms(20)?;
+        let now = free_counts(fd)?;
+        if now == last {
+            same += 1;
+            if same == 4 {
+                return Ok(now);
+            }
+        } else {
+            same = 0;
+            last = now;
+        }
+    }
+    Err("free counts never settled".into())
+}
 fn listing() -> Result<Tree, libbreenix::suite::CaseError> {
     let f = Tree::new()?;
     f.file("beta", b"b")?;
@@ -591,6 +652,7 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("missing", "rmdir on a missing path fails with ENOENT", mkdir_rmdir_missing),
         case("symlink", "rmdir does not follow a final symlink to a directory", mkdir_rmdir_symlink),
         case("parent-nlink", "ext2 mkdir and rmdir update the parent directory link count", mkdir_rmdir_parent_nlink),
+        case("reclaim", "rmdir returns the directory's inode and block to the filesystem's free counts", mkdir_rmdir_reclaim),
     ]),
     category("readdir", "readdir & seekdir", &[
         case("entries", "readdir returns every child exactly once without imposing lexical order", readdir_entries),
@@ -603,6 +665,8 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("tell-after-rewind", "telldir and seekdir work with a fresh cookie after rewinddir", readdir_tell_after_rewind),
         case("two-streams", "independent directory streams have independent positions", readdir_two_streams),
         case("not-directory", "opening a regular file as a directory fails with ENOTDIR", readdir_not_directory),
+        case("cookie-churn", "seekdir resumes at the surviving entries after names are created and removed around its cookie", readdir_cookie_churn),
+        case("cookie-blocks", "cookies address every record of a multi-block directory and only the directory they seek", readdir_cookie_blocks),
     ]),
     category("links", "hard links & unlink", &[
         case("identity", "hard links share an inode and report two links", links_identity),
@@ -800,6 +864,41 @@ fn mkdir_rmdir_parent_nlink() -> CaseResult {
     )
 }
 
+fn mkdir_rmdir_reclaim() -> CaseResult {
+    // Each mkdir allocates one inode and one block; rmdir must return both.
+    // The counts are the filesystem's own (fstatfs), so a removed directory
+    // whose inode or block stays allocated is a deficit here.
+    const N: u64 = 8;
+    let f = Tree::new()?;
+    let root = Directory::open(&f.root)?;
+    let fd = root.file.fd();
+    let base = settled_counts(fd)?;
+    let dirs: Vec<String> = (0..N).map(|i| f.path(&format!("d{i}"))).collect();
+    for d in &dirs {
+        fs::mkdir(d, 0o777)?;
+    }
+    let made = free_counts(fd)?;
+    check(
+        made == (base.0 - N, base.1 - N),
+        &format!("{N} mkdirs moved free inodes and blocks {base:?} -> {made:?}"),
+    )?;
+    for d in &dirs {
+        fs::rmdir(d)?;
+    }
+    // The ext2 finalizer releases a removed directory after rmdir returns.
+    let mut now = free_counts(fd)?;
+    for _ in 0..250 {
+        if now == base {
+            return Ok(());
+        }
+        time::sleep_ms(20)?;
+        now = free_counts(fd)?;
+    }
+    fail(format!(
+        "after {N} rmdirs free inodes and blocks are {now:?}, not {base:?}"
+    ))
+}
+
 fn readdir_entries() -> CaseResult {
     let f = listing()?;
     let mut d = Directory::open(&f.root)?;
@@ -908,6 +1007,132 @@ fn readdir_not_directory() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("file", b"x")?;
     errno(observed::open(&p, O_RDONLY | O_DIRECTORY), 20)
+}
+
+fn readdir_cookie_churn() -> CaseResult {
+    let f = Tree::new()?;
+    for n in ["a0", "a1", "a2", "a3", "a4", "a5"] {
+        f.file(n, b"")?;
+    }
+    let mut d = Directory::open(&f.root)?;
+    let mut head = Vec::new();
+    for _ in 0..4 {
+        head.push(d.readdir()?.ok_or("directory ended early")?);
+    }
+    let cookie = d.telldir()?;
+    let tail = d.all()?;
+    check(tail.len() >= 3, "too few entries after the cookie")?;
+    // Remove a name read before the cookie and the one the cookie names,
+    // then create two.
+    let before = head
+        .iter()
+        .find(|e| e.name.starts_with('a'))
+        .ok_or("no removable entry before the cookie")?;
+    fs::unlink(&f.path(&before.name))?;
+    fs::unlink(&f.path(&tail[0].name))?;
+    f.file("b0", b"")?;
+    f.file("b1", b"")?;
+    d.seekdir(cookie)?;
+    let after = d.all()?;
+    // Entries present throughout follow in their original order exactly once;
+    // a name created since may appear, but only once.
+    let old: Vec<&Entry> = after.iter().filter(|e| !e.name.starts_with('b')).collect();
+    let survivors: Vec<&Entry> = tail[1..].iter().collect();
+    check(old == survivors, "seekdir lost, repeated or replayed an entry")?;
+    for n in ["b0", "b1"] {
+        check(
+            after.iter().filter(|e| e.name == n).count() <= 1,
+            "a created name appeared twice",
+        )?;
+    }
+    // rewinddir restarts at the beginning and sees the directory as it is.
+    d.rewinddir()?;
+    let all = d.all()?;
+    check(
+        all.len() >= 2 && all[0].name == "." && all[1].name == "..",
+        "rewinddir did not restart at dot and dot-dot",
+    )?;
+    let mut names: Vec<&str> = all.iter().map(|e| e.name.as_str()).collect();
+    names.sort();
+    let mut expected = vec![".", "..", "b0", "b1"];
+    for n in ["a0", "a1", "a2", "a3", "a4", "a5"] {
+        if n != before.name && n != tail[0].name {
+            expected.push(n);
+        }
+    }
+    expected.sort();
+    check(names == expected, "rewinddir listing differs from the directory")
+}
+
+fn readdir_cookie_blocks() -> CaseResult {
+    // Breenix directories do not grow past their first block, so the one
+    // measured is a multi-block directory the disk image was built with.
+    let mut chosen = None;
+    for p in ["/bin", "/usr/local/test/bin", "/sbin", "/usr/local/cbin"] {
+        let Ok(dir) = Directory::open(p) else { continue };
+        let block = fs::fstatfs(dir.file.fd())?.f_bsize as u64;
+        if fs::fstat(dir.file.fd())?.st_size as u64 >= 2 * block {
+            chosen = Some((dir, block));
+            break;
+        }
+    }
+    let (dir, block) = chosen.ok_or("no directory spanning two blocks to measure")?;
+    let fd = dir.file.fd();
+    let mut records = Vec::new();
+    loop {
+        let batch = dirents(fd)?;
+        if batch.is_empty() {
+            break;
+        }
+        records.extend(batch);
+        check(records.len() < 4096, "directory stream did not terminate")?;
+    }
+    check(records[0].0.name == ".", "the first record is not dot")?;
+    check(
+        records.windows(2).all(|w| w[0].1 < w[1].1),
+        "cookies do not increase",
+    )?;
+    check(
+        records.iter().any(|(_, c)| *c > block && *c < records.last().unwrap().1),
+        "no cookie lies past the first block",
+    )?;
+    // Every cookie, including those at a block boundary, resumes at the next
+    // entry; 0 is the beginning.
+    check(entry_at(fd, 0)? == Some(Entry { name: ".".into(), ino: records[0].0.ino }), "cookie 0 is not dot")?;
+    for (i, (_, cookie)) in records.iter().enumerate() {
+        let want = records.get(i + 1).map(|(e, _)| e);
+        check(
+            entry_at(fd, *cookie)?.as_ref() == want,
+            &format!("cookie {cookie} did not resume at entry {}", i + 1),
+        )?;
+    }
+    // A position inside a record resumes at a later whole record, never a
+    // partial one: inside the first record of each block, and of every
+    // fourth record.
+    for (i, (_, cookie)) in records.iter().enumerate() {
+        if i % 4 != 0 && cookie % block != 0 {
+            continue;
+        }
+        let got = entry_at(fd, cookie + 1)?;
+        check(
+            got.is_none() || records[i + 1..].iter().take(2).any(|(e, _)| Some(e) == got.as_ref()),
+            &format!("position {} selected a partial record", cookie + 1),
+        )?;
+    }
+    // A cookie from that directory, given to another, positions within the
+    // other's own records: past its end it reads nothing, and before it only
+    // its own entries.
+    let f = listing()?;
+    let small = Directory::open(&f.root)?;
+    let own: Vec<String> = Directory::open(&f.root)?.all()?.into_iter().map(|e| e.name).collect();
+    let last = records.last().unwrap().1;
+    check(entry_at(small.file.fd(), last)?.is_none(), "a foreign cookie read past the directory")?;
+    for (_, cookie) in records.iter().filter(|(_, c)| *c < block) {
+        if let Some(e) = entry_at(small.file.fd(), *cookie)? {
+            check(own.contains(&e.name), "a foreign cookie read another directory's entry")?;
+        }
+    }
+    Ok(())
 }
 
 fn links_identity() -> CaseResult {

@@ -56,6 +56,10 @@
         {
           "id": "parent-nlink",
           "title": "ext2 mkdir and rmdir update the parent directory link count"
+        },
+        {
+          "id": "reclaim",
+          "title": "rmdir returns the directory's inode and block to the filesystem's free counts"
         }
       ]
     },
@@ -102,6 +106,14 @@
         {
           "id": "not-directory",
           "title": "opening a regular file as a directory fails with ENOTDIR"
+        },
+        {
+          "id": "cookie-churn",
+          "title": "seekdir resumes at the surviving entries after names are created and removed around its cookie"
+        },
+        {
+          "id": "cookie-blocks",
+          "title": "cookies address every record of a multi-block directory and only the directory they seek"
         }
       ]
     },
