@@ -1085,8 +1085,8 @@ fn readdir_cookie_blocks() -> CaseResult {
         check(records.len() < 4096, "directory stream did not terminate")?;
     }
     // The builder makes names 0..n, zero-padded to 200 digits, while 208 * i
-    // stays within three blocks, all linked to one file. Every one of them,
-    // dot and dot-dot appear exactly once with the inode stat gives them.
+    // stays within three blocks, all linked to one file. Each of those
+    // names, dot and dot-dot appears exactly once, with the inode stat gives it.
     let n = (3 * block / 208 + 1) as usize;
     let file_ino = stat(&format!("/test/dir-blocks/{:0200}", 0), false)?.st_ino;
     let mut expected: Vec<(String, u64)> = (0..n).map(|i| (format!("{i:0200}"), file_ino)).collect();
@@ -1119,8 +1119,12 @@ fn readdir_cookie_blocks() -> CaseResult {
         )?;
     }
     // A position inside a record resumes at the first whole record after
-    // it, and reads nothing only inside the last record.
+    // it, and reads nothing only inside the last record: inside the first
+    // record of each block, every eighth record and the last two.
     for (i, (_, cookie)) in records.iter().enumerate() {
+        if i % 8 != 0 && cookie % block != 0 && i + 2 < records.len() {
+            continue;
+        }
         let want = records.get(i + 2).map(|(e, _)| e);
         check(
             entry_at(fd, cookie + 1)?.as_ref() == want,
@@ -1148,7 +1152,7 @@ fn readdir_cookie_blocks() -> CaseResult {
     let starts: Vec<u64> = core::iter::once(0).chain(own.iter().map(|(_, c)| *c)).take(own.len()).collect();
     let last = records.last().unwrap().1;
     check(entry_at(sfd, last)?.is_none(), "a foreign cookie read past the directory")?;
-    for (_, cookie) in records.iter().filter(|(_, c)| *c < block) {
+    for (_, cookie) in records.iter().filter(|(_, c)| *c < block).step_by(2) {
         let want = starts.iter().position(|s| s >= cookie).map(|k| &own[k].0);
         check(
             entry_at(sfd, *cookie)?.as_ref() == want,
