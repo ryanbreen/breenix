@@ -170,6 +170,11 @@ impl Reclaim {
                 published
                     .write_to(fs.device.as_ref(), ino, &fs.superblock, &fs.block_groups)
                     .map_err(|_| ReclaimError::Retry)?;
+                // A device may reorder cached writes, so the detached
+                // pointers, and the name removal and zero-link inode written
+                // before the handoff, are made durable before any bitmap bit
+                // they guarded can persist as free.
+                fs.device.flush().map_err(|_| ReclaimError::Retry)?;
                 *inode = published;
                 self.inode_published = true;
                 batch.published = true;
