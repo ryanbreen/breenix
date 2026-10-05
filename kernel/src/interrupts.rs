@@ -1042,13 +1042,11 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
         return false;
     }
 
-    // Only grow if the fault is within a reasonable guard window (16 pages = 64KB below bottom)
-    // This prevents random accesses far below the stack from triggering growth
-    const GUARD_WINDOW: u64 = 16 * 4096;
-    if fault_addr < stack_bottom.saturating_sub(GUARD_WINDOW) {
-        return false;
-    }
-
+    // Any access between the current bottom and the stack's maximum extent
+    // grows it, as on Linux: a function whose frame is larger than the
+    // distance to the current bottom touches its first page far below it
+    // (a 128 KiB local array lands 64 KiB past a fresh 64 KiB stack). The
+    // extent check below is what keeps growth inside the stack's own range.
     // Check we wouldn't exceed MAX_USER_STACK_SIZE
     let page_aligned_fault = fault_addr & !0xFFF;
     let new_stack_size = stack_top - page_aligned_fault;
@@ -1062,9 +1060,12 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
         None => return false,
     };
 
-    // Map all pages from the fault address (page-aligned) up to the current bottom
-    let mut addr = page_aligned_fault;
-    while addr < stack_bottom {
+    // Map every page from the current bottom down to the fault address
+    // (page-aligned), moving the recorded bottom with each one, so a growth
+    // that stops part way leaves the bottom at the lowest page it mapped.
+    let mut addr = stack_bottom;
+    while addr > page_aligned_fault {
+        addr -= 4096;
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
 
         let frame = match crate::memory::frame_allocator::allocate_frame() {
@@ -1089,18 +1090,8 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
             let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
             return false;
         }
-
-        addr += 4096;
-    }
-
-    // Update the process's stack bottom
-    process.user_stack_bottom = page_aligned_fault;
-
-    // Flush TLB for the new pages
-    let mut flush_addr = page_aligned_fault;
-    while flush_addr < stack_bottom {
-        X86PageTableOps::flush_tlb_page(flush_addr);
-        flush_addr += 4096;
+        X86PageTableOps::flush_tlb_page(addr);
+        process.user_stack_bottom = addr;
     }
 
     true

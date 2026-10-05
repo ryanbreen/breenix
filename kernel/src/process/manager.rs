@@ -2238,6 +2238,8 @@ impl ProcessManager {
             parent_code_size,
             parent_heap_size,
             parent_stack_size,
+            parent_user_stack_top,
+            parent_user_stack_bottom,
         ) = {
             let parent = self
                 .processes
@@ -2263,6 +2265,8 @@ impl ProcessManager {
                 parent.memory_usage.code_size,
                 parent.memory_usage.heap_size,
                 parent.memory_usage.stack_size,
+                parent.user_stack_top,
+                parent.user_stack_bottom,
             )
         };
 
@@ -2339,6 +2343,10 @@ impl ProcessManager {
             child_process.memory_usage.code_size = parent_code_size;
             child_process.memory_usage.heap_size = parent_heap_size;
             child_process.memory_usage.stack_size = parent_stack_size;
+            // The child's page table copies the parent's stack, grown pages
+            // included, so it grows from the same bounds.
+            child_process.user_stack_top = parent_user_stack_top;
+            child_process.user_stack_bottom = parent_user_stack_bottom;
         }
 
         {
@@ -2405,6 +2413,8 @@ impl ProcessManager {
             parent_code_size,
             parent_heap_size,
             parent_stack_size,
+            parent_user_stack_top,
+            parent_user_stack_bottom,
         ) = {
             let parent = self
                 .processes
@@ -2430,6 +2440,8 @@ impl ProcessManager {
                 parent.memory_usage.code_size,
                 parent.memory_usage.heap_size,
                 parent.memory_usage.stack_size,
+                parent.user_stack_top,
+                parent.user_stack_bottom,
             )
         };
 
@@ -2504,6 +2516,10 @@ impl ProcessManager {
             child_process.memory_usage.code_size = parent_code_size;
             child_process.memory_usage.heap_size = parent_heap_size;
             child_process.memory_usage.stack_size = parent_stack_size;
+            // The child's page table copies the parent's stack, grown pages
+            // included, so it grows from the same bounds.
+            child_process.user_stack_top = parent_user_stack_top;
+            child_process.user_stack_bottom = parent_user_stack_bottom;
         }
 
         child_process.page_table = Some(child_page_table);
@@ -2548,6 +2564,8 @@ impl ProcessManager {
             parent_code_size,
             parent_heap_size,
             parent_stack_size,
+            parent_user_stack_top,
+            parent_user_stack_bottom,
         ) = {
             let parent = self
                 .processes
@@ -2572,6 +2590,8 @@ impl ProcessManager {
                 parent.memory_usage.code_size,
                 parent.memory_usage.heap_size,
                 parent.memory_usage.stack_size,
+                parent.user_stack_top,
+                parent.user_stack_bottom,
             )
         };
 
@@ -2650,6 +2670,10 @@ impl ProcessManager {
             child_process.memory_usage.code_size = parent_code_size;
             child_process.memory_usage.heap_size = parent_heap_size;
             child_process.memory_usage.stack_size = parent_stack_size;
+            // The child's page table copies the parent's stack, grown pages
+            // included, so it grows from the same bounds.
+            child_process.user_stack_top = parent_user_stack_top;
+            child_process.user_stack_bottom = parent_user_stack_bottom;
         }
 
         child_process.page_table = Some(child_page_table);
@@ -3054,6 +3078,8 @@ impl ProcessManager {
         let parent_code_size = parent.memory_usage.code_size;
         let parent_heap_size = parent.memory_usage.heap_size;
         let parent_stack_size = parent.memory_usage.stack_size;
+        let parent_user_stack_top = parent.user_stack_top;
+        let parent_user_stack_bottom = parent.user_stack_bottom;
 
         // Verify parent has a page table
         if parent.page_table.is_none() {
@@ -3128,6 +3154,10 @@ impl ProcessManager {
             child_process.memory_usage.code_size = parent_code_size;
             child_process.memory_usage.heap_size = parent_heap_size;
             child_process.memory_usage.stack_size = parent_stack_size;
+            // The child's page table copies the parent's stack, grown pages
+            // included, so it grows from the same bounds.
+            child_process.user_stack_top = parent_user_stack_top;
+            child_process.user_stack_bottom = parent_user_stack_bottom;
         }
 
         {

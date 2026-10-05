@@ -799,6 +799,16 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // Check if from userspace (EL0) - SPSR[3:0] indicates source EL
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
 
+            // An access below the user stack, from EL0 or from the user-copy
+            // routine on a syscall's buffer, grows the stack and is retried.
+            if (from_el0
+                || (crate::syscall::userptr::uaccess_fixup(frame_ref.elr, far).is_some()
+                    && !crate::process::process_manager_held_on_current_cpu()))
+                && handle_stack_growth_arm64(far, iss)
+            {
+                return;
+            }
+
             // A private file mapping: an EL0 access, or a kernel access to a
             // user address (the user-copy routine or a raw user pointer), is
             // resolved from the file's page cache and retried. An EL0 access
@@ -2402,6 +2412,101 @@ fn file_mapping_fault(
         Some(manager) => handle_fault(manager, root, far, access, thread),
         None => FaultOutcome::NotFile,
     }
+}
+
+/// Grow the faulting process's user stack down to `far`.
+///
+/// A process starts with a fully mapped `USER_STACK_SIZE` window below
+/// `USER_STACK_REGION_START`. A translation fault anywhere between that
+/// window's current bottom and the stack's maximum extent
+/// (`MAX_USER_STACK_SIZE`) maps the missing pages, as x86_64's
+/// `handle_stack_growth` does and as Linux grows a stack VMA: a function
+/// whose frame is larger than the room left touches its first page far
+/// below the current bottom. The mmap region ends far below this range on
+/// aarch64, so nothing else is mapped there.
+///
+/// The caller must not hold PROCESS_MANAGER on this CPU. Returns true if
+/// the page is now mapped.
+fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
+    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
+    use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
+    use crate::memory::layout::MAX_USER_STACK_SIZE;
+
+    // Translation fault, level 0 to 3: nothing is mapped at `far`.
+    if !(0x04..=0x07).contains(&(iss & 0x3F))
+        || far >= crate::memory::layout::USER_STACK_REGION_START
+    {
+        return false;
+    }
+
+    let ttbr0: u64;
+    // SAFETY: reading TTBR0_EL1 has no side effects.
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+    let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+
+    let mut guard = crate::process::manager();
+    let Some(pm) = guard.as_mut() else {
+        return false;
+    };
+    let Some((_pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) else {
+        return false;
+    };
+    let stack_top = process.user_stack_top;
+    let stack_bottom = process.user_stack_bottom;
+    let page_aligned_fault = far & !0xFFF;
+    if stack_top == 0
+        || far >= stack_bottom
+        || stack_top - page_aligned_fault > MAX_USER_STACK_SIZE
+    {
+        return false;
+    }
+    let Some(page_table) = process.page_table.as_mut() else {
+        return false;
+    };
+
+    // The same flags as the initial stack window
+    // (`map_user_stack_to_process_with_phys`). Map from the current bottom
+    // down, moving the recorded bottom with each page, so a growth that
+    // stops part way leaves the bottom at the lowest page it mapped.
+    let flags =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+    let mut addr = stack_bottom;
+    let mut grown = true;
+    while addr > page_aligned_fault {
+        addr -= 4096;
+        let Some(frame) = allocate_frame() else {
+            grown = false;
+            break;
+        };
+        // SAFETY: the frame was just allocated and is reached through the
+        // HHDM; nothing else refers to it yet.
+        unsafe {
+            core::ptr::write_bytes(
+                (hhdm_base + frame.start_address().as_u64()) as *mut u8,
+                0,
+                4096,
+            );
+        }
+        let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(addr));
+        if page_table.map_page(page, frame, flags).is_err() {
+            let _ = deallocate_leaf_frame(frame);
+            grown = false;
+            break;
+        }
+        process.user_stack_bottom = addr;
+    }
+
+    // Make the new descriptors visible to the table walker before the
+    // faulting access is retried. They replace invalid entries, which the
+    // TLB does not hold, so no invalidation is needed.
+    // SAFETY: barriers only.
+    unsafe {
+        core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
+    }
+    grown
 }
 
 /// Handle CoW (Copy-on-Write) page fault for ARM64
