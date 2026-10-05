@@ -165,6 +165,25 @@ unsafe fn futex_wake(word: *mut u32, count: u32) -> i64 {
     raw::syscall6(nr::FUTEX, word as u64, FUTEX_WAKE, count as u64, 0, 0, 0) as i64
 }
 
+/// Readiness precedes FUTEX_WAIT's atomic queue insertion. Wait for that
+/// insertion rather than treating a wake with no waiter as a failed handoff.
+/// Success still requires waking exactly one queued waiter.
+unsafe fn wake_queued_waiter(word: *mut u32) -> bool {
+    let deadline = monotonic_ns(b"CLONEVM_EXEC_TEST: ERROR wake clock failed\n")
+        .saturating_add(1_000_000_000);
+    loop {
+        match futex_wake(word, 1) {
+            1 => return true,
+            0 => {}
+            _ => return false,
+        }
+        if monotonic_ns(b"CLONEVM_EXEC_TEST: ERROR wake clock failed\n") >= deadline {
+            return false;
+        }
+        sys_yield();
+    }
+}
+
 unsafe fn clone_vm_child(
     stack: *mut u8,
     child_fn: extern "C" fn(*mut u8) -> *mut u8,
@@ -330,8 +349,7 @@ extern "C" fn post_exec_rendezvous_child(arg: *mut u8) -> *mut u8 {
             raw_msg(b"CLONEVM_EXEC_TEST: ERROR sibling did not observe parent wait readiness\n");
             thread_exit(1);
         }
-        core::ptr::write_volatile(rendezvous, 1);
-        if futex_wake(rendezvous, 1) != 1 {
+        if !wake_queued_waiter(rendezvous) {
             core::ptr::write_volatile(child_status, u32::MAX);
             raw_msg(b"CLONEVM_EXEC_TEST: ERROR sibling wake of parent failed\n");
             thread_exit(1);
@@ -469,7 +487,7 @@ unsafe fn second_stage() -> ! {
         second_ready,
         b"CLONEVM_EXEC_TEST: ERROR sibling did not report second wait readiness\n",
     );
-    if futex_wake(second_word, 1) != 1 {
+    if !wake_queued_waiter(second_word) {
         fail_closed(b"CLONEVM_EXEC_TEST: ERROR parent wake of sibling failed\n");
     }
     wait_for_child_status(
