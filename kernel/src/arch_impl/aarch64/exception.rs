@@ -2456,22 +2456,26 @@ fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
     let stack_top = process.user_stack_top;
     let stack_bottom = process.user_stack_bottom;
     let page_aligned_fault = far & !0xFFF;
-    if stack_top == 0
-        || far >= stack_bottom
-        || stack_top - page_aligned_fault > MAX_USER_STACK_SIZE
-    {
+    if stack_top == 0 || stack_top - page_aligned_fault > MAX_USER_STACK_SIZE {
         return false;
     }
     let Some(page_table) = process.page_table.as_mut() else {
         return false;
     };
+    if far >= stack_bottom {
+        // Another thread sharing this address space faulted below the same
+        // bottom and grew the stack before this CPU took PROCESS_MANAGER.
+        // The access is retried if its page is mapped now.
+        return page_table.translate(VirtAddr::new(page_aligned_fault)).is_some();
+    }
 
-    // The same flags as the initial stack window
-    // (`map_user_stack_to_process_with_phys`). Map from the current bottom
-    // down, moving the recorded bottom with each page, so a growth that
-    // stops part way leaves the bottom at the lowest page it mapped.
-    let flags =
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    // Map from the current bottom down, moving the recorded bottom with each
+    // page, so a growth that stops part way leaves the bottom at the lowest
+    // page it mapped. Stack pages are never executable, as on x86_64.
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::NO_EXECUTE;
     let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
     let mut addr = stack_bottom;
     let mut grown = true;
