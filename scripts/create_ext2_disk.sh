@@ -59,6 +59,10 @@ else
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 fi
 
+# Both native and gate disks use the same checked-in, checksummed build.
+# A missing cross compiler must never silently remove coreutils from a disk.
+python3 "$SCRIPT_DIR/install-busybox.py" "$ARCH"
+
 echo "Creating ext2 disk image..."
 echo "  Arch: $ARCH"
 echo "  Output: $OUTPUT_FILE"
@@ -148,6 +152,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
         -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
         -e "BREENIX_WAIT_STRESS=${BREENIX_WAIT_STRESS:-0}" \
         -e "BREENIX_BSSH_AUTORUN=${BREENIX_BSSH_AUTORUN:-0}" \
+        -e "BREENIX_ARCH=$ARCH" \
         alpine:latest \
         sh -c '
             set -e
@@ -233,9 +238,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
             echo "  Installed $cbin_count C binaries in /usr/local/cbin"
             echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
-            # Prefer the native Breenix ls over the BusyBox applet. The
-            # BusyBox ARM64 build currently faults in its libc path under bsh.
-            if [ -f /mnt/ext2/bin/bls ]; then
+            # Keep the ARM64 workaround for #1074; x86 must execute BusyBox ls.
+            if [ "$BREENIX_ARCH" = aarch64 ] && [ -f /mnt/ext2/bin/bls ]; then
                 rm -f /mnt/ext2/bin/ls
                 cp /mnt/ext2/bin/bls /mnt/ext2/bin/ls
                 chmod 755 /mnt/ext2/bin/ls
@@ -464,14 +468,6 @@ else
 
     # Install BusyBox with hardlinks for coreutils
     # Auto-build if missing but build script and source exist
-    if [[ ! -f "$USERSPACE_DIR/busybox.elf" ]] && [[ -x "$SCRIPT_DIR/build-busybox.sh" ]]; then
-        echo "  busybox.elf not found, attempting to build..."
-        if "$SCRIPT_DIR/build-busybox.sh" --arch "$ARCH"; then
-            echo "  BusyBox built successfully"
-        else
-            echo "  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)"
-        fi
-    fi
     if [[ -f "$USERSPACE_DIR/busybox.elf" ]]; then
         cp "$USERSPACE_DIR/busybox.elf" "$MOUNT_DIR/bin/busybox"
         chmod 755 "$MOUNT_DIR/bin/busybox"
@@ -534,9 +530,8 @@ else
     echo "  Installed $cbin_count C binaries in /usr/local/cbin"
     echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
-    # Prefer the native Breenix ls over the BusyBox applet. The BusyBox ARM64
-    # build currently faults in its libc path under bsh.
-    if [ -f "$MOUNT_DIR/bin/bls" ]; then
+    # Keep the ARM64 workaround for #1074; x86 must execute BusyBox ls.
+    if [[ "$ARCH" = aarch64 ]] && [ -f "$MOUNT_DIR/bin/bls" ]; then
         rm -f "$MOUNT_DIR/bin/ls"
         cp "$MOUNT_DIR/bin/bls" "$MOUNT_DIR/bin/ls"
         chmod 755 "$MOUNT_DIR/bin/ls"
@@ -739,7 +734,7 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo ""
     echo "Contents:"
     echo "  /bin/busybox - BusyBox multi-call binary"
-    echo "  /bin/ls - native Breenix ls"
+    echo "  /bin/ls - BusyBox ls applet"
     echo "  /bin/{cat,head,tail,...} - BusyBox hardlinks"
     echo "  /sbin/{true,false} - BusyBox hardlinks"
     echo "  /bin/* - Other userspace binaries (demos)"

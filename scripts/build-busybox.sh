@@ -19,7 +19,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUSYBOX_DIR="$PROJECT_ROOT/third-party/busybox-1.37.0"
-FRAGMENT="$PROJECT_ROOT/third-party/busybox-breenix-fragment.config"
+FRAGMENT="$PROJECT_ROOT/vendor/busybox/breenix.config"
+SOURCE_SHA256="3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
+export SOURCE_DATE_EPOCH=1725148800
+export KBUILD_BUILD_TIMESTAMP="2024-09-01 00:00:00 UTC"
 
 ARCH="x86_64"
 while [[ $# -gt 0 ]]; do
@@ -65,12 +68,15 @@ if ! command -v "${CROSS_PREFIX}gcc" &>/dev/null; then
 fi
 
 if [[ ! -d "$BUSYBOX_DIR" ]]; then
-    echo "Error: BusyBox source not found at $BUSYBOX_DIR"
-    echo "Download with:"
-    echo "  cd third-party"
-    echo "  curl -LO https://busybox.net/downloads/busybox-1.37.0.tar.bz2"
-    echo "  tar xjf busybox-1.37.0.tar.bz2"
-    exit 1
+    mkdir -p "$PROJECT_ROOT/third-party"
+    archive="$PROJECT_ROOT/third-party/busybox-1.37.0.tar.bz2"
+    curl --fail --location --retry 2 https://busybox.net/downloads/busybox-1.37.0.tar.bz2 -o "$archive"
+    python3 - "$archive" "$SOURCE_SHA256" <<'PYVERIFY'
+import hashlib, pathlib, sys
+if hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest() != sys.argv[2]:
+    sys.exit("BusyBox source checksum mismatch")
+PYVERIFY
+    tar -xjf "$archive" -C "$PROJECT_ROOT/third-party"
 fi
 
 echo "Building BusyBox for Breenix ($ARCH)"
@@ -80,6 +86,8 @@ echo ""
 
 cd "$BUSYBOX_DIR"
 
+# Clean objects when switching cross architectures.
+make distclean >/dev/null 2>&1
 # Start from allnoconfig
 make allnoconfig >/dev/null 2>&1
 
@@ -134,7 +142,7 @@ echo "Configuration applied. Building..."
 echo ""
 
 # Build with parallel jobs
-NPROC=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+NPROC=${CARGO_BUILD_JOBS:-6}
 make -j"$NPROC" 2>&1
 
 # Verify the binary
