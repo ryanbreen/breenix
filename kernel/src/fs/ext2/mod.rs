@@ -520,29 +520,38 @@ impl Ext2Fs {
             .iter()
             .map(|group| group.bg_free_blocks_count as u32)
             .sum();
+        let mut persisted = Ok(());
         if free_before != free_after || self.superblock.s_free_blocks_count != free_after {
             self.superblock.s_free_blocks_count = free_after;
-            self.superblock
+            persisted = self
+                .superblock
                 .write_to(self.device.as_ref())
-                .map_err(|_| "Failed to persist allocation count")?;
-            Ext2BlockGroupDesc::write_table(
+                .map_err(|_| "Failed to persist allocation count")
+                .and_then(|_| {
+                    Ext2BlockGroupDesc::write_table(
+                        self.device.as_ref(),
+                        &self.superblock,
+                        &self.block_groups,
+                    )
+                    .map_err(|_| "Failed to persist allocation groups")
+                });
+        }
+
+        // The bitmaps already hold every block this write allocated, and the
+        // inode links them even when the write failed part way (its size and
+        // times change only on success). Persist those links on either
+        // outcome, so a retry reuses the blocks instead of leaking them.
+        let linked = inode
+            .write_to(
                 self.device.as_ref(),
+                inode_num,
                 &self.superblock,
                 &self.block_groups,
             )
-            .map_err(|_| "Failed to persist allocation groups")?;
-        }
+            .map_err(|_| "Failed to write inode");
         written.map_err(|_| "Failed to write file data")?;
-
-        // Write the modified inode back to disk
-        if let Err(_) = inode.write_to(
-            self.device.as_ref(),
-            inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ) {
-            return Err("Failed to write inode");
-        }
+        persisted?;
+        linked?;
 
         self.live_inodes.publish_size(inode_num, inode.size());
         Ok(data.len())

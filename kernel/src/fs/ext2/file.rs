@@ -711,6 +711,17 @@ pub fn write_file_range<B: BlockDevice + ?Sized>(
                     logical_block,
                     new_block,
                 ) {
+                    // Release the data block only when the tree provably does
+                    // not reference it; a pointer write that failed may still
+                    // have landed.
+                    if let Ok(None) = get_block_num(device, inode, superblock, logical_block) {
+                        let _ = super::block_group::free_block(
+                            device,
+                            new_block,
+                            superblock,
+                            block_groups,
+                        );
+                    }
                     return Err(e);
                 }
 
