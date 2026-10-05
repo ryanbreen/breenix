@@ -1066,18 +1066,15 @@ fn readdir_cookie_churn() -> CaseResult {
 
 fn readdir_cookie_blocks() -> CaseResult {
     // Breenix directories do not grow past their first block, so the one
-    // measured is a multi-block directory the disk image was built with.
-    let mut chosen = None;
-    for p in ["/bin", "/usr/local/test/bin", "/sbin", "/usr/local/cbin"] {
-        let Ok(dir) = Directory::open(p) else { continue };
-        let block = fs::fstatfs(dir.file.fd())?.f_bsize as u64;
-        if fs::fstat(dir.file.fd())?.st_size as u64 >= 2 * block {
-            chosen = Some((dir, block));
-            break;
-        }
-    }
-    let (dir, block) = chosen.ok_or("no directory spanning two blocks to measure")?;
+    // measured is a fixture the disk image builder fills past three blocks
+    // (scripts/create_ext2_disk.sh, /test/dir-blocks).
+    let dir = Directory::open("/test/dir-blocks")?;
     let fd = dir.file.fd();
+    let block = fs::fstatfs(fd)?.f_bsize as u64;
+    check(
+        fs::fstat(fd)?.st_size as u64 >= 2 * block,
+        "/test/dir-blocks does not span two blocks",
+    )?;
     let mut records = Vec::new();
     loop {
         let batch = dirents(fd)?;
