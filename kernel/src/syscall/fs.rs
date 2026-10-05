@@ -219,37 +219,10 @@ impl Stat {
     }
 }
 
-/// Effective user and group IDs that file access checks are made against,
-/// and the file creation mask. A caller with no process (a kernel thread) is
-/// treated as root with no mask.
-#[derive(Clone, Copy)]
-struct FileCredentials {
-    euid: u32,
-    egid: u32,
-    umask: u32,
-}
+use crate::fs::permissions::Credentials as FileCredentials;
 
 fn current_file_credentials() -> FileCredentials {
-    let root = FileCredentials {
-        euid: 0,
-        egid: 0,
-        umask: 0,
-    };
-    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
-        return root;
-    };
-    let manager_guard = crate::process::manager();
-    match &*manager_guard {
-        Some(manager) => manager
-            .find_process_by_thread(thread_id)
-            .map(|(_, p)| FileCredentials {
-                euid: p.euid,
-                egid: p.egid,
-                umask: p.umask,
-            })
-            .unwrap_or(root),
-        None => root,
-    }
+    FileCredentials::current(false)
 }
 
 /// POSIX open access check: the access mode (and O_TRUNC) must be granted by
@@ -258,23 +231,13 @@ fn current_file_credentials() -> FileCredentials {
 fn check_open_access(
     inode: &crate::fs::ext2::Ext2Inode,
     flags: u32,
-    cred: FileCredentials,
+    cred: &FileCredentials,
 ) -> Result<(), SyscallResult> {
     use super::errno::EACCES;
 
     if cred.euid == 0 {
         return Ok(());
     }
-    let uid = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_uid)) } as u32;
-    let gid = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_gid)) } as u32;
-    let mode = inode.permissions() as u32;
-    let granted = if cred.euid == uid {
-        (mode >> 6) & 0o7
-    } else if cred.egid == gid {
-        (mode >> 3) & 0o7
-    } else {
-        mode & 0o7
-    };
     let mut wanted = match flags & 0x3 {
         O_RDONLY => 0o4,
         O_WRONLY => 0o2,
@@ -283,7 +246,7 @@ fn check_open_access(
     if flags & O_TRUNC != 0 {
         wanted |= 0o2;
     }
-    if granted & wanted == wanted {
+    if cred.permits(inode, wanted) {
         Ok(())
     } else {
         Err(SyscallResult::Err(EACCES as u64))
@@ -371,15 +334,15 @@ fn sys_open_write_path(
                     log::debug!("sys_open: creating new file {}", resolved.path);
                     // The requested mode is used as given, less the umask: mode 0
                     // creates a file nobody but root may open.
-                    let file_mode = (mode & 0o777 & !cred.umask) as u16;
+                    let file_mode = (mode & 0o7777 & !cred.umask) as u16;
                     // The new file belongs to its creator (Linux: the effective
                     // uid and gid), so a restrictive mode still lets it reopen it.
                     match fs.create_file(
                         parent,
                         filename,
                         file_mode,
-                        cred.euid as u16,
-                        cred.egid as u16,
+                        cred.euid,
+                        cred.egid,
                     ) {
                         Ok(new_inode) => {
                             log::info!(
@@ -419,12 +382,13 @@ fn sys_open_write_path(
     // A file this open created is opened with the requested access whatever
     // its new mode; an existing one must grant that access first.
     if !file_created && open_is_access_checked(is_reg, is_dir, flags) {
-        check_open_access(&inode, flags, cred)?;
+        check_open_access(&inode, flags, &cred)?;
     }
 
     if want_trunc && is_reg && !file_created {
         log::debug!("sys_open: truncating file inode {}", ino);
-        if let Err(e) = fs.truncate_file(ino) {
+        let result = if cred.euid == 0 { fs.truncate_file(ino) } else { fs.resize_file_as(ino, 0, true) };
+        if let Err(e) = result {
             log::error!("sys_open: failed to truncate file: {}", e);
             return Err(SyscallResult::Err(5)); // EIO
         }
@@ -465,7 +429,7 @@ fn sys_open_read_path(
     let is_dir = matches!(ft, Ext2FileType::Directory);
     let is_reg = matches!(ft, Ext2FileType::Regular);
     if open_is_access_checked(is_reg, is_dir, flags) {
-        check_open_access(&inode, flags, cred)?;
+        check_open_access(&inode, flags, &cred)?;
     }
     let mid = fs.mount_id;
     let handle = if is_reg {
@@ -881,7 +845,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         TcpSocket,
         PtyDevice { pty_num: u32 },
         UnixSocket,
-        Fifo,
+        Fifo(alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>),
         ProcfsFile { size: i64 },
         ProcfsDirectory,
         Epoll,
@@ -946,7 +910,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
                 FstatKind::UnixSocket
             }
-            FdKind::FifoRead(_, _) | FdKind::FifoWrite(_, _) => FstatKind::Fifo,
+            FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) => FstatKind::Fifo(entry.clone()),
             FdKind::ProcfsFile { ref content, .. } => FstatKind::ProcfsFile {
                 size: content.len() as i64,
             },
@@ -1080,7 +1044,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFSOCK | 0o755;
             stat.st_nlink = 1;
         }
-        FstatKind::Fifo => fill_fifo_stat(&mut stat),
+        FstatKind::Fifo(entry) => fill_fifo_stat(&mut stat, &entry.lock()),
         FstatKind::ProcfsFile { size } => {
             stat.st_dev = 0;
             stat.st_ino = 0;
@@ -1111,12 +1075,14 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
 }
 
 /// What fstat and newfstatat report for a FIFO, which has no inode.
-fn fill_fifo_stat(stat: &mut Stat) {
+fn fill_fifo_stat(stat: &mut Stat, entry: &crate::ipc::fifo::FifoEntry) {
     static FIFO_INODE_COUNTER: core::sync::atomic::AtomicU64 =
         core::sync::atomic::AtomicU64::new(6000);
     stat.st_dev = 0;
     stat.st_ino = FIFO_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    stat.st_mode = S_IFIFO | 0o644;
+    stat.st_mode = S_IFIFO | entry.mode;
+    stat.st_uid = entry.uid;
+    stat.st_gid = entry.gid;
     stat.st_nlink = 1;
     stat.st_size = 0;
 }
@@ -1142,8 +1108,8 @@ struct InodeStat {
 /// Extract InodeStat from an already-loaded ext2 inode
 fn load_inode_stat_from_inode(inode: &crate::fs::ext2::Ext2Inode) -> Option<InodeStat> {
     let mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_mode)) };
-    let uid = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_uid)) };
-    let gid = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_gid)) };
+    let uid = inode.uid();
+    let gid = inode.gid();
     let links_count =
         unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) };
     let atime = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_atime)) };
@@ -1153,8 +1119,8 @@ fn load_inode_stat_from_inode(inode: &crate::fs::ext2::Ext2Inode) -> Option<Inod
 
     Some(InodeStat {
         mode: mode as u32,
-        uid: uid as u32,
-        gid: gid as u32,
+        uid,
+        gid,
         size: inode.size() as i64,
         nlink: links_count as u64,
         atime: atime as i64,
@@ -1890,15 +1856,12 @@ pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
     };
 
     // Create the directory on the correct filesystem
-    let dir_mode = if mode == 0 {
-        0o755
-    } else {
-        (mode & 0o777) as u16
-    };
+    let cred = current_file_credentials();
+    let dir_mode = (mode & 0o7777 & !cred.umask) as u16;
     let mkdir_result = {
         let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.create_directory(resolved.fs_path(), dir_mode),
+            Some(fs) => fs.create_directory_owned(resolved.fs_path(), dir_mode, cred.euid, cred.egid),
             None => {
                 log::error!("sys_mkdir: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
@@ -2145,88 +2108,37 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
 /// * EACCES - Access would be denied
 /// * ENOTDIR - A component of path is not a directory
 pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
+    sys_faccessat(AT_FDCWD, pathname, mode, 0)
+}
+
+fn access_resolved(resolved: &crate::fs::namei::Resolved, mode: u32, cred: &FileCredentials) -> SyscallResult {
     use super::errno::{EACCES, EIO, ENOENT};
     use crate::fs::namei::Target;
-
-    // Access mode constants
-    const F_OK: u32 = 0; // Test for existence
-    const X_OK: u32 = 1; // Test for execute permission
-    const W_OK: u32 = 2; // Test for write permission
-    const R_OK: u32 = 4; // Test for read permission
-
-    let resolved = match resolve_user(pathname, true) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-    let path = resolved.path.as_str();
-
-    log::debug!("sys_access: path={:?}, mode={:#o}", path, mode);
-
+    if let Some(entry) = crate::ipc::fifo::FIFO_REGISTRY.get(&resolved.path) {
+        return if cred.permits(&entry.lock().inode(), mode) { SyscallResult::Ok(0) } else { SyscallResult::Err(EACCES as u64) };
+    }
     let (mount, ino) = match resolved.target {
         Target::Inode { mount, ino, .. } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
-            // /dev and /proc are directories with rwxr-xr-x permissions
-            if resolved.is_mount_point() {
-                return SyscallResult::Ok(0);
-            }
-            if let Some(device_name) = path.strip_prefix("/dev/") {
-                if crate::fs::devfs::lookup(device_name).is_none() {
+            if resolved.is_mount_point() { return SyscallResult::Ok(0); }
+            if let Some(device) = resolved.path.strip_prefix("/dev/") {
+                if crate::fs::devfs::lookup(device).is_none() {
                     return SyscallResult::Err(ENOENT as u64);
                 }
-                // Devices have rw permissions (no execute)
-                if (mode & X_OK) != 0 {
-                    return SyscallResult::Err(EACCES as u64);
-                }
-                return SyscallResult::Ok(0);
+                return if mode & 1 == 0 { SyscallResult::Ok(0) } else { SyscallResult::Err(EACCES as u64) };
             }
-            if crate::fs::procfs::lookup_by_path(path).is_none() {
-                return SyscallResult::Err(ENOENT as u64);
-            }
-            return SyscallResult::Ok(0);
+            return if crate::fs::procfs::lookup_by_path(&resolved.path).is_some() {
+                SyscallResult::Ok(0)
+            } else { SyscallResult::Err(ENOENT as u64) };
         }
     };
-    if mode == F_OK {
-        return SyscallResult::Ok(0);
-    }
-
-    // Read the inode from the correct filesystem
-    let inode = {
-        let fs_guard = mount.read();
-        let fs = match fs_guard.as_ref() {
-            Some(fs) => fs,
-            None => {
-                log::error!("sys_access: ext2 filesystem not mounted");
-                return SyscallResult::Err(ENOENT as u64);
-            }
-        };
-        match fs.read_inode(ino) {
-            Ok(i) => i,
-            Err(_) => return SyscallResult::Err(EIO as u64),
-        }
+    let guard = mount.read();
+    let Some(fs) = guard.as_ref() else { return SyscallResult::Err(EIO as u64); };
+    let inode = match fs.read_inode(ino) {
+        Ok(inode) => inode, Err(_) => return SyscallResult::Err(EIO as u64),
     };
-
-    // Get permission bits from inode mode (owner permissions in bits 8-6)
-    let inode_mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_mode)) };
-    let owner_perms = (inode_mode >> 6) & 0o7;
-
-    // Check requested permissions against owner permissions
-    // (We don't have real users yet, so we check owner bits only)
-    if (mode & R_OK) != 0 && (owner_perms & 0o4) == 0 {
-        log::debug!("sys_access: read permission denied");
-        return SyscallResult::Err(EACCES as u64);
-    }
-    if (mode & W_OK) != 0 && (owner_perms & 0o2) == 0 {
-        log::debug!("sys_access: write permission denied");
-        return SyscallResult::Err(EACCES as u64);
-    }
-    if (mode & X_OK) != 0 && (owner_perms & 0o1) == 0 {
-        log::debug!("sys_access: execute permission denied");
-        return SyscallResult::Err(EACCES as u64);
-    }
-
-    log::debug!("sys_access: access check passed");
-    SyscallResult::Ok(0)
+    if cred.permits(&inode, mode) { SyscallResult::Ok(0) } else { SyscallResult::Err(EACCES as u64) }
 }
 
 /// Handle opening a device file from /dev/*
@@ -3291,6 +3203,10 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
     use alloc::string::String;
 
     let access_mode = flags & 3; // O_RDONLY=0, O_WRONLY=1, O_RDWR=2
+    let entry = match crate::ipc::fifo::FIFO_REGISTRY.get(path) {
+        Some(entry) => entry,
+        None => return SyscallResult::Err(super::errno::ENOENT as u64),
+    };
     let nonblock = (flags & status_flags::O_NONBLOCK) != 0;
 
     log::debug!(
@@ -3315,9 +3231,9 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
         FifoOpenResult::Ready(buffer) => {
             // FIFO is ready - create fd
             let kind = if for_write {
-                FdKind::FifoWrite(String::from(path), buffer)
+                FdKind::FifoWrite(String::from(path), buffer, entry)
             } else {
-                FdKind::FifoRead(String::from(path), buffer)
+                FdKind::FifoRead(String::from(path), buffer, entry)
             };
 
             let fd_entry = FileDescriptor::opened(kind, flags);
@@ -3474,9 +3390,9 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
                 FifoOpenResult::Ready(buffer) => {
                     // Now ready - create fd
                     let kind = if for_write {
-                        FdKind::FifoWrite(path_owned.clone(), buffer)
+                        FdKind::FifoWrite(path_owned.clone(), buffer, entry)
                     } else {
-                        FdKind::FifoRead(path_owned.clone(), buffer)
+                        FdKind::FifoRead(path_owned.clone(), buffer, entry)
                     };
 
                     let fd_entry = FileDescriptor::opened(kind, flags);
@@ -3560,10 +3476,10 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
     // opening it, since an open could block or release a waiting writer.
     // devfs and procfs paths are described by the descriptor an open of them
     // yields; those opens make no permission check.
-    if crate::ipc::fifo::FIFO_REGISTRY.exists(full_path) {
+    if let Some(entry) = crate::ipc::fifo::FIFO_REGISTRY.get(full_path) {
         let mut stat = Stat::zeroed();
         stat.st_blksize = 4096;
-        fill_fifo_stat(&mut stat);
+        fill_fifo_stat(&mut stat, &entry.lock());
         return match copy_to_user(statbuf as *mut Stat, &stat) {
             Ok(()) => SyscallResult::Ok(0),
             Err(errno) => SyscallResult::Err(errno),
@@ -3636,11 +3552,19 @@ pub fn sys_openat(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRe
 }
 
 /// faccessat(dirfd, pathname, mode, flags) - replacement for access
-pub fn sys_faccessat(dirfd: i32, pathname: u64, mode: u32, _flags: u32) -> SyscallResult {
-    if dirfd != AT_FDCWD {
-        return SyscallResult::Err(super::errno::ENOSYS as u64);
+pub fn sys_faccessat(dirfd: i32, pathname: u64, mode: u32, flags: u32) -> SyscallResult {
+    const AT_EACCESS: u32 = 0x200;
+    if mode & !7 != 0 || flags & !(AT_SYMLINK_NOFOLLOW | AT_EACCESS) != 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-    sys_access(pathname, mode)
+    let path = match super::userptr::copy_cstr_from_user(pathname) {
+        Ok(path) => path, Err(errno) => return SyscallResult::Err(errno),
+    };
+    let cred = FileCredentials::current(flags & AT_EACCESS == 0);
+    let resolved = match super::metadata::resolve_at(dirfd, &path, flags & AT_SYMLINK_NOFOLLOW == 0, &cred) {
+        Ok(r) => r, Err(errno) => return SyscallResult::Err(errno),
+    };
+    access_resolved(&resolved, mode, &cred)
 }
 
 /// mkdirat(dirfd, pathname, mode) - replacement for mkdir
@@ -3942,7 +3866,7 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
     }
 }
 
-fn resize_inode(fs: &mut crate::fs::ext2::Ext2Fs, ino: u32, length: u64) -> SyscallResult {
+fn resize_inode(fs: &mut crate::fs::ext2::Ext2Fs, ino: u32, length: u64, unprivileged: bool) -> SyscallResult {
     use super::errno::{EFBIG, EINVAL, EIO, EISDIR};
     match fs.read_inode(ino) {
         Ok(inode) if inode.is_dir() => return SyscallResult::Err(EISDIR as u64),
@@ -3953,7 +3877,7 @@ fn resize_inode(fs: &mut crate::fs::ext2::Ext2Fs, ino: u32, length: u64) -> Sysc
     if length > fs.max_file_size() {
         return SyscallResult::Err(EFBIG as u64);
     }
-    match fs.resize_file(ino, length) {
+    match fs.resize_file_as(ino, length, unprivileged) {
         Ok(()) => SyscallResult::Ok(0),
         Err(_) => SyscallResult::Err(EIO as u64),
     }
@@ -3970,12 +3894,13 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     let Some(handle) = handle else { return SyscallResult::Err(super::errno::EINVAL as u64); };
+    let unprivileged = current_file_credentials().euid != 0;
     let mut guard = match ext2::write_mount(handle.object.mount) {
         Ok(guard) => guard,
         Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
     };
     match guard.as_mut() {
-        Some(fs) if handle.verify(fs).is_ok() => resize_inode(fs, ino, length as u64),
+        Some(fs) if handle.verify(fs).is_ok() => resize_inode(fs, ino, length as u64, unprivileged),
         _ => SyscallResult::Err(super::errno::EIO as u64),
     }
 }
@@ -4029,11 +3954,11 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
         Err(_) => return SyscallResult::Err(EIO as u64),
     };
     if inode.is_file() {
-        if let Err(error) = check_open_access(&inode, O_WRONLY, cred) {
+        if let Err(error) = check_open_access(&inode, O_WRONLY, &cred) {
             return error;
         }
     }
-    resize_inode(fs, ino, length as u64)
+    resize_inode(fs, ino, length as u64, cred.euid != 0)
 }
 
 /// Record a successful nonempty read after releasing the read-side FS lock.

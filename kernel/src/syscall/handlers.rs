@@ -458,12 +458,12 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     != 0,
             },
             FdKind::PipeRead(_) => WriteOperation::Ebadf,
-            FdKind::FifoWrite(_path, pipe_buffer) => WriteOperation::Fifo {
+            FdKind::FifoWrite(_path, pipe_buffer, _) => WriteOperation::Fifo {
                 pipe_buffer: pipe_buffer.clone(),
                 is_nonblocking: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
             },
-            FdKind::FifoRead(_, _) => WriteOperation::Ebadf,
+            FdKind::FifoRead(_, _, _) => WriteOperation::Ebadf,
             FdKind::TcpSocket(_) => WriteOperation::Enotconn,
             FdKind::TcpListener(_) => WriteOperation::Enotconn,
             FdKind::TcpConnection(conn_id) => WriteOperation::TcpConnection { conn_id: *conn_id },
@@ -588,6 +588,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 )
             };
 
+            let unprivileged = crate::fs::permissions::Credentials::current(false).euid != 0;
             let inode_num = handle.object.key.inode;
             // Dispatch to correct filesystem based on mount_id
             let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
@@ -607,7 +608,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 } else {
                     position
                 };
-                let bw = match fs.write_file_range(inode_num as u32, wo, &buffer) {
+                let bw = match fs.write_file_range_as(inode_num as u32, wo, &buffer, unprivileged) {
                     Ok(n) => n,
                     Err(error) => {
                         return SyscallResult::Err(crate::memory::file_map::mutation_errno(error))
@@ -629,7 +630,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 } else {
                     position
                 };
-                let bw = match fs.write_file_range(inode_num as u32, wo, &buffer) {
+                let bw = match fs.write_file_range_as(inode_num as u32, wo, &buffer, unprivileged) {
                     Ok(n) => n,
                     Err(error) => {
                         return SyscallResult::Err(crate::memory::file_map::mutation_errno(error))
@@ -1023,7 +1024,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Can't read from write end of pipe
             SyscallResult::Err(9) // EBADF
         }
-        FdKind::FifoRead(_path, pipe_buffer) => {
+        FdKind::FifoRead(_path, pipe_buffer, _) => {
             // FIFO read - with blocking support
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
@@ -1167,7 +1168,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
         }
-        FdKind::FifoWrite(_, _) => {
+        FdKind::FifoWrite(_, _, _) => {
             // Can't read from write end of FIFO
             SyscallResult::Err(9) // EBADF
         }
@@ -5243,6 +5244,57 @@ pub fn sys_setgid(gid: u32) -> SyscallResult {
     })
 }
 
+/// Report supplementary groups without holding PM across a faultable user copy.
+pub fn sys_getgroups(size: i32, list: u64) -> SyscallResult {
+    use super::errno::{EINVAL, ESRCH};
+    if size < 0 { return SyscallResult::Err(EINVAL as u64); }
+    let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(ESRCH as u64); };
+    let groups = {
+        let guard = crate::process::manager();
+        match guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) {
+            Some((_, process)) => process.supplementary_groups.clone(),
+            None => return SyscallResult::Err(ESRCH as u64),
+        }
+    };
+    if size == 0 { return SyscallResult::Ok(groups.len() as u64); }
+    if (size as usize) < groups.len() { return SyscallResult::Err(EINVAL as u64); }
+    match super::userptr::write_user_bytes(list, groups.as_ptr() as *const u8, groups.len() * core::mem::size_of::<u32>()) {
+        Ok(()) => SyscallResult::Ok(groups.len() as u64),
+        Err(errno) => SyscallResult::Err(errno),
+    }
+}
+
+/// Replace supplementary groups atomically after copying the complete user list.
+/// Only root may change the list, including clearing it with setgroups(0, NULL).
+pub fn sys_setgroups(count: u64, list: u64) -> SyscallResult {
+    use super::errno::{EINVAL, EPERM, ESRCH};
+    if count > 65536 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    if crate::fs::permissions::Credentials::current(false).euid != 0 {
+        return SyscallResult::Err(EPERM as u64);
+    }
+    let mut groups = alloc::vec![0u32; count as usize];
+    if let Err(errno) = super::userptr::read_user_bytes(
+        groups.as_mut_ptr() as *mut u8, list, groups.len() * core::mem::size_of::<u32>(),
+    ) {
+        return SyscallResult::Err(errno);
+    }
+    let groups = alloc::sync::Arc::new(groups);
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(ESRCH as u64);
+    };
+    let mut guard = crate::process::manager();
+    let Some((_, process)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) else {
+        return SyscallResult::Err(ESRCH as u64);
+    };
+    if process.euid != 0 {
+        return SyscallResult::Err(EPERM as u64);
+    }
+    process.supplementary_groups = groups;
+    SyscallResult::Ok(0)
+}
+
 // =============================================================================
 // umask syscall
 // =============================================================================
@@ -5262,7 +5314,7 @@ pub fn sys_umask(mask: u32) -> SyscallResult {
                 }
             }
         }
-        SyscallResult::Ok(0o022)
+        SyscallResult::Err(super::errno::ESRCH as u64)
     })
 }
 
@@ -5440,9 +5492,10 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     };
 
     use crate::fs::ext2;
+    let unprivileged = crate::fs::permissions::Credentials::current(false).euid != 0;
     let write_fn = |fs: &mut ext2::Ext2Fs| -> SyscallResult {
         if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
-        match fs.write_file_range(inode_num as u32, file_offset, &data) {
+        match fs.write_file_range_as(inode_num as u32, file_offset, &data, unprivileged) {
             Ok(written) => SyscallResult::Ok(written as u64),
             Err(error) => SyscallResult::Err(crate::memory::file_map::mutation_errno(error)),
         }

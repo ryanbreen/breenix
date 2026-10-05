@@ -41,13 +41,14 @@ pub struct FifoEntry {
     /// Threads waiting to open for writing (waiting for reader)
     pub write_waiters: Vec<u64>,
     /// File mode (permissions)
-    #[allow(dead_code)] // Part of FifoEntry public API, used for permission checking
     pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 impl FifoEntry {
     /// Create a new FIFO entry
-    pub fn new(mode: u32) -> Self {
+    pub fn new(mode: u32, uid: u32, gid: u32) -> Self {
         FifoEntry {
             buffer: None,
             readers: 0,
@@ -55,7 +56,16 @@ impl FifoEntry {
             read_waiters: Vec::new(),
             write_waiters: Vec::new(),
             mode,
-        }
+            uid,
+            gid,        }
+    }
+
+    /// In-memory metadata uses the same permission and ownership rules as ext2.
+    pub(crate) fn inode(&self) -> crate::fs::ext2::Ext2Inode {
+        let mut inode = crate::fs::ext2::Ext2Inode::new_regular_file(0, 0, 0);
+        inode.i_mode = crate::fs::ext2::inode::EXT2_S_IFIFO | self.mode as u16;
+        inode.set_owner(self.uid, self.gid);
+        inode
     }
 
     /// Get or create the pipe buffer
@@ -167,14 +177,14 @@ impl FifoRegistry {
     ///
     /// Returns Ok(()) on success, Err(errno) on failure:
     /// - EEXIST (17) if path already exists
-    pub fn create(&self, path: &str, mode: u32) -> Result<(), i32> {
+    pub fn create(&self, path: &str, mode: u32, uid: u32, gid: u32) -> Result<(), i32> {
         let mut fifos = self.fifos.lock();
 
         if fifos.contains_key(path) {
             return Err(17); // EEXIST
         }
 
-        let entry = Arc::new(Mutex::new(FifoEntry::new(mode)));
+        let entry = Arc::new(Mutex::new(FifoEntry::new(mode, uid, gid)));
         fifos.insert(String::from(path), entry);
 
         log::debug!("FIFO created: {} with mode {:#o}", path, mode);

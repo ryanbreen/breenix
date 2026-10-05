@@ -110,11 +110,11 @@ fn query(fd: u64, arg: u64) -> Result<(), u64> {
         (own, other) => {
             let (buffer, kind) = match own {
                 FdKind::PipeWrite(buffer) => (buffer, 1),
-                FdKind::FifoWrite(_, buffer) => (buffer, 2),
+                FdKind::FifoWrite(_, buffer, _) => (buffer, 2),
                 _ => return Err(errno::EINVAL as u64),
             };
             let same = match &other {
-                FdKind::PipeWrite(other) | FdKind::FifoWrite(_, other) => {
+                FdKind::PipeWrite(other) | FdKind::FifoWrite(_, other, _) => {
                     Arc::ptr_eq(&buffer, other)
                 }
                 _ => false,

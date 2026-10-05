@@ -143,9 +143,9 @@ pub enum FdKind {
     /// Fully architecture-independent
     UnixListener(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>),
     /// FIFO (named pipe) read end - path is stored for cleanup on close
-    FifoRead(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>),
+    FifoRead(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// FIFO (named pipe) write end - path is stored for cleanup on close
-    FifoWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>),
+    FifoWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// Procfs virtual file (content generated at open time)
     ProcfsFile {
         content: alloc::string::String,
@@ -189,8 +189,8 @@ impl core::fmt::Debug for FdKind {
                 let listener = l.lock();
                 write!(f, "UnixListener(pending={})", listener.pending_count())
             }
-            FdKind::FifoRead(path, _) => write!(f, "FifoRead({})", path),
-            FdKind::FifoWrite(path, _) => write!(f, "FifoWrite({})", path),
+            FdKind::FifoRead(path, _, _) => write!(f, "FifoRead({})", path),
+            FdKind::FifoWrite(path, _, _) => write!(f, "FifoWrite({})", path),
             FdKind::ProcfsFile { content, position } => {
                 write!(f, "ProcfsFile(len={}, pos={})", content.len(), position)
             }
@@ -237,13 +237,13 @@ fn inherent_access_mode(kind: &FdKind) -> u32 {
     match kind {
         FdKind::StdIo(STDIN)
         | FdKind::PipeRead(_)
-        | FdKind::FifoRead(_, _)
+        | FdKind::FifoRead(_, _, _)
         | FdKind::Directory(_)
         | FdKind::DevfsDirectory { .. }
         | FdKind::DevptsDirectory { .. }
         | FdKind::ProcfsFile { .. }
         | FdKind::ProcfsDirectory { .. } => status_flags::O_RDONLY,
-        FdKind::StdIo(_) | FdKind::PipeWrite(_) | FdKind::FifoWrite(_, _) => status_flags::O_WRONLY,
+        FdKind::StdIo(_) | FdKind::PipeWrite(_) | FdKind::FifoWrite(_, _, _) => status_flags::O_WRONLY,
         _ => status_flags::O_RDWR,
     }
 }
@@ -343,14 +343,14 @@ impl Clone for FdTable {
                 match &fd_entry.kind {
                     FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
                     FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
-                    FdKind::FifoRead(path, buffer) => {
+                    FdKind::FifoRead(path, buffer, _) => {
                         // Increment both FIFO entry reader count and pipe buffer reader count
                         if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
                             entry.lock().readers += 1;
                         }
                         buffer.lock().add_reader();
                     }
-                    FdKind::FifoWrite(path, buffer) => {
+                    FdKind::FifoWrite(path, buffer, _) => {
                         // Increment both FIFO entry writer count and pipe buffer writer count
                         if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
                             entry.lock().writers += 1;
@@ -532,13 +532,13 @@ impl FdTable {
         match &fd_entry.kind {
             FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
             FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
-            FdKind::FifoRead(path, buffer) => {
+            FdKind::FifoRead(path, buffer, _) => {
                 if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
                     entry.lock().readers += 1;
                 }
                 buffer.lock().add_reader();
             }
-            FdKind::FifoWrite(path, buffer) => {
+            FdKind::FifoWrite(path, buffer, _) => {
                 if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
                     entry.lock().writers += 1;
                 }
@@ -612,13 +612,13 @@ impl FdTable {
         match &fd_entry.kind {
             FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
             FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
-            FdKind::FifoRead(path, buffer) => {
+            FdKind::FifoRead(path, buffer, _) => {
                 if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
                     entry.lock().readers += 1;
                 }
                 buffer.lock().add_reader();
             }
-            FdKind::FifoWrite(path, buffer) => {
+            FdKind::FifoWrite(path, buffer, _) => {
                 if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
                     entry.lock().writers += 1;
                 }
@@ -814,14 +814,14 @@ impl Drop for FdTable {
                         l.wake_waiters();
                         log::debug!("FdTable::drop() - closed Unix listener fd {}", i);
                     }
-                    FdKind::FifoRead(path, buffer) => {
+                    FdKind::FifoRead(path, buffer, _) => {
                         // Decrement FIFO reader count and pipe buffer reader count
                         super::fifo::close_fifo_read(&path);
                         let notifications = buffer.lock().close_read();
                         notifications.deliver();
                         log::debug!("FdTable::drop() - closed FIFO read fd {} ({})", i, path);
                     }
-                    FdKind::FifoWrite(path, buffer) => {
+                    FdKind::FifoWrite(path, buffer, _) => {
                         // Decrement FIFO writer count and pipe buffer writer count
                         super::fifo::close_fifo_write(&path);
                         let notifications = buffer.lock().close_write();

@@ -578,6 +578,15 @@ fn dispatch_syscall_enum(
         SyscallNumber::GetSid => result_to_u64(crate::syscall::session::sys_getsid(arg1 as i32)),
 
         // Filesystem syscalls
+        SyscallNumber::Chmod => result_to_u64(crate::syscall::metadata::sys_chmod(arg1, arg2 as u32)),
+        SyscallNumber::Fchmod => result_to_u64(crate::syscall::metadata::sys_fchmod(arg1 as i32, arg2 as u32)),
+        SyscallNumber::Fchmodat => result_to_u64(crate::syscall::metadata::sys_fchmodat(arg1 as i32, arg2, arg3 as u32)),
+        SyscallNumber::Chown => result_to_u64(crate::syscall::metadata::sys_chown(arg1, arg2 as u32, arg3 as u32)),
+        SyscallNumber::Lchown => result_to_u64(crate::syscall::metadata::sys_lchown(arg1, arg2 as u32, arg3 as u32)),
+        SyscallNumber::Fchown => result_to_u64(crate::syscall::metadata::sys_fchown(arg1 as i32, arg2 as u32, arg3 as u32)),
+        SyscallNumber::Fchownat => result_to_u64(crate::syscall::metadata::sys_fchownat(arg1 as i32, arg2, arg3 as u32, arg4 as u32, arg5 as u32)),
+        SyscallNumber::Setgroups => result_to_u64(crate::syscall::handlers::sys_setgroups(arg1, arg2)),
+        SyscallNumber::Getgroups => result_to_u64(crate::syscall::handlers::sys_getgroups(arg1 as i32, arg2)),
         SyscallNumber::Access => result_to_u64(crate::syscall::fs::sys_access(arg1, arg2 as u32)),
         SyscallNumber::Getcwd => result_to_u64(crate::syscall::fs::sys_getcwd(arg1, arg2)),
         SyscallNumber::Chdir => result_to_u64(crate::syscall::fs::sys_chdir(arg1)),
@@ -617,7 +626,7 @@ fn dispatch_syscall_enum(
             arg1 as i32,
             arg2,
             arg3 as u32,
-            arg4 as u32,
+            0,
         )),
         SyscallNumber::Mkdirat => result_to_u64(crate::syscall::fs::sys_mkdirat(
             arg1 as i32,

@@ -2,10 +2,8 @@
 //!
 //! Implements: mkfifo (via mknod with S_IFIFO)
 
-#[cfg(target_arch = "x86_64")]
 use super::userptr::copy_cstr_from_user;
 use super::SyscallResult;
-#[cfg(target_arch = "x86_64")]
 use crate::ipc::fifo::FIFO_REGISTRY;
 
 /// sys_mkfifo - Create a FIFO (named pipe)
@@ -16,7 +14,6 @@ use crate::ipc::fifo::FIFO_REGISTRY;
 ///
 /// # Returns
 /// 0 on success, negative errno on failure
-#[cfg(target_arch = "x86_64")]
 pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
     use crate::fs::namei::{Last, Target};
 
@@ -44,7 +41,8 @@ pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
     log::debug!("sys_mkfifo: path={}, mode={:#o}", path, mode);
 
     // Create the FIFO in the registry
-    match FIFO_REGISTRY.create(&path, mode) {
+    let cred = crate::fs::permissions::Credentials::current(false);
+    match FIFO_REGISTRY.create(&path, mode & 0o777 & !cred.umask, cred.euid, cred.egid) {
         Ok(()) => {
             log::info!("Created FIFO: {}", path);
             SyscallResult::Ok(0)
@@ -68,7 +66,6 @@ pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
 ///
 /// # Returns
 /// 0 on success, negative errno on failure
-#[cfg(target_arch = "x86_64")]
 pub fn sys_mknod(pathname: u64, mode: u32, _dev: u64) -> SyscallResult {
     use super::fs::S_IFIFO;
     use super::fs::S_IFMT;
@@ -84,14 +81,4 @@ pub fn sys_mknod(pathname: u64, mode: u32, _dev: u64) -> SyscallResult {
         log::warn!("sys_mknod: file type {:#o} not supported", file_type);
         SyscallResult::Err(38) // ENOSYS
     }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn sys_mkfifo(_pathname: u64, _mode: u32) -> SyscallResult {
-    SyscallResult::Err(super::errno::ENOSYS as u64)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn sys_mknod(_pathname: u64, _mode: u32, _dev: u64) -> SyscallResult {
-    SyscallResult::Err(super::errno::ENOSYS as u64)
 }

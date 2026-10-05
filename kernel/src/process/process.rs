@@ -202,6 +202,8 @@ pub struct Process {
     pub euid: u32,
     /// Effective group ID
     pub egid: u32,
+    /// Supplementary group membership, shared until setgroups replaces it.
+    pub supplementary_groups: alloc::sync::Arc<Vec<u32>>,
     /// File creation mask (umask)
     pub umask: u32,
 
@@ -358,6 +360,7 @@ impl Process {
             gid: 0,
             euid: 0,
             egid: 0,
+            supplementary_groups: alloc::sync::Arc::new(Vec::new()),
             // Standard default umask: owner rwx, group/other rx
             umask: 0o022,
             // Default working directory is root
@@ -631,14 +634,14 @@ impl Process {
                         let notifications = socket.lock().close();
                         notifications.deliver_deferred();
                     }
-                    FdKind::FifoRead(path, buffer) => {
+                    FdKind::FifoRead(path, buffer, _) => {
                         crate::ipc::fifo::close_fifo_read(&path);
                         // #919/P-2: deliver via the PM-safe deferred path
                         // (see the PipeRead arm above).
                         let notifications = buffer.lock().close_read();
                         notifications.deliver_deferred();
                     }
-                    FdKind::FifoWrite(path, buffer) => {
+                    FdKind::FifoWrite(path, buffer, _) => {
                         crate::ipc::fifo::close_fifo_write(&path);
                         // #919/P-2: no new-writer notification here either;
                         // see the PipeWrite arm above.
@@ -714,14 +717,14 @@ impl Process {
                         let notifications = socket.lock().close();
                         notifications.deliver_deferred();
                     }
-                    FdKind::FifoRead(path, buffer) => {
+                    FdKind::FifoRead(path, buffer, _) => {
                         crate::ipc::fifo::close_fifo_read(&path);
                         // #919/P-2: deliver via the PM-safe deferred path
                         // (see the PipeRead arm above).
                         let notifications = buffer.lock().close_read();
                         notifications.deliver_deferred();
                     }
-                    FdKind::FifoWrite(path, buffer) => {
+                    FdKind::FifoWrite(path, buffer, _) => {
                         crate::ipc::fifo::close_fifo_write(&path);
                         // #919/P-2: no new-writer notification here either;
                         // see the PipeWrite arm above.

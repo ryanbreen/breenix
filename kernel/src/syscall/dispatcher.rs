@@ -101,6 +101,15 @@ pub fn dispatch_syscall(
         SyscallNumber::GetPgid => super::session::sys_getpgid(arg1 as i32),
         SyscallNumber::GetSid => super::session::sys_getsid(arg1 as i32),
         // Filesystem syscalls
+        SyscallNumber::Chmod => super::metadata::sys_chmod(arg1, arg2 as u32),
+        SyscallNumber::Fchmod => super::metadata::sys_fchmod(arg1 as i32, arg2 as u32),
+        SyscallNumber::Fchmodat => super::metadata::sys_fchmodat(arg1 as i32, arg2, arg3 as u32),
+        SyscallNumber::Chown => super::metadata::sys_chown(arg1, arg2 as u32, arg3 as u32),
+        SyscallNumber::Lchown => super::metadata::sys_lchown(arg1, arg2 as u32, arg3 as u32),
+        SyscallNumber::Fchown => super::metadata::sys_fchown(arg1 as i32, arg2 as u32, arg3 as u32),
+        SyscallNumber::Fchownat => super::metadata::sys_fchownat(arg1 as i32, arg2, arg3 as u32, arg4 as u32, arg5 as u32),
+        SyscallNumber::Setgroups => super::handlers::sys_setgroups(arg1, arg2),
+        SyscallNumber::Getgroups => handlers::sys_getgroups(arg1 as i32, arg2),
         SyscallNumber::Access => super::fs::sys_access(arg1, arg2 as u32),
         SyscallNumber::Getcwd => super::fs::sys_getcwd(arg1, arg2),
         SyscallNumber::Chdir => super::fs::sys_chdir(arg1),
@@ -119,7 +128,7 @@ pub fn dispatch_syscall(
         // *at variants (Linux ARM64 uses these, x86_64 also supports them)
         SyscallNumber::Openat => super::fs::sys_openat(arg1 as i32, arg2, arg3 as u32, arg4 as u32),
         SyscallNumber::Faccessat => {
-            super::fs::sys_faccessat(arg1 as i32, arg2, arg3 as u32, arg4 as u32)
+            super::fs::sys_faccessat(arg1 as i32, arg2, arg3 as u32, 0)
         }
         SyscallNumber::Mkdirat => super::fs::sys_mkdirat(arg1 as i32, arg2, arg3 as u32),
         SyscallNumber::Mknodat => super::fs::sys_mknodat(arg1 as i32, arg2, arg3 as u32, arg4),

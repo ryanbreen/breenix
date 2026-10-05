@@ -84,6 +84,13 @@ pub mod nr {
     pub const UNLINK: u64 = 87;
     pub const SYMLINK: u64 = 88;
     pub const READLINK: u64 = 89;
+    pub const FCHMOD: u64 = 91;
+    pub const FCHMODAT: u64 = 268;
+    pub const FCHOWN: u64 = 93;
+    pub const FCHOWNAT: u64 = 260;
+    pub const UMASK: u64 = 95;
+    pub const GETGROUPS: u64 = 115;
+    pub const SETGROUPS: u64 = 116;
     pub const SETPGID: u64 = 109;
     pub const GETPPID: u64 = 110;
     pub const SETSID: u64 = 112;
@@ -174,6 +181,13 @@ pub mod nr {
     pub const TRUNCATE: u64 = 45;
     pub const FTRUNCATE: u64 = 46;
     pub const FACCESSAT: u64 = 48;
+    pub const FCHMOD: u64 = 52;
+    pub const FCHMODAT: u64 = 53;
+    pub const FCHOWN: u64 = 55;
+    pub const FCHOWNAT: u64 = 54;
+    pub const UMASK: u64 = 166;
+    pub const GETGROUPS: u64 = 158;
+    pub const SETGROUPS: u64 = 159;
     pub const CHDIR: u64 = 49;
     pub const OPENAT: u64 = 56;
     pub const CLOSE: u64 = 57;

@@ -60,7 +60,7 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
             let entry = process.fd_table.get(fd as i32)?;
             match &entry.kind {
                 crate::ipc::FdKind::PipeWrite(buffer)
-                | crate::ipc::FdKind::FifoWrite(_, buffer) => Some((
+                | crate::ipc::FdKind::FifoWrite(_, buffer, _) => Some((
                     buffer.clone(),
                     entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK != 0,
                 )),

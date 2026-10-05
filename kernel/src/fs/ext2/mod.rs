@@ -457,7 +457,7 @@ impl Ext2Fs {
         offset: u64,
         bytes: &[u8],
     ) -> Result<usize, &'static str> {
-        self.write_file_range_disk(ino, offset, bytes)
+        self.write_file_range_disk(ino, offset, bytes, false)
     }
 
     /// Write data to a file at the specified offset
@@ -476,6 +476,13 @@ impl Ext2Fs {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, &'static str> {
+        self.write_file_range_as(inode_num, offset, data, false)
+    }
+
+    /// User content changes clear execution privilege bits for unprivileged writers.
+    pub fn write_file_range_as(
+        &mut self, inode_num: u32, offset: u64, data: &[u8], unprivileged: bool,
+    ) -> Result<usize, &'static str> {
         // Private mappings: give bound holes cache frames and reserve poison
         // room before the disk changes; afterwards only apply what ext2
         // published, which allocates nothing.
@@ -483,7 +490,7 @@ impl Ext2Fs {
         if let Some(object) = &mapped {
             object.map.prepare_write(offset, data.len())?;
         }
-        let result = self.write_file_range_disk(inode_num, offset, data);
+        let result = self.write_file_range_disk(inode_num, offset, data, unprivileged);
         if let Some(object) = mapped {
             object.map.transition(object.size.load(Ordering::Acquire));
             match result {
@@ -500,6 +507,7 @@ impl Ext2Fs {
         inode_num: u32,
         offset: u64,
         data: &[u8],
+        unprivileged: bool,
     ) -> Result<usize, &'static str> {
         self.check_shrink(inode_num)?;
         if data.is_empty() {
@@ -520,6 +528,8 @@ impl Ext2Fs {
         if !inode.is_file() {
             return Err("Not a regular file");
         }
+
+        if unprivileged { inode.i_mode &= !0o6000; }
 
         // Allocation updates the group counters. Publish their aggregate and
         // the descriptors once per write, including partial allocation failure.
@@ -610,8 +620,8 @@ impl Ext2Fs {
         parent_inode_num: u32,
         name: &str,
         mode: u16,
-        uid: u16,
-        gid: u16,
+        uid: u32,
+        gid: u32,
     ) -> Result<u32, &'static str> {
         // Validate name
         if name.is_empty() || name.len() > 255 {
@@ -643,7 +653,8 @@ impl Ext2Fs {
         )?;
 
         // Create the new inode structure
-        let new_inode = Ext2Inode::new_regular_file(mode, uid, gid);
+        let mut new_inode = Ext2Inode::new_regular_file(mode, uid as u16, gid as u16);
+        new_inode.set_owner(uid, gid);
 
         // Write the new inode to disk
         new_inode
@@ -714,6 +725,10 @@ impl Ext2Fs {
 
     /// Resize a regular file, preserving its prefix and zero-filling extension.
     pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
+        self.resize_file_as(inode_num, length, false)
+    }
+
+    pub fn resize_file_as(&mut self, inode_num: u32, length: u64, unprivileged: bool) -> Result<(), &'static str> {
         let mapped = self.live_inodes.get(inode_num);
         let before = mapped
             .as_ref()
@@ -721,7 +736,7 @@ impl Ext2Fs {
         if let (Some(object), Some(before)) = (&mapped, before) {
             object.map.prepare_resize(before, length)?;
         }
-        let result = self.resize_file_disk(inode_num, length);
+        let result = self.resize_file_disk(inode_num, length, unprivileged);
         if let (Some(object), Some(before)) = (mapped, before) {
             // A shrink publishes its EOF before it can fail, so the published
             // size is followed on failure too.
@@ -736,12 +751,13 @@ impl Ext2Fs {
         result
     }
 
-    fn resize_file_disk(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
+    fn resize_file_disk(&mut self, inode_num: u32, length: u64, unprivileged: bool) -> Result<(), &'static str> {
         self.check_shrink(inode_num)?;
         let mut inode = self.read_inode(inode_num)?;
         if !inode.is_file() || length > self.max_file_size() {
             return Err("Invalid file size or type");
         }
+        if unprivileged { inode.i_mode &= !0o6000; }
         if length < inode.size() {
             // Publish EOF before modifying any content that used to be visible.
             let mut smaller = inode;
@@ -1102,7 +1118,12 @@ impl Ext2Fs {
     /// # Returns
     /// * `Ok(inode_num)` - The inode number of the newly created directory
     /// * `Err(msg)` - Error message if creation failed
+    #[cfg(feature = "ext2_lock_race")]
     pub fn create_directory(&mut self, path: &str, mode: u16) -> Result<u32, &'static str> {
+        self.create_directory_owned(path, mode, 0, 0)
+    }
+
+    pub fn create_directory_owned(&mut self, path: &str, mode: u16, uid: u32, gid: u32) -> Result<u32, &'static str> {
         // Must be an absolute path
         if !path.starts_with('/') {
             return Err("Path must be absolute");
@@ -1155,6 +1176,7 @@ impl Ext2Fs {
 
         // Create the new directory inode
         let mut new_inode = Ext2Inode::new_directory(mode);
+        new_inode.set_owner(uid, gid);
 
         // Set the data block pointer
         new_inode.i_block[0] = new_block;
