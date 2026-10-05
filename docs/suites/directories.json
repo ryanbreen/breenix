@@ -1,0 +1,481 @@
+{
+  "id": "directories",
+  "title": "Directories & links",
+  "area": "Directories & links",
+  "summary": "Programs can build, walk and rearrange directory trees with POSIX semantics, including permissions and timestamps.",
+  "binary": "/sbin/suite-directories",
+  "categories": [
+    {
+      "id": "mkdir-rmdir",
+      "title": "mkdir & rmdir",
+      "cases": [
+        {
+          "id": "create",
+          "title": "mkdir creates a directory with the requested mode"
+        },
+        {
+          "id": "existing-dir",
+          "title": "mkdir on an existing directory fails with EEXIST"
+        },
+        {
+          "id": "existing-file",
+          "title": "mkdir on an existing file fails with EEXIST"
+        },
+        {
+          "id": "missing-parent",
+          "title": "mkdir with a missing parent fails with ENOENT"
+        },
+        {
+          "id": "file-parent",
+          "title": "mkdir beneath a regular file fails with ENOTDIR"
+        },
+        {
+          "id": "empty",
+          "title": "rmdir removes an empty directory"
+        },
+        {
+          "id": "nonempty-file",
+          "title": "rmdir with a file child fails with EEXIST or ENOTEMPTY and preserves the tree"
+        },
+        {
+          "id": "nonempty-dir",
+          "title": "rmdir with a directory child fails with EEXIST or ENOTEMPTY"
+        },
+        {
+          "id": "regular-file",
+          "title": "rmdir on a regular file fails with ENOTDIR"
+        },
+        {
+          "id": "missing",
+          "title": "rmdir on a missing path fails with ENOENT"
+        },
+        {
+          "id": "symlink",
+          "title": "rmdir does not follow a final symlink to a directory"
+        },
+        {
+          "id": "parent-nlink",
+          "title": "ext2 mkdir and rmdir update the parent directory link count"
+        }
+      ]
+    },
+    {
+      "id": "readdir",
+      "title": "readdir & seekdir",
+      "cases": [
+        {
+          "id": "entries",
+          "title": "readdir returns every child exactly once without imposing lexical order"
+        },
+        {
+          "id": "dot",
+          "title": "readdir includes dot with the directory inode"
+        },
+        {
+          "id": "dotdot",
+          "title": "readdir includes dot-dot with the parent inode"
+        },
+        {
+          "id": "inodes",
+          "title": "readdir child inode numbers agree with fresh pathname stat"
+        },
+        {
+          "id": "eof",
+          "title": "readdir at end stays at end"
+        },
+        {
+          "id": "rewind",
+          "title": "rewinddir replays an unchanged directory in its original order"
+        },
+        {
+          "id": "tell-seek",
+          "title": "seekdir to a telldir cookie replays the remaining entries in order"
+        },
+        {
+          "id": "tell-after-rewind",
+          "title": "telldir and seekdir work with a fresh cookie after rewinddir"
+        },
+        {
+          "id": "two-streams",
+          "title": "independent directory streams have independent positions"
+        },
+        {
+          "id": "not-directory",
+          "title": "opening a regular file as a directory fails with ENOTDIR"
+        }
+      ]
+    },
+    {
+      "id": "links",
+      "title": "hard links & unlink",
+      "cases": [
+        {
+          "id": "identity",
+          "title": "hard links share an inode and report two links"
+        },
+        {
+          "id": "shared-write",
+          "title": "writes through a hard link are visible by reopening the original"
+        },
+        {
+          "id": "unlink-one",
+          "title": "unlink of one hard link preserves data and decrements nlink"
+        },
+        {
+          "id": "open-unlink",
+          "title": "an open descriptor sees link counts two, one and zero and retains data"
+        },
+        {
+          "id": "destination-exists",
+          "title": "link to an existing destination fails with EEXIST"
+        },
+        {
+          "id": "source-missing",
+          "title": "link of a missing source fails with ENOENT"
+        },
+        {
+          "id": "directory",
+          "title": "implementation prohibits hard linking a directory with EPERM"
+        },
+        {
+          "id": "cross-directory",
+          "title": "hard links across directories share data and link counts"
+        },
+        {
+          "id": "unlink-missing",
+          "title": "unlink of a missing name fails with ENOENT"
+        },
+        {
+          "id": "unlink-directory",
+          "title": "implementation prohibits unlink of a directory with EPERM or EISDIR"
+        }
+      ]
+    },
+    {
+      "id": "symlinks",
+      "title": "symlinks & readlink",
+      "cases": [
+        {
+          "id": "absolute",
+          "title": "an absolute symlink resolves to its target"
+        },
+        {
+          "id": "relative",
+          "title": "a relative symlink resolves from its containing directory"
+        },
+        {
+          "id": "dangling",
+          "title": "a dangling symlink exists in lstat but opening it fails with ENOENT"
+        },
+        {
+          "id": "existing",
+          "title": "symlink at an existing name fails with EEXIST"
+        },
+        {
+          "id": "readlink",
+          "title": "readlink returns target bytes without a terminating NUL"
+        },
+        {
+          "id": "truncate",
+          "title": "readlink silently truncates to the buffer size without a NUL"
+        },
+        {
+          "id": "readlink-regular",
+          "title": "readlink on a regular file fails with EINVAL"
+        },
+        {
+          "id": "self-loop",
+          "title": "opening a self-referential symlink fails with ELOOP"
+        },
+        {
+          "id": "mutual-loop",
+          "title": "opening a two-link cycle fails with ELOOP"
+        },
+        {
+          "id": "nofollow",
+          "title": "O_NOFOLLOW rejects a final symlink with ELOOP"
+        },
+        {
+          "id": "nofollow-prefix",
+          "title": "O_NOFOLLOW still follows symlinks in prefix components"
+        },
+        {
+          "id": "unlink-link",
+          "title": "unlink removes the symlink rather than its target"
+        }
+      ]
+    },
+    {
+      "id": "rename",
+      "title": "rename & atomic replace",
+      "cases": [
+        {
+          "id": "file",
+          "title": "rename moves a file while preserving inode and contents"
+        },
+        {
+          "id": "replace-open",
+          "title": "rename replaces a file while old open descriptors retain the replaced inode"
+        },
+        {
+          "id": "atomic-replace",
+          "title": "a concurrent reader sees the destination continuously as whole old or new data"
+        },
+        {
+          "id": "empty-dir",
+          "title": "rename of a directory onto an empty directory replaces it"
+        },
+        {
+          "id": "nonempty-dir",
+          "title": "rename onto a non-empty directory fails with EEXIST or ENOTEMPTY"
+        },
+        {
+          "id": "cross-directory",
+          "title": "rename moves a file across directories"
+        },
+        {
+          "id": "directory-parent",
+          "title": "moving a directory updates dot-dot and ext2 parent link counts"
+        },
+        {
+          "id": "same-name",
+          "title": "rename of a name onto itself succeeds without altering data"
+        },
+        {
+          "id": "same-inode",
+          "title": "rename between hard links to the same inode preserves both names"
+        },
+        {
+          "id": "file-to-dir",
+          "title": "rename of a file onto a directory fails with EISDIR"
+        },
+        {
+          "id": "dir-to-file",
+          "title": "rename of a directory onto a file fails with ENOTDIR"
+        },
+        {
+          "id": "descendant",
+          "title": "rename of a directory into its descendant fails with EINVAL"
+        },
+        {
+          "id": "symlink",
+          "title": "rename moves a symlink itself and preserves its target text"
+        },
+        {
+          "id": "missing-source",
+          "title": "rename of a missing source fails with ENOENT and preserves the destination"
+        }
+      ]
+    },
+    {
+      "id": "cwd",
+      "title": "getcwd, chdir & relative paths",
+      "cases": [
+        {
+          "id": "absolute",
+          "title": "chdir followed by getcwd reports the absolute directory path"
+        },
+        {
+          "id": "relative",
+          "title": "relative opens after chdir resolve from the working directory"
+        },
+        {
+          "id": "parent",
+          "title": "chdir dot-dot moves to the parent directory"
+        },
+        {
+          "id": "relative-create",
+          "title": "mkdir and rename with relative paths operate in the working directory"
+        },
+        {
+          "id": "renamed",
+          "title": "getcwd follows a renamed working directory to its new pathname"
+        },
+        {
+          "id": "ancestor-renamed",
+          "title": "getcwd follows a renamed ancestor of the working directory"
+        },
+        {
+          "id": "removed",
+          "title": "rmdir of cwd returns EBUSY or Linux getcwd of removed cwd returns ENOENT"
+        },
+        {
+          "id": "small-buffer",
+          "title": "getcwd with an insufficient buffer fails with ERANGE"
+        },
+        {
+          "id": "not-dir",
+          "title": "chdir to a regular file fails with ENOTDIR and keeps cwd"
+        },
+        {
+          "id": "missing",
+          "title": "chdir to a missing path fails with ENOENT and keeps cwd"
+        },
+        {
+          "id": "count-abi",
+          "title": "Linux getcwd syscall byte count includes the NUL terminator"
+        },
+        {
+          "id": "symlink-parent-open",
+          "title": "open resolves symlink before dot-dot"
+        },
+        {
+          "id": "symlink-parent-chdir",
+          "title": "chdir resolves symlink before dot-dot"
+        },
+        {
+          "id": "symlink-physical",
+          "title": "getcwd after chdir of a symlink names the physical directory"
+        }
+      ]
+    },
+    {
+      "id": "permissions",
+      "title": "chmod, chown, access & umask",
+      "cases": [
+        {
+          "id": "chmod-file",
+          "title": "chmod changes file permission bits reported by fresh stat"
+        },
+        {
+          "id": "chmod-dir",
+          "title": "chmod changes directory permission bits"
+        },
+        {
+          "id": "chmod-missing",
+          "title": "chmod of a missing path fails with ENOENT"
+        },
+        {
+          "id": "chown",
+          "title": "chown updates the UID and GID reported by fresh stat"
+        },
+        {
+          "id": "chown-unchanged",
+          "title": "chown with minus one leaves the corresponding owner unchanged"
+        },
+        {
+          "id": "umask-return",
+          "title": "umask returns the previous mask and restricts it to permission bits"
+        },
+        {
+          "id": "umask-file",
+          "title": "umask applies at regular-file creation"
+        },
+        {
+          "id": "umask-dir",
+          "title": "umask applies at directory creation"
+        },
+        {
+          "id": "chmod-umask",
+          "title": "umask does not mask chmod permission bits"
+        },
+        {
+          "id": "access-exists",
+          "title": "access F_OK reports existence even without permission bits"
+        },
+        {
+          "id": "access-owner",
+          "title": "access checks owner permission bits using real credentials"
+        },
+        {
+          "id": "access-group",
+          "title": "access checks group permission bits using real credentials"
+        },
+        {
+          "id": "access-other",
+          "title": "access checks other permission bits using real credentials"
+        },
+        {
+          "id": "access-execute",
+          "title": "access checks execute permission bits using real credentials"
+        },
+        {
+          "id": "search-denied",
+          "title": "path traversal without directory search permission fails with EACCES"
+        },
+        {
+          "id": "root-execute",
+          "title": "Linux policy denies root X_OK on a regular file with no execute bits"
+        },
+        {
+          "id": "access-owner-denied",
+          "title": "access denies owner bits even when another class grants them"
+        },
+        {
+          "id": "access-group-denied",
+          "title": "access denies group bits even when another class grants them"
+        },
+        {
+          "id": "access-other-denied",
+          "title": "access denies other bits even when another class grants them"
+        }
+      ]
+    },
+    {
+      "id": "timestamps",
+      "title": "utimensat & time updates",
+      "cases": [
+        {
+          "id": "explicit",
+          "title": "utimensat sets explicit access and modification times"
+        },
+        {
+          "id": "now",
+          "title": "UTIME_NOW sets both times to the current realtime clock"
+        },
+        {
+          "id": "omit-atime",
+          "title": "UTIME_OMIT preserves atime while setting mtime"
+        },
+        {
+          "id": "omit-mtime",
+          "title": "UTIME_OMIT preserves mtime while setting atime"
+        },
+        {
+          "id": "omit-both",
+          "title": "Linux policy preserves atime mtime and ctime for two UTIME_OMIT values"
+        },
+        {
+          "id": "now-omit",
+          "title": "UTIME_NOW and UTIME_OMIT can be used in the same request"
+        },
+        {
+          "id": "invalid-nsec",
+          "title": "utimensat rejects an ordinary nanosecond value of one billion with EINVAL"
+        },
+        {
+          "id": "missing",
+          "title": "utimensat of a missing file fails with ENOENT"
+        },
+        {
+          "id": "symlink-follow",
+          "title": "utimensat follows symlinks by default"
+        },
+        {
+          "id": "symlink-nofollow",
+          "title": "utimensat AT_SYMLINK_NOFOLLOW updates only the symlink"
+        },
+        {
+          "id": "write-update",
+          "title": "writing file data updates mtime and ctime"
+        },
+        {
+          "id": "parent-create",
+          "title": "creating a child updates its parent directory mtime and ctime"
+        },
+        {
+          "id": "parent-unlink",
+          "title": "unlink updates the parent directory mtime and ctime"
+        },
+        {
+          "id": "parent-rename",
+          "title": "cross-directory rename updates both parent directories timestamps"
+        },
+        {
+          "id": "directory",
+          "title": "utimensat sets and reads back directory timestamps"
+        }
+      ]
+    }
+  ]
+}

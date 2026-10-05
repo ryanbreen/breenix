@@ -114,7 +114,7 @@ framebuffer (and stops drawing its own log there), so the panel shows on every p
 
 ## Files & I/O
 
-`files-io` has 159 syscall and descriptor cases. Stream stdio cases are deferred until
+`files-io` has 176 syscall and descriptor cases. Stream stdio cases are deferred until
 there is a musl-built helper; libbreenix-libc supplies Rust's runtime ABI and has no
 stdio implementation. Synchronization cases call the kernel's fsync/fdatasync ABI,
 so an unimplemented syscall fails with ENOSYS rather than passing a libc stub.
@@ -122,7 +122,7 @@ so an unimplemented syscall fails with ENOSYS rather than passing a libc stub.
 The suite uses the runner's default 10-second case deadline, including helper children;
 there is no shorter fork/exec deadline. This is a hang limit, not a performance target.
 A timeout reports a failure to finish, not the result of a POSIX assertion. Allow 1800
-seconds on x86 for 159 cases, their kill/reap allowance, boot and panel overhead:
+seconds on x86 for 176 cases, their kill/reap allowance, boot and panel overhead:
 
 ```bash
 BREENIX_BOOT_SUITE=files-io BREENIX_GATE_TIMEOUT=1800 docker/qemu/run-x86-gate.sh 1
@@ -136,3 +136,29 @@ all images, including default boot images, so changing boot mode does not requir
 second userspace image; default boot does not execute them. Files & I/O uses
 `/usr/local/test/bin/files-io-exec_test` for descriptor lifetime across exec. Helpers
 must return their result to the case and must not print suite serial records.
+
+## Directories & links
+
+`directories` measures the directories effort in `docs/efforts/path.json`. Its
+106 cases cover eight categories, one per suite milestone: `mkdir-rmdir`,
+`readdir`, `links`, `symlinks`, `rename`, `cwd`, `permissions` and `timestamps`.
+The boot-path `userspace-fs` and system-interface milestones are separate measures.
+
+Each case creates its own PID-specific tree on the writable root filesystem and
+uses the shared runner's default 10-second deadline. Unsupported operations fail;
+there are no skips. Reads reopen filesystem paths, and metadata assertions issue
+fresh stat calls. Permission cases clear supplementary groups and drop real UID/GID before checking access bits.
+Directory streams are thin unbuffered getdents64/lseek adapters: replay goes back
+to the kernel, without a cached entry list. No lexical ordering is assumed.
+Cookies are acquired and replayed within the same rewind epoch; POSIX leaves
+reusing a pre-rewind telldir cookie unspecified. Timestamp assertions allow ext2's
+whole-second resolution. Baseline failures measure kernel gaps and are expected. Linux ABI/policy and ext2
+link-count cases are named explicitly; they are implementation checks.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite directories
+./run.sh --parallels --suite directories
+./run.sh --vmware --suite directories
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode full --boots 1 --suite directories --gate-timeout 1800 --sha <pushed-sha>
+```

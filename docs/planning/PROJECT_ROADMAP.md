@@ -11,12 +11,12 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
-Files & I/O issue [#1015](https://github.com/ryanbreen/breenix/issues/1015):
-PR #1035 implements synchronization, ext2 resizing, final-symlink stat and relatime reads;
-Private file mappings landed in PR #1070. Shared mappings, coherent reads,
-dirty custody and msync/writeback are implemented in PR #1073 for
-[#1038](https://github.com/ryanbreen/breenix/issues/1038). Device-failure
-injection coverage remains tracked in #1059.
+Files & I/O is complete in [PR #1073](https://github.com/ryanbreen/breenix/pull/1073),
+closing #1038, #1015 and #1025. The next effort is **Directories & links**
+(`docs/efforts/path.json`): its `directories` suite opens measurement of eight
+milestones, from directory creation through permissions and timestamps.
+The initial suite and four-target baseline do not repair kernel gaps.
+Device-failure injection coverage remains tracked in #1059.
 
 Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
