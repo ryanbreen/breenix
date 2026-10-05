@@ -3357,7 +3357,7 @@ fn handle_fifo_open(
                 }
             }
         }
-        FifoOpenResult::Block => {
+        FifoOpenResult::Block(partner_opens_seen) => {
             // Need to block waiting for the other end
             // Following the TCP blocking pattern with proper HLT loop
             let path_owned = String::from(path);
@@ -3374,13 +3374,16 @@ fn handle_fifo_open(
                 path
             );
 
-            // A wake only means "look again". A signal, or a wake left over
-            // from an earlier wait of this thread (a block-request completion
-            // buffered for it after it had already seen the request finish),
-            // ends the HLT loop below with the other end still absent. The
-            // open then registers again and keeps waiting; it used to fail
-            // with EAGAIN while still counted as a reader or writer, so the
-            // peer that opened later saw a partner that would never do I/O.
+            // A wake only means "look again". The open completes once a
+            // partner has opened the other end since we blocked, even if it
+            // has closed again by the time we run (`recheck_fifo_open`). A
+            // signal, or a wake left over from an earlier wait of this thread
+            // (a block-request completion buffered for it after it had
+            // already seen the request finish), ends the HLT loop below with
+            // no partner yet; the open then registers again and keeps
+            // waiting. It used to fail with EAGAIN in both cases while still
+            // counted as a reader or writer, so the peer that opened later
+            // saw a partner that would never do I/O.
             let buffer = loop {
                 // Block the current thread AND set blocked_in_syscall flag.
                 // CRITICAL: Setting blocked_in_syscall is essential because:
@@ -3399,7 +3402,7 @@ fn handle_fifo_open(
                 //   - when we set thread state to Blocked
                 // If other end opened during that window, add_reader/add_writer
                 // would have tried to wake us but unblock() would have done nothing.
-                if let FifoOpenResult::Ready(buffer) = recheck_fifo_open(&entry, for_write) {
+                if let FifoOpenResult::Ready(buffer) = recheck_fifo_open(&entry, for_write, partner_opens_seen) {
                     log::debug!(
                         "FIFO: Thread {} caught race - other end opened during block setup",
                         thread_id
@@ -3475,7 +3478,7 @@ fn handle_fifo_open(
                 {}
                 crate::task::scheduler::check_and_clear_need_resched();
 
-                if let FifoOpenResult::Ready(buffer) = recheck_fifo_open(&entry, for_write) {
+                if let FifoOpenResult::Ready(buffer) = recheck_fifo_open(&entry, for_write, partner_opens_seen) {
                     break buffer;
                 }
             };
