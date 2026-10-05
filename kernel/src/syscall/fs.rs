@@ -3234,7 +3234,8 @@ pub fn sys_fchdir(fd: u64) -> SyscallResult {
 }
 
 /// Make `dir` the calling process's working directory, as chdir and fchdir
-/// do once they hold it: the caller must be able to search it.
+/// do once they hold it: the caller must be able to search it. Every thread
+/// that shares the working directory moves with it.
 fn enter_working_dir(dir: crate::fs::namei::WorkingDir) -> SyscallResult {
     if let Err(errno) = crate::fs::namei::may_search(&dir, &current_file_credentials()) {
         return SyscallResult::Err(errno);
@@ -3265,7 +3266,7 @@ fn enter_working_dir(dir: crate::fs::namei::WorkingDir) -> SyscallResult {
                 return SyscallResult::Err(3); // ESRCH
             }
         };
-        core::mem::replace(&mut process.cwd, dir)
+        process.cwd.replace(dir)
     };
     drop(previous);
     SyscallResult::Ok(0)

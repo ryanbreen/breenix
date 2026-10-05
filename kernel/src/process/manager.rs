@@ -816,7 +816,7 @@ impl ProcessManager {
                 .processes
                 .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
-            (parent.pgid, parent.sid, parent.cwd.clone(),
+            (parent.pgid, parent.sid, parent.cwd.copy(),
                 (parent.uid, parent.gid, parent.euid, parent.egid),
                 parent.umask, parent.supplementary_groups.clone())
         };
@@ -1322,7 +1322,7 @@ impl ProcessManager {
                 .processes
                 .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
-            (parent.pgid, parent.sid, parent.cwd.clone(),
+            (parent.pgid, parent.sid, parent.cwd.copy(),
                 (parent.uid, parent.gid, parent.euid, parent.egid),
                 parent.umask, parent.supplementary_groups.clone())
         };
@@ -2255,7 +2255,7 @@ impl ProcessManager {
                 parent.entry_point,
                 parent.pgid,
                 parent.sid,
-                parent.cwd.clone(),
+                parent.cwd.copy(),
                 _parent_thread.clone(),
                 parent.heap_start,
                 parent.heap_end,
@@ -2296,7 +2296,7 @@ impl ProcessManager {
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
-        child_process.cwd = parent_cwd.clone();
+        child_process.cwd = parent_cwd;
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
         // This is independent of the loader profile. The boot_tests-only
@@ -2422,7 +2422,7 @@ impl ProcessManager {
                 parent.entry_point,
                 parent.pgid,
                 parent.sid,
-                parent.cwd.clone(),
+                parent.cwd.copy(),
                 _parent_thread.clone(),
                 parent.heap_start,
                 parent.heap_end,
@@ -2456,7 +2456,7 @@ impl ProcessManager {
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
-        child_process.cwd = parent_cwd.clone();
+        child_process.cwd = parent_cwd;
 
         // COPY-ON-WRITE FORK: Share pages between parent and child.
         // Pages are marked read-only and only copied when written to.
@@ -2564,7 +2564,7 @@ impl ProcessManager {
                 parent.entry_point,
                 parent.pgid,
                 parent.sid,
-                parent.cwd.clone(),
+                parent.cwd.copy(),
                 parent_thread.clone(),
                 parent.heap_start,
                 parent.heap_end,
@@ -2602,7 +2602,7 @@ impl ProcessManager {
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
-        child_process.cwd = parent_cwd.clone();
+        child_process.cwd = parent_cwd;
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
         {
@@ -3037,7 +3037,7 @@ impl ProcessManager {
         // Capture parent's pgid, sid, and cwd before borrowing page_table
         let parent_pgid = parent.pgid;
         let parent_sid = parent.sid;
-        let parent_cwd = parent.cwd.clone();
+        let parent_cwd = parent.cwd.copy();
 
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
