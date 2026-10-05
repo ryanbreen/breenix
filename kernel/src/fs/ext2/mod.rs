@@ -40,6 +40,9 @@ pub struct Ext2Fs {
     live_inodes: live_inode::LiveInodes,
     orphan_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
     finalization_cursor: u32,
+    /// The last inode the cache service reached with budget left; the next
+    /// pass starts after it.
+    eviction_cursor: u32,
     shrink_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
 }
 
@@ -95,6 +98,7 @@ impl Ext2Fs {
             live_inodes: live_inode::LiveInodes::new(),
             orphan_reclaims: alloc::collections::BTreeMap::new(),
             finalization_cursor: 0,
+            eviction_cursor: 0,
             shrink_reclaims: alloc::collections::BTreeMap::new(),
         })
     }
@@ -120,9 +124,12 @@ impl Ext2Fs {
         let mut budget = RECLAIM_BUDGET;
         let mut outcome = self.finalize_shrinks(&mut budget);
         let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
-        let evictions = self.live_inodes.evictions();
+        let evictions = self.live_inodes.evictions(self.eviction_cursor);
         let mut write_budget = crate::memory::file_map::EVICT_BUDGET;
         for object in &evictions {
+            if write_budget != 0 && cache_budget != 0 {
+                self.eviction_cursor = object.key.inode;
+            }
             match object
                 .map
                 .service_writeback(self, object.key.inode, &mut write_budget)

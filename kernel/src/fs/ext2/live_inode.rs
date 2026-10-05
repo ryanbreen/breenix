@@ -223,12 +223,17 @@ impl LiveInodes {
     }
 
     /// Up to `EVICTION_BATCH` entries whose file-mapping cache holds pages
-    /// no binding covers.
-    pub fn evictions(&self) -> alloc::vec::Vec<Arc<LiveInode>> {
-        self.table
-            .lock()
+    /// no binding covers or awaits writeback, in key order starting after
+    /// `after` and wrapping, so entries that stay pending cannot keep later
+    /// ones out of every batch.
+    pub fn evictions(&self, after: u32) -> alloc::vec::Vec<Arc<LiveInode>> {
+        use core::ops::Bound::{Excluded, Included, Unbounded};
+        let table = self.table.lock();
+        table
             .objects
-            .values()
+            .range((Excluded(after), Unbounded))
+            .chain(table.objects.range((Unbounded, Included(after))))
+            .map(|(_, object)| object)
             .filter(|object| {
                 !object.orphan.load(Ordering::Acquire)
                     && (object.map.eviction_pending() || object.map.writeback_pending())
