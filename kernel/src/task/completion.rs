@@ -48,11 +48,6 @@
 
 use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 
-#[cfg(not(target_arch = "aarch64"))]
-use crate::arch_impl::traits::CpuOps;
-#[cfg(not(target_arch = "aarch64"))]
-type Cpu = crate::arch_impl::x86_64::cpu::X86Cpu;
-
 /// POSIX EINTR errno value.
 const EINTR: i32 = 4;
 
@@ -433,7 +428,7 @@ impl Completion {
                         crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
                     }
                     #[cfg(not(target_arch = "aarch64"))]
-                    Cpu::halt_with_interrupts();
+                    crate::task::waitqueue::halt_blocked_current();
 
                     #[cfg(target_arch = "aarch64")]
                     trace_wait_timeout_stage(1);
