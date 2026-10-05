@@ -181,7 +181,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
 
                 # Create hardlinks for the 48 applets listed below in /bin
                 # (hardlinks avoid needing symlink-following in kernel exec path)
-                for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir \
+                for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir false \
                            echo which sh ash sed awk find sort uniq tee xargs \
                            chmod chown chgrp df du free date sleep test expr seq \
                            id whoami hostname basename dirname env printf cut tr \
@@ -473,7 +473,7 @@ else
         chmod 755 "$MOUNT_DIR/bin/busybox"
 
         # Create hardlinks for the 48 applets listed below in /bin
-        for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir \
+        for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir false \
                    echo which sh ash sed awk find sort uniq tee xargs \
                    chmod chown chgrp df du free date sleep test expr seq \
                    id whoami hostname basename dirname env printf cut tr \
