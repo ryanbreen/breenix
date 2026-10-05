@@ -5808,9 +5808,100 @@ pub fn reclaim_terminated_threads() {
             alloc::vec::Vec::new()
         }
     });
+    #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+    idle_release_probe::hold();
     release_reclaimed_threads(reclaimed_threads);
     #[cfg(target_arch = "x86_64")]
     crate::per_cpu::preempt_enable();
+}
+
+/// Forced reproduction of the window the x86 bracket above closes.
+///
+/// Once Ring 3 is confirmed, a dispatch of the x86 idle thread does not resume
+/// it where it stopped, so a release interrupted by one is never finished.
+/// Idle's first reclamation pass after that point stays inside the bracket,
+/// halting with interrupts enabled until a timer tick is taken while a
+/// reschedule is pending. With the bracket, the timer cannot dispatch idle,
+/// the pass finishes and prints `IDLE_RELEASE_PROBE: release kept its CPU`.
+/// Without its `preempt_disable()`, that tick dispatches idle, the pass never
+/// finishes, and the next reclamation by any thread more than `ABANDONED_MS`
+/// later panics. Without its `preempt_enable()`, idle's count grows by one per
+/// pass, and idle's next pass panics on that. Either panic fails the testing
+/// boot.
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+mod idle_release_probe {
+    use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+
+    const ARMED: u8 = 0;
+    const HOLDING: u8 = 1;
+    const FINISHED: u8 = 2;
+    /// Halts to wait for a request and a tick before trying a later pass.
+    const HOLD_HALTS: u32 = 500;
+
+    /// A hold that has not finished this long after it began was cut short:
+    /// with the bracket a hold ends within `HOLD_HALTS` interrupts.
+    const ABANDONED_MS: u64 = 10_000;
+
+    static STATE: AtomicU8 = AtomicU8::new(ARMED);
+    static HELD_SINCE_MS: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn hold() {
+        if !crate::syscall::handler::is_ring3_confirmed() {
+            return;
+        }
+        // Every reclaiming context checks, so an idle that is never dispatched
+        // again, or one restarted elsewhere, still fails the boot.
+        if STATE.load(Ordering::Acquire) == HOLDING
+            && crate::time::get_monotonic_time()
+                .saturating_sub(HELD_SINCE_MS.load(Ordering::Acquire))
+                > ABANDONED_MS
+        {
+            panic!("x86 idle release was cut short inside reclaim_terminated_threads");
+        }
+        let on_idle = super::with_scheduler(|scheduler| {
+            scheduler.current_thread_id_inner() == Some(scheduler.idle_thread())
+        });
+        if on_idle != Some(true) {
+            return;
+        }
+        // Idle runs at a count of zero, so the bracket alone accounts for one.
+        if crate::per_cpu::preempt_count() & 0xFF > 1 {
+            panic!("x86 idle reclamation left preemption disabled");
+        }
+        match STATE.load(Ordering::Acquire) {
+            FINISHED => return,
+            HOLDING => panic!("x86 idle was dispatched inside reclaim_terminated_threads"),
+            _ => {
+                HELD_SINCE_MS.store(crate::time::get_monotonic_time(), Ordering::Release);
+                STATE.store(HOLDING, Ordering::Release);
+            }
+        }
+        crate::tracing::output::raw_serial_str("IDLE_RELEASE_PROBE: holding\n");
+        let masked = !x86_64::instructions::interrupts::are_enabled();
+        // A request can be raised by an interrupt that does not reschedule on
+        // its way out, so the pass ends only after a timer tick, which always
+        // does, has been taken with the request still pending.
+        let mut requested_at = None;
+        for _ in 0..HOLD_HALTS {
+            let tick = crate::time::get_ticks();
+            match requested_at {
+                Some(at) if tick != at => {
+                    STATE.store(FINISHED, Ordering::Release);
+                    crate::tracing::output::raw_serial_str(
+                        "IDLE_RELEASE_PROBE: release kept its CPU\n",
+                    );
+                    break;
+                }
+                None if super::is_need_resched() => requested_at = Some(tick),
+                _ => {}
+            }
+            x86_64::instructions::interrupts::enable_and_hlt();
+        }
+        let _ = STATE.compare_exchange(HOLDING, ARMED, Ordering::AcqRel, Ordering::Acquire);
+        if masked {
+            x86_64::instructions::interrupts::disable();
+        }
+    }
 }
 
 /// Free reclaimed control blocks with interrupts MASKED.
