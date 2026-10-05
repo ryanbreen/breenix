@@ -20,18 +20,20 @@ fn now() -> u64 {
         .saturating_add(n as u64)
 }
 
-/// A short timer wait lets every descriptor kind publish readiness through its
-/// existing state, without introducing a second wakeup protocol.
-fn park(deadline: u64) -> Result<(), u64> {
+/// Publish the sleep before rechecking readiness, closing the wake-before-block
+/// race. Pipe readers use their existing event notifications; descriptor kinds
+/// without a notification source retain a short timer fallback.
+fn park(deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
     crate::task::scheduler::with_scheduler(|s| {
-        s.block_current_for_timer(deadline);
+        s.block_current_for_io_with_timeout((deadline != u64::MAX).then_some(deadline));
     });
     #[cfg(target_arch = "aarch64")]
     crate::per_cpu_aarch64::preempt_enable();
     #[cfg(target_arch = "x86_64")]
     crate::per_cpu::preempt_enable();
+    let already_ready = ready();
     let mut interrupted = false;
-    loop {
+    while !already_ready {
         if super::check_signals_for_eintr().is_some() {
             interrupted = true;
             break;
@@ -39,7 +41,7 @@ fn park(deadline: u64) -> Result<(), u64> {
         let blocked = crate::task::scheduler::with_scheduler(|s| {
             s.wake_expired_timers();
             s.current_thread_mut()
-                .is_some_and(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
+                .is_some_and(|t| t.state == crate::task::thread::ThreadState::BlockedOnIO)
         })
         .unwrap_or(false);
         if !blocked {
@@ -52,7 +54,7 @@ fn park(deadline: u64) -> Result<(), u64> {
         if let Some(t) = s.current_thread_mut() {
             t.blocked_in_syscall = false;
             t.wake_time_ns = None;
-            if interrupted {
+            if interrupted || already_ready {
                 t.set_ready();
             }
         }
@@ -129,7 +131,52 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
         if super::check_signals_for_eintr().is_some() {
             return Err(4);
         }
-        park(deadline.min(now().saturating_add(1_000_000)))?;
+        // Register all pipe readers before publishing the blocked state. The
+        // post-publication scan in park handles data/EOF arriving during setup.
+        // Keep the wait blocked until an event or its actual deadline instead
+        // of repeatedly making an indefinite pipe wait runnable every 1 ms.
+        let tid = crate::task::scheduler::current_thread_id().ok_or(3u64)?;
+        let mut readers = Vec::new();
+        let mut notified = true;
+        for (f, entry) in fds.iter().zip(&entries) {
+            if f.fd < 0 {
+                continue;
+            }
+            match entry.as_ref().map(|e| &e.kind) {
+                Some(crate::ipc::fd::FdKind::PipeRead(pipe))
+                | Some(crate::ipc::fd::FdKind::FifoRead(_, pipe, _)) => {
+                    pipe.lock().add_read_waiter(tid);
+                    readers.push(pipe.clone());
+                }
+                _ => notified = false,
+            }
+        }
+        let wake = if notified {
+            deadline
+        } else {
+            deadline.min(now().saturating_add(1_000_000))
+        };
+        let ret = park(wake, || {
+            fds.iter().zip(&entries).any(|(f, entry)| {
+                let Some(entry) = entry else {
+                    return false;
+                };
+                let bits = poll::poll_fd(entry, f.events);
+                if select {
+                    (f.events & events::POLLIN != 0
+                        && bits & (events::POLLIN | events::POLLHUP | events::POLLERR) != 0)
+                        || (f.events & events::POLLOUT != 0
+                            && bits & (events::POLLOUT | events::POLLERR) != 0)
+                        || (f.events & bits & events::POLLPRI != 0)
+                } else {
+                    bits != 0
+                }
+            })
+        });
+        for pipe in readers {
+            pipe.lock().remove_read_waiter(tid);
+        }
+        ret?;
     }
 }
 
