@@ -10,6 +10,18 @@ use libbreenix::signal::{kill, SIGTERM};
 fn main() {
     println!("=== Signal Test ===");
 
+    #[cfg(target_arch = "x86_64")]
+    match fork().expect("fork #UD child") {
+        ForkResult::Child => unsafe { core::arch::asm!("ud2", options(noreturn)); },
+        ForkResult::Parent(child) => {
+            let mut status = 0;
+            let reaped = waitpid(child.raw() as i32, &mut status, 0).expect("wait #UD child");
+            assert_eq!(reaped.raw(), child.raw());
+            assert_eq!(wtermsig(status), libbreenix::signal::SIGILL);
+            println!("USER_UD_SIGILL_PASSED");
+        }
+    }
+
     let my_pid = getpid().unwrap().raw() as i32;
     println!("My PID: {}", my_pid);
 
