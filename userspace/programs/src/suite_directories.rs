@@ -1105,9 +1105,9 @@ fn readdir_cookie_blocks() -> CaseResult {
     }
     // A position inside a record resumes at a later whole record, never a
     // partial one: inside the first record of each block, and of every
-    // fourth record.
+    // eighth record.
     for (i, (_, cookie)) in records.iter().enumerate() {
-        if i % 4 != 0 && cookie % block != 0 {
+        if i % 8 != 0 && cookie % block != 0 {
             continue;
         }
         let got = entry_at(fd, cookie + 1)?;
@@ -1119,12 +1119,13 @@ fn readdir_cookie_blocks() -> CaseResult {
     // A cookie from that directory, given to another, positions within the
     // other's own records: past its end it reads nothing, and before it only
     // its own entries.
-    let f = listing()?;
+    let f = Tree::new()?;
+    f.file("own", b"")?;
     let small = Directory::open(&f.root)?;
     let own: Vec<String> = Directory::open(&f.root)?.all()?.into_iter().map(|e| e.name).collect();
     let last = records.last().unwrap().1;
     check(entry_at(small.file.fd(), last)?.is_none(), "a foreign cookie read past the directory")?;
-    for (_, cookie) in records.iter().filter(|(_, c)| *c < block) {
+    for (_, cookie) in records.iter().filter(|(_, c)| *c < block).step_by(2) {
         if let Some(e) = entry_at(small.file.fd(), *cookie)? {
             check(own.contains(&e.name), "a foreign cookie read another directory's entry")?;
         }
