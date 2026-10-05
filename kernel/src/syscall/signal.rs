@@ -170,16 +170,19 @@ pub(crate) fn raise_sigpipe() {
 /// kill is left pending as SIGKILL instead: the thread finishes the section,
 /// and its return to user mode ends the process.
 pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
+    // Publish before checking custody: a peer may leave its section and enter
+    // a blocking syscall while we acquire the scheduler lock. Its signal check
+    // must already see SIGKILL if immediate termination has to be deferred.
+    crate::process::with_process_manager(|manager| {
+        if let Some(process) = manager.get_process_mut(victim) {
+            process.signals.set_pending(SIGKILL);
+        }
+    });
     let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
         scheduler.claim_process_threads_for_kill(victim.as_u64())
     })
     .unwrap_or(true);
     if !claimed {
-        crate::process::with_process_manager(|manager| {
-            if let Some(process) = manager.get_process_mut(victim) {
-                process.signals.set_pending(SIGKILL);
-            }
-        });
         return;
     }
     crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
