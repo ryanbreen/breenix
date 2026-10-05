@@ -310,6 +310,7 @@ STD_BINARIES=(
     # Effort suites, installed as /sbin/suite-<id>
     "suite-smoke"
     "suite-files-io"
+    "suite-directories"
     "files-io-exec_test"
     "telnetd"
     "blogd"
