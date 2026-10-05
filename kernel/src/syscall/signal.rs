@@ -1112,7 +1112,10 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
         }
     };
 
-    if let Some(mut manager_guard) = crate::process::try_manager() {
+    {
+        // This is a userspace syscall with no PM guard held. Contention must
+        // wait: skipping restoration would leave the handler's mask installed.
+        let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
                 // Check if we're returning from a signal that interrupted sigsuspend
@@ -2100,7 +2103,10 @@ pub fn sys_sigreturn_with_frame_aarch64(
         }
     };
 
-    if let Some(mut manager_guard) = crate::process::try_manager() {
+    {
+        // This is a userspace syscall with no PM guard held. Contention must
+        // wait: skipping restoration would leave the handler's mask installed.
+        let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
                 // Check if we're returning from a signal that interrupted sigsuspend

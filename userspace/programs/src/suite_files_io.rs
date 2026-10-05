@@ -4722,7 +4722,7 @@ fn signal_wait(api: WaitApi, masked: bool, no_fds: bool, unblock: bool) -> CaseR
     signal::sigprocmask(signal::SIG_SETMASK, None, Some(&mut restored))?;
     check(
         restored == original,
-        "wait did not restore the original mask",
+        &format!("wait restored mask {restored:#x}, expected {original:#x}"),
     )?;
     child_ok(
         wait_child(pid)?,
