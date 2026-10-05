@@ -73,7 +73,7 @@ fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> 
 /// `-fw_cfg name=opt/breenix/mode,string=<mode>`; absent or unknown is `Default`.
 /// `program` also needs `-fw_cfg name=opt/breenix/program,string=<absolute path>`,
 /// and `suite` needs `-fw_cfg name=opt/breenix/suite,string=<id>`. With no fw_cfg
-/// mode (and always on Parallels and VMware), the boot-target file
+/// mode (including the VM runner configuration), the boot-target file
 /// (`kernel::boot::target`) can select a suite or probe.
 #[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy, PartialEq, Eq)]

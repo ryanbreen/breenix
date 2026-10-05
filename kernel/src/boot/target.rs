@@ -1,7 +1,7 @@
 //! The boot-target file: which PID 1 a production boot runs when the QEMU command
 //! line does not say (docs/boot-path.md, "Boot modes").
 //!
-//! `/etc/breenix/boot-target` on the ext2 root holds one line, `suite <id>` or `probe`. It is
+//! The runner writes `suite <id>` or `probe` to `/etc/breenix/boot-target`. It is
 //! written onto a copy of the disk image by `./run.sh --parallels|--vmware --suite <id>`
 //! or `--probe`, and by `BREENIX_BOOT_SUITE=<id>` in `docker/qemu/run-x86-gate.sh`; disks built by
 //! `scripts/create_ext2_disk.sh` carry none. QEMU's fw_cfg mode is read first;

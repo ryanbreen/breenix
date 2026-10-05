@@ -1,4 +1,7 @@
-//! A kernel announcement must never satisfy a userspace boot stage.
+//! Reject literal userspace catalog markers in kernel source.
+//! Source matching cannot detect arbitrary runtime formatting. Set
+//! BREENIX_MARKER_SERIAL to serial paths (platform path separator) to check
+//! formatted kernel log lines from boots as well.
 
 use proc_macro2::{TokenStream, TokenTree};
 use std::collections::BTreeSet;
@@ -21,6 +24,39 @@ fn rust_markers(tokens: TokenStream, markers: &mut BTreeSet<String>) {
         if let TokenTree::Group(group) = token {
             rust_markers(group.stream(), markers);
         }
+    }
+}
+
+fn json_markers(value: &serde_json::Value, markers: &mut BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(marker) = object.get("marker").and_then(|value| value.as_str()) {
+                markers.extend(marker.split('|').filter(|part| !part.is_empty()).map(str::to_owned));
+            }
+            for child in object.values() {
+                json_markers(child, markers);
+            }
+        }
+        serde_json::Value::Array(array) => {
+            for child in array {
+                json_markers(child, markers);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn marker_matches(text: &str, marker: &str) -> bool {
+    // The boot-path catalog uses record suffixes for parameterized programs
+    // and suites. Require the emitting program's record prefix as well.
+    match marker {
+        " START" | " DONE PASS exit 0; no FAIL output" => {
+            text.contains("RUN ") && text.contains(marker)
+        }
+        " START cases=" | " DONE passed=" => {
+            text.contains("SUITE ") && text.contains(marker)
+        }
+        _ => text.contains(marker),
     }
 }
 
@@ -83,6 +119,18 @@ fn userspace_stage_markers_do_not_occur_in_kernel_source() {
     markers.retain(|marker| {
         !marker.is_empty() && sources.iter().any(|source| source.contains(marker))
     });
+    // Explicit markers on userspace milestones belong to PID 1, even when the
+    // emitter assembles them dynamically or no current literal emitter exists.
+    let boot_path: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("docs/boot-path.json")).unwrap())
+            .unwrap();
+    for milestone in boot_path["milestones"].as_array().unwrap() {
+        if milestone["kernel"].as_bool() != Some(true) {
+            json_markers(&milestone["stages"], &mut markers);
+        }
+    }
+    // This catalog stage's emitter uses formatted fragments.
+    markers.insert("HTTP_TEST: https_rejected OK".to_owned());
     assert!(!markers.is_empty(), "No userspace markers found");
 
     let mut violations = Vec::new();
@@ -90,7 +138,7 @@ fn userspace_stage_markers_do_not_occur_in_kernel_source() {
         let source = fs::read_to_string(&path).unwrap();
         for (line, text) in source.lines().enumerate() {
             for marker in &markers {
-                if text.contains(marker) {
+                if marker_matches(text, marker) {
                     violations.push(format!(
                         "{}:{}: {marker}",
                         path.strip_prefix(root).unwrap().display(),
@@ -100,9 +148,25 @@ fn userspace_stage_markers_do_not_occur_in_kernel_source() {
             }
         }
     }
+    if let Some(serials) = std::env::var_os("BREENIX_MARKER_SERIAL") {
+        for path in std::env::split_paths(&serials) {
+            let serial = fs::read_to_string(&path).unwrap();
+            for (line, text) in serial.lines().enumerate() {
+                // Both logger implementations identify kernel module targets;
+                // buffered early log lines carry [BUFF] instead of a level.
+                if text.contains("kernel::") || text.contains("] kernel:") {
+                    for marker in &markers {
+                        if marker_matches(text, marker) {
+                            violations.push(format!("{}:{}: {marker}", path.display(), line + 1));
+                        }
+                    }
+                }
+            }
+        }
+    }
     assert!(
         violations.is_empty(),
-        "Userspace markers in kernel source:\n{}",
+        "Userspace markers in kernel source or serial logs:\n{}",
         violations.join("\n")
     );
 }

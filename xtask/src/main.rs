@@ -1135,23 +1135,12 @@ fn ring3_enosys() -> Result<()> {
         if let Ok(mut file) = fs::File::open(serial_output_file) {
             let mut contents = String::new();
             if file.read_to_string(&mut contents).is_ok() {
-                // Look for ENOSYS test results
-                // IMPORTANT: Must use specific prefix to avoid matching instructional messages
-                // like "Should print 'ENOSYS OK'" which would cause false positives.
-                if contents.contains("USERSPACE OUTPUT: ENOSYS OK") {
-                    found_enosys_ok = true;
-                    break;
-                }
-
-                // Also accept plain "ENOSYS OK\n" at start of line (actual userspace output)
+                // Accept only the syscall_enosys program's complete output line.
                 if contents.lines().any(|line| line.trim() == "ENOSYS OK") {
                     found_enosys_ok = true;
                     break;
                 }
-
-                if contents.contains("USERSPACE OUTPUT: ENOSYS FAIL")
-                    || contents.contains("ENOSYS FAIL")
-                {
+                if contents.lines().any(|line| line.trim() == "ENOSYS FAIL") {
                     found_enosys_fail = true;
                     break;
                 }

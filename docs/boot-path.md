@@ -36,8 +36,9 @@ stage list and shown alongside, but does not block moving on.
   Parallels and VMware run it with `./run.sh --parallels --probe` and
   `./run.sh --vmware --probe`: the same production kernel selects `/sbin/probe`
   from a boot-target file containing `probe` on a copy of the ext2 disk. These
-  runs register with Vigil as mode `probe`, wait for `PROBE DONE`, stop the VM,
-  and exit (a missing completion line times out with an error).
+  runners request Vigil mode `probe` ([vigil#2](https://github.com/ryanbreen/vigil/issues/2)
+  tracks the constructor overriding it to `default`), wait for `PROBE DONE`, stop
+  the VM, and exit nonzero for a missing completion or `failed>0`.
 - `shell`: the production kernel runs `/sbin/init shell`, a bsh prompt on the serial
   console you can type into.
 - `desktop`: the production kernel runs `/sbin/init desktop`, the window manager and a
@@ -51,7 +52,7 @@ stage list and shown alongside, but does not block moving on.
   Stage markers are substrings and the program's output is relayed unchanged, so a program
   that prints probe's own `START` or `DONE PASS` text can match those stages.
 - `suite`: the production kernel runs an effort suite, `/sbin/suite-ID`, as PID 1
-  (`--suite ID`, passed as `-fw_cfg name=opt/breenix/suite,string=ID`). The suite runs every
+  (`--suite ID`, passed as `-fw_cfg name=opt/breenix/suite,string=ID`). The suite runs the
   case of `docs/suites/ID.json`, prints `SUITE ID START`, one `SUITE ID CASE` line per case and
   `SUITE ID DONE passed=P failed=F skipped=S total=N`, and leaves its scored panel on screen
   (`docs/suites/README.md`). Parallels and VMware boot a suite with
@@ -61,7 +62,10 @@ stage list and shown alongside, but does not block moving on.
   first (x86-64 QEMU reads fw_cfg too, for `default` and `suite`), then that file, else
   `default`. Suite mode exercises the kernel milestones and the first userspace process: the
   suite's `START` and `DONE` lines show PID 1 running in user mode and making syscalls.
-  The VM runners wait for the suite's `DONE` line and stop the VM before exiting.
+  The VM runners validate the suite's `DONE` line, requiring `failed=0`, then keep
+  the scored panel visible until Ctrl-C stops the VM. `--suite --test` on Parallels
+  waits for DONE before its timed screenshot and exit; VMware rejects `--test`.
+  `--gate-timeout N` sets the DONE deadline (default 1800 seconds for suites and probes).
   The `default` boot (what Parallels and VMware run without `--suite` or `--probe`) measures that
   milestone by init's `[init] Breenix init starting (PID 1)` and `[init] Boot script completed`.
 

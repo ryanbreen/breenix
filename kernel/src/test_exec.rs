@@ -911,7 +911,7 @@ fn create_exec_test_elf() -> alloc::vec::Vec<u8> {
 ///   - This is a CHECKPOINT confirming process creation succeeded
 ///   - Does NOT prove the process executed or that ENOSYS works
 /// - Stage 2 (Boot stage 32): Validates actual execution and ENOSYS return value
-///   - Marker: "USERSPACE OUTPUT: ENOSYS OK"
+///   - The syscall_enosys program prints its ENOSYS verdict on its own line
 ///   - This PROVES the process ran AND syscall 999 returned -38
 pub fn test_syscall_enosys() {
     log::info!("Testing undefined syscall returns ENOSYS");

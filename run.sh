@@ -1,7 +1,7 @@
 #!/bin/bash
 # Breenix Interactive Runner
 # ===========================
-# Runs Breenix with a graphical display
+# Boots Breenix with a display or serial console; probe mode exits after its verdict.
 #
 # Usage:
 #   ./run.sh              # ARM64 with native cocoa display (default)
@@ -63,6 +63,7 @@ VMWARE=false
 SUITE=""
 PROBE=false
 BOOT_MODE=default
+GATE_TIMEOUT=1800
 DEBUG=false
 REBUILD_HOME=false
 RESOLUTION=""
@@ -139,6 +140,10 @@ while [[ $# -gt 0 ]]; do
             SERIAL_LOG_OVERRIDE="$2"
             shift 2
             ;;
+        --gate-timeout)
+            GATE_TIMEOUT="${2:-}"
+            shift 2
+            ;;
         --probe)
             PROBE=true
             shift
@@ -180,6 +185,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --debug                    Enable GDB stub (port 1234) for debugging"
             echo "  --serial-log PATH          Parallels/VMware: write the VM's serial output to PATH"
             echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
+            echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
@@ -203,6 +209,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+[[ "$GATE_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "--gate-timeout needs positive seconds"; exit 2; }
+if [ "$VMWARE" = true ] && [ "$PARALLELS_TEST" = true ]; then
+    echo "--test screenshots are supported only on Parallels"
+    exit 2
+fi
 
 # --suite ID: the VM's ext2 disk gets /etc/breenix/boot-target ("suite ID"), so the
 # production kernel runs /sbin/suite-ID as PID 1 (docs/boot-path.md, "Boot modes").
@@ -233,7 +245,7 @@ fi
 
 # The ext2 disk a Parallels or VMware VM boots: the built disk itself, or with
 # --suite or --probe a copy carrying the boot target (the built disk never gets one, so later
-# boots of it are unaffected). Sets BOOT_EXT2_DISK.
+# ordinary boots keep using the built disk). Sets BOOT_EXT2_DISK.
 stage_boot_ext2_disk() {
     local built="$1" staging_dir="$2"
     BOOT_EXT2_DISK="$built"
@@ -270,17 +282,39 @@ mark_wrapped_ext2() {
     if [ "$BOOT_MODE" != default ]; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
 }
 
-# Poll in the foreground: a missing DONE line is an error, never a completed boot.
+# Wait for a userspace completion record and reject missing or failing verdicts.
 wait_boot_done() {
-    local marker="$1" deadline=$((SECONDS + 600))
-    while ! grep -q "^$marker" "$SERIAL_LOG" 2>/dev/null; do
-        if [ "$SECONDS" -ge "$deadline" ]; then
-            echo "ERROR: boot did not print $marker within 600 seconds"
-            return 1
-        fi
-        sleep 1
-    done
-    grep "^$marker" "$SERIAL_LOG"
+    python3 "$BREENIX_ROOT/scripts/wait-boot-done.py" "$SERIAL_LOG" "$BOOT_MODE" \
+        --suite "$SUITE" --timeout "$GATE_TIMEOUT"
+}
+
+# Install before starting a VM. Ignore further signals during cleanup so Vigil
+# receives the boot verdict even if stopping the VM fails or Ctrl-C is repeated.
+finish_vm_boot() {
+    local status=$?
+    trap '' INT HUP TERM
+    trap - EXIT
+    if [ "$PARALLELS" = true ]; then
+        prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1 || true
+    else
+        "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
+    fi
+    "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
+    exit "$status"
+}
+
+install_vm_boot_traps() {
+    trap finish_vm_boot EXIT
+    trap 'exit 130' INT
+    trap 'exit 129' HUP
+    trap 'exit 143' TERM
+}
+
+# Suite panels stay visible until the caller leaves; no log-monitor job is needed.
+hold_suite_panel() {
+    echo "Suite complete; scored panel remains visible. Ctrl-C stops the VM."
+    trap 'exit 0' INT
+    while :; do sleep 1; done
 }
 
 # BTRT mode: delegate to xtask and exit
@@ -565,11 +599,10 @@ if [ "$PARALLELS" = true ]; then
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
-    prlctl start "$PARALLELS_VM"
-
-    # Vigil shows the boot while this script runs and scores it when it ends (does nothing without Vigil).
+    VIGIL_ID=""
+    install_vm_boot_traps
     VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
-    trap '"$BREENIX_ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" $?' EXIT
+    prlctl start "$PARALLELS_VM"
     echo ""
     echo "========================================="
     echo "Breenix running on Parallels"
@@ -580,15 +613,9 @@ if [ "$PARALLELS" = true ]; then
     echo ""
 
     if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]; then
-        trap 'BOOT_EXIT=$?; prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1; "$BREENIX_ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" "$BOOT_EXIT"' EXIT
-        trap 'exit 130' INT
-        trap 'exit 143' HUP TERM
-        if [ "$BOOT_MODE" = probe ]; then DONE_MARKER="PROBE DONE "; else DONE_MARKER="SUITE $SUITE DONE "; fi
-        BOOT_STATUS=0
-        wait_boot_done "$DONE_MARKER" || BOOT_STATUS=$?
-        prlctl stop "$PARALLELS_VM" --kill
-        trap '"$BREENIX_ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" $?' EXIT
-        exit "$BOOT_STATUS"
+        wait_boot_done || exit $?
+        if [ "$BOOT_MODE" = probe ]; then exit 0; fi
+        if [ "$PARALLELS_TEST" != true ]; then hold_suite_panel; fi
     fi
 
     if [ "$PARALLELS_TEST" = true ]; then
@@ -923,6 +950,9 @@ VMXEOF
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
+    VIGIL_ID=""
+    install_vm_boot_traps
+    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then
         # Headless automation (docker/qemu/run-vmware-gate.sh): `gui` mode
         # "succeeds" (exit 0, no error to fall back from) even when nothing
@@ -938,9 +968,6 @@ VMXEOF
         }
     fi
 
-    # Vigil shows the boot while this script runs and scores it when it ends (does nothing without Vigil).
-    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
-    trap '"$BREENIX_ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" $?' EXIT
     echo ""
     echo "========================================="
     echo "Breenix running on VMware Fusion"
@@ -951,15 +978,9 @@ VMXEOF
     echo "Stop:   \"$VMRUN\" stop \"$VMX_FILE\" hard"
     echo ""
     if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]; then
-        trap 'BOOT_EXIT=$?; "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1; "$BREENIX_ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" "$BOOT_EXIT"' EXIT
-        trap 'exit 130' INT
-        trap 'exit 143' HUP TERM
-        if [ "$BOOT_MODE" = probe ]; then DONE_MARKER="PROBE DONE "; else DONE_MARKER="SUITE $SUITE DONE "; fi
-        BOOT_STATUS=0
-        wait_boot_done "$DONE_MARKER" || BOOT_STATUS=$?
-        "$VMRUN" stop "$VMX_FILE" hard
-        trap '"$BREENIX_ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" $?' EXIT
-        exit "$BOOT_STATUS"
+        wait_boot_done || exit $?
+        if [ "$BOOT_MODE" = probe ]; then exit 0; fi
+        hold_suite_panel
     fi
 
     echo "Tailing serial output (Ctrl+C to detach)..."

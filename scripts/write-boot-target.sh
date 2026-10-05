@@ -1,16 +1,13 @@
 #!/bin/bash
 # Write the boot-target file onto an ext2 disk image, so a production kernel booted
-# from it runs that effort suite as PID 1 (docs/boot-path.md, "Boot modes"):
+# from it selects a suite or probe as PID 1 (docs/boot-path.md, "Boot modes"):
 #
 #   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe [PID1_ELF]
 #
-# IMAGE gets /etc/breenix/boot-target containing the one line "suite SUITE_ID",
-# replacing any boot target already there. Write it onto a copy, never onto the
-# disk an ordinary boot uses: every production boot of that disk would run the suite.
-# The image must hold /sbin/suite-SUITE_ID; given SUITE_ELF, it must be that file,
-# byte for byte, so a stale or partly copied image is refused.
-#
-# --probe writes "probe" instead and verifies /sbin/probe with the same readback.
+# IMAGE gets /etc/breenix/boot-target containing "suite SUITE_ID" or "probe",
+# replacing the prior target. Use a copy so ordinary boots keep their disk.
+# The image must contain /sbin/suite-SUITE_ID or /sbin/probe respectively.
+# When PID1_ELF is supplied, readback must match its bytes before accepting the image.
 #
 # Uses debugfs (e2fsprogs) when it is on PATH or in Homebrew's keg-only e2fsprogs,
 # and otherwise runs debugfs in an Alpine container.

@@ -38,8 +38,6 @@ use alloc::string::ToString;
 #[cfg(target_arch = "x86_64")]
 use bootloader_api::config::{BootloaderConfig, Mapping};
 #[cfg(target_arch = "x86_64")]
-use kernel::syscall::SyscallResult;
-#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
 /// Bootloader configuration to enable physical memory mapping
@@ -2731,107 +2729,6 @@ fn test_exception_handlers() {
     log::info!("🧪 EXCEPTION_HANDLER_TESTS_COMPLETE 🧪");
 }
 
-/// Test system calls from kernel mode
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-fn test_syscalls() {
-    serial_println!("DEBUG: test_syscalls() function entered");
-    log::info!("DEBUG: Proceeding with syscall tests");
-
-    {
-        serial_println!("Testing system call infrastructure...");
-
-        // Test 1: Verify INT 0x80 handler is installed
-        serial_println!("Test 1: INT 0x80 handler installation");
-        let _pre_result = unsafe { syscall::SYSCALL_RESULT };
-        unsafe {
-            core::arch::asm!(
-                "mov rax, 4", // SyscallNumber::GetTime
-                "int 0x80",
-                // The kernel writes RAX on every syscall return, so the block
-                // must declare it clobbered rather than leave the compiler
-                // believing a live value survives the trap (#608 shape).
-                lateout("rax") _,
-                options(nostack)
-            );
-        }
-        let post_result = unsafe { syscall::SYSCALL_RESULT };
-
-        if post_result == 0x1234 {
-            log::info!("✓ INT 0x80 handler called successfully");
-        } else {
-            log::error!("✗ INT 0x80 handler not working properly");
-        }
-
-        // Test 2: Direct syscall function tests
-        log::info!("Test 2: Direct syscall implementations");
-
-        // Test sys_get_time
-        let time_result = syscall::handlers::sys_get_time();
-        match time_result {
-            SyscallResult::Ok(millis) => {
-                // #767: milliseconds, which is what handlers::sys_get_time is
-                // documented to return and what it now actually returns.
-                log::info!("✓ sys_get_time: {} ms", millis);
-                // Note: Timer may be 0 if very early in boot process
-            }
-            SyscallResult::Err(e) => log::error!("✗ sys_get_time failed: {:?}", e),
-        }
-
-        // Test sys_write
-        let msg = b"[syscall test output]\n";
-        let write_result = syscall::handlers::sys_write(1, msg.as_ptr() as u64, msg.len() as u64);
-        match write_result {
-            SyscallResult::Ok(bytes) => {
-                log::info!("✓ sys_write: {} bytes written", bytes);
-                // Note: All bytes should be written
-            }
-            SyscallResult::Err(e) => log::error!("✗ sys_write failed: {:?}", e),
-        }
-
-        // Test sys_yield
-        let yield_result = syscall::handlers::sys_yield();
-        match yield_result {
-            SyscallResult::Ok(_) => log::info!("✓ sys_yield: success"),
-            SyscallResult::Err(e) => log::error!("✗ sys_yield failed: {:?}", e),
-        }
-
-        // Test sys_read (should return 0 as no input available)
-        let mut buffer = [0u8; 10];
-        let read_result =
-            syscall::handlers::sys_read(0, buffer.as_mut_ptr() as u64, buffer.len() as u64);
-        match read_result {
-            SyscallResult::Ok(bytes) => {
-                log::info!("✓ sys_read: {} bytes read (expected 0)", bytes);
-                // Note: No input should be available initially
-            }
-            SyscallResult::Err(e) => log::error!("✗ sys_read failed: {:?}", e),
-        }
-
-        // Test 3: Error handling
-        log::info!("Test 3: Syscall error handling");
-
-        // Invalid file descriptor for write
-        let invalid_write = syscall::handlers::sys_write(99, 0, 0);
-        match invalid_write {
-            SyscallResult::Err(_) => log::info!("✓ Invalid FD correctly rejected"),
-            SyscallResult::Ok(_) => panic!("Invalid FD should fail"),
-        }
-        log::info!("✓ Invalid write FD correctly rejected");
-
-        // Invalid file descriptor for read
-        let invalid_read = syscall::handlers::sys_read(99, 0, 0);
-        match invalid_read {
-            SyscallResult::Err(_) => log::info!("✓ Invalid FD correctly rejected"),
-            SyscallResult::Ok(_) => panic!("Invalid FD should fail"),
-        }
-        log::info!("✓ Invalid read FD correctly rejected");
-
-        log::info!("DEBUG: All tests done, about to print final message");
-        log::info!("System call infrastructure test completed successfully!");
-        log::info!("DEBUG: About to return from test_syscalls");
-    }
-}
 
 // test_kthread_lifecycle and test_kthread_join moved to task/kthread_tests.rs
 // for cross-architecture sharing (x86_64 + ARM64).
