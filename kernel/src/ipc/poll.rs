@@ -96,7 +96,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             if (events & events::POLLIN) != 0 && (pipe.available() > 0 || !pipe.has_writers()) {
                 revents |= events::POLLIN;
             }
-            if !pipe.has_writers() {
+            if pipe.has_hung_up() {
                 revents |= events::POLLHUP;
             }
         }

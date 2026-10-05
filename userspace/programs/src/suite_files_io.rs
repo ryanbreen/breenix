@@ -4843,6 +4843,9 @@ fn poll_fifo() -> CaseResult {
     let f = Fixture::empty()?;
     fs::mkfifo(&f.path, 0o600)?;
     let r = f.open(O_RDONLY | O_NONBLOCK)?;
+    // EOF is readable, but no last writer has closed on a fresh FIFO.
+    poll_exact(r, POLLIN, POLLIN)?;
+    poll_exact(r, 0, 0)?;
     let w = f.open(O_WRONLY | O_NONBLOCK)?;
     poll_exact(r, POLLIN, 0)?;
     write_all(w, b"F")?;
@@ -4856,7 +4859,15 @@ fn poll_fifo() -> CaseResult {
         io::read(r, &mut byte)? == 1 && byte == *b"F",
         "FIFO lost buffered data",
     )?;
-    poll_exact(r, POLLIN, POLLIN | POLLHUP)
+    poll_exact(r, POLLIN, POLLIN | POLLHUP)?;
+    let w = f.open(O_WRONLY | O_NONBLOCK)?;
+    poll_exact(r, POLLIN, 0)?; // Reopening a writer clears the hangup.
+    io::close(w)?;
+    poll_exact(r, 0, POLLHUP)?;
+    io::close(r)?; // Closing all readers ends this hangup session.
+    let r = f.open(O_RDONLY | O_NONBLOCK)?;
+    poll_exact(r, POLLIN, POLLIN)?;
+    poll_exact(r, 0, 0)
 }
 fn select_fifo() -> CaseResult {
     let f = Fixture::empty()?;

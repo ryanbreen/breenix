@@ -67,6 +67,9 @@ pub struct PipeBuffer {
     readers: usize,
     /// Number of active writers (0 = EOF on read)
     writers: usize,
+    /// Last writer closed while readers remained. A new FIFO with no writer
+    /// has EOF readiness but has not hung up; writer/read-session reopen clears it.
+    hangup: bool,
     /// Threads waiting to read from this pipe
     read_waiters: Vec<u64>,
     /// Data writers, distinct from FIFO open waiters and legacy pipe readers.
@@ -93,6 +96,7 @@ impl PipeBuffer {
             len: 0,
             readers: 0,
             writers: 0,
+            hangup: false,
             read_waiters: Vec::new(),
             write_waiters: Arc::new(WaitQueueHead::new()),
         }
@@ -212,6 +216,9 @@ impl PipeBuffer {
         if self.readers > 0 {
             self.readers -= 1;
         }
+        if self.readers == 0 {
+            self.hangup = false;
+        }
         CloseNotifications {
             writers: last_reader.then(|| self.write_waiters.clone()),
         }
@@ -225,6 +232,7 @@ impl PipeBuffer {
         if self.writers > 0 {
             self.writers -= 1;
             if self.writers == 0 {
+                self.hangup = self.readers > 0;
                 self.wake_read_waiters();
             }
         }
@@ -239,6 +247,11 @@ impl PipeBuffer {
     /// Add a writer (used when duplicating pipe write fds)
     pub fn add_writer(&mut self) {
         self.writers += 1;
+        self.hangup = false;
+    }
+
+    pub fn has_hung_up(&self) -> bool {
+        self.hangup
     }
 
     /// Register a thread as waiting to read from this pipe
