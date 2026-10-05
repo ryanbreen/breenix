@@ -156,9 +156,9 @@ pub struct SignalState {
     ignored: u64,
     /// Alternate signal stack configuration
     pub alt_stack: AltStack,
-    /// Saved signal mask from sigsuspend - restored after signal handler returns via sigreturn
-    /// This is set when sigsuspend temporarily changes the mask and a signal is delivered.
-    /// The sigreturn syscall checks this and restores the original mask.
+    /// Original mask for a temporary-mask wait. Delivery selects a signal
+    /// using the temporary mask, then consumes this before saving a handler
+    /// frame or applying a default action. Nested frames restore their own mask.
     pub sigsuspend_saved_mask: Option<u64>,
 }
 

@@ -4290,14 +4290,27 @@ fn metadata_statfs_allocation() -> CaseResult {
     let after = fs_stats(None, f.fd())?;
     stats_fields(&before)?;
     stats_fields(&after)?;
-    // A concurrent reclaim can offset allocation in mount-wide free counts.
-    // Check the file's allocated sectors and the mount's stable capacity and
-    // identity separately, without attributing a global delta to this write.
     check(
         fstat(f.fd())?.st_blocks >= 16 && stable_stats(&before, &after),
         "allocated file lost its blocks or changed filesystem capacity/identity",
-    )
+    )?;
+    // Bracket statfs with the independent in-memory and raw-disk allocator
+    // counters. A reclaim between snapshots requires a fresh comparison, not
+    // accepting a global delta that can conceal a stale free count.
+    let start = time::now_monotonic()?;
+    loop {
+        let free_before = root_free_blocks()?;
+        let stats = fs_stats(None, f.fd())?;
+        let free_after = root_free_blocks()?;
+        if free_before == free_after {
+            return check(stats[3] == free_before && stats[4] == free_before,
+                "statfs free blocks disagree with allocator and persisted counters");
+        }
+        check(elapsed_ms(start)? < 3000, "allocator did not settle for statfs comparison")?;
+        process::yield_now()?;
+    }
 }
+
 fn sync_global() -> CaseResult {
     let (r, w) = io::pipe()?;
     match process::fork()? {
@@ -4779,7 +4792,7 @@ fn signal_wait(api: WaitApi, masked: bool, no_fds: bool, unblock: bool) -> CaseR
     let seen = WAIT_SIGNAL.load(Ordering::SeqCst);
     if masked {
         check(
-            ret? == 0 && elapsed >= 4000,
+            ret? == 0 && (4000..6000).contains(&elapsed),
             "temporary mask did not block the signal through the timeout",
         )?;
     } else {

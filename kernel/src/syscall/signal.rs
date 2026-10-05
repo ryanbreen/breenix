@@ -1435,9 +1435,9 @@ pub fn sys_sigsuspend_with_frame(
                     let sanitized_mask = new_mask & !UNCATCHABLE_SIGNALS;
                     process.signals.set_blocked(sanitized_mask);
 
-                    // CRITICAL: Store saved_mask for sigreturn BEFORE entering HLT loop!
+                    // Store the original mask for signal delivery before entering the wait.
                     // When a signal is delivered, the handler runs and calls sigreturn.
-                    // sigreturn needs this mask to restore the original blocked state.
+                    // Delivery restores this mask before creating the handler frame.
                     // The code AFTER the HLT loop never runs because signal delivery
                     // modifies the return path to go directly to userspace.
                     process.signals.sigsuspend_saved_mask = Some(saved_mask);
@@ -2191,7 +2191,7 @@ pub fn sys_sigsuspend_with_frame_aarch64(
                     let sanitized_mask = new_mask & !UNCATCHABLE_SIGNALS;
                     process.signals.set_blocked(sanitized_mask);
 
-                    // Store saved_mask for sigreturn
+                    // Store the original mask for signal delivery
                     process.signals.sigsuspend_saved_mask = Some(saved_mask);
 
                     log::info!(
