@@ -1255,6 +1255,14 @@ static SUITE: Suite = suite(
                     "Timestamp nanoseconds are in the POSIX range",
                     metadata_timestamp_nanos,
                 ),
+                case("statfs", "statfs defines every filesystem statistics field", metadata_statfs),
+                case("fstatfs", "fstatfs agrees with statfs for the same filesystem", metadata_fstatfs),
+                case("statfs-symlink", "statfs follows final symlinks and physical dot-dot across mounts", metadata_statfs_symlink),
+                case("statfs-missing", "statfs rejects missing paths, file components and dangling symlinks", metadata_statfs_missing),
+                case("fstatfs-bad-fd", "fstatfs rejects an invalid descriptor with EBADF", metadata_fstatfs_bad_fd),
+                case("fstatfs-unlinked", "fstatfs keeps the filesystem identity of an unlinked open file", metadata_fstatfs_unlinked),
+                case("statfs-fault", "statfs and fstatfs reject null user buffers with EFAULT", metadata_statfs_fault),
+                case("statfs-allocation", "statfs free blocks follow filesystem allocation", metadata_statfs_allocation),
             ],
         ),
         category(
@@ -1331,6 +1339,48 @@ static SUITE: Suite = suite(
                     "A nonblocking PIPE_BUF write is all-or-nothing",
                     pipes_atomic_nonblock,
                 ),
+            ],
+        ),
+        category(
+            "sync",
+            "File synchronization",
+            &[
+                case(
+                    "fsync",
+                    "fsync returns success for a writable regular file",
+                    sync_fsync,
+                ),
+                case(
+                    "fsync-bad-fd",
+                    "fsync rejects an invalid descriptor with EBADF",
+                    sync_fsync_bad_fd,
+                ),
+                case(
+                    "fsync-pipe",
+                    "fsync rejects a pipe with EINVAL",
+                    sync_fsync_pipe,
+                ),
+                case(
+                    "fdatasync",
+                    "fdatasync returns success for a writable regular file",
+                    sync_fdatasync,
+                ),
+                case(
+                    "fdatasync-bad-fd",
+                    "fdatasync rejects an invalid descriptor with EBADF",
+                    sync_fdatasync_bad_fd,
+                ),
+                case(
+                    "fdatasync-pipe",
+                    "fdatasync rejects a pipe with EINVAL",
+                    sync_fdatasync_pipe,
+                ),
+                case(
+                    "killed-writer",
+                    "Processes killed holding and awaiting the filesystem lock leave it usable",
+                    sync_killed_writer,
+                ),
+                case("sync", "sync writes dirty shared pages of every inode across writeback batches", sync_global),
             ],
         ),
         category(
@@ -1437,47 +1487,42 @@ static SUITE: Suite = suite(
                 ),
             ],
         ),
-        category(
-            "sync",
-            "File synchronization",
-            &[
-                case(
-                    "fsync",
-                    "fsync returns success for a writable regular file",
-                    sync_fsync,
-                ),
-                case(
-                    "fsync-bad-fd",
-                    "fsync rejects an invalid descriptor with EBADF",
-                    sync_fsync_bad_fd,
-                ),
-                case(
-                    "fsync-pipe",
-                    "fsync rejects a pipe with EINVAL",
-                    sync_fsync_pipe,
-                ),
-                case(
-                    "fdatasync",
-                    "fdatasync returns success for a writable regular file",
-                    sync_fdatasync,
-                ),
-                case(
-                    "fdatasync-bad-fd",
-                    "fdatasync rejects an invalid descriptor with EBADF",
-                    sync_fdatasync_bad_fd,
-                ),
-                case(
-                    "fdatasync-pipe",
-                    "fdatasync rejects a pipe with EINVAL",
-                    sync_fdatasync_pipe,
-                ),
-                case(
-                    "killed-writer",
-                    "Processes killed holding and awaiting the filesystem lock leave it usable",
-                    sync_killed_writer,
-                ),
-            ],
-        ),
+        category("poll-select", "poll and select", &[
+            case("regular", "poll reports regular files readable and writable even at EOF", poll_regular),
+            case("pipe-level", "poll pipe readability persists until all data is drained", poll_level),
+            case("pipe-hup", "poll reports HUP while buffered pipe bytes remain readable", poll_hup),
+            case("pipe-error", "poll reports ERR when the pipe read end closes", poll_error),
+            case("pipe-full", "poll reports a full pipe unwritable until drained", poll_full),
+            case("invalid", "poll reports NVAL per invalid fd and ignores negative fds", poll_invalid),
+            case("timeout", "poll expires with zero count and cleared revents", poll_timeout),
+            case("sleep", "poll with zero descriptors sleeps through its timeout", poll_sleep),
+            case("blocking", "A negative poll timeout waits for a write made while blocked", poll_blocking),
+            case("finite-ready", "poll returns readiness for a write made before its deadline", poll_finite_ready),
+            case("eintr", "poll returns EINTR for a signal sent while blocked", poll_eintr),
+            case("empty-eintr", "Infinite poll with zero descriptors blocks until a signal", poll_empty_eintr),
+            case("ppoll-timeout", "ppoll expires with zero count and cleared revents", ppoll_timeout),
+            case("ppoll-blocking", "ppoll with a null timeout waits for a write while blocked", ppoll_blocking),
+            case("ppoll-eintr", "ppoll returns EINTR for a signal sent while blocked", ppoll_eintr),
+            case("ppoll-mask", "ppoll blocks its temporary signal mask and restores the original", ppoll_mask),
+            case("ppoll-arguments", "ppoll rejects invalid timeout and signal-mask size", ppoll_arguments),
+            case("select-regular", "select counts both regular-file sets and clears exceptfds", select_regular),
+            case("select-level", "select reports pipe levels and readable EOF without an exception", select_level),
+            case("select-bounds", "select respects nfds, multiple fd_set words and buffer bounds", select_bounds),
+            case("select-timeout", "select expires with zero count and cleared sets", select_timeout),
+            case("select-sleep", "select with nfds zero sleeps through its timeout", select_sleep),
+            case("select-blocking", "select with a null timeout waits for a write while blocked", select_blocking),
+            case("select-eintr", "select returns EINTR for a signal sent while blocked", select_eintr),
+            case("pselect-timeout", "pselect6 expires with zero count and cleared sets", pselect_timeout),
+            case("pselect-blocking", "pselect6 with a null timeout waits for a write while blocked", pselect_blocking),
+            case("pselect-eintr", "pselect6 returns EINTR for a signal sent while blocked", pselect_eintr),
+            case("pselect-mask", "pselect6 blocks its temporary signal mask and restores the original", pselect_mask),
+            case("fifo", "poll preserves FIFO readiness and delivers buffered bytes before HUP", poll_fifo),
+            case("select-fifo", "select reports the true FIFO read and write sets", select_fifo),
+            case("ppoll-regular", "Zero-timeout ppoll reports regular-file read and write bits", ppoll_regular),
+            case("pselect-regular", "Zero-timeout pselect6 counts regular-file read and write sets", pselect_regular),
+            case("ppoll-unmask", "ppoll temporarily unblocks a signal and restores its blocked mask", ppoll_unmask),
+            case("pselect-unmask", "pselect6 temporarily unblocks a signal and restores its blocked mask", pselect_unmask),
+        ]),
     ],
 );
 
@@ -4085,6 +4130,826 @@ fn spawn_killable_writer() -> Result<(i32, Fixture), String> {
             Ok((pid, f))
         }
     }
+}
+
+// Linux statfs is 120 bytes on both of our 64-bit architectures. Checking a
+// sentinel-filled raw buffer also proves reserved bytes were initialized.
+#[cfg(target_arch = "x86_64")]
+const STATFS: u64 = 137;
+#[cfg(target_arch = "aarch64")]
+const STATFS: u64 = 43;
+#[cfg(target_arch = "x86_64")]
+const FSTATFS: u64 = 138;
+#[cfg(target_arch = "aarch64")]
+const FSTATFS: u64 = 44;
+#[cfg(target_arch = "x86_64")]
+const SYNC: u64 = 162;
+#[cfg(target_arch = "aarch64")]
+const SYNC: u64 = 81;
+
+fn fs_stats(path: Option<&str>, fd: Fd) -> Result<[u64; 15], String> {
+    let mut words = [u64::MAX; 15];
+    if let Some(path) = path {
+        let p = cpath(path);
+        sc(
+            STATFS,
+            p.as_ptr() as u64,
+            words.as_mut_ptr() as u64,
+            0,
+            0,
+            "statfs",
+        )?;
+    } else {
+        sc(
+            FSTATFS,
+            fd.raw(),
+            words.as_mut_ptr() as u64,
+            0,
+            0,
+            "fstatfs",
+        )?;
+    }
+    Ok(words)
+}
+fn stats_fields(s: &[u64; 15]) -> CaseResult {
+    check(
+        s[0] == 0xef53 && s[1].is_power_of_two() && s[1] >= 1024,
+        "statfs did not report ext2 and its block size",
+    )?;
+    check(
+        s[2] > 0 && s[3] <= s[2] && s[4] == s[3],
+        "invalid block capacity or available count",
+    )?;
+    check(s[5] > 0 && s[6] <= s[5], "invalid inode capacity")?;
+    check(
+        s[7] != u64::MAX
+            && s[7] >> 32 == 0
+            && s[8] == 255
+            && s[9] == s[1]
+            && s[10] == 0x20
+            && s[11..] == [0; 4],
+        "undefined fsid, name limit, fragment size, flags or spare fields",
+    )
+}
+fn metadata_statfs() -> CaseResult {
+    let f = Fixture::new(b"stats")?;
+    stats_fields(&fs_stats(Some(&f.path), BAD)?)
+}
+fn metadata_fstatfs() -> CaseResult {
+    let f = Fixture::new(b"stats")?;
+    let by_path = fs_stats(Some(&f.path), BAD)?;
+    let by_fd = fs_stats(None, f.fd())?;
+    stats_fields(&by_fd)?;
+    check(
+        by_fd == by_path,
+        "fstatfs disagrees with statfs on the same filesystem",
+    )
+}
+fn metadata_statfs_symlink() -> CaseResult {
+    let f = Fixture::new(b"stats")?;
+    fs::symlink("/proc", &f.extra("link"))?;
+    let stats = fs_stats(Some(&f.extra("link")), BAD)?;
+    check(
+        stats[0] == 0x9fa0 && stats[2..7] == [0; 5] && stats[11..] == [0; 4],
+        "statfs did not follow its final symlink into procfs",
+    )?;
+    // Physical '..' leaves procfs: lexical cleanup would remain in /tmp.
+    let parent = fs_stats(Some(&format!("{}/../etc", f.extra("link"))), BAD)?;
+    check(
+        parent[7] == fs_stats(Some("/etc"), BAD)?[7],
+        "statfs did not resolve physical dot-dot",
+    )
+}
+fn metadata_statfs_missing() -> CaseResult {
+    let f = Fixture::empty()?;
+    expect_errno(fs_stats(Some(&f.path), BAD), 2, "statfs missing path")?;
+    let existing = Fixture::new(b"x")?;
+    expect_errno(
+        fs_stats(Some(&format!("{}/child", existing.path)), BAD),
+        20,
+        "statfs file component",
+    )?;
+    fs::symlink(&f.path, &f.extra("link"))?;
+    expect_errno(
+        fs_stats(Some(&f.extra("link")), BAD),
+        2,
+        "statfs dangling final symlink",
+    )
+}
+fn metadata_fstatfs_bad_fd() -> CaseResult {
+    expect_errno(fs_stats(None, BAD), 9, "fstatfs invalid fd")
+}
+fn metadata_fstatfs_unlinked() -> CaseResult {
+    let f = Fixture::new(b"x")?;
+    let before = fs_stats(None, f.fd())?;
+    fs::unlink(&f.path)?;
+    let after = fs_stats(None, f.fd())?;
+    check(
+        before[7] == after[7] && before[2] == after[2],
+        "fstatfs lost an unlinked descriptor's filesystem",
+    )
+}
+fn metadata_statfs_fault() -> CaseResult {
+    expect_errno(sc(STATFS, 0, 0, 0, 0, "statfs"), 14, "statfs null path")?;
+    let p = cpath("/tmp");
+    expect_errno(
+        sc(STATFS, p.as_ptr() as u64, 0, 0, 0, "statfs"),
+        14,
+        "statfs null output",
+    )?;
+    let f = Fixture::new(b"x")?;
+    expect_errno(
+        sc(FSTATFS, f.fd().raw(), 0, 0, 0, "fstatfs"),
+        14,
+        "fstatfs null output",
+    )
+}
+fn metadata_statfs_allocation() -> CaseResult {
+    let f = Fixture::new(b"")?;
+    let before = fs_stats(None, f.fd())?;
+    write_all(f.fd(), &[0x5a; 8192])?;
+    let after = fs_stats(None, f.fd())?;
+    check(
+        after[3] < before[3] && after[4] == after[3],
+        "statfs free counters did not track disk allocation",
+    )
+}
+fn sync_global() -> CaseResult {
+    let f = Fixture::new(b"")?;
+    let g = Fixture::new(b"")?;
+    // Two inodes; the first crosses the 64-page writeback batch limit.
+    let files = [(&f, 266240), (&g, 4096)];
+    for (file, len) in files {
+        truncate_fd(file.fd(), len as i64)?;
+    }
+    let mut maps = Vec::new();
+    for (file, len) in files {
+        let p = memory::mmap(
+            std::ptr::null_mut(),
+            len,
+            memory::PROT_READ | memory::PROT_WRITE,
+            memory::MAP_SHARED,
+            file.fd().raw() as i32,
+            0,
+        )?;
+        maps.push((p, len));
+        unsafe {
+            std::ptr::write_bytes(p, 0x53, len);
+        }
+    }
+    let r = (|| -> CaseResult {
+        sc(SYNC, 0, 0, 0, 0, "sync")?;
+        for (file, len) in files {
+            check(
+                fstat(file.fd())?.st_blocks >= (len / 512) as u64,
+                "sync left dirty sparse pages without disk blocks",
+            )?;
+            contents(file.fd(), &vec![0x53; len])?;
+        }
+        Ok(())
+    })();
+    for (p, len) in maps {
+        memory::munmap(p, len)?;
+    }
+    r
+}
+
+use io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT};
+#[derive(Clone, Copy)]
+enum WaitApi {
+    Poll,
+    Ppoll,
+    Select,
+    Pselect,
+}
+fn poll_call(
+    api: WaitApi,
+    fds: &mut [io::PollFd],
+    ms: i32,
+    mask: Option<&u64>,
+) -> Result<usize, Error> {
+    if matches!(api, WaitApi::Poll) {
+        return io::poll(fds, ms);
+    }
+    let ts = libbreenix::Timespec {
+        tv_sec: (ms.max(0) / 1000) as i64,
+        tv_nsec: (ms.max(0) % 1000) as i64 * 1_000_000,
+    };
+    let ret = unsafe {
+        raw::syscall5(
+            nr::PPOLL,
+            fds.as_mut_ptr() as u64,
+            fds.len() as u64,
+            if ms < 0 { 0 } else { &ts as *const _ as u64 },
+            mask.map_or(0, |p| p as *const _ as u64),
+            8,
+        )
+    };
+    Error::from_syscall(ret as i64).map(|n| n as usize)
+}
+#[repr(C)]
+struct MaskArg {
+    ptr: u64,
+    size: u64,
+}
+fn select_call(
+    api: WaitApi,
+    nfds: i32,
+    sets: &mut [[u64; 4]; 3],
+    ms: i32,
+    mask: Option<&u64>,
+) -> Result<usize, Error> {
+    let mut ts = [
+        (ms.max(0) / 1000) as i64,
+        (ms.max(0) % 1000) as i64 * 1_000_000,
+    ];
+    let arg = MaskArg {
+        ptr: mask.map_or(0, |p| p as *const _ as u64),
+        size: 8,
+    };
+    #[cfg(target_arch = "x86_64")]
+    let (number, mask_ptr) = if matches!(api, WaitApi::Select) {
+        ts[1] /= 1000;
+        (nr::SELECT, 0)
+    } else {
+        (nr::PSELECT6, &arg as *const _ as u64)
+    };
+    // ARM64 has no Linux select syscall; exercise its pselect6 replacement.
+    #[cfg(target_arch = "aarch64")]
+    let (number, mask_ptr) = {
+        let _ = api;
+        (nr::PSELECT6, &arg as *const _ as u64)
+    };
+    let ret = unsafe {
+        raw::syscall6(
+            number,
+            nfds as u64,
+            sets[0].as_mut_ptr() as u64,
+            sets[1].as_mut_ptr() as u64,
+            sets[2].as_mut_ptr() as u64,
+            if ms < 0 { 0 } else { ts.as_mut_ptr() as u64 },
+            mask_ptr,
+        )
+    };
+    Error::from_syscall(ret as i64).map(|n| n as usize)
+}
+fn bit(sets: &mut [[u64; 4]; 3], which: usize, fd: Fd) {
+    sets[which][fd.raw() as usize / 64] |= 1 << (fd.raw() % 64);
+}
+fn poll_exact(fd: Fd, events: i16, expected: i16) -> CaseResult {
+    let mut fds = [io::PollFd {
+        fd: fd.raw() as i32,
+        events,
+        revents: -1,
+    }];
+    let count = io::poll(&mut fds, 0)?;
+    check(
+        count == usize::from(expected != 0) && fds[0].revents == expected,
+        &format!(
+            "poll count={count} bits={:#x}, expected bits={expected:#x}",
+            fds[0].revents
+        ),
+    )
+}
+fn poll_regular() -> CaseResult {
+    let f = Fixture::new(b"")?;
+    poll_exact(f.fd(), POLLIN | POLLOUT, POLLIN | POLLOUT)?;
+    let ro = f.open(O_RDONLY)?;
+    let wo = f.open(O_WRONLY)?;
+    poll_exact(ro, POLLIN | POLLOUT, POLLIN | POLLOUT)?;
+    poll_exact(wo, POLLIN | POLLOUT, POLLIN | POLLOUT)
+}
+fn poll_level() -> CaseResult {
+    let (r, w) = io::pipe()?;
+    poll_exact(r, POLLIN, 0)?;
+    write_all(w, b"AB")?;
+    for _ in 0..3 {
+        poll_exact(r, POLLIN, POLLIN)?;
+    }
+    let mut byte = [0];
+    check(
+        io::read(r, &mut byte)? == 1 && byte == *b"A",
+        "pipe first byte",
+    )?;
+    poll_exact(r, POLLIN, POLLIN)?;
+    check(
+        io::read(r, &mut byte)? == 1 && byte == *b"B",
+        "pipe second byte",
+    )?;
+    poll_exact(r, POLLIN, 0)
+}
+fn poll_hup() -> CaseResult {
+    let (r, w) = io::pipe()?;
+    write_all(w, b"AB")?;
+    io::close(w)?;
+    poll_exact(r, POLLIN, POLLIN | POLLHUP)?;
+    poll_exact(r, 0, POLLHUP)?;
+    let mut bytes = [0; 3];
+    check(
+        io::read(r, &mut bytes)? == 2 && &bytes[..2] == b"AB",
+        "HUP lost buffered bytes",
+    )?;
+    poll_exact(r, POLLIN, POLLIN | POLLHUP)?;
+    check(
+        io::read(r, &mut bytes)? == 0,
+        "closed empty pipe did not return EOF",
+    )
+}
+fn poll_error() -> CaseResult {
+    let (r, w) = io::pipe()?;
+    io::close(r)?;
+    poll_exact(w, 0, POLLERR)?;
+    poll_exact(w, POLLOUT, POLLOUT | POLLERR)
+}
+fn poll_full() -> CaseResult {
+    let (r, w) = io::pipe2(O_NONBLOCK as i32)?;
+    poll_exact(w, POLLOUT, POLLOUT)?;
+    fill_pipe(w)?;
+    poll_exact(w, POLLOUT, 0)?;
+    let mut buf = [0; 4096];
+    check(io::read(r, &mut buf)? == 4096, "full pipe drain failed")?;
+    poll_exact(w, POLLOUT, POLLOUT)
+}
+fn poll_invalid() -> CaseResult {
+    let f = Fixture::new(b"")?;
+    let mut fds = [
+        io::PollFd {
+            fd: BAD.raw() as i32,
+            events: 0,
+            revents: -1,
+        },
+        io::PollFd {
+            fd: -1,
+            events: POLLIN,
+            revents: -1,
+        },
+        io::PollFd::new(f.fd(), POLLIN),
+    ];
+    check(
+        io::poll(&mut fds, 0)? == 2
+            && fds[0].revents == POLLNVAL
+            && fds[1].revents == 0
+            && fds[2].revents == POLLIN,
+        "invalid fd failed the call, or negative fd/ready fd bits were wrong",
+    )
+}
+fn elapsed_ms(start: libbreenix::Timespec) -> Result<i64, Error> {
+    let end = time::now_monotonic()?;
+    Ok(((end.tv_sec - start.tv_sec) * 1_000_000_000 + end.tv_nsec - start.tv_nsec) / 1_000_000)
+}
+fn timeout_case(api: WaitApi, empty: bool) -> CaseResult {
+    let (r, _w) = io::pipe()?;
+    let mut fds = if empty {
+        Vec::new()
+    } else {
+        vec![io::PollFd {
+            fd: r.raw() as i32,
+            events: POLLIN,
+            revents: -1,
+        }]
+    };
+    let mut sets = [[0; 4]; 3];
+    if !empty {
+        bit(&mut sets, 0, r);
+    }
+    let start = time::now_monotonic()?;
+    let n = if matches!(api, WaitApi::Poll | WaitApi::Ppoll) {
+        poll_call(api, &mut fds, 100, None)?
+    } else {
+        select_call(
+            api,
+            if empty { 0 } else { r.raw() as i32 + 1 },
+            &mut sets,
+            100,
+            None,
+        )?
+    };
+    check(
+        n == 0
+            && if matches!(api, WaitApi::Poll | WaitApi::Ppoll) {
+                fds.iter().all(|f| f.revents == 0)
+            } else {
+                sets == [[0; 4]; 3]
+            },
+        "timeout returned readiness or stale output bits",
+    )?;
+    check(
+        elapsed_ms(start)? >= 100,
+        "timeout returned before its deadline",
+    )
+}
+fn poll_timeout() -> CaseResult {
+    timeout_case(WaitApi::Poll, false)
+}
+fn poll_sleep() -> CaseResult {
+    timeout_case(WaitApi::Poll, true)
+}
+fn ppoll_timeout() -> CaseResult {
+    timeout_case(WaitApi::Ppoll, false)
+}
+fn select_timeout() -> CaseResult {
+    timeout_case(WaitApi::Select, false)
+}
+fn select_sleep() -> CaseResult {
+    timeout_case(WaitApi::Select, true)
+}
+fn pselect_timeout() -> CaseResult {
+    timeout_case(WaitApi::Pselect, false)
+}
+
+// The helper cannot act before the caller parks: it waits for /proc's
+// scheduler-backed Blocked state after the caller sends its start byte. The
+// caller makes no intervening blocking syscall, so that state belongs to the
+// poll/select under test. An implementation that returns immediately cannot
+// pass: the helper times out without sending its event and exits nonzero.
+fn after_blocked(event: impl FnOnce() -> CaseResult) -> Result<(i32, Fd), CaseError> {
+    let caller = process::getpid()?.raw();
+    let (r, w) = io::pipe()?;
+    match process::fork()? {
+        process::ForkResult::Child => {
+            let result = (|| -> CaseResult {
+                io::close(w)?;
+                let mut byte = [0];
+                check(io::read(r, &mut byte)? == 1, "missing wait handshake")?;
+                io::close(r)?;
+                let path = format!("/proc/{caller}/status");
+                let start = time::now_monotonic()?;
+                loop {
+                    let d = fs::open_with_mode(&path, O_RDONLY, 0)?;
+                    let mut buf = [0; 2048];
+                    let n = io::read(d, &mut buf)?;
+                    io::close(d)?;
+                    if std::str::from_utf8(&buf[..n])
+                        .unwrap_or("")
+                        .contains("State:\tBlocked\n")
+                    {
+                        break;
+                    }
+                    check(
+                        elapsed_ms(start)? < 3000,
+                        "caller never blocked in the tested wait",
+                    )?;
+                    process::yield_now()?;
+                }
+                event()
+            })();
+            process::exit(if result.is_ok() { 0 } else { 1 });
+        }
+        process::ForkResult::Parent(pid) => {
+            io::close(r)?;
+            Ok((pid.raw() as i32, w))
+        }
+    }
+}
+fn release_wait(w: Fd) -> CaseResult {
+    write_all(w, b"S")?;
+    io::close(w)?;
+    Ok(())
+}
+fn blocking_ready(api: WaitApi, ms: i32) -> CaseResult {
+    let (r, w) = io::pipe()?;
+    let (pid, start) = after_blocked(|| {
+        write_all(w, b"R")?;
+        Ok(())
+    })?;
+    release_wait(start)?;
+    let mut fds = [io::PollFd::new(r, POLLIN)];
+    let mut sets = [[0; 4]; 3];
+    bit(&mut sets, 0, r);
+    let n = if matches!(api, WaitApi::Poll | WaitApi::Ppoll) {
+        poll_call(api, &mut fds, ms, None)?
+    } else {
+        select_call(api, r.raw() as i32 + 1, &mut sets, ms, None)?
+    };
+    child_ok(
+        wait_child(pid)?,
+        "helper did not observe the caller blocked before writing",
+    )?;
+    check(
+        n == 1
+            && (if matches!(api, WaitApi::Poll | WaitApi::Ppoll) {
+                fds[0].revents == POLLIN
+            } else {
+                sets[0][r.raw() as usize / 64] == 1 << (r.raw() % 64) && sets[1..] == [[0; 4]; 2]
+            }),
+        "wait expired or returned wrong readiness",
+    )?;
+    poll_exact(r, POLLIN, POLLIN)
+}
+fn poll_blocking() -> CaseResult {
+    blocking_ready(WaitApi::Poll, -7)
+}
+fn ppoll_blocking() -> CaseResult {
+    blocking_ready(WaitApi::Ppoll, -1)
+}
+fn select_blocking() -> CaseResult {
+    blocking_ready(WaitApi::Select, -1)
+}
+fn pselect_blocking() -> CaseResult {
+    blocking_ready(WaitApi::Pselect, -1)
+}
+fn poll_finite_ready() -> CaseResult {
+    blocking_ready(WaitApi::Poll, 4000)
+}
+
+static WAIT_SIGNAL: AtomicUsize = AtomicUsize::new(0);
+extern "C" fn wait_signal(_: i32) {
+    WAIT_SIGNAL.fetch_add(1, Ordering::SeqCst);
+}
+fn signal_wait(api: WaitApi, masked: bool, no_fds: bool, unblock: bool) -> CaseResult {
+    WAIT_SIGNAL.store(0, Ordering::SeqCst);
+    signal::sigaction(
+        signal::SIGUSR1,
+        Some(&signal::Sigaction::new(wait_signal)),
+        None,
+    )?;
+    let usr1 = 1u64 << (signal::SIGUSR1 - 1);
+    let original = (1u64 << (signal::SIGUSR2 - 1)) | if unblock { usr1 } else { 0 };
+    signal::sigprocmask(signal::SIG_SETMASK, Some(&original), None)?;
+    let temporary = if unblock {
+        original & !usr1
+    } else {
+        original | usr1
+    };
+    let parent = process::getpid()?.raw() as i32;
+    let (r, _w) = io::pipe()?;
+    let (pid, start) = after_blocked(|| {
+        signal::kill(parent, signal::SIGUSR1)?;
+        Ok(())
+    })?;
+    release_wait(start)?;
+    let mut fds = if no_fds {
+        Vec::new()
+    } else {
+        vec![io::PollFd::new(r, POLLIN)]
+    };
+    let mut sets = [[0; 4]; 3];
+    if !no_fds {
+        bit(&mut sets, 0, r);
+    }
+    let clock = time::now_monotonic()?;
+    let ms = if masked { 4000 } else { -1 };
+    let mask = if masked || unblock {
+        Some(&temporary)
+    } else {
+        None
+    };
+    let ret = if matches!(api, WaitApi::Poll | WaitApi::Ppoll) {
+        poll_call(api, &mut fds, ms, mask)
+    } else {
+        select_call(
+            api,
+            if no_fds { 0 } else { r.raw() as i32 + 1 },
+            &mut sets,
+            ms,
+            mask,
+        )
+    };
+    // Check the actual return before waiting for the helper (another wait
+    // must never be mistaken for the syscall under test).
+    let elapsed = elapsed_ms(clock)?;
+    let seen = WAIT_SIGNAL.load(Ordering::SeqCst);
+    if masked {
+        check(
+            ret? == 0 && elapsed >= 4000,
+            "temporary mask did not block the signal through the timeout",
+        )?;
+    } else {
+        expect_errno(ret, 4, "signal during blocked wait")?;
+    }
+    check(seen == 1, "signal was not delivered once at syscall return")?;
+    let mut restored = 0;
+    signal::sigprocmask(signal::SIG_SETMASK, None, Some(&mut restored))?;
+    check(
+        restored == original,
+        "wait did not restore the original mask",
+    )?;
+    child_ok(
+        wait_child(pid)?,
+        "signal helper did not observe the tested call blocked",
+    )
+}
+fn poll_eintr() -> CaseResult {
+    signal_wait(WaitApi::Poll, false, false, false)
+}
+fn poll_empty_eintr() -> CaseResult {
+    signal_wait(WaitApi::Poll, false, true, false)
+}
+fn ppoll_eintr() -> CaseResult {
+    signal_wait(WaitApi::Ppoll, false, false, false)
+}
+fn select_eintr() -> CaseResult {
+    signal_wait(WaitApi::Select, false, false, false)
+}
+fn pselect_eintr() -> CaseResult {
+    signal_wait(WaitApi::Pselect, false, false, false)
+}
+fn ppoll_mask() -> CaseResult {
+    signal_wait(WaitApi::Ppoll, true, false, false)
+}
+fn pselect_mask() -> CaseResult {
+    signal_wait(WaitApi::Pselect, true, false, false)
+}
+fn select_regular() -> CaseResult {
+    let f = Fixture::new(b"")?;
+    let mut sets = [[0; 4]; 3];
+    for i in 0..3 {
+        bit(&mut sets, i, f.fd());
+    }
+    let mut expected = sets;
+    expected[2] = [0; 4];
+    check(
+        select_call(WaitApi::Select, f.fd().raw() as i32 + 1, &mut sets, 0, None)? == 2
+            && sets == expected,
+        "select failed to count both regular-file sets or reported an exception",
+    )
+}
+fn select_level() -> CaseResult {
+    let (r, w) = io::pipe()?;
+    for has_data in [false, true, true, false] {
+        if has_data {
+            write_all(w, b"X")?;
+        }
+        let mut sets = [[0; 4]; 3];
+        bit(&mut sets, 0, r);
+        let mut expected = sets;
+        if !has_data {
+            expected = [[0; 4]; 3];
+        }
+        for _ in 0..2 {
+            bit(&mut sets, 0, r);
+            check(
+                select_call(WaitApi::Select, r.raw() as i32 + 1, &mut sets, 0, None)?
+                    == usize::from(has_data)
+                    && sets == expected,
+                "select pipe level readiness mismatch",
+            )?;
+        }
+        if has_data {
+            check(io::read(r, &mut [0])? == 1, "select pipe drain")?;
+        }
+    }
+    io::close(w)?;
+    let mut sets = [[0; 4]; 3];
+    bit(&mut sets, 0, r);
+    bit(&mut sets, 2, r);
+    let mut expected = sets;
+    expected[2] = [0; 4];
+    check(
+        select_call(WaitApi::Select, r.raw() as i32 + 1, &mut sets, 0, None)? == 1
+            && sets == expected,
+        "pipe EOF was not readable or HUP was misreported in exceptfds",
+    )
+}
+fn select_bounds() -> CaseResult {
+    let f = Fixture::new(b"")?;
+    let high = io::dup2(f.fd(), Fd::from_raw(130))?;
+    let mut sets = [[0; 4]; 3];
+    bit(&mut sets, 0, high);
+    sets[0][3] = 0xabcdef; // outside ceil(nfds/64): must not be touched
+    let expected = sets;
+    check(
+        select_call(WaitApi::Select, 131, &mut sets, 0, None)? == 1 && sets == expected,
+        "select truncated fd_set or overwrote a word beyond nfds",
+    )?;
+    // A valid ready fd above nfds, and an invalid bit in the same word, are
+    // ignored. Only the rounded word is rewritten; later words stay intact.
+    let mut sets = [[0; 4]; 3];
+    sets[0][0] = 1 << 60;
+    sets[0][2] = 1 << 2;
+    check(
+        select_call(WaitApi::Select, 5, &mut sets, 0, None)? == 0 && sets[0] == [0, 0, 4, 0],
+        "select ignored nfds or touched later words",
+    )?;
+    expect_errno(
+        select_call(WaitApi::Select, -1, &mut sets, 0, None),
+        22,
+        "select negative nfds",
+    )?;
+    expect_errno(
+        select_call(WaitApi::Select, 257, &mut sets, 0, None),
+        22,
+        "select nfds beyond descriptor limit",
+    )?;
+    let mut sets = [[0; 4]; 3];
+    sets[0][3] = 1 << 63;
+    expect_errno(
+        select_call(WaitApi::Select, 256, &mut sets, 0, None),
+        9,
+        "select invalid descriptor",
+    )
+}
+fn poll_fifo() -> CaseResult {
+    let f = Fixture::empty()?;
+    fs::mkfifo(&f.path, 0o600)?;
+    let r = f.open(O_RDONLY | O_NONBLOCK)?;
+    let w = f.open(O_WRONLY | O_NONBLOCK)?;
+    poll_exact(r, POLLIN, 0)?;
+    write_all(w, b"F")?;
+    for _ in 0..2 {
+        poll_exact(r, POLLIN, POLLIN)?;
+    }
+    io::close(w)?;
+    poll_exact(r, POLLIN, POLLIN | POLLHUP)?;
+    let mut byte = [0];
+    check(
+        io::read(r, &mut byte)? == 1 && byte == *b"F",
+        "FIFO lost buffered data",
+    )?;
+    poll_exact(r, POLLIN, POLLIN | POLLHUP)
+}
+fn select_fifo() -> CaseResult {
+    let f = Fixture::empty()?;
+    fs::mkfifo(&f.path, 0o600)?;
+    let r = f.open(O_RDONLY | O_NONBLOCK)?;
+    let w = f.open(O_WRONLY | O_NONBLOCK)?;
+    for ready in [false, true] {
+        if ready {
+            write_all(w, b"F")?;
+        }
+        let mut sets = [[0; 4]; 3];
+        bit(&mut sets, 0, r);
+        bit(&mut sets, 1, w);
+        let mut expected = sets;
+        if !ready {
+            expected[0] = [0; 4];
+        }
+        check(
+            select_call(WaitApi::Select, w.raw() as i32 + 1, &mut sets, 0, None)?
+                == 1 + usize::from(ready)
+                && sets == expected,
+            "select returned wrong FIFO read/write sets",
+        )?;
+    }
+    Ok(())
+}
+fn ppoll_arguments() -> CaseResult {
+    let mut fds = [io::PollFd {
+        fd: -1,
+        events: POLLIN,
+        revents: -1,
+    }];
+    let ts = [0i64, 1_000_000_000];
+    let mask = 0u64;
+    let call = |ts: u64, size: u64| -> Result<u64, Error> {
+        Error::from_syscall(unsafe {
+            raw::syscall5(
+                nr::PPOLL,
+                fds.as_mut_ptr() as u64,
+                1,
+                ts,
+                &mask as *const _ as u64,
+                size,
+            )
+        } as i64)
+    };
+    // Each raw argument check supplies live buffers; invalid ABI values must
+    // return an error rather than silently changing the requested duration.
+    let mut call = call;
+    expect_errno(call(ts.as_ptr() as u64, 8), 22, "ppoll invalid nanoseconds")?;
+    let zero = [0i64; 2];
+    expect_errno(
+        call(zero.as_ptr() as u64, 4),
+        22,
+        "ppoll invalid sigset size",
+    )
+}
+
+fn ppoll_unmask() -> CaseResult {
+    signal_wait(WaitApi::Ppoll, false, false, true)
+}
+fn pselect_unmask() -> CaseResult {
+    signal_wait(WaitApi::Pselect, false, false, true)
+}
+fn ppoll_regular() -> CaseResult {
+    let f = Fixture::new(b"")?;
+    let mut fds = [io::PollFd {
+        fd: f.fd().raw() as i32,
+        events: POLLIN | POLLOUT,
+        revents: -1,
+    }];
+    check(
+        poll_call(WaitApi::Ppoll, &mut fds, 0, None)? == 1 && fds[0].revents == POLLIN | POLLOUT,
+        "zero-timeout ppoll did not report both regular-file readiness bits",
+    )
+}
+fn pselect_regular() -> CaseResult {
+    let f = Fixture::new(b"")?;
+    let mut sets = [[0; 4]; 3];
+    bit(&mut sets, 0, f.fd());
+    bit(&mut sets, 1, f.fd());
+    let expected = sets;
+    check(
+        select_call(
+            WaitApi::Pselect,
+            f.fd().raw() as i32 + 1,
+            &mut sets,
+            0,
+            None,
+        )? == 2
+            && sets == expected,
+        "zero-timeout pselect6 did not return both regular-file sets",
+    )
 }
 
 fn main() {

@@ -9,6 +9,8 @@ use super::fd::{FdKind, FileDescriptor};
 pub mod events {
     /// Data available to read
     pub const POLLIN: i16 = 0x0001;
+    /// Priority data available
+    pub const POLLPRI: i16 = 0x0002;
     /// Write won't block
     pub const POLLOUT: i16 = 0x0004;
     /// Error condition (output only)
@@ -62,9 +64,9 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
         FdKind::PipeRead(buffer) => {
             let pipe = buffer.lock();
 
-            // Check for data available
+            // A read that returns data or EOF does not block.
             if (events & events::POLLIN) != 0 {
-                if pipe.available() > 0 {
+                if pipe.available() > 0 || !pipe.has_writers() {
                     revents |= events::POLLIN;
                 }
             }
@@ -77,9 +79,9 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
         FdKind::PipeWrite(buffer) => {
             let pipe = buffer.lock();
 
-            // Check for space available
+            // A write with no readers returns EPIPE without blocking.
             if (events & events::POLLOUT) != 0 {
-                if pipe.has_write_space(1) {
+                if pipe.space() > 0 || !pipe.has_readers() {
                     revents |= events::POLLOUT;
                 }
             }
@@ -91,7 +93,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
         }
         FdKind::FifoRead(_, buffer, _) => {
             let pipe = buffer.lock();
-            if (events & events::POLLIN) != 0 && pipe.available() > 0 {
+            if (events & events::POLLIN) != 0 && (pipe.available() > 0 || !pipe.has_writers()) {
                 revents |= events::POLLIN;
             }
             if !pipe.has_writers() {
@@ -100,7 +102,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
         }
         FdKind::FifoWrite(_, buffer, _) => {
             let pipe = buffer.lock();
-            if (events & events::POLLOUT) != 0 && pipe.has_write_space(1) {
+            if (events & events::POLLOUT) != 0 && (pipe.space() > 0 || !pipe.has_readers()) {
                 revents |= events::POLLOUT;
             }
             if !pipe.has_readers() {

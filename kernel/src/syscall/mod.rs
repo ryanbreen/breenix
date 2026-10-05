@@ -37,6 +37,7 @@ pub mod epoll;
 pub mod fifo;
 pub mod fs;
 pub mod metadata;
+mod multiplex;
 pub mod futex;
 #[cfg(feature = "boot_tests")]
 pub mod futex_oracle;
@@ -157,6 +158,8 @@ pub enum SyscallNumber {
     Newfstatat, // Path-based file stat (AT_FDCWD support)
     Fsync,
     Fdatasync,
+    Sync,
+    Statfs,
     Truncate,
     Ftruncate,
     // *at variants (Linux ARM64 has these instead of legacy syscalls)
@@ -281,6 +284,8 @@ impl SyscallNumber {
             62 => Some(Self::Kill),
             63 => Some(Self::Uname),
             72 => Some(Self::Fcntl),
+            162 => Some(Self::Sync),
+            137 => Some(Self::Statfs),
             74 => Some(Self::Fsync),
             75 => Some(Self::Fdatasync),
             76 => Some(Self::Truncate),
@@ -424,6 +429,8 @@ impl SyscallNumber {
             78 => Some(Self::Readlinkat),
             79 => Some(Self::Newfstatat),
             80 => Some(Self::Fstat),
+            81 => Some(Self::Sync),
+            43 => Some(Self::Statfs),
             82 => Some(Self::Fsync),
             83 => Some(Self::Fdatasync),
             // Process management

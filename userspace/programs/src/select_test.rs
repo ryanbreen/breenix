@@ -16,6 +16,9 @@ fn fail(msg: &str) -> ! {
 fn main() {
     println!("=== Select Test Program ===");
 
+    let mut zero = [0i64; 2];
+    let timeout = zero.as_mut_ptr() as u64;
+
     // Phase 1: Create a pipe for testing
     println!("Phase 1: Creating pipe...");
     let (pipe_read, pipe_write) = match io::pipe() {
@@ -35,7 +38,7 @@ fn main() {
     fd_set_bit(pipe_read, &mut readfds);
 
     let nfds = pipe_read.raw() as i32 + 1;
-    let select_ret = io::select(nfds, Some(&mut readfds), None, None, 0).unwrap();
+    let select_ret = io::select(nfds, Some(&mut readfds), None, None, timeout).unwrap();
 
     println!("  select() returned: {}, readfds={:#x}", select_ret, readfds);
 
@@ -57,7 +60,7 @@ fn main() {
     fd_zero(&mut readfds);
     fd_set_bit(pipe_read, &mut readfds);
 
-    let select_ret = io::select(nfds, Some(&mut readfds), None, None, 0).unwrap();
+    let select_ret = io::select(nfds, Some(&mut readfds), None, None, timeout).unwrap();
 
     println!("  select() returned: {}, readfds={:#x}", select_ret, readfds);
 
@@ -76,7 +79,7 @@ fn main() {
     fd_set_bit(pipe_write, &mut writefds);
 
     let nfds_write = pipe_write.raw() as i32 + 1;
-    let select_ret = io::select(nfds_write, None, Some(&mut writefds), None, 0).unwrap();
+    let select_ret = io::select(nfds_write, None, Some(&mut writefds), None, timeout).unwrap();
 
     println!("  select() returned: {}, writefds={:#x}", select_ret, writefds);
 
@@ -95,7 +98,7 @@ fn main() {
     let max_fd = if pipe_read.raw() > pipe_write.raw() { pipe_read.raw() } else { pipe_write.raw() };
     let nfds_multi = max_fd as i32 + 1;
 
-    let select_ret = io::select(nfds_multi, Some(&mut readfds), Some(&mut writefds), None, 0).unwrap();
+    let select_ret = io::select(nfds_multi, Some(&mut readfds), Some(&mut writefds), None, timeout).unwrap();
 
     println!("  select() returned: {}", select_ret);
     println!("  readfds={:#x}, writefds={:#x}", readfds, writefds);
@@ -124,7 +127,7 @@ fn main() {
     fd_zero(&mut exceptfds);
     fd_set_bit(pipe_read, &mut exceptfds);
 
-    let select_ret = io::select(nfds, Some(&mut readfds), None, Some(&mut exceptfds), 0).unwrap();
+    let select_ret = io::select(nfds, Some(&mut readfds), None, Some(&mut exceptfds), timeout).unwrap();
 
     println!("  select() returned: {}", select_ret);
     println!("  readfds={:#x}, exceptfds={:#x}", readfds, exceptfds);
@@ -136,7 +139,7 @@ fn main() {
     fd_zero(&mut writefds);
     fd_set_bit(Fd::STDOUT, &mut writefds);
 
-    let select_ret = io::select(2, None, Some(&mut writefds), None, 0).unwrap();
+    let select_ret = io::select(2, None, Some(&mut writefds), None, timeout).unwrap();
 
     println!("  select() returned: {}, writefds={:#x}", select_ret, writefds);
 
@@ -161,7 +164,7 @@ fn main() {
     fd_zero(&mut readfds);
     fd_set_bit(server_fd, &mut readfds);
     let nfds_tcp = server_fd.raw() as i32 + 1;
-    let select_ret = io::select(nfds_tcp, Some(&mut readfds), None, None, 0).unwrap();
+    let select_ret = io::select(nfds_tcp, Some(&mut readfds), None, None, timeout).unwrap();
 
     println!("  select() returned: {}, readfds={:#x}", select_ret, readfds);
 

@@ -668,13 +668,14 @@ fn dispatch_syscall_enum(
             arg4,
         )),
         SyscallNumber::Dup3 => result_to_u64(crate::syscall::handlers::sys_dup3(arg1, arg2, arg3)),
-        SyscallNumber::Pselect6 => result_to_u64(crate::syscall::handlers::sys_select(
+        SyscallNumber::Pselect6 => result_to_u64(crate::syscall::handlers::sys_pselect6(
             arg1 as i32,
             arg2,
             arg3,
             arg4,
             arg5,
-        )), // simplified
+            arg6,
+        )),
 
         // PTY syscalls
         SyscallNumber::PosixOpenpt => result_to_u64(crate::syscall::pty::sys_posix_openpt(arg1)),
@@ -750,6 +751,8 @@ fn dispatch_syscall_enum(
         SyscallNumber::SetRobustList => 0,
         // arch_prctl is x86_64 only - return ENOSYS on ARM64
         SyscallNumber::ArchPrctl => (-(crate::syscall::errno::ENOSYS as i64)) as u64,
+        SyscallNumber::Sync => result_to_u64(crate::syscall::fs::sys_sync()),
+        SyscallNumber::Statfs => result_to_u64(crate::syscall::fs::sys_statfs(arg1, arg2)),
         SyscallNumber::Fsync => result_to_u64(crate::syscall::fs::sys_fsync(arg1 as i32)),
         SyscallNumber::Fdatasync => result_to_u64(crate::syscall::fs::sys_fsync(arg1 as i32)),
         SyscallNumber::Truncate => result_to_u64(crate::syscall::fs::sys_truncate(arg1, arg2 as i64)),

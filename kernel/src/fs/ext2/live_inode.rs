@@ -257,6 +257,15 @@ impl LiveInodes {
         }
     }
 
+    /// Pin a snapshot of dirty mappings, including unlinked files. Drop the
+    /// registry lock before writeback takes filesystem and page-cache locks.
+    pub(crate) fn dirty_handles(&self) -> alloc::vec::Vec<FileHandle> {
+        self.table.lock().objects.values()
+            .filter(|object| object.map.has_dirty())
+            .map(|object| FileHandle::acquire(object.clone()))
+            .collect()
+    }
+
     pub fn pending(&self, after: u32) -> alloc::vec::Vec<Arc<LiveInode>> {
         use core::ops::Bound::{Excluded, Included, Unbounded};
         let table = self.table.lock();
