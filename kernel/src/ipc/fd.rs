@@ -81,7 +81,7 @@ pub struct DirectoryFile {
     pub handle: crate::fs::ext2::live_inode::FileHandle,
     pub inode_num: u64,
     pub mount_id: usize,
-    pub position: u64, // Current offset in directory entries
+    pub position: u64, // getdents64 cookie: byte offset of the next record
 }
 
 /// Types of file descriptors
