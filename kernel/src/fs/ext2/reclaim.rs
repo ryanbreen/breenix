@@ -242,6 +242,9 @@ impl Reclaim {
             .map_err(|_| ReclaimError::Retry)?
             {
                 fs.superblock.increment_free_inodes();
+                if self.inode.is_dir() {
+                    super::inode::note_directory_freed(ino, &fs.superblock, &mut fs.block_groups);
+                }
             } else {
                 log::warn!("ext2: orphan inode {} was not allocated", ino);
             }

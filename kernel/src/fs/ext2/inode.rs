@@ -447,6 +447,19 @@ pub fn increment_inode_links<B: BlockDevice + ?Sized>(
     Ok(new_links)
 }
 
+/// Take a freed directory inode out of its group's directory count, which
+/// mkdir raised when it allocated the inode.
+pub(super) fn note_directory_freed(
+    ino: u32,
+    superblock: &super::Ext2Superblock,
+    groups: &mut [super::Ext2BlockGroupDesc],
+) {
+    let Some(adjusted) = ino.checked_sub(1) else { return };
+    if let Some(group) = groups.get_mut((adjusted / superblock.s_inodes_per_group) as usize) {
+        group.bg_used_dirs_count = group.bg_used_dirs_count.saturating_sub(1);
+    }
+}
+
 /// Clear an orphan inode's bitmap bit and post it to its group. Same
 /// contract as `release_orphan_block`, including `write_attempted`.
 pub(super) fn release_orphan_inode<B: BlockDevice + ?Sized>(
