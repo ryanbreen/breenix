@@ -39,7 +39,8 @@ pub fn read_init_from_ext2(path: &str) -> Result<Vec<u8>, &'static str> {
 pub fn read_program(path: &str) -> Result<Vec<u8>, i32> {
     use crate::syscall::errno::{EIO, EISDIR};
 
-    let (mount, inode_num) =
+    // The handle holds the inode until its content is read.
+    let (mount, inode_num, _held) =
         crate::fs::namei::resolve_file(path).map_err(|errno| errno as i32)?;
     let fs_guard = mount.read();
     let fs = fs_guard.as_ref().ok_or(EIO)?;

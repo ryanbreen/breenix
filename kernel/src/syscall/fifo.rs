@@ -25,7 +25,7 @@ pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     // A FIFO is registered under the physical pathname of its new name.
-    let resolved = match crate::fs::namei::resolve(&raw_path, false) {
+    let resolved = match crate::fs::namei::resolve_create(&raw_path) {
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
     };
@@ -34,6 +34,10 @@ pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
     }
     if resolved.target == Target::Virtual {
         return SyscallResult::Err(super::errno::EPERM as u64);
+    }
+    // Only a directory is created at a name ending in `/`.
+    if resolved.trailing_slash {
+        return SyscallResult::Err(super::errno::ENOENT as u64);
     }
     let path = resolved.path;
 

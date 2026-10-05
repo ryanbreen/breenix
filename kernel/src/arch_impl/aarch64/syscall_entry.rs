@@ -1403,7 +1403,8 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
     // Trace: entering load_elf_from_ext2
     super::trace::trace_exec(b'1');
 
-    let (mount, inode_num) = crate::fs::namei::resolve_file(path).map_err(|errno| {
+    // The handle holds the inode until its content is read.
+    let (mount, inode_num, _held) = crate::fs::namei::resolve_file(path).map_err(|errno| {
         super::trace::trace_exec(b'!');
         errno as i32
     })?;

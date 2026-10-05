@@ -304,6 +304,20 @@ fn resolve_user(pathname: u64, follow: bool) -> Result<crate::fs::namei::Resolve
     crate::fs::namei::resolve(&path, follow).map_err(SyscallResult::Err)
 }
 
+/// Copy a pathname from userspace and resolve it to the directory entry an
+/// unlink, rmdir or rename acts on.
+fn resolve_user_entry(pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+    crate::fs::namei::resolve_entry(&path).map_err(SyscallResult::Err)
+}
+
+/// Copy a pathname from userspace and resolve it to the name a mkdir,
+/// symlink or link creates.
+fn resolve_user_create(pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+    crate::fs::namei::resolve_create(&path).map_err(SyscallResult::Err)
+}
+
 /// sys_open - Open a file or directory
 ///
 /// Helper: sys_open write path (O_CREAT/O_TRUNC) — works on any Ext2Fs instance.
@@ -1473,7 +1487,7 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
     use crate::fs::ext2::FileType;
     use crate::fs::namei::{Last, Target};
 
-    let resolved = match resolve_user(pathname, false) {
+    let resolved = match resolve_user_entry(pathname) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -1567,11 +1581,11 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
     use crate::fs::namei::{Last, Target};
 
     // rename acts on the names themselves: neither final symlink is followed.
-    let old = match resolve_user(oldpath, false) {
+    let old = match resolve_user_entry(oldpath) {
         Ok(r) => r,
         Err(e) => return e,
     };
-    let new = match resolve_user(newpath, false) {
+    let new = match resolve_user_entry(newpath) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -1586,6 +1600,18 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
         Target::Virtual => return SyscallResult::Err(EXDEV as u64),
         Target::Inode { mount, .. } => mount,
     };
+    // Only a directory may be renamed to a name ending in `/`.
+    if new.trailing_slash
+        && !matches!(
+            old.target,
+            Target::Inode {
+                file_type: crate::fs::ext2::FileType::Directory,
+                ..
+            }
+        )
+    {
+        return SyscallResult::Err(super::errno::ENOTDIR as u64);
+    }
     // Both names must be on the same filesystem
     if new.mount() != Some(mount) {
         log::error!("sys_rename: cross-filesystem rename not supported");
@@ -1652,7 +1678,7 @@ pub fn sys_rmdir(pathname: u64) -> SyscallResult {
     use crate::fs::namei::{Last, Target};
 
     // rmdir removes the name itself: a final symlink is not followed.
-    let resolved = match resolve_user(pathname, false) {
+    let resolved = match resolve_user_entry(pathname) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -1751,7 +1777,7 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
         Ok(r) => r,
         Err(e) => return e,
     };
-    let new = match resolve_user(newpath, false) {
+    let new = match resolve_user_create(newpath) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -1770,6 +1796,8 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
     match new.target {
         Target::Inode { .. } => return SyscallResult::Err(EEXIST as u64),
         _ if new.last != Last::Name => return SyscallResult::Err(EEXIST as u64),
+        // Only a directory is created at a name ending in `/`.
+        Target::Absent { .. } if new.trailing_slash => return SyscallResult::Err(ENOENT as u64),
         Target::Absent { mount: m, .. } if m == mount => {}
         _ => {
             log::error!("sys_link: cross-filesystem link not supported");
@@ -1843,7 +1871,7 @@ pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
     use crate::fs::namei::{Last, Target};
 
     // A final symlink, even a dangling one, is an existing name.
-    let resolved = match resolve_user(pathname, false) {
+    let resolved = match resolve_user_create(pathname) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -1940,7 +1968,7 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
         Ok(p) => p,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let link = match resolve_user(linkpath, false) {
+    let link = match resolve_user_create(linkpath) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -1962,6 +1990,8 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
         Target::Inode { .. } => return SyscallResult::Err(EEXIST as u64),
         Target::Virtual if link.is_mount_point() => return SyscallResult::Err(EEXIST as u64),
         Target::Virtual => return SyscallResult::Err(EPERM as u64),
+        // Only a directory is created at a name ending in `/`.
+        Target::Absent { .. } if link.trailing_slash => return SyscallResult::Err(ENOENT as u64),
         Target::Absent { mount, .. } => mount,
     };
 
@@ -1989,7 +2019,9 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
         Err(e) => {
             log::debug!("sys_symlink: failed: {}", e);
             // Map error to appropriate errno
-            let errno = if e.contains("not found")
+            let errno = if e.contains("too long") {
+                super::errno::ENAMETOOLONG
+            } else if e.contains("not found")
                 || e.contains("not exist")
                 || e.contains("Path component not found")
             {
@@ -3793,29 +3825,15 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
     }
 
     let no_follow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
-    let (mount, ino) = match crate::fs::namei::resolve(&path, !no_follow) {
-        Ok(crate::fs::namei::Resolved {
-            target: crate::fs::namei::Target::Inode { mount, ino, .. },
-            ..
-        }) => (mount, ino),
-        Ok(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
+    let resolved = match crate::fs::namei::resolve(&path, !no_follow) {
+        Ok(resolved) => resolved,
         Err(errno) => return SyscallResult::Err(errno),
     };
-
-    // Resolve path first (read lock), then update timestamps (write lock)
-    let handle = {
-        let fs_guard = mount.read();
-        let fs = match fs_guard.as_ref() {
-            Some(f) => f,
-            None => return SyscallResult::Err(super::errno::ENOENT as u64),
-        };
-        match fs.pin_inode(ino) {
-            Ok(handle) => handle,
-            Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-        }
-    };
-
-    update_inode_timestamps(&handle, set_atime, set_mtime)
+    // The resolution holds the inode it found; the update acts on that one.
+    match resolved.handle() {
+        Some(handle) => update_inode_timestamps(handle, set_atime, set_mtime),
+        None => SyscallResult::Err(super::errno::ENOENT as u64),
+    }
 }
 
 /// Helper: update an inode's atime/mtime on the ext2 filesystem
