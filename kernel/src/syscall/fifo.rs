@@ -18,25 +18,28 @@ use crate::ipc::fifo::FIFO_REGISTRY;
 /// 0 on success, negative errno on failure
 #[cfg(target_arch = "x86_64")]
 pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
-    // Copy path from userspace
+    use crate::fs::namei::{Last, Target};
+
     let raw_path = match copy_cstr_from_user(pathname) {
         Ok(p) => p,
         Err(errno) => return SyscallResult::Err(errno),
     };
-
-    // Normalize path
-    let path = if raw_path.starts_with('/') {
-        raw_path
-    } else {
-        // Get current process's cwd
-        let cwd = super::fs::get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
-        let absolute = if cwd.ends_with('/') {
-            alloc::format!("{}{}", cwd, raw_path)
-        } else {
-            alloc::format!("{}/{}", cwd, raw_path)
-        };
-        super::fs::normalize_path(&absolute)
+    // A FIFO is registered under the physical pathname of its new name.
+    let resolved = match crate::fs::namei::resolve_create(&raw_path) {
+        Ok(r) => r,
+        Err(errno) => return SyscallResult::Err(errno),
     };
+    if resolved.last != Last::Name || matches!(resolved.target, Target::Inode { .. }) {
+        return SyscallResult::Err(super::errno::EEXIST as u64);
+    }
+    if resolved.target == Target::Virtual {
+        return SyscallResult::Err(super::errno::EPERM as u64);
+    }
+    // Only a directory is created at a name ending in `/`.
+    if resolved.trailing_slash {
+        return SyscallResult::Err(super::errno::ENOENT as u64);
+    }
+    let path = resolved.path;
 
     log::debug!("sys_mkfifo: path={}, mode={:#o}", path, mode);
 

@@ -2343,40 +2343,13 @@ pub fn sys_exec_with_frame(
 /// It's called on every exec syscall, and serial I/O causes CI timing issues.
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
-    use super::errno::EIO;
-    use crate::fs::ext2;
-
-    // Determine which filesystem to use based on path
-    let is_home = ext2::is_home_path(path);
-    let fs_path = if is_home {
-        ext2::strip_home_prefix(path)
-    } else {
-        path
-    };
-
-    if is_home {
-        let fs_guard = ext2::home_fs_read();
-        let fs = fs_guard.as_ref().ok_or(EIO)?;
-        load_elf_from_ext2_fs(fs, fs_path)
-    } else {
-        let fs_guard = ext2::root_fs_read();
-        let fs = fs_guard.as_ref().ok_or(EIO)?;
-        load_elf_from_ext2_fs(fs, fs_path)
-    }
-}
-
-/// Inner helper for loading ELF from any ext2 filesystem instance.
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
-fn load_elf_from_ext2_fs(fs: &crate::fs::ext2::Ext2Fs, path: &str) -> Result<Vec<u8>, i32> {
     use super::errno::{EACCES, EIO, ENOTDIR};
 
-    let inode_num = fs.resolve_path(path).map_err(|e| {
-        if e.contains("not found") {
-            super::errno::ENOENT
-        } else {
-            EIO
-        }
-    })?;
+    // The handle holds the inode until its content is read.
+    let (mount, inode_num, _held) =
+        crate::fs::namei::resolve_file(path).map_err(|errno| errno as i32)?;
+    let fs_guard = mount.read();
+    let fs = fs_guard.as_ref().ok_or(EIO)?;
 
     let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
 
@@ -2443,25 +2416,13 @@ pub fn sys_execv_with_frame(
         return SyscallResult::Err(22); // EINVAL
     }
 
-    let name_bytes = match copy_string_from_user(program_name_ptr, 256) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            log::error!("sys_execv: Failed to read program name: {}", e);
-            return SyscallResult::Err(14); // EFAULT
-        }
+    // The whole pathname, up to PATH_MAX, reaches the resolver, which
+    // reports ENAMETOOLONG for one that is too long.
+    let program_name = match super::userptr::copy_cstr_from_user(program_name_ptr) {
+        Ok(name) => name,
+        Err(errno) => return SyscallResult::Err(errno),
     };
-
-    let name_len = name_bytes
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(name_bytes.len());
-    let program_name = match core::str::from_utf8(&name_bytes[..name_len]) {
-        Ok(s) => s,
-        Err(_) => {
-            log::error!("sys_execv: Invalid UTF-8 in program name");
-            return SyscallResult::Err(22); // EINVAL
-        }
-    };
+    let program_name = program_name.as_str();
 
     log::info!("sys_execv: Loading program '{}'", program_name);
 
@@ -2550,14 +2511,18 @@ pub fn sys_execv_with_frame(
                 Err(errno) => return SyscallResult::Err(errno as u64),
             }
         } else {
-            // Bare name: try ext2 /bin/ first, then fall back to test disk
+            // Bare name: try ext2 /bin/ first, then, only when /bin holds no
+            // such name, the test disk.
             let bin_path = alloc::format!("/bin/{}", program_name);
             match load_elf_from_ext2(&bin_path) {
                 Ok(data) => data,
-                Err(_) => {
-                    // Fall back to test disk for compatibility
-                    crate::userspace_test::get_test_binary(program_name)
+                Err(errno) if errno == super::errno::ENOENT => {
+                    match crate::userspace_test::load_test_binary_from_disk(program_name) {
+                        Ok(data) => data,
+                        Err(_) => return SyscallResult::Err(errno as u64),
+                    }
                 }
+                Err(errno) => return SyscallResult::Err(errno as u64),
             }
         };
         let elf_data = elf_vec.as_slice();
@@ -2689,16 +2654,9 @@ pub fn sys_execv_with_frame(
             alloc::format!("/bin/{}", program_name)
         };
 
-        let elf_vec = match crate::boot::init_image::read_init_from_ext2(&resolved_path) {
+        let elf_vec = match crate::boot::init_image::read_program(&resolved_path) {
             Ok(data) => data,
-            Err(msg) => {
-                let errno = match msg {
-                    "init not found" => super::errno::ENOENT,
-                    "init is a directory" => super::errno::EISDIR,
-                    _ => super::errno::EIO,
-                };
-                return SyscallResult::Err(errno as u64);
-            }
+            Err(errno) => return SyscallResult::Err(errno as u64),
         };
         let elf_data = elf_vec.as_slice();
 
@@ -2866,26 +2824,18 @@ pub fn sys_execv_with_frame(
 pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     // Declared before PM guards: removed FD tables are destroyed after PM unlock.
     let mut retired_rows = alloc::vec::Vec::new();
-    use super::errno::{EFAULT, EINVAL, EIO, EISDIR, ENOENT, ENOMEM, ESRCH};
+    use super::errno::{EFAULT, ENOMEM, ESRCH};
 
     if path_ptr == 0 {
         return SyscallResult::Err(EFAULT as u64);
     }
 
-    // Read the path from userspace. 256 bytes matches sys_execv_with_frame's
-    // program-name budget above.
-    let path_bytes = match copy_string_from_user(path_ptr, 256) {
-        Ok(bytes) => bytes,
-        Err(_) => return SyscallResult::Err(EFAULT as u64),
+    // Read the whole pathname, up to PATH_MAX, as sys_execv_with_frame does.
+    let program_path = match super::userptr::copy_cstr_from_user(path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return SyscallResult::Err(errno),
     };
-    let path_len = path_bytes
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(path_bytes.len());
-    let program_path = match core::str::from_utf8(&path_bytes[..path_len]) {
-        Ok(s) => s,
-        Err(_) => return SyscallResult::Err(EINVAL as u64),
-    };
+    let program_path = program_path.as_str();
 
     // Read argv from userspace (mirrors sys_execv_with_frame's own loop above,
     // same MAX_ARGS/MAX_ARG_LEN budget; not factored into a shared helper —
@@ -2951,16 +2901,9 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         alloc::format!("/bin/{}", program_path)
     };
 
-    let elf_vec = match crate::boot::init_image::read_init_from_ext2(&resolved_path) {
+    let elf_vec = match crate::boot::init_image::read_program(&resolved_path) {
         Ok(data) => data,
-        Err(msg) => {
-            let errno = match msg {
-                "init not found" => ENOENT,
-                "init is a directory" => EISDIR,
-                _ => EIO,
-            };
-            return SyscallResult::Err(errno as u64);
-        }
+        Err(errno) => return SyscallResult::Err(errno as u64),
     };
     let elf_data = elf_vec.as_slice();
 

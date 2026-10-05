@@ -429,7 +429,11 @@ pub const O_NONBLOCK: c_int = 0o4000;
 pub const O_SYNC: c_int = 0o4010000;
 pub const O_ASYNC: c_int = 0o20000;
 pub const O_DIRECTORY: c_int = 0o200000;
+// The Linux value differs by architecture, and the kernel tests each one.
+#[cfg(target_arch = "x86_64")]
 pub const O_NOFOLLOW: c_int = 0o400000;
+#[cfg(target_arch = "aarch64")]
+pub const O_NOFOLLOW: c_int = 0o100000;
 pub const O_CLOEXEC: c_int = 0o2000000;
 pub const O_DSYNC: c_int = 0o10000;
 pub const O_RSYNC: c_int = 0o4010000;

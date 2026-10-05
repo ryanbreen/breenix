@@ -341,7 +341,7 @@ pub fn getsid(pid: i32) -> Result<Pid, Error> {
 /// * `buf` - Buffer to store the path
 ///
 /// # Returns
-/// * On success: number of bytes written
+/// * On success: number of bytes written, the terminating NUL included
 /// * On error: `Err(Error)`
 ///
 /// # Errors

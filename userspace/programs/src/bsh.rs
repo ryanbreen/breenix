@@ -553,8 +553,9 @@ fn native_pwd(
 ) -> JsResult<JsValue> {
     let mut buf = [0u8; 1024];
     match libbreenix::process::getcwd(&mut buf) {
-        Ok(len) if len <= buf.len() => {
-            let path = core::str::from_utf8(&buf[..len]).unwrap_or("/");
+        // The count includes the terminating NUL.
+        Ok(len) if (1..=buf.len()).contains(&len) => {
+            let path = core::str::from_utf8(&buf[..len - 1]).unwrap_or("/");
             let id = strings.intern(path);
             Ok(JsValue::string(id))
         }
@@ -2507,8 +2508,9 @@ fn source_file(ctx: &mut Context, path: &str) {
 fn get_short_cwd() -> Option<String> {
     let mut buf = [0u8; 1024];
     match libbreenix::process::getcwd(&mut buf) {
-        Ok(len) if len <= buf.len() => {
-            let cwd = std::str::from_utf8(&buf[..len]).ok()?;
+        // The count includes the terminating NUL.
+        Ok(len) if (1..=buf.len()).contains(&len) => {
+            let cwd = std::str::from_utf8(&buf[..len - 1]).ok()?;
             if cwd == "/" {
                 Some(String::from("/"))
             } else {

@@ -1339,7 +1339,10 @@ fn cwd_removed() -> CaseResult {
 fn cwd_small_buffer() -> CaseResult {
     let f = Tree::new()?;
     process::chdir(&cpath(&f.root))?;
-    errno(observed::getcwd(&mut [0; 2]), 34)
+    // The pathname fits but its NUL does not; nothing may be written.
+    let mut buf = [0xa5; 256];
+    errno(observed::getcwd(&mut buf[..f.root.len()]), 34)?;
+    check(buf.iter().all(|v| *v == 0xa5), "getcwd wrote into a buffer it refused")
 }
 
 fn cwd_not_dir() -> CaseResult {
@@ -1748,12 +1751,17 @@ fn links_unlink_directory() -> CaseResult {
 fn cwd_count_abi() -> CaseResult {
     let f = Tree::new()?;
     process::chdir(&cpath(&f.root))?;
+    // A buffer that exactly fits the pathname and its NUL; the bytes past it
+    // must be untouched.
     let mut buf = [0xa5; 256];
-    let n = process::getcwd(&mut buf)?;
+    let size = f.root.len() + 1;
+    let n = process::getcwd(&mut buf[..size])?;
     check(
-        n == f.root.len() + 1 && buf[f.root.len()] == 0,
+        n == size && buf[f.root.len()] == 0,
         "Linux getcwd byte count excludes NUL",
-    )
+    )?;
+    check(&buf[..f.root.len()] == f.root.as_bytes(), "getcwd pathname differs")?;
+    check(buf[size..].iter().all(|v| *v == 0xa5), "getcwd wrote past its buffer")
 }
 fn symlink_tree() -> Result<(Tree, String, String), libbreenix::suite::CaseError> {
     let f = Tree::new()?;

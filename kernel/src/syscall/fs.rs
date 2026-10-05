@@ -25,6 +25,12 @@ pub const O_TRUNC: u32 = 0x200;
 pub const O_APPEND: u32 = 0x400;
 /// O_DIRECTORY - must be a directory
 pub const O_DIRECTORY: u32 = 0x10000;
+/// O_NOFOLLOW - fail with ELOOP rather than follow a final symlink. The Linux
+/// value differs by architecture.
+#[cfg(target_arch = "x86_64")]
+pub const O_NOFOLLOW: u32 = 0x20000;
+#[cfg(target_arch = "aarch64")]
+pub const O_NOFOLLOW: u32 = 0x8000;
 
 /// Linux dirent64 structure for getdents64 syscall
 ///
@@ -291,18 +297,25 @@ fn open_is_access_checked(is_reg: bool, is_dir: bool, flags: u32) -> bool {
     is_reg || (is_dir && flags & 0x3 == O_RDONLY)
 }
 
-/// The errno for an ext2 path lookup that failed with `e`.
-fn path_lookup_errno(e: &str) -> SyscallResult {
-    use super::errno::{EIO, ELOOP, ENOENT, ENOTDIR};
-    if e.contains("not found") {
-        SyscallResult::Err(ENOENT as u64)
-    } else if e.contains("Not a directory") {
-        SyscallResult::Err(ENOTDIR as u64)
-    } else if e.contains("Too many levels of symbolic links") {
-        SyscallResult::Err(ELOOP as u64)
-    } else {
-        SyscallResult::Err(EIO as u64)
-    }
+/// Copy a pathname from userspace and resolve it; `follow` says whether a
+/// final symlink is followed.
+fn resolve_user(pathname: u64, follow: bool) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+    crate::fs::namei::resolve(&path, follow).map_err(SyscallResult::Err)
+}
+
+/// Copy a pathname from userspace and resolve it to the directory entry an
+/// unlink, rmdir or rename acts on.
+fn resolve_user_entry(pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+    crate::fs::namei::resolve_entry(&path).map_err(SyscallResult::Err)
+}
+
+/// Copy a pathname from userspace and resolve it to the name a mkdir,
+/// symlink or link creates.
+fn resolve_user_create(pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+    crate::fs::namei::resolve_create(&path).map_err(SyscallResult::Err)
 }
 
 /// sys_open - Open a file or directory
@@ -311,105 +324,84 @@ fn path_lookup_errno(e: &str) -> SyscallResult {
 /// Returns (inode_num, file_type, is_directory, is_regular, mount_id) or Err.
 fn sys_open_write_path(
     fs: &mut crate::fs::ext2::Ext2Fs,
-    fs_path: &str,
-    display_path: &str,
+    resolved: &crate::fs::namei::Resolved,
     flags: u32,
     mode: u32,
     cred: FileCredentials,
 ) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize, Option<crate::fs::ext2::live_inode::FileHandle>), SyscallResult> {
-    use super::errno::{EEXIST, ENOENT, ENOSPC, ENOTDIR};
+    use super::errno::{EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR};
     use crate::fs::ext2::FileType as Ext2FileType;
+    use crate::fs::namei::Target;
 
     let want_creat = (flags & O_CREAT) != 0;
     let want_excl = (flags & O_EXCL) != 0;
     let want_trunc = (flags & O_TRUNC) != 0;
 
-    let resolve_result = fs.resolve_path(fs_path);
-
-    let (ino, file_created) = match resolve_result {
-        Ok(ino) => {
+    let (ino, file_created) = match resolved.target {
+        Target::Inode { ino, .. } => {
             if want_creat && want_excl {
                 log::debug!("sys_open: file exists and O_EXCL set");
                 return Err(SyscallResult::Err(EEXIST as u64));
             }
             (ino, false)
         }
-        Err(e) => {
-            if e.contains("not found") && want_creat {
-                log::debug!("sys_open: creating new file {}", display_path);
-
-                let (parent_path, filename) = match fs_path.rfind('/') {
-                    Some(0) => ("/", &fs_path[1..]),
-                    Some(idx) => (&fs_path[..idx], &fs_path[idx + 1..]),
-                    None => {
-                        log::error!("sys_open: invalid path format");
-                        return Err(SyscallResult::Err(ENOENT as u64));
-                    }
-                };
-
-                if filename.is_empty() {
-                    log::error!("sys_open: empty filename");
-                    return Err(SyscallResult::Err(ENOENT as u64));
-                }
-
-                let parent_inode = match fs.resolve_path(parent_path) {
-                    Ok(ino) => ino,
-                    Err(_) => {
-                        log::error!("sys_open: parent directory not found: {}", parent_path);
-                        return Err(SyscallResult::Err(ENOENT as u64));
-                    }
-                };
-
-                let parent = match fs.read_inode(parent_inode) {
-                    Ok(ino) => ino,
-                    Err(_) => {
-                        log::error!("sys_open: failed to read parent inode");
-                        return Err(SyscallResult::Err(5)); // EIO
-                    }
-                };
-                if !parent.is_dir() {
-                    return Err(SyscallResult::Err(ENOTDIR as u64));
-                }
-
-                // The requested mode is used as given, less the umask: mode 0
-                // creates a file nobody but root may open.
-                let file_mode = (mode & 0o777 & !cred.umask) as u16;
-                // The new file belongs to its creator (Linux: the effective
-                // uid and gid), so a restrictive mode still lets it reopen it.
-                match fs.create_file(
-                    parent_inode,
-                    filename,
-                    file_mode,
-                    cred.euid as u16,
-                    cred.egid as u16,
-                ) {
-                    Ok(new_inode) => {
-                        log::info!(
-                            "sys_open: created file {} with inode {}",
-                            display_path,
-                            new_inode
-                        );
-                        (new_inode, true)
-                    }
-                    Err(e) => {
-                        log::error!("sys_open: failed to create file: {}", e);
-                        if e.contains("No free inodes") || e.contains("No space") {
-                            return Err(SyscallResult::Err(ENOSPC as u64));
-                        }
-                        return Err(SyscallResult::Err(5)); // EIO
-                    }
-                }
-            } else {
-                log::debug!("sys_open: path resolution failed: {}", e);
-                if e.contains("not found") {
-                    return Err(SyscallResult::Err(ENOENT as u64));
-                } else if e.contains("Not a directory") {
-                    return Err(SyscallResult::Err(ENOTDIR as u64));
-                } else {
+        Target::Absent { parent, .. } => {
+            if !want_creat {
+                return Err(SyscallResult::Err(ENOENT as u64));
+            }
+            if resolved.trailing_slash {
+                return Err(SyscallResult::Err(EISDIR as u64));
+            }
+            let filename = resolved.path.rsplit('/').next().unwrap_or("");
+            let parent_inode = match fs.read_inode(parent) {
+                Ok(ino) => ino,
+                Err(_) => {
+                    log::error!("sys_open: failed to read parent inode");
                     return Err(SyscallResult::Err(5)); // EIO
                 }
+            };
+            if !parent_inode.is_dir() {
+                return Err(SyscallResult::Err(ENOTDIR as u64));
+            }
+            // Another creator may have won since the pathname was resolved.
+            match fs.lookup_in_dir(&parent_inode, filename) {
+                Ok(Some(_)) if want_excl => return Err(SyscallResult::Err(EEXIST as u64)),
+                Ok(Some(ino)) => (ino, false),
+                Ok(None) => {
+                    log::debug!("sys_open: creating new file {}", resolved.path);
+                    // The requested mode is used as given, less the umask: mode 0
+                    // creates a file nobody but root may open.
+                    let file_mode = (mode & 0o777 & !cred.umask) as u16;
+                    // The new file belongs to its creator (Linux: the effective
+                    // uid and gid), so a restrictive mode still lets it reopen it.
+                    match fs.create_file(
+                        parent,
+                        filename,
+                        file_mode,
+                        cred.euid as u16,
+                        cred.egid as u16,
+                    ) {
+                        Ok(new_inode) => {
+                            log::info!(
+                                "sys_open: created file {} with inode {}",
+                                resolved.path,
+                                new_inode
+                            );
+                            (new_inode, true)
+                        }
+                        Err(e) => {
+                            log::error!("sys_open: failed to create file: {}", e);
+                            if e.contains("No free inodes") || e.contains("No space") {
+                                return Err(SyscallResult::Err(ENOSPC as u64));
+                            }
+                            return Err(SyscallResult::Err(5)); // EIO
+                        }
+                    }
+                }
+                Err(_) => return Err(SyscallResult::Err(5)), // EIO
             }
         }
+        Target::Virtual => return Err(SyscallResult::Err(ENOENT as u64)),
     };
 
     let inode = match fs.read_inode(ino) {
@@ -449,18 +441,16 @@ fn sys_open_write_path(
 /// Helper: sys_open read path — works on any Ext2Fs instance.
 fn sys_open_read_path(
     fs: &crate::fs::ext2::Ext2Fs,
-    fs_path: &str,
+    resolved: &crate::fs::namei::Resolved,
     flags: u32,
     cred: FileCredentials,
 ) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize, Option<crate::fs::ext2::live_inode::FileHandle>), SyscallResult> {
     use crate::fs::ext2::FileType as Ext2FileType;
+    use crate::fs::namei::Target;
 
-    let ino = match fs.resolve_path(fs_path) {
-        Ok(ino) => ino,
-        Err(e) => {
-            log::debug!("sys_open: path resolution failed: {}", e);
-            return Err(path_lookup_errno(e));
-        }
+    let ino = match resolved.target {
+        Target::Inode { ino, .. } => ino,
+        _ => return Err(SyscallResult::Err(super::errno::ENOENT as u64)),
     };
 
     let inode = match fs.read_inode(ino) {
@@ -493,66 +483,59 @@ fn sys_open_read_path(
 /// # Returns
 /// File descriptor on success, negative errno on failure
 pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
-    use super::errno::{EACCES, EISDIR, EMFILE, ENOENT, ENOTDIR};
-    use super::userptr::copy_cstr_from_user;
-    use crate::fs::ext2::{self, FileType as Ext2FileType};
+    use super::errno::{EACCES, EEXIST, EISDIR, ELOOP, EMFILE, ENOENT, ENOTDIR};
+    use crate::fs::ext2::FileType as Ext2FileType;
+    use crate::fs::namei::Target;
     use crate::ipc::fd::{DirectoryFile, FileDescriptor, RegularFile};
     use alloc::sync::Arc;
     use spin::Mutex;
 
-    // Copy path from userspace
-    let raw_path = match copy_cstr_from_user(pathname) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    let want_creat = (flags & O_CREAT) != 0;
+    let want_excl = (flags & O_EXCL) != 0;
+    // O_NOFOLLOW, and O_CREAT with O_EXCL, act on a final symlink itself.
+    let follow = (flags & O_NOFOLLOW) == 0 && !(want_creat && want_excl);
+    let resolved = match resolve_user(pathname, follow) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
+    let path = resolved.path.as_str();
 
     log::debug!(
-        "sys_open: raw_path={:?}, flags={:#x}, mode={:#o}",
-        raw_path,
+        "sys_open: path={:?}, flags={:#x}, mode={:#o}",
+        path,
         flags,
         mode
     );
 
-    // Resolve relative paths using current working directory
-    let path = if raw_path.starts_with('/') {
-        raw_path
-    } else {
-        // Get current process's cwd
-        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
-        let absolute = if cwd.ends_with('/') {
-            alloc::format!("{}{}", cwd, raw_path)
-        } else {
-            alloc::format!("{}/{}", cwd, raw_path)
-        };
-        normalize_path(&absolute)
-    };
-
-    let path = normalize_path(&path);
-    log::debug!("sys_open: resolved path={:?}", path);
-
-    // Check for /dev directory itself
-    if path == "/dev" || path == "/dev/" {
-        return handle_devfs_directory_open(flags);
-    }
-
-    // Check for /dev/* paths - route to devfs
-    if path.starts_with("/dev/") {
-        let device_name = &path[5..]; // Remove "/dev/" prefix
-        return handle_devfs_open(device_name, flags);
+    if resolved.target == Target::Virtual {
+        if path == "/dev" {
+            return handle_devfs_directory_open(flags);
+        }
+        if let Some(device_name) = path.strip_prefix("/dev/") {
+            return handle_devfs_open(device_name, flags);
+        }
+        return handle_procfs_open(path, flags);
     }
 
     // Check if this is a FIFO (named pipe)
-    if crate::ipc::fifo::FIFO_REGISTRY.exists(&path) {
-        return handle_fifo_open(&path, flags);
+    if crate::ipc::fifo::FIFO_REGISTRY.exists(path) {
+        return handle_fifo_open(path, flags);
     }
 
-    // Check for /proc paths - route to procfs
-    if path == "/proc" || path.starts_with("/proc/") {
-        return handle_procfs_open(&path, flags);
-    }
+    let mount = match resolved.target {
+        // Only an unfollowed final symlink resolves to one.
+        Target::Inode {
+            file_type: Ext2FileType::SymLink,
+            ..
+        } => {
+            let errno = if want_creat && want_excl { EEXIST } else { ELOOP };
+            return SyscallResult::Err(errno as u64);
+        }
+        Target::Inode { mount, .. } | Target::Absent { mount, .. } => mount,
+        Target::Virtual => return SyscallResult::Err(ENOENT as u64),
+    };
 
     // Parse flags
-    let want_creat = (flags & O_CREAT) != 0;
     let want_trunc = (flags & O_TRUNC) != 0;
     let wants_directory = (flags & O_DIRECTORY) != 0;
 
@@ -564,68 +547,31 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     // acquired under one.
     let cred = current_file_credentials();
 
-    // Determine which filesystem to use based on path
-    let is_home = ext2::is_home_path(&path);
-    let fs_path = if is_home {
-        ext2::strip_home_prefix(&path)
-    } else {
-        &path
-    };
-
-    let (inode_num, file_type, is_directory, is_regular, mount_id, handle) = if needs_write {
+    let result = if needs_write {
         // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
-        let result = if is_home {
-            let mut fs_guard = ext2::home_fs_write();
-            match fs_guard.as_mut() {
-                Some(fs) => sys_open_write_path(fs, fs_path, &path, flags, mode, cred),
-                None => {
-                    log::error!("sys_open: ext2 home filesystem not mounted");
-                    return SyscallResult::Err(ENOENT as u64);
-                }
+        let mut fs_guard = mount.write();
+        match fs_guard.as_mut() {
+            Some(fs) => sys_open_write_path(fs, &resolved, flags, mode, cred),
+            None => {
+                log::error!("sys_open: ext2 filesystem not mounted");
+                return SyscallResult::Err(ENOENT as u64);
             }
-        } else {
-            let mut fs_guard = ext2::root_fs_write();
-            match fs_guard.as_mut() {
-                Some(fs) => sys_open_write_path(fs, fs_path, &path, flags, mode, cred),
-                None => {
-                    log::error!("sys_open: ext2 root filesystem not mounted");
-                    return SyscallResult::Err(ENOENT as u64);
-                }
-            }
-        };
-        match result {
-            Ok(v) => v,
-            Err(e) => return e,
         }
     } else {
         // === READ PATH: No filesystem modification needed, use shared read lock ===
-        let result = if is_home {
-            let fs_guard = ext2::home_fs_read();
-            match fs_guard.as_ref() {
-                Some(fs) => sys_open_read_path(fs, fs_path, flags, cred),
-                None => {
-                    log::error!("sys_open: ext2 home filesystem not mounted");
-                    return SyscallResult::Err(ENOENT as u64);
-                }
+        let fs_guard = mount.read();
+        match fs_guard.as_ref() {
+            Some(fs) => sys_open_read_path(fs, &resolved, flags, cred),
+            None => {
+                log::error!("sys_open: ext2 filesystem not mounted");
+                return SyscallResult::Err(ENOENT as u64);
             }
-        } else {
-            let fs_guard = ext2::root_fs_read();
-            match fs_guard.as_ref() {
-                Some(fs) => sys_open_read_path(fs, fs_path, flags, cred),
-                None => {
-                    log::error!("sys_open: ext2 root filesystem not mounted");
-                    return SyscallResult::Err(ENOENT as u64);
-                }
-            }
-        };
-        match result {
-            Ok(v) => v,
-            Err(e) => return e,
         }
     };
-
-    let _ = file_type;
-    let _ = is_regular;
+    let (inode_num, file_type, is_directory, _, mount_id, handle) = match result {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
 
     // Handle directory vs file cases
     if is_directory {
@@ -1537,36 +1483,23 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
 /// * EACCES - Permission denied
 /// * EIO - I/O error
 pub fn sys_unlink(pathname: u64) -> SyscallResult {
-    use super::errno::{EACCES, EIO, EISDIR, ENOENT};
-    use super::userptr::copy_cstr_from_user;
-    use crate::fs::ext2;
+    use super::errno::{EACCES, EIO, EISDIR, ENOENT, EPERM};
+    use crate::fs::ext2::FileType;
+    use crate::fs::namei::{Last, Target};
 
-    // Copy path from userspace
-    let raw_path = match copy_cstr_from_user(pathname) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    let resolved = match resolve_user_entry(pathname) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
-
-    // Normalize path
-    let path = if raw_path.starts_with('/') {
-        raw_path
-    } else {
-        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
-        let absolute = if cwd.ends_with('/') {
-            alloc::format!("{}{}", cwd, raw_path)
-        } else {
-            alloc::format!("{}/{}", cwd, raw_path)
-        };
-        normalize_path(&absolute)
-    };
+    let path = resolved.path.as_str();
 
     log::debug!("sys_unlink: path={:?}", path);
 
     // Check if this is a FIFO - if so, remove from registry
     {
         use crate::ipc::fifo::FIFO_REGISTRY;
-        if FIFO_REGISTRY.exists(&path) {
-            match FIFO_REGISTRY.unlink(&path) {
+        if FIFO_REGISTRY.exists(path) {
+            match FIFO_REGISTRY.unlink(path) {
                 Ok(()) => {
                     log::info!("sys_unlink: successfully unlinked FIFO {}", path);
                     return SyscallResult::Ok(0);
@@ -1578,30 +1511,25 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
         }
     }
 
-    // Determine which filesystem to use
-    let is_home = ext2::is_home_path(&path);
-    let fs_path: alloc::string::String = if is_home {
-        alloc::string::String::from(ext2::strip_home_prefix(&path))
-    } else {
-        path.clone()
+    if resolved.last != Last::Name {
+        return SyscallResult::Err(EISDIR as u64);
+    }
+    let mount = match resolved.target {
+        Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::Virtual => return SyscallResult::Err(EPERM as u64),
+        Target::Inode {
+            file_type: FileType::Directory,
+            ..
+        } => return SyscallResult::Err(EISDIR as u64),
+        Target::Inode { mount, .. } => mount,
     };
 
-    // Get the filesystem (with mutable access)
-    let unlink_result = if is_home {
-        let mut fs_guard = ext2::home_fs_write();
+    let unlink_result = {
+        let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.unlink_file(&fs_path),
+            Some(fs) => fs.unlink_file(resolved.fs_path()),
             None => {
-                log::error!("sys_unlink: ext2 home filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
-    } else {
-        let mut fs_guard = ext2::root_fs_write();
-        match fs_guard.as_mut() {
-            Some(fs) => fs.unlink_file(&fs_path),
-            None => {
-                log::error!("sys_unlink: ext2 root filesystem not mounted");
+                log::error!("sys_unlink: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
             }
         }
@@ -1649,57 +1577,54 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
 /// * EEXIST/ENOTEMPTY - newpath is a non-empty directory
 /// * EIO - I/O error
 pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
-    use super::errno::{EACCES, EIO, EISDIR, ENOENT};
-    use super::userptr::copy_cstr_from_user;
-    use crate::fs::ext2;
+    use super::errno::{EACCES, EBUSY, EIO, EISDIR, ENOENT, EXDEV};
+    use crate::fs::namei::{Last, Target};
 
-    // Copy paths from userspace
-    let old = match copy_cstr_from_user(oldpath) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    // rename acts on the names themselves: neither final symlink is followed.
+    let old = match resolve_user_entry(oldpath) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
-    let new = match copy_cstr_from_user(newpath) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    let new = match resolve_user_entry(newpath) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
 
-    log::debug!("sys_rename: old={:?}, new={:?}", old, new);
+    log::debug!("sys_rename: old={:?}, new={:?}", old.path, new.path);
 
-    // Both paths must be on the same filesystem
-    let old_is_home = ext2::is_home_path(&old);
-    let new_is_home = ext2::is_home_path(&new);
-    if old_is_home != new_is_home {
+    if old.last != Last::Name || new.last != Last::Name {
+        return SyscallResult::Err(EBUSY as u64);
+    }
+    let mount = match old.target {
+        Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::Virtual => return SyscallResult::Err(EXDEV as u64),
+        Target::Inode { mount, .. } => mount,
+    };
+    // Only a directory may be renamed to a name ending in `/`.
+    if new.trailing_slash
+        && !matches!(
+            old.target,
+            Target::Inode {
+                file_type: crate::fs::ext2::FileType::Directory,
+                ..
+            }
+        )
+    {
+        return SyscallResult::Err(super::errno::ENOTDIR as u64);
+    }
+    // Both names must be on the same filesystem
+    if new.mount() != Some(mount) {
         log::error!("sys_rename: cross-filesystem rename not supported");
-        return SyscallResult::Err(18); // EXDEV
+        return SyscallResult::Err(EXDEV as u64);
     }
 
-    let fs_old = if old_is_home {
-        alloc::string::String::from(ext2::strip_home_prefix(&old))
-    } else {
-        old.clone()
-    };
-    let fs_new = if new_is_home {
-        alloc::string::String::from(ext2::strip_home_prefix(&new))
-    } else {
-        new.clone()
-    };
-
     // Perform the rename operation on the correct filesystem
-    let rename_result = if old_is_home {
-        let mut fs_guard = ext2::home_fs_write();
+    let rename_result = {
+        let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.rename_file(&fs_old, &fs_new),
+            Some(fs) => fs.rename_file(old.fs_path(), new.fs_path()),
             None => {
-                log::error!("sys_rename: ext2 home filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
-    } else {
-        let mut fs_guard = ext2::root_fs_write();
-        match fs_guard.as_mut() {
-            Some(fs) => fs.rename_file(&fs_old, &fs_new),
-            None => {
-                log::error!("sys_rename: ext2 root filesystem not mounted");
+                log::error!("sys_rename: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
             }
         }
@@ -1707,7 +1632,7 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
 
     match rename_result {
         Ok(()) => {
-            log::info!("sys_rename: successfully renamed {} to {}", old, new);
+            log::info!("sys_rename: successfully renamed {} to {}", old.path, new.path);
             SyscallResult::Ok(0)
         }
         Err(e) => {
@@ -1748,47 +1673,45 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
 /// * EINVAL - pathname is "." or ends with "/."
 /// * EIO - I/O error
 pub fn sys_rmdir(pathname: u64) -> SyscallResult {
-    use super::errno::{EACCES, EINVAL, EIO, ENOENT, ENOTDIR, ENOTEMPTY};
-    use super::userptr::copy_cstr_from_user;
-    use crate::fs::ext2;
+    use super::errno::{EACCES, EBUSY, EINVAL, EIO, ENOENT, ENOTDIR, ENOTEMPTY};
+    use crate::fs::ext2::FileType;
+    use crate::fs::namei::{Last, Target};
 
-    // Copy path from userspace
-    let path = match copy_cstr_from_user(pathname) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    // rmdir removes the name itself: a final symlink is not followed.
+    let resolved = match resolve_user_entry(pathname) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
 
-    log::debug!("sys_rmdir: path={:?}", path);
+    log::debug!("sys_rmdir: path={:?}", resolved.path);
 
-    // Check for invalid paths like "." or ending with "/."
-    if path == "." || path.ends_with("/.") {
-        return SyscallResult::Err(EINVAL as u64);
+    match resolved.last {
+        Last::Dot => return SyscallResult::Err(EINVAL as u64),
+        Last::DotDot => return SyscallResult::Err(ENOTEMPTY as u64),
+        Last::Root => return SyscallResult::Err(EBUSY as u64),
+        Last::Name => {}
     }
-
-    // Determine which filesystem to use
-    let is_home = ext2::is_home_path(&path);
-    let fs_path: alloc::string::String = if is_home {
-        alloc::string::String::from(ext2::strip_home_prefix(&path))
-    } else {
-        path.clone()
+    if resolved.is_mount_point() {
+        return SyscallResult::Err(EBUSY as u64);
+    }
+    let mount = match resolved.target {
+        Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::Virtual => return SyscallResult::Err(ENOTDIR as u64),
+        Target::Inode {
+            mount,
+            file_type: FileType::Directory,
+            ..
+        } => mount,
+        Target::Inode { .. } => return SyscallResult::Err(ENOTDIR as u64),
     };
 
     // Perform the rmdir operation on the correct filesystem
-    let rmdir_result = if is_home {
-        let mut fs_guard = ext2::home_fs_write();
+    let rmdir_result = {
+        let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.remove_directory(&fs_path),
+            Some(fs) => fs.remove_directory(resolved.fs_path()),
             None => {
-                log::error!("sys_rmdir: ext2 home filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
-    } else {
-        let mut fs_guard = ext2::root_fs_write();
-        match fs_guard.as_mut() {
-            Some(fs) => fs.remove_directory(&fs_path),
-            None => {
-                log::error!("sys_rmdir: ext2 root filesystem not mounted");
+                log::error!("sys_rmdir: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
             }
         }
@@ -1796,13 +1719,15 @@ pub fn sys_rmdir(pathname: u64) -> SyscallResult {
 
     match rmdir_result {
         Ok(()) => {
-            log::info!("sys_rmdir: successfully removed directory {}", path);
+            log::info!("sys_rmdir: successfully removed directory {}", resolved.path);
             SyscallResult::Ok(0)
         }
         Err(e) => {
             log::debug!("sys_rmdir: failed: {}", e);
             // Map error to appropriate errno
-            let errno = if e.contains("not found") || e.contains("not exist") {
+            let errno = if e.contains("busy") {
+                EBUSY
+            } else if e.contains("not found") || e.contains("not exist") {
                 ENOENT
             } else if e.contains("Not a directory") || e.contains("not a directory") {
                 ENOTDIR
@@ -1810,7 +1735,7 @@ pub fn sys_rmdir(pathname: u64) -> SyscallResult {
                 ENOTEMPTY
             } else if e.contains("root directory") {
                 // Cannot remove root directory - treat as busy
-                super::errno::EBUSY
+                EBUSY
             } else if e.contains("permission") || e.contains("Cannot") {
                 EACCES
             } else if e.contains("Invalid") {
@@ -1843,57 +1768,50 @@ pub fn sys_rmdir(pathname: u64) -> SyscallResult {
 /// * ENOSPC - No space in target directory
 /// * EIO - I/O error
 pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
-    use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOTDIR, EPERM};
-    use super::userptr::copy_cstr_from_user;
-    use crate::fs::ext2;
+    use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOTDIR, EPERM, EXDEV};
+    use crate::fs::ext2::FileType;
+    use crate::fs::namei::{Last, Target};
 
-    // Copy paths from userspace
-    let old = match copy_cstr_from_user(oldpath) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    // As on Linux, link() names a final symlink in oldpath itself.
+    let old = match resolve_user(oldpath, false) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
-    let new = match copy_cstr_from_user(newpath) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    let new = match resolve_user_create(newpath) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
 
-    log::debug!("sys_link: oldpath={:?}, newpath={:?}", old, new);
+    log::debug!("sys_link: oldpath={:?}, newpath={:?}", old.path, new.path);
 
-    // Both paths must be on the same filesystem
-    let old_is_home = ext2::is_home_path(&old);
-    let new_is_home = ext2::is_home_path(&new);
-    if old_is_home != new_is_home {
-        log::error!("sys_link: cross-filesystem link not supported");
-        return SyscallResult::Err(18); // EXDEV
+    let mount = match old.target {
+        Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::Virtual => return SyscallResult::Err(EXDEV as u64),
+        Target::Inode {
+            file_type: FileType::Directory,
+            ..
+        } => return SyscallResult::Err(EPERM as u64),
+        Target::Inode { mount, .. } => mount,
+    };
+    match new.target {
+        Target::Inode { .. } => return SyscallResult::Err(EEXIST as u64),
+        _ if new.last != Last::Name => return SyscallResult::Err(EEXIST as u64),
+        // Only a directory is created at a name ending in `/`.
+        Target::Absent { .. } if new.trailing_slash => return SyscallResult::Err(ENOENT as u64),
+        Target::Absent { mount: m, .. } if m == mount => {}
+        _ => {
+            log::error!("sys_link: cross-filesystem link not supported");
+            return SyscallResult::Err(EXDEV as u64);
+        }
     }
 
-    let fs_old = if old_is_home {
-        alloc::string::String::from(ext2::strip_home_prefix(&old))
-    } else {
-        old.clone()
-    };
-    let fs_new = if new_is_home {
-        alloc::string::String::from(ext2::strip_home_prefix(&new))
-    } else {
-        new.clone()
-    };
-
     // Perform the hard link operation on the correct filesystem
-    let link_result = if old_is_home {
-        let mut fs_guard = ext2::home_fs_write();
+    let link_result = {
+        let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.create_hard_link(&fs_old, &fs_new),
+            Some(fs) => fs.create_hard_link(old.fs_path(), new.fs_path()),
             None => {
-                log::error!("sys_link: ext2 home filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
-    } else {
-        let mut fs_guard = ext2::root_fs_write();
-        match fs_guard.as_mut() {
-            Some(fs) => fs.create_hard_link(&fs_old, &fs_new),
-            None => {
-                log::error!("sys_link: ext2 root filesystem not mounted");
+                log::error!("sys_link: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
             }
         }
@@ -1903,8 +1821,8 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
         Ok(()) => {
             log::info!(
                 "sys_link: successfully created hard link {} -> {}",
-                new,
-                old
+                new.path,
+                old.path
             );
             SyscallResult::Ok(0)
         }
@@ -1949,24 +1867,26 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
 /// * ENOSPC - No space for new directory
 /// * EIO - I/O error
 pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
-    use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOSPC, ENOTDIR};
-    use super::userptr::copy_cstr_from_user;
-    use crate::fs::ext2;
+    use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOSPC, ENOTDIR, EPERM};
+    use crate::fs::namei::{Last, Target};
 
-    // Copy path from userspace
-    let path = match copy_cstr_from_user(pathname) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    // A final symlink, even a dangling one, is an existing name.
+    let resolved = match resolve_user_create(pathname) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
+    let path = resolved.path.as_str();
 
     log::debug!("sys_mkdir: path={:?}, mode={:#o}", path, mode);
 
-    // Determine which filesystem to use
-    let is_home = ext2::is_home_path(&path);
-    let fs_path: alloc::string::String = if is_home {
-        alloc::string::String::from(ext2::strip_home_prefix(&path))
-    } else {
-        path.clone()
+    if resolved.last != Last::Name {
+        return SyscallResult::Err(EEXIST as u64);
+    }
+    let mount = match resolved.target {
+        Target::Inode { .. } => return SyscallResult::Err(EEXIST as u64),
+        Target::Virtual if resolved.is_mount_point() => return SyscallResult::Err(EEXIST as u64),
+        Target::Virtual => return SyscallResult::Err(EPERM as u64),
+        Target::Absent { mount, .. } => mount,
     };
 
     // Create the directory on the correct filesystem
@@ -1975,21 +1895,12 @@ pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
     } else {
         (mode & 0o777) as u16
     };
-    let mkdir_result = if is_home {
-        let mut fs_guard = ext2::home_fs_write();
+    let mkdir_result = {
+        let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.create_directory(&fs_path, dir_mode),
+            Some(fs) => fs.create_directory(resolved.fs_path(), dir_mode),
             None => {
-                log::error!("sys_mkdir: ext2 home filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
-    } else {
-        let mut fs_guard = ext2::root_fs_write();
-        match fs_guard.as_mut() {
-            Some(fs) => fs.create_directory(&fs_path, dir_mode),
-            None => {
-                log::error!("sys_mkdir: ext2 root filesystem not mounted");
+                log::error!("sys_mkdir: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
             }
         }
@@ -2048,56 +1959,49 @@ pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
 /// * ENOSPC - No space to create the symlink
 /// * EIO - I/O error
 pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
-    use super::errno::{EACCES, EEXIST, EINVAL, EIO, ENOENT, ENOSPC, ENOTDIR};
+    use super::errno::{EACCES, EEXIST, EINVAL, EIO, ENOENT, ENOSPC, ENOTDIR, EPERM};
     use super::userptr::copy_cstr_from_user;
-    use crate::fs::ext2;
+    use crate::fs::namei::{Last, Target};
 
-    // Copy paths from userspace
+    // Copy the target from userspace; it is stored as written.
     let target_str = match copy_cstr_from_user(target) {
         Ok(p) => p,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let linkpath_str = match copy_cstr_from_user(linkpath) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    let link = match resolve_user_create(linkpath) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
 
     log::debug!(
         "sys_symlink: target={:?}, linkpath={:?}",
         target_str,
-        linkpath_str
+        link.path
     );
 
     // Validate target is not empty
     if target_str.is_empty() {
         return SyscallResult::Err(EINVAL as u64);
     }
-
-    // Determine which filesystem to use based on linkpath
-    let is_home = ext2::is_home_path(&linkpath_str);
-    let fs_target = target_str.clone();
-    let fs_linkpath: alloc::string::String = if is_home {
-        alloc::string::String::from(ext2::strip_home_prefix(&linkpath_str))
-    } else {
-        linkpath_str.clone()
+    if link.last != Last::Name {
+        return SyscallResult::Err(EEXIST as u64);
+    }
+    let mount = match link.target {
+        Target::Inode { .. } => return SyscallResult::Err(EEXIST as u64),
+        Target::Virtual if link.is_mount_point() => return SyscallResult::Err(EEXIST as u64),
+        Target::Virtual => return SyscallResult::Err(EPERM as u64),
+        // Only a directory is created at a name ending in `/`.
+        Target::Absent { .. } if link.trailing_slash => return SyscallResult::Err(ENOENT as u64),
+        Target::Absent { mount, .. } => mount,
     };
 
     // Create the symbolic link on the correct filesystem
-    let symlink_result = if is_home {
-        let mut fs_guard = ext2::home_fs_write();
+    let symlink_result = {
+        let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.create_symlink(&fs_target, &fs_linkpath),
+            Some(fs) => fs.create_symlink(&target_str, link.fs_path()),
             None => {
-                log::error!("sys_symlink: ext2 home filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
-    } else {
-        let mut fs_guard = ext2::root_fs_write();
-        match fs_guard.as_mut() {
-            Some(fs) => fs.create_symlink(&fs_target, &fs_linkpath),
-            None => {
-                log::error!("sys_symlink: ext2 root filesystem not mounted");
+                log::error!("sys_symlink: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
             }
         }
@@ -2107,7 +2011,7 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
         Ok(()) => {
             log::info!(
                 "sys_symlink: successfully created symlink {} -> {}",
-                linkpath_str,
+                link.path,
                 target_str
             );
             SyscallResult::Ok(0)
@@ -2115,7 +2019,9 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
         Err(e) => {
             log::debug!("sys_symlink: failed: {}", e);
             // Map error to appropriate errno
-            let errno = if e.contains("not found")
+            let errno = if e.contains("too long") {
+                super::errno::ENAMETOOLONG
+            } else if e.contains("not found")
                 || e.contains("not exist")
                 || e.contains("Path component not found")
             {
@@ -2158,78 +2064,41 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
 /// * EIO - I/O error
 pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
     use super::errno::{EFAULT, EINVAL, EIO, ENOENT};
-    use super::userptr::copy_cstr_from_user;
-    use crate::fs::ext2;
+    use crate::fs::ext2::FileType;
+    use crate::fs::namei::Target;
 
     // Validate buffer pointer
     if buf == 0 || bufsize == 0 {
         return SyscallResult::Err(EFAULT as u64);
     }
 
-    // Copy path from userspace
-    let path = match copy_cstr_from_user(pathname) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    // readlink reads the final symlink itself.
+    let resolved = match resolve_user(pathname, false) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
 
-    log::debug!("sys_readlink: pathname={:?}, bufsize={}", path, bufsize);
+    log::debug!("sys_readlink: pathname={:?}, bufsize={}", resolved.path, bufsize);
 
-    // Determine which filesystem to use
-    let is_home = ext2::is_home_path(&path);
-    let fs_path = if is_home {
-        ext2::strip_home_prefix(&path)
-    } else {
-        &path
+    let (mount, ino) = match resolved.target {
+        Target::Inode {
+            mount,
+            ino,
+            file_type: FileType::SymLink,
+        } => (mount, ino),
+        Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::Inode { .. } | Target::Virtual => return SyscallResult::Err(EINVAL as u64),
     };
-
-    // Resolve path and read symlink from the correct filesystem
-    let target = if is_home {
-        let fs_guard = ext2::home_fs_read();
+    let target = {
+        let fs_guard = mount.read();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
-                log::error!("sys_readlink: ext2 home filesystem not mounted");
+                log::error!("sys_readlink: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
             }
         };
-        let inode_num = match fs.resolve_path_no_follow(fs_path) {
-            Ok(ino) => ino,
-            Err(e) => {
-                log::debug!("sys_readlink: path resolution failed: {}", e);
-                return SyscallResult::Err(ENOENT as u64);
-            }
-        };
-        match fs.read_symlink(inode_num) {
-            Ok(t) => t,
-            Err(e) => {
-                log::debug!("sys_readlink: failed to read symlink: {}", e);
-                let errno = if e.contains("Not a symbolic link") {
-                    EINVAL
-                } else if e.contains("not found") {
-                    ENOENT
-                } else {
-                    EIO
-                };
-                return SyscallResult::Err(errno as u64);
-            }
-        }
-    } else {
-        let fs_guard = ext2::root_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(fs) => fs,
-            None => {
-                log::error!("sys_readlink: ext2 root filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        };
-        let inode_num = match fs.resolve_path_no_follow(fs_path) {
-            Ok(ino) => ino,
-            Err(e) => {
-                log::debug!("sys_readlink: path resolution failed: {}", e);
-                return SyscallResult::Err(ENOENT as u64);
-            }
-        };
-        match fs.read_symlink(inode_num) {
+        match fs.read_symlink(ino) {
             Ok(t) => t,
             Err(e) => {
                 log::debug!("sys_readlink: failed to read symlink: {}", e);
@@ -2250,9 +2119,8 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
     let bytes_to_copy = core::cmp::min(target_bytes.len(), bufsize as usize);
 
     // Copy to user buffer (NOT null-terminated, per readlink semantics)
-    let user_buf = buf as *mut u8;
-    unsafe {
-        core::ptr::copy_nonoverlapping(target_bytes.as_ptr(), user_buf, bytes_to_copy);
+    if let Err(errno) = super::userptr::write_user_bytes(buf, target_bytes.as_ptr(), bytes_to_copy) {
+        return SyscallResult::Err(errno);
     }
 
     log::debug!(
@@ -2277,9 +2145,8 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
 /// * EACCES - Access would be denied
 /// * ENOTDIR - A component of path is not a directory
 pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
-    use super::errno::{EACCES, ENOENT, ENOTDIR};
-    use super::userptr::copy_cstr_from_user;
-    use crate::fs::ext2;
+    use super::errno::{EACCES, EIO, ENOENT};
+    use crate::fs::namei::Target;
 
     // Access mode constants
     const F_OK: u32 = 0; // Test for existence
@@ -2287,113 +2154,57 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
     const W_OK: u32 = 2; // Test for write permission
     const R_OK: u32 = 4; // Test for read permission
 
-    // Copy path from userspace
-    let path = match copy_cstr_from_user(pathname) {
-        Ok(p) => p,
-        Err(errno) => return SyscallResult::Err(errno),
+    let resolved = match resolve_user(pathname, true) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
+    let path = resolved.path.as_str();
 
     log::debug!("sys_access: path={:?}, mode={:#o}", path, mode);
 
-    // Handle /dev paths specially
-    if path == "/dev" || path == "/dev/" {
-        // /dev directory exists with rwxr-xr-x permissions
-        if mode == F_OK {
-            return SyscallResult::Ok(0);
-        }
-        // Owner has rwx, so all access checks pass
-        return SyscallResult::Ok(0);
-    }
-    if path.starts_with("/dev/") {
-        use crate::fs::devfs;
-        let device_name = &path[5..];
-        if devfs::lookup(device_name).is_some() {
-            // Device exists with rw-rw-rw- permissions
-            if mode == F_OK {
+    let (mount, ino) = match resolved.target {
+        Target::Inode { mount, ino, .. } => (mount, ino),
+        Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::Virtual => {
+            // /dev and /proc are directories with rwxr-xr-x permissions
+            if resolved.is_mount_point() {
                 return SyscallResult::Ok(0);
             }
-            // Devices have rw permissions (no execute)
-            if (mode & X_OK) != 0 {
-                return SyscallResult::Err(EACCES as u64);
+            if let Some(device_name) = path.strip_prefix("/dev/") {
+                if crate::fs::devfs::lookup(device_name).is_none() {
+                    return SyscallResult::Err(ENOENT as u64);
+                }
+                // Devices have rw permissions (no execute)
+                if (mode & X_OK) != 0 {
+                    return SyscallResult::Err(EACCES as u64);
+                }
+                return SyscallResult::Ok(0);
+            }
+            if crate::fs::procfs::lookup_by_path(path).is_none() {
+                return SyscallResult::Err(ENOENT as u64);
             }
             return SyscallResult::Ok(0);
         }
-        return SyscallResult::Err(ENOENT as u64);
+    };
+    if mode == F_OK {
+        return SyscallResult::Ok(0);
     }
 
-    // Determine which filesystem to use
-    let is_home = ext2::is_home_path(&path);
-    let fs_path = if is_home {
-        ext2::strip_home_prefix(&path)
-    } else {
-        &path
-    };
-
-    // Resolve path and read inode from the correct filesystem
-    let (inode_num, inode) = if is_home {
-        let fs_guard = ext2::home_fs_read();
+    // Read the inode from the correct filesystem
+    let inode = {
+        let fs_guard = mount.read();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
-                log::error!("sys_access: ext2 home filesystem not mounted");
+                log::error!("sys_access: ext2 filesystem not mounted");
                 return SyscallResult::Err(ENOENT as u64);
             }
         };
-        let ino = match fs.resolve_path(fs_path) {
-            Ok(ino) => ino,
-            Err(e) => {
-                log::debug!("sys_access: path resolution failed: {}", e);
-                let errno = if e.contains("not found") {
-                    ENOENT
-                } else if e.contains("Not a directory") {
-                    ENOTDIR
-                } else {
-                    5
-                };
-                return SyscallResult::Err(errno as u64);
-            }
-        };
-        if mode == F_OK {
-            return SyscallResult::Ok(0);
-        }
-        let inode = match fs.read_inode(ino) {
+        match fs.read_inode(ino) {
             Ok(i) => i,
-            Err(_) => return SyscallResult::Err(5),
-        };
-        (ino, inode)
-    } else {
-        let fs_guard = ext2::root_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(fs) => fs,
-            None => {
-                log::error!("sys_access: ext2 root filesystem not mounted");
-                return SyscallResult::Err(ENOENT as u64);
-            }
-        };
-        let ino = match fs.resolve_path(fs_path) {
-            Ok(ino) => ino,
-            Err(e) => {
-                log::debug!("sys_access: path resolution failed: {}", e);
-                let errno = if e.contains("not found") {
-                    ENOENT
-                } else if e.contains("Not a directory") {
-                    ENOTDIR
-                } else {
-                    5
-                };
-                return SyscallResult::Err(errno as u64);
-            }
-        };
-        if mode == F_OK {
-            return SyscallResult::Ok(0);
+            Err(_) => return SyscallResult::Err(EIO as u64),
         }
-        let inode = match fs.read_inode(ino) {
-            Ok(i) => i,
-            Err(_) => return SyscallResult::Err(5),
-        };
-        (ino, inode)
     };
-    let _ = inode_num;
 
     // Get permission bits from inode mode (owner permissions in bits 8-6)
     let inode_mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_mode)) };
@@ -3352,21 +3163,23 @@ fn handle_procfs_getdents64(
 
 /// sys_getcwd - Get current working directory
 ///
-/// Returns the absolute pathname of the current working directory.
+/// Writes the physical absolute pathname of the current working directory,
+/// with its terminating NUL, to `buf`.
 ///
 /// # Arguments
 /// * `buf` - Buffer to store the path (userspace pointer)
 /// * `size` - Size of the buffer
 ///
 /// # Returns
-/// Pointer to buf on success (as u64), negative errno on failure
+/// The number of bytes written, NUL included (the Linux syscall ABI), or a
+/// negative errno
 ///
 /// # Errors
 /// * EFAULT - Invalid buffer pointer
-/// * ERANGE - Buffer too small
-/// * ENOENT - cwd has been unlinked (not implemented yet)
+/// * ERANGE - Buffer too small for the pathname and its NUL
+/// * ENOENT - The working directory no longer has a name
 pub fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
-    use super::errno::{EFAULT, EINVAL, ERANGE};
+    use super::errno::{EFAULT, ERANGE};
 
     log::debug!("sys_getcwd: buf={:#x}, size={}", buf, size);
 
@@ -3375,63 +3188,32 @@ pub fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
         return SyscallResult::Err(EFAULT as u64);
     }
 
-    // Size must be at least 1 for the null terminator
-    if size == 0 {
-        return SyscallResult::Err(EINVAL as u64);
-    }
-
-    // Get current process
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("sys_getcwd: No current thread");
-            return SyscallResult::Err(3); // ESRCH
-        }
+    // The pathname is derived from the working directory itself, after the
+    // process manager is released: the walk reads the filesystem, and the
+    // user buffer may be a CoW page whose fault handler takes the manager.
+    let dir = crate::fs::namei::current_working_dir();
+    let cwd = match crate::fs::namei::working_dir_path(&dir) {
+        Ok(path) => path,
+        Err(errno) => return SyscallResult::Err(errno),
     };
+    let mut bytes = cwd.into_bytes();
+    bytes.push(0);
 
-    // Copy the CWD while holding PROCESS_MANAGER, then drop it before writing
-    // to userspace. The destination may be a CoW page, and the CoW handler
-    // also needs PROCESS_MANAGER.
-    let cwd = {
-        let manager_guard = crate::process::manager();
-        let process = match &*manager_guard {
-            Some(manager) => match manager.find_process_by_thread(thread_id) {
-                Some((_, p)) => p,
-                None => {
-                    log::error!("sys_getcwd: Process not found for thread {}", thread_id);
-                    return SyscallResult::Err(3); // ESRCH
-                }
-            },
-            None => {
-                log::error!("sys_getcwd: Process manager not initialized");
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-
-        process.cwd.clone()
-    };
-    let cwd_bytes = cwd.as_bytes();
-    let required_size = cwd_bytes.len() + 1; // +1 for null terminator
-
-    // Check if buffer is large enough
-    if required_size > size as usize {
+    // Nothing is written unless the whole pathname and its NUL fit.
+    if bytes.len() > size as usize {
         log::debug!(
             "sys_getcwd: buffer too small ({} < {})",
             size,
-            required_size
+            bytes.len()
         );
         return SyscallResult::Err(ERANGE as u64);
     }
-
-    // Copy to user buffer with null terminator
-    let user_buf = buf as *mut u8;
-    unsafe {
-        core::ptr::copy_nonoverlapping(cwd_bytes.as_ptr(), user_buf, cwd_bytes.len());
-        *user_buf.add(cwd_bytes.len()) = 0; // Null terminator
+    if let Err(errno) = super::userptr::write_user_bytes(buf, bytes.as_ptr(), bytes.len()) {
+        return SyscallResult::Err(errno);
     }
 
-    log::debug!("sys_getcwd: returning {:?}", cwd);
-    SyscallResult::Ok(cwd_bytes.len() as u64)
+    // The Linux syscall returns the length of the buffer used, NUL included.
+    SyscallResult::Ok(bytes.len() as u64)
 }
 
 /// sys_chdir - Change current working directory
@@ -3450,25 +3232,18 @@ pub fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
 /// * EACCES - Permission denied
 /// * EIO - I/O error
 pub fn sys_chdir(pathname: u64) -> SyscallResult {
-    use super::errno::{EACCES, EIO, ENOENT, ENOTDIR};
-    use super::userptr::copy_cstr_from_user;
-    use crate::fs::ext2::{self, FileType as Ext2FileType};
-    use alloc::string::String;
+    let resolved = match resolve_user(pathname, true) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
 
-    // Copy path from userspace
-    let path = match copy_cstr_from_user(pathname) {
-        Ok(p) => p,
+    log::debug!("sys_chdir: path={:?}", resolved.path);
+
+    let dir = match crate::fs::namei::working_dir(&resolved) {
+        Ok(dir) => dir,
         Err(errno) => return SyscallResult::Err(errno),
     };
 
-    log::debug!("sys_chdir: path={:?}", path);
-
-    // Handle empty path
-    if path.is_empty() {
-        return SyscallResult::Err(ENOENT as u64);
-    }
-
-    // Get current process cwd for resolving relative paths
     let thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
         None => {
@@ -3477,208 +3252,28 @@ pub fn sys_chdir(pathname: u64) -> SyscallResult {
         }
     };
 
-    // First, get the current cwd for relative path resolution
-    let current_cwd = {
-        let manager_guard = crate::process::manager();
-        match &*manager_guard {
-            Some(manager) => match manager.find_process_by_thread(thread_id) {
-                Some((_, p)) => p.cwd.clone(),
-                None => return SyscallResult::Err(3), // ESRCH
-            },
-            None => return SyscallResult::Err(3), // ESRCH
-        }
-    };
-
-    // Normalize the path (handle relative paths)
-    let absolute_path = if path.starts_with('/') {
-        path.clone()
-    } else {
-        // Combine current cwd with relative path
-        if current_cwd.ends_with('/') {
-            alloc::format!("{}{}", current_cwd, path)
-        } else {
-            alloc::format!("{}/{}", current_cwd, path)
-        }
-    };
-
-    // Normalize the path (resolve . and ..)
-    let normalized = normalize_path(&absolute_path);
-
-    // Handle /dev directory and its contents specially
-    if normalized == "/dev" {
-        // /dev is always accessible as a directory
+    // Update the process's cwd. The directory it replaces is released when
+    // the manager is, so its handle is not dropped under the lock.
+    let previous = {
         let mut manager_guard = crate::process::manager();
-        if let Some(manager) = &mut *manager_guard {
-            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
-                process.cwd = String::from("/dev");
-                log::info!("sys_chdir: changed cwd to /dev");
-                return SyscallResult::Ok(0);
-            }
-        }
-        return SyscallResult::Err(3); // ESRCH
-    }
-
-    // Handle paths under /dev - these are device files, not directories
-    if normalized.starts_with("/dev/") {
-        let device_name = &normalized[5..]; // Strip "/dev/" prefix
-        if crate::fs::devfs::lookup(device_name).is_some() {
-            // Device exists but is a file, not a directory
-            log::debug!(
-                "sys_chdir: /dev/{} is a device file, not a directory",
-                device_name
-            );
-            return SyscallResult::Err(ENOTDIR as u64);
-        } else {
-            // Device doesn't exist
-            log::debug!("sys_chdir: /dev/{} not found", device_name);
-            return SyscallResult::Err(ENOENT as u64);
-        }
-    }
-
-    // Determine which filesystem to use
-    let is_home = ext2::is_home_path(&normalized);
-    let fs_path = if is_home {
-        ext2::strip_home_prefix(&normalized)
-    } else {
-        normalized.as_str()
-    };
-
-    // Resolve path and verify it's a directory
-    let is_dir = if is_home {
-        let fs_guard = ext2::home_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(fs) => fs,
+        let process = match &mut *manager_guard {
+            Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+                Some((_, p)) => p,
+                None => {
+                    log::error!("sys_chdir: Process not found for thread {}", thread_id);
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            },
             None => {
-                log::error!("sys_chdir: ext2 home filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        };
-        let inode_num = match fs.resolve_path(fs_path) {
-            Ok(ino) => ino,
-            Err(e) => {
-                log::debug!("sys_chdir: path resolution failed: {}", e);
-                let errno = if e.contains("not found") {
-                    ENOENT
-                } else if e.contains("Not a directory") {
-                    ENOTDIR
-                } else if e.contains("permission") {
-                    EACCES
-                } else {
-                    EIO
-                };
-                return SyscallResult::Err(errno as u64);
-            }
-        };
-        let inode = match fs.read_inode(inode_num) {
-            Ok(ino) => ino,
-            Err(_) => return SyscallResult::Err(EIO as u64),
-        };
-        matches!(inode.file_type(), Ext2FileType::Directory)
-    } else {
-        let fs_guard = ext2::root_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(fs) => fs,
-            None => {
-                log::error!("sys_chdir: ext2 root filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        };
-        let inode_num = match fs.resolve_path(fs_path) {
-            Ok(ino) => ino,
-            Err(e) => {
-                log::debug!("sys_chdir: path resolution failed: {}", e);
-                let errno = if e.contains("not found") {
-                    ENOENT
-                } else if e.contains("Not a directory") {
-                    ENOTDIR
-                } else if e.contains("permission") {
-                    EACCES
-                } else {
-                    EIO
-                };
-                return SyscallResult::Err(errno as u64);
-            }
-        };
-        let inode = match fs.read_inode(inode_num) {
-            Ok(ino) => ino,
-            Err(_) => return SyscallResult::Err(EIO as u64),
-        };
-        matches!(inode.file_type(), Ext2FileType::Directory)
-    };
-
-    if !is_dir {
-        log::debug!("sys_chdir: {} is not a directory", normalized);
-        return SyscallResult::Err(ENOTDIR as u64);
-    }
-
-    // Update the process's cwd
-    let mut manager_guard = crate::process::manager();
-    let process = match &mut *manager_guard {
-        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((_, p)) => p,
-            None => {
-                log::error!("sys_chdir: Process not found for thread {}", thread_id);
+                log::error!("sys_chdir: Process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH
             }
-        },
-        None => {
-            log::error!("sys_chdir: Process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
+        };
+        core::mem::replace(&mut process.cwd, dir)
     };
-
-    process.cwd = normalized.clone();
-    log::info!("sys_chdir: changed cwd to {}", normalized);
+    drop(previous);
+    log::info!("sys_chdir: changed cwd to {}", resolved.path);
     SyscallResult::Ok(0)
-}
-
-/// Normalize a path by resolving . and .. components
-///
-/// Examples:
-/// - "/foo/bar/../baz" -> "/foo/baz"
-/// - "/foo/./bar" -> "/foo/bar"
-/// - "/../foo" -> "/foo" (can't go above root)
-pub fn normalize_path(path: &str) -> alloc::string::String {
-    use alloc::string::String;
-    use alloc::vec::Vec;
-
-    let mut components: Vec<&str> = Vec::new();
-
-    for component in path.split('/') {
-        match component {
-            "" | "." => continue, // Skip empty and current directory
-            ".." => {
-                // Go up one level (but not above root)
-                components.pop();
-            }
-            _ => components.push(component),
-        }
-    }
-
-    if components.is_empty() {
-        String::from("/")
-    } else {
-        let mut result = String::new();
-        for component in components {
-            result.push('/');
-            result.push_str(component);
-        }
-        result
-    }
-}
-
-/// Get the current working directory for the current process
-///
-/// Returns None if the current thread or process cannot be determined.
-pub fn get_current_cwd() -> Option<alloc::string::String> {
-    let thread_id = crate::task::scheduler::current_thread_id()?;
-    let manager_guard = crate::process::manager();
-    match &*manager_guard {
-        Some(manager) => manager
-            .find_process_by_thread(thread_id)
-            .map(|(_, p)| p.cwd.clone()),
-        None => None,
-    }
 }
 
 /// Handle opening a FIFO (named pipe)
@@ -3932,7 +3527,7 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
 pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> SyscallResult {
     use super::errno::{EFAULT, ENOENT};
     use super::userptr::{copy_cstr_from_user, copy_to_user};
-    use crate::fs::ext2;
+    use crate::fs::namei::Target;
 
     const AT_FDCWD: i32 = -100;
 
@@ -3955,26 +3550,17 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
         return SyscallResult::Err(super::errno::ENOSYS as u64);
     }
 
-    // Resolve the path to a full path (handle CWD for relative paths), as
-    // sys_open does
-    let full_path = if path.starts_with('/') {
-        path.clone()
-    } else {
-        // Get CWD from current process
-        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
-        let absolute = if cwd.ends_with('/') {
-            alloc::format!("{}{}", cwd, path)
-        } else {
-            alloc::format!("{}/{}", cwd, path)
-        };
-        normalize_path(&absolute)
+    let resolved = match crate::fs::namei::resolve(&path, flags & AT_SYMLINK_NOFOLLOW == 0) {
+        Ok(r) => r,
+        Err(errno) => return SyscallResult::Err(errno),
     };
+    let full_path = resolved.path.as_str();
 
     // Paths outside ext2 have no inode to read. A FIFO is described without
     // opening it, since an open could block or release a waiting writer.
     // devfs and procfs paths are described by the descriptor an open of them
     // yields; those opens make no permission check.
-    if crate::ipc::fifo::FIFO_REGISTRY.exists(&full_path) {
+    if crate::ipc::fifo::FIFO_REGISTRY.exists(full_path) {
         let mut stat = Stat::zeroed();
         stat.st_blksize = 4096;
         fill_fifo_stat(&mut stat);
@@ -3983,59 +3569,22 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
             Err(errno) => SyscallResult::Err(errno),
         };
     }
-    if full_path == "/dev"
-        || full_path.starts_with("/dev/")
-        || full_path == "/proc"
-        || full_path.starts_with("/proc/")
-    {
-        let fd = match sys_open(pathname, O_RDONLY, 0) {
-            SyscallResult::Ok(fd) => fd as i32,
-            error => return error,
-        };
-        let result = sys_fstat(fd, statbuf);
-        let _ = super::pipe::sys_close(fd);
-        return result;
-    }
-
-    // Determine which filesystem to use
-    let is_home = ext2::is_home_path(&full_path);
-    let fs_path = if is_home {
-        ext2::strip_home_prefix(&full_path)
-    } else {
-        &full_path
+    let (mount, inode_num) = match resolved.target {
+        Target::Inode { mount, ino, .. } => (mount, ino as u64),
+        Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::Virtual => {
+            let fd = match sys_open(pathname, O_RDONLY, 0) {
+                SyscallResult::Ok(fd) => fd as i32,
+                error => return error,
+            };
+            let result = sys_fstat(fd, statbuf);
+            let _ = super::pipe::sys_close(fd);
+            return result;
+        }
     };
-
-    // Look up inode by path
-    let (inode_num, mount_id) = if is_home {
-        let fs_guard = ext2::home_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(f) => f,
-            None => return SyscallResult::Err(ENOENT as u64),
-        };
-        let mid = fs.mount_id;
-        match if flags & AT_SYMLINK_NOFOLLOW != 0 {
-            fs.resolve_path_no_follow(fs_path)
-        } else {
-            fs.resolve_path(fs_path)
-        } {
-            Ok(inum) => (inum as u64, mid),
-            Err(e) => return path_lookup_errno(e),
-        }
-    } else {
-        let fs_guard = ext2::root_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(f) => f,
-            None => return SyscallResult::Err(ENOENT as u64),
-        };
-        let mid = fs.mount_id;
-        match if flags & AT_SYMLINK_NOFOLLOW != 0 {
-            fs.resolve_path_no_follow(fs_path)
-        } else {
-            fs.resolve_path(fs_path)
-        } {
-            Ok(inum) => (inum as u64, mid),
-            Err(e) => return path_lookup_errno(e),
-        }
+    let mount_id = match mount.read().as_ref() {
+        Some(fs) => fs.mount_id,
+        None => return SyscallResult::Err(ENOENT as u64),
     };
 
     // Build stat from inode
@@ -4191,8 +3740,6 @@ struct UtimeTimespec {
 /// UTIME_NOW (0x3FFFFFFF): use current time for that field.
 /// UTIME_OMIT (0x3FFFFFFE): don't change that timestamp.
 pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> SyscallResult {
-    use crate::fs::ext2;
-
     let now = crate::time::current_unix_time() as u32;
 
     // Determine what atime/mtime to set
@@ -4277,65 +3824,16 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
         return SyscallResult::Err(super::errno::ENOSYS as u64);
     }
 
-    let full_path = if path.starts_with('/') {
-        path.clone()
-    } else {
-        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
-        if cwd.ends_with('/') {
-            alloc::format!("{}{}", cwd, path)
-        } else {
-            alloc::format!("{}/{}", cwd, path)
-        }
-    };
-
-    let is_home = ext2::is_home_path(&full_path);
-    let fs_path = if is_home {
-        ext2::strip_home_prefix(&full_path)
-    } else {
-        &full_path
-    };
     let no_follow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
-
-    // Resolve path first (read lock), then update timestamps (write lock)
-    let handle = if is_home {
-        let fs_guard = ext2::home_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(f) => f,
-            None => return SyscallResult::Err(super::errno::ENOENT as u64),
-        };
-        let ino = if no_follow {
-            fs.resolve_path_no_follow(fs_path)
-        } else {
-            fs.resolve_path(fs_path)
-        };
-        match ino {
-            Ok(n) => match fs.pin_inode(n) {
-                Ok(handle) => handle,
-                Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-            },
-            Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
-        }
-    } else {
-        let fs_guard = ext2::root_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(f) => f,
-            None => return SyscallResult::Err(super::errno::ENOENT as u64),
-        };
-        let ino = if no_follow {
-            fs.resolve_path_no_follow(fs_path)
-        } else {
-            fs.resolve_path(fs_path)
-        };
-        match ino {
-            Ok(n) => match fs.pin_inode(n) {
-                Ok(handle) => handle,
-                Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-            },
-            Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
-        }
+    let resolved = match crate::fs::namei::resolve(&path, !no_follow) {
+        Ok(resolved) => resolved,
+        Err(errno) => return SyscallResult::Err(errno),
     };
-
-    update_inode_timestamps(&handle, set_atime, set_mtime)
+    // The resolution holds the inode it found; the update acts on that one.
+    match resolved.handle() {
+        Some(handle) => update_inode_timestamps(handle, set_atime, set_mtime),
+        None => SyscallResult::Err(super::errno::ENOENT as u64),
+    }
 }
 
 /// Helper: update an inode's atime/mtime on the ext2 filesystem
@@ -4485,7 +3983,7 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
 /// truncate resolves the final symlink and resizes the same inode open FDs use.
 pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
     use super::errno::{EINVAL, EIO, ENOENT};
-    use crate::fs::ext2;
+    use crate::fs::namei::Target;
     if length < 0 {
         return SyscallResult::Err(EINVAL as u64);
     }
@@ -4496,47 +3994,35 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
     if path.is_empty() {
         return SyscallResult::Err(ENOENT as u64);
     }
-    let absolute = if path.starts_with('/') {
-        path
-    } else {
-        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
-        alloc::format!("{}/{}", cwd.trim_end_matches('/'), path)
+    let resolved = match crate::fs::namei::resolve(&path, true) {
+        Ok(r) => r,
+        Err(errno) => return SyscallResult::Err(errno),
     };
-    let full_path = normalize_path(&absolute);
-    if crate::ipc::fifo::FIFO_REGISTRY.exists(&full_path) {
+    let full_path = resolved.path.as_str();
+    if crate::ipc::fifo::FIFO_REGISTRY.exists(full_path) {
         return SyscallResult::Err(EINVAL as u64);
     }
-    if full_path == "/dev" || full_path == "/proc" {
-        return SyscallResult::Err(super::errno::EISDIR as u64);
-    }
-    if full_path.starts_with("/dev/") || full_path.starts_with("/proc/") {
-        // Resolve virtual paths through their filesystem before rejecting resize.
-        let fd = match sys_open(pathname, O_RDONLY, 0) {
-            SyscallResult::Ok(fd) => fd as i32,
-            error => return error,
-        };
-        let _ = super::pipe::sys_close(fd);
-        return SyscallResult::Err(EINVAL as u64);
-    }
-    let is_home = ext2::is_home_path(&full_path);
-    let fs_path = if is_home {
-        ext2::strip_home_prefix(&full_path)
-    } else {
-        &full_path
+    let (mount, ino) = match resolved.target {
+        Target::Inode { mount, ino, .. } => (mount, ino),
+        Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::Virtual if resolved.is_mount_point() => {
+            return SyscallResult::Err(super::errno::EISDIR as u64)
+        }
+        Target::Virtual => {
+            // Resolve virtual paths through their filesystem before rejecting resize.
+            let fd = match sys_open(pathname, O_RDONLY, 0) {
+                SyscallResult::Ok(fd) => fd as i32,
+                error => return error,
+            };
+            let _ = super::pipe::sys_close(fd);
+            return SyscallResult::Err(EINVAL as u64);
+        }
     };
     let cred = current_file_credentials();
-    let mut guard = if is_home {
-        ext2::home_fs_write()
-    } else {
-        ext2::root_fs_write()
-    };
+    let mut guard = mount.write();
     let fs = match guard.as_mut() {
         Some(fs) => fs,
         None => return SyscallResult::Err(EIO as u64),
-    };
-    let ino = match fs.resolve_path(fs_path) {
-        Ok(ino) => ino,
-        Err(error) => return path_lookup_errno(error),
     };
     let inode = match fs.read_inode(ino) {
         Ok(inode) => inode,
