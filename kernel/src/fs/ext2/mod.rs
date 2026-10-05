@@ -23,6 +23,20 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::RwLock;
 
+/// The directory-entry file type recorded for an inode.
+fn dir_entry_type(inode: &Ext2Inode) -> u8 {
+    match inode.file_type() {
+        FileType::Regular => EXT2_FT_REG_FILE,
+        FileType::Directory => EXT2_FT_DIR,
+        FileType::CharDevice => EXT2_FT_CHRDEV,
+        FileType::BlockDevice => EXT2_FT_BLKDEV,
+        FileType::Fifo => EXT2_FT_FIFO,
+        FileType::Socket => EXT2_FT_SOCK,
+        FileType::SymLink => EXT2_FT_SYMLINK,
+        FileType::Unknown => EXT2_FT_UNKNOWN,
+    }
+}
+
 /// A mounted ext2 filesystem instance
 ///
 /// Holds the superblock, block group descriptors, and a reference
@@ -941,15 +955,12 @@ impl Ext2Fs {
             return Ok(());
         }
 
-        // Resolve source file/directory
-        let source_inode_num = self.resolve_path(oldpath)?;
+        // Resolve source file/directory. rename moves the name itself, so a
+        // final symlink is not followed.
+        let source_inode_num = self.resolve_path_no_follow(oldpath)?;
         let source_inode = self.read_inode(source_inode_num)?;
         let source_is_dir = source_inode.is_dir();
-        let source_file_type = if source_is_dir {
-            EXT2_FT_DIR
-        } else {
-            EXT2_FT_REG_FILE
-        };
+        let source_file_type = dir_entry_type(&source_inode);
 
         // Resolve parent directories
         let old_parent_num = self.resolve_path(old_parent_path)?;
@@ -962,12 +973,12 @@ impl Ext2Fs {
             return Err("Parent is not a directory");
         }
 
-        // Check if destination exists
-        let dest_exists = self.resolve_path(newpath).is_ok();
+        // Check if destination exists; a symlink there is replaced, not followed.
+        let dest_exists = self.resolve_path_no_follow(newpath).is_ok();
 
         if dest_exists {
             // Destination exists - check if we can replace it
-            let dest_inode_num = self.resolve_path(newpath)?;
+            let dest_inode_num = self.resolve_path_no_follow(newpath)?;
             let dest_inode = self.read_inode(dest_inode_num)?;
 
             if dest_inode.is_dir() {
@@ -1300,13 +1311,23 @@ impl Ext2Fs {
             return Err("Invalid directory name");
         }
 
-        // Resolve the target directory
-        let target_inode_num = self.resolve_path(path)?;
+        // Resolve the target directory. The entry removed is the one named,
+        // so a final symlink is not followed: it is not a directory.
+        let target_inode_num = self.resolve_path_no_follow(path)?;
         let target_inode = self.read_inode(target_inode_num)?;
 
         // Verify it's a directory
         if !target_inode.is_dir() {
             return Err("Not a directory");
+        }
+
+        // A held directory (a working directory) keeps its inode and blocks.
+        if self
+            .live_inodes
+            .get(target_inode_num)
+            .is_some_and(|object| !object.unused())
+        {
+            return Err("Directory is busy");
         }
 
         // Read directory contents and check if empty
@@ -1418,8 +1439,9 @@ impl Ext2Fs {
             return Err("Paths must be absolute");
         }
 
-        // Resolve the source path to get the inode
-        let source_inode_num = self.resolve_path(oldpath)?;
+        // Resolve the source path to get the inode. As on Linux, a final
+        // symlink is linked itself.
+        let source_inode_num = self.resolve_path_no_follow(oldpath)?;
         let source_inode = self.read_inode(source_inode_num)?;
 
         // Hard links to directories are not allowed (prevents cycles in filesystem)
@@ -1450,8 +1472,8 @@ impl Ext2Fs {
             return Err("Parent is not a directory");
         }
 
-        // Check if the destination already exists
-        if self.resolve_path(newpath).is_ok() {
+        // Check if the destination already exists, a dangling symlink included
+        if self.resolve_path_no_follow(newpath).is_ok() {
             return Err("Destination already exists");
         }
 
@@ -1463,7 +1485,7 @@ impl Ext2Fs {
             &mut dir_data,
             source_inode_num,
             new_filename,
-            EXT2_FT_REG_FILE,
+            dir_entry_type(&source_inode),
         )?;
 
         // Update parent directory timestamps
@@ -1547,8 +1569,8 @@ impl Ext2Fs {
             return Err("Parent is not a directory");
         }
 
-        // Check if the link already exists
-        if self.resolve_path(linkpath).is_ok() {
+        // Check if the link already exists, a dangling symlink included
+        if self.resolve_path_no_follow(linkpath).is_ok() {
             return Err("File already exists");
         }
 
