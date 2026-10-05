@@ -620,8 +620,23 @@ pub fn check_signals_for_restartable_wait() -> Option<i32> {
 pub fn init() {
     log::info!("Initializing system call infrastructure");
 
-    // Register INT 0x80 handler in IDT (done in interrupts module)
-    // The actual registration happens in interrupts::init_idt()
+    // MSRs are CPU-local. Every online x86 CPU must run this initialization
+    // before entering userspace (currently x86 brings up only the BSP).
+    use x86_64::registers::{
+        model_specific::{Efer, EferFlags, LStar, SFMask, Star},
+        rflags::RFlags,
+    };
+    extern "C" {
+        fn syscall_instruction_entry();
+    }
+    unsafe {
+        // GDT: kernel CS/SS = 0x08/0x10, user SS/CS = 0x2b/0x33.
+        Star::write_raw(0x23, 0x08);
+        LStar::write(x86_64::VirtAddr::new(syscall_instruction_entry as u64));
+        SFMask::write(RFlags::INTERRUPT_FLAG | RFlags::DIRECTION_FLAG
+            | RFlags::TRAP_FLAG | RFlags::ALIGNMENT_CHECK | RFlags::NESTED_TASK);
+        Efer::update(|flags| flags.insert(EferFlags::SYSTEM_CALL_EXTENSIONS));
+    }
 
     log::info!("System call infrastructure initialized");
 }
