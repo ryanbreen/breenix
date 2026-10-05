@@ -14,6 +14,7 @@ use alloc::boxed::Box;
 
 /// Clone flags (Linux-compatible)
 const CLONE_VM: u64 = 0x00000100;
+const CLONE_FS: u64 = 0x00000200;
 const CLONE_FILES: u64 = 0x00000400;
 const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
 const CLONE_CHILD_SETTID: u64 = 0x01000000;
@@ -117,7 +118,11 @@ pub fn sys_clone(
         (
             cr3,
             tg_id,
-            process.cwd.clone(),
+            if flags & CLONE_FS != 0 {
+                process.cwd.share()
+            } else {
+                process.cwd.copy()
+            },
             process.lock_owner.clone(),
             process.signals.new_thread(),
         )

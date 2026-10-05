@@ -5,7 +5,7 @@
 
 use crate::error::Error;
 use crate::syscall::{nr, raw};
-use crate::types::{Pid, Tid};
+use crate::types::{Fd, Pid, Tid};
 
 /// Result of a fork() call.
 pub enum ForkResult {
@@ -374,5 +374,17 @@ pub fn getcwd(buf: &mut [u8]) -> Result<usize, Error> {
 pub fn chdir(path: &[u8]) -> Result<(), Error> {
     debug_assert!(path.last() == Some(&0), "chdir path must be null-terminated");
     let ret = unsafe { raw::syscall1(nr::CHDIR, path.as_ptr() as u64) };
+    Error::from_syscall(ret as i64).map(|_| ())
+}
+
+/// Changes the current working directory to the directory open as `fd`.
+///
+/// # Errors
+/// * EBADF - `fd` is not an open file descriptor
+/// * ENOTDIR - `fd` does not refer to a directory
+/// * EACCES - Search permission is denied on the directory
+#[inline]
+pub fn fchdir(fd: Fd) -> Result<(), Error> {
+    let ret = unsafe { raw::syscall1(nr::FCHDIR, fd.raw()) };
     Error::from_syscall(ret as i64).map(|_| ())
 }

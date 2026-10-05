@@ -78,6 +78,7 @@ pub mod nr {
     pub const FTRUNCATE: u64 = 77;
     pub const GETCWD: u64 = 79;
     pub const CHDIR: u64 = 80;
+    pub const FCHDIR: u64 = 81;
     pub const RENAME: u64 = 82;
     pub const MKDIR: u64 = 83;
     pub const RMDIR: u64 = 84;
@@ -190,6 +191,7 @@ pub mod nr {
     pub const GETGROUPS: u64 = 158;
     pub const SETGROUPS: u64 = 159;
     pub const CHDIR: u64 = 49;
+    pub const FCHDIR: u64 = 50;
     pub const OPENAT: u64 = 56;
     pub const CLOSE: u64 = 57;
     pub const PIPE2: u64 = 59;

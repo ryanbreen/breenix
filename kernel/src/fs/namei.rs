@@ -29,6 +29,7 @@
 use crate::fs::ext2::{self, live_inode::FileHandle, DirReader, FileType, EXT2_ROOT_INO};
 use crate::syscall::errno::{EIO, ELOOP, ENAMETOOLONG, ENOENT, ENOTDIR};
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 /// Longest pathname a syscall accepts, counting its terminating NUL (Linux).
@@ -563,6 +564,35 @@ impl Default for WorkingDir {
     }
 }
 
+/// The working directory a process holds. Threads created with `CLONE_FS`
+/// share one, so a chdir or fchdir in any of them moves all of them; fork,
+/// spawn and a clone without `CLONE_FS` start from a copy. Its lock is only
+/// taken under the process manager's, and nothing else is taken under it.
+#[derive(Debug, Default)]
+pub struct SharedWorkingDir(Arc<spin::Mutex<WorkingDir>>);
+
+impl SharedWorkingDir {
+    /// The same working directory, for a thread created with `CLONE_FS`.
+    pub fn share(&self) -> Self {
+        Self(self.0.clone())
+    }
+
+    /// A separate working directory that starts where this one is.
+    pub fn copy(&self) -> Self {
+        Self(Arc::new(spin::Mutex::new(self.get())))
+    }
+
+    pub fn get(&self) -> WorkingDir {
+        self.0.lock().clone()
+    }
+
+    /// Make `dir` the working directory. The one it replaces is returned so
+    /// the caller can release it after the process manager.
+    pub fn replace(&self, dir: WorkingDir) -> WorkingDir {
+        core::mem::replace(&mut *self.0.lock(), dir)
+    }
+}
+
 /// The working directory of the calling process; `/` for a caller with none.
 pub fn current_working_dir() -> WorkingDir {
     let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
@@ -572,7 +602,7 @@ pub fn current_working_dir() -> WorkingDir {
     match &*manager_guard {
         Some(manager) => manager
             .find_process_by_thread(thread_id)
-            .map(|(_, p)| p.cwd.clone())
+            .map(|(_, p)| p.cwd.get())
             .unwrap_or_default(),
         None => WorkingDir::Root,
     }
@@ -600,6 +630,33 @@ pub fn working_dir(resolved: &Resolved) -> Result<WorkingDir, u64> {
             Ok(WorkingDir::Ext2 { mount, dir })
         }
     }
+}
+
+/// EACCES unless `cred` may search `dir`, as entering it as the working
+/// directory requires. A removed directory is checked by its inode.
+pub(crate) fn may_search(
+    dir: &WorkingDir,
+    cred: &super::permissions::Credentials,
+) -> Result<(), u64> {
+    let (mount, handle) = match dir {
+        WorkingDir::Virtual(_) => return Ok(()),
+        WorkingDir::Root => (Mount::Root, None),
+        WorkingDir::Ext2 { mount, dir } => (*mount, Some(dir)),
+    };
+    let mut held = Held(None);
+    let fs = held.fs(mount)?;
+    let ino = match handle {
+        Some(handle) => handle.verify(fs).map_err(|_| ENOENT as u64)?,
+        None => EXT2_ROOT_INO,
+    };
+    let inode = fs.read_inode(ino).map_err(|_| EIO as u64)?;
+    if !inode.is_dir() {
+        return Err(ENOTDIR as u64);
+    }
+    if !cred.permits(&inode, 1) {
+        return Err(crate::syscall::errno::EACCES as u64);
+    }
+    Ok(())
 }
 
 /// The physical pathname of a working directory, derived from the directory

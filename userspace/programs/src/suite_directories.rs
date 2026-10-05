@@ -251,6 +251,9 @@ mod observed {
     pub fn chdir(p: &[u8]) -> i64 {
         call(nr::CHDIR, [p.as_ptr() as u64, 0, 0, 0])
     }
+    pub fn fchdir(fd: u64) -> i64 {
+        call(nr::FCHDIR, [fd, 0, 0, 0])
+    }
     pub fn chmod(p: &str, mode: u32) -> i64 {
         let p = cpath(p);
         call(ABI[0], [AT_FDCWD, p.as_ptr() as u64, mode as u64, 0])
@@ -725,6 +728,14 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("symlink-parent-open", "open resolves symlink before dot-dot", cwd_symlink_parent_open),
         case("symlink-parent-chdir", "chdir resolves symlink before dot-dot", cwd_symlink_parent_chdir),
         case("symlink-physical", "getcwd after chdir of a symlink names the physical directory", cwd_symlink_physical),
+        case("fchdir", "fchdir to an open directory makes getcwd report that directory", cwd_fchdir),
+        case("fchdir-relative", "relative opens and AT_FDCWD lookups after fchdir resolve from the directory", cwd_fchdir_relative),
+        case("fchdir-closed", "the working directory fchdir sets survives closing the descriptor", cwd_fchdir_closed),
+        case("fchdir-bad-fd", "fchdir of a descriptor that is not open fails with EBADF and keeps cwd", cwd_fchdir_bad_fd),
+        case("fchdir-not-dir", "fchdir of a regular-file descriptor fails with ENOTDIR and keeps cwd", cwd_fchdir_not_dir),
+        case("fchdir-search-denied", "fchdir of a directory without search permission fails with EACCES and keeps cwd", cwd_fchdir_search_denied),
+        case("fchdir-renamed", "getcwd follows a directory entered by fchdir to its new pathname after rename", cwd_fchdir_renamed),
+        case("fchdir-threads", "threads share the working directory: fchdir in one thread moves the others, and theirs moves it", cwd_fchdir_threads),
     ]),
     category("permissions", "chmod, chown, access & umask", &[
         case("chmod-file", "pathname and descriptor chmod preserve file type and update modes across symlinks and unlink", permissions_chmod_file),
@@ -1618,6 +1629,225 @@ fn cwd_missing() -> CaseResult {
         "failed chdir changed cwd inode",
     )?;
     check(cwd()? == f.root, "failed chdir changed cwd")
+}
+
+fn opened_dir(p: &str) -> Result<File, Error> {
+    File::open(p, O_RDONLY | O_DIRECTORY)
+}
+
+fn kept_cwd(dir: &str, what: &str) -> CaseResult {
+    check(
+        stat(".", false)?.st_ino == stat(dir, false)?.st_ino,
+        &format!("{what} changed cwd inode"),
+    )?;
+    check(cwd()? == dir, &format!("{what} changed cwd"))
+}
+
+fn cwd_fchdir() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    let dir = opened_dir(&d)?;
+    process::fchdir(dir.fd())?;
+    check(cwd()? == d, "getcwd differs from fchdir target")?;
+    check(
+        stat(".", false)?.st_ino == stat(&d, false)?.st_ino,
+        "dot differs from fchdir target",
+    )
+}
+
+fn cwd_fchdir_relative() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    let p = f.file("dir/file", b"data")?;
+    let dir = opened_dir(&d)?;
+    process::chdir(&cpath(&f.root))?;
+    process::fchdir(dir.fd())?;
+    bytes("file", b"data")?;
+    check(
+        stat("file", false)?.st_ino == stat(&p, false)?.st_ino,
+        "AT_FDCWD lookup missed the fchdir directory",
+    )
+}
+
+fn cwd_fchdir_closed() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    f.file("dir/file", b"data")?;
+    let dir = opened_dir(&d)?.into_raw_fd();
+    process::fchdir(dir)?;
+    io::close(dir)?;
+    check(cwd()? == d, "closing the descriptor changed cwd")?;
+    bytes("file", b"data")
+}
+
+fn cwd_fchdir_bad_fd() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    let closed = opened_dir(&d)?.into_raw_fd();
+    io::close(closed)?;
+    process::chdir(&cpath(&f.root))?;
+    errno(observed::fchdir(closed.raw()), 9)?;
+    kept_cwd(&f.root, "failed fchdir")
+}
+
+fn cwd_fchdir_not_dir() -> CaseResult {
+    let f = Tree::new()?;
+    let p = f.file("file", b"x")?;
+    let file = File::open(&p, O_RDONLY)?;
+    process::chdir(&cpath(&f.root))?;
+    errno(observed::fchdir(file.fd().raw()), 20)?;
+    kept_cwd(&f.root, "failed fchdir")
+}
+
+fn cwd_fchdir_search_denied() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    chmod(&d, 0o666)?;
+    let dir = opened_dir(&d)?;
+    process::chdir(&cpath(&f.root))?;
+    unprivileged()?;
+    errno(observed::fchdir(dir.fd().raw()), 13)?;
+    kept_cwd(&f.root, "denied fchdir")
+}
+
+fn cwd_fchdir_renamed() -> CaseResult {
+    let f = Tree::new()?;
+    let a = f.dir("a")?;
+    let b = f.path("b");
+    let dir = opened_dir(&a)?;
+    process::fchdir(dir.fd())?;
+    fs::rename(&a, &b)?;
+    check(
+        stat(".", false)?.st_ino == stat(&b, false)?.st_ino,
+        "fchdir directory lost across rename",
+    )?;
+    check(cwd()? == b, "getcwd retained old name")
+}
+
+// The second thread of `cwd_fchdir_threads`. It runs on a bare clone, so it
+// makes raw calls only and reports through the shared record.
+mod sibling {
+    use super::*;
+    use core::cell::UnsafeCell;
+    use core::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+
+    extern "C" {
+        fn pthread_create(
+            thread: *mut usize,
+            attr: *const u8,
+            start: extern "C" fn(*mut u8) -> *mut u8,
+            arg: *mut u8,
+        ) -> i32;
+        fn pthread_join(thread: usize, retval: *mut *mut u8) -> i32;
+    }
+
+    /// The sibling has called fchdir and stored its result.
+    pub const ENTERED: u32 = 1;
+    /// The creator has changed directory; the sibling may read its cwd.
+    pub const MOVED: u32 = 2;
+
+    pub struct Shared {
+        pub fd: u64,
+        pub step: AtomicU32,
+        pub fchdir: AtomicI64,
+        pub getcwd: AtomicI64,
+        pub cwd: UnsafeCell<[u8; 256]>,
+    }
+
+    // SAFETY: `cwd` is written by the sibling only, and read after the join.
+    unsafe impl Sync for Shared {}
+
+    /// Wait up to five seconds for `step` to reach `want`.
+    pub fn wait(shared: &Shared, want: u32) -> bool {
+        let deadline = match time::now_monotonic() {
+            Ok(t) => t.tv_sec + 5,
+            Err(_) => return false,
+        };
+        while shared.step.load(Ordering::Acquire) < want {
+            match time::now_monotonic() {
+                Ok(t) if t.tv_sec < deadline => {}
+                _ => return false,
+            }
+            let _ = process::yield_now();
+        }
+        true
+    }
+
+    extern "C" fn run(arg: *mut u8) -> *mut u8 {
+        // SAFETY: the creator keeps the record alive until it has joined.
+        let shared = unsafe { &*(arg as *const Shared) };
+        shared.fchdir.store(observed::fchdir(shared.fd), Ordering::Release);
+        shared.step.store(ENTERED, Ordering::Release);
+        if wait(shared, MOVED) {
+            // SAFETY: only this thread touches `cwd` until the join.
+            let buf = unsafe { &mut *shared.cwd.get() };
+            let r = unsafe {
+                raw::syscall2(nr::GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64)
+            };
+            shared.getcwd.store(r as i64, Ordering::Release);
+        }
+        core::ptr::null_mut()
+    }
+
+    pub fn spawn(shared: &Shared) -> Result<usize, libbreenix::suite::CaseError> {
+        let mut thread = 0usize;
+        // SAFETY: `shared` outlives the thread, which the caller joins.
+        let r = unsafe {
+            pthread_create(&mut thread, core::ptr::null(), run, shared as *const Shared as *mut u8)
+        };
+        check(r == 0, &format!("pthread_create returned {r}"))?;
+        Ok(thread)
+    }
+
+    pub fn join(thread: usize) -> CaseResult {
+        // SAFETY: `thread` came from pthread_create and is joined once.
+        let r = unsafe { pthread_join(thread, core::ptr::null_mut()) };
+        check(r == 0, &format!("pthread_join returned {r}"))
+    }
+}
+
+fn cwd_fchdir_threads() -> CaseResult {
+    use core::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+    let f = Tree::new()?;
+    let a = f.dir("a")?;
+    let b = f.dir("b")?;
+    f.file("a/file", b"data")?;
+    process::chdir(&cpath(&f.root))?;
+    let dir = opened_dir(&a)?;
+    let shared = sibling::Shared {
+        fd: dir.fd().raw(),
+        step: AtomicU32::new(0),
+        fchdir: AtomicI64::new(i64::MIN),
+        getcwd: AtomicI64::new(i64::MIN),
+        cwd: core::cell::UnsafeCell::new([0; 256]),
+    };
+    let thread = sibling::spawn(&shared)?;
+    let entered = sibling::wait(&shared, sibling::ENTERED);
+    // Every check runs after the join, so a failed one never leaves the
+    // sibling waiting.
+    let seen = if entered {
+        (cwd(), bytes("file", b"data"), process::chdir(&cpath(&b)))
+    } else {
+        (Ok(String::new()), Ok(()), Ok(()))
+    };
+    shared.step.store(sibling::MOVED, Ordering::Release);
+    sibling::join(thread)?;
+    check(entered, "the sibling thread never called fchdir")?;
+    check(
+        shared.fchdir.load(Ordering::Acquire) == 0,
+        &format!("sibling fchdir returned {}", shared.fchdir.load(Ordering::Acquire)),
+    )?;
+    check(seen.0? == a, "a sibling's fchdir did not move this thread's getcwd")?;
+    seen.1?;
+    seen.2?;
+    let r = shared.getcwd.load(Ordering::Acquire);
+    check(r > 0, &format!("sibling getcwd returned {r}"))?;
+    let buf = shared.cwd.into_inner();
+    let end = buf.iter().position(|v| *v == 0).unwrap_or(buf.len());
+    check(
+        &buf[..end] == b.as_bytes(),
+        "this thread's chdir did not move the sibling's getcwd",
+    )
 }
 
 fn permissions_chmod_file() -> CaseResult {

@@ -207,8 +207,9 @@ pub struct Process {
     /// File creation mask (umask)
     pub umask: u32,
 
-    /// Current working directory. Its pathname is derived from the directory.
-    pub cwd: crate::fs::namei::WorkingDir,
+    /// Current working directory, shared by the threads of a process. Its
+    /// pathname is derived from the directory.
+    pub cwd: crate::fs::namei::SharedWorkingDir,
 
     /// Process name (for debugging)
     pub name: String,
@@ -364,7 +365,7 @@ impl Process {
             // Standard default umask: owner rwx, group/other rx
             umask: 0o022,
             // Default working directory is root
-            cwd: crate::fs::namei::WorkingDir::Root,
+            cwd: crate::fs::namei::SharedWorkingDir::default(),
             name,
             state: ProcessState::Creating,
             entry_point,

@@ -9,7 +9,7 @@ const AT_FDCWD: i32 = -100;
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 const AT_EMPTY_PATH: u32 = 0x1000;
 
-fn descriptor(fd: i32) -> Result<FdKind, u64> {
+pub(crate) fn descriptor(fd: i32) -> Result<FdKind, u64> {
     let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)?;
     let guard = crate::process::manager();
     guard
@@ -21,7 +21,11 @@ fn descriptor(fd: i32) -> Result<FdKind, u64> {
 }
 
 pub(crate) fn directory(fd: i32) -> Result<namei::WorkingDir, u64> {
-    let kind = descriptor(fd)?;
+    directory_of(descriptor(fd)?)
+}
+
+/// The ext2 directory an open descriptor's kind holds; ENOTDIR for any other.
+pub(crate) fn directory_of(kind: FdKind) -> Result<namei::WorkingDir, u64> {
     let FdKind::Directory(dir) = kind else {
         return Err(ENOTDIR as u64);
     };

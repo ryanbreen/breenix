@@ -731,6 +731,16 @@ pub unsafe extern "C" fn chdir(path: *const u8) -> i32 {
     syscall_result_to_c_int(result)
 }
 
+/// fchdir - change working directory to an open directory
+#[no_mangle]
+pub unsafe extern "C" fn fchdir(fd: i32) -> i32 {
+    let result = libbreenix::raw::syscall1(
+        libbreenix::syscall::nr::FCHDIR,
+        fd as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
 /// isatty - test whether a file descriptor refers to a terminal
 ///
 /// Implemented by attempting an ioctl(TIOCGWINSZ). If it succeeds, the fd
