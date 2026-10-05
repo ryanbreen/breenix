@@ -159,7 +159,7 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
     // Allocate file descriptor in process
     match process.fd_table.alloc_with_entry(fd_entry) {
         Ok(num) => {
-            log::info!("{}: Socket created fd={}", kind_str, num);
+            log::info!("{} socket created fd={}", kind_str, num);
             log::debug!("{} socket: returning to userspace fd={}", kind_str, num);
             SyscallResult::Ok(num as u64)
         }
