@@ -3892,6 +3892,80 @@ fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize, Option<crate::fs
     })
 }
 
+/// Linux `struct statfs` on 64-bit targets: x86-64 and aarch64 share the
+/// asm-generic layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinuxStatfs {
+    f_type: i64,
+    f_bsize: i64,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [i32; 2],
+    f_namelen: i64,
+    f_frsize: i64,
+    f_flags: i64,
+    f_spare: [i64; 4],
+}
+
+/// ext2's superblock magic, the f_type Linux reports for it.
+const EXT2_SUPER_MAGIC: i64 = 0xEF53;
+
+/// fstatfs(fd, buf) - Report the filesystem an ext2 file or directory
+/// descriptor is on: its block size, block and inode totals, and the free
+/// counts its block groups hold. Other descriptor kinds are not backed by a
+/// filesystem this reports on and fail with ENOSYS.
+pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
+    use super::errno::{EBADF, EIO, ENOSYS};
+    let handle = crate::arch_without_interrupts(|| {
+        let thread = crate::task::scheduler::current_thread_id().ok_or(EBADF as u64)?;
+        let manager_guard = crate::process::manager();
+        let manager = manager_guard.as_ref().ok_or(EBADF as u64)?;
+        let (_, process) = manager.find_process_by_thread(thread).ok_or(EBADF as u64)?;
+        let entry = process.fd_table.get(fd).ok_or(EBADF as u64)?;
+        match &entry.kind {
+            FdKind::RegularFile(file) => Ok(file.lock().handle.clone()),
+            FdKind::Directory(dir) => Ok(dir.lock().handle.clone()),
+            _ => Err(ENOSYS as u64),
+        }
+    });
+    let handle = match handle {
+        Ok(handle) => handle,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    let stats = {
+        let guard = match crate::fs::ext2::read_mount(handle.object.mount) {
+            Ok(guard) => guard,
+            Err(_) => return SyscallResult::Err(EIO as u64),
+        };
+        match guard.as_ref() {
+            Some(fs) => fs.statfs(),
+            None => return SyscallResult::Err(EIO as u64),
+        }
+    };
+    let out = LinuxStatfs {
+        f_type: EXT2_SUPER_MAGIC,
+        f_bsize: stats.block_size as i64,
+        f_blocks: stats.blocks,
+        f_bfree: stats.free_blocks,
+        f_bavail: stats.free_blocks.saturating_sub(stats.reserved_blocks),
+        f_files: stats.inodes,
+        f_ffree: stats.free_inodes,
+        f_fsid: [0; 2],
+        f_namelen: 255,
+        f_frsize: stats.block_size as i64,
+        f_flags: 0,
+        f_spare: [0; 4],
+    };
+    match super::userptr::copy_to_user(buf as *mut LinuxStatfs, &out) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(errno) => SyscallResult::Err(errno),
+    }
+}
+
 /// fsync/fdatasync write back all dirty shared pages of the pinned inode,
 /// then flush data and metadata to the device. Without dirty mapped pages,
 /// ext2 already wrote both synchronously and only the device flush remains.

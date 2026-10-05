@@ -152,6 +152,7 @@ pub enum SyscallNumber {
     Open,
     Lseek,
     Fstat,
+    Fstatfs,
     Getdents64,
     Newfstatat, // Path-based file stat (AT_FDCWD support)
     Fsync,
@@ -303,6 +304,7 @@ impl SyscallNumber {
             130 => Some(Self::Sigsuspend),
             131 => Some(Self::Sigaltstack),
             133 => Some(Self::Mknod),
+            138 => Some(Self::Fstatfs),
             158 => Some(Self::ArchPrctl), // NEW
             186 => Some(Self::GetTid),
             202 => Some(Self::Futex),
@@ -396,6 +398,7 @@ impl SyscallNumber {
             36 => Some(Self::Symlinkat),
             37 => Some(Self::Linkat),
             38 => Some(Self::Renameat),
+            44 => Some(Self::Fstatfs),
             45 => Some(Self::Truncate),
             46 => Some(Self::Ftruncate),
             48 => Some(Self::Faccessat),

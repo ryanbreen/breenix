@@ -329,6 +329,39 @@ pub fn fstat(fd: Fd) -> Result<Stat, Error> {
     Ok(stat)
 }
 
+/// Filesystem statistics as fstatfs reports them (Linux `struct statfs`,
+/// the asm-generic layout x86-64 and aarch64 share).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Statfs {
+    pub f_type: i64,
+    pub f_bsize: i64,
+    pub f_blocks: u64,
+    pub f_bfree: u64,
+    pub f_bavail: u64,
+    pub f_files: u64,
+    pub f_ffree: u64,
+    pub f_fsid: [i32; 2],
+    pub f_namelen: i64,
+    pub f_frsize: i64,
+    pub f_flags: i64,
+    pub f_spare: [i64; 4],
+}
+
+/// Report the filesystem holding an open file or directory.
+pub fn fstatfs(fd: Fd) -> Result<Statfs, Error> {
+    let mut buf = Statfs::default();
+    let ret = unsafe {
+        raw::syscall2(
+            nr::FSTATFS,
+            fd.raw(),
+            &mut buf as *mut Statfs as u64,
+        ) as i64
+    };
+    Error::from_syscall(ret)?;
+    Ok(buf)
+}
+
 /// Reposition read/write file offset.
 ///
 /// # Arguments

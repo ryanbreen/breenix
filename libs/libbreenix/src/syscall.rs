@@ -25,6 +25,7 @@ pub mod nr {
     pub const WRITE: u64 = 1;
     pub const CLOSE: u64 = 3;
     pub const FSTAT: u64 = 5;
+    pub const FSTATFS: u64 = 138;
     pub const POLL: u64 = 7;
     pub const LSEEK: u64 = 8;
     pub const MMAP: u64 = 9;
@@ -205,6 +206,7 @@ pub mod nr {
     pub const READLINKAT: u64 = 78;
     pub const NEWFSTATAT: u64 = 79;
     pub const FSTAT: u64 = 80;
+    pub const FSTATFS: u64 = 44;
     pub const FSYNC: u64 = 82;
     pub const FDATASYNC: u64 = 83;
 

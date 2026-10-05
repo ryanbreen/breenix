@@ -116,6 +116,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Open => super::fs::sys_open(arg1, arg2 as u32, arg3 as u32),
         SyscallNumber::Lseek => super::fs::sys_lseek(arg1 as i32, arg2 as i64, arg3 as i32),
         SyscallNumber::Fstat => super::fs::sys_fstat(arg1 as i32, arg2),
+        SyscallNumber::Fstatfs => super::fs::sys_fstatfs(arg1 as i32, arg2),
         SyscallNumber::Getdents64 => super::fs::sys_getdents64(arg1 as i32, arg2, arg3),
         SyscallNumber::Rename => super::fs::sys_rename(arg1, arg2),
         SyscallNumber::Mkdir => super::fs::sys_mkdir(arg1, arg2 as u32),

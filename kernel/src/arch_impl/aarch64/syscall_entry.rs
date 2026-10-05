@@ -599,6 +599,7 @@ fn dispatch_syscall_enum(
             arg3 as i32,
         )),
         SyscallNumber::Fstat => result_to_u64(crate::syscall::fs::sys_fstat(arg1 as i32, arg2)),
+        SyscallNumber::Fstatfs => result_to_u64(crate::syscall::fs::sys_fstatfs(arg1 as i32, arg2)),
         SyscallNumber::Getdents64 => {
             result_to_u64(crate::syscall::fs::sys_getdents64(arg1 as i32, arg2, arg3))
         }

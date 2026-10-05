@@ -40,6 +40,17 @@ fn dir_entry_type(inode: &Ext2Inode) -> u8 {
     }
 }
 
+/// What statfs reports for a mounted ext2 filesystem.
+#[derive(Clone, Copy, Debug)]
+pub struct FsStats {
+    pub block_size: u64,
+    pub blocks: u64,
+    pub reserved_blocks: u64,
+    pub free_blocks: u64,
+    pub inodes: u64,
+    pub free_inodes: u64,
+}
+
 /// A mounted ext2 filesystem instance
 ///
 /// Holds the superblock, block group descriptors, and a reference
@@ -131,6 +142,26 @@ impl Ext2Fs {
         self.superblock.s_state |= EXT2_ERROR_FS;
         let _ = self.superblock.write_to(self.device.as_ref());
         self.failed.store(true, Ordering::Release);
+    }
+
+    /// Capacity and free counts for statfs. The free counts are the sums of
+    /// the group descriptors' counts, which each allocation and release posts
+    /// with its bitmap bit, as Linux ext2 reports them.
+    pub fn statfs(&self) -> FsStats {
+        let (free_blocks, free_inodes) = self.block_groups.iter().fold((0u64, 0u64), |(b, i), g| {
+            (
+                b + u64::from(g.bg_free_blocks_count),
+                i + u64::from(g.bg_free_inodes_count),
+            )
+        });
+        FsStats {
+            block_size: self.superblock.block_size() as u64,
+            blocks: u64::from(self.superblock.s_blocks_count),
+            reserved_blocks: u64::from(self.superblock.s_r_blocks_count),
+            free_blocks,
+            inodes: u64::from(self.superblock.s_inodes_count),
+            free_inodes,
+        }
     }
 
     pub fn pin_inode(&self, inode_num: u32) -> Result<live_inode::FileHandle, &'static str> {
