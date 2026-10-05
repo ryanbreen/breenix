@@ -130,6 +130,7 @@ STD_BINARIES=(
     # Exec smoke (aarch64 boot-path execve coverage)
     "exec_smoke"
     "exec_smoke_target"
+    "umask_exec_test"
 
     # Fork smoke (#745 -- x86 production fork() coverage, arch-neutral)
     "fork_smoke"

@@ -673,3 +673,7 @@ path = "src/files_io_exec.rs"
 [[bin]]
 name = "suite-directories"
 path = "src/suite_directories.rs"
+
+[[bin]]
+name = "umask_exec_test"
+path = "src/umask_exec_test.rs"

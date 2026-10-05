@@ -267,6 +267,14 @@ pub fn sys_clone(
         alloc::format!("thread-{}", child_pid.as_u64()),
         entry_point,
     );
+    let parent = manager.get_process(parent_pid)
+        .expect("parent remains present under PM during clone");
+    child_process.uid = parent.uid;
+    child_process.gid = parent.gid;
+    child_process.euid = parent.euid;
+    child_process.egid = parent.egid;
+    child_process.umask = parent.umask;
+    child_process.supplementary_groups = parent.supplementary_groups.clone();
     child_process.parent = Some(parent_pid);
     child_process.inherited_cr3 = Some(parent_cr3);
     child_process.thread_group_id = Some(parent_tg_id);

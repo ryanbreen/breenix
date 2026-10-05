@@ -15,6 +15,7 @@ use std::cell::RefCell;
 const O_NOFOLLOW: u32 = 0x20000;
 #[cfg(target_arch = "aarch64")]
 const O_NOFOLLOW: u32 = 0x8000;
+const O_NONBLOCK: u32 = 0x800;
 const AT_FDCWD: u64 = (-100i64) as u64;
 const UTIME_NOW: i64 = 1073741823;
 const UTIME_OMIT: i64 = 1073741822;
@@ -306,8 +307,7 @@ fn umask(mode: u32) -> Result<u64, Error> {
     request(ABI[2], [mode as u64, 0, 0, 0])
 }
 fn unprivileged() -> CaseResult {
-    // The kernel has no supplementary groups today. Use the real syscall so a
-    // future group implementation must clear them before access is measured.
+    // Clear inherited supplementary groups before measuring primary classes.
     #[cfg(target_arch = "x86_64")]
     const SETGROUPS: u64 = 116;
     #[cfg(target_arch = "aarch64")]
@@ -663,13 +663,13 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("symlink-physical", "getcwd after chdir of a symlink names the physical directory", cwd_symlink_physical),
     ]),
     category("permissions", "chmod, chown, access & umask", &[
-        case("chmod-file", "chmod changes file permission bits reported by fresh stat", permissions_chmod_file),
-        case("chmod-dir", "chmod changes directory permission bits", permissions_chmod_dir),
+        case("chmod-file", "pathname and descriptor chmod preserve file type and update modes across symlinks and unlink", permissions_chmod_file),
+        case("chmod-dir", "directory descriptor metadata retains inode identity and SGID", permissions_chmod_dir),
         case("chmod-missing", "chmod of a missing path fails with ENOENT", permissions_chmod_missing),
-        case("chown", "chown updates the UID and GID reported by fresh stat", permissions_chown),
-        case("chown-unchanged", "chown with minus one leaves the corresponding owner unchanged", permissions_chown_unchanged),
-        case("umask-return", "umask returns the previous mask and restricts it to permission bits", permissions_umask_return),
-        case("umask-file", "umask applies at regular-file creation", permissions_umask_file),
+        case("chown", "pathname and descriptor chown preserve full-width IDs and symlink behavior", permissions_chown),
+        case("chown-unchanged", "chown preserves minus-one IDs and enforces owner, FIFO and privilege-bit rules", permissions_chown_unchanged),
+        case("umask-return", "umask returns masked state and credentials survive fork, exec, spawn and clone", permissions_umask_return),
+        case("umask-file", "creation modes and FIFO descriptor identity survive unlink and replacement", permissions_umask_file),
         case("umask-dir", "umask applies at directory creation", permissions_umask_dir),
         case("chmod-umask", "umask does not mask chmod permission bits", permissions_chmod_umask),
         case("access-exists", "access F_OK reports existence even without permission bits", permissions_access_exists),
@@ -678,7 +678,7 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("access-other", "access checks other permission bits using real credentials", permissions_access_other),
         case("access-execute", "access checks execute permission bits using real credentials", permissions_access_execute),
         case("search-denied", "path traversal without directory search permission fails with EACCES", permissions_search_denied),
-        case("root-execute", "Linux policy denies root X_OK on a regular file with no execute bits", permissions_root_execute),
+        case("root-execute", "Linux policy denies root X_OK on non-directory inodes without execute bits", permissions_root_execute),
         case("access-owner-denied", "access denies owner bits even when another class grants them", permissions_access_owner_denied),
         case("access-group-denied", "access denies group bits even when another class grants them", permissions_access_group_denied),
         case("access-other-denied", "access denies other bits even when another class grants them", permissions_access_other_denied),
@@ -1371,11 +1371,29 @@ fn cwd_missing() -> CaseResult {
 fn permissions_chmod_file() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("file", b"x")?;
+    #[cfg(target_arch = "x86_64")]
+    {
+        let c = cpath(&p);
+        request(90, [c.as_ptr() as u64, 0o600, 0, 0])?;
+        check(stat(&p, false)?.st_mode & 0o7777 == 0o600, "legacy chmod failed")?;
+    }
     chmod(&p, 0o654)?;
     check(
         stat(&p, false)?.st_mode & 0o7777 == 0o654,
         "chmod mode differs",
-    )
+    )?;
+    let fd = File::open(&p, O_RDONLY)?;
+    request(nr::FCHMOD, [fd.fd().raw(), 0xffff, 0, 0])?;
+    let mode = fs::fstat(fd.fd())?.st_mode;
+    check(mode & 0o170000 == 0o100000 && mode & 0o7777 == 0o7777,
+        "fchmod changed type or failed to mask mode")?;
+    let link = f.sym("link", &p)?;
+    chmod(&link, 0o640)?;
+    check(stat(&p, false)?.st_mode & 0o7777 == 0o640 && stat(&link, true)?.is_symlink(),
+        "chmod did not follow final symlink")?;
+    fs::unlink(&p)?;
+    request(nr::FCHMOD, [fd.fd().raw(), 0o600, 0, 0])?;
+    check(fs::fstat(fd.fd())?.st_mode & 0o7777 == 0o600, "fchmod lost unlinked inode")
 }
 
 fn permissions_chmod_dir() -> CaseResult {
@@ -1385,7 +1403,16 @@ fn permissions_chmod_dir() -> CaseResult {
     check(
         stat(&p, false)?.st_mode & 0o777 == 0o711,
         "directory chmod mode differs",
-    )
+    )?;
+    let fd = File::open(&p, O_RDONLY | O_DIRECTORY)?;
+    request(nr::FCHMOD, [fd.fd().raw(), 0o2750, 0, 0])?;
+    check(fs::fstat(fd.fd())?.st_mode & 0o177777 == 0o42750, "fchmod directory mode or type differs")?;
+    // A counted directory handle follows the existing cwd EBUSY policy.
+    errno(observed::rmdir(&p), 16)?;
+    request(nr::FCHOWN, [fd.fd().raw(), 1001, 1001, 0])?;
+    unprivileged()?;
+    request(nr::FCHOWN, [fd.fd().raw(), u32::MAX as u64, 1001, 0])?;
+    check(fs::fstat(fd.fd())?.st_mode & 0o2000 != 0, "directory chown cleared SGID")
 }
 
 fn permissions_chmod_missing() -> CaseResult {
@@ -1396,12 +1423,43 @@ fn permissions_chmod_missing() -> CaseResult {
 fn permissions_chown() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("file", b"x")?;
+    #[cfg(target_arch = "x86_64")]
+    {
+        let c = cpath(&p);
+        request(92, [c.as_ptr() as u64, 1111, 2222, 0])?;
+        let st = stat(&p, false)?;
+        check(st.st_uid == 1111 && st.st_gid == 2222, "legacy chown failed")?;
+    }
     chown(&p, 1234, 2345)?;
     let s = stat(&p, false)?;
     check(
         s.st_uid == 1234 && s.st_gid == 2345,
         "chown ownership differs",
-    )
+    )?;
+    let fd = File::open(&p, O_RDONLY)?;
+    request(nr::FCHOWN, [fd.fd().raw(), 0x12345678, 0x23456789, 0])?;
+    let owned = fs::fstat(fd.fd())?;
+    check(owned.st_uid == 0x12345678 && owned.st_gid == 0x23456789, "fchown truncated ownership IDs")?;
+    let link = f.sym("link", &p)?;
+    let c = cpath(&link);
+    #[cfg(target_arch = "x86_64")]
+    {
+        request(94, [c.as_ptr() as u64, 2222, 3333, 0])?;
+        let st = stat(&link, true)?;
+        check(st.st_uid == 2222 && st.st_gid == 3333 && stat(&p, false)?.st_uid == 0x12345678,
+            "legacy lchown followed target or failed ownership")?;
+    }
+    // SAFETY: c stays NUL-terminated through fchownat.
+    let ret = unsafe { raw::syscall5(nr::FCHOWNAT, AT_FDCWD, c.as_ptr() as u64, 3456, 4567, 0x100) };
+    Error::from_syscall(ret as i64)?;
+    let l = stat(&link, true)?;
+    check(l.st_uid == 3456 && l.st_gid == 4567 && l.is_symlink(), "lchown followed final symlink")?;
+    check(stat(&p, false)?.st_uid == 0x12345678, "lchown changed target ownership")?;
+    chmod(&p, 0o6755)?;
+    chown(&link, 1234, 2345)?;
+    let target = stat(&p, false)?;
+    check(target.st_uid == 1234 && target.st_gid == 2345 && target.st_mode & 0o6000 == 0,
+        "chown failed to follow symlink or clear privilege bits")
 }
 
 fn permissions_chown_unchanged() -> CaseResult {
@@ -1419,7 +1477,45 @@ fn permissions_chown_unchanged() -> CaseResult {
     check(
         s.st_uid == 4567 && s.st_gid == 3456,
         "minus-one GID was not preserved",
-    )
+    )?;
+    chown(&p, 1001, 2001)?;
+    chmod(&p, 0o6755)?;
+    let fd = File::open(&p, O_RDWR)?;
+    let fifo_path = f.path("fifo");
+    fs::mkfifo(&fifo_path, 0o7777)?;
+    check(stat(&fifo_path, false)?.st_mode & 0o7777 == 0o7777, "mkfifo discarded special mode bits")?;
+    chown(&fifo_path, 1001, 1001)?;
+    chmod(&fifo_path, 0)?;
+    unprivileged()?;
+    let symlink = f.sym("owned-link", &p)?;
+    check(stat(&symlink, true)?.st_uid == 1001 && stat(&symlink, true)?.st_gid == 1001,
+        "symlink did not inherit creator ownership")?;
+    let link_c = cpath(&symlink);
+    // SAFETY: NUL-terminated link path remains alive through fchownat.
+    Error::from_syscall(unsafe { raw::syscall5(nr::FCHOWNAT, AT_FDCWD,
+        link_c.as_ptr() as u64, u32::MAX as u64, 1001, 0x100) } as i64)?;
+    errno(observed::open(&fifo_path, O_RDONLY | O_NONBLOCK), 13)?;
+    chmod(&p, 0o6755)?;
+    check(stat(&p, false)?.st_mode & 0o6000 == 0o4000, "unprivileged chmod retained nonmember SGID")?;
+    request(nr::FCHOWN, [fd.fd().raw(), u32::MAX as u64, 1001, 0])?;
+    check(stat(&p, false)?.st_mode & 0o6000 == 0, "unprivileged chown retained privilege bits")?;
+    let c = cpath(&p);
+    // SAFETY: c stays alive through the syscall.
+    let denied = unsafe { raw::syscall5(nr::FCHOWNAT, AT_FDCWD, c.as_ptr() as u64, 2001, u32::MAX as u64, 0) as i64 };
+    errno(denied, 1)?;
+    check(stat(&p, false)?.st_uid == 1001, "denied chown changed owner")?;
+    chmod(&p, 0o6610)?;
+    write_all(fd.fd(), b"y")?;
+    check(stat(&p, false)?.st_mode & 0o6000 == 0, "unprivileged write retained privilege bits")?;
+    chmod(&p, 0o6600)?;
+    write_all(fd.fd(), b"z")?;
+    check(stat(&p, false)?.st_mode & 0o6000 == 0o2000, "write cleared non-executable SGID")?;
+    chmod(&p, 0o6610)?;
+    request(nr::FTRUNCATE, [fd.fd().raw(), 0, 0, 0])?;
+    check(stat(&p, false)?.st_mode & 0o6000 == 0, "unprivileged truncate retained privilege bits")?;
+    chmod(&p, 0o6600)?;
+    request(nr::FTRUNCATE, [fd.fd().raw(), 0, 0, 0])?;
+    check(stat(&p, false)?.st_mode & 0o6000 == 0o2000, "truncate cleared non-executable SGID")
 }
 
 fn permissions_umask_return() -> CaseResult {
@@ -1427,7 +1523,56 @@ fn permissions_umask_return() -> CaseResult {
     check(
         umask(0o7022)? == 0o027 && umask(0)? == 0o022,
         "umask old value or mask bits differ",
-    )
+    )?;
+    umask(0o027)?;
+    let groups = [1001u32, 2345];
+    request(nr::SETGROUPS, [2, groups.as_ptr() as u64, 0, 0])?;
+    match process::fork()? {
+        process::ForkResult::Child => {
+            if umask(0o007).ok() != Some(0o027) { process::exit(1); }
+            if umask(0o027).ok() != Some(0o007) { process::exit(2); }
+            let path = b"/usr/local/test/bin/umask_exec_test\0";
+            let argv = [path.as_ptr(), core::ptr::null()];
+            let _ = process::execv(path, argv.as_ptr());
+            process::exit(3);
+        }
+        process::ForkResult::Parent(pid) => {
+            let mut status = 0;
+            let waited = process::waitpid(pid.raw() as i32, &mut status, 0)?;
+            check(waited == pid && process::wifexited(status) && process::wexitstatus(status) == 0,
+                "fork/exec lost umask or supplementary groups")?;
+        }
+    }
+    check(umask(0)? == 0o027, "child changed parent's umask")?;
+    let mut actual = [0u32; 2];
+    check(request(nr::GETGROUPS, [2, actual.as_mut_ptr() as u64, 0, 0])? == 2 && actual == groups,
+        "child changed parent's supplementary groups")?;
+    // Empty-path AT_FDCWD must select cwd instead of looking up fd -100.
+    let f = Tree::new()?;
+    process::chdir(&cpath(&f.root))?;
+    let empty = b"\0";
+    // SAFETY: empty is NUL-terminated and alive through fchownat.
+    Error::from_syscall(unsafe { raw::syscall5(nr::FCHOWNAT, AT_FDCWD,
+        empty.as_ptr() as u64, 1001, 1001, 0x1000) } as i64)?;
+    check(stat(".", false)?.st_uid == 1001, "empty-path chown did not select cwd")?;
+    let cwd_fd = File::open(&f.root, O_RDONLY | O_DIRECTORY)?;
+    request(ABI[4], [1001, 0, 0, 0])?;
+    request(ABI[3], [1001, 0, 0, 0])?;
+    request(nr::FCHMOD, [cwd_fd.fd().raw(), 0, 0, 0])?;
+    // SAFETY: empty is NUL-terminated and alive through the syscall. No
+    // pathname search is permitted here; ownership still authorizes the change.
+    Error::from_syscall(unsafe { raw::syscall5(nr::FCHOWNAT, AT_FDCWD,
+        empty.as_ptr() as u64, u32::MAX as u64, 1001, 0x1000) } as i64)?;
+    request(nr::FCHMOD, [cwd_fd.fd().raw(), 0o777, 0, 0])?;
+    umask(0o027)?;
+    let path = b"/usr/local/test/bin/umask_exec_test\0";
+    let arg = b"unprivileged\0";
+    let argv = [path.as_ptr(), arg.as_ptr(), core::ptr::null()];
+    let pid = process::spawnv(path, argv.as_ptr())?;
+    let mut status = 0;
+    let waited = process::waitpid(pid.raw() as i32, &mut status, 0)?;
+    check(waited == pid && process::wifexited(status) && process::wexitstatus(status) == 0,
+        "spawn/clone lost credentials, umask or groups")
 }
 
 fn permissions_umask_file() -> CaseResult {
@@ -1439,7 +1584,31 @@ fn permissions_umask_file() -> CaseResult {
     check(
         stat(&p, false)?.st_mode & 0o777 == 0o640,
         "file creation ignored umask",
-    )
+    )?;
+    for (name, mode, expected) in [("requested", 0o623, 0o600), ("zero", 0, 0)] {
+        let p = f.path(name);
+        let fd = fs::open_with_mode(&p, O_CREAT | O_EXCL | O_RDWR, mode)?;
+        check(fs::fstat(fd)?.st_mode & 0o7777 == expected, "open ignored requested mode")?;
+        io::close(fd)?;
+    }
+    let fifo = f.path("fifo");
+    let c = cpath(&fifo);
+    request(nr::MKNODAT, [AT_FDCWD, c.as_ptr() as u64, 0o10777, 0])?;
+    check(stat(&fifo, false)?.st_mode & 0o777 == 0o750, "mkfifo ignored umask")?;
+    let fd = File::open(&fifo, O_RDONLY | O_NONBLOCK)?;
+    check(fs::fstat(fd.fd())?.st_mode & 0o777 == 0o750, "FIFO fstat ignored creation mode")?;
+    fs::unlink(&fifo)?;
+    check(fs::fstat(fd.fd())?.st_mode & 0o777 == 0o750, "FIFO lost mode after unlink")?;
+    let duplicate = io::dup(fd.fd())?;
+    fs::mkfifo(&fifo, 0o666)?;
+    let reader = File::open(&fifo, O_RDONLY | O_NONBLOCK)?;
+    drop(fd);
+    io::close(duplicate)?;
+    let writer = File::open(&fifo, O_WRONLY | O_NONBLOCK)?;
+    write_all(writer.fd(), b"r")?;
+    let mut byte = [0u8];
+    check(io::read(reader.fd(), &mut byte)? == 1 && byte == *b"r",
+        "closing old FIFO changed replacement readers or buffer")
 }
 
 fn permissions_umask_dir() -> CaseResult {
@@ -1450,7 +1619,13 @@ fn permissions_umask_dir() -> CaseResult {
     check(
         stat(&p, false)?.st_mode & 0o777 == 0o750,
         "mkdir ignored umask",
-    )
+    )?;
+    for (name, mode, expected) in [("requested", 0o721, 0o700), ("zero", 0, 0)] {
+        let p = f.path(name);
+        fs::mkdir(&p, mode)?;
+        check(stat(&p, false)?.st_mode & 0o777 == expected, "mkdir ignored requested mode")?;
+    }
+    Ok(())
 }
 
 fn permissions_chmod_umask() -> CaseResult {
@@ -1537,7 +1712,10 @@ fn permissions_root_execute() -> CaseResult {
         stat(&p, false)?.st_mode & 0o111 == 0,
         "fixture unexpectedly executable",
     )?;
-    errno(observed::access(&p, X_OK), 13)
+    errno(observed::access(&p, X_OK), 13)?;
+    let fifo = f.path("fifo");
+    fs::mkfifo(&fifo, 0o600)?;
+    errno(observed::access(&fifo, X_OK), 13)
 }
 
 fn timestamps_explicit() -> CaseResult {

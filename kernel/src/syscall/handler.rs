@@ -340,6 +340,15 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::GetPgid) => super::session::sys_getpgid(args.0 as i32),
         Some(SyscallNumber::GetSid) => super::session::sys_getsid(args.0 as i32),
         // Filesystem syscalls
+        Some(SyscallNumber::Chmod) => super::metadata::sys_chmod(args.0, args.1 as u32),
+        Some(SyscallNumber::Fchmod) => super::metadata::sys_fchmod(args.0 as i32, args.1 as u32),
+        Some(SyscallNumber::Fchmodat) => super::metadata::sys_fchmodat(args.0 as i32, args.1, args.2 as u32),
+        Some(SyscallNumber::Chown) => super::metadata::sys_chown(args.0, args.1 as u32, args.2 as u32),
+        Some(SyscallNumber::Lchown) => super::metadata::sys_lchown(args.0, args.1 as u32, args.2 as u32),
+        Some(SyscallNumber::Fchown) => super::metadata::sys_fchown(args.0 as i32, args.1 as u32, args.2 as u32),
+        Some(SyscallNumber::Fchownat) => super::metadata::sys_fchownat(args.0 as i32, args.1, args.2 as u32, args.3 as u32, args.4 as u32),
+        Some(SyscallNumber::Setgroups) => super::handlers::sys_setgroups(args.0, args.1),
+        Some(SyscallNumber::Getgroups) => super::handlers::sys_getgroups(args.0 as i32, args.1),
         Some(SyscallNumber::Access) => super::fs::sys_access(args.0, args.1 as u32),
         Some(SyscallNumber::Getcwd) => super::fs::sys_getcwd(args.0, args.1),
         Some(SyscallNumber::Chdir) => super::fs::sys_chdir(args.0),
@@ -368,7 +377,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             super::fs::sys_openat(args.0 as i32, args.1, args.2 as u32, args.3 as u32)
         }
         Some(SyscallNumber::Faccessat) => {
-            super::fs::sys_faccessat(args.0 as i32, args.1, args.2 as u32, args.3 as u32)
+            super::fs::sys_faccessat(args.0 as i32, args.1, args.2 as u32, 0)
         }
         Some(SyscallNumber::Mkdirat) => {
             super::fs::sys_mkdirat(args.0 as i32, args.1, args.2 as u32)

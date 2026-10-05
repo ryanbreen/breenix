@@ -469,7 +469,7 @@ pub fn copy_stack_contents(
 /// - **Session ID (sid)**: Already copied during Process::new() creation in the fork path.
 ///   Verified here for consistency.
 ///
-/// - **umask**: Not yet tracked per-process (uses global default). TODO when implemented.
+/// - **umask and supplementary groups**: Inherited unchanged; exec preserves both.
 ///
 /// - **Current working directory**: Inherited from parent in fork_internal().
 ///
@@ -501,6 +501,7 @@ pub fn copy_process_state(
     child_process.euid = parent_process.euid;
     child_process.egid = parent_process.egid;
     child_process.umask = parent_process.umask;
+    child_process.supplementary_groups = parent_process.supplementary_groups.clone();
 
     Ok(())
 }

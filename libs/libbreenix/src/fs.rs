@@ -829,9 +829,9 @@ pub fn mkfifo(pathname: &str, mode: u32) -> Result<(), Error> {
     // mkfifo is implemented via mknod with S_IFIFO mode
     let ret = unsafe {
         #[cfg(target_arch = "x86_64")]
-        { raw::syscall3(nr::MKNOD, cpath.as_u64(), (S_IFIFO | (mode & 0o777)) as u64, 0) as i64 }
+        { raw::syscall3(nr::MKNOD, cpath.as_u64(), (S_IFIFO | (mode & 0o7777)) as u64, 0) as i64 }
         #[cfg(target_arch = "aarch64")]
-        { raw::syscall4(nr::MKNODAT, AT_FDCWD, cpath.as_u64(), (S_IFIFO | (mode & 0o777)) as u64, 0) as i64 }
+        { raw::syscall4(nr::MKNODAT, AT_FDCWD, cpath.as_u64(), (S_IFIFO | (mode & 0o7777)) as u64, 0) as i64 }
     };
     Error::from_syscall(ret).map(|_| ())
 }

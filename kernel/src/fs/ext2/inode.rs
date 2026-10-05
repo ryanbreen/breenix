@@ -197,6 +197,22 @@ impl Ext2Inode {
         }
     }
 
+    /// Linux ext2 stores the upper half of each ownership ID in i_osd2.
+    pub fn uid(&self) -> u32 {
+        self.i_uid as u32 | ((u16::from_le_bytes([self.i_osd2[4], self.i_osd2[5]]) as u32) << 16)
+    }
+
+    pub fn gid(&self) -> u32 {
+        self.i_gid as u32 | ((u16::from_le_bytes([self.i_osd2[6], self.i_osd2[7]]) as u32) << 16)
+    }
+
+    pub fn set_owner(&mut self, uid: u32, gid: u32) {
+        self.i_uid = uid as u16;
+        self.i_gid = gid as u16;
+        self.i_osd2[4..6].copy_from_slice(&((uid >> 16) as u16).to_le_bytes());
+        self.i_osd2[6..8].copy_from_slice(&((gid >> 16) as u16).to_le_bytes());
+    }
+
     /// Get file type from mode
     pub fn file_type(&self) -> FileType {
         // Safety: Reading from packed struct requires unaligned access
@@ -839,7 +855,7 @@ impl Ext2Inode {
         let now = crate::time::current_unix_time() as u32;
 
         Self {
-            i_mode: EXT2_S_IFREG | (mode & 0o777),
+            i_mode: EXT2_S_IFREG | (mode & 0o7777),
             i_uid: uid,
             i_size: 0,
             i_atime: now,
@@ -924,7 +940,7 @@ impl Ext2Inode {
         let now = crate::time::current_unix_time() as u32;
 
         Self {
-            i_mode: EXT2_S_IFDIR | (mode & 0o777),
+            i_mode: EXT2_S_IFDIR | (mode & 0o1777),
             i_uid: 0,  // root for now
             i_size: 0, // Will be set when directory data is written
             i_atime: now,

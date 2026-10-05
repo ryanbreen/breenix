@@ -834,30 +834,51 @@ pub extern "C" fn fdatasync(fd: i32) -> i32 {
 
 /// fchmod - change file mode bits (by fd)
 #[no_mangle]
-pub unsafe extern "C" fn fchmod(_fd: i32, _mode: u32) -> i32 {
-    ERRNO = ENOSYS;
-    -1
+pub unsafe extern "C" fn fchmod(fd: i32, mode: u32) -> i32 {
+    syscall_result_to_c_int(libbreenix::raw::syscall2(libbreenix::syscall::nr::FCHMOD, fd as u64, mode as u64) as i64)
 }
 
 /// fchown - change file owner/group (by fd)
 #[no_mangle]
-pub unsafe extern "C" fn fchown(_fd: i32, _owner: u32, _group: u32) -> i32 {
-    ERRNO = ENOSYS;
-    -1
+pub unsafe extern "C" fn fchown(fd: i32, owner: u32, group: u32) -> i32 {
+    syscall_result_to_c_int(libbreenix::raw::syscall3(libbreenix::syscall::nr::FCHOWN, fd as u64, owner as u64, group as u64) as i64)
 }
 
-/// chmod - change file mode bits (by path)
+/// chmod follows the final symlink, using the shared *at ABI on both architectures.
 #[no_mangle]
-pub unsafe extern "C" fn chmod(_path: *const u8, _mode: u32) -> i32 {
-    ERRNO = ENOSYS;
-    -1
+pub unsafe extern "C" fn chmod(path: *const u8, mode: u32) -> i32 {
+    fchmodat(-100, path, mode, 0)
 }
 
-/// chown - change file owner/group (by path)
+/// Linux's fchmodat syscall has no flags; unsupported libc flags fail explicitly.
 #[no_mangle]
-pub unsafe extern "C" fn chown(_path: *const u8, _owner: u32, _group: u32) -> i32 {
-    ERRNO = ENOSYS;
-    -1
+pub unsafe extern "C" fn fchmodat(fd: i32, path: *const u8, mode: u32, flags: i32) -> i32 {
+    if flags != 0 {
+        ERRNO = if flags & !0x100 != 0 { EINVAL } else { 95 };
+        return -1;
+    }
+    syscall_result_to_c_int(libbreenix::raw::syscall3(libbreenix::syscall::nr::FCHMODAT, fd as u64, path as u64, mode as u64) as i64)
+}
+
+/// chown follows a final symlink; lchown changes the symlink's own ownership.
+#[no_mangle]
+pub unsafe extern "C" fn chown(path: *const u8, owner: u32, group: u32) -> i32 {
+    fchownat(-100, path, owner, group, 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lchown(path: *const u8, owner: u32, group: u32) -> i32 {
+    fchownat(-100, path, owner, group, 0x100)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn fchownat(fd: i32, path: *const u8, owner: u32, group: u32, flags: i32) -> i32 {
+    syscall_result_to_c_int(libbreenix::raw::syscall5(libbreenix::syscall::nr::FCHOWNAT, fd as u64, path as u64, owner as u64, group as u64, flags as u64) as i64)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn umask(mask: u32) -> u32 {
+    libbreenix::raw::syscall1(libbreenix::syscall::nr::UMASK, mask as u64) as u32
 }
 
 /// utimes - change file access and modification times
@@ -3066,21 +3087,14 @@ pub unsafe extern "C" fn futimens(_fd: i32, _times: *const u8) -> i32 {
 
 /// setgroups - set list of supplementary group IDs
 #[no_mangle]
-pub unsafe extern "C" fn setgroups(_size: usize, _list: *const u32) -> i32 {
-    0 // No-op: single-user system
+pub unsafe extern "C" fn setgroups(size: usize, list: *const u32) -> i32 {
+    syscall_result_to_c_int(libbreenix::raw::syscall2(libbreenix::syscall::nr::SETGROUPS, size as u64, list as u64) as i64)
 }
 
-/// getgroups - get list of supplementary group IDs
+/// getgroups - return the process's supplementary group list
 #[no_mangle]
 pub unsafe extern "C" fn getgroups(size: i32, list: *mut u32) -> i32 {
-    if size == 0 {
-        return 0; // Return number of supplementary group IDs (none)
-    }
-    if !list.is_null() && size > 0 {
-        *list = 0; // root group
-        return 1;
-    }
-    0
+    syscall_result_to_c_int(libbreenix::raw::syscall2(libbreenix::syscall::nr::GETGROUPS, size as u64, list as u64) as i64)
 }
 
 /// getpwuid - get password entry by UID (stub)

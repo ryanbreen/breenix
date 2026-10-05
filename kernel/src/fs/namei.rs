@@ -277,7 +277,24 @@ pub fn resolve_create(path: &str) -> Result<Resolved, u64> {
     walk(path, Mode::Create)
 }
 
+/// Resolve with the caller's chosen credentials (access uses real IDs) and
+/// optionally a directory descriptor, using the same component walk.
+pub(crate) fn resolve_from(
+    path: &str, follow: bool, start: Option<WorkingDir>,
+    cred: &super::permissions::Credentials,
+) -> Result<Resolved, u64> {
+    walk_with(path, Mode::Lookup { follow }, start, cred)
+}
+
 fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
+    let cred = super::permissions::Credentials::current(false);
+    walk_with(path, mode, None, &cred)
+}
+
+fn walk_with(
+    path: &str, mode: Mode, start: Option<WorkingDir>,
+    cred: &super::permissions::Credentials,
+) -> Result<Resolved, u64> {
     if path.is_empty() {
         return Err(ENOENT as u64);
     }
@@ -289,7 +306,7 @@ fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
     let start = if path.starts_with('/') {
         WorkingDir::Root
     } else {
-        current_working_dir()
+        start.unwrap_or_else(current_working_dir)
     };
     let mut held = Held(None);
     let mut stack = frames(&start, &mut held)?;
@@ -317,13 +334,19 @@ fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
         if !top_is_dir {
             return Err(ENOTDIR as u64);
         }
+        // Searching any component, including . and .., requires permission
+        // on the directory it is looked up in. Keep the inode under its guard.
+        let searched_inode = if let Node::Ext2(mount, dir) = top(&stack) {
+            let inode = read_dir_inode(held.fs(mount)?, dir)?;
+            if !cred.permits(&inode, 1) {
+                return Err(crate::syscall::errno::EACCES as u64);
+            }
+            Some(inode)
+        } else { None };
         match name.as_str() {
             "." => {
                 last = Last::Dot;
-                // `.` names the directory itself, which must still be one.
-                if let Node::Ext2(mount, dir) = top(&stack) {
-                    read_dir_inode(held.fs(mount)?, dir)?;
-                }
+                // The search check already verified this directory.
                 continue;
             }
             ".." => {
@@ -364,7 +387,7 @@ fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
                     }
                 }
                 let fs = held.fs(mount)?;
-                let dir_inode = read_dir_inode(fs, dir)?;
+                let dir_inode = searched_inode.ok_or(ENOTDIR as u64)?;
                 let found = fs
                     .lookup_in_dir(&dir_inode, &name)
                     .map_err(|_| EIO as u64)?;

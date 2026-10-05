@@ -887,7 +887,7 @@ fn aggregate_writev(source: &str) -> bool {
     let body = compact(&function(source, "sys_writev"));
     body.contains("length<=crate::ipc::pipe::PIPE_BUFasu64")
         && body.contains(
-            "crate::ipc::FdKind::PipeWrite(buffer)|crate::ipc::FdKind::FifoWrite(_,buffer)",
+            "crate::ipc::FdKind::PipeWrite(buffer)|crate::ipc::FdKind::FifoWrite(_,buffer,_)",
         )
         && body.contains("forvectorin&vectors")
         && body.contains("copy_from_user(addressas*constu8)")

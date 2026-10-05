@@ -14,6 +14,7 @@ pub mod devptsfs;
 pub mod ext2;
 pub mod locks;
 pub mod namei;
+pub(crate) mod permissions;
 // The ext2/VFS fault-injection leg. Test profile only: every byte of it is
 // behind this feature, and `scripts/check-fs-fault-production-clean.sh` proves
 // a production ELF carries none of it.

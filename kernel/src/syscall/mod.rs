@@ -36,6 +36,7 @@ pub(crate) mod dispatcher;
 pub mod epoll;
 pub mod fifo;
 pub mod fs;
+pub mod metadata;
 pub mod futex;
 #[cfg(feature = "boot_tests")]
 pub mod futex_oracle;
@@ -141,6 +142,13 @@ pub enum SyscallNumber {
     Symlink,
     Readlink,
     Mknod,
+    Chmod,
+    Fchmod,
+    Fchmodat,
+    Chown,
+    Fchown,
+    Lchown,
+    Fchownat,
     Open,
     Lseek,
     Fstat,
@@ -197,6 +205,8 @@ pub enum SyscallNumber {
     Getegid,
     Setuid,
     Setgid,
+    Setgroups,
+    Getgroups,
     // File creation mask
     Umask,
     // Timestamps
@@ -310,6 +320,15 @@ impl SyscallNumber {
             265 => Some(Self::Linkat),
             266 => Some(Self::Symlinkat),
             267 => Some(Self::Readlinkat),
+            268 => Some(Self::Fchmodat),
+            260 => Some(Self::Fchownat),
+            90 => Some(Self::Chmod),
+            91 => Some(Self::Fchmod),
+            92 => Some(Self::Chown),
+            93 => Some(Self::Fchown),
+            94 => Some(Self::Lchown),
+            116 => Some(Self::Setgroups),
+            115 => Some(Self::Getgroups),
             269 => Some(Self::Faccessat),
             270 => Some(Self::Pselect6),
             271 => Some(Self::Ppoll),         // NEW stub
@@ -380,6 +399,12 @@ impl SyscallNumber {
             45 => Some(Self::Truncate),
             46 => Some(Self::Ftruncate),
             48 => Some(Self::Faccessat),
+            52 => Some(Self::Fchmod),
+            53 => Some(Self::Fchmodat),
+            54 => Some(Self::Fchownat),
+            55 => Some(Self::Fchown),
+            159 => Some(Self::Setgroups),
+            158 => Some(Self::Getgroups),
             49 => Some(Self::Chdir),
             56 => Some(Self::Openat),
             57 => Some(Self::Close),
