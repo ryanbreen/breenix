@@ -8,9 +8,9 @@ pub mod dir;
 pub mod file;
 pub mod inode;
 pub mod live_inode;
-pub mod writeback;
 mod reclaim;
 pub mod superblock;
+pub mod writeback;
 
 pub use block_group::*;
 pub use dir::*;
@@ -40,6 +40,9 @@ pub struct Ext2Fs {
     live_inodes: live_inode::LiveInodes,
     orphan_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
     finalization_cursor: u32,
+    /// The last inode the cache service reached with budget left; the next
+    /// pass starts after it.
+    eviction_cursor: u32,
     shrink_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
 }
 
@@ -54,6 +57,16 @@ pub(super) enum Finalize {
     More,
     /// An I/O step failed; retry after the service's delay.
     Retry,
+}
+
+impl Finalize {
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Retry, _) | (_, Self::Retry) => Self::Retry,
+            (Self::More, _) | (_, Self::More) => Self::More,
+            _ => Self::Idle,
+        }
+    }
 }
 
 impl Ext2Fs {
@@ -85,6 +98,7 @@ impl Ext2Fs {
             live_inodes: live_inode::LiveInodes::new(),
             orphan_reclaims: alloc::collections::BTreeMap::new(),
             finalization_cursor: 0,
+            eviction_cursor: 0,
             shrink_reclaims: alloc::collections::BTreeMap::new(),
         })
     }
@@ -95,8 +109,11 @@ impl Ext2Fs {
     }
 
     /// The caller read this inode under the same FS guard that protects the pin.
-    pub(crate) fn pin_loaded_inode(&self, inode_num: u32, size: u64)
-        -> Result<live_inode::FileHandle, &'static str> {
+    pub(crate) fn pin_loaded_inode(
+        &self,
+        inode_num: u32,
+        size: u64,
+    ) -> Result<live_inode::FileHandle, &'static str> {
         self.live_inodes.pin(self.mount_pin, inode_num, size)
     }
 
@@ -107,33 +124,50 @@ impl Ext2Fs {
         let mut budget = RECLAIM_BUDGET;
         let mut outcome = self.finalize_shrinks(&mut budget);
         let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
-        let evictions = self.live_inodes.evictions();
+        let evictions = self.live_inodes.evictions(self.eviction_cursor);
+        let mut write_budget = crate::memory::file_map::EVICT_BUDGET;
         for object in &evictions {
+            if write_budget != 0 && cache_budget != 0 {
+                self.eviction_cursor = object.key.inode;
+            }
+            match object
+                .map
+                .service_writeback(self, object.key.inode, &mut write_budget)
+            {
+                Ok(true) => outcome = outcome.merge(Finalize::More),
+                Err(_) => outcome = Finalize::Retry,
+                Ok(false) => {}
+            }
             if object.map.evict(&mut cache_budget) {
-                outcome = Finalize::More;
+                outcome = outcome.merge(Finalize::More);
             }
         }
         // One pass takes a bounded batch of inodes; any left pending need
         // another pass even when every inode in this batch was emptied.
         if evictions.len() == live_inode::EVICTION_BATCH && self.live_inodes.evictions_pending() {
-            outcome = Finalize::More;
+            outcome = outcome.merge(Finalize::More);
         }
         for object in self.live_inodes.pending(self.finalization_cursor) {
-            if !object.unused() { continue; }
+            if !object.unused() {
+                continue;
+            }
             if budget == 0 {
-                return Finalize::More;
+                return outcome.merge(Finalize::More);
             }
             self.finalization_cursor = object.key.inode;
             match self.reclaim_orphan(&object, &mut budget) {
                 Ok(true) | Err(reclaim::ReclaimError::Abandon(_)) => {}
-                Ok(false) => return Finalize::More,
+                Ok(false) => return outcome.merge(Finalize::More),
                 Err(reclaim::ReclaimError::Retry) => outcome = Finalize::Retry,
             }
         }
         if matches!(outcome, Finalize::Idle)
-            && !self.live_inodes.pending(self.finalization_cursor).is_empty()
+            && !self
+                .live_inodes
+                .pending(self.finalization_cursor)
+                .is_empty()
         {
-            return Finalize::More;
+            return outcome.merge(Finalize::More);
         }
         outcome
     }
@@ -143,13 +177,17 @@ impl Ext2Fs {
         let inodes: Vec<u32> = self.shrink_reclaims.keys().copied().collect();
         let mut outcome = Finalize::Idle;
         for ino in inodes {
-            if *budget == 0 { return Finalize::More; }
+            if *budget == 0 {
+                return outcome.merge(Finalize::More);
+            }
             let mut progress = self.shrink_reclaims.remove(&ino).expect("queued shrink");
             match progress.finish(self, ino, budget) {
                 Ok(true) => {}
                 result => {
                     self.shrink_reclaims.insert(ino, progress);
-                    if matches!(result, Ok(false)) { return Finalize::More; }
+                    if matches!(result, Ok(false)) {
+                        return outcome.merge(Finalize::More);
+                    }
                     outcome = Finalize::Retry;
                 }
             }
@@ -197,7 +235,9 @@ impl Ext2Fs {
     pub fn check_shrink(&self, inode_num: u32) -> Result<(), &'static str> {
         if self.shrink_reclaims.contains_key(&inode_num) {
             Err("Unfinished ext2 shrink after I/O failure")
-        } else { Ok(()) }
+        } else {
+            Ok(())
+        }
     }
 
     /// Read an inode from the filesystem
@@ -345,13 +385,13 @@ impl Ext2Fs {
     }
 
     /// Read file content from an inode
-    pub fn read_file_content(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
+    fn read_file_content(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
         read_file(self.device.as_ref(), inode, &self.superblock)
             .map_err(|_| "Failed to read file content")
     }
 
     /// Read a range of file content from an inode
-    pub fn read_file_range(
+    pub(crate) fn read_file_range(
         &self,
         inode: &Ext2Inode,
         offset: u64,
@@ -365,6 +405,45 @@ impl Ext2Fs {
             length,
         )
         .map_err(|_| "Failed to read file range")
+    }
+
+    /// External readers, including exec, use the resident inode cache while
+    /// holding the same mount guard that protects the disk read.
+    pub fn read_file_range_coherent(
+        &self,
+        ino: u32,
+        inode: &Ext2Inode,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, &'static str> {
+        let mut bytes = self.read_file_range(inode, offset, length)?;
+        if let Some(object) = self.live_inodes.get(ino) {
+            object.map.overlay(offset, &mut bytes)?;
+        }
+        Ok(bytes)
+    }
+
+    pub fn read_file_content_coherent(
+        &self,
+        ino: u32,
+        inode: &Ext2Inode,
+    ) -> Result<Vec<u8>, &'static str> {
+        let mut bytes = self.read_file_content(inode)?;
+        if let Some(object) = self.live_inodes.get(ino) {
+            object.map.overlay(0, &mut bytes)?;
+        }
+        Ok(bytes)
+    }
+
+    /// Raw writeback bypasses cache overlays and size transitions. The
+    /// snapshot is clipped to EOF, so this never extends the inode.
+    pub(crate) fn write_mapped_range(
+        &mut self,
+        ino: u32,
+        offset: u64,
+        bytes: &[u8],
+    ) -> Result<usize, &'static str> {
+        self.write_file_range_disk(ino, offset, bytes)
     }
 
     /// Write data to a file at the specified offset
@@ -430,8 +509,11 @@ impl Ext2Fs {
 
         // Allocation updates the group counters. Publish their aggregate and
         // the descriptors once per write, including partial allocation failure.
-        let free_before: u32 = self.block_groups.iter()
-            .map(|group| group.bg_free_blocks_count as u32).sum();
+        let free_before: u32 = self
+            .block_groups
+            .iter()
+            .map(|group| group.bg_free_blocks_count as u32)
+            .sum();
         let written = write_file_range(
             self.device.as_ref(),
             &mut inode,
@@ -440,26 +522,43 @@ impl Ext2Fs {
             offset,
             data,
         );
-        let free_after: u32 = self.block_groups.iter()
-            .map(|group| group.bg_free_blocks_count as u32).sum();
+        let free_after: u32 = self
+            .block_groups
+            .iter()
+            .map(|group| group.bg_free_blocks_count as u32)
+            .sum();
+        let mut persisted = Ok(());
         if free_before != free_after || self.superblock.s_free_blocks_count != free_after {
             self.superblock.s_free_blocks_count = free_after;
-            self.superblock.write_to(self.device.as_ref())
-                .map_err(|_| "Failed to persist allocation count")?;
-            Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
-                .map_err(|_| "Failed to persist allocation groups")?;
+            persisted = self
+                .superblock
+                .write_to(self.device.as_ref())
+                .map_err(|_| "Failed to persist allocation count")
+                .and_then(|_| {
+                    Ext2BlockGroupDesc::write_table(
+                        self.device.as_ref(),
+                        &self.superblock,
+                        &self.block_groups,
+                    )
+                    .map_err(|_| "Failed to persist allocation groups")
+                });
         }
-        written.map_err(|_| "Failed to write file data")?;
 
-        // Write the modified inode back to disk
-        if let Err(_) = inode.write_to(
-            self.device.as_ref(),
-            inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ) {
-            return Err("Failed to write inode");
-        }
+        // The bitmaps already hold every block this write allocated, and the
+        // inode links them even when the write failed part way (its size and
+        // times change only on success). Persist those links on either
+        // outcome, so a retry reuses the blocks instead of leaking them.
+        let linked = inode
+            .write_to(
+                self.device.as_ref(),
+                inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write inode");
+        written.map_err(|_| "Failed to write file data")?;
+        persisted?;
+        linked?;
 
         self.live_inodes.publish_size(inode_num, inode.size());
         Ok(data.len())
@@ -602,7 +701,9 @@ impl Ext2Fs {
     /// Resize a regular file, preserving its prefix and zero-filling extension.
     pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
         let mapped = self.live_inodes.get(inode_num);
-        let before = mapped.as_ref().map(|object| object.size.load(Ordering::Acquire));
+        let before = mapped
+            .as_ref()
+            .map(|object| object.size.load(Ordering::Acquire));
         if let (Some(object), Some(before)) = (&mapped, before) {
             object.map.prepare_resize(before, length)?;
         }
@@ -643,7 +744,9 @@ impl Ext2Fs {
         self.live_inodes.publish_size(inode_num, length);
         if shrinking {
             let mut progress = reclaim::Reclaim::shrink(
-                inode, length.div_ceil(self.superblock.block_size() as u64));
+                inode,
+                length.div_ceil(self.superblock.block_size() as u64),
+            );
             // Success is synchronous: stat and the allocator observe the completed
             // shrink when this syscall returns. Only I/O failure queues custody.
             let mut budget = usize::MAX;
@@ -751,8 +854,12 @@ impl Ext2Fs {
             )
             .map_err(|_| "Failed to write parent inode")?;
 
-        let links = decrement_inode_links(self.device.as_ref(), target_inode_num,
-            &self.superblock, &mut self.block_groups)?;
+        let links = decrement_inode_links(
+            self.device.as_ref(),
+            target_inode_num,
+            &self.superblock,
+            &mut self.block_groups,
+        )?;
         if links == 0 {
             handle.object.orphan.store(true, Ordering::Release);
             // With no descriptor observing it, reclaim the inode now under
@@ -2111,6 +2218,39 @@ fn ext2_acquire<T>(
     spin_fallback()
 }
 
+/// How long a thread a kill has claimed parks between checks of its claim.
+const EXT2_KILL_CLAIM_RECHECK_NS: u64 = 1_000_000;
+
+/// Open the calling thread's kill custody before it acquires an ext2 mount
+/// lock (#1025). A thread a kill has already claimed must not acquire the
+/// lock at all: its termination discards its kernel continuation, guard
+/// included, and the lock would stay held. On SMP the claim can land while
+/// the thread runs on another CPU, so it waits here, parked on the mount's
+/// queue, until either the termination takes it off the CPU for good or the
+/// claim is withdrawn because the kill was deferred.
+fn ext2_kill_custody(
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+) -> crate::task::thread::KillCustody {
+    loop {
+        if let Some(custody) = crate::task::thread::KillCustody::try_enter() {
+            return custody;
+        }
+        if !ext2_lock_can_sleep() {
+            core::hint::spin_loop();
+            continue;
+        }
+        let outcome = waiters.prepare_to_wait_checked(
+            crate::task::thread::ThreadState::BlockedOnIO,
+            Some(ext2_now_ns() + EXT2_KILL_CLAIM_RECHECK_NS),
+            || true,
+        );
+        if let crate::task::waitqueue::PrepareOutcome::Queued = outcome {
+            ext2_schedule_current_wait();
+            waiters.finish_wait();
+        }
+    }
+}
+
 /// Write-acquisition variant of `ext2_acquire`: acquires the upgradeable
 /// slot via `ext2_acquire` (park-capable, generic), then parks waiting for
 /// the upgrade itself while *continuing to hold* the upgradeable guard
@@ -2195,6 +2335,9 @@ fn ext2_acquire_write(
 pub struct Ext2ReadGuard {
     inner: Option<spin::RwLockReadGuard<'static, Option<Ext2Fs>>>,
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
+    /// Opened before the acquisition and closed after `Drop` releases the
+    /// lock, so a SIGKILL never abandons a holder or a queued waiter (#1025).
+    _custody: crate::task::thread::KillCustody,
 }
 
 impl core::ops::Deref for Ext2ReadGuard {
@@ -2249,6 +2392,9 @@ impl Drop for Ext2ReadGuard {
 pub struct Ext2WriteGuard {
     inner: Option<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>>,
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
+    /// Opened before the acquisition and closed after `Drop` releases the
+    /// lock, so a SIGKILL never abandons a holder or a queued waiter (#1025).
+    _custody: crate::task::thread::KillCustody,
 }
 
 impl core::ops::Deref for Ext2WriteGuard {
@@ -2320,13 +2466,21 @@ fn pin_is_home(pin: live_inode::MountPin) -> Result<bool, &'static str> {
 /// Route only to an installed mount whose VFS ID and lifetime token match.
 /// Only the selected guard is taken, and it stays held for the caller.
 pub fn read_mount(pin: live_inode::MountPin) -> Result<Ext2ReadGuard, &'static str> {
-    let guard = if pin_is_home(pin)? { home_fs_read() } else { root_fs_read() };
+    let guard = if pin_is_home(pin)? {
+        home_fs_read()
+    } else {
+        root_fs_read()
+    };
     pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
     Ok(guard)
 }
 
 pub fn write_mount(pin: live_inode::MountPin) -> Result<Ext2WriteGuard, &'static str> {
-    let guard = if pin_is_home(pin)? { home_fs_write() } else { root_fs_write() };
+    let guard = if pin_is_home(pin)? {
+        home_fs_write()
+    } else {
+        root_fs_write()
+    };
     pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
     Ok(guard)
 }
@@ -2441,7 +2595,10 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 
     // Store globally
     let mut installed = ROOT_EXT2.write();
-    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty()) {
+    if installed
+        .as_ref()
+        .is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty())
+    {
         return Err("Root ext2 mount is pinned");
     }
     ROOT_MOUNT_ID.store(fs.mount_id, Ordering::Release);
@@ -2455,6 +2612,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 /// Multiple readers can hold this lock concurrently, allowing parallel
 /// exec, file reads, getdents, and stat operations without contention.
 pub fn root_fs_read() -> Ext2ReadGuard {
+    let custody = ext2_kill_custody(&ROOT_EXT2_WAITERS);
     let inner = ext2_acquire(
         &ROOT_EXT2_WAITERS,
         "ROOT_EXT2_read",
@@ -2464,6 +2622,7 @@ pub fn root_fs_read() -> Ext2ReadGuard {
     Ext2ReadGuard {
         inner: Some(inner),
         waiters: &ROOT_EXT2_WAITERS,
+        _custody: custody,
     }
 }
 
@@ -2489,8 +2648,13 @@ fn fs_write_raw(home: bool) -> Ext2WriteGuard {
     } else {
         (&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write")
     };
+    let custody = ext2_kill_custody(waiters);
     let inner = ext2_acquire_write(lock, waiters, name);
-    Ext2WriteGuard { inner: Some(inner), waiters }
+    Ext2WriteGuard {
+        inner: Some(inner),
+        waiters,
+        _custody: custody,
+    }
 }
 
 fn fs_write(home: bool) -> Ext2WriteGuard {
@@ -2563,7 +2727,10 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 
     // Store globally
     let mut installed = HOME_EXT2.write();
-    if installed.as_ref().is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty()) {
+    if installed
+        .as_ref()
+        .is_some_and(|old| old.live_inodes.is_pinned() || !old.shrink_reclaims.is_empty())
+    {
         return Err("Home ext2 mount is pinned");
     }
     HOME_MOUNT_ID.store(fs.mount_id, Ordering::Release);
@@ -2574,6 +2741,7 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 
 /// Access the home ext2 filesystem for read-only operations
 pub fn home_fs_read() -> Ext2ReadGuard {
+    let custody = ext2_kill_custody(&HOME_EXT2_WAITERS);
     let inner = ext2_acquire(
         &HOME_EXT2_WAITERS,
         "HOME_EXT2_read",
@@ -2583,6 +2751,7 @@ pub fn home_fs_read() -> Ext2ReadGuard {
     Ext2ReadGuard {
         inner: Some(inner),
         waiters: &HOME_EXT2_WAITERS,
+        _custody: custody,
     }
 }
 

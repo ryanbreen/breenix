@@ -247,6 +247,7 @@ pub fn sys_clone(
         owner_pid: Some(child_pid.as_u64()),
         cached_ttbr0: 0,
         wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+        kill_custody: core::sync::atomic::AtomicU64::new(0),
         cpu_affinity: None,
     };
 

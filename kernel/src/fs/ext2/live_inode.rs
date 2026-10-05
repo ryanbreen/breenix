@@ -51,7 +51,7 @@ pub struct LiveInode {
     pub mount: MountPin,
     pub size: AtomicU64,
     pub size_epoch: AtomicU64,
-    /// Cached pages and reverse map for private file mappings.
+    /// Cached pages and reverse map for file mappings.
     pub map: crate::memory::file_map::MapState,
     external_handles: AtomicUsize,
     pending: AtomicBool,
@@ -159,7 +159,7 @@ impl Table {
             .take(PRUNE_PER_PIN)
         {
             self.prune_cursor = inode;
-            if object.unused() && !object.orphan.load(Ordering::Acquire) {
+            if object.unused() && !object.orphan.load(Ordering::Acquire) && !object.map.nonempty() {
                 stale[found] = inode;
                 found += 1;
             }
@@ -223,13 +223,21 @@ impl LiveInodes {
     }
 
     /// Up to `EVICTION_BATCH` entries whose file-mapping cache holds pages
-    /// no binding covers.
-    pub fn evictions(&self) -> alloc::vec::Vec<Arc<LiveInode>> {
-        self.table
-            .lock()
+    /// no binding covers or awaits writeback, in key order starting after
+    /// `after` and wrapping, so entries that stay pending cannot keep later
+    /// ones out of every batch.
+    pub fn evictions(&self, after: u32) -> alloc::vec::Vec<Arc<LiveInode>> {
+        use core::ops::Bound::{Excluded, Included, Unbounded};
+        let table = self.table.lock();
+        table
             .objects
-            .values()
-            .filter(|object| object.map.eviction_pending())
+            .range((Excluded(after), Unbounded))
+            .chain(table.objects.range((Unbounded, Included(after))))
+            .map(|(_, object)| object)
+            .filter(|object| {
+                !object.orphan.load(Ordering::Acquire)
+                    && (object.map.eviction_pending() || object.map.writeback_pending())
+            })
             .take(EVICTION_BATCH)
             .cloned()
             .collect()
@@ -237,11 +245,10 @@ impl LiveInodes {
 
     /// Whether any entry's file-mapping cache still awaits eviction.
     pub fn evictions_pending(&self) -> bool {
-        self.table
-            .lock()
-            .objects
-            .values()
-            .any(|object| object.map.eviction_pending())
+        self.table.lock().objects.values().any(|object| {
+            !object.orphan.load(Ordering::Acquire)
+                && (object.map.eviction_pending() || object.map.writeback_pending())
+        })
     }
 
     pub fn publish_size(&self, inode: u32, size: u64) {
@@ -279,10 +286,8 @@ impl LiveInodes {
     /// Whether an external handle or an unreclaimed orphan still depends on
     /// this mount. Unused linked entries awaiting pruning do not count.
     pub fn is_pinned(&self) -> bool {
-        self.table
-            .lock()
-            .objects
-            .values()
-            .any(|object| !object.unused() || object.orphan.load(Ordering::Acquire))
+        self.table.lock().objects.values().any(|object| {
+            !object.unused() || object.orphan.load(Ordering::Acquire) || object.map.nonempty()
+        })
     }
 }

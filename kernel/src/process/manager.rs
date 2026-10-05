@@ -1432,6 +1432,7 @@ impl ProcessManager {
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1512,6 +1513,7 @@ impl ProcessManager {
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1591,6 +1593,7 @@ impl ProcessManager {
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1676,6 +1679,7 @@ impl ProcessManager {
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -3191,6 +3195,7 @@ impl ProcessManager {
                 owner_pid: Some(child_pid.as_u64()),
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+                kill_custody: core::sync::atomic::AtomicU64::new(0),
                 // A pin is not inherited, on either child-creation path. A
                 // `per_cpu_worker` pin is a claim about servicing one CPU's
                 // per-CPU state and a child services none of it; a hold-pen pin
@@ -3455,7 +3460,10 @@ impl ProcessManager {
             .processes
             .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
-        let old_page_table = process.page_table.take();
+        let old_page_table = process.page_table.take().map(|mut pt| {
+            pt.retain_file_vmas(&mut process.vmas);
+            pt
+        });
 
         // Use our manually calculated stack top
         let new_stack_top = stack_top;
@@ -3628,6 +3636,12 @@ impl ProcessManager {
         // - If exec() succeeds, it never returns (jumps to new program)
         // - If exec() fails, it returns an error to the original program
         // For now, we return the entry point for testing, but this violates POSIX
+        if let Some(process) = self.processes.live_row_mut(&pid) {
+            for old_pt in &mut process.pending_old_page_tables {
+                old_pt.release_exec_file_vmas();
+            }
+        }
+
         Ok(new_entry_point)
     }
 
@@ -3847,7 +3861,8 @@ impl ProcessManager {
         // fallible ELF/frame/argv work earlier in this function) exists to prevent. Deferring
         // immediately closes that window: from here on, a failure leaves the table safely
         // queued for later reclaim instead of owned by a local that is about to disappear.
-        if let Some(old_pt) = process.page_table.take() {
+        if let Some(mut old_pt) = process.page_table.take() {
+            old_pt.retain_file_vmas(&mut process.vmas);
             process.pending_old_page_tables.push(old_pt);
         }
 
@@ -3966,6 +3981,12 @@ impl ProcessManager {
         // Add the process back to the ready queue if it's not already there
         if !self.ready_queue.contains(&pid) {
             self.ready_queue.push(pid);
+        }
+
+        if let Some(process) = self.processes.live_row_mut(&pid) {
+            for old_pt in &mut process.pending_old_page_tables {
+                old_pt.release_exec_file_vmas();
+            }
         }
 
         Ok((new_entry_point, initial_rsp, sched_commit))
@@ -4157,7 +4178,10 @@ impl ProcessManager {
             .processes
             .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
-        let old_page_table = process.page_table.take();
+        let old_page_table = process.page_table.take().map(|mut pt| {
+            pt.retain_file_vmas(&mut process.vmas);
+            pt
+        });
 
         if let Some(name) = program_name {
             process.name = String::from(name);
@@ -4281,6 +4305,12 @@ impl ProcessManager {
 
         if !self.ready_queue.contains(&pid) {
             self.ready_queue.push(pid);
+        }
+
+        if let Some(process) = self.processes.live_row_mut(&pid) {
+            for old_pt in &mut process.pending_old_page_tables {
+                old_pt.release_exec_file_vmas();
+            }
         }
 
         Ok((new_entry_point, initial_rsp, sched_commit))
@@ -4481,7 +4511,10 @@ impl ProcessManager {
             .processes
             .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
-        let old_page_table = process.page_table.take();
+        let old_page_table = process.page_table.take().map(|mut pt| {
+            pt.retain_file_vmas(&mut process.vmas);
+            pt
+        });
 
         // Update the process with new program data
         if let Some(name) = program_name {
@@ -4639,6 +4672,12 @@ impl ProcessManager {
 
         // Lock-free trace: exec exit
         crate::tracing::providers::process::trace_exec_exit(pid.as_u64() as u32);
+
+        if let Some(process) = self.processes.live_row_mut(&pid) {
+            for old_pt in &mut process.pending_old_page_tables {
+                old_pt.release_exec_file_vmas();
+            }
+        }
 
         Ok((new_entry_point, sched_commit))
     }

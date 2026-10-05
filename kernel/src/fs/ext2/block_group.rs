@@ -248,11 +248,23 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
                     );
                 }
 
-                // Zero out the newly allocated block
+                // Zero out the newly allocated block. Nothing references it
+                // yet, so a failure hands the block back to the bitmap.
                 let zero_buf = [0u8; 4096]; // Max block size
                 if let Err(_) =
                     write_ext2_block(device, global_block, block_size, &zero_buf[..block_size])
                 {
+                    bitmap_buf[byte_index] &= !(1 << bit_index);
+                    if write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
+                        .is_ok()
+                    {
+                        unsafe {
+                            core::ptr::write_unaligned(
+                                core::ptr::addr_of_mut!(bg.bg_free_blocks_count),
+                                free_blocks,
+                            );
+                        }
+                    }
                     return Err("Failed to zero allocated block");
                 }
 

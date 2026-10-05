@@ -623,6 +623,13 @@ pub struct Thread {
     /// enough: the value is only ever compared against a stamp of itself.
     pub wait_loop_iters: AtomicU64,
 
+    /// Kill custody: the low bits count the kernel sections this thread is
+    /// inside that a SIGKILL must let it finish, and `KILL_CLAIMED` records
+    /// that `kill_process_now` has taken the thread. Entry and claim are both
+    /// compare-and-swap on this one word, so a thread is never killed inside a
+    /// section and never enters one once claimed. See `KillCustody`.
+    pub kill_custody: AtomicU64,
+
     /// Optional CPU target: `Some(pin)` pins the thread; the empty state permits
     /// migration.
     ///
@@ -726,6 +733,71 @@ impl CpuPin {
     }
 }
 
+/// Set in `Thread::kill_custody` once a kill has claimed the thread.
+const KILL_CLAIMED: u64 = 1 << 63;
+
+impl Thread {
+    /// Claim this thread for an immediate kill. Refused while the thread is
+    /// inside a kill-custody section; the caller then defers the kill.
+    pub(crate) fn claim_for_kill(&self) -> bool {
+        self.kill_custody
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |word| {
+                (word & !KILL_CLAIMED == 0).then_some(word | KILL_CLAIMED)
+            })
+            .is_ok()
+    }
+
+    /// Withdraw a claim taken by `claim_for_kill` when the kill was deferred.
+    pub(crate) fn release_kill_claim(&self) {
+        self.kill_custody.fetch_and(!KILL_CLAIMED, Ordering::AcqRel);
+    }
+
+    /// Whether the thread is inside a kill-custody section.
+    pub(crate) fn in_kill_custody(&self) -> bool {
+        self.kill_custody.load(Ordering::Acquire) & !KILL_CLAIMED != 0
+    }
+}
+
+/// A kernel section the running thread must be allowed to finish before a
+/// SIGKILL takes it: it holds, or is queued for, a lock other threads need.
+/// While one is open, `kill_process_now` leaves SIGKILL pending instead of
+/// terminating the thread, and the thread dies at its return to user mode
+/// with the lock released. A thread already claimed by a kill enters no
+/// section, and must not take the lock either: see `try_enter`.
+pub struct KillCustody(Option<&'static AtomicU64>);
+
+impl KillCustody {
+    /// Open a section for the running thread. `None` means a kill has claimed
+    /// it: its termination is imminent and would discard anything it then
+    /// acquired, so the caller must wait for the termination, or for the
+    /// claim to be withdrawn, and try again. With no current thread there is
+    /// nothing a kill could claim, and the guard is empty.
+    pub fn try_enter() -> Option<Self> {
+        #[cfg(target_arch = "x86_64")]
+        let thread = crate::per_cpu::current_thread();
+        #[cfg(target_arch = "aarch64")]
+        let thread = crate::per_cpu_aarch64::current_thread();
+        let Some(thread) = thread else {
+            return Some(KillCustody(None));
+        };
+        let thread: &'static Thread = thread;
+        let word = &thread.kill_custody;
+        word.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count & KILL_CLAIMED == 0).then_some(count + 1)
+        })
+        .ok()
+        .map(|_| KillCustody(Some(word)))
+    }
+}
+
+impl Drop for KillCustody {
+    fn drop(&mut self) {
+        if let Some(word) = self.0 {
+            word.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
 impl Clone for Thread {
     fn clone(&self) -> Self {
         Thread {
@@ -764,6 +836,7 @@ impl Clone for Thread {
             // it. Resetting here would make the next identical-frame save read
             // as a backwards jump.
             wait_loop_iters: AtomicU64::new(self.wait_loop_iters.load(Ordering::Relaxed)),
+            kill_custody: AtomicU64::new(self.kill_custody.load(Ordering::Acquire)),
             cpu_affinity: self.cpu_affinity,
         }
     }
@@ -876,6 +949,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         })
     }
@@ -942,6 +1016,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         })
     }
@@ -995,6 +1070,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1047,6 +1123,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1112,6 +1189,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1172,6 +1250,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1251,6 +1330,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1299,6 +1379,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            kill_custody: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }

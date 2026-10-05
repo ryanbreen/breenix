@@ -5,6 +5,11 @@ use crossbeam_queue::ArrayQueue;
 #[cfg(target_arch = "x86_64")]
 use x86_64::instructions::interrupts;
 
+/// The kthread running the x86 console executor, set once by `run`. Its
+/// wakers unpark it.
+#[cfg(target_arch = "x86_64")]
+static PARKING_EXECUTOR: spin::Once<super::kthread::KthreadHandle> = spin::Once::new();
+
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub struct Executor {
     tasks: BTreeMap<TaskId, Task>,
@@ -71,6 +76,19 @@ impl Executor {
     #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     #[cfg(target_arch = "x86_64")]
     fn sleep_if_idle(&self) {
+        // #1055: an executor with its own kthread parks Blocked, so the
+        // scheduler does not dispatch it again until a waker unparks it.
+        // Halting while Running kept it on the run queue, and each time it
+        // was picked it kept the CPU until the next reschedule request or the
+        // end of its 50 ms slice. A woken disk waiter queued behind it waited
+        // that long, which on x86 stretched the files-io sync cases past their
+        // 10 s deadline. The boot thread that drives the executor on the
+        // non-production profiles is the idle thread and must not block, so
+        // it keeps the halt below.
+        if PARKING_EXECUTOR.get().is_some() {
+            super::kthread::kthread_park_if(|| self.task_queue.is_empty());
+            return;
+        }
         interrupts::disable();
         if self.task_queue.is_empty() {
             // #673 review, mi3: enable_and_hlt() atomically re-enables and
@@ -120,6 +138,10 @@ impl Executor {
 
     #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     pub fn run(&mut self) -> ! {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(handle) = super::kthread::current_kthread() {
+            PARKING_EXECUTOR.call_once(|| handle);
+        }
         loop {
             self.run_ready_tasks();
             self.sleep_if_idle();
@@ -145,6 +167,12 @@ impl TaskWaker {
     #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     fn wake_task(&self) {
         self.task_queue.push(self.task_id).expect("task_queue full");
+        // Publish the task before unparking: a park that has already checked
+        // the queue is woken, and one that has not yet checked sees the task.
+        #[cfg(target_arch = "x86_64")]
+        if let Some(handle) = PARKING_EXECUTOR.get() {
+            super::kthread::kthread_unpark(handle);
+        }
     }
 }
 

@@ -97,6 +97,8 @@ pub struct ProcessPageTable {
     leaves: OwnedLeafFrames,
     /// Never-reused identity of this address space (see `address_space`).
     space: u64,
+    /// Superseded VMAs keep shared writer custody until this root retires.
+    retired_vmas: alloc::vec::Vec<crate::memory::vma::Vma>,
 }
 
 static NEXT_ADDRESS_SPACE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
@@ -413,6 +415,7 @@ impl ProcessPageTable {
             owned_root_slots: RootSlotOwnership::new(),
             leaves: OwnedLeafFrames::new(),
             space: next_address_space(),
+            retired_vmas: alloc::vec::Vec::new(),
         };
 
         log::debug!("ARM64: ProcessPageTable created successfully");
@@ -1148,6 +1151,7 @@ impl ProcessPageTable {
             owned_root_slots,
             leaves: OwnedLeafFrames::new(),
             space: next_address_space(),
+            retired_vmas: alloc::vec::Vec::new(),
         };
 
         // With global kernel page tables, all kernel stacks are automatically visible
@@ -1155,6 +1159,19 @@ impl ProcessPageTable {
         log::debug!("ProcessPageTable created with global kernel page tables");
 
         Ok(new_page_table)
+    }
+
+    /// Transfer bindings without allocation when exec or exit supersedes the root.
+    pub(crate) fn retain_file_vmas(&mut self, vmas: &mut alloc::vec::Vec<crate::memory::vma::Vma>) {
+        assert!(self.retired_vmas.is_empty());
+        self.retired_vmas = core::mem::take(vmas);
+    }
+
+    /// A committed exec cannot return to the superseded image. Installed
+    /// leaves retain their own frame references until root reclamation, so
+    /// release its file bindings without retaining inode or writer custody.
+    pub(crate) fn release_exec_file_vmas(&mut self) {
+        self.retired_vmas.clear();
     }
 
     /// Get the physical frame of the level 4 page table

@@ -1,6 +1,6 @@
-//! Private file mappings.
+//! File mappings with shared dirty-page custody.
 //!
-//! Each live inode carries a cache of clean file pages and a reverse map of
+//! Each live inode carries a cache of resident file pages and a reverse map of
 //! the bindings (one per file VMA) that may map them. Page-table entries are
 //! installed only by faults, from the cache. Everything that runs after the
 //! disk has changed only removes entries, so no step there can fail for want
@@ -19,8 +19,9 @@
 //! and the poison set are sorted vectors for that reason: inserting into
 //! reserved capacity, draining a range and truncating never allocate.
 //!
-//! Lock order: ext2 mount guard, PROCESS_MANAGER, `MapState`, frame ledger and
-//! allocator. No disk I/O runs under PROCESS_MANAGER or `MapState`. No path
+//! Lock order: ext2 mount guard, PROCESS_MANAGER, live-inode table, `MapState`,
+//! frame ledger and allocator. The inode table may take `MapState` without PM.
+//! No disk I/O runs under PROCESS_MANAGER or `MapState`. No path
 //! takes an ext2 guard with PROCESS_MANAGER held: faults never touch the
 //! filesystem, and mmap releases PROCESS_MANAGER before taking the mount guard.
 
@@ -47,6 +48,55 @@ const PAGE_SIZE: u64 = 4096;
 const REVOKE_WINDOW: u64 = 64;
 /// Unbound cache pages one eviction pass retires.
 pub(crate) const EVICT_BUDGET: usize = 64;
+/// Pages copied by one writeback batch.
+const WRITEBACK_PAGES: usize = 64;
+
+fn writeback_buffer() -> Result<Vec<u8>, &'static str> {
+    let mut bytes = Vec::new();
+    let capacity = WRITEBACK_PAGES * PAGE_SIZE as usize;
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| "Out of memory for writeback")?;
+    bytes.resize(capacity, 0);
+    Ok(bytes)
+}
+
+/// Synchronous writeback walks the requested range once, reusing a bounded
+/// copy buffer and releasing the mount guard between batches. A live writer
+/// can keep earlier pages dirty without causing this call to loop over them.
+pub(crate) fn sync_range(
+    handle: &FileHandle,
+    mut first: u64,
+    last: u64,
+) -> Result<(), &'static str> {
+    let mut bytes = writeback_buffer()?;
+    let mut wrote = false;
+    loop {
+        let next = {
+            let mut guard = crate::fs::ext2::write_mount(handle.object.mount)?;
+            let fs = guard.as_mut().ok_or("Missing mount")?;
+            let ino = handle.verify(fs)?;
+            fs.check_shrink(ino)?;
+            let next =
+                handle
+                    .object
+                    .map
+                    .writeback(fs, ino, first, last, WRITEBACK_PAGES, &mut bytes)?;
+            if next.is_none() && !wrote {
+                fs.sync()?;
+            }
+            next
+        };
+        let Some(next) = next else {
+            return Ok(());
+        };
+        wrote = true;
+        if next >= last {
+            return Ok(());
+        }
+        first = next;
+    }
+}
 
 const SIGBUS: u32 = crate::signal::constants::SIGBUS;
 const SIGSEGV: u32 = crate::signal::constants::SIGSEGV;
@@ -61,6 +111,10 @@ fn pages(size: u64) -> u64 {
 pub struct MapState {
     inner: Mutex<MapInner>,
     eviction_pending: AtomicBool,
+    resident: AtomicBool,
+    dirty: AtomicBool,
+    writeback_pending: AtomicBool,
+    writeback_requests: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -73,6 +127,11 @@ struct MapInner {
     poisoned: PageVec<()>,
     /// Sorted by id: ids are issued under this lock, in increasing order.
     bindings: Vec<BindingRec>,
+    writable_shared: usize,
+    writeback_cursor: u64,
+    /// The request generation the traversal at `writeback_cursor` began
+    /// under. A traversal that ends under a newer one starts over.
+    writeback_epoch: u64,
 }
 
 /// Values keyed by file page index, sorted by index.
@@ -102,6 +161,10 @@ impl<T> PageVec<T> {
 
     fn contains(&self, index: u64) -> bool {
         self.find(index).is_ok()
+    }
+
+    fn get_mut(&mut self, index: u64) -> Option<&mut T> {
+        self.find(index).ok().map(|slot| &mut self.entries[slot].1)
     }
 
     fn get(&self, index: u64) -> Option<&T> {
@@ -144,13 +207,6 @@ impl<T> PageVec<T> {
         let low = self.lower_bound(first);
         let high = self.lower_bound(last).max(low);
         &self.entries[low..high]
-    }
-
-    /// Drop the entries with index in `[first, last)`, in place.
-    fn remove_range(&mut self, first: u64, last: u64) {
-        let low = self.lower_bound(first);
-        let high = self.lower_bound(last).max(low);
-        self.entries.drain(low..high);
     }
 
     /// Drop the entries at and after `index`, in place.
@@ -222,12 +278,18 @@ struct BindingRec {
     pages: u64,
     pgoff: u64,
     prot: Protection,
+    shared: bool,
+    may_write: bool,
     /// Private copies whose entries mprotect removed, sorted by page index.
     /// The next fault on that index maps the copy again.
     parked: Vec<(u64, CachePage)>,
 }
 
 impl BindingRec {
+    fn writable_shared(&self) -> bool {
+        self.shared && self.prot.contains(Protection::WRITE)
+    }
+
     fn covers(&self, index: u64) -> bool {
         index >= self.pgoff && index - self.pgoff < self.pages
     }
@@ -245,12 +307,18 @@ impl BindingRec {
 #[derive(Debug)]
 struct CachePage {
     frame: PhysFrame,
+    dirty: bool,
+    gen: u64,
 }
 
 impl CachePage {
     fn retain(frame: PhysFrame) -> Result<Self, &'static str> {
         super::frame_allocator::acquire_leaf_mapping(frame)?;
-        Ok(Self { frame })
+        Ok(Self {
+            frame,
+            dirty: false,
+            gen: 0,
+        })
     }
 
     fn allocate() -> Result<Self, &'static str> {
@@ -294,8 +362,9 @@ impl Drop for CachePage {
     }
 }
 
-/// The file side of one file VMA. Owned by the VMA; dropping it removes the
-/// binding from the reverse map.
+/// The file side of one file VMA. Exec and exit transfer the VMA to its
+/// retired page table. A committed exec releases its old bindings; exit
+/// retains them until root retirement. Drop queues work without filesystem I/O.
 #[derive(Debug)]
 pub struct Binding {
     id: u64,
@@ -312,6 +381,9 @@ impl Drop for Binding {
                 .iter()
                 .position(|rec| rec.id == self.id)
                 .map(|slot| inner.bindings.remove(slot));
+            if removed.as_ref().is_some_and(BindingRec::writable_shared) {
+                inner.writable_shared -= 1;
+            }
             (
                 removed,
                 !inner.pages.is_empty() || !inner.poisoned.is_empty(),
@@ -321,6 +393,7 @@ impl Drop for Binding {
         // to retire them. Parked copies release their frames here, outside
         // the map lock.
         if cached {
+            map.request_writeback();
             map.eviction_pending.store(true, Ordering::Release);
             crate::fs::ext2::request_map_eviction();
         }
@@ -398,7 +471,10 @@ impl MapInner {
     /// made.
     fn poison(&mut self, first: u64, last: u64) {
         let MapInner {
-            poisoned, bindings, ..
+            poisoned,
+            bindings,
+            pages,
+            ..
         } = self;
         let sorted = poisoned.len();
         bound_runs(bindings, first, last, |low, high| {
@@ -406,7 +482,10 @@ impl MapInner {
                 let present = poisoned.entries[..sorted]
                     .binary_search_by_key(&index, |(key, _)| *key)
                     .is_ok();
-                if !present && poisoned.spare() > 0 {
+                if !present
+                    && !pages.get(index).is_some_and(|page| page.dirty)
+                    && poisoned.spare() > 0
+                {
                     poisoned.entries.push((index, ()));
                 }
             }
@@ -427,9 +506,242 @@ impl MapState {
                 pages: PageVec::new(),
                 poisoned: PageVec::new(),
                 bindings: Vec::new(),
+                writable_shared: 0,
+                writeback_cursor: 0,
+                writeback_epoch: 0,
             }),
             eviction_pending: AtomicBool::new(false),
+            resident: AtomicBool::new(false),
+            dirty: AtomicBool::new(false),
+            writeback_pending: AtomicBool::new(false),
+            writeback_requests: AtomicU64::new(0),
         }
+    }
+
+    fn refresh(&self, inner: &MapInner) {
+        self.resident.store(
+            !inner.pages.is_empty() || !inner.poisoned.is_empty(),
+            Ordering::Release,
+        );
+        self.dirty.store(
+            inner.pages.entries.iter().any(|(_, page)| page.dirty),
+            Ordering::Release,
+        );
+    }
+
+    pub(crate) fn nonempty(&self) -> bool {
+        let inner = self.inner.lock();
+        !inner.pages.is_empty() || !inner.poisoned.is_empty() || !inner.bindings.is_empty()
+    }
+
+    pub(crate) fn has_dirty(&self) -> bool {
+        self.dirty.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn request_writeback(&self) {
+        if self.has_dirty() {
+            self.writeback_requests.fetch_add(1, Ordering::AcqRel);
+            self.writeback_pending.store(true, Ordering::Release);
+            crate::fs::ext2::request_map_eviction();
+        }
+    }
+
+    pub(crate) fn writeback_pending(&self) -> bool {
+        self.writeback_pending.load(Ordering::Acquire)
+    }
+
+    /// Overlay under the filesystem guard, which prevents cache removal and
+    /// disk transitions. The map lock serializes fault insertion and lookup.
+    pub(crate) fn overlay(&self, offset: u64, bytes: &mut [u8]) -> Result<(), &'static str> {
+        if bytes.is_empty() || !self.resident.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let end = offset + bytes.len() as u64;
+        let inner = self.inner.lock();
+        if !inner
+            .poisoned
+            .range(offset / PAGE_SIZE, pages(end))
+            .is_empty()
+        {
+            return Err("Unknown mapped file bytes");
+        }
+        for (index, page) in inner.pages.range(offset / PAGE_SIZE, pages(end)) {
+            let start = offset.max(index * PAGE_SIZE);
+            let stop = end.min((index + 1) * PAGE_SIZE);
+            // SAFETY: the filesystem guard pins the frame; both slices are in bounds.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    page.ptr().add((start % PAGE_SIZE) as usize),
+                    bytes.as_mut_ptr().add((start - offset) as usize),
+                    (stop - start) as usize,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// One bounded snapshot, contiguous writes, then a device flush. Errors
+    /// leave the snapshot dirty. No PTEs are changed here.
+    pub(crate) fn writeback(
+        &self,
+        fs: &mut Ext2Fs,
+        ino: u32,
+        first: u64,
+        last: u64,
+        limit: usize,
+        bytes: &mut [u8],
+    ) -> Result<Option<u64>, &'static str> {
+        let limit = limit
+            .min(WRITEBACK_PAGES)
+            .min(bytes.len() / PAGE_SIZE as usize);
+        let result = self.writeback_snapshot(fs, ino, first, last, limit, bytes);
+        if result.is_err() {
+            self.request_writeback();
+        }
+        result
+    }
+
+    fn writeback_snapshot(
+        &self,
+        fs: &mut Ext2Fs,
+        ino: u32,
+        first: u64,
+        last: u64,
+        limit: usize,
+        bytes: &mut [u8],
+    ) -> Result<Option<u64>, &'static str> {
+        let (snapshot, writable) = {
+            let inner = self.inner.lock();
+            let count = inner
+                .pages
+                .range(first, last)
+                .iter()
+                .filter(|(_, page)| page.dirty)
+                .take(limit)
+                .count();
+            let mut snapshot = Vec::new();
+            snapshot
+                .try_reserve(count)
+                .map_err(|_| "Out of memory for writeback")?;
+            for (index, page) in inner
+                .pages
+                .range(first, last)
+                .iter()
+                .filter(|(_, page)| page.dirty)
+                .take(limit)
+            {
+                snapshot.push((*index, page.frame, page.gen));
+            }
+            (snapshot, inner.writable_shared)
+        };
+        if snapshot.is_empty() {
+            return Ok(None);
+        }
+        fs.check_shrink(ino)?;
+        let size = fs.read_inode(ino)?.size();
+        let mut cursor = 0;
+        while cursor < snapshot.len() {
+            let start = cursor;
+            cursor += 1;
+            while cursor < snapshot.len() && snapshot[cursor].0 == snapshot[cursor - 1].0 + 1 {
+                cursor += 1;
+            }
+            let offset = snapshot[start].0 * PAGE_SIZE;
+            let length =
+                ((cursor - start) * PAGE_SIZE as usize).min(size.saturating_sub(offset) as usize);
+            if length == 0 {
+                continue;
+            }
+            for (slot, (_, frame, _)) in snapshot[start..cursor].iter().enumerate() {
+                let at = slot * PAGE_SIZE as usize;
+                if at >= length {
+                    break;
+                }
+                let ptr = (super::physical_memory_offset().as_u64()
+                    + frame.start_address().as_u64()) as *const u8;
+                // SAFETY: the filesystem write guard excludes frame removal.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        ptr,
+                        bytes.as_mut_ptr().add(at),
+                        (PAGE_SIZE as usize).min(length - at),
+                    );
+                }
+            }
+            let written = fs.write_mapped_range(ino, offset, &bytes[..length])?;
+            if written != length {
+                return Err("Short mapped writeback");
+            }
+        }
+        fs.sync()?;
+        let mut inner = self.inner.lock();
+        if writable == 0 && inner.writable_shared == 0 {
+            for (index, _, gen) in &snapshot {
+                if let Some(page) = inner.pages.get_mut(*index) {
+                    if page.gen == *gen {
+                        page.dirty = false;
+                    }
+                }
+            }
+        }
+        self.refresh(&inner);
+        Ok(snapshot.last().map(|(index, _, _)| index + 1))
+    }
+
+    /// The service processes at most the remaining page budget and resumes
+    /// after its snapshot, even when a live writer keeps those pages dirty.
+    /// A request that arrives mid-traversal may concern pages already
+    /// passed, so the traversal that ends under it is followed by a full one.
+    pub(crate) fn service_writeback(
+        &self,
+        fs: &mut Ext2Fs,
+        ino: u32,
+        budget: &mut usize,
+    ) -> Result<bool, &'static str> {
+        if !self.writeback_pending() {
+            return Ok(false);
+        }
+        if *budget == 0 {
+            return Ok(true);
+        }
+        let request = self.writeback_requests.load(Ordering::Acquire);
+        let (first, count) = {
+            let mut inner = self.inner.lock();
+            let first = inner.writeback_cursor;
+            if first == 0 {
+                inner.writeback_epoch = request;
+            }
+            let count = inner
+                .pages
+                .range(first, u64::MAX)
+                .iter()
+                .filter(|(_, page)| page.dirty)
+                .take(*budget)
+                .count();
+            (first, count)
+        };
+        let mut bytes = writeback_buffer()?;
+        let next = self.writeback(fs, ino, first, u64::MAX, *budget, &mut bytes)?;
+        *budget -= count;
+        let mut inner = self.inner.lock();
+        let next = next.unwrap_or(u64::MAX);
+        let more = inner
+            .pages
+            .range(next, u64::MAX)
+            .iter()
+            .any(|(_, page)| page.dirty);
+        inner.writeback_cursor = if more { next } else { 0 };
+        let epoch = inner.writeback_epoch;
+        drop(inner);
+        self.writeback_pending.store(more, Ordering::Release);
+        // Publish idle before checking the request generation. A request on
+        // either side of this check either changes the generation or sets the
+        // flag after it; neither wake can be lost.
+        if self.writeback_requests.load(Ordering::Acquire) != epoch {
+            self.writeback_pending.store(true, Ordering::Release);
+            return Ok(true);
+        }
+        Ok(more)
     }
 
     /// The caller observed `size` under the filesystem guard. Without a
@@ -438,10 +750,14 @@ impl MapState {
     pub(crate) fn resync_unbound(&self, size: u64) {
         let stale = {
             let mut inner = self.inner.lock();
-            if inner.mapped_size == size || !inner.bindings.is_empty() {
+            if inner.mapped_size == size
+                || !inner.bindings.is_empty()
+                || inner.pages.entries.iter().any(|(_, page)| page.dirty)
+            {
                 return;
             }
             inner.mapped_size = size;
+            self.resident.store(false, Ordering::Release);
             inner.poisoned = PageVec::new();
             core::mem::replace(&mut inner.pages, PageVec::new())
         };
@@ -480,14 +796,19 @@ impl MapState {
         poisoned.retain(|index| !unbound(index));
         // Retired frames are released in place: the frame allocator follows
         // the map lock in the lock order.
-        pages.retain(|index| {
-            if *budget == 0 || !unbound(index) {
+        pages.entries.retain(|(index, page)| {
+            if *budget == 0 || !unbound(*index) || page.dirty {
                 return true;
             }
             *budget -= 1;
             false
         });
-        let more = pages.keys().any(unbound);
+        let more = pages
+            .entries
+            .iter()
+            .any(|(index, page)| unbound(*index) && !page.dirty);
+        self.resident
+            .store(!pages.is_empty() || !poisoned.is_empty(), Ordering::Release);
         self.eviction_pending.store(more, Ordering::Release);
         more
     }
@@ -533,6 +854,10 @@ impl MapState {
         });
         prepared.truncate(filled);
         inner.pages.merge_reserved(prepared);
+        self.resident.store(
+            !inner.pages.is_empty() || !inner.poisoned.is_empty(),
+            Ordering::Release,
+        );
         Ok(())
     }
 
@@ -568,23 +893,31 @@ impl MapState {
     }
 
     /// A mutation failed after it may have changed the bytes of `[offset,
-    /// offset + len)`. The cache no longer knows them: poison the bound pages
-    /// there, remove every entry that maps a cache page there, then drop
-    /// those cache pages. Private copies are the process's own bytes and
-    /// stay. Uses the poison room the mutation reserved; allocates nothing.
+    /// offset + len)`. Poison and revoke clean pages whose disk bytes are
+    /// unknown. Dirty pages hold mapping stores in custody and remain mapped
+    /// for retry. Private copies stay. Uses reserved room; allocates nothing.
     pub(crate) fn invalidate(&self, offset: u64, len: u64) {
         let first = offset / PAGE_SIZE;
         let last = pages(offset.saturating_add(len));
         let cached = {
             let mut inner = self.inner.lock();
-            // Faults check poison before the cache, so from here no fault
-            // maps these cache pages; an unbound one no fault reaches.
+            // Dirty cache pages are authoritative even if the disk mutation
+            // failed; poison only pages that lack dirty custody.
             inner.poison(first, last);
+            self.resident.store(
+                !inner.pages.is_empty() || !inner.poisoned.is_empty(),
+                Ordering::Release,
+            );
             !inner.pages.range(first, last).is_empty()
         };
         if cached {
             self.revoke(first, last, true);
-            self.inner.lock().pages.remove_range(first, last);
+            let mut inner = self.inner.lock();
+            inner
+                .pages
+                .entries
+                .retain(|(index, page)| *index < first || *index >= last || page.dirty);
+            self.refresh(&inner);
         }
     }
 
@@ -620,6 +953,7 @@ impl MapState {
             // first. Bytes past EOF read as zero once the file grows again.
             inner.pages.truncate_from(keep);
             inner.poisoned.truncate_from(keep);
+            self.refresh(&inner);
             old
         };
         self.revoke(pages(size), pages(old), false);
@@ -675,6 +1009,7 @@ impl MapState {
                 && !inner.pages.contains(index)
                 && inner.pages.try_insert(index, page).is_ok()
             {
+                self.resident.store(true, Ordering::Release);
                 inner.poisoned.remove(index);
             }
         }
@@ -722,6 +1057,9 @@ impl MapState {
                         from = page.start_address().as_u64() + PAGE_SIZE;
                         if aliases {
                             let index = rec.index(page.start_address().as_u64());
+                            if inner.pages.get(index).is_some_and(|page| page.dirty) {
+                                continue;
+                            }
                             let mapped = pt.get_page_info(page).map(|(frame, _)| frame);
                             let cached = inner.pages.get(index).map(|page| page.frame);
                             if mapped.is_none() || cached != mapped {
@@ -845,6 +1183,10 @@ pub(crate) fn populate(
         inner.poisoned.remove(*index);
     }
     inner.pages.merge_reserved(read);
+    map.resident.store(
+        !inner.pages.is_empty() || !inner.poisoned.is_empty(),
+        Ordering::Release,
+    );
     Ok(())
 }
 
@@ -856,6 +1198,7 @@ pub(crate) fn bind(
     pt: &ProcessPageTable,
     vma: &Vma,
     pgoff: u64,
+    may_write: bool,
 ) -> Result<Binding, &'static str> {
     let id = {
         let mut inner = handle.object.map.inner.lock();
@@ -864,6 +1207,10 @@ pub(crate) fn bind(
             .try_reserve(1)
             .map_err(|_| "Out of memory for file binding")?;
         let id = next_binding();
+        let shared = vma.flags.bits() & 3 != 2;
+        if shared && vma.prot.contains(Protection::WRITE) {
+            inner.writable_shared += 1;
+        }
         inner.bindings.push(BindingRec {
             id,
             pid,
@@ -872,6 +1219,8 @@ pub(crate) fn bind(
             pages: vma.size() / PAGE_SIZE,
             pgoff,
             prot: vma.prot,
+            shared: vma.flags.bits() & 3 != 2,
+            may_write,
             parked: Vec::new(),
         });
         id
@@ -901,6 +1250,21 @@ pub(crate) fn fork_vmas(
 }
 
 impl Binding {
+    /// VMAs bound this virtual range before msync's filesystem work begins.
+    pub(crate) fn sync_range(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> Result<(FileHandle, u64, u64), &'static str> {
+        let inner = self.handle.object.map.inner.lock();
+        let rec = inner
+            .bindings
+            .iter()
+            .find(|rec| rec.id == self.id)
+            .ok_or("Missing file binding")?;
+        Ok((self.handle.clone(), rec.index(start), rec.index(end)))
+    }
+
     fn fork(&self, pid: ProcessId, pt: &ProcessPageTable) -> Result<Binding, &'static str> {
         let mut inner = self.handle.object.map.inner.lock();
         inner
@@ -928,8 +1292,13 @@ impl Binding {
             pages: parent.pages,
             pgoff: parent.pgoff,
             prot: parent.prot,
+            shared: parent.shared,
+            may_write: parent.may_write,
             parked,
         };
+        if rec.writable_shared() {
+            inner.writable_shared += 1;
+        }
         inner.bindings.push(rec);
         drop(inner);
         Ok(Binding {
@@ -1031,6 +1400,8 @@ pub(crate) fn isolate(
             pages: head.pages - pages,
             pgoff: head.pgoff + pages,
             prot: head.prot,
+            shared: head.shared,
+            may_write: head.may_write,
             parked: moved,
         });
         head.pages = pages;
@@ -1049,6 +1420,9 @@ pub(crate) fn isolate(
             id: rec.id,
             handle: handle.clone(),
         });
+        if rec.writable_shared() {
+            inner.writable_shared += 1;
+        }
         inner.bindings.push(rec);
         vmas.insert(index + 1 + slot, vma);
     }
@@ -1112,6 +1486,9 @@ pub(crate) fn protect(
             .iter()
             .find(|rec| rec.id == binding.id)
             .ok_or("File binding missing from its reverse map")?;
+        if rec.shared && prot.contains(Protection::WRITE) && !rec.may_write {
+            return Err("Permission denied");
+        }
         let mut from = start;
         while let Some(page) = pt.next_mapped_page(from, end) {
             from = page.start_address().as_u64() + PAGE_SIZE;
@@ -1153,8 +1530,17 @@ pub(crate) fn protect(
     if !clean {
         return Err("File mapping entry custody disagreed");
     }
+    let was_writable = rec.writable_shared();
     rec.prot = prot;
+    let now_writable = rec.writable_shared();
+    if now_writable && !was_writable {
+        inner.writable_shared += 1;
+    }
+    if was_writable && !now_writable {
+        inner.writable_shared -= 1;
+    }
     drop(inner);
+    binding.handle.object.map.request_writeback();
     vmas[index].prot = prot;
     Ok(true)
 }
@@ -1260,6 +1646,7 @@ pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access)
         return FaultOutcome::Signal(SIGBUS);
     }
     let prot = rec.prot;
+    let shared = rec.shared;
     if let Ok(slot) = rec.parked.binary_search_by_key(&index, |(index, _)| *index) {
         let frame = rec.parked[slot].1.frame;
         let exclusive = !super::frame_metadata::frame_is_shared(frame);
@@ -1295,10 +1682,17 @@ pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access)
             Err(_) => return FaultOutcome::Signal(SIGBUS),
         },
     };
+    object.map.resident.store(true, Ordering::Release);
     if prot.contains(Protection::EXEC) {
         sync_executable(frame);
     }
-    if pt.map_page(page, frame, entry_flags(prot, false)).is_err() {
+    if shared && prot.contains(Protection::WRITE) {
+        let cached = inner.pages.get_mut(index).expect("resident file page");
+        cached.dirty = true;
+        cached.gen = cached.gen.wrapping_add(1);
+        object.map.dirty.store(true, Ordering::Release);
+    }
+    if pt.map_page(page, frame, entry_flags(prot, shared)).is_err() {
         return FaultOutcome::Signal(SIGBUS);
     }
     FaultOutcome::Resolved

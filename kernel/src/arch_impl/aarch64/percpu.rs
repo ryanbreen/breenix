@@ -365,6 +365,29 @@ fn percpu_atomic_u32(offset: usize) -> Option<&'static AtomicU32> {
     unsafe { Some(&*((base as *const u8).add(offset) as *const AtomicU32)) }
 }
 
+/// Apply `update` to this CPU's preempt count with IRQ and FIQ masked.
+///
+/// `TPIDR_EL1` names the CPU only for as long as the thread stays on it. With
+/// interrupts unmasked and the count at zero, a reschedule between reading it
+/// and storing the count resumes the thread elsewhere, and the store lands on
+/// the CPU it left: that CPU keeps a count no thread owns, while the thread's
+/// new CPU later underflows. Masking makes the read and the store one step on
+/// one CPU. Only the owning CPU writes its count, so a plain load and store
+/// suffice once nothing on this CPU can interleave.
+#[inline(always)]
+fn update_preempt_count(update: impl FnOnce(u32) -> u32, order: Ordering) {
+    let daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", "msr daifset, #3", out(reg) daif, options(nostack));
+    }
+    if let Some(count) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+        count.store(update(count.load(Ordering::Relaxed)), order);
+    }
+    unsafe {
+        core::arch::asm!("msr daif, {}", in(reg) daif, options(nostack));
+    }
+}
+
 impl PerCpuOps for Aarch64PerCpu {
     /// Get the current CPU ID
     ///
@@ -428,34 +451,26 @@ impl PerCpuOps for Aarch64PerCpu {
     /// Disable preemption by incrementing preempt count
     #[inline]
     fn preempt_disable() {
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_add(1, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count.wrapping_add(1), Ordering::Relaxed);
     }
 
     /// Enable preemption by decrementing preempt count
     #[inline]
     fn preempt_enable() {
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_sub(1, Ordering::Release);
-        }
+        update_preempt_count(|count| count.wrapping_sub(1), Ordering::Release);
     }
 
     #[inline(always)]
     fn bh_disable() {
         compiler_fence(Ordering::Acquire);
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_add(SOFTIRQ_DISABLE_OFFSET, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count.wrapping_add(SOFTIRQ_DISABLE_OFFSET), Ordering::Relaxed);
         compiler_fence(Ordering::Release);
     }
 
     #[inline(always)]
     fn bh_enable() {
         compiler_fence(Ordering::Acquire);
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_sub(SOFTIRQ_DISABLE_OFFSET, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count.wrapping_sub(SOFTIRQ_DISABLE_OFFSET), Ordering::Relaxed);
         compiler_fence(Ordering::Release);
     }
 
@@ -613,9 +628,7 @@ impl Aarch64PerCpu {
     #[inline(always)]
     pub unsafe fn irq_enter() {
         compiler_fence(Ordering::Acquire);
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_add(1 << HARDIRQ_SHIFT, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count.wrapping_add(1 << HARDIRQ_SHIFT), Ordering::Relaxed);
         compiler_fence(Ordering::Release);
     }
 
@@ -623,26 +636,20 @@ impl Aarch64PerCpu {
     #[inline(always)]
     pub unsafe fn irq_exit() {
         compiler_fence(Ordering::Acquire);
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_sub(1 << HARDIRQ_SHIFT, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count.wrapping_sub(1 << HARDIRQ_SHIFT), Ordering::Relaxed);
         compiler_fence(Ordering::Release);
     }
 
     /// Set the PREEMPT_ACTIVE flag.
     #[inline(always)]
     pub unsafe fn set_preempt_active() {
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_or(PREEMPT_ACTIVE, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count | PREEMPT_ACTIVE, Ordering::Relaxed);
     }
 
     /// Clear the PREEMPT_ACTIVE flag.
     #[inline(always)]
     pub unsafe fn clear_preempt_active() {
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_and(!PREEMPT_ACTIVE, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count & !PREEMPT_ACTIVE, Ordering::Relaxed);
     }
 
     /// Get the idle thread pointer.
@@ -789,9 +796,7 @@ impl Aarch64PerCpu {
     #[inline(always)]
     pub unsafe fn softirq_enter() {
         compiler_fence(Ordering::Acquire);
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_add(SOFTIRQ_OFFSET, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count.wrapping_add(SOFTIRQ_OFFSET), Ordering::Relaxed);
         compiler_fence(Ordering::Release);
     }
 
@@ -799,9 +804,7 @@ impl Aarch64PerCpu {
     #[inline(always)]
     pub unsafe fn softirq_exit() {
         compiler_fence(Ordering::Acquire);
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_sub(SOFTIRQ_OFFSET, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count.wrapping_sub(SOFTIRQ_OFFSET), Ordering::Relaxed);
         compiler_fence(Ordering::Release);
     }
 
@@ -809,9 +812,7 @@ impl Aarch64PerCpu {
     #[inline(always)]
     pub unsafe fn nmi_enter() {
         compiler_fence(Ordering::Acquire);
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_add(1 << NMI_SHIFT, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count.wrapping_add(1 << NMI_SHIFT), Ordering::Relaxed);
         compiler_fence(Ordering::Release);
     }
 
@@ -819,9 +820,7 @@ impl Aarch64PerCpu {
     #[inline(always)]
     pub unsafe fn nmi_exit() {
         compiler_fence(Ordering::Acquire);
-        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_sub(1 << NMI_SHIFT, Ordering::Relaxed);
-        }
+        update_preempt_count(|count| count.wrapping_sub(1 << NMI_SHIFT), Ordering::Relaxed);
         compiler_fence(Ordering::Release);
     }
 

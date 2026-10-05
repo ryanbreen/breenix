@@ -38,8 +38,10 @@ fn wait(waiters: &WaitQueueHead, deadline: Option<u64>, condition: impl FnOnce()
 pub(super) fn pause(nanoseconds: u64) {
     let waiters = WaitQueueHead::new();
     let (seconds, nanos) = crate::time::get_monotonic_time_ns();
-    let deadline = (seconds as u64).saturating_mul(1_000_000_000)
-        .saturating_add(nanos as u64).saturating_add(nanoseconds);
+    let deadline = (seconds as u64)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(nanos as u64)
+        .saturating_add(nanoseconds);
     wait(&waiters, Some(deadline), || true);
 }
 
@@ -68,7 +70,7 @@ fn service() {
         }
         if more || retry {
             PENDING.store(true, Ordering::Release);
-            pause(if more { 1_000_000 } else { 100_000_000 });
+            pause(if retry { 100_000_000 } else { 1_000_000 });
         } else {
             // The condition and publication are serialized with request's
             // wake under WORK's lock, closing both sides of the sleep race.

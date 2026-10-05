@@ -4408,14 +4408,22 @@ fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize, Option<crate::fs
     })
 }
 
-/// fsync/fdatasync: ext2 writes both data and metadata synchronously, so a
-/// device cache flush covers both requests (fdatasync may flush more metadata).
+/// fsync/fdatasync write back all dirty shared pages of the pinned inode,
+/// then flush data and metadata to the device. Without dirty mapped pages,
+/// ext2 already wrote both synchronously and only the device flush remains.
 pub fn sys_fsync(fd: i32) -> SyscallResult {
     use crate::fs::ext2;
     let (inode_num, mount_id, handle) = match ext2_fd_info(fd, false) {
         Ok(info) => info,
         Err(errno) => return SyscallResult::Err(errno),
     };
+    if let Some(handle) = handle.as_ref().filter(|handle| handle.object.map.has_dirty()) {
+        let result = crate::memory::file_map::sync_range(handle, 0, u64::MAX);
+        return match result {
+            Ok(()) => SyscallResult::Ok(0),
+            Err(_) => SyscallResult::Err(super::errno::EIO as u64),
+        };
+    }
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     let guard = if is_home {
         ext2::home_fs_read()
