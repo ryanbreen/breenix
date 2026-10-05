@@ -263,9 +263,10 @@ fn load_segment(
     );
 
     // Calculate pages needed
-    let start_page = Page::<Size4KiB>::containing_address(vaddr);
-    let end_addr = vaddr + mem_size as u64 - 1u64;
-    let end_page = Page::<Size4KiB>::containing_address(end_addr);
+    let end_addr = vaddr + (mem_size as u64 - 1);
+    // Iterate integer addresses: PageRangeInclusive advances past its last
+    // page, which panics at the end of the canonical user address range.
+    let page_addresses = vaddr.align_down(4096u64).as_u64()..=end_addr.as_u64();
 
     // Map pages
     let mut mapper = unsafe { crate::memory::paging::get_mapper() };
@@ -286,7 +287,8 @@ fn load_segment(
     );
 
     // Map all pages for the segment
-    for page in Page::range_inclusive(start_page, end_page) {
+    for address in page_addresses.clone().step_by(4096) {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
         log::trace!(
             "Allocating frame for page {:#x}",
             page.start_address().as_u64()
@@ -336,7 +338,8 @@ fn load_segment(
         log::trace!("Removing write permission from non-writable segment");
         let correct_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
 
-        for page in Page::range_inclusive(start_page, end_page) {
+        for address in page_addresses.step_by(4096) {
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
             unsafe {
                 // Update the page table entry to remove write permission
                 if mapper.update_flags(page, correct_flags).is_ok() {
@@ -473,9 +476,8 @@ fn load_segment_into_page_table(
     );
 
     // Calculate pages needed
-    let start_page = Page::<Size4KiB>::containing_address(vaddr);
-    let end_addr = vaddr + mem_size as u64 - 1u64;
-    let end_page = Page::<Size4KiB>::containing_address(end_addr);
+    let end_addr = vaddr + (mem_size as u64 - 1);
+    let page_addresses = vaddr.align_down(4096u64).as_u64()..=end_addr.as_u64();
 
     // Determine final permissions
     let segment_writable = ph.p_flags & 2 != 0;
@@ -498,7 +500,8 @@ fn load_segment_into_page_table(
     }
 
     // Map and load each page - NEVER switch to process page table
-    for page in Page::range_inclusive(start_page, end_page) {
+    for address in page_addresses.step_by(4096) {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
         // Check if page is already mapped (from a previous overlapping segment)
         // This handles cases like RELRO segments that overlap with data segments
         let (frame, already_mapped) =
@@ -600,7 +603,7 @@ fn load_segment_into_page_table(
 
     log::trace!(
         "Successfully loaded segment with {} pages using Linux-style physical memory access",
-        Page::range_inclusive(start_page, end_page).count()
+        (end_addr.as_u64() - vaddr.align_down(4096u64).as_u64()) / 4096 + 1
     );
 
     Ok(())
