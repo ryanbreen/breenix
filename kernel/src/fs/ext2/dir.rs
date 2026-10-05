@@ -335,14 +335,14 @@ fn required_entry_size(name_len: usize) -> usize {
 /// * `file_type` - File type (EXT2_FT_* constant)
 ///
 /// # Returns
-/// * `Ok(())` - Entry was added successfully
+/// * `Ok(offset)` - Byte offset of the added entry
 /// * `Err(msg)` - No space available or other error
 pub fn add_directory_entry(
     dir_data: &mut Vec<u8>,
     new_inode: u32,
     name: &str,
     file_type: u8,
-) -> Result<(), &'static str> {
+) -> Result<usize, &'static str> {
     let name_bytes = name.as_bytes();
     if name_bytes.is_empty() || name_bytes.len() > 255 {
         return Err("Invalid name length");
@@ -384,7 +384,7 @@ pub fn add_directory_entry(
                     name_bytes,
                     file_type,
                 );
-                return Ok(());
+                return Ok(offset);
             }
         } else {
             // Active entry - check if we can split its padding
@@ -410,7 +410,7 @@ pub fn add_directory_entry(
                     name_bytes,
                     file_type,
                 );
-                return Ok(());
+                return Ok(new_offset);
             }
         }
 
@@ -470,23 +470,27 @@ pub fn is_directory_empty(dir_data: &[u8]) -> bool {
     true
 }
 
-/// Update a directory entry's inode number (for updating ".." when moving directories)
+/// Point an existing directory entry at another inode
 ///
-/// Finds the entry with the given name and updates its inode number.
+/// Finds the entry with the given name and rewrites its inode number and file
+/// type in place: a rename that replaces a name, and `..` of a directory
+/// moved to another parent.
 ///
 /// # Arguments
 /// * `dir_data` - Mutable directory data buffer
 /// * `name` - Name of the entry to update
 /// * `new_inode` - New inode number
+/// * `file_type` - File type of the new inode (EXT2_FT_* constant)
 ///
 /// # Returns
-/// * `Ok(())` - Entry was updated
+/// * `Ok(offset)` - Byte offset of the updated entry
 /// * `Err(msg)` - Entry not found or other error
 pub fn update_directory_entry(
     dir_data: &mut [u8],
     name: &str,
     new_inode: u32,
-) -> Result<(), &'static str> {
+    file_type: u8,
+) -> Result<usize, &'static str> {
     let mut offset = 0usize;
 
     while offset < dir_data.len() {
@@ -515,9 +519,10 @@ pub fn update_directory_entry(
             if entry_name_offset + entry_name_len <= dir_data.len() {
                 let entry_name = &dir_data[entry_name_offset..entry_name_offset + entry_name_len];
                 if entry_name == name.as_bytes() {
-                    // Found it - update the inode number
+                    // Found it - update the inode number and type
                     dir_data[offset..offset + 4].copy_from_slice(&new_inode.to_le_bytes());
-                    return Ok(());
+                    dir_data[offset + 7] = file_type;
+                    return Ok(offset);
                 }
             }
         }

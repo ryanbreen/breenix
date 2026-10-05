@@ -274,6 +274,13 @@ fn resolve_user_entry(pathname: u64) -> Result<crate::fs::namei::Resolved, Sysca
     crate::fs::namei::resolve_entry(&path).map_err(SyscallResult::Err)
 }
 
+/// Copy a pathname from userspace and resolve it to the directory entry a
+/// rename acts on, holding the directory the entry is in.
+fn resolve_user_rename(pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+    crate::fs::namei::resolve_rename(&path).map_err(SyscallResult::Err)
+}
+
 /// Copy a pathname from userspace and resolve it to the name a mkdir,
 /// symlink or link creates.
 fn resolve_user_create(pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
@@ -1534,94 +1541,103 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
 
 /// sys_rename - Rename/move a file or directory
 ///
-/// Renames oldpath to newpath. If newpath already exists, it will be atomically
-/// replaced (if it's a file) or the operation will fail (if it's a directory).
+/// Renames oldpath to newpath as one transaction: newpath names either what
+/// it named before or the renamed entry at every instant, and a failure
+/// leaves the tree as it was. An existing newpath is replaced when it is a
+/// non-directory and oldpath is too, or an empty directory and oldpath is a
+/// directory. Neither final symlink is followed.
 ///
 /// # Arguments
 /// * `oldpath` - Current path (userspace pointer to null-terminated string)
 /// * `newpath` - New path (userspace pointer to null-terminated string)
 ///
 /// # Returns
-/// 0 on success, negative errno on failure
+/// 0 on success, negative errno on failure. When both names are links to the
+/// same file, rename succeeds and changes nothing.
 ///
 /// # Errors
 /// * ENOENT - oldpath does not exist
 /// * EISDIR - newpath is a directory but oldpath is not
-/// * ENOTDIR - Component in path is not a directory
-/// * EEXIST/ENOTEMPTY - newpath is a non-empty directory
+/// * ENOTDIR - oldpath is a directory but newpath is not, or a pathname
+///   ending in `/` names a non-directory
+/// * ENOTEMPTY - newpath is a non-empty directory
+/// * EINVAL - a final component is `.` or `..`, or a directory would move
+///   into itself or a descendant
+/// * EBUSY - an operand is a filesystem root, or newpath is a directory in use
+/// * EXDEV - the names are on different filesystems
+/// * ENOSPC - newpath's directory has no room for the name
 /// * EIO - I/O error
 pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
-    use super::errno::{EACCES, EBUSY, EIO, EISDIR, ENOENT, EXDEV};
+    use super::errno::{
+        EBUSY, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EXDEV,
+    };
+    use crate::fs::ext2::RenameError;
     use crate::fs::namei::{Last, Target};
 
     // rename acts on the names themselves: neither final symlink is followed.
-    let old = match resolve_user_entry(oldpath) {
+    let old = match resolve_user_rename(oldpath) {
         Ok(r) => r,
         Err(e) => return e,
     };
-    let new = match resolve_user_entry(newpath) {
+    let new = match resolve_user_rename(newpath) {
         Ok(r) => r,
         Err(e) => return e,
     };
 
     log::debug!("sys_rename: old={:?}, new={:?}", old.path, new.path);
 
-    if old.last != Last::Name || new.last != Last::Name {
-        return SyscallResult::Err(EBUSY as u64);
+    for operand in [&old, &new] {
+        match operand.last {
+            Last::Dot | Last::DotDot => return SyscallResult::Err(EINVAL as u64),
+            Last::Root => return SyscallResult::Err(EBUSY as u64),
+            Last::Name => {}
+        }
     }
     let mount = match old.target {
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => return SyscallResult::Err(EXDEV as u64),
         Target::Inode { mount, .. } => mount,
     };
-    // Only a directory may be renamed to a name ending in `/`.
-    if new.trailing_slash
-        && !matches!(
-            old.target,
-            Target::Inode {
-                file_type: crate::fs::ext2::FileType::Directory,
-                ..
-            }
-        )
-    {
-        return SyscallResult::Err(super::errno::ENOTDIR as u64);
+    if old.is_mount_point() || new.is_mount_point() {
+        return SyscallResult::Err(EBUSY as u64);
     }
     // Both names must be on the same filesystem
     if new.mount() != Some(mount) {
-        log::error!("sys_rename: cross-filesystem rename not supported");
         return SyscallResult::Err(EXDEV as u64);
     }
+    let (Some(old_dir), Some(new_dir)) = (old.entry_dir(), new.entry_dir()) else {
+        return SyscallResult::Err(EIO as u64);
+    };
+    // A pathname ending in `/` names a directory.
+    let want_dir = old.trailing_slash || new.trailing_slash;
 
-    // Perform the rename operation on the correct filesystem
-    let rename_result = {
+    let result = {
         let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.rename_file(old.fs_path(), new.fs_path()),
-            None => {
-                log::error!("sys_rename: ext2 filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
+            Some(fs) => fs.rename(
+                old_dir,
+                old.final_name(),
+                new_dir,
+                new.final_name(),
+                want_dir,
+            ),
+            None => return SyscallResult::Err(EIO as u64),
         }
     };
 
-    match rename_result {
-        Ok(()) => {
-            log::info!("sys_rename: successfully renamed {} to {}", old.path, new.path);
-            SyscallResult::Ok(0)
-        }
+    match result {
+        Ok(()) => SyscallResult::Ok(0),
         Err(e) => {
-            log::debug!("sys_rename: failed: {}", e);
-            // Map error to appropriate errno
-            let errno = if e.contains("not found") || e.contains("not exist") {
-                ENOENT
-            } else if e.contains("is a directory") {
-                EISDIR
-            } else if e.contains("Not a directory") {
-                super::errno::ENOTDIR
-            } else if e.contains("permission") || e.contains("Cannot") {
-                EACCES
-            } else {
-                EIO
+            log::debug!("sys_rename: failed: {:?}", e);
+            let errno = match e {
+                RenameError::NotFound => ENOENT,
+                RenameError::NotDirectory => ENOTDIR,
+                RenameError::IsDirectory => EISDIR,
+                RenameError::NotEmpty => ENOTEMPTY,
+                RenameError::Invalid => EINVAL,
+                RenameError::Busy => EBUSY,
+                RenameError::NoSpace => ENOSPC,
+                RenameError::Io => EIO,
             };
             SyscallResult::Err(errno as u64)
         }

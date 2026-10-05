@@ -108,6 +108,9 @@ pub struct Resolved {
     /// it would be created in: held from the walk step that found it, so its
     /// inode is not reclaimed and its number reused while this lives.
     pin: Option<FileHandle>,
+    /// For a rename, the directory holding the final entry, held so the
+    /// entry is looked up again in the directory the walk found.
+    entry_dir: Option<FileHandle>,
 }
 
 impl Resolved {
@@ -148,6 +151,16 @@ impl Resolved {
             Target::Inode { .. } => self.pin.as_ref(),
             _ => None,
         }
+    }
+
+    /// The directory a rename resolution holds for its final name.
+    pub fn entry_dir(&self) -> Option<&FileHandle> {
+        self.entry_dir.as_ref()
+    }
+
+    /// The final component of the physical pathname.
+    pub fn final_name(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or("")
     }
 }
 
@@ -247,10 +260,13 @@ enum Mode {
     /// Look the target up: a final symlink is followed when `follow` is set
     /// or the pathname ends in `/`. The result holds the target.
     Lookup { follow: bool },
-    /// Act on the directory entry itself (unlink, rmdir, rename): a final
-    /// symlink is never followed, and a trailing `/` requires the entry
-    /// itself to be a directory.
+    /// Act on the directory entry itself (unlink, rmdir): a final symlink
+    /// is never followed, and a trailing `/` requires the entry itself to be
+    /// a directory.
     Entry,
+    /// As `Entry`, for rename, and the result holds the directory the final
+    /// name is in.
+    Rename,
     /// Create the final name (mkdir, symlink, link, mknod): a final symlink,
     /// dangling or not, is an existing name, whatever follows it.
     Create,
@@ -269,6 +285,12 @@ pub fn resolve(path: &str, follow: bool) -> Result<Resolved, u64> {
 /// ENOTDIR unless that entry is a directory.
 pub fn resolve_entry(path: &str) -> Result<Resolved, u64> {
     walk(path, Mode::Entry)
+}
+
+/// Resolve `path` to the directory entry a rename acts on, as
+/// `resolve_entry` does, holding the directory the final name is in.
+pub fn resolve_rename(path: &str) -> Result<Resolved, u64> {
+    walk(path, Mode::Rename)
 }
 
 /// Resolve `path` to the name a mkdir, symlink, link or mknod creates. A
@@ -313,7 +335,7 @@ fn walk_with(
     let mut trailing_slash = path.ends_with('/');
     let follow_final = match mode {
         Mode::Lookup { follow } => follow || trailing_slash,
-        Mode::Entry | Mode::Create => false,
+        Mode::Entry | Mode::Rename | Mode::Create => false,
     };
     let mut pending = Vec::new();
     push_components(&mut pending, path)?;
@@ -395,12 +417,14 @@ fn walk_with(
                     if !is_final {
                         return Err(ENOENT as u64);
                     }
-                    let pin = match mode {
-                        Mode::Lookup { .. } => Some(
-                            fs.pin_loaded_inode(dir, dir_inode.size())
-                                .map_err(|_| EIO as u64)?,
-                        ),
-                        Mode::Entry | Mode::Create => None,
+                    let dir_pin = || {
+                        fs.pin_loaded_inode(dir, dir_inode.size())
+                            .map_err(|_| EIO as u64)
+                    };
+                    let (pin, entry_dir) = match mode {
+                        Mode::Lookup { .. } => (Some(dir_pin()?), None),
+                        Mode::Rename => (None, Some(dir_pin()?)),
+                        Mode::Entry | Mode::Create => (None, None),
                     };
                     let mut absent = join(&stack);
                     if !stack.is_empty() {
@@ -416,6 +440,7 @@ fn walk_with(
                         last,
                         trailing_slash,
                         pin,
+                        entry_dir,
                     });
                 };
                 let inode = fs.read_inode(ino).map_err(|_| EIO as u64)?;
@@ -459,7 +484,7 @@ fn walk_with(
     if trailing_slash && !top_is_dir && !virtual_absent {
         return Err(ENOTDIR as u64);
     }
-    let (target, pin) = match top(&stack) {
+    let (target, pin, entry_dir) = match top(&stack) {
         Node::Ext2(mount, ino) => {
             let fs = held.fs(mount)?;
             let inode = fs.read_inode(ino).map_err(|_| EIO as u64)?;
@@ -468,16 +493,29 @@ fn walk_with(
                     fs.pin_loaded_inode(ino, inode.size())
                         .map_err(|_| EIO as u64)?,
                 ),
-                Mode::Entry | Mode::Create => None,
+                Mode::Entry | Mode::Rename | Mode::Create => None,
+            };
+            // The final name's directory is the frame below it, on the same
+            // filesystem unless the name is a filesystem root.
+            let below = stack.len().checked_sub(2).map_or(ROOT, |i| stack[i].node);
+            let entry_dir = match (mode, last, below) {
+                (Mode::Rename, Last::Name, Node::Ext2(dir_mount, dir)) if dir_mount == mount => {
+                    let dir_inode = fs.read_inode(dir).map_err(|_| EIO as u64)?;
+                    Some(
+                        fs.pin_loaded_inode(dir, dir_inode.size())
+                            .map_err(|_| EIO as u64)?,
+                    )
+                }
+                _ => None,
             };
             let target = Target::Inode {
                 mount,
                 ino,
                 file_type: inode.file_type(),
             };
-            (target, pin)
+            (target, pin, entry_dir)
         }
-        Node::Virtual => (Target::Virtual, None),
+        Node::Virtual => (Target::Virtual, None, None),
     };
     drop(held);
     Ok(Resolved {
@@ -486,6 +524,7 @@ fn walk_with(
         last,
         trailing_slash,
         pin,
+        entry_dir,
     })
 }
 
