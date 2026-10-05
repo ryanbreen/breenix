@@ -3880,10 +3880,19 @@ fn mmap_close_fd() -> CaseResult {
     memory::munmap(p, 4096)?;
     result?;
 
+    // read() sees the resident cache, so it cannot tell whether exit wrote
+    // the store back. A sparse page gains its disk block only from that
+    // writeback, and fstat reports the disk inode's block count.
+    let sparse = Fixture::new(b"")?;
+    truncate_fd(sparse.fd(), 4096)?;
+    check(
+        fstat(sparse.fd())?.st_blocks == 0,
+        "exit writeback fixture was not sparse",
+    )?;
     match process::fork()? {
         process::ForkResult::Child => {
             let result = (|| -> CaseResult {
-                let d = f.open(O_RDWR)?;
+                let d = sparse.open(O_RDWR)?;
                 let p = map(d, memory::MAP_SHARED, 0)?;
                 unsafe { p.write_volatile(b'X') };
                 io::close(d)?;
@@ -3898,7 +3907,19 @@ fn mmap_close_fd() -> CaseResult {
             "child did not store through its shared mapping",
         )?,
     }
-    contents(f.fd(), b"Xbcdef")
+    // The kernel's writeback service runs after the exit; allow it three
+    // seconds, as the orphan finalizer case does.
+    let start = time::now_monotonic()?.tv_sec;
+    while fstat(sparse.fd())?.st_blocks == 0 {
+        check(
+            time::now_monotonic()?.tv_sec - start < 3,
+            "exit without unmap did not write the mapped store back",
+        )?;
+        time::sleep_ms(10)?;
+    }
+    let mut expected = vec![0u8; 4096];
+    expected[0] = b'X';
+    contents(sparse.fd(), &expected)
         .map_err(|_| CaseError::from("exit without unmap lost the mapped store"))
 }
 
