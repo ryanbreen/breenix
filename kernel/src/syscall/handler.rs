@@ -514,6 +514,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             super::handlers::sys_pwrite64(args.0 as i32, args.1, args.2, args.3 as i64)
         }
         Some(SyscallNumber::Spawn) => super::handlers::sys_spawn(args.0, args.1),
+        // musl uses x86's legacy stat/lstat numbers, with the same Stat ABI.
+        None if syscall_num == 4 => super::fs::sys_newfstatat(-100, args.0, args.1, 0),
+        None if syscall_num == 6 => super::fs::sys_newfstatat(-100, args.0, args.1, 0x100),
         None if syscall_num == super::MSYNC_SYSCALL_NUMBER => {
             super::mmap::sys_msync(args.0, args.1, args.2 as u32)
         }
