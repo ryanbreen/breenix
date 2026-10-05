@@ -300,7 +300,7 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                     }) {
                         Ok(actual_port) => {
                             log::info!(
-                                "UDP: Socket bound to port {} (requested: {})",
+                                "UDP socket bound to port {} (requested: {})",
                                 actual_port,
                                 addr.port_host()
                             );
@@ -472,7 +472,7 @@ pub fn sys_sendto(
 
     match result {
         Ok(()) => {
-            log::info!("UDP: Packet sent successfully, bytes={}", data.len());
+            log::info!("UDP socket sent packet successfully, bytes={}", data.len());
             log::debug!("UDP sendto: returning to userspace");
             SyscallResult::Ok(data.len() as u64)
         }

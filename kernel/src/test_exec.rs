@@ -17,11 +17,10 @@ use alloc::vec;
 ///   - This is a CHECKPOINT confirming process creation succeeded
 ///   - Does NOT prove the process executed
 /// - Stage 2 (Boot stage 31): Validates actual execution
-///   - Marker: "USERSPACE OUTPUT: Hello from userspace"
 ///   - This PROVES the process ran and printed output
 ///
 /// SUCCESS CRITERIA:
-/// - Must see: Multiple "Hello from userspace! Current time: XXXXX" outputs with different times
+/// - Must see: multiple userspace greetings with different times
 /// - Must see: All processes complete successfully without crashes
 /// - Must see: No page table conflicts or double faults
 ///
@@ -62,7 +61,7 @@ pub fn test_direct_execution() {
 
     log::info!("✓ CONCURRENT: Created hello_time test process");
     log::info!("    -> Process will execute hello_time.elf when scheduler runs");
-    log::info!("    -> Look for 'Hello from userspace! Current time: XXXXX' output");
+    log::info!("    -> userspace reports the hello-world time result");
 }
 
 /// Test fork from userspace - validates that userspace processes can call fork()
@@ -73,7 +72,6 @@ pub fn test_direct_execution() {
 ///   - This is a CHECKPOINT confirming process creation succeeded
 ///   - Does NOT prove the process executed
 /// - Stage 2 (Boot stage 31): Validates actual execution
-///   - Marker: "USERSPACE OUTPUT: Hello from userspace"
 ///   - This PROVES the process ran and printed output
 pub fn test_userspace_fork() {
     log::info!("=== Testing multiple instances of same program ===");
@@ -788,7 +786,7 @@ pub fn create_hello_world_elf() -> alloc::vec::Vec<u8> {
 
     // Code section at offset 176
     let code = vec![
-        // Print "Hello from userspace!\n"
+        // Print "Hello from test code!\n"
         0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1 (sys_write)
         0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1 (stdout)
         0x48, 0xbe, 0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00,
@@ -809,8 +807,8 @@ pub fn create_hello_world_elf() -> alloc::vec::Vec<u8> {
         elf.push(0x90); // NOP padding
     }
 
-    // Data section at offset 304 - the "Hello from userspace!\n" string
-    let message = b"Hello from userspace!\n";
+    // Data section at offset 304 - the "Hello from test code!\n" string
+    let message = b"Hello from test code!\n";
     elf.extend_from_slice(message);
 
     // Pad data section to 32 bytes
@@ -932,7 +930,7 @@ pub fn test_syscall_enosys() {
     ) {
         Ok(pid) => {
             log::info!("Created syscall_enosys process with PID {:?}", pid);
-            log::info!("    -> Should print 'ENOSYS OK' if syscall 999 returns -38");
+            log::info!("    -> userspace reports the undefined syscall result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -960,7 +958,6 @@ pub fn test_syscall_enosys() {
 ///   - This is a CHECKPOINT confirming process creation succeeded
 ///   - Does NOT prove the handler executed
 /// - Stage 2 (Boot stage): Validates actual signal handler execution
-///   - Marker: "SIGNAL_HANDLER_EXECUTED"
 ///   - This PROVES the signal handler was called when the signal was delivered
 pub fn test_signal_handler() {
     log::info!("Testing signal handler execution");
@@ -978,7 +975,7 @@ pub fn test_signal_handler() {
     ) {
         Ok(pid) => {
             log::info!("Created signal_handler_test process with PID {:?}", pid);
-            log::info!("    -> Should print 'SIGNAL_HANDLER_EXECUTED' if handler runs");
+            log::info!("    -> userspace reports the signal handler executed result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1012,7 +1009,6 @@ pub fn test_signal_handler() {
 ///   - This is a CHECKPOINT confirming process creation succeeded
 ///   - Does NOT prove the trampoline worked
 /// - Stage 2 (Boot stage): Validates handler return and context restoration
-///   - Marker: "SIGNAL_RETURN_WORKS"
 ///   - This PROVES the trampoline successfully restored pre-signal context
 pub fn test_signal_return() {
     log::info!("Testing signal handler return via trampoline");
@@ -1030,7 +1026,7 @@ pub fn test_signal_return() {
     ) {
         Ok(pid) => {
             log::info!("Created signal_return_test process with PID {:?}", pid);
-            log::info!("    -> Should print 'SIGNAL_RETURN_WORKS' if trampoline works");
+            log::info!("    -> userspace reports the signal return works result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1057,7 +1053,6 @@ pub fn test_signal_return() {
 ///   - Marker: "Signal regs test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates register preservation
-///   - Marker: "SIGNAL_REGS_PRESERVED"
 ///   - This PROVES registers are correctly saved/restored across signals
 pub fn test_signal_regs() {
     log::info!("Testing signal register preservation");
@@ -1076,7 +1071,7 @@ pub fn test_signal_regs() {
         Ok(pid) => {
             log::info!("Created signal_regs_test process with PID {:?}", pid);
             log::info!("Signal regs test: process scheduled for execution.");
-            log::info!("    -> Should print 'SIGNAL_REGS_PRESERVED' if registers preserved");
+            log::info!("    -> userspace reports the signal regs preserved result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1103,7 +1098,6 @@ pub fn test_signal_regs() {
 ///   - Marker: "Unix socket test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates socketpair read/write/close functionality
-///   - Marker: "UNIX_SOCKET_TEST_PASSED"
 ///   - This PROVES Unix socket creation, bidirectional IPC, and EOF on close work
 pub fn test_unix_socket() {
     log::info!("Testing Unix domain socket (socketpair) functionality");
@@ -1122,7 +1116,7 @@ pub fn test_unix_socket() {
         Ok(pid) => {
             log::info!("Created unix_socket_test process with PID {:?}", pid);
             log::info!("Unix socket test: process scheduled for execution.");
-            log::info!("    -> Emits pass marker on success (UNIX_SOCKET_TEST_...)");
+            log::info!("    -> userspace reports the Unix socket result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1169,7 +1163,7 @@ pub fn test_unix_named_socket() {
         Ok(pid) => {
             log::info!("Created unix_named_socket_test process with PID {:?}", pid);
             log::info!("Named Unix socket test: process scheduled for execution.");
-            log::info!("    -> Emits pass marker on success (UNIX_NAMED_SOCKET_TEST_...)");
+            log::info!("    -> userspace reports the named Unix socket result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1212,7 +1206,7 @@ pub fn test_fifo() {
         Ok(pid) => {
             log::info!("Created fifo_test process with PID {:?}", pid);
             log::info!("FIFO test: process scheduled for execution.");
-            log::info!("    -> Emits pass marker on success (FIFO_TEST_...)");
+            log::info!("    -> userspace reports the FIFO result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1239,7 +1233,6 @@ pub fn test_fifo() {
 ///   - Marker: "Pipe test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates pipe operations
-///   - Marker: "PIPE_TEST_PASSED"
 ///   - This PROVES pipe creation, read/write, and close all work
 pub fn test_pipe() {
     log::info!("Testing pipe syscall functionality");
@@ -1255,7 +1248,7 @@ pub fn test_pipe() {
         Ok(pid) => {
             log::info!("Created pipe_test process with PID {:?}", pid);
             log::info!("Pipe test: process scheduled for execution.");
-            log::info!("    -> Emits pass marker on success (PIPE_TEST_...)");
+            log::info!("    -> userspace reports the pipe result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1301,7 +1294,7 @@ pub fn test_pipe_fork() {
         Ok(pid) => {
             log::info!("Created pipe_fork_test process with PID {:?}", pid);
             log::info!("Pipe+fork test: process scheduled for execution.");
-            log::info!("    -> Emits pass marker on success (PIPE_FORK_...)");
+            log::info!("    -> userspace reports the pipe fork result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1348,7 +1341,7 @@ pub fn test_pipe_concurrent() {
         Ok(pid) => {
             log::info!("Created pipe_concurrent_test process with PID {:?}", pid);
             log::info!("Pipe concurrent test: process scheduled for execution.");
-            log::info!("    -> Emits pass marker on success (PIPE_CONCURRENT_...)");
+            log::info!("    -> userspace reports the concurrent pipe result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1375,7 +1368,6 @@ pub fn test_pipe_concurrent() {
 ///   - Marker: "Waitpid test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates waitpid operations
-///   - Marker: "WAITPID_TEST_PASSED"
 ///   - This PROVES waitpid correctly waits for child, returns correct PID, and status extraction works
 pub fn test_waitpid() {
     log::info!("Testing waitpid syscall functionality");
@@ -1394,7 +1386,7 @@ pub fn test_waitpid() {
         Ok(pid) => {
             log::info!("Created waitpid_test process with PID {:?}", pid);
             log::info!("Waitpid test: process scheduled for execution.");
-            log::info!("    -> Emits pass marker on success (WAITPID_TEST_PASSED)");
+            log::info!("    -> userspace reports the waitpid result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1421,7 +1413,6 @@ pub fn test_waitpid() {
 ///   - Marker: "Signal fork test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates signal inheritance
-///   - Marker: "SIGNAL_FORK_TEST_PASSED"
 ///   - This PROVES signal handlers are correctly inherited by forked children
 pub fn test_signal_fork() {
     log::info!("Testing signal handler inheritance across fork");
@@ -1440,7 +1431,7 @@ pub fn test_signal_fork() {
         Ok(pid) => {
             log::info!("Created signal_fork_test process with PID {:?}", pid);
             log::info!("Signal fork test: process scheduled for execution.");
-            log::info!("    -> Emits pass marker on success (SIGNAL_FORK_TEST_PASSED)");
+            log::info!("    -> userspace reports the signal fork result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1467,7 +1458,6 @@ pub fn test_signal_fork() {
 ///   - Marker: "Signal kill test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates SIGTERM delivery terminates child
-///   - Marker: "SIGNAL_KILL_TEST_PASSED"
 ///   - This PROVES SIGTERM is delivered and child is terminated
 pub fn test_signal_kill() {
     log::info!("Testing SIGTERM delivery with default handler");
@@ -1513,7 +1503,6 @@ pub fn test_signal_kill() {
 ///   - Marker: "SIGCHLD test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates SIGCHLD delivery
-///   - Marker: "SIGCHLD_TEST_PASSED"
 ///   - This PROVES SIGCHLD is delivered to parent when child terminates
 pub fn test_sigchld() {
     log::info!("Testing SIGCHLD delivery on child exit");
@@ -1559,7 +1548,6 @@ pub fn test_sigchld() {
 ///   - Marker: "WNOHANG timing test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates WNOHANG timing
-///   - Marker: "WNOHANG_TIMING_TEST_PASSED"
 ///   - This PROVES WNOHANG returns 0 when child still running, ECHILD when no children
 pub fn test_wnohang_timing() {
     log::info!("Testing WNOHANG timing behavior");
@@ -1578,7 +1566,7 @@ pub fn test_wnohang_timing() {
         Ok(pid) => {
             log::info!("Created wnohang_timing_test process with PID {:?}", pid);
             log::info!("WNOHANG timing test: process scheduled for execution.");
-            log::info!("    -> Emits pass marker on success (WNOHANG_TIMING_TEST_PASSED)");
+            log::info!("    -> userspace reports the wnohang timing result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1605,7 +1593,6 @@ pub fn test_wnohang_timing() {
 ///   - Marker: "Signal exec test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates signal reset on exec
-///   - Marker: "SIGNAL_EXEC_TEST_PASSED"
 ///   - This PROVES signal handlers are reset to SIG_DFL after exec
 pub fn test_signal_exec() {
     log::info!("Testing signal handler reset on exec");
@@ -1651,7 +1638,6 @@ pub fn test_signal_exec() {
 ///   - Marker: "Pause test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates pause behavior
-///   - Marker: "PAUSE_TEST_PASSED"
 ///   - This PROVES pause() blocks until signal delivered, and signal handler executes
 pub fn test_pause() {
     log::info!("Testing pause() syscall functionality");
@@ -1668,7 +1654,7 @@ pub fn test_pause() {
         Ok(pid) => {
             log::info!("Created pause_test process with PID {:?}", pid);
             log::info!("Pause test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit PAUSE_TEST marker if successful");
+            log::info!("    -> userspace reports the pause result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1695,7 +1681,6 @@ pub fn test_pause() {
 ///   - Marker: "Kill process group test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates kill process group behavior
-///   - Marker: "KILL_PGROUP_TEST_PASSED"
 ///   - This PROVES kill(0, sig), kill(-pgid, sig), and kill(-1, sig) work correctly
 pub fn test_kill_process_group() {
     log::info!("Testing process group kill semantics");
@@ -1715,7 +1700,7 @@ pub fn test_kill_process_group() {
         Ok(pid) => {
             log::info!("Created kill_process_group_test process with PID {:?}", pid);
             log::info!("Kill process group test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit KILL_PGROUP_TEST marker if successful");
+            log::info!("    -> userspace reports the kill pgroup result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1742,7 +1727,6 @@ pub fn test_kill_process_group() {
 ///   - Marker: "Sigsuspend test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates sigsuspend behavior
-///   - Marker: "SIGSUSPEND_TEST_PASSED"
 ///   - This PROVES sigsuspend() atomically replaces mask, suspends, and restores original mask
 pub fn test_sigsuspend() {
     log::info!("Testing sigsuspend() syscall functionality");
@@ -1761,7 +1745,7 @@ pub fn test_sigsuspend() {
         Ok(pid) => {
             log::info!("Created sigsuspend_test process with PID {:?}", pid);
             log::info!("Sigsuspend test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit SIGSUSPEND_TEST marker if successful");
+            log::info!("    -> userspace reports the sigsuspend result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1788,7 +1772,6 @@ pub fn test_sigsuspend() {
 ///   - Marker: "Sigaltstack test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates sigaltstack behavior
-///   - Marker: "SIGALTSTACK_TEST_PASSED"
 ///   - This PROVES sigaltstack() sets alternate signal stack and SA_ONSTACK works
 pub fn test_sigaltstack() {
     log::info!("Testing sigaltstack() syscall functionality");
@@ -1807,7 +1790,7 @@ pub fn test_sigaltstack() {
         Ok(pid) => {
             log::info!("Created sigaltstack_test process with PID {:?}", pid);
             log::info!("Sigaltstack test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit SIGALTSTACK_TEST marker if successful");
+            log::info!("    -> userspace reports the sigaltstack result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1834,7 +1817,6 @@ pub fn test_sigaltstack() {
 ///   - Marker: "Dup test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates dup behavior
-///   - Marker: "DUP_TEST_PASSED"
 ///   - This PROVES dup() creates working duplicate fd that survives original fd close
 pub fn test_dup() {
     log::info!("Testing dup() syscall functionality");
@@ -1850,7 +1832,7 @@ pub fn test_dup() {
         Ok(pid) => {
             log::info!("Created dup_test process with PID {:?}", pid);
             log::info!("Dup test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit DUP_TEST marker if successful");
+            log::info!("    -> userspace reports the dup result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1877,7 +1859,6 @@ pub fn test_dup() {
 ///   - Marker: "Fcntl test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates fcntl behavior
-///   - Marker: "FCNTL_TEST_PASSED"
 ///   - This PROVES fcntl F_GETFD/F_SETFD/F_GETFL/F_SETFL/F_DUPFD all work
 pub fn test_fcntl() {
     log::info!("Testing fcntl() syscall functionality");
@@ -1894,7 +1875,7 @@ pub fn test_fcntl() {
         Ok(pid) => {
             log::info!("Created fcntl_test process with PID {:?}", pid);
             log::info!("Fcntl test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FCNTL_TEST marker if successful");
+            log::info!("    -> userspace reports the fcntl result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1921,7 +1902,6 @@ pub fn test_fcntl() {
 ///   - Marker: "Pipe2 test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates pipe2 behavior
-///   - Marker: "PIPE2_TEST_PASSED"
 ///   - This PROVES pipe2 with O_CLOEXEC/O_NONBLOCK flags works correctly
 pub fn test_pipe2() {
     log::info!("Testing pipe2() syscall functionality");
@@ -1938,7 +1918,7 @@ pub fn test_pipe2() {
         Ok(pid) => {
             log::info!("Created pipe2_test process with PID {:?}", pid);
             log::info!("Pipe2 test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit PIPE2_TEST marker if successful");
+            log::info!("    -> userspace reports the pipe2 result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -1965,7 +1945,6 @@ pub fn test_pipe2() {
 ///   - Marker: "Poll test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates poll behavior
-///   - Marker: "POLL_TEST_PASSED"
 ///   - This PROVES poll correctly monitors fds for I/O readiness
 pub fn test_poll() {
     log::info!("Testing poll() syscall functionality");
@@ -1981,7 +1960,7 @@ pub fn test_poll() {
         Ok(pid) => {
             log::info!("Created poll_test process with PID {:?}", pid);
             log::info!("Poll test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit POLL_TEST marker if successful");
+            log::info!("    -> userspace reports the poll result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2008,7 +1987,6 @@ pub fn test_poll() {
 ///   - Marker: "Select test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates select behavior
-///   - Marker: "SELECT_TEST_PASSED"
 ///   - This PROVES select correctly monitors fds for I/O readiness using fd_set bitmaps
 pub fn test_select() {
     log::info!("Testing select() syscall functionality");
@@ -2027,7 +2005,7 @@ pub fn test_select() {
         Ok(pid) => {
             log::info!("Created select_test process with PID {:?}", pid);
             log::info!("Select test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit SELECT_TEST marker if successful");
+            log::info!("    -> userspace reports the select result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2054,7 +2032,6 @@ pub fn test_select() {
 ///   - Marker: "Nonblock test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates non-blocking pipe I/O
-///   - Marker: "NONBLOCK_TEST_PASSED"
 ///   - This PROVES O_NONBLOCK correctly causes read/write on empty/full pipes to return EAGAIN
 pub fn test_nonblock() {
     log::info!("Testing O_NONBLOCK pipe behavior");
@@ -2073,7 +2050,7 @@ pub fn test_nonblock() {
         Ok(pid) => {
             log::info!("Created nonblock_test process with PID {:?}", pid);
             log::info!("Nonblock test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit NONBLOCK_TEST marker if successful");
+            log::info!("    -> userspace reports the nonblock result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2100,7 +2077,6 @@ pub fn test_nonblock() {
 ///   - Marker: "TTY test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates TTY operations
-///   - Marker: "TTY_TEST_PASSED"
 ///   - This PROVES isatty, tcgetattr, tcsetattr, and raw/cooked mode switching all work
 pub fn test_tty() {
     log::info!("Testing TTY layer functionality");
@@ -2116,7 +2092,7 @@ pub fn test_tty() {
         Ok(pid) => {
             log::info!("Created tty_test process with PID {:?}", pid);
             log::info!("TTY test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit TTY_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the tty result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2162,7 +2138,7 @@ pub fn test_job_control() {
         Ok(pid) => {
             log::info!("Created job_control_test process with PID {:?}", pid);
             log::info!("Job control test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit JOB_CONTROL_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the job control result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2189,7 +2165,6 @@ pub fn test_job_control() {
 ///   - Marker: "Session test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates session/pgid operations
-///   - Marker: "SESSION_TEST_PASSED"
 ///   - This PROVES getpgid, setpgid, getpgrp, getsid, setsid all work correctly
 pub fn test_session() {
     log::info!("Testing session and process group syscalls");
@@ -2208,7 +2183,7 @@ pub fn test_session() {
         Ok(pid) => {
             log::info!("Created session_test process with PID {:?}", pid);
             log::info!("Session test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit SESSION_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the session result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2235,7 +2210,6 @@ pub fn test_session() {
 ///   - Marker: "File read test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates file reading from ext2
-///   - Marker: "FILE_READ_TEST_PASSED"
 ///   - This PROVES open, read, fstat, and close syscalls work on ext2 filesystem
 pub fn test_file_read() {
     log::info!("Testing ext2 file read functionality");
@@ -2254,7 +2228,7 @@ pub fn test_file_read() {
         Ok(pid) => {
             log::info!("Created file_read_test process with PID {:?}", pid);
             log::info!("File read test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FILE_READ_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the file read result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2281,7 +2255,6 @@ pub fn test_file_read() {
 ///   - Marker: "Ctrl-C test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates SIGINT delivery and wstatus encoding
-///   - Marker: "CTRL_C_TEST_PASSED"
 ///   - This PROVES:
 ///     1. Parent can fork a child process
 ///     2. SIGINT can be sent to child via kill()
@@ -2304,7 +2277,7 @@ pub fn test_ctrl_c() {
         Ok(pid) => {
             log::info!("Created ctrl_c_test process with PID {:?}", pid);
             log::info!("Ctrl-C test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit CTRL_C_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the ctrl c result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2342,7 +2315,7 @@ pub fn test_getdents() {
         Ok(pid) => {
             log::info!("Created getdents_test process with PID {:?}", pid);
             log::info!("Getdents test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit GETDENTS_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the getdents result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2378,7 +2351,7 @@ pub fn test_lseek() {
         Ok(pid) => {
             log::info!("Created lseek_test process with PID {:?}", pid);
             log::info!("Lseek test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit LSEEK_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the lseek result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2416,7 +2389,7 @@ pub fn test_fs_write() {
         Ok(pid) => {
             log::info!("Created fs_write_test process with PID {:?}", pid);
             log::info!("Filesystem write test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FS_WRITE_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the fs write result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2454,7 +2427,7 @@ pub fn test_fs_rename() {
         Ok(pid) => {
             log::info!("Created fs_rename_test process with PID {:?}", pid);
             log::info!("Filesystem rename test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FS_RENAME_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the fs rename result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2492,7 +2465,7 @@ pub fn test_fs_large_file() {
         Ok(pid) => {
             log::info!("Created fs_large_file_test process with PID {:?}", pid);
             log::info!("Large file test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FS_LARGE_FILE_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the fs large file result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2530,7 +2503,7 @@ pub fn test_fs_directory() {
         Ok(pid) => {
             log::info!("Created fs_directory_test process with PID {:?}", pid);
             log::info!("Directory test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FS_DIRECTORY_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the fs directory result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2568,7 +2541,7 @@ pub fn test_fs_link() {
         Ok(pid) => {
             log::info!("Created fs_link_test process with PID {:?}", pid);
             log::info!("Link test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FS_LINK_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the fs link result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2606,7 +2579,7 @@ pub fn test_access() {
         Ok(pid) => {
             log::info!("Created access_test process with PID {:?}", pid);
             log::info!("Access test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit ACCESS_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the access result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2642,7 +2615,7 @@ pub fn test_devfs() {
         Ok(pid) => {
             log::info!("Created devfs_test process with PID {:?}", pid);
             log::info!("Devfs test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit DEVFS_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the devfs result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2677,7 +2650,7 @@ pub fn test_cwd() {
         Ok(pid) => {
             log::info!("Created cwd_test process with PID {:?}", pid);
             log::info!("CWD test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit CWD_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the cwd result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2715,7 +2688,7 @@ pub fn test_exec_from_ext2() {
         Ok(pid) => {
             log::info!("Created exec_from_ext2_test process with PID {:?}", pid);
             log::info!("Exec ext2 test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit EXEC_EXT2_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the exec ext2 result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2756,7 +2729,7 @@ pub fn test_fs_block_alloc() {
         Ok(pid) => {
             log::info!("Created fs_block_alloc_test process with PID {:?}", pid);
             log::info!("Block alloc test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit BLOCK_ALLOC_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the block alloc result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2823,7 +2796,6 @@ pub fn test_hello_std_real() {
 ///   - Marker: "fork_memory_test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates memory isolation
-///   - Marker: "FORK_MEMORY_ISOLATION_PASSED"
 ///   - This PROVES:
 ///     1. Stack memory is isolated (child sees original value after parent modifies)
 ///     2. Heap memory (sbrk) is isolated
@@ -2849,7 +2821,7 @@ pub fn test_fork_memory() {
             log::info!("Created fork_memory_test process with PID {:?}", pid);
             log::info!("fork_memory_test: process scheduled for execution.");
             log::info!(
-                "    -> Userspace will emit FORK_MEMORY_ISOLATION_PASSED marker if successful"
+                "    -> userspace reports the fork memory isolation result"
             );
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
@@ -2883,7 +2855,6 @@ pub fn test_fork_memory() {
 ///   - Marker: "fork_state_test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates state inheritance
-///   - Marker: "FORK_STATE_COPY_PASSED"
 ///   - This PROVES:
 ///     1. File descriptors are inherited (pipe data readable)
 ///     2. Signal handlers are inherited (SIGUSR1 handler works)
@@ -2906,7 +2877,7 @@ pub fn test_fork_state() {
         Ok(pid) => {
             log::info!("Created fork_state_test process with PID {:?}", pid);
             log::info!("fork_state_test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FORK_STATE_COPY_PASSED marker if successful");
+            log::info!("    -> userspace reports the fork state copy result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2948,7 +2919,7 @@ pub fn test_fork_pending_signal() {
                 pid
             );
             log::info!(
-                "    -> Userspace will emit FORK_PENDING_SIGNAL_TEST_PASSED marker if successful"
+                "    -> userspace reports the fork pending signal result"
             );
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
@@ -2979,7 +2950,6 @@ pub fn test_fork_pending_signal() {
 /// - Stage 1 (Checkpoint): Process creation
 ///   - Marker: (none - process creation logs)
 /// - Stage 2 (Boot stage): Validates CoW + signal interaction
-///   - Marker: "COW_SIGNAL_TEST_PASSED"
 ///   - This PROVES:
 ///     1. Signal delivery can write to CoW-shared stack without deadlocking
 ///     2. Signal handler executes correctly on CoW-copied stack
@@ -3000,7 +2970,7 @@ pub fn test_cow_signal() {
     ) {
         Ok(pid) => {
             log::info!("Created cow_signal_test process with PID {:?}", pid);
-            log::info!("    -> Userspace will emit COW_SIGNAL_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the cow signal result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3028,7 +2998,6 @@ pub fn test_cow_signal() {
 /// TWO-STAGE VALIDATION PATTERN:
 /// - Stage 1 (Checkpoint): Process creation
 /// - Stage 2 (Boot stage): Validates CoW cleanup
-///   - Marker: "COW_CLEANUP_TEST_PASSED"
 ///   - This PROVES: Frame refcounts are correctly decremented on child exit
 pub fn test_cow_cleanup() {
     log::info!("Testing CoW cleanup on process exit");
@@ -3046,7 +3015,7 @@ pub fn test_cow_cleanup() {
     ) {
         Ok(pid) => {
             log::info!("Created cow_cleanup_test process with PID {:?}", pid);
-            log::info!("    -> Userspace will emit COW_CLEANUP_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the cow cleanup result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3074,7 +3043,6 @@ pub fn test_cow_cleanup() {
 /// TWO-STAGE VALIDATION PATTERN:
 /// - Stage 1 (Checkpoint): Process creation
 /// - Stage 2 (Boot stage): Validates sole owner optimization
-///   - Marker: "COW_SOLE_OWNER_TEST_PASSED"
 ///   - This PROVES: Sole owner optimization path works correctly
 pub fn test_cow_sole_owner() {
     log::info!("Testing CoW sole owner optimization");
@@ -3093,7 +3061,7 @@ pub fn test_cow_sole_owner() {
         Ok(pid) => {
             log::info!("Created cow_sole_owner_test process with PID {:?}", pid);
             log::info!(
-                "    -> Userspace will emit COW_SOLE_OWNER_TEST_PASSED marker if successful"
+                "    -> userspace reports the cow sole owner result"
             );
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
@@ -3123,7 +3091,6 @@ pub fn test_cow_sole_owner() {
 /// TWO-STAGE VALIDATION PATTERN:
 /// - Stage 1 (Checkpoint): Process creation
 /// - Stage 2 (Boot stage): Validates CoW at scale
-///   - Marker: "COW_STRESS_TEST_PASSED"
 ///   - This PROVES: CoW works correctly with many pages, no memory corruption
 pub fn test_cow_stress() {
     log::info!("Testing CoW at scale with many pages (stress test)");
@@ -3141,7 +3108,7 @@ pub fn test_cow_stress() {
     ) {
         Ok(pid) => {
             log::info!("Created cow_stress_test process with PID {:?}", pid);
-            log::info!("    -> Userspace will emit COW_STRESS_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the cow stress result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3168,7 +3135,6 @@ pub fn test_cow_stress() {
 /// TWO-STAGE VALIDATION PATTERN:
 /// - Stage 1 (Checkpoint): Process creation
 /// - Stage 2 (Boot stage): Validates read-only page sharing
-///   - Marker: "COW_READONLY_TEST_PASSED"
 ///   - This PROVES: Code sections are shared without COW overhead
 pub fn test_cow_readonly() {
     log::info!("Testing CoW read-only page sharing (code sections)");
@@ -3186,7 +3152,7 @@ pub fn test_cow_readonly() {
     ) {
         Ok(pid) => {
             log::info!("Created cow_readonly_test process with PID {:?}", pid);
-            log::info!("    -> Userspace will emit COW_READONLY_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the cow readonly result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3209,7 +3175,7 @@ pub fn test_cow_readonly() {
 ///
 /// TWO-STAGE VALIDATION PATTERN:
 /// - Stage 1 (This function): Creates and schedules the process
-/// - Stage 2 (Boot stage): Validates actual execution via ARGV_TEST_PASSED marker
+/// - Stage 2 (Boot stage): Validates actual execution via the userspace argument result
 pub fn test_argv() {
     log::info!("Testing argv support in exec syscall");
 
@@ -3223,7 +3189,7 @@ pub fn test_argv() {
     match crate::process::creation::create_user_process(String::from("argv_test"), argv_test_elf) {
         Ok(pid) => {
             log::info!("Created argv_test process with PID {:?}", pid);
-            log::info!("    -> Userspace will emit ARGV_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the argv result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3260,7 +3226,7 @@ pub fn test_exec_argv() {
     ) {
         Ok(pid) => {
             log::info!("Created exec_argv_test process with PID {:?}", pid);
-            log::info!("    -> Userspace will emit EXEC_ARGV_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the exec argv result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3302,7 +3268,7 @@ pub fn test_exec_stack_argv() {
         Ok(pid) => {
             log::info!("Created exec_stack_argv_test process with PID {:?}", pid);
             log::info!(
-                "    -> Userspace will emit EXEC_STACK_ARGV_TEST_PASSED marker if successful"
+                "    -> userspace reports the exec stack argv result"
             );
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
@@ -3339,7 +3305,7 @@ pub fn test_cloexec() {
     ) {
         Ok(pid) => {
             log::info!("Created cloexec_test process with PID {:?}", pid);
-            log::info!("    -> Userspace will emit CLOEXEC_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the cloexec result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3365,7 +3331,6 @@ pub fn test_cloexec() {
 ///   - Marker: "Shell pipe test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
 /// - Stage 2 (Boot stage): Validates pipeline data flow
-///   - Marker: "SHELL_PIPE_TEST_PASSED"
 ///   - This PROVES the pipe+fork+dup2 pattern works correctly for shell pipelines
 ///
 /// The test simulates `echo TEST | cat` and verifies data flows through the pipeline.
@@ -3386,7 +3351,7 @@ pub fn test_shell_pipe() {
         Ok(pid) => {
             log::info!("Created shell_pipe_test process with PID {:?}", pid);
             log::info!("Shell pipe test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit SHELL_PIPE_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the shell pipe result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3423,7 +3388,7 @@ pub fn test_true_coreutil() {
         Ok(pid) => {
             log::info!("Created true_test process with PID {:?}", pid);
             log::info!("true_test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit TRUE_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the true result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3461,7 +3426,7 @@ pub fn test_false_coreutil() {
         Ok(pid) => {
             log::info!("Created false_test process with PID {:?}", pid);
             log::info!("false_test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FALSE_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the false result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3498,7 +3463,7 @@ pub fn test_head_coreutil() {
         Ok(pid) => {
             log::info!("Created head_test process with PID {:?}", pid);
             log::info!("head_test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit HEAD_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the head result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3535,7 +3500,7 @@ pub fn test_tail_coreutil() {
         Ok(pid) => {
             log::info!("Created tail_test process with PID {:?}", pid);
             log::info!("tail_test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit TAIL_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the tail result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3572,7 +3537,7 @@ pub fn test_wc_coreutil() {
         Ok(pid) => {
             log::info!("Created wc_test process with PID {:?}", pid);
             log::info!("wc_test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit WC_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the wc result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3610,7 +3575,7 @@ pub fn test_which_coreutil() {
         Ok(pid) => {
             log::info!("Created which_test process with PID {:?}", pid);
             log::info!("which_test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit WHICH_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the which result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3647,7 +3612,7 @@ pub fn test_cat_coreutil() {
         Ok(pid) => {
             log::info!("Created cat_test process with PID {:?}", pid);
             log::info!("cat_test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit CAT_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the cat result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3684,7 +3649,7 @@ pub fn test_ls_coreutil() {
         Ok(pid) => {
             log::info!("Created ls_test process with PID {:?}", pid);
             log::info!("ls_test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit LS_TEST_PASSED marker if successful");
+            log::info!("    -> userspace reports the ls result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3708,7 +3673,7 @@ pub fn test_ls_coreutil() {
 ///
 /// TWO-STAGE VALIDATION PATTERN:
 /// - Stage 1 (This function): Creates and schedules the fbinfo_test process
-/// - Stage 2 (Boot stage): Validates actual execution via FBINFO_TEST: all tests PASSED marker
+/// - Stage 2 (Boot stage): Validates actual execution via the userspace framebuffer info result
 ///
 /// This test validates:
 /// - The FbInfo syscall (410) returns valid framebuffer information
@@ -3732,7 +3697,7 @@ pub fn test_fbinfo() {
         Ok(pid) => {
             log::info!("Created fbinfo_test process with PID {:?}", pid);
             log::info!(
-                "    -> Userspace will emit FBINFO_TEST: all tests PASSED marker if successful"
+                "    -> userspace reports the framebuffer info result"
             );
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(

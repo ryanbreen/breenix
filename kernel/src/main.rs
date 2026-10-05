@@ -963,7 +963,7 @@ fn dns_test_only_main() -> ! {
     x86_64::instructions::interrupts::enable();
 
     // Enter idle loop - dns_test will run via scheduler
-    // The test harness watches for "DNS Test: All tests passed" marker
+    // The test harness watches for the userspace DNS completion marker
     // and kills QEMU when it appears
     log::info!("DNS_TEST_ONLY: Entering idle loop (dns_test running via scheduler)");
     loop {
@@ -1199,7 +1199,12 @@ fn x86_boot_suite() -> Option<alloc::string::String> {
 
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
-            Ok(id) => id,
+            Ok(Some(target::Target::Suite(id))) => Some(id),
+            Ok(Some(target::Target::Probe)) => {
+                log::warn!("[boot] Ignoring probe boot target: x86-64 runs only default and suite");
+                None
+            }
+            Ok(None) => None,
             Err(why) => {
                 log::warn!("[boot] Ignoring boot target {}: {}", target::PATH, why);
                 None

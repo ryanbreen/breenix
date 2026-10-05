@@ -107,7 +107,7 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
     };
 
     log::debug!(
-        "UDP: Received packet from {}.{}.{}.{}:{} -> port {} ({} bytes)",
+        "UDP driver received packet from {}.{}.{}.{}:{} -> port {} ({} bytes)",
         ip.src_ip[0],
         ip.src_ip[1],
         ip.src_ip[2],

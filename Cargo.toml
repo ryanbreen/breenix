@@ -84,3 +84,4 @@ bootloader = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707d
 libc = "0.2"
 serde_json = "1.0"
 syn = { version = "2", features = ["full"] }
+proc-macro2 = "1"

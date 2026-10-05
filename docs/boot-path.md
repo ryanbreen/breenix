@@ -33,6 +33,11 @@ stage list and shown alongside, but does not block moving on.
 - `tests` (default): the testing kernel and its test loader. This is the gate above.
 - `probe`: the production kernel runs `/sbin/probe` as PID 1, which checks one
   subsystem per line (`PROBE <id> OK|FAIL ...`) and ends with `PROBE DONE`.
+  Parallels and VMware run it with `./run.sh --parallels --probe` and
+  `./run.sh --vmware --probe`: the same production kernel selects `/sbin/probe`
+  from a boot-target file containing `probe` on a copy of the ext2 disk. These
+  runs register with Vigil as mode `probe`, wait for `PROBE DONE`, stop the VM,
+  and exit (a missing completion line times out with an error).
 - `shell`: the production kernel runs `/sbin/init shell`, a bsh prompt on the serial
   console you can type into.
 - `desktop`: the production kernel runs `/sbin/init desktop`, the window manager and a
@@ -56,7 +61,8 @@ stage list and shown alongside, but does not block moving on.
   first (x86-64 QEMU reads fw_cfg too, for `default` and `suite`), then that file, else
   `default`. Suite mode exercises the kernel milestones and the first userspace process: the
   suite's `START` and `DONE` lines show PID 1 running in user mode and making syscalls.
-  The `default` boot (what Parallels and VMware run without `--suite`) measures that
+  The VM runners wait for the suite's `DONE` line and stop the VM before exiting.
+  The `default` boot (what Parallels and VMware run without `--suite` or `--probe`) measures that
   milestone by init's `[init] Breenix init starting (PID 1)` and `[init] Boot script completed`.
 
 The non-test modes build the kernel with no features, exactly like the prod-profile gate,

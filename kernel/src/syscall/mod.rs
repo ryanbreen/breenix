@@ -595,7 +595,7 @@ pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) 
 
         // For the hello world test, we know it's trying to call sys_write
         // Let's call it directly to prove userspace syscalls work
-        let message = "Hello from userspace! (via Rust syscall handler)\n";
+        let message = "Legacy Rust syscall handler greeting\n";
         match handlers::sys_write(1, message.as_ptr() as u64, message.len() as u64) {
             SyscallResult::Ok(bytes) => {
                 log::info!(
