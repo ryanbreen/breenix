@@ -40,6 +40,17 @@ fn dir_entry_type(inode: &Ext2Inode) -> u8 {
     }
 }
 
+/// What statfs reports for a mounted ext2 filesystem.
+#[derive(Clone, Copy, Debug)]
+pub struct FsStats {
+    pub block_size: u64,
+    pub blocks: u64,
+    pub reserved_blocks: u64,
+    pub free_blocks: u64,
+    pub inodes: u64,
+    pub free_inodes: u64,
+}
+
 /// A mounted ext2 filesystem instance
 ///
 /// Holds the superblock, block group descriptors, and a reference
@@ -131,6 +142,26 @@ impl Ext2Fs {
         self.superblock.s_state |= EXT2_ERROR_FS;
         let _ = self.superblock.write_to(self.device.as_ref());
         self.failed.store(true, Ordering::Release);
+    }
+
+    /// Capacity and free counts for statfs. The free counts are the sums of
+    /// the group descriptors' counts, which each allocation and release posts
+    /// with its bitmap bit, as Linux ext2 reports them.
+    pub fn statfs(&self) -> FsStats {
+        let (free_blocks, free_inodes) = self.block_groups.iter().fold((0u64, 0u64), |(b, i), g| {
+            (
+                b + u64::from(g.bg_free_blocks_count),
+                i + u64::from(g.bg_free_inodes_count),
+            )
+        });
+        FsStats {
+            block_size: self.superblock.block_size() as u64,
+            blocks: u64::from(self.superblock.s_blocks_count),
+            reserved_blocks: u64::from(self.superblock.s_r_blocks_count),
+            free_blocks,
+            inodes: u64::from(self.superblock.s_inodes_count),
+            free_inodes,
+        }
     }
 
     pub fn pin_inode(&self, inode_num: u32) -> Result<live_inode::FileHandle, &'static str> {
@@ -1132,7 +1163,12 @@ impl Ext2Fs {
     /// Remove an empty directory from the filesystem
     ///
     /// This removes the directory if it is empty (contains only "." and "..").
-    /// The directory's inode is freed and the entry is removed from the parent.
+    /// The entry is removed from the parent, the parent loses the link the
+    /// directory's ".." gave it, and the directory, left with no link, is
+    /// handed to the ext2 finalizer, which frees its blocks and its inode once
+    /// and posts them to the group and superblock counts. Every write is
+    /// planned, and everything allocated, before the disk changes; a failed
+    /// write is undone as rename undoes one.
     ///
     /// # Arguments
     /// * `path` - Absolute path to the directory to remove
@@ -1203,66 +1239,56 @@ impl Ext2Fs {
             return Err("Parent is not a directory");
         }
 
-        // Read the parent directory data
-        let mut parent_dir_data = self.read_directory(&parent_inode)?;
+        // The parent's entries with the name removed
+        let parent_dir_data = self.read_directory(&parent_inode)?;
+        let mut parent_image = parent_dir_data.clone();
+        remove_entry(&mut parent_image, dir_name, self.superblock.block_size())?;
 
-        // Remove the directory entry from parent
-        remove_entry(&mut parent_dir_data, dir_name, self.superblock.block_size())?;
+        // The parent loses the link the directory's ".." gave it, and its
+        // mtime and ctime change.
+        let mut parent_after = parent_inode;
+        parent_after.update_timestamps(false, true, true);
+        parent_after.i_links_count = parent_inode
+            .i_links_count
+            .checked_sub(1)
+            .ok_or("Corrupt parent link count")?;
 
-        // Update parent directory timestamps (mtime and ctime)
-        let mut parent_inode_mut = parent_inode;
-        parent_inode_mut.update_timestamps(false, true, true);
+        // The directory loses its name and its own ".": no link remains.
+        let mut target_after = target_inode;
+        target_after.i_links_count = 0;
+        target_after.update_timestamps(false, false, true);
 
-        // Decrement parent's link count (for the ".." entry that pointed to it)
-        let parent_links = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(parent_inode_mut.i_links_count))
-        };
-        parent_inode_mut.i_links_count = parent_links.saturating_sub(1);
+        // Held from before the disk changes, so the zero-link inode can be
+        // handed to the finalizer afterwards without allocating.
+        let handle = self.pin_loaded_inode(target_inode_num, target_inode.size())?;
 
-        // Write the modified parent directory data back
-        self.write_directory_data(parent_inode_num, &parent_dir_data)?;
+        // The name goes first; the counts it held fall after it is gone.
+        let mut writes = Vec::with_capacity(3);
+        self.plan_blocks(&parent_inode, &parent_dir_data, &parent_image, 0, &mut writes)
+            .map_err(|_| "Failed to plan directory removal")?;
+        writes.push(rename::Write::Inode {
+            ino: target_inode_num,
+            old: target_inode,
+            new: target_after,
+        });
+        writes.push(rename::Write::Inode {
+            ino: parent_inode_num,
+            old: parent_inode,
+            new: parent_after,
+        });
 
-        // Write the updated parent directory inode
-        parent_inode_mut
-            .write_to(
-                self.device.as_ref(),
-                parent_inode_num,
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write parent inode")?;
+        // The disk changes from here on; nothing below allocates. After a
+        // failed write the directory is not handed to the finalizer, so
+        // nothing a name may still reach is freed.
+        self.commit_writes(&writes)
+            .map_err(|_| "Failed to write directory removal")?;
 
-        // Free the directory's data blocks
-        let i_block =
-            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_block)) };
-        for block_num in i_block.iter().take(12) {
-            if *block_num != 0 {
-                free_block(
-                    self.device.as_ref(),
-                    *block_num,
-                    &self.superblock,
-                    &mut self.block_groups,
-                )?;
-            }
+        handle.object.orphan.store(true, Ordering::Release);
+        match handle.release_sole() {
+            Ok(object) => object.defer(),
+            // Another observer holds it; its last close queues the orphan.
+            Err(handle) => drop(handle),
         }
-
-        // Decrement the directory's inode link count (which frees the inode)
-        reclaim_directory_inode(
-            self.device.as_ref(),
-            target_inode_num,
-            &self.superblock,
-            &mut self.block_groups,
-        )?;
-
-        // Update superblock with new free inode/block counts
-        self.superblock.increment_free_inodes();
-        self.superblock
-            .write_to(self.device.as_ref())
-            .map_err(|_| "Failed to write superblock")?;
-
-        // Write updated block group descriptors
-        Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
-            .map_err(|_| "Failed to write block group descriptors")?;
 
         log::debug!(
             "ext2: removed directory '{}' (inode {})",

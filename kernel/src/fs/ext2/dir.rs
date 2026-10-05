@@ -97,10 +97,25 @@ impl<'a> DirReader<'a> {
     }
 }
 
-impl<'a> Iterator for DirReader<'a> {
-    type Item = DirEntry;
+/// A live directory entry with where its record lies in the directory's data.
+pub struct PositionedEntry {
+    /// Byte offset of the entry's record within the directory's data.
+    pub offset: usize,
+    /// Byte offset of the record that follows it.
+    pub next: usize,
+    pub entry: DirEntry,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
+impl<'a> DirReader<'a> {
+    /// Iterate live entries together with their record offsets. Records are
+    /// found only by following the `rec_len` chain from the start of the
+    /// data, so every offset yielded is a record boundary.
+    pub fn positioned(self) -> impl Iterator<Item = PositionedEntry> + 'a {
+        let mut reader = self;
+        core::iter::from_fn(move || reader.next_positioned())
+    }
+
+    fn next_positioned(&mut self) -> Option<PositionedEntry> {
         // Loop to skip deleted entries
         loop {
             // Check if we're at or past the end of the data
@@ -132,6 +147,7 @@ impl<'a> Iterator for DirReader<'a> {
             }
 
             // Save the current offset for name extraction
+            let record_offset = self.offset;
             let name_offset = self.offset + header_size;
 
             // Advance offset to next entry
@@ -142,8 +158,8 @@ impl<'a> Iterator for DirReader<'a> {
                 continue;
             }
 
-            // Validate name_len
-            if name_len == 0 || name_offset + name_len as usize > self.data.len() {
+            // Validate name_len: the name lies inside its own record
+            if name_len == 0 || header_size + name_len as usize > rec_len as usize {
                 // Invalid name length, stop iteration
                 return None;
             }
@@ -155,13 +171,25 @@ impl<'a> Iterator for DirReader<'a> {
             let name_is_exact = core::str::from_utf8(name_bytes).is_ok();
             let name = String::from_utf8_lossy(name_bytes).into_owned();
 
-            return Some(DirEntry {
-                inode,
-                file_type,
-                name,
-                name_is_exact,
+            return Some(PositionedEntry {
+                offset: record_offset,
+                next: self.offset,
+                entry: DirEntry {
+                    inode,
+                    file_type,
+                    name,
+                    name_is_exact,
+                },
             });
         }
+    }
+}
+
+impl<'a> Iterator for DirReader<'a> {
+    type Item = DirEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_positioned().map(|positioned| positioned.entry)
     }
 }
 

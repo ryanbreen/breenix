@@ -304,6 +304,21 @@ BSHRC
                 dd if=/dev/zero bs="$fixture_block_size" count=129 status=none |
                     tr "\000" Z > "/mnt/ext2/test/$fixture"
             done
+            # A directory whose entries span at least three blocks, for the
+            # directories suite: hard links to one empty file under 200-byte
+            # names, which ext2 stores in 208-byte records.
+            mkdir -p /mnt/ext2/test/dir-blocks
+            i=0
+            while [ $((i * 208)) -le $((3 * fixture_block_size)) ]; do
+                name=$(printf "%0200d" "$i")
+                if [ "$i" -eq 0 ]; then
+                    first=$name
+                    touch "/mnt/ext2/test/dir-blocks/$first"
+                else
+                    ln "/mnt/ext2/test/dir-blocks/$first" "/mnt/ext2/test/dir-blocks/$name"
+                fi
+                i=$((i + 1))
+            done
 
             # Create additional test content
             mkdir -p /mnt/ext2/deep/path/to/file
@@ -589,6 +604,19 @@ BSHRC
     for fixture in files-io-large-shrink files-io-large-open; do
         dd if=/dev/zero bs="$fixture_block_size" count=129 status=none |
             tr "\000" Z > "$MOUNT_DIR/test/$fixture"
+    done
+    # Match the multi-block directory installed by the Docker path above.
+    mkdir -p "$MOUNT_DIR/test/dir-blocks"
+    i=0
+    while [ $((i * 208)) -le $((3 * fixture_block_size)) ]; do
+        name=$(printf "%0200d" "$i")
+        if [ "$i" -eq 0 ]; then
+            first=$name
+            touch "$MOUNT_DIR/test/dir-blocks/$first"
+        else
+            ln "$MOUNT_DIR/test/dir-blocks/$first" "$MOUNT_DIR/test/dir-blocks/$name"
+        fi
+        i=$((i + 1))
     done
     mkdir -p "$MOUNT_DIR/deep/path/to/file"
     echo "Deep nested content" > "$MOUNT_DIR/deep/path/to/file/data.txt"

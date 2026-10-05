@@ -690,6 +690,9 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
 /// * `offset` - Offset value
 /// * `whence` - SEEK_SET, SEEK_CUR, or SEEK_END
 ///
+/// On a directory, the position is the getdents64 cookie: SEEK_SET and
+/// SEEK_CUR move it, SEEK_END is EINVAL.
+///
 /// # Returns
 /// New file position on success, negative errno on failure
 pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
@@ -730,7 +733,9 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
                     let f = file.lock();
                     (f.handle.clone(), f.position)
                 }
-                FdKind::Directory(_) => return SyscallResult::Err(21), // EISDIR
+                // A directory position is a record offset, not a byte count
+                // that SEEK_END can be relative to.
+                FdKind::Directory(_) => return SyscallResult::Err(22), // EINVAL
                 _ => return SyscallResult::Err(29),                    // ESPIPE
             }
             // PM lock and file lock both dropped here
@@ -810,9 +815,22 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
             file.position = new_pos;
             SyscallResult::Ok(new_pos)
         }
-        FdKind::Directory(_) => {
-            // Directories are not seekable with lseek - use getdents position instead
-            SyscallResult::Err(21) // EISDIR
+        FdKind::Directory(dir) => {
+            // The position is the getdents64 cookie (see sys_getdents64): a
+            // value telldir saved, or 0 to rewind. Any non-negative value is
+            // accepted; getdents64 resumes at the first record at or after it.
+            let mut dir = dir.lock();
+            let new_pos = match whence {
+                SEEK_SET => Some(offset),
+                SEEK_CUR => (dir.position as i64).checked_add(offset),
+                _ => return SyscallResult::Err(22), // EINVAL
+            };
+            let new_pos = match new_pos {
+                Some(position) if position >= 0 => position as u64,
+                _ => return SyscallResult::Err(22), // EINVAL
+            };
+            dir.position = new_pos;
+            SyscallResult::Ok(new_pos)
         }
         _ => SyscallResult::Err(29), // ESPIPE - not seekable
     }
@@ -1302,81 +1320,77 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
 
     // Get directory info
     let dir_guard = dir_file.lock();
-    let inode_num = dir_guard.inode_num;
-    let dir_mount_id = dir_guard.mount_id;
+    let handle = dir_guard.handle.clone();
     let start_position = dir_guard.position;
     drop(dir_guard);
 
     // Drop process manager lock before acquiring filesystem lock
     drop(manager_guard);
 
-    // Read directory data from ext2, dispatching to correct filesystem
-    let is_home_dir = ext2::home_mount_id().map_or(false, |id| id == dir_mount_id);
-    let (inode, dir_data) = if is_home_dir {
-        let fs_guard = ext2::home_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(fs) => fs,
-            None => {
-                log::error!("sys_getdents64: ext2 home filesystem not mounted");
+    // Read the records of the directory this descriptor holds, through the
+    // mount and inode its handle pins: a position is never applied to any
+    // other directory's data.
+    let dir_data = {
+        let fs_guard = match ext2::read_mount(handle.object.mount) {
+            Ok(guard) => guard,
+            Err(e) => {
+                log::error!("sys_getdents64: directory mount unavailable: {}", e);
                 return SyscallResult::Err(EIO as u64);
             }
         };
-        let inode = match fs.read_inode(inode_num as u32) {
+        let fs = match fs_guard.as_ref() {
+            Some(fs) => fs,
+            None => return SyscallResult::Err(EIO as u64),
+        };
+        let inode_num = match handle.verify(fs) {
+            Ok(ino) => ino,
+            Err(_) => return SyscallResult::Err(EIO as u64),
+        };
+        let inode = match fs.read_inode(inode_num) {
             Ok(ino) => ino,
             Err(_) => {
                 log::error!("sys_getdents64: failed to read inode {}", inode_num);
                 return SyscallResult::Err(EIO as u64);
             }
         };
-        let dir_data = match fs.read_directory(&inode) {
+        match fs.read_directory(&inode) {
             Ok(data) => data,
             Err(e) => {
                 log::error!("sys_getdents64: failed to read directory: {}", e);
                 return SyscallResult::Err(EIO as u64);
             }
-        };
-        (inode, dir_data)
-    } else {
-        let fs_guard = ext2::root_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(fs) => fs,
-            None => {
-                log::error!("sys_getdents64: ext2 root filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        };
-        let inode = match fs.read_inode(inode_num as u32) {
-            Ok(ino) => ino,
-            Err(_) => {
-                log::error!("sys_getdents64: failed to read inode {}", inode_num);
-                return SyscallResult::Err(EIO as u64);
-            }
-        };
-        let dir_data = match fs.read_directory(&inode) {
-            Ok(data) => data,
-            Err(e) => {
-                log::error!("sys_getdents64: failed to read directory: {}", e);
-                return SyscallResult::Err(EIO as u64);
-            }
-        };
-        (inode, dir_data)
+        }
     };
-    let _ = inode; // inode used above, data extracted
 
-    // Parse directory entries and write to user buffer
+    // Parse directory entries and write to user buffer.
+    //
+    // A directory position (the getdents64 d_off, and what lseek reports
+    // and accepts) is the byte offset of a record within the directory's
+    // data: block index times block size plus the offset in the block. ext2
+    // never moves a record that stays: a new name splits free space after a
+    // record or reuses an empty one, and a removed name is absorbed into the
+    // record before it. So a saved position still lies at or before every
+    // entry that followed it, however many names were created or removed
+    // around it, and reading resumes at the first live record starting at or
+    // after it. Records are found only by walking each block's record chain
+    // from its start, so a position that falls inside a record (because the
+    // record it named was removed, or because the position was never one this
+    // directory returned) never selects partial bytes. A position is not tied
+    // to the open that returned it: one from an earlier open of the same
+    // directory resumes the same way, and one from another directory is only a
+    // byte offset into this directory's own records, so it can never read
+    // another directory's bytes. Position 0 is the first record, `.`, so a
+    // rewind replays `.` and `..`.
     let buffer = dirp as *mut u8;
     let buffer_size = count as usize;
     let mut bytes_written = 0usize;
-    let mut entry_index = 0usize;
     let mut new_position = start_position;
 
-    for entry in DirReader::new(&dir_data) {
-        // Skip entries before our current position
-        // Position is stored as entry index for simplicity
-        if (entry_index as u64) < start_position {
-            entry_index += 1;
+    for positioned in DirReader::new(&dir_data).positioned() {
+        if (positioned.offset as u64) < start_position {
             continue;
         }
+        let entry = &positioned.entry;
 
         let name_len = entry.name.len();
         // d_reclen = header + name + null terminator, aligned to 8 bytes
@@ -1384,7 +1398,11 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
 
         // Check if this entry fits in remaining buffer
         if bytes_written + reclen > buffer_size {
-            // No more room - stop here
+            // A buffer too small for even the next entry is EINVAL, as on
+            // Linux; returning 0 would read as the end of the directory.
+            if bytes_written == 0 {
+                return SyscallResult::Err(EINVAL as u64);
+            }
             break;
         }
 
@@ -1397,9 +1415,9 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
             let d_ino_ptr = entry_ptr as *mut u64;
             core::ptr::write_unaligned(d_ino_ptr, entry.inode as u64);
 
-            // Write d_off (i64) at offset 8 - offset to NEXT entry (entry_index + 1)
+            // Write d_off (i64) at offset 8 - the position of the next record
             let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
+            core::ptr::write_unaligned(d_off_ptr, positioned.next as i64);
 
             // Write d_reclen (u16) at offset 16
             let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
@@ -1423,8 +1441,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         }
 
         bytes_written += reclen;
-        entry_index += 1;
-        new_position = entry_index as u64;
+        new_position = positioned.next as u64;
     }
 
     // Update directory position
@@ -3679,7 +3696,6 @@ const UTIME_NOW: i64 = 0x3FFFFFFF;
 /// Special timespec value: leave timestamp unchanged
 const UTIME_OMIT: i64 = 0x3FFFFFFE;
 /// AT_SYMLINK_NOFOLLOW flag
-#[allow(dead_code)]
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 
 /// Timespec layout for utimensat (matches Linux ABI)
@@ -3698,6 +3714,10 @@ struct UtimeTimespec {
 /// UTIME_NOW (0x3FFFFFFF): use current time for that field.
 /// UTIME_OMIT (0x3FFFFFFE): don't change that timestamp.
 pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> SyscallResult {
+    // AT_SYMLINK_NOFOLLOW is the only flag utimensat defines.
+    if flags & !AT_SYMLINK_NOFOLLOW != 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
     let now = crate::time::current_unix_time() as u32;
 
     // Determine what atime/mtime to set
@@ -3711,6 +3731,14 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
                 Ok(t) => t,
                 Err(e) => return SyscallResult::Err(e),
             };
+
+        // Each tv_nsec is UTIME_NOW, UTIME_OMIT, or a nanosecond count in
+        // [0, 999999999]; anything else is EINVAL, checked for both before
+        // either is acted on (POSIX utimensat).
+        let valid = |nsec: i64| nsec == UTIME_NOW || nsec == UTIME_OMIT || (0..1_000_000_000).contains(&nsec);
+        if !valid(times[0].tv_nsec) || !valid(times[1].tv_nsec) {
+            return SyscallResult::Err(super::errno::EINVAL as u64);
+        }
 
         let atime = if times[0].tv_nsec == UTIME_NOW {
             Some(now)
@@ -3862,6 +3890,80 @@ fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize, Option<crate::fs
             _ => Err(EINVAL as u64),
         }
     })
+}
+
+/// Linux `struct statfs` on 64-bit targets: x86-64 and aarch64 share the
+/// asm-generic layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinuxStatfs {
+    f_type: i64,
+    f_bsize: i64,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [i32; 2],
+    f_namelen: i64,
+    f_frsize: i64,
+    f_flags: i64,
+    f_spare: [i64; 4],
+}
+
+/// ext2's superblock magic, the f_type Linux reports for it.
+const EXT2_SUPER_MAGIC: i64 = 0xEF53;
+
+/// fstatfs(fd, buf) - Report the filesystem an ext2 file or directory
+/// descriptor is on: its block size, block and inode totals, and the free
+/// counts its block groups hold. Other descriptor kinds are not backed by a
+/// filesystem this reports on and fail with ENOSYS.
+pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
+    use super::errno::{EBADF, EIO, ENOSYS};
+    let handle = crate::arch_without_interrupts(|| {
+        let thread = crate::task::scheduler::current_thread_id().ok_or(EBADF as u64)?;
+        let manager_guard = crate::process::manager();
+        let manager = manager_guard.as_ref().ok_or(EBADF as u64)?;
+        let (_, process) = manager.find_process_by_thread(thread).ok_or(EBADF as u64)?;
+        let entry = process.fd_table.get(fd).ok_or(EBADF as u64)?;
+        match &entry.kind {
+            FdKind::RegularFile(file) => Ok(file.lock().handle.clone()),
+            FdKind::Directory(dir) => Ok(dir.lock().handle.clone()),
+            _ => Err(ENOSYS as u64),
+        }
+    });
+    let handle = match handle {
+        Ok(handle) => handle,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    let stats = {
+        let guard = match crate::fs::ext2::read_mount(handle.object.mount) {
+            Ok(guard) => guard,
+            Err(_) => return SyscallResult::Err(EIO as u64),
+        };
+        match guard.as_ref() {
+            Some(fs) => fs.statfs(),
+            None => return SyscallResult::Err(EIO as u64),
+        }
+    };
+    let out = LinuxStatfs {
+        f_type: EXT2_SUPER_MAGIC,
+        f_bsize: stats.block_size as i64,
+        f_blocks: stats.blocks,
+        f_bfree: stats.free_blocks,
+        f_bavail: stats.free_blocks.saturating_sub(stats.reserved_blocks),
+        f_files: stats.inodes,
+        f_ffree: stats.free_inodes,
+        f_fsid: [0; 2],
+        f_namelen: 255,
+        f_frsize: stats.block_size as i64,
+        f_flags: 0,
+        f_spare: [0; 4],
+    };
+    match super::userptr::copy_to_user(buf as *mut LinuxStatfs, &out) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(errno) => SyscallResult::Err(errno),
+    }
 }
 
 /// fsync/fdatasync write back all dirty shared pages of the pinned inode,
