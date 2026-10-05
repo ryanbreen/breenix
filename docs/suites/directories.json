@@ -366,6 +366,10 @@
         {
           "id": "fchdir-renamed",
           "title": "getcwd follows a directory entered by fchdir to its new pathname after rename"
+        },
+        {
+          "id": "fchdir-threads",
+          "title": "threads share the working directory: fchdir in one thread moves the others, and theirs moves it"
         }
       ]
     },
