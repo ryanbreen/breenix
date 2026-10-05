@@ -2343,40 +2343,12 @@ pub fn sys_exec_with_frame(
 /// It's called on every exec syscall, and serial I/O causes CI timing issues.
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
-    use super::errno::EIO;
-    use crate::fs::ext2;
-
-    // Determine which filesystem to use based on path
-    let is_home = ext2::is_home_path(path);
-    let fs_path = if is_home {
-        ext2::strip_home_prefix(path)
-    } else {
-        path
-    };
-
-    if is_home {
-        let fs_guard = ext2::home_fs_read();
-        let fs = fs_guard.as_ref().ok_or(EIO)?;
-        load_elf_from_ext2_fs(fs, fs_path)
-    } else {
-        let fs_guard = ext2::root_fs_read();
-        let fs = fs_guard.as_ref().ok_or(EIO)?;
-        load_elf_from_ext2_fs(fs, fs_path)
-    }
-}
-
-/// Inner helper for loading ELF from any ext2 filesystem instance.
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
-fn load_elf_from_ext2_fs(fs: &crate::fs::ext2::Ext2Fs, path: &str) -> Result<Vec<u8>, i32> {
     use super::errno::{EACCES, EIO, ENOTDIR};
 
-    let inode_num = fs.resolve_path(path).map_err(|e| {
-        if e.contains("not found") {
-            super::errno::ENOENT
-        } else {
-            EIO
-        }
-    })?;
+    let (mount, inode_num) =
+        crate::fs::namei::resolve_file(path).map_err(|errno| errno as i32)?;
+    let fs_guard = mount.read();
+    let fs = fs_guard.as_ref().ok_or(EIO)?;
 
     let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
 
@@ -2689,16 +2661,9 @@ pub fn sys_execv_with_frame(
             alloc::format!("/bin/{}", program_name)
         };
 
-        let elf_vec = match crate::boot::init_image::read_init_from_ext2(&resolved_path) {
+        let elf_vec = match crate::boot::init_image::read_program(&resolved_path) {
             Ok(data) => data,
-            Err(msg) => {
-                let errno = match msg {
-                    "init not found" => super::errno::ENOENT,
-                    "init is a directory" => super::errno::EISDIR,
-                    _ => super::errno::EIO,
-                };
-                return SyscallResult::Err(errno as u64);
-            }
+            Err(errno) => return SyscallResult::Err(errno as u64),
         };
         let elf_data = elf_vec.as_slice();
 
@@ -2866,7 +2831,7 @@ pub fn sys_execv_with_frame(
 pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     // Declared before PM guards: removed FD tables are destroyed after PM unlock.
     let mut retired_rows = alloc::vec::Vec::new();
-    use super::errno::{EFAULT, EINVAL, EIO, EISDIR, ENOENT, ENOMEM, ESRCH};
+    use super::errno::{EFAULT, EINVAL, ENOMEM, ESRCH};
 
     if path_ptr == 0 {
         return SyscallResult::Err(EFAULT as u64);
@@ -2951,16 +2916,9 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         alloc::format!("/bin/{}", program_path)
     };
 
-    let elf_vec = match crate::boot::init_image::read_init_from_ext2(&resolved_path) {
+    let elf_vec = match crate::boot::init_image::read_program(&resolved_path) {
         Ok(data) => data,
-        Err(msg) => {
-            let errno = match msg {
-                "init not found" => ENOENT,
-                "init is a directory" => EISDIR,
-                _ => EIO,
-            };
-            return SyscallResult::Err(errno as u64);
-        }
+        Err(errno) => return SyscallResult::Err(errno as u64),
     };
     let elf_data = elf_vec.as_slice();
 

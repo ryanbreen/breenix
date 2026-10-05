@@ -48,6 +48,9 @@ pub const EBUSY: i32 = 16;
 /// File exists
 pub const EEXIST: i32 = 17;
 
+/// Cross-device link (the two names are on different filesystems)
+pub const EXDEV: i32 = 18;
+
 /// No such device (a descriptor that cannot back a memory mapping)
 pub const ENODEV: i32 = 19;
 
@@ -90,6 +93,9 @@ pub const ENOLCK: i32 = 37;
 /// Function not implemented (used by syscall dispatcher)
 #[allow(dead_code)]
 pub const ENOSYS: i32 = 38;
+
+/// File name too long
+pub const ENAMETOOLONG: i32 = 36;
 
 /// Directory not empty
 pub const ENOTEMPTY: i32 = 39;

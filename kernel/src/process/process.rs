@@ -205,8 +205,8 @@ pub struct Process {
     /// File creation mask (umask)
     pub umask: u32,
 
-    /// Current working directory (absolute path)
-    pub cwd: String,
+    /// Current working directory. Its pathname is derived from the directory.
+    pub cwd: crate::fs::namei::WorkingDir,
 
     /// Process name (for debugging)
     pub name: String,
@@ -361,7 +361,7 @@ impl Process {
             // Standard default umask: owner rwx, group/other rx
             umask: 0o022,
             // Default working directory is root
-            cwd: String::from("/"),
+            cwd: crate::fs::namei::WorkingDir::Root,
             name,
             state: ProcessState::Creating,
             entry_point,

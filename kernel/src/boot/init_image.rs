@@ -24,24 +24,35 @@ use alloc::vec::Vec;
 /// other disk-backed load in `kernel_main_continue()`).
 #[cfg(target_arch = "x86_64")]
 pub fn read_init_from_ext2(path: &str) -> Result<Vec<u8>, &'static str> {
-    let fs_guard = crate::fs::ext2::root_fs_read();
-    let fs = fs_guard
-        .as_ref()
-        .ok_or("ext2 root filesystem not mounted")?;
+    use crate::syscall::errno::{EISDIR, ENOENT};
+    read_program(path).map_err(|errno| match errno {
+        ENOENT => "init not found",
+        EISDIR => "init is a directory",
+        _ => "failed to read init",
+    })
+}
 
-    let inode_num = fs.resolve_path(path).map_err(|_| "init not found")?;
+/// Read a program image for exec or spawn, resolving `path` as every
+/// pathname is resolved. Fails with the resolution's own errno, or EISDIR for
+/// a directory.
+#[cfg(target_arch = "x86_64")]
+pub fn read_program(path: &str) -> Result<Vec<u8>, i32> {
+    use crate::syscall::errno::{EIO, EISDIR};
 
-    let inode = fs
-        .read_inode(inode_num)
-        .map_err(|_| "failed to read inode")?;
+    let (mount, inode_num) =
+        crate::fs::namei::resolve_file(path).map_err(|errno| errno as i32)?;
+    let fs_guard = mount.read();
+    let fs = fs_guard.as_ref().ok_or(EIO)?;
+
+    let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
 
     if inode.is_dir() {
-        return Err("init is a directory");
+        return Err(EISDIR);
     }
 
     let elf_data = fs
         .read_file_content_coherent(inode_num, &inode)
-        .map_err(|_| "failed to read init")?;
+        .map_err(|_| EIO)?;
 
     drop(fs_guard);
 
