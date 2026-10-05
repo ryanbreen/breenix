@@ -957,6 +957,16 @@
       "path": "/tmp/files-io-writeback-fdatasync",
       "length": 266240,
       "byte": 66
+    },
+    {
+      "path": "/tmp/files-io-writeback-sync-large",
+      "length": 266240,
+      "byte": 83
+    },
+    {
+      "path": "/tmp/files-io-writeback-sync-small",
+      "length": 4096,
+      "byte": 83
     }
   ]
 }

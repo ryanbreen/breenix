@@ -11,12 +11,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
-Files & I/O has two remaining milestones after [PR #1073](https://github.com/ryanbreen/breenix/pull/1073):
-poll/select behavior and the sync/statfs/fstatfs interfaces. [Issue #1094](https://github.com/ryanbreen/breenix/issues/1094)
-tracks their completion on branch `files-io/poll-select`, expanding the suite from
-176 to 219 cases. Socket multiplexing remains in the networking effort.
-Directories & links has its separate 106-case suite. Device-failure injection
-coverage remains tracked in #1059.
+[PR #1098](https://github.com/ryanbreen/breenix/pull/1098) supplies the Files & I/O
+poll/select cases and sync/statfs/fstatfs interfaces. Its suite manifest lists
+219 cases; socket multiplexing remains in the networking effort.
+Directories & links has its separate suite. Device-failure injection coverage
+remains tracked in #1059.
 
 Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:

@@ -131,7 +131,7 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
         if super::check_signals_for_eintr().is_some() {
             return Err(4);
         }
-        // Register all pipe readers before publishing the blocked state. The
+        // Register pipe readers before publishing the blocked state. The
         // post-publication scan in park handles data/EOF arriving during setup.
         // Keep the wait blocked until an event or its actual deadline instead
         // of repeatedly making an indefinite pipe wait runnable every 1 ms.
@@ -233,7 +233,7 @@ fn duration(ptr: u64, scale: i64) -> Result<Option<u64>, u64> {
 }
 
 /// Set the temporary mask before any readiness scan. On EINTR leave it in
-/// force for delivery at syscall exit; sigreturn restores the original mask.
+/// force until delivery selects the interrupting signal, then restores it.
 /// Other exits restore immediately, including validation and copy failures.
 fn with_mask(mask: u64, size: u64, call: impl FnOnce() -> Result<u64, u64>) -> Result<u64, u64> {
     if mask == 0 {
@@ -338,13 +338,14 @@ pub(super) fn select(nfds: i32, read: u64, write: u64, except: u64, tv: u64) -> 
         let ret = select_wait(nfds, [read, write, except], timeout);
         if let Some(n) = timeout {
             let left = n.saturating_sub(now().saturating_sub(start));
-            userptr::copy_to_user(
+            // Timeout writeback is advisory and cannot erase a completed wait.
+            let _ = userptr::copy_to_user(
                 tv as *mut TimePair,
                 &TimePair {
                     sec: (left / 1_000_000_000) as i64,
                     fraction: (left % 1_000_000_000 / 1000) as i64,
                 },
-            )?;
+            );
         }
         ret
     }))

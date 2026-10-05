@@ -4133,7 +4133,7 @@ fn spawn_killable_writer() -> Result<(i32, Fixture), String> {
 }
 
 // Linux statfs is 120 bytes on both of our 64-bit architectures. Checking a
-// sentinel-filled raw buffer also proves reserved bytes were initialized.
+// sentinel-filled raw buffer checks initialization of the four spare words.
 #[cfg(target_arch = "x86_64")]
 const STATFS: u64 = 137;
 #[cfg(target_arch = "aarch64")]
@@ -4191,6 +4191,10 @@ fn stats_fields(s: &[u64; 15]) -> CaseResult {
         "undefined fsid, name limit, fragment size, flags or spare fields",
     )
 }
+// Free counters may change between calls as the orphan finalizer runs.
+fn stable_stats(a: &[u64; 15], b: &[u64; 15]) -> bool {
+    [0, 1, 2, 5, 7, 8, 9, 10, 11, 12, 13, 14].iter().all(|&i| a[i] == b[i])
+}
 fn metadata_statfs() -> CaseResult {
     let f = Fixture::new(b"stats")?;
     stats_fields(&fs_stats(Some(&f.path), BAD)?)
@@ -4200,8 +4204,9 @@ fn metadata_fstatfs() -> CaseResult {
     let by_path = fs_stats(Some(&f.path), BAD)?;
     let by_fd = fs_stats(None, f.fd())?;
     stats_fields(&by_fd)?;
+    stats_fields(&by_path)?;
     check(
-        by_fd == by_path,
+        stable_stats(&by_fd, &by_path),
         "fstatfs disagrees with statfs on the same filesystem",
     )
 }
@@ -4223,6 +4228,20 @@ fn metadata_statfs_symlink() -> CaseResult {
 fn metadata_statfs_missing() -> CaseResult {
     let f = Fixture::empty()?;
     expect_errno(fs_stats(Some(&f.path), BAD), 2, "statfs missing path")?;
+    for path in ["/proc/files-io-missing", "/dev/files-io-missing", "/dev/pts/4294967295"] {
+        expect_errno(fs_stats(Some(path), BAD), 2, "statfs missing virtual path")?;
+    }
+    fs::mkfifo(&f.path, 0o600)?;
+    let fd = f.open(O_RDONLY | O_NONBLOCK)?;
+    let by_path = fs_stats(Some(&f.path), BAD)?;
+    let by_fd = fs_stats(None, fd)?;
+    io::close(fd)?;
+    check(by_path[0] == 0x50495045 && by_path == by_fd, "FIFO statfs identity differs from fstatfs")?;
+    fs::unlink(&f.path)?;
+    let pts = fs::open("/dev/pts", O_RDONLY | O_DIRECTORY)?;
+    let by_fd = fs_stats(None, pts)?;
+    io::close(pts)?;
+    check(by_fd == fs_stats(Some("/dev/pts"), BAD)?, "devpts statfs identity mismatch")?;
     let existing = Fixture::new(b"x")?;
     expect_errno(
         fs_stats(Some(&format!("{}/child", existing.path)), BAD),
@@ -4269,49 +4288,57 @@ fn metadata_statfs_allocation() -> CaseResult {
     let before = fs_stats(None, f.fd())?;
     write_all(f.fd(), &[0x5a; 8192])?;
     let after = fs_stats(None, f.fd())?;
+    stats_fields(&before)?;
+    stats_fields(&after)?;
+    // A concurrent reclaim can offset allocation in mount-wide free counts.
+    // Check the file's allocated sectors and the mount's stable capacity and
+    // identity separately, without attributing a global delta to this write.
     check(
-        after[3] < before[3] && after[4] == after[3],
-        "statfs free counters did not track disk allocation",
+        fstat(f.fd())?.st_blocks >= 16 && stable_stats(&before, &after),
+        "allocated file lost its blocks or changed filesystem capacity/identity",
     )
 }
 fn sync_global() -> CaseResult {
-    let f = Fixture::new(b"")?;
-    let g = Fixture::new(b"")?;
-    // Two inodes; the first crosses the 64-page writeback batch limit.
-    let files = [(&f, 266240), (&g, 4096)];
-    for (file, len) in files {
-        truncate_fd(file.fd(), len as i64)?;
-    }
-    let mut maps = Vec::new();
-    for (file, len) in files {
-        let p = memory::mmap(
-            std::ptr::null_mut(),
-            len,
-            memory::PROT_READ | memory::PROT_WRITE,
-            memory::MAP_SHARED,
-            file.fd().raw() as i32,
-            0,
-        )?;
-        maps.push((p, len));
-        unsafe {
-            std::ptr::write_bytes(p, 0x53, len);
+    let (r, w) = io::pipe()?;
+    match process::fork()? {
+        process::ForkResult::Child => {
+            let _ = io::close(r);
+            let result = (|| -> CaseResult {
+                for (path, len) in [("/tmp/files-io-writeback-sync-large", 65 * 4096),
+                                    ("/tmp/files-io-writeback-sync-small", 4096)] {
+                    let fd = fs::open_with_mode(path, O_CREAT | O_TRUNC | O_RDWR, 0o600)?;
+                    truncate_fd(fd, len as i64)?;
+                    check(fstat(fd)?.st_blocks == 0, "sync fixture was not sparse")?;
+                    let p = memory::mmap(std::ptr::null_mut(), len,
+                        memory::PROT_READ | memory::PROT_WRITE, memory::MAP_SHARED,
+                        fd.raw() as i32, 0)?;
+                    unsafe { std::ptr::write_bytes(p, b'S', len) };
+                }
+                sc(SYNC, 0, 0, 0, 0, "sync")?;
+                Ok(())
+            })();
+            let report = match result {
+                Ok(()) => String::from("ok"),
+                Err(CaseError::Fail(msg) | CaseError::Skip(msg)) => msg,
+            };
+            let _ = io::write(w, report.as_bytes());
+            if report != "ok" { process::exit(1); }
+            // Keep both mappings bound: unmap/exit must not repair disk bytes
+            // before the host checks the two manifest artifacts on the disk.
+            loop { let _ = time::sleep_ms(3_600_000); }
+        }
+        process::ForkResult::Parent(_) => {
+            io::close(w)?;
+            let mut report = [0; 256];
+            let n = io::read(r, &mut report)?;
+            io::close(r)?;
+            match &report[..n] {
+                b"ok" => Ok(()),
+                b"" => fail("sync holder ended before reporting"),
+                msg => fail(String::from_utf8_lossy(msg)),
+            }
         }
     }
-    let r = (|| -> CaseResult {
-        sc(SYNC, 0, 0, 0, 0, "sync")?;
-        for (file, len) in files {
-            check(
-                fstat(file.fd())?.st_blocks >= (len / 512) as u64,
-                "sync left dirty sparse pages without disk blocks",
-            )?;
-            contents(file.fd(), &vec![0x53; len])?;
-        }
-        Ok(())
-    })();
-    for (p, len) in maps {
-        memory::munmap(p, len)?;
-    }
-    r
 }
 
 use io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT};
@@ -4466,9 +4493,13 @@ fn poll_full() -> CaseResult {
     poll_exact(w, POLLOUT, POLLOUT)?;
     fill_pipe(w)?;
     poll_exact(w, POLLOUT, 0)?;
-    let mut buf = [0; 4096];
-    check(io::read(r, &mut buf)? == 4096, "full pipe drain failed")?;
-    poll_exact(w, POLLOUT, POLLOUT)
+    check(io::read(r, &mut [0])? == 1, "one-byte pipe drain failed")?;
+    poll_exact(w, POLLOUT, 0)?;
+    expect_errno(io::write(w, &[0; 4096]), 11, "atomic write with one byte free")?;
+    let mut buf = [0; 4095];
+    check(io::read(r, &mut buf)? == 4095, "PIPE_BUF pipe drain failed")?;
+    poll_exact(w, POLLOUT, POLLOUT)?;
+    check(io::write(w, &[0; 4096])? == 4096, "ready PIPE_BUF write failed")
 }
 fn poll_invalid() -> CaseResult {
     let f = Fixture::new(b"")?;
@@ -4533,10 +4564,8 @@ fn timeout_case(api: WaitApi, empty: bool) -> CaseResult {
             },
         "timeout returned readiness or stale output bits",
     )?;
-    check(
-        elapsed_ms(start)? >= 100,
-        "timeout returned before its deadline",
-    )
+    let elapsed = elapsed_ms(start)?;
+    check((100..2000).contains(&elapsed), "100ms timeout fell outside 100..2000ms")
 }
 fn poll_timeout() -> CaseResult {
     timeout_case(WaitApi::Poll, false)
@@ -4548,7 +4577,18 @@ fn ppoll_timeout() -> CaseResult {
     timeout_case(WaitApi::Ppoll, false)
 }
 fn select_timeout() -> CaseResult {
-    timeout_case(WaitApi::Select, false)
+    timeout_case(WaitApi::Select, false)?;
+    // Exercise the C shim too: ARM64 must convert timeval microseconds to
+    // pselect6 nanoseconds, rather than treating timeval as a timespec.
+    unsafe extern "C" {
+        #[link_name = "select"]
+        fn libc_select(nfds: i32, read: *mut u8, write: *mut u8, except: *mut u8, tv: *mut i64) -> i32;
+    }
+    let mut tv = [0i64, 100_000];
+    let start = time::now_monotonic()?;
+    let n = unsafe { libc_select(0, std::ptr::null_mut(), std::ptr::null_mut(),
+        std::ptr::null_mut(), tv.as_mut_ptr()) };
+    check(n == 0 && (100..2000).contains(&elapsed_ms(start)?), "libc select timeout conversion")
 }
 fn select_sleep() -> CaseResult {
     timeout_case(WaitApi::Select, true)
@@ -4559,9 +4599,9 @@ fn pselect_timeout() -> CaseResult {
 
 // The helper cannot act before the caller parks: it waits for /proc's
 // scheduler-backed Blocked state after the caller sends its start byte. The
-// caller makes no intervening blocking syscall, so that state belongs to the
-// poll/select under test. An implementation that returns immediately cannot
-// pass: the helper times out without sending its event and exits nonzero.
+// caller checks readiness again before waitpid can put it in Blocked state.
+// This checks that the tested wait's reported readiness already exists when
+// it returns, before the helper could mistake waitpid for that tested wait.
 fn after_blocked(event: impl FnOnce() -> CaseResult) -> Result<(i32, Fd), CaseError> {
     let caller = process::getpid()?.raw();
     let (r, w) = io::pipe()?;
@@ -4621,10 +4661,14 @@ fn blocking_ready(api: WaitApi, ms: i32) -> CaseResult {
     } else {
         select_call(api, r.raw() as i32 + 1, &mut sets, ms, None)?
     };
+    // Do this before waitpid: it must not let the helper manufacture data
+    // after a false-ready return by observing waitpid's Blocked state.
+    let ready_at_return = poll_exact(r, POLLIN, POLLIN);
     child_ok(
         wait_child(pid)?,
         "helper did not observe the caller blocked before writing",
     )?;
+    ready_at_return?;
     check(
         n == 1
             && (if matches!(api, WaitApi::Poll | WaitApi::Ppoll) {
@@ -4653,11 +4697,35 @@ fn poll_finite_ready() -> CaseResult {
 }
 
 static WAIT_SIGNAL: AtomicUsize = AtomicUsize::new(0);
+static NEST_WAIT: AtomicUsize = AtomicUsize::new(0);
+static NEST_SEEN: AtomicUsize = AtomicUsize::new(0);
+static NEST_MASK: AtomicUsize = AtomicUsize::new(0);
+extern "C" fn nested_wait_signal(_: i32) {
+    NEST_SEEN.fetch_add(1, Ordering::SeqCst);
+}
 extern "C" fn wait_signal(_: i32) {
     WAIT_SIGNAL.fetch_add(1, Ordering::SeqCst);
+    if NEST_WAIT.load(Ordering::SeqCst) != 0 {
+        let usr2 = 1u64 << (signal::SIGUSR2 - 1);
+        if signal::sigprocmask(signal::SIG_UNBLOCK, Some(&usr2), None).is_ok() {
+            if let Ok(pid) = process::getpid() {
+                let _ = signal::kill(pid.raw() as i32, signal::SIGUSR2);
+            }
+            let mut mask = 0;
+            if signal::sigprocmask(signal::SIG_SETMASK, None, Some(&mut mask)).is_ok() {
+                NEST_MASK.store(mask as usize, Ordering::SeqCst);
+            }
+        }
+    }
 }
 fn signal_wait(api: WaitApi, masked: bool, no_fds: bool, unblock: bool) -> CaseResult {
     WAIT_SIGNAL.store(0, Ordering::SeqCst);
+    NEST_WAIT.store(usize::from(unblock), Ordering::SeqCst);
+    NEST_SEEN.store(0, Ordering::SeqCst);
+    NEST_MASK.store(0, Ordering::SeqCst);
+    if unblock {
+        signal::sigaction(signal::SIGUSR2, Some(&signal::Sigaction::new(nested_wait_signal)), None)?;
+    }
     signal::sigaction(
         signal::SIGUSR1,
         Some(&signal::Sigaction::new(wait_signal)),
@@ -4718,6 +4786,12 @@ fn signal_wait(api: WaitApi, masked: bool, no_fds: bool, unblock: bool) -> CaseR
         expect_errno(ret, 4, "signal during blocked wait")?;
     }
     check(seen == 1, "signal was not delivered once at syscall return")?;
+    if unblock {
+        check(NEST_SEEN.load(Ordering::SeqCst) == 1
+            && NEST_MASK.load(Ordering::SeqCst) as u64 == usr1,
+            "nested handler did not restore its outer handler mask")?;
+    }
+    NEST_WAIT.store(0, Ordering::SeqCst);
     let mut restored = 0;
     signal::sigprocmask(signal::SIG_SETMASK, None, Some(&mut restored))?;
     check(
@@ -4843,8 +4917,8 @@ fn poll_fifo() -> CaseResult {
     let f = Fixture::empty()?;
     fs::mkfifo(&f.path, 0o600)?;
     let r = f.open(O_RDONLY | O_NONBLOCK)?;
-    // EOF is readable, but no last writer has closed on a fresh FIFO.
-    poll_exact(r, POLLIN, POLLIN)?;
+    // No bytes and no completed writer session: no readiness or hangup.
+    poll_exact(r, POLLIN, 0)?;
     poll_exact(r, 0, 0)?;
     let w = f.open(O_WRONLY | O_NONBLOCK)?;
     poll_exact(r, POLLIN, 0)?;
@@ -4859,14 +4933,14 @@ fn poll_fifo() -> CaseResult {
         io::read(r, &mut byte)? == 1 && byte == *b"F",
         "FIFO lost buffered data",
     )?;
-    poll_exact(r, POLLIN, POLLIN | POLLHUP)?;
+    poll_exact(r, POLLIN, POLLHUP)?;
     let w = f.open(O_WRONLY | O_NONBLOCK)?;
     poll_exact(r, POLLIN, 0)?; // Reopening a writer clears the hangup.
     io::close(w)?;
     poll_exact(r, 0, POLLHUP)?;
     io::close(r)?; // Closing all readers ends this hangup session.
     let r = f.open(O_RDONLY | O_NONBLOCK)?;
-    poll_exact(r, POLLIN, POLLIN)?;
+    poll_exact(r, POLLIN, 0)?;
     poll_exact(r, 0, 0)
 }
 fn select_fifo() -> CaseResult {

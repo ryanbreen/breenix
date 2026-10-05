@@ -81,7 +81,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
 
             // A write with no readers returns EPIPE without blocking.
             if (events & events::POLLOUT) != 0 {
-                if pipe.space() > 0 || !pipe.has_readers() {
+                if pipe.space() >= super::pipe::PIPE_BUF || !pipe.has_readers() {
                     revents |= events::POLLOUT;
                 }
             }
@@ -93,7 +93,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
         }
         FdKind::FifoRead(_, buffer, _) => {
             let pipe = buffer.lock();
-            if (events & events::POLLIN) != 0 && (pipe.available() > 0 || !pipe.has_writers()) {
+            if (events & events::POLLIN) != 0 && pipe.available() > 0 {
                 revents |= events::POLLIN;
             }
             if pipe.has_hung_up() {
@@ -102,7 +102,9 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
         }
         FdKind::FifoWrite(_, buffer, _) => {
             let pipe = buffer.lock();
-            if (events & events::POLLOUT) != 0 && (pipe.space() > 0 || !pipe.has_readers()) {
+            if (events & events::POLLOUT) != 0
+                && (pipe.space() >= super::pipe::PIPE_BUF || !pipe.has_readers())
+            {
                 revents |= events::POLLOUT;
             }
             if !pipe.has_readers() {

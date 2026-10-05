@@ -3928,8 +3928,8 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
     }
 }
 
-/// Linux 64-bit statfs ABI, shared by x86-64 and ARM64. Every byte has a
-/// defined value, including fsid and reserved words (there is no padding).
+/// Linux 64-bit statfs ABI: fifteen 64-bit words on x86-64 and ARM64,
+/// including fsid and four reserved words.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct Statfs {
@@ -3970,8 +3970,7 @@ fn ext2_statfs(mount: crate::fs::namei::Mount) -> Result<Statfs, u64> {
     })
 }
 
-/// Virtual filesystems have no block/inode capacity accounting. Zero means
-/// no reported capacity, not fabricated free RAM or an unlimited disk.
+/// Virtual filesystems report 0 for block/inode capacity and free counts.
 fn virtual_statfs(kind: u64) -> Statfs {
     Statfs { kind, bsize: 4096, frsize: 4096, namelen: 255,
         fsid: [kind as i32, 0], flags: 0x20, ..Statfs::default() }
@@ -3979,10 +3978,19 @@ fn virtual_statfs(kind: u64) -> Statfs {
 
 fn resolved_statfs(resolved: &crate::fs::namei::Resolved) -> Result<Statfs, u64> {
     use crate::fs::namei::Target;
+    // Named FIFOs have namespace entries in the registry rather than ext2.
+    if crate::ipc::fifo::FIFO_REGISTRY.exists(&resolved.path) {
+        return Ok(virtual_statfs(0x50495045));
+    }
     match resolved.target {
         Target::Inode { mount, .. } => ext2_statfs(mount),
         Target::Absent { .. } => Err(super::errno::ENOENT as u64),
-        Target::Virtual => Ok(virtual_statfs(if resolved.path == "/proc" || resolved.path.starts_with("/proc/") { 0x9fa0 } else { 0x1373 })),
+        Target::Virtual if resolved.virtual_absent => Err(super::errno::ENOENT as u64),
+        Target::Virtual => Ok(virtual_statfs(if resolved.path == "/proc" || resolved.path.starts_with("/proc/") {
+            0x9fa0
+        } else if resolved.path == "/dev/pts" || resolved.path.starts_with("/dev/pts/") {
+            0x1cd1
+        } else { 0x1373 })),
     }
 }
 
@@ -4021,7 +4029,9 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
         FdKind::Device(_) | FdKind::StdIo(_) | FdKind::DevfsDirectory { .. } => Ok(virtual_statfs(0x1373)),
         FdKind::DevptsDirectory { .. } | FdKind::PtyMaster(_) | FdKind::PtySlave(_) => Ok(virtual_statfs(0x1cd1)),
         FdKind::Epoll(_) => Ok(virtual_statfs(0x09041934)),
-        _ => Ok(virtual_statfs(0x534f434b)),
+        FdKind::UdpSocket(_) | FdKind::TcpSocket(_) | FdKind::TcpListener(_)
+        | FdKind::TcpConnection(_) | FdKind::UnixStream(_) | FdKind::UnixSocket(_)
+        | FdKind::UnixListener(_) => Ok(virtual_statfs(0x534f434b)),
     };
     match stat.and_then(|s| super::userptr::copy_to_user(buf as *mut Statfs, &s)) {
         Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e),
@@ -4038,28 +4048,27 @@ fn statfs_pin(pin: &crate::fs::ext2::live_inode::FileHandle) -> Result<Statfs, u
     ext2_statfs(mount)
 }
 
-/// Ext2 writes ordinary data and metadata synchronously. Sync additionally
-/// snapshots and writes back dirty shared mappings, then flushes each device.
-/// Concurrent stores after a snapshot belong to a later synchronization; this
-/// does not promise a transaction, power-loss atomicity, or hardware barriers
-/// beyond the block driver's flush implementation. Failures return EIO.
+/// Write back dirty shared mappings and flush mounted devices. Like Linux
+/// sync, this advisory interface returns zero; fsync reports individual errors.
 pub fn sys_sync() -> SyscallResult {
     use crate::fs::namei::Mount;
-    let mut failed = false;
+    let mut bytes = crate::memory::file_map::writeback_buffer().ok();
     for mount in [Mount::Root, Mount::Home] {
         let handles = {
             let guard = mount.read();
-            guard.as_ref().map(|fs| fs.dirty_handles()).unwrap_or_default()
+            guard.as_ref().map(|fs| fs.dirty_handles()).transpose()
         };
-        for handle in handles {
-            if crate::memory::file_map::sync_range(&handle, 0, u64::MAX).is_err() { failed = true; }
+        if let (Ok(Some(handles)), Some(buffer)) = (handles, bytes.as_mut()) {
+            for handle in handles {
+                let _ = crate::memory::file_map::sync_range_with_buffer(&handle, 0, u64::MAX, buffer);
+            }
         }
         let guard = mount.read();
         if let Some(fs) = guard.as_ref() {
-            if fs.sync().is_err() { failed = true; }
+            let _ = fs.sync();
         }
     }
-    if failed { SyscallResult::Err(5) } else { SyscallResult::Ok(0) }
+    SyscallResult::Ok(0)
 }
 
 fn resize_inode(fs: &mut crate::fs::ext2::Ext2Fs, ino: u32, length: u64, unprivileged: bool) -> SyscallResult {

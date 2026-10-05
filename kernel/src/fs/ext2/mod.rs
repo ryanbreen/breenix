@@ -751,7 +751,7 @@ impl Ext2Fs {
         Ok(new_inode_num)
     }
 
-    pub(crate) fn dirty_handles(&self) -> Vec<live_inode::FileHandle> {
+    pub(crate) fn dirty_handles(&self) -> Result<Vec<live_inode::FileHandle>, &'static str> {
         self.live_inodes.dirty_handles()
     }
 

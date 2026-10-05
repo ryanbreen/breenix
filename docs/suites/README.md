@@ -110,7 +110,7 @@ case, then failures, then its neighbours) and a row counting the rest. The suite
 display back before every update, so a case that took it cannot leave the panel stale.
 When every case has run it prints the DONE line, leaves the final panel up and idles; it
 never exits. On x86-64 the production kernel gives the display owner the bootloader's
-framebuffer (and stops drawing its own log there), so the panel shows on every platform.
+framebuffer (and stops drawing its own log there), so the panel uses that framebuffer.
 
 ## Files & I/O
 
@@ -118,7 +118,7 @@ framebuffer (and stops drawing its own log there), so the panel shows on every p
 there is a musl-built helper; libbreenix-libc supplies Rust's runtime ABI and has no
 stdio implementation. Synchronization cases call the kernel's fsync/fdatasync ABI,
 so an unimplemented syscall fails with ENOSYS rather than passing a libc stub.
-The sync category runs before mmap: the three raw-disk mapping holders must never
+The sync category runs before mmap: the raw-disk mapping holders must not
 be written back by a later global sync, which could hide an fsync/fdatasync defect.
 The poll-select category covers regular files, pipes and FIFOs; sockets belong to
 the networking effort. Blocking helpers observe the caller parked through procfs

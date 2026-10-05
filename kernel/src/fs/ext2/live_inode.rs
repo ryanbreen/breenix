@@ -257,13 +257,41 @@ impl LiveInodes {
         }
     }
 
-    /// Pin a snapshot of dirty mappings, including unlinked files. Drop the
-    /// registry lock before writeback takes filesystem and page-cache locks.
-    pub(crate) fn dirty_handles(&self) -> alloc::vec::Vec<FileHandle> {
-        self.table.lock().objects.values()
+    /// Snapshot dirty mappings without resurrecting an unused orphan. A live
+    /// orphan's count must be incremented atomically against the last drop.
+    pub(crate) fn dirty_handles(&self) -> Result<alloc::vec::Vec<FileHandle>, &'static str> {
+        let table = self.table.lock();
+        let mut handles = alloc::vec::Vec::new();
+        for object in table
+            .objects
+            .values()
             .filter(|object| object.map.has_dirty())
-            .map(|object| FileHandle::acquire(object.clone()))
-            .collect()
+        {
+            handles
+                .try_reserve(1)
+                .map_err(|_| "Out of memory for sync handles")?;
+            if object.orphan.load(Ordering::Acquire) {
+                if object
+                    .external_handles
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        if count == 0 {
+                            None
+                        } else {
+                            count.checked_add(1)
+                        }
+                    })
+                    .is_err()
+                {
+                    continue;
+                }
+                handles.push(FileHandle {
+                    object: object.clone(),
+                });
+            } else {
+                handles.push(FileHandle::acquire(object.clone()));
+            }
+        }
+        Ok(handles)
     }
 
     pub fn pending(&self, after: u32) -> alloc::vec::Vec<Arc<LiveInode>> {

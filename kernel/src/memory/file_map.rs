@@ -51,7 +51,7 @@ pub(crate) const EVICT_BUDGET: usize = 64;
 /// Pages copied by one writeback batch.
 const WRITEBACK_PAGES: usize = 64;
 
-fn writeback_buffer() -> Result<Vec<u8>, &'static str> {
+pub(crate) fn writeback_buffer() -> Result<Vec<u8>, &'static str> {
     let mut bytes = Vec::new();
     let capacity = WRITEBACK_PAGES * PAGE_SIZE as usize;
     bytes
@@ -66,10 +66,19 @@ fn writeback_buffer() -> Result<Vec<u8>, &'static str> {
 /// can keep earlier pages dirty without causing this call to loop over them.
 pub(crate) fn sync_range(
     handle: &FileHandle,
-    mut first: u64,
+    first: u64,
     last: u64,
 ) -> Result<(), &'static str> {
     let mut bytes = writeback_buffer()?;
+    sync_range_with_buffer(handle, first, last, &mut bytes)
+}
+
+pub(crate) fn sync_range_with_buffer(
+    handle: &FileHandle,
+    mut first: u64,
+    last: u64,
+    bytes: &mut [u8],
+) -> Result<(), &'static str> {
     let mut wrote = false;
     loop {
         let next = {
@@ -81,7 +90,7 @@ pub(crate) fn sync_range(
                 handle
                     .object
                     .map
-                    .writeback(fs, ino, first, last, WRITEBACK_PAGES, &mut bytes)?;
+                    .writeback(fs, ino, first, last, WRITEBACK_PAGES, bytes)?;
             if next.is_none() && !wrote {
                 fs.sync()?;
             }
