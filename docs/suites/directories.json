@@ -359,7 +359,7 @@
         },
         {
           "id": "umask-file",
-          "title": "umask applies at regular-file creation"
+          "title": "creation modes and FIFO descriptor identity survive unlink and replacement"
         },
         {
           "id": "umask-dir",

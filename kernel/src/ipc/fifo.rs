@@ -232,19 +232,14 @@ pub enum FifoOpenResult {
     Error(i32),
 }
 
-/// Open a FIFO for reading
+/// Open the held FIFO for reading; pathname replacement cannot change it.
 ///
 /// If no writer is present and O_NONBLOCK is not set, this will block.
-/// If O_NONBLOCK is set and no writer is present, returns ENXIO.
-pub fn open_fifo_read(path: &str, nonblock: bool) -> FifoOpenResult {
+/// O_NONBLOCK read-only open succeeds even when no writer is present.
+pub fn open_fifo_read(entry_arc: &Arc<Mutex<FifoEntry>>, nonblock: bool) -> FifoOpenResult {
     // CRITICAL: Disable interrupts during lock acquisition to prevent
     // preemption while holding the lock.
     Cpu::without_interrupts(|| {
-        let entry_arc = match FIFO_REGISTRY.get(path) {
-            Some(e) => e,
-            None => return FifoOpenResult::Error(2), // ENOENT
-        };
-
         let mut entry = entry_arc.lock();
 
         // Get or create the buffer
@@ -274,19 +269,14 @@ pub fn open_fifo_read(path: &str, nonblock: bool) -> FifoOpenResult {
     })
 }
 
-/// Open a FIFO for writing
+/// Open the held FIFO for writing; pathname replacement cannot change it.
 ///
 /// If no reader is present and O_NONBLOCK is not set, this will block.
 /// If O_NONBLOCK is set and no reader is present, returns ENXIO.
-pub fn open_fifo_write(path: &str, nonblock: bool) -> FifoOpenResult {
+pub fn open_fifo_write(entry_arc: &Arc<Mutex<FifoEntry>>, nonblock: bool) -> FifoOpenResult {
     // CRITICAL: Disable interrupts during lock acquisition to prevent
     // preemption while holding the lock.
     Cpu::without_interrupts(|| {
-        let entry_arc = match FIFO_REGISTRY.get(path) {
-            Some(e) => e,
-            None => return FifoOpenResult::Error(2), // ENOENT
-        };
-
         let mut entry = entry_arc.lock();
 
         // Check if a reader exists first (for O_NONBLOCK case)
@@ -321,16 +311,11 @@ pub fn open_fifo_write(path: &str, nonblock: bool) -> FifoOpenResult {
 /// Complete a blocked FIFO open after being woken
 ///
 /// Returns the buffer if now ready, or Block if still waiting
-pub fn complete_fifo_open(path: &str, for_write: bool) -> FifoOpenResult {
+pub fn complete_fifo_open(entry_arc: &Arc<Mutex<FifoEntry>>, for_write: bool) -> FifoOpenResult {
     // CRITICAL: Disable interrupts during lock acquisition to prevent
     // preemption while holding the lock. This avoids deadlock when
     // both parent and child try to access the same FIFO.
     Cpu::without_interrupts(|| {
-        let entry_arc = match FIFO_REGISTRY.get(path) {
-            Some(e) => e,
-            None => return FifoOpenResult::Error(2), // ENOENT
-        };
-
         let entry = entry_arc.lock();
 
         // Check if the other end is now present

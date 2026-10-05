@@ -487,7 +487,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         if let Err(error) = check_open_access(&entry.lock().inode(), flags, &cred) {
             return error;
         }
-        return handle_fifo_open(path, flags);
+        return handle_fifo_open(path, flags, entry);
     }
 
     let mount = match resolved.target {
@@ -3205,17 +3205,17 @@ pub fn sys_chdir(pathname: u64) -> SyscallResult {
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
-fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
+fn handle_fifo_open(
+    path: &str,
+    flags: u32,
+    entry: alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>,
+) -> SyscallResult {
     use super::errno::EMFILE;
     use crate::ipc::fd::{status_flags, FdKind, FileDescriptor};
     use crate::ipc::fifo::{complete_fifo_open, open_fifo_read, open_fifo_write, FifoOpenResult};
     use alloc::string::String;
 
     let access_mode = flags & 3; // O_RDONLY=0, O_WRONLY=1, O_RDWR=2
-    let entry = match crate::ipc::fifo::FIFO_REGISTRY.get(path) {
-        Some(entry) => entry,
-        None => return SyscallResult::Err(super::errno::ENOENT as u64),
-    };
     let nonblock = (flags & status_flags::O_NONBLOCK) != 0;
 
     log::debug!(
@@ -3231,9 +3231,9 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
 
     // Attempt to open the FIFO
     let result = if for_write {
-        open_fifo_write(path, nonblock)
+        open_fifo_write(&entry, nonblock)
     } else {
-        open_fifo_read(path, nonblock)
+        open_fifo_read(&entry, nonblock)
     };
 
     match result {
@@ -3315,7 +3315,7 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
             // If other end opened during that window, add_reader/add_writer
             // would have tried to wake us but unblock() would have done nothing.
             let other_end_ready =
-                Cpu::without_interrupts(|| match complete_fifo_open(&path_owned, for_write) {
+                Cpu::without_interrupts(|| match complete_fifo_open(&entry, for_write) {
                     FifoOpenResult::Ready(_) => true,
                     _ => false,
                 });
@@ -3395,7 +3395,7 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
             }
 
             // Now complete the FIFO open
-            match complete_fifo_open(&path_owned, for_write) {
+            match complete_fifo_open(&entry, for_write) {
                 FifoOpenResult::Ready(buffer) => {
                     // Now ready - create fd
                     let kind = if for_write {

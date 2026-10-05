@@ -669,7 +669,7 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("chown", "pathname and descriptor chown preserve full-width IDs and symlink behavior", permissions_chown),
         case("chown-unchanged", "chown preserves minus-one IDs and enforces owner, FIFO and privilege-bit rules", permissions_chown_unchanged),
         case("umask-return", "umask returns masked state and credentials survive fork, exec, spawn and clone", permissions_umask_return),
-        case("umask-file", "umask applies at regular-file creation", permissions_umask_file),
+        case("umask-file", "creation modes and FIFO descriptor identity survive unlink and replacement", permissions_umask_file),
         case("umask-dir", "umask applies at directory creation", permissions_umask_dir),
         case("chmod-umask", "umask does not mask chmod permission bits", permissions_chmod_umask),
         case("access-exists", "access F_OK reports existence even without permission bits", permissions_access_exists),
@@ -1598,7 +1598,17 @@ fn permissions_umask_file() -> CaseResult {
     let fd = File::open(&fifo, O_RDONLY | O_NONBLOCK)?;
     check(fs::fstat(fd.fd())?.st_mode & 0o777 == 0o750, "FIFO fstat ignored creation mode")?;
     fs::unlink(&fifo)?;
-    check(fs::fstat(fd.fd())?.st_mode & 0o777 == 0o750, "FIFO lost mode after unlink")
+    check(fs::fstat(fd.fd())?.st_mode & 0o777 == 0o750, "FIFO lost mode after unlink")?;
+    let duplicate = io::dup(fd.fd())?;
+    fs::mkfifo(&fifo, 0o666)?;
+    let reader = File::open(&fifo, O_RDONLY | O_NONBLOCK)?;
+    drop(fd);
+    io::close(duplicate)?;
+    let writer = File::open(&fifo, O_WRONLY | O_NONBLOCK)?;
+    write_all(writer.fd(), b"r")?;
+    let mut byte = [0u8];
+    check(io::read(reader.fd(), &mut byte)? == 1 && byte == *b"r",
+        "closing old FIFO changed replacement readers or buffer")
 }
 
 fn permissions_umask_dir() -> CaseResult {
