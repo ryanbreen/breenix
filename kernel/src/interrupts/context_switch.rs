@@ -1792,6 +1792,13 @@ pub fn idle_loop() -> ! {
         crate::task::scheduler::reclaim_terminated_threads();
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
+        // Reclamation can wake a waiter. Check with interrupts masked so a
+        // wakeup cannot slip between the check and the atomic enable/halt.
+        x86_64::instructions::interrupts::disable();
+        if crate::task::scheduler::is_need_resched() {
+            x86_64::instructions::interrupts::enable();
+            continue;
+        }
         // CRITICAL: Use enable_and_hlt() instead of just hlt()
         // This atomically enables interrupts and halts, preventing race conditions
         // where interrupts might be disabled when we enter this loop.
