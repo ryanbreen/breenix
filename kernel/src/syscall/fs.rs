@@ -409,6 +409,19 @@ fn sys_open_write_path(
     Ok((ino, ft, is_dir, is_reg, mid, handle))
 }
 
+/// Whether the calling thread's descriptor table has a free slot.
+fn current_fd_table_has_free_slot() -> bool {
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return false;
+    };
+    crate::process::with_process_manager(|manager| {
+        manager
+            .find_process_by_thread(thread_id)
+            .is_some_and(|(_, process)| process.fd_table.has_free_slot())
+    })
+    .unwrap_or(false)
+}
+
 /// Helper: sys_open read path — works on any Ext2Fs instance.
 fn sys_open_read_path(
     fs: &crate::fs::ext2::Ext2Fs,
@@ -521,6 +534,14 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     // Read before taking a filesystem lock; the process manager is not
     // acquired under one.
     let cred = current_file_credentials();
+
+    // An open that creates or truncates must not change the disk and then
+    // fail with EMFILE. A row's descriptor table is filled only by its own
+    // thread, so a slot free now is still free when the descriptor is
+    // installed below.
+    if needs_write && !current_fd_table_has_free_slot() {
+        return SyscallResult::Err(EMFILE as u64);
+    }
 
     let result = if needs_write {
         // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
