@@ -1560,6 +1560,11 @@ impl Ext2Fs {
         if target.is_empty() {
             return Err("Symlink target cannot be empty");
         }
+        // A target and its NUL must fit the one block a symlink holds (Linux
+        // ext2 refuses a longer one the same way).
+        if target.len() >= self.superblock.block_size() {
+            return Err("Symlink target too long");
+        }
 
         // Resolve parent directory
         let parent_inode_num = self.resolve_path(parent_path)?;

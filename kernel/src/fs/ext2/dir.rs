@@ -34,6 +34,8 @@ pub struct DirEntry {
     pub inode: u32,
     pub file_type: u8,
     pub name: String,
+    /// `name` is the entry's on-disk bytes, not a lossy rendering of them.
+    pub name_is_exact: bool,
 }
 
 impl DirEntry {
@@ -150,12 +152,14 @@ impl<'a> Iterator for DirReader<'a> {
             let name_bytes = &self.data[name_offset..name_offset + name_len as usize];
 
             // Convert to String, replacing invalid UTF-8 with replacement char
+            let name_is_exact = core::str::from_utf8(name_bytes).is_ok();
             let name = String::from_utf8_lossy(name_bytes).into_owned();
 
             return Some(DirEntry {
                 inode,
                 file_type,
                 name,
+                name_is_exact,
             });
         }
     }
@@ -167,8 +171,11 @@ pub fn parse_directory(data: &[u8]) -> Vec<DirEntry> {
 }
 
 /// Find a specific entry by name in directory data
+///
+/// A name that is not valid UTF-8 is matched by nothing: its lossy rendering
+/// is not its name.
 pub fn find_entry(data: &[u8], name: &str) -> Option<DirEntry> {
-    DirReader::new(data).find(|e| e.name == name)
+    DirReader::new(data).find(|e| e.name_is_exact && e.name == name)
 }
 
 /// Result of finding a directory entry with its offset
@@ -234,6 +241,7 @@ pub fn find_entry_location(data: &[u8], name: &str) -> Option<DirEntryLocation> 
                                 inode,
                                 file_type,
                                 name: String::from(entry_name_str),
+                                name_is_exact: true,
                             },
                             offset,
                             rec_len,
