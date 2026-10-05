@@ -682,6 +682,31 @@ extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFram
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+    if stack_frame.code_segment.0 & 3 == 3 {
+        // Unlike an assembly interrupt entry, x86-interrupt does not switch GS.
+        // Queue the synchronous fault with kernel GS, then retry the instruction.
+        // The timer return path owns the full register frame and delivers SIGILL
+        // through the ordinary signal dispositions before resuming this thread.
+        unsafe { core::arch::asm!("swapgs", options(nostack, preserves_flags)); }
+        if let Some(mut guard) = crate::process::try_manager() {
+            if let Some(manager) = guard.as_mut() {
+                if let Some(tid) = crate::per_cpu::current_thread_id_lock_free() {
+                    if let Some((_, process)) = manager.find_process_by_thread_mut(tid) {
+                        use crate::signal::{constants::SIGILL, types::SignalAction};
+                        if process.signals.is_blocked(SIGILL)
+                            || process.signals.get_handler(SIGILL).is_ignore()
+                        {
+                            process.signals.set_handler(SIGILL, SignalAction::default());
+                            process.signals.unblock_signals(1 << (SIGILL - 1));
+                        }
+                        process.signals.set_pending(SIGILL);
+                    }
+                }
+            }
+        }
+        unsafe { core::arch::asm!("swapgs", options(nostack, preserves_flags)); }
+        return;
+    }
     // Increment preempt count on exception entry
     crate::per_cpu::preempt_disable();
 
