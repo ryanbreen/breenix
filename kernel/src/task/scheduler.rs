@@ -5875,6 +5875,9 @@ fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
 
 /// Free reclaimed control blocks with interrupts as the caller left them.
 ///
+/// On x86_64 the caller must keep preemption disabled throughout this call:
+/// idle dispatch restarts its entry point and can abandon an interrupted drop.
+///
 /// The `#609` race the masked aarch64 release closes is an `ARM64_STACK_BITMAP`
 /// race and does not exist here. What does exist here is the cost: the x86_64
 /// `KernelStack::drop` walks `KERNEL_STACK_SIZE / 4096` pages, taking the kernel
