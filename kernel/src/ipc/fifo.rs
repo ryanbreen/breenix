@@ -353,29 +353,46 @@ pub fn recheck_fifo_open(
     })
 }
 
-/// Give back the reference a blocked FIFO open took, when the open is
-/// interrupted before the other end arrives. Without this the abandoned
-/// opener stays counted: a reader that later opens sees a writer that will
-/// never write and blocks in read() instead of reading EOF.
-pub fn abandon_fifo_open(entry_arc: &Arc<Mutex<FifoEntry>>, for_write: bool) {
+/// A FIFO open that holds the reader or writer reference it took in
+/// `open_fifo_read`/`open_fifo_write` but has no descriptor yet: it is
+/// waiting for the other end, or about to install its descriptor.
+///
+/// A blocked opener is recorded on its process row
+/// (`Process::pending_fifo_opens`) for as long as it waits, because a
+/// SIGKILL terminates a parked thread without returning through the open;
+/// `process::exit_process_and_retire` then gives the reference back. Exactly
+/// one side releases it: whoever takes the record off the row under
+/// PROCESS_MANAGER, the opener before it installs its descriptor or abandons
+/// the open, or the exit. A missing record means the exit already did.
+pub struct PendingFifoOpen {
+    /// The opening thread, registered as a waiter on the entry.
+    pub tid: u64,
+    pub entry: Arc<Mutex<FifoEntry>>,
+    pub for_write: bool,
+}
+
+/// Give back the reference an open took when it ends without a descriptor:
+/// interrupted by a signal, killed while it waited, or refused a descriptor.
+/// Without this the abandoned opener stays counted: a reader that later opens
+/// sees a writer that will never write and blocks in read() instead of
+/// reading EOF.
+///
+/// Must not be called with PROCESS_MANAGER held: the close notifications are
+/// delivered inline.
+pub fn abandon_fifo_open(open: &PendingFifoOpen) {
     let buffer = Cpu::without_interrupts(|| {
-        let mut entry = entry_arc.lock();
-        if let Some(tid) = crate::task::scheduler::current_thread_id() {
-            if for_write {
-                entry.remove_write_waiter(tid);
-            } else {
-                entry.remove_read_waiter(tid);
-            }
-        }
-        if for_write {
+        let mut entry = open.entry.lock();
+        if open.for_write {
+            entry.remove_write_waiter(open.tid);
             entry.remove_writer();
         } else {
+            entry.remove_read_waiter(open.tid);
             entry.remove_reader();
         }
         entry.buffer.clone()
     });
     if let Some(buffer) = buffer {
-        if for_write {
+        if open.for_write {
             let notifications = buffer.lock().close_write();
             notifications.deliver();
         } else {

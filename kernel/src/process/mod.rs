@@ -418,7 +418,14 @@ where
 /// receipt only into this function; PM is out of scope before the receipt is
 /// enqueued and before notification redemption enters scheduler/SERIAL code.
 pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
+    let mut fifo_opens = alloc::vec::Vec::new();
     let locked = with_process_manager(|pm| {
+        // A FIFO open the row's thread was parked in when a kill terminated
+        // it still holds its reader or writer reference; take it here and
+        // give it back below, outside PROCESS_MANAGER.
+        if let Some(process) = pm.get_process_mut(pid) {
+            fifo_opens = core::mem::take(&mut process.pending_fifo_opens);
+        }
         let Some(process) = pm.get_process(pid) else {
             return (ExitOutcome::Missing, None, None, exit_code);
         };
@@ -435,6 +442,10 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             .unwrap_or(exit_code);
         (outcome, receipt, thread_id, reported_exit_code)
     });
+
+    for open in &fifo_opens {
+        crate::ipc::fifo::abandon_fifo_open(open);
+    }
 
     let Some((outcome, receipt, thread_id, reported_exit_code)) = locked else {
         return ExitOutcome::Missing;

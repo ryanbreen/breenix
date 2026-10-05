@@ -3285,12 +3285,12 @@ fn handle_fifo_open(
     flags: u32,
     entry: alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>,
 ) -> SyscallResult {
-    use super::errno::EMFILE;
-    use crate::ipc::fd::{status_flags, FdKind, FileDescriptor};
+    use super::errno::EINTR;
+    use crate::ipc::fd::status_flags;
     use crate::ipc::fifo::{
         abandon_fifo_open, open_fifo_read, open_fifo_write, recheck_fifo_open, FifoOpenResult,
+        PendingFifoOpen,
     };
-    use alloc::string::String;
 
     let access_mode = flags & 3; // O_RDONLY=0, O_WRONLY=1, O_RDWR=2
     let nonblock = (flags & status_flags::O_NONBLOCK) != 0;
@@ -3306,6 +3306,21 @@ fn handle_fifo_open(
     // by opening both read and write ends. For simplicity, treat it as read.
     let for_write = access_mode == O_WRONLY;
 
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(tid) => tid,
+        None => return SyscallResult::Err(3), // ESRCH
+    };
+
+    // From the moment the open takes its reader or writer reference until a
+    // descriptor owns it or the row records it (`PendingFifoOpen`), a SIGKILL
+    // that terminated this thread would leave the reference counted for
+    // good. Inside a kill-custody section the kill is left pending instead,
+    // and ends the wait below.
+    let Some(custody) = crate::task::thread::KillCustody::try_enter() else {
+        // A kill has claimed this thread; it takes no reference.
+        return SyscallResult::Err(EINTR as u64);
+    };
+
     // Attempt to open the FIFO
     let result = if for_write {
         open_fifo_write(&entry, nonblock)
@@ -3315,57 +3330,33 @@ fn handle_fifo_open(
 
     match result {
         FifoOpenResult::Ready(buffer) => {
-            // FIFO is ready - create fd
-            let kind = if for_write {
-                FdKind::FifoWrite(String::from(path), buffer, entry)
-            } else {
-                FdKind::FifoRead(String::from(path), buffer, entry)
+            let open = PendingFifoOpen {
+                tid: thread_id,
+                entry,
+                for_write,
             };
-
-            let fd_entry = FileDescriptor::opened(kind, flags);
-
-            // Allocate fd in current process
-            let thread_id = match crate::task::scheduler::current_thread_id() {
-                Some(tid) => tid,
-                None => return SyscallResult::Err(3), // ESRCH
-            };
-
-            let mut manager_guard = crate::process::manager();
-            let manager = match manager_guard.as_mut() {
-                Some(m) => m,
-                None => return SyscallResult::Err(3), // ESRCH
-            };
-
-            let (_, process) = match manager.find_process_by_thread_mut(thread_id) {
-                Some(p) => p,
-                None => return SyscallResult::Err(3), // ESRCH
-            };
-
-            match process.fd_table.alloc_with_entry(fd_entry) {
-                Ok(fd) => {
-                    log::info!(
-                        "handle_fifo_open: opened FIFO {} as fd {} ({})",
-                        path,
-                        fd,
-                        if for_write { "write" } else { "read" }
-                    );
-                    SyscallResult::Ok(fd as u64)
-                }
-                Err(_) => {
-                    log::error!("handle_fifo_open: too many open files");
-                    SyscallResult::Err(EMFILE as u64)
-                }
-            }
+            let result = install_fifo_descriptor(path, flags, open, buffer, false);
+            drop(custody);
+            result
         }
         FifoOpenResult::Block(partner_opens_seen) => {
             // Need to block waiting for the other end
             // Following the TCP blocking pattern with proper HLT loop
-            let path_owned = String::from(path);
-
-            let thread_id = match crate::task::scheduler::current_thread_id() {
-                Some(tid) => tid,
-                None => return SyscallResult::Err(3), // ESRCH
-            };
+            let mut open = Some(PendingFifoOpen {
+                tid: thread_id,
+                entry: entry.clone(),
+                for_write,
+            });
+            crate::process::with_process_manager(|manager| {
+                if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    process.pending_fifo_opens.extend(open.take());
+                }
+            });
+            if let Some(open) = open {
+                abandon_fifo_open(&open);
+                return SyscallResult::Err(3); // ESRCH
+            }
+            drop(custody);
 
             log::debug!(
                 "handle_fifo_open: thread {} blocking for {} end on {}",
@@ -3435,7 +3426,19 @@ fn handle_fifo_open(
                             }
                         });
                         crate::per_cpu::preempt_disable();
-                        abandon_fifo_open(&entry, for_write);
+                        // Give the reference back unless the row's exit
+                        // already has.
+                        let pending = crate::process::with_process_manager(|manager| {
+                            manager
+                                .find_process_by_thread_mut(thread_id)
+                                .and_then(|(_, process)| {
+                                    process.take_pending_fifo_open(thread_id, &entry)
+                                })
+                        })
+                        .flatten();
+                        if let Some(open) = pending {
+                            abandon_fifo_open(&open);
+                        }
                         log::debug!(
                             "handle_fifo_open: Thread {} interrupted by signal (EINTR)",
                             thread_id
@@ -3483,44 +3486,101 @@ fn handle_fifo_open(
                 }
             };
 
-            // Now complete the FIFO open
-            let kind = if for_write {
-                FdKind::FifoWrite(path_owned.clone(), buffer, entry)
-            } else {
-                FdKind::FifoRead(path_owned.clone(), buffer, entry)
+            let open = PendingFifoOpen {
+                tid: thread_id,
+                entry,
+                for_write,
             };
-
-            let fd_entry = FileDescriptor::opened(kind, flags);
-
-            let mut manager_guard = crate::process::manager();
-            let manager = match manager_guard.as_mut() {
-                Some(m) => m,
-                None => return SyscallResult::Err(3),
-            };
-
-            let (_, process) = match manager.find_process_by_thread_mut(thread_id) {
-                Some(p) => p,
-                None => return SyscallResult::Err(3),
-            };
-
-            match process.fd_table.alloc_with_entry(fd_entry) {
-                Ok(fd) => {
-                    log::info!(
-                        "handle_fifo_open: opened FIFO {} as fd {} ({})",
-                        path_owned,
-                        fd,
-                        if for_write { "write" } else { "read" }
-                    );
-                    SyscallResult::Ok(fd as u64)
-                }
-                Err(_) => SyscallResult::Err(EMFILE as u64),
-            }
+            install_fifo_descriptor(path, flags, open, buffer, true)
         }
         FifoOpenResult::Error(errno) => {
+            // Refused before taking a reference.
+            drop(custody);
             log::debug!("handle_fifo_open: error {}", errno);
             SyscallResult::Err(errno as u64)
         }
     }
+}
+
+/// Install the descriptor for a FIFO open that holds its reader or writer
+/// reference, or give the reference back if no descriptor can be installed.
+///
+/// `recorded` is true for an open that blocked: its `PendingFifoOpen` record
+/// is on the row, and is taken off in the same PROCESS_MANAGER hold that
+/// installs the descriptor, so the row's exit finds either the record or the
+/// descriptor and releases the reference exactly once. A missing record means
+/// the exit got there first. An unrecorded open must be called inside
+/// a kill-custody section.
+fn install_fifo_descriptor(
+    path: &str,
+    flags: u32,
+    open: crate::ipc::fifo::PendingFifoOpen,
+    buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
+    recorded: bool,
+) -> SyscallResult {
+    use super::errno::{EINTR, EMFILE};
+    use crate::ipc::fd::{FdKind, FileDescriptor};
+    use alloc::string::String;
+
+    enum Install {
+        Installed(i32),
+        Released,
+        Refused(u64),
+    }
+
+    // A recorded open is outside any custody section while it waits. Once
+    // its record is off the row and before the descriptor is installed, a
+    // kill must not take it, or nothing would give the reference back.
+    let custody = if recorded {
+        match crate::task::thread::KillCustody::try_enter() {
+            Some(custody) => Some(custody),
+            // A kill has claimed this thread; the row's exit gives the
+            // reference back through the record.
+            None => return SyscallResult::Err(EINTR as u64),
+        }
+    } else {
+        None
+    };
+
+    let kind = if open.for_write {
+        FdKind::FifoWrite(String::from(path), buffer, open.entry.clone())
+    } else {
+        FdKind::FifoRead(String::from(path), buffer, open.entry.clone())
+    };
+    let fd_entry = FileDescriptor::opened(kind, flags);
+
+    let outcome = crate::process::with_process_manager(|manager| {
+        let Some((_, process)) = manager.find_process_by_thread_mut(open.tid) else {
+            return Install::Refused(3); // ESRCH
+        };
+        if recorded && process.take_pending_fifo_open(open.tid, &open.entry).is_none() {
+            return Install::Released;
+        }
+        match process.fd_table.alloc_with_entry(fd_entry) {
+            Ok(fd) => Install::Installed(fd),
+            Err(_) => Install::Refused(EMFILE as u64),
+        }
+    })
+    .unwrap_or(Install::Refused(3)); // ESRCH
+
+    let result = match outcome {
+        Install::Installed(fd) => {
+            log::info!(
+                "handle_fifo_open: opened FIFO {} as fd {} ({})",
+                path,
+                fd,
+                if open.for_write { "write" } else { "read" }
+            );
+            SyscallResult::Ok(fd as u64)
+        }
+        Install::Released => SyscallResult::Err(EINTR as u64),
+        Install::Refused(errno) => {
+            crate::ipc::fifo::abandon_fifo_open(&open);
+            SyscallResult::Err(errno)
+        }
+    };
+    drop(custody);
+    result
 }
 
 /// newfstatat(dirfd, pathname, statbuf, flags) - Get file status by path
