@@ -269,11 +269,12 @@ pub fn find_entry_location(data: &[u8], name: &str) -> Option<DirEntryLocation> 
 /// # Arguments
 /// * `data` - Mutable directory data buffer
 /// * `name` - Name of the entry to remove
+/// * `block_size` - The filesystem block size; no entry spans two blocks
 ///
 /// # Returns
 /// * `Ok(u32)` - Inode number of the removed entry
 /// * `Err(&'static str)` - Error message
-pub fn remove_entry(data: &mut [u8], name: &str) -> Result<u32, &'static str> {
+pub fn remove_entry(data: &mut [u8], name: &str, block_size: usize) -> Result<u32, &'static str> {
     // Cannot remove . or ..
     if name == "." || name == ".." {
         return Err("Cannot remove . or ..");
@@ -283,9 +284,15 @@ pub fn remove_entry(data: &mut [u8], name: &str) -> Result<u32, &'static str> {
     let location = find_entry_location(data, name).ok_or("Entry not found")?;
     let removed_inode = location.entry.inode;
 
-    // If there's a previous entry, extend its rec_len to include this entry
-    // (effectively "absorbing" this entry's space)
-    if let (Some(prev_off), Some(prev_rec)) = (location.prev_offset, location.prev_rec_len) {
+    // If there's a previous entry in the same block, extend its rec_len to
+    // include this entry (effectively "absorbing" this entry's space). The
+    // first entry of a block has its predecessor in another block, which a
+    // record may not reach into.
+    let same_block = |prev_off: usize| prev_off / block_size == location.offset / block_size;
+    if let (Some(prev_off), Some(prev_rec)) = (
+        location.prev_offset.filter(|prev_off| same_block(*prev_off)),
+        location.prev_rec_len,
+    ) {
         // Calculate new rec_len for previous entry
         let new_prev_rec_len = prev_rec + location.rec_len;
 

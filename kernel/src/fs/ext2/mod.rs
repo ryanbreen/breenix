@@ -872,7 +872,7 @@ impl Ext2Fs {
         let handle = self.pin_loaded_inode(target_inode_num, target_inode.size())?;
 
         // Remove the directory entry
-        remove_entry(&mut dir_data, filename)?;
+        remove_entry(&mut dir_data, filename, self.superblock.block_size())?;
 
         // Update parent directory timestamps (mtime and ctime)
         let mut parent_inode_mut = parent_inode;
@@ -1034,7 +1034,7 @@ impl Ext2Fs {
         };
 
         // Remove entry from old parent
-        remove_entry(&mut old_parent_data, old_filename)?;
+        remove_entry(&mut old_parent_data, old_filename, self.superblock.block_size())?;
 
         // Add entry to new parent
         if old_parent_num == new_parent_num {
@@ -1377,7 +1377,7 @@ impl Ext2Fs {
         let mut parent_dir_data = self.read_directory(&parent_inode)?;
 
         // Remove the directory entry from parent
-        remove_entry(&mut parent_dir_data, dir_name)?;
+        remove_entry(&mut parent_dir_data, dir_name, self.superblock.block_size())?;
 
         // Update parent directory timestamps (mtime and ctime)
         let mut parent_inode_mut = parent_inode;
