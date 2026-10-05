@@ -856,6 +856,11 @@ fn deliver_to_user_handler_syscall(
         (frame_rsp, trampoline_rsp)
     };
 
+    // The wait mask selects the signal; its frame must save the original mask.
+    if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
+        process.signals.set_blocked(saved);
+    }
+
     // Build signal frame with saved context
     let signal_frame = SignalFrame {
         trampoline_addr: return_addr,
