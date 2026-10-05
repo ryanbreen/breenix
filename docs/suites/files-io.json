@@ -570,6 +570,38 @@
         {
           "id": "timestamp-nanos",
           "title": "Timestamp nanoseconds are in the POSIX range"
+        },
+        {
+          "id": "statfs",
+          "title": "statfs defines every filesystem statistics field"
+        },
+        {
+          "id": "fstatfs",
+          "title": "fstatfs agrees with statfs for the same filesystem"
+        },
+        {
+          "id": "statfs-symlink",
+          "title": "statfs follows final symlinks and physical dot-dot across mounts"
+        },
+        {
+          "id": "statfs-missing",
+          "title": "statfs rejects missing paths, file components and dangling symlinks"
+        },
+        {
+          "id": "fstatfs-bad-fd",
+          "title": "fstatfs rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "fstatfs-unlinked",
+          "title": "fstatfs keeps the filesystem identity of an unlinked open file"
+        },
+        {
+          "id": "statfs-fault",
+          "title": "statfs and fstatfs reject null user buffers with EFAULT"
+        },
+        {
+          "id": "statfs-allocation",
+          "title": "statfs free blocks follow filesystem allocation"
         }
       ]
     },
@@ -632,6 +664,44 @@
         {
           "id": "atomic-nonblock",
           "title": "A nonblocking PIPE_BUF write is all-or-nothing"
+        }
+      ]
+    },
+    {
+      "id": "sync",
+      "title": "File synchronization",
+      "cases": [
+        {
+          "id": "fsync",
+          "title": "fsync returns success for a writable regular file"
+        },
+        {
+          "id": "fsync-bad-fd",
+          "title": "fsync rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "fsync-pipe",
+          "title": "fsync rejects a pipe with EINVAL"
+        },
+        {
+          "id": "fdatasync",
+          "title": "fdatasync returns success for a writable regular file"
+        },
+        {
+          "id": "fdatasync-bad-fd",
+          "title": "fdatasync rejects an invalid descriptor with EBADF"
+        },
+        {
+          "id": "fdatasync-pipe",
+          "title": "fdatasync rejects a pipe with EINVAL"
+        },
+        {
+          "id": "killed-writer",
+          "title": "Processes killed holding and awaiting the filesystem lock leave it usable"
+        },
+        {
+          "id": "sync",
+          "title": "sync writes dirty shared pages of every inode across writeback batches"
         }
       ]
     },
@@ -730,43 +800,173 @@
       ]
     },
     {
-      "id": "sync",
-      "title": "File synchronization",
+      "id": "poll-select",
+      "title": "poll and select",
       "cases": [
         {
-          "id": "fsync",
-          "title": "fsync returns success for a writable regular file"
+          "id": "regular",
+          "title": "poll reports regular files readable and writable even at EOF"
         },
         {
-          "id": "fsync-bad-fd",
-          "title": "fsync rejects an invalid descriptor with EBADF"
+          "id": "pipe-level",
+          "title": "poll pipe readability persists until all data is drained"
         },
         {
-          "id": "fsync-pipe",
-          "title": "fsync rejects a pipe with EINVAL"
+          "id": "pipe-hup",
+          "title": "poll reports HUP while buffered pipe bytes remain readable"
         },
         {
-          "id": "fdatasync",
-          "title": "fdatasync returns success for a writable regular file"
+          "id": "pipe-error",
+          "title": "poll reports ERR when the pipe read end closes"
         },
         {
-          "id": "fdatasync-bad-fd",
-          "title": "fdatasync rejects an invalid descriptor with EBADF"
+          "id": "pipe-full",
+          "title": "poll reports a full pipe unwritable until drained"
         },
         {
-          "id": "fdatasync-pipe",
-          "title": "fdatasync rejects a pipe with EINVAL"
+          "id": "invalid",
+          "title": "poll reports NVAL per invalid fd and ignores negative fds"
         },
         {
-          "id": "killed-writer",
-          "title": "Processes killed holding and awaiting the filesystem lock leave it usable"
+          "id": "timeout",
+          "title": "poll expires with zero count and cleared revents"
+        },
+        {
+          "id": "sleep",
+          "title": "poll with zero descriptors sleeps through its timeout"
+        },
+        {
+          "id": "blocking",
+          "title": "A negative poll timeout waits for a write made while blocked"
+        },
+        {
+          "id": "finite-ready",
+          "title": "poll returns readiness for a write made before its deadline"
+        },
+        {
+          "id": "eintr",
+          "title": "poll returns EINTR for a signal sent while blocked"
+        },
+        {
+          "id": "empty-eintr",
+          "title": "Infinite poll with zero descriptors blocks until a signal"
+        },
+        {
+          "id": "ppoll-timeout",
+          "title": "ppoll expires with zero count and cleared revents"
+        },
+        {
+          "id": "ppoll-blocking",
+          "title": "ppoll with a null timeout waits for a write while blocked"
+        },
+        {
+          "id": "ppoll-eintr",
+          "title": "ppoll returns EINTR for a signal sent while blocked"
+        },
+        {
+          "id": "ppoll-mask",
+          "title": "ppoll blocks its temporary signal mask and restores the original"
+        },
+        {
+          "id": "ppoll-arguments",
+          "title": "ppoll rejects invalid timeout and signal-mask size"
+        },
+        {
+          "id": "select-regular",
+          "title": "select counts both regular-file sets and clears exceptfds"
+        },
+        {
+          "id": "select-level",
+          "title": "select reports pipe levels and readable EOF without an exception"
+        },
+        {
+          "id": "select-bounds",
+          "title": "select respects nfds, multiple fd_set words and buffer bounds"
+        },
+        {
+          "id": "select-timeout",
+          "title": "select expires with zero count and cleared sets"
+        },
+        {
+          "id": "select-sleep",
+          "title": "select with nfds zero sleeps through its timeout"
+        },
+        {
+          "id": "select-blocking",
+          "title": "select with a null timeout waits for a write while blocked"
+        },
+        {
+          "id": "select-eintr",
+          "title": "select returns EINTR for a signal sent while blocked"
+        },
+        {
+          "id": "pselect-timeout",
+          "title": "pselect6 expires with zero count and cleared sets"
+        },
+        {
+          "id": "pselect-blocking",
+          "title": "pselect6 with a null timeout waits for a write while blocked"
+        },
+        {
+          "id": "pselect-eintr",
+          "title": "pselect6 returns EINTR for a signal sent while blocked"
+        },
+        {
+          "id": "pselect-mask",
+          "title": "pselect6 blocks its temporary signal mask and restores the original"
+        },
+        {
+          "id": "fifo",
+          "title": "poll preserves FIFO readiness and delivers buffered bytes before HUP"
+        },
+        {
+          "id": "select-fifo",
+          "title": "select reports the true FIFO read and write sets"
+        },
+        {
+          "id": "ppoll-regular",
+          "title": "Zero-timeout ppoll reports regular-file read and write bits"
+        },
+        {
+          "id": "pselect-regular",
+          "title": "Zero-timeout pselect6 counts regular-file read and write sets"
+        },
+        {
+          "id": "ppoll-unmask",
+          "title": "ppoll temporarily unblocks a signal and restores its blocked mask"
+        },
+        {
+          "id": "pselect-unmask",
+          "title": "pselect6 temporarily unblocks a signal and restores its blocked mask"
         }
       ]
     }
   ],
   "diskChecks": [
-    {"path": "/tmp/files-io-writeback-msync", "length": 266240, "byte": 66},
-    {"path": "/tmp/files-io-writeback-fsync", "length": 266240, "byte": 66},
-    {"path": "/tmp/files-io-writeback-fdatasync", "length": 266240, "byte": 66}
+    {
+      "path": "/tmp/files-io-writeback-msync",
+      "length": 266240,
+      "byte": 66
+    },
+    {
+      "path": "/tmp/files-io-writeback-fsync",
+      "length": 266240,
+      "byte": 66
+    },
+    {
+      "path": "/tmp/files-io-writeback-fdatasync",
+      "length": 266240,
+      "byte": 66
+    },
+    {
+      "path": "/tmp/files-io-writeback-sync-large",
+      "length": 266240,
+      "byte": 83
+    },
+    {
+      "path": "/tmp/files-io-writeback-sync-small",
+      "length": 4096,
+      "byte": 83
+    }
   ]
 }

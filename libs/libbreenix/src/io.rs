@@ -430,13 +430,12 @@ pub fn fd_isset(fd: Fd, set: &FdSet) -> bool {
 /// * `readfds` - Optional fd_set for read monitoring (modified in place)
 /// * `writefds` - Optional fd_set for write monitoring (modified in place)
 /// * `exceptfds` - Optional fd_set for exception monitoring (modified in place)
-/// * `timeout_ptr` - Timeout pointer (0 for non-blocking, currently only 0 supported)
+/// * `timeout_ptr` - Pointer to a timeval (NULL waits indefinitely)
 ///
 /// # Returns
 /// Number of ready fds on success, 0 on timeout, `Err(Error)` on error.
 ///
 /// # Note
-/// Currently only non-blocking select (timeout=0/NULL) is supported.
 /// The fd_sets are modified in place to indicate which fds are ready.
 #[inline]
 pub fn select(
@@ -465,13 +464,18 @@ pub fn select(
         // ARM64 Linux has no select; use pselect6(nfds, readfds, writefds, exceptfds, timeout, NULL)
         #[cfg(target_arch = "aarch64")]
         {
+            // Linux pselect6 takes nanoseconds instead of timeval microseconds.
+            let ts = if timeout_ptr == 0 { [0i64; 2] } else {
+                let tv = core::ptr::read(timeout_ptr as *const [i64; 2]);
+                [tv[0], tv[1].saturating_mul(1000)]
+            };
             raw::syscall6(
                 nr::PSELECT6,
                 nfds as u64,
                 readfds_ptr,
                 writefds_ptr,
                 exceptfds_ptr,
-                timeout_ptr,
+                if timeout_ptr == 0 { 0 } else { ts.as_ptr() as u64 },
                 0, // NULL sigmask
             )
         }

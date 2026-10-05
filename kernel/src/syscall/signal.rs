@@ -1112,28 +1112,13 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
         }
     };
 
-    if let Some(mut manager_guard) = crate::process::try_manager() {
+    {
+        // This is a userspace syscall with no PM guard held. Contention must
+        // wait: skipping restoration would leave the handler's mask installed.
+        let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
-                // Check if we're returning from a signal that interrupted sigsuspend
-                // If so, restore the original mask that sigsuspend saved, not the
-                // temporary mask from the signal frame
-                if let Some(saved_mask) = process.signals.sigsuspend_saved_mask.take() {
-                    // Restore the original mask from before sigsuspend was called
-                    process.signals.set_blocked(saved_mask);
-                    log::info!(
-                        "sigreturn: restored sigsuspend saved mask to {:#x} (ignoring signal frame mask {:#x})",
-                        saved_mask,
-                        signal_frame.saved_blocked
-                    );
-                } else {
-                    // Normal case - restore from signal frame
-                    process.signals.set_blocked(signal_frame.saved_blocked);
-                    log::debug!(
-                        "sigreturn: restored signal mask to {:#x}",
-                        signal_frame.saved_blocked
-                    );
-                }
+                process.signals.set_blocked(signal_frame.saved_blocked);
 
                 // Clear the on_stack flag - we're leaving the signal handler
                 // This allows the alternate stack to be used for future signals
@@ -1450,9 +1435,9 @@ pub fn sys_sigsuspend_with_frame(
                     let sanitized_mask = new_mask & !UNCATCHABLE_SIGNALS;
                     process.signals.set_blocked(sanitized_mask);
 
-                    // CRITICAL: Store saved_mask for sigreturn BEFORE entering HLT loop!
+                    // Store the original mask for signal delivery before entering the wait.
                     // When a signal is delivered, the handler runs and calls sigreturn.
-                    // sigreturn needs this mask to restore the original blocked state.
+                    // Delivery restores this mask before creating the handler frame.
                     // The code AFTER the HLT loop never runs because signal delivery
                     // modifies the return path to go directly to userspace.
                     process.signals.sigsuspend_saved_mask = Some(saved_mask);
@@ -2100,23 +2085,13 @@ pub fn sys_sigreturn_with_frame_aarch64(
         }
     };
 
-    if let Some(mut manager_guard) = crate::process::try_manager() {
+    {
+        // This is a userspace syscall with no PM guard held. Contention must
+        // wait: skipping restoration would leave the handler's mask installed.
+        let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
-                // Check if we're returning from a signal that interrupted sigsuspend
-                if let Some(saved_mask) = process.signals.sigsuspend_saved_mask.take() {
-                    process.signals.set_blocked(saved_mask);
-                    log::info!(
-                        "sigreturn_aarch64: restored sigsuspend saved mask to {:#x}",
-                        saved_mask
-                    );
-                } else {
-                    process.signals.set_blocked(signal_frame.saved_blocked);
-                    log::debug!(
-                        "sigreturn_aarch64: restored signal mask to {:#x}",
-                        signal_frame.saved_blocked
-                    );
-                }
+                process.signals.set_blocked(signal_frame.saved_blocked);
 
                 // Clear the on_stack flag
                 if process.signals.alt_stack.on_stack {
@@ -2216,7 +2191,7 @@ pub fn sys_sigsuspend_with_frame_aarch64(
                     let sanitized_mask = new_mask & !UNCATCHABLE_SIGNALS;
                     process.signals.set_blocked(sanitized_mask);
 
-                    // Store saved_mask for sigreturn
+                    // Store the original mask for signal delivery
                     process.signals.sigsuspend_saved_mask = Some(saved_mask);
 
                     log::info!(

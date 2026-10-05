@@ -2216,13 +2216,23 @@ pub unsafe extern "C" fn select(
         }
         #[cfg(target_arch = "aarch64")]
         {
+            let ts = if timeout.is_null() {
+                None
+            } else {
+                let tv = core::ptr::read_unaligned(timeout as *const [i64; 2]);
+                if tv[0] < 0 || tv[1] < 0 || tv[1] >= 1_000_000 {
+                    ERRNO = EINVAL;
+                    return -1;
+                }
+                Some([tv[0], tv[1] * 1000])
+            };
             libbreenix::raw::syscall6(
                 libbreenix::syscall::nr::PSELECT6,
                 nfds as u64,
                 readfds as u64,
                 writefds as u64,
                 exceptfds as u64,
-                timeout as u64,
+                ts.as_ref().map_or(0, |t| t.as_ptr() as u64),
                 0, // NULL sigmask
             ) as i64
         }

@@ -104,6 +104,8 @@ pub struct Resolved {
     /// The pathname ended in `/`, or its final symlink's target did, so its
     /// final component must be a directory.
     pub trailing_slash: bool,
+    /// The final virtual component was absent during the namespace walk.
+    pub virtual_absent: bool,
     /// For a lookup, the target inode, or for an absent target the directory
     /// it would be created in: held from the walk step that found it, so its
     /// inode is not reclaimed and its number reused while this lives.
@@ -439,6 +441,7 @@ fn walk_with(
                         },
                         last,
                         trailing_slash,
+                        virtual_absent,
                         pin,
                         entry_dir,
                     });
@@ -523,6 +526,7 @@ fn walk_with(
         target,
         last,
         trailing_slash,
+        virtual_absent,
         pin,
         entry_dir,
     })

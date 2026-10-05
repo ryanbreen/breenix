@@ -3892,80 +3892,6 @@ fn ext2_fd_info(fd: i32, writable: bool) -> Result<(u32, usize, Option<crate::fs
     })
 }
 
-/// Linux `struct statfs` on 64-bit targets: x86-64 and aarch64 share the
-/// asm-generic layout.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct LinuxStatfs {
-    f_type: i64,
-    f_bsize: i64,
-    f_blocks: u64,
-    f_bfree: u64,
-    f_bavail: u64,
-    f_files: u64,
-    f_ffree: u64,
-    f_fsid: [i32; 2],
-    f_namelen: i64,
-    f_frsize: i64,
-    f_flags: i64,
-    f_spare: [i64; 4],
-}
-
-/// ext2's superblock magic, the f_type Linux reports for it.
-const EXT2_SUPER_MAGIC: i64 = 0xEF53;
-
-/// fstatfs(fd, buf) - Report the filesystem an ext2 file or directory
-/// descriptor is on: its block size, block and inode totals, and the free
-/// counts its block groups hold. Other descriptor kinds are not backed by a
-/// filesystem this reports on and fail with ENOSYS.
-pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
-    use super::errno::{EBADF, EIO, ENOSYS};
-    let handle = crate::arch_without_interrupts(|| {
-        let thread = crate::task::scheduler::current_thread_id().ok_or(EBADF as u64)?;
-        let manager_guard = crate::process::manager();
-        let manager = manager_guard.as_ref().ok_or(EBADF as u64)?;
-        let (_, process) = manager.find_process_by_thread(thread).ok_or(EBADF as u64)?;
-        let entry = process.fd_table.get(fd).ok_or(EBADF as u64)?;
-        match &entry.kind {
-            FdKind::RegularFile(file) => Ok(file.lock().handle.clone()),
-            FdKind::Directory(dir) => Ok(dir.lock().handle.clone()),
-            _ => Err(ENOSYS as u64),
-        }
-    });
-    let handle = match handle {
-        Ok(handle) => handle,
-        Err(errno) => return SyscallResult::Err(errno),
-    };
-    let stats = {
-        let guard = match crate::fs::ext2::read_mount(handle.object.mount) {
-            Ok(guard) => guard,
-            Err(_) => return SyscallResult::Err(EIO as u64),
-        };
-        match guard.as_ref() {
-            Some(fs) => fs.statfs(),
-            None => return SyscallResult::Err(EIO as u64),
-        }
-    };
-    let out = LinuxStatfs {
-        f_type: EXT2_SUPER_MAGIC,
-        f_bsize: stats.block_size as i64,
-        f_blocks: stats.blocks,
-        f_bfree: stats.free_blocks,
-        f_bavail: stats.free_blocks.saturating_sub(stats.reserved_blocks),
-        f_files: stats.inodes,
-        f_ffree: stats.free_inodes,
-        f_fsid: [0; 2],
-        f_namelen: 255,
-        f_frsize: stats.block_size as i64,
-        f_flags: 0,
-        f_spare: [0; 4],
-    };
-    match super::userptr::copy_to_user(buf as *mut LinuxStatfs, &out) {
-        Ok(()) => SyscallResult::Ok(0),
-        Err(errno) => SyscallResult::Err(errno),
-    }
-}
-
 /// fsync/fdatasync write back all dirty shared pages of the pinned inode,
 /// then flush data and metadata to the device. Without dirty mapped pages,
 /// ext2 already wrote both synchronously and only the device flush remains.
@@ -4000,6 +3926,149 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
         Some(Ok(())) => SyscallResult::Ok(0),
         _ => SyscallResult::Err(super::errno::EIO as u64),
     }
+}
+
+/// Linux 64-bit statfs ABI: fifteen 64-bit words on x86-64 and ARM64,
+/// including fsid and four reserved words.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Statfs {
+    kind: u64,
+    bsize: u64,
+    blocks: u64,
+    bfree: u64,
+    bavail: u64,
+    files: u64,
+    ffree: u64,
+    fsid: [i32; 2],
+    namelen: u64,
+    frsize: u64,
+    flags: u64,
+    spare: [u64; 4],
+}
+
+fn ext2_statfs(mount: crate::fs::namei::Mount) -> Result<Statfs, u64> {
+    let guard = mount.read();
+    let fs = guard.as_ref().ok_or(super::errno::EIO as u64)?;
+    let stats = fs.statfs();
+    Ok(Statfs {
+        kind: 0xef53,
+        bsize: stats.block_size,
+        blocks: stats.blocks,
+        bfree: stats.free_blocks,
+        // Allocation is controlled by the group bitmaps, not the disk image's
+        // reserved-block policy: Breenix does not enforce s_r_blocks_count.
+        bavail: stats.free_blocks,
+        files: stats.inodes,
+        ffree: stats.free_inodes,
+        // A mount identity is stable for the mounted filesystem's lifetime.
+        fsid: [fs.mount_id as i32, 0],
+        namelen: crate::fs::namei::NAME_MAX as u64,
+        frsize: stats.block_size,
+        flags: 0x20, // Linux ST_VALID; writable, no NOSUID mount policy
+        spare: [0; 4],
+    })
+}
+
+/// Virtual filesystems report 0 for block/inode capacity and free counts.
+fn virtual_statfs(kind: u64) -> Statfs {
+    Statfs { kind, bsize: 4096, frsize: 4096, namelen: 255,
+        fsid: [kind as i32, 0], flags: 0x20, ..Statfs::default() }
+}
+
+fn resolved_statfs(resolved: &crate::fs::namei::Resolved) -> Result<Statfs, u64> {
+    use crate::fs::namei::Target;
+    // Named FIFOs have namespace entries in the registry rather than ext2.
+    if crate::ipc::fifo::FIFO_REGISTRY.exists(&resolved.path) {
+        return Ok(virtual_statfs(0x50495045));
+    }
+    match resolved.target {
+        Target::Inode { mount, .. } => ext2_statfs(mount),
+        Target::Absent { .. } => Err(super::errno::ENOENT as u64),
+        Target::Virtual if resolved.virtual_absent => Err(super::errno::ENOENT as u64),
+        Target::Virtual => Ok(virtual_statfs(if resolved.path == "/proc" || resolved.path.starts_with("/proc/") {
+            0x9fa0
+        } else if resolved.path == "/dev/pts" || resolved.path.starts_with("/dev/pts/") {
+            0x1cd1
+        } else { 0x1373 })),
+    }
+}
+
+pub fn sys_statfs(pathname: u64, buf: u64) -> SyscallResult {
+    // statvfs follows the final symlink, including cross-mount links, and
+    // resolves physical .. components through the shared namei walk.
+    let resolved = match resolve_user(pathname, true) { Ok(r) => r, Err(e) => return e };
+    let stat = match resolved_statfs(&resolved) { Ok(s) => s, Err(e) => return SyscallResult::Err(e) };
+    match super::userptr::copy_to_user(buf as *mut Statfs, &stat) {
+        Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e),
+    }
+}
+
+pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
+    // Validate and snapshot before filesystem I/O, even for a non-file fd.
+    let kind = {
+        let tid = match crate::task::scheduler::current_thread_id() { Some(t) => t, None => return SyscallResult::Err(9) };
+        let guard = crate::process::manager();
+        let entry = guard.as_ref().and_then(|m| m.find_process_by_thread(tid))
+            .and_then(|(_, p)| p.fd_table.get(fd));
+        match entry { Some(e) => e.kind.clone(), None => return SyscallResult::Err(9) }
+    };
+    let stat = match kind {
+        FdKind::RegularFile(file) => {
+            let pin = file.lock().handle.clone();
+            statfs_pin(&pin)
+        }
+        FdKind::Directory(dir) => {
+            let pin = dir.lock().handle.clone();
+            statfs_pin(&pin)
+        }
+        // FIFOs currently live in the in-memory FIFO registry, not ext2.
+        FdKind::FifoRead(_, _, _) | FdKind::FifoWrite(_, _, _) => Ok(virtual_statfs(0x50495045)),
+        FdKind::ProcfsFile { .. } | FdKind::ProcfsDirectory { .. } => Ok(virtual_statfs(0x9fa0)),
+        FdKind::PipeRead(_) | FdKind::PipeWrite(_) => Ok(virtual_statfs(0x50495045)),
+        FdKind::Device(_) | FdKind::StdIo(_) | FdKind::DevfsDirectory { .. } => Ok(virtual_statfs(0x1373)),
+        FdKind::DevptsDirectory { .. } | FdKind::PtyMaster(_) | FdKind::PtySlave(_) => Ok(virtual_statfs(0x1cd1)),
+        FdKind::Epoll(_) => Ok(virtual_statfs(0x09041934)),
+        FdKind::UdpSocket(_) | FdKind::TcpSocket(_) | FdKind::TcpListener(_)
+        | FdKind::TcpConnection(_) | FdKind::UnixStream(_) | FdKind::UnixSocket(_)
+        | FdKind::UnixListener(_) => Ok(virtual_statfs(0x534f434b)),
+    };
+    match stat.and_then(|s| super::userptr::copy_to_user(buf as *mut Statfs, &s)) {
+        Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e),
+    }
+}
+
+fn statfs_pin(pin: &crate::fs::ext2::live_inode::FileHandle) -> Result<Statfs, u64> {
+    use crate::fs::{ext2, namei::Mount};
+    let mount = if ext2::home_mount_id() == Some(pin.object.mount.mount_id) { Mount::Home } else { Mount::Root };
+    {
+        let guard = mount.read();
+        pin.verify(guard.as_ref().ok_or(5u64)?).map_err(|_| 5u64)?;
+    }
+    ext2_statfs(mount)
+}
+
+/// Write back dirty shared mappings and flush mounted devices. Like Linux
+/// sync, this advisory interface returns zero; fsync reports individual errors.
+pub fn sys_sync() -> SyscallResult {
+    use crate::fs::namei::Mount;
+    let mut bytes = crate::memory::file_map::writeback_buffer().ok();
+    for mount in [Mount::Root, Mount::Home] {
+        let handles = {
+            let guard = mount.read();
+            guard.as_ref().map(|fs| fs.dirty_handles()).transpose()
+        };
+        if let (Ok(Some(handles)), Some(buffer)) = (handles, bytes.as_mut()) {
+            for handle in handles {
+                let _ = crate::memory::file_map::sync_range_with_buffer(&handle, 0, u64::MAX, buffer);
+            }
+        }
+        let guard = mount.read();
+        if let Some(fs) = guard.as_ref() {
+            let _ = fs.sync();
+        }
+    }
+    SyscallResult::Ok(0)
 }
 
 fn resize_inode(fs: &mut crate::fs::ext2::Ext2Fs, ino: u32, length: u64, unprivileged: bool) -> SyscallResult {

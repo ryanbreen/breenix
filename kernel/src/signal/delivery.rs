@@ -66,6 +66,12 @@ pub fn deliver_pending_signals(
             None => return SignalDeliveryResult::NoAction,
         };
 
+        // Select under the temporary wait mask, then restore before creating
+        // the handler frame or stopping. Each nested frame owns its own mask.
+        if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
+            process.signals.set_blocked(saved);
+        }
+
         // Clear pending flag for this signal
         process.signals.clear_pending(sig);
 
@@ -147,6 +153,12 @@ pub fn deliver_pending_signals(
             Some(s) => s,
             None => return SignalDeliveryResult::NoAction,
         };
+
+        // Select under the temporary wait mask, then restore before creating
+        // the handler frame or stopping. Each nested frame owns its own mask.
+        if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
+            process.signals.set_blocked(saved);
+        }
 
         // Clear pending flag for this signal
         process.signals.clear_pending(sig);

@@ -11,12 +11,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
-Files & I/O is complete in [PR #1073](https://github.com/ryanbreen/breenix/pull/1073),
-closing #1038, #1015 and #1025. The next effort is **Directories & links**
-(`docs/efforts/path.json`): its `directories` suite opens measurement of eight
-milestones, from directory creation through permissions and timestamps.
-The initial suite and four-target baseline do not repair kernel gaps.
-Device-failure injection coverage remains tracked in #1059.
+[PR #1098](https://github.com/ryanbreen/breenix/pull/1098) supplies the Files & I/O
+poll/select cases and sync/statfs/fstatfs interfaces. Its suite manifest lists
+219 cases; socket multiplexing remains in the networking effort.
+Directories & links has its separate suite. Device-failure injection coverage
+remains tracked in #1059.
 
 Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
