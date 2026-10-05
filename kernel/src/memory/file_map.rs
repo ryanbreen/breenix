@@ -129,6 +129,9 @@ struct MapInner {
     bindings: Vec<BindingRec>,
     writable_shared: usize,
     writeback_cursor: u64,
+    /// The request generation the traversal at `writeback_cursor` began
+    /// under. A traversal that ends under a newer one starts over.
+    writeback_epoch: u64,
 }
 
 /// Values keyed by file page index, sorted by index.
@@ -505,6 +508,7 @@ impl MapState {
                 bindings: Vec::new(),
                 writable_shared: 0,
                 writeback_cursor: 0,
+                writeback_epoch: 0,
             }),
             eviction_pending: AtomicBool::new(false),
             resident: AtomicBool::new(false),
@@ -686,6 +690,8 @@ impl MapState {
 
     /// The service processes at most the remaining page budget and resumes
     /// after its snapshot, even when a live writer keeps those pages dirty.
+    /// A request that arrives mid-traversal may concern pages already
+    /// passed, so the traversal that ends under it is followed by a full one.
     pub(crate) fn service_writeback(
         &self,
         fs: &mut Ext2Fs,
@@ -699,16 +705,20 @@ impl MapState {
             return Ok(true);
         }
         let request = self.writeback_requests.load(Ordering::Acquire);
-        let first = self.inner.lock().writeback_cursor;
-        let count = {
-            let inner = self.inner.lock();
-            inner
+        let (first, count) = {
+            let mut inner = self.inner.lock();
+            let first = inner.writeback_cursor;
+            if first == 0 {
+                inner.writeback_epoch = request;
+            }
+            let count = inner
                 .pages
                 .range(first, u64::MAX)
                 .iter()
                 .filter(|(_, page)| page.dirty)
                 .take(*budget)
-                .count()
+                .count();
+            (first, count)
         };
         let mut bytes = writeback_buffer()?;
         let next = self.writeback(fs, ino, first, u64::MAX, *budget, &mut bytes)?;
@@ -721,11 +731,13 @@ impl MapState {
             .iter()
             .any(|(_, page)| page.dirty);
         inner.writeback_cursor = if more { next } else { 0 };
+        let epoch = inner.writeback_epoch;
+        drop(inner);
         self.writeback_pending.store(more, Ordering::Release);
         // Publish idle before checking the request generation. A request on
         // either side of this check either changes the generation or sets the
         // flag after it; neither wake can be lost.
-        if self.writeback_requests.load(Ordering::Acquire) != request {
+        if self.writeback_requests.load(Ordering::Acquire) != epoch {
             self.writeback_pending.store(true, Ordering::Release);
             return Ok(true);
         }
