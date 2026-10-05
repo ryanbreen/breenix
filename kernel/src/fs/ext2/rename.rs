@@ -63,7 +63,7 @@ pub enum RenameError {
 }
 
 /// One planned write and the bytes it replaces.
-enum Write<'a> {
+pub(super) enum Write<'a> {
     Block {
         block: u32,
         old: &'a [u8],
@@ -303,27 +303,10 @@ impl Ext2Fs {
             new: new_dir_after,
         });
 
-        // The disk changes from here on; nothing below allocates.
-        for (done, write) in writes.iter().enumerate() {
-            if self.apply(write, false).is_err() {
-                // The failed write may have landed in part, so it is undone
-                // with the rest. Undoing stops at the first rewrite that
-                // fails, so what stays on disk is a prefix of the plan: the
-                // state a crash there leaves, with counts high, never low.
-                let restored = writes[..=done]
-                    .iter()
-                    .rev()
-                    .all(|undo| self.apply(undo, true).is_ok());
-                if !restored {
-                    // The tree is between two states and stays so. The
-                    // replaced inode is not handed to the finalizer, so
-                    // nothing a name may still reach is freed, and the mount
-                    // writes nothing more.
-                    self.fail_writes();
-                }
-                return Err(RenameError::Io);
-            }
-        }
+        // The disk changes from here on; nothing below allocates. After a
+        // failed write the replaced inode is not handed to the finalizer, so
+        // nothing a name may still reach is freed.
+        self.commit_writes(&writes).map_err(io)?;
 
         if let (Some((_, _, handle)), Some(after)) = (victim, victim_after) {
             if after.i_links_count == 0 {
@@ -368,9 +351,33 @@ impl Ext2Fs {
         Err(RenameError::Io)
     }
 
+    /// Perform planned writes in order. When one fails, it and the writes
+    /// before it are rewritten with their old bytes, last first, and the
+    /// result is an error. When one of those rewrites fails too, the tree is
+    /// between two states and stays so: the mount writes nothing more.
+    pub(super) fn commit_writes(&mut self, writes: &[Write]) -> Result<(), ()> {
+        for (done, write) in writes.iter().enumerate() {
+            if self.apply(write, false).is_err() {
+                // The failed write may have landed in part, so it is undone
+                // with the rest. Undoing stops at the first rewrite that
+                // fails, so what stays on disk is a prefix of the plan: the
+                // state a crash there leaves, with counts high, never low.
+                let restored = writes[..=done]
+                    .iter()
+                    .rev()
+                    .all(|undo| self.apply(undo, true).is_ok());
+                if !restored {
+                    self.fail_writes();
+                }
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+
     /// Plan the writes of the blocks of directory `dir` that differ between
     /// `old` and `new`, the block holding byte `first` first.
-    fn plan_blocks<'a>(
+    pub(super) fn plan_blocks<'a>(
         &self,
         dir: &Ext2Inode,
         old: &'a [u8],
