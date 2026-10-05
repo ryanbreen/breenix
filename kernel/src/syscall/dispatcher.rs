@@ -177,10 +177,7 @@ pub fn dispatch_syscall(
             const ARCH_SET_FS: u64 = 0x1002;
             const ARCH_GET_FS: u64 = 0x1003;
             match arg1 {
-                ARCH_SET_FS => {
-                    x86_64::registers::model_specific::FsBase::write(x86_64::VirtAddr::new(arg2));
-                    SyscallResult::Ok(0)
-                }
+                ARCH_SET_FS => crate::tls::set_user_fs_base(arg2),
                 ARCH_GET_FS => {
                     let fs_base = x86_64::registers::model_specific::FsBase::read().as_u64();
                     match super::userptr::copy_to_user(arg2 as *mut u64, &fs_base) {

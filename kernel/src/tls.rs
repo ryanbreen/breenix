@@ -245,6 +245,22 @@ pub fn register_thread_tls(thread_id: u64, tls_block: VirtAddr) -> Result<(), &'
     })
 }
 
+/// ARCH_SET_FS updates both the live MSR and the state restored on dispatch.
+/// Syscall entry pins the current thread while this lock-free update runs.
+pub fn set_user_fs_base(base: u64) -> crate::syscall::SyscallResult {
+    use crate::syscall::{errno, SyscallResult};
+    if base >= crate::memory::layout::USER_STACK_REGION_END {
+        return SyscallResult::Err(errno::EPERM as u64);
+    }
+    let Some(thread) = crate::per_cpu::current_thread() else {
+        return SyscallResult::Err(errno::ESRCH as u64);
+    };
+    thread.context.user_fs_base = base;
+    thread.context.user_fs_base_set = true;
+    x86_64::registers::model_specific::FsBase::write(VirtAddr::new(base));
+    SyscallResult::Ok(0)
+}
+
 /// Switch to a different thread's TLS
 /// CRITICAL: Now uses FS base for user TLS, leaving GS for per-CPU data
 #[allow(dead_code)]
@@ -256,6 +272,17 @@ pub fn switch_tls(thread_id: u64) -> Result<(), &'static str> {
         // GS remains pointing to per-CPU data
         set_fs_base(VirtAddr::new(0))?;
         return Ok(());
+    }
+
+    // The dispatcher has already installed this thread in per-CPU state.
+    // An arch_prctl base belongs to the user runtime, not the TLS block cache.
+    if let Some(thread) = crate::per_cpu::current_thread() {
+        if thread.id == thread_id {
+            if thread.context.user_fs_base_set {
+                x86_64::registers::model_specific::FsBase::write(VirtAddr::new(thread.context.user_fs_base));
+                return Ok(());
+            }
+        }
     }
 
     // Disable interrupts to prevent deadlock. This function may be called from
