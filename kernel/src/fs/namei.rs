@@ -336,19 +336,17 @@ fn walk_with(
         }
         // Searching any component, including . and .., requires permission
         // on the directory it is looked up in. Keep the inode under its guard.
-        if let Node::Ext2(mount, dir) = top(&stack) {
+        let searched_inode = if let Node::Ext2(mount, dir) = top(&stack) {
             let inode = read_dir_inode(held.fs(mount)?, dir)?;
             if !cred.permits(&inode, 1) {
                 return Err(crate::syscall::errno::EACCES as u64);
             }
-        }
+            Some(inode)
+        } else { None };
         match name.as_str() {
             "." => {
                 last = Last::Dot;
-                // `.` names the directory itself, which must still be one.
-                if let Node::Ext2(mount, dir) = top(&stack) {
-                    read_dir_inode(held.fs(mount)?, dir)?;
-                }
+                // The search check already verified this directory.
                 continue;
             }
             ".." => {
@@ -389,7 +387,7 @@ fn walk_with(
                     }
                 }
                 let fs = held.fs(mount)?;
-                let dir_inode = read_dir_inode(fs, dir)?;
+                let dir_inode = searched_inode.ok_or(ENOTDIR as u64)?;
                 let found = fs
                     .lookup_in_dir(&dir_inode, &name)
                     .map_err(|_| EIO as u64)?;

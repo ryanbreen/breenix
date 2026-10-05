@@ -57,7 +57,7 @@ fn fixture(fd: u64, arg: u64) -> Result<(), u64> {
         caller.fd_table.get(fd as i32).ok_or(errno::EBADF as u64)?;
     }
     crate::ipc::fifo::FIFO_REGISTRY
-        .create(&path, 0o600)
+        .create(&path, 0o600, 0, 0)
         .map_err(|e| e as u64)
 }
 

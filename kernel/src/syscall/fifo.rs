@@ -42,7 +42,7 @@ pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
 
     // Create the FIFO in the registry
     let cred = crate::fs::permissions::Credentials::current(false);
-    match FIFO_REGISTRY.create(&path, mode & 0o777 & !cred.umask, cred.euid, cred.egid) {
+    match FIFO_REGISTRY.create(&path, mode & 0o7777 & !cred.umask, cred.euid, cred.egid) {
         Ok(()) => {
             log::info!("Created FIFO: {}", path);
             SyscallResult::Ok(0)
@@ -74,7 +74,7 @@ pub fn sys_mknod(pathname: u64, mode: u32, _dev: u64) -> SyscallResult {
 
     if file_type == S_IFIFO {
         // Creating a FIFO - delegate to mkfifo
-        let perms = mode & 0o777;
+        let perms = mode & 0o7777;
         sys_mkfifo(pathname, perms)
     } else {
         // Other special file types not yet implemented

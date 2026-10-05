@@ -335,11 +335,11 @@
       "cases": [
         {
           "id": "chmod-file",
-          "title": "chmod changes file permission bits reported by fresh stat"
+          "title": "pathname and descriptor chmod preserve file type and update modes across symlinks and unlink"
         },
         {
           "id": "chmod-dir",
-          "title": "chmod changes directory permission bits"
+          "title": "directory descriptor metadata retains inode identity and SGID"
         },
         {
           "id": "chmod-missing",
@@ -347,15 +347,15 @@
         },
         {
           "id": "chown",
-          "title": "chown updates the UID and GID reported by fresh stat"
+          "title": "pathname and descriptor chown preserve full-width IDs and symlink behavior"
         },
         {
           "id": "chown-unchanged",
-          "title": "chown with minus one leaves the corresponding owner unchanged"
+          "title": "chown preserves minus-one IDs and enforces owner, FIFO and privilege-bit rules"
         },
         {
           "id": "umask-return",
-          "title": "umask returns the previous mask and restricts it to permission bits"
+          "title": "umask returns masked state and credentials survive fork, exec, spawn and clone"
         },
         {
           "id": "umask-file",
@@ -395,7 +395,7 @@
         },
         {
           "id": "root-execute",
-          "title": "Linux policy denies root X_OK on a regular file with no execute bits"
+          "title": "Linux policy denies root X_OK on non-directory inodes without execute bits"
         },
         {
           "id": "access-owner-denied",

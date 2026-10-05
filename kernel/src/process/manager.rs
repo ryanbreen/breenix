@@ -811,12 +811,14 @@ impl ProcessManager {
         argv: &[&[u8]],
     ) -> Result<ProcessId, &'static str> {
         // Capture parent attributes before creating the child.
-        let (parent_pgid, parent_sid, parent_cwd) = {
+        let (parent_pgid, parent_sid, parent_cwd, ids, umask, groups) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
-            (parent.pgid, parent.sid, parent.cwd.clone())
+            (parent.pgid, parent.sid, parent.cwd.clone(),
+                (parent.uid, parent.gid, parent.euid, parent.egid),
+                parent.umask, parent.supplementary_groups.clone())
         };
 
         // Create the child process (allocates PID, page table, loads ELF, argv stack).
@@ -828,6 +830,9 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
+            (child.uid, child.gid, child.euid, child.egid) = ids;
+            child.umask = umask;
+            child.supplementary_groups = groups;
         }
 
         if let Some(parent) = self.processes.live_row_mut(&parent_pid) {
@@ -1312,12 +1317,14 @@ impl ProcessManager {
         argv: &[&[u8]],
     ) -> Result<ProcessId, &'static str> {
         // Capture parent attributes before creating child
-        let (parent_pgid, parent_sid, parent_cwd) = {
+        let (parent_pgid, parent_sid, parent_cwd, ids, umask, groups) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
-            (parent.pgid, parent.sid, parent.cwd.clone())
+            (parent.pgid, parent.sid, parent.cwd.clone(),
+                (parent.uid, parent.gid, parent.euid, parent.egid),
+                parent.umask, parent.supplementary_groups.clone())
         };
 
         // Create the child process (allocates PID, page table, loads ELF, etc.)
@@ -1329,6 +1336,9 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
+            (child.uid, child.gid, child.euid, child.egid) = ids;
+            child.umask = umask;
+            child.supplementary_groups = groups;
         }
 
         // Add child to parent's children list

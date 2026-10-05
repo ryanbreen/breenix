@@ -395,7 +395,7 @@ fn sys_open_write_path(
     }
 
     let mid = fs.mount_id;
-    let handle = if is_reg {
+    let handle = if is_reg || is_dir {
         Some(fs.pin_loaded_inode(ino, if want_trunc && !file_created { 0 } else { inode.size() })
             .map_err(|_| SyscallResult::Err(super::errno::EIO as u64))?)
     } else { None };
@@ -432,7 +432,7 @@ fn sys_open_read_path(
         check_open_access(&inode, flags, &cred)?;
     }
     let mid = fs.mount_id;
-    let handle = if is_reg {
+    let handle = if is_reg || is_dir {
         Some(fs.pin_loaded_inode(ino, inode.size())
             .map_err(|_| SyscallResult::Err(super::errno::EIO as u64))?)
     } else { None };
@@ -482,7 +482,11 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     }
 
     // Check if this is a FIFO (named pipe)
-    if crate::ipc::fifo::FIFO_REGISTRY.exists(path) {
+    if let Some(entry) = crate::ipc::fifo::FIFO_REGISTRY.get(path) {
+        let cred = current_file_credentials();
+        if let Err(error) = check_open_access(&entry.lock().inode(), flags, &cred) {
+            return error;
+        }
         return handle_fifo_open(path, flags);
     }
 
@@ -545,6 +549,10 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
             // permission check relies on that.
             // Create DirectoryFile structure
             let dir_file = DirectoryFile {
+                handle: match handle {
+                    Some(handle) => handle,
+                    None => return SyscallResult::Err(super::errno::EIO as u64),
+                },
                 inode_num: inode_num as u64,
                 mount_id,
                 position: 0,
@@ -1958,11 +1966,12 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
         Target::Absent { mount, .. } => mount,
     };
 
+    let cred = current_file_credentials();
     // Create the symbolic link on the correct filesystem
     let symlink_result = {
         let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.create_symlink(&target_str, link.fs_path()),
+            Some(fs) => fs.create_symlink_as(&target_str, link.fs_path(), cred.euid, cred.egid),
             None => {
                 log::error!("sys_symlink: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);

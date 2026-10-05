@@ -354,15 +354,11 @@ pub fn complete_fifo_open(path: &str, for_write: bool) -> FifoOpenResult {
 }
 
 /// Close a FIFO read end
-pub fn close_fifo_read(path: &str) {
-    if let Some(entry_arc) = FIFO_REGISTRY.get(path) {
-        entry_arc.lock().remove_reader();
-    }
+pub fn close_fifo_read(entry: &Arc<Mutex<FifoEntry>>) {
+    entry.lock().remove_reader();
 }
 
-/// Close a FIFO write end
-pub fn close_fifo_write(path: &str) {
-    if let Some(entry_arc) = FIFO_REGISTRY.get(path) {
-        entry_arc.lock().remove_writer();
-    }
+/// Close the write end of the original FIFO, even after unlink/recreation.
+pub fn close_fifo_write(entry: &Arc<Mutex<FifoEntry>>) {
+    entry.lock().remove_writer();
 }

@@ -410,6 +410,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         RegularFile {
             file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>>,
             append: bool,
+            unprivileged: bool,
         },
         TcpConnection {
             conn_id: crate::net::tcp::ConnectionId,
@@ -480,6 +481,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             FdKind::RegularFile(file) => WriteOperation::RegularFile {
                 file: file.clone(),
                 append: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND) != 0,
+                unprivileged: process.euid != 0,
             },
             FdKind::Directory(_) => WriteOperation::Eisdir,
             FdKind::Device(device_type) => WriteOperation::Device {
@@ -577,7 +579,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
         }
-        WriteOperation::RegularFile { file, append } => {
+        WriteOperation::RegularFile { file, append, unprivileged } => {
             // Write to ext2 regular file
             let (handle, position, file_mount_id) = {
                 let file_guard = file.lock();
@@ -588,7 +590,6 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 )
             };
 
-            let unprivileged = crate::fs::permissions::Credentials::current(false).euid != 0;
             let inode_num = handle.object.key.inode;
             // Dispatch to correct filesystem based on mount_id
             let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
@@ -5449,7 +5450,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     };
 
     // Extract file info from fd table under process lock
-    let fd_result: Result<crate::fs::ext2::live_inode::FileHandle, u64> = crate::arch_without_interrupts(|| {
+    let fd_result: Result<(crate::fs::ext2::live_inode::FileHandle, bool), u64> = crate::arch_without_interrupts(|| {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
@@ -5460,7 +5461,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
                         }
                         FdKind::RegularFile(file_ref) => {
                             let file = file_ref.lock();
-                            return Ok(file.handle.clone());
+                            return Ok((file.handle.clone(), process.euid != 0));
                         }
                         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
                             return Err(super::errno::ESPIPE as u64);
@@ -5476,8 +5477,8 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
         }
     });
 
-    let handle = match fd_result {
-        Ok(handle) => handle,
+    let (handle, unprivileged) = match fd_result {
+        Ok(info) => info,
         Err(e) => return SyscallResult::Err(e),
     };
 
@@ -5492,7 +5493,6 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     };
 
     use crate::fs::ext2;
-    let unprivileged = crate::fs::permissions::Credentials::current(false).euid != 0;
     let write_fn = |fs: &mut ext2::Ext2Fs| -> SyscallResult {
         if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
         match fs.write_file_range_as(inode_num as u32, file_offset, &data, unprivileged) {

@@ -634,15 +634,15 @@ impl Process {
                         let notifications = socket.lock().close();
                         notifications.deliver_deferred();
                     }
-                    FdKind::FifoRead(path, buffer, _) => {
-                        crate::ipc::fifo::close_fifo_read(&path);
+                    FdKind::FifoRead(_, buffer, entry) => {
+                        crate::ipc::fifo::close_fifo_read(&entry);
                         // #919/P-2: deliver via the PM-safe deferred path
                         // (see the PipeRead arm above).
                         let notifications = buffer.lock().close_read();
                         notifications.deliver_deferred();
                     }
-                    FdKind::FifoWrite(path, buffer, _) => {
-                        crate::ipc::fifo::close_fifo_write(&path);
+                    FdKind::FifoWrite(_, buffer, entry) => {
+                        crate::ipc::fifo::close_fifo_write(&entry);
                         // #919/P-2: no new-writer notification here either;
                         // see the PipeWrite arm above.
                         let _should_notify = buffer.lock().close_write();
@@ -717,15 +717,15 @@ impl Process {
                         let notifications = socket.lock().close();
                         notifications.deliver_deferred();
                     }
-                    FdKind::FifoRead(path, buffer, _) => {
-                        crate::ipc::fifo::close_fifo_read(&path);
+                    FdKind::FifoRead(_, buffer, entry) => {
+                        crate::ipc::fifo::close_fifo_read(&entry);
                         // #919/P-2: deliver via the PM-safe deferred path
                         // (see the PipeRead arm above).
                         let notifications = buffer.lock().close_read();
                         notifications.deliver_deferred();
                     }
-                    FdKind::FifoWrite(path, buffer, _) => {
-                        crate::ipc::fifo::close_fifo_write(&path);
+                    FdKind::FifoWrite(_, buffer, entry) => {
+                        crate::ipc::fifo::close_fifo_write(&entry);
                         // #919/P-2: no new-writer notification here either;
                         // see the PipeWrite arm above.
                         let _should_notify = buffer.lock().close_write();

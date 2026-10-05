@@ -44,8 +44,8 @@ impl Credentials {
 
     pub fn permits(&self, inode: &Ext2Inode, wanted: u32) -> bool {
         if self.euid == 0 {
-            // Linux policy: root still needs an execute bit on a regular file.
-            return wanted & 1 == 0 || !inode.is_file() || inode.permissions() & 0o111 != 0;
+            // Linux policy: root needs an execute bit on any non-directory inode.
+            return wanted & 1 == 0 || inode.is_dir() || inode.permissions() & 0o111 != 0;
         }
         let mode = inode.permissions() as u32;
         let granted = if self.euid == inode.uid() {

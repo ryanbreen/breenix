@@ -450,14 +450,15 @@ impl Ext2Fs {
     }
 
     /// Raw writeback bypasses cache overlays and size transitions. The
-    /// snapshot is clipped to EOF, so this never extends the inode.
+    /// snapshot is clipped to EOF, so this never extends the inode. Writeback
+    /// has no writer credentials and conservatively strips execution privilege.
     pub(crate) fn write_mapped_range(
         &mut self,
         ino: u32,
         offset: u64,
         bytes: &[u8],
     ) -> Result<usize, &'static str> {
-        self.write_file_range_disk(ino, offset, bytes, false)
+        self.write_file_range_disk(ino, offset, bytes, true)
     }
 
     /// Write data to a file at the specified offset
@@ -529,7 +530,10 @@ impl Ext2Fs {
             return Err("Not a regular file");
         }
 
-        if unprivileged { inode.i_mode &= !0o6000; }
+        if unprivileged {
+            let kill = 0o4000 | if inode.i_mode & 0o0010 != 0 { 0o2000 } else { 0 };
+            inode.i_mode &= !kill;
+        }
 
         // Allocation updates the group counters. Publish their aggregate and
         // the descriptors once per write, including partial allocation failure.
@@ -757,7 +761,10 @@ impl Ext2Fs {
         if !inode.is_file() || length > self.max_file_size() {
             return Err("Invalid file size or type");
         }
-        if unprivileged { inode.i_mode &= !0o6000; }
+        if unprivileged {
+            let kill = 0o4000 | if inode.i_mode & 0o0010 != 0 { 0o2000 } else { 0 };
+            inode.i_mode &= !kill;
+        }
         if length < inode.size() {
             // Publish EOF before modifying any content that used to be visible.
             let mut smaller = inode;
@@ -1558,6 +1565,10 @@ impl Ext2Fs {
     /// * `Ok(())` - Symlink was created successfully
     /// * `Err(msg)` - Error message
     pub fn create_symlink(&mut self, target: &str, linkpath: &str) -> Result<(), &'static str> {
+        self.create_symlink_as(target, linkpath, 0, 0)
+    }
+
+    pub fn create_symlink_as(&mut self, target: &str, linkpath: &str, uid: u32, gid: u32) -> Result<(), &'static str> {
         // linkpath must be absolute
         if !linkpath.starts_with('/') {
             return Err("Path must be absolute");
@@ -1610,6 +1621,7 @@ impl Ext2Fs {
 
         // Create the new symlink inode
         let mut new_inode = Ext2Inode::new_symlink(target);
+        new_inode.set_owner(uid, gid);
 
         // If target is > 60 bytes, we need to allocate a data block
         if target.len() > 60 {

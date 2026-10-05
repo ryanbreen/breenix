@@ -25,24 +25,19 @@ pub(crate) fn directory(fd: i32) -> Result<namei::WorkingDir, u64> {
     let FdKind::Directory(dir) = kind else {
         return Err(ENOTDIR as u64);
     };
-    let (ino, mount_id) = {
-        let dir = dir.lock();
-        (dir.inode_num as u32, dir.mount_id)
-    };
-    let mount = if ext2::home_mount_id() == Some(mount_id) {
+    let handle = dir.lock().handle.clone();
+    let mount = if ext2::home_mount_id() == Some(handle.object.mount.mount_id) {
         namei::Mount::Home
     } else {
         namei::Mount::Root
     };
     let guard = mount.read();
-    let fs = guard
-        .as_ref()
-        .filter(|fs| fs.mount_id == mount_id)
-        .ok_or(EIO as u64)?;
-    let inode = fs.read_inode(ino).map_err(|_| EIO as u64)?;
-    let dir = fs
-        .pin_loaded_inode(ino, inode.size())
-        .map_err(|_| EIO as u64)?;
+    let fs = guard.as_ref().ok_or(EIO as u64)?;
+    let ino = handle.verify(fs).map_err(|_| EIO as u64)?;
+    if !fs.read_inode(ino).map_err(|_| EIO as u64)?.is_dir() {
+        return Err(ENOTDIR as u64);
+    }
+    let dir = handle;
     Ok(namei::WorkingDir::Ext2 { mount, dir })
 }
 
@@ -107,8 +102,8 @@ fn apply(inode: &mut ext2::Ext2Inode, change: Change, cred: &Credentials) -> Res
                 if group == u32::MAX { gid } else { group },
             );
             // Breenix clears both execution privilege bits on regular files
-            // even for root. For other types an unprivileged change clears them.
-            if inode.is_file() || cred.euid != 0 {
+            // even for root. Directories retain SGID for group inheritance.
+            if !inode.is_dir() && (inode.is_file() || cred.euid != 0) {
                 inode.i_mode &= !0o6000;
             }
         }
@@ -137,9 +132,10 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
         Ok(path) => path,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    if empty && path.is_empty() {
+    if empty && path.is_empty() && fd != AT_FDCWD {
         return by_fd(fd, change);
     }
+    let path = if empty && path.is_empty() { "." } else { path.as_str() };
     let cred = Credentials::current(false);
     let resolved = match resolve_at(fd, &path, follow, &cred) {
         Ok(r) => r,
@@ -183,20 +179,19 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             update(fs, ino, change, &cred)
         }
         FdKind::Directory(dir) => {
-            let (ino, mount_id) = {
-                let dir = dir.lock();
-                (dir.inode_num as u32, dir.mount_id)
+            let handle = dir.lock().handle.clone();
+            let mut guard = match ext2::write_mount(handle.object.mount) {
+                Ok(g) => g,
+                Err(_) => return SyscallResult::Err(EIO as u64),
             };
-            let mount = if ext2::home_mount_id() == Some(mount_id) {
-                namei::Mount::Home
-            } else {
-                namei::Mount::Root
+            let Some(fs) = guard.as_mut() else {
+                return SyscallResult::Err(EIO as u64);
             };
-            let mut guard = mount.write();
-            match guard.as_mut().filter(|fs| fs.mount_id == mount_id) {
-                Some(fs) => update(fs, ino, change, &cred),
-                None => SyscallResult::Err(EIO as u64),
-            }
+            let ino = match handle.verify(fs) {
+                Ok(ino) => ino,
+                Err(_) => return SyscallResult::Err(EIO as u64),
+            };
+            update(fs, ino, change, &cred)
         }
         FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) => {
             fifo(&entry, change, &cred)
