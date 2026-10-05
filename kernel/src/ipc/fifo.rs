@@ -36,6 +36,13 @@ pub struct FifoEntry {
     pub readers: usize,
     /// Number of processes that have opened for writing
     pub writers: usize,
+    /// Opens for reading since creation. A blocked writer waits for this to
+    /// move rather than for `readers` to be non-zero, so a reader that opens
+    /// and closes again before the writer runs still completes its open
+    /// (Linux's `pipe->r_counter`).
+    pub reader_opens: u64,
+    /// Opens for writing since creation; see `reader_opens`.
+    pub writer_opens: u64,
     /// Threads waiting to open for reading (waiting for writer)
     pub read_waiters: Vec<u64>,
     /// Threads waiting to open for writing (waiting for reader)
@@ -53,6 +60,8 @@ impl FifoEntry {
             buffer: None,
             readers: 0,
             writers: 0,
+            reader_opens: 0,
+            writer_opens: 0,
             read_waiters: Vec::new(),
             write_waiters: Vec::new(),
             mode,
@@ -91,31 +100,27 @@ impl FifoEntry {
     /// Add a reader and wake any waiting writers
     pub fn add_reader(&mut self) {
         self.readers += 1;
+        self.reader_opens = self.reader_opens.wrapping_add(1);
         // Wake writers waiting for a reader
         let waiters: Vec<u64> = self.write_waiters.drain(..).collect();
-        #[cfg(target_arch = "x86_64")]
         for tid in waiters {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
         }
-        #[cfg(target_arch = "aarch64")]
-        let _ = waiters; // On ARM64 we don't have a scheduler yet
     }
 
     /// Add a writer and wake any waiting readers
     pub fn add_writer(&mut self) {
         self.writers += 1;
+        self.writer_opens = self.writer_opens.wrapping_add(1);
         // Wake readers waiting for a writer
         let waiters: Vec<u64> = self.read_waiters.drain(..).collect();
-        #[cfg(target_arch = "x86_64")]
         for tid in waiters {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
         }
-        #[cfg(target_arch = "aarch64")]
-        let _ = waiters; // On ARM64 we don't have a scheduler yet
     }
 
     /// Remove a reader
@@ -147,13 +152,11 @@ impl FifoEntry {
     }
 
     /// Remove thread from read waiters
-    #[allow(dead_code)] // Part of FifoEntry public API for waiter management
     pub fn remove_read_waiter(&mut self, tid: u64) {
         self.read_waiters.retain(|&t| t != tid);
     }
 
     /// Remove thread from write waiters
-    #[allow(dead_code)] // Part of FifoEntry public API for waiter management
     pub fn remove_write_waiter(&mut self, tid: u64) {
         self.write_waiters.retain(|&t| t != tid);
     }
@@ -226,8 +229,9 @@ impl FifoRegistry {
 pub enum FifoOpenResult {
     /// FIFO opened successfully, here's the buffer
     Ready(Arc<Mutex<PipeBuffer>>),
-    /// Need to block waiting for the other end
-    Block,
+    /// Need to block waiting for the other end. Carries the other end's
+    /// open count when the caller blocked; the open completes once it moves.
+    Block(u64),
     /// Error occurred
     Error(i32),
 }
@@ -264,7 +268,7 @@ pub fn open_fifo_read(entry_arc: &Arc<Mutex<FifoEntry>>, nonblock: bool) -> Fifo
             if let Some(tid) = crate::task::scheduler::current_thread_id() {
                 entry.add_read_waiter(tid);
             }
-            FifoOpenResult::Block
+            FifoOpenResult::Block(entry.writer_opens)
         }
     })
 }
@@ -303,39 +307,99 @@ pub fn open_fifo_write(entry_arc: &Arc<Mutex<FifoEntry>>, nonblock: bool) -> Fif
             if let Some(tid) = crate::task::scheduler::current_thread_id() {
                 entry.add_write_waiter(tid);
             }
-            FifoOpenResult::Block
+            FifoOpenResult::Block(entry.reader_opens)
         }
     })
 }
 
-/// Complete a blocked FIFO open after being woken
+/// Re-check a blocked FIFO open and, if no partner has opened the other end
+/// since the caller blocked, register the caller as waiting for it again.
 ///
-/// Returns the buffer if now ready, or Block if still waiting
-pub fn complete_fifo_open(entry_arc: &Arc<Mutex<FifoEntry>>, for_write: bool) -> FifoOpenResult {
-    // CRITICAL: Disable interrupts during lock acquisition to prevent
-    // preemption while holding the lock. This avoids deadlock when
-    // both parent and child try to access the same FIFO.
+/// The open completes once the other end's open count has moved past
+/// `partner_opens_seen` (from `FifoOpenResult::Block`), as Linux's
+/// `wait_for_partner` does: the partner may already have closed again by
+/// the time the opener runs, and the opener then reads EOF or gets EPIPE
+/// rather than waiting for another partner. A blocked open can also be
+/// woken by something other than a partner -- a signal, or a wake left over
+/// from an earlier wait of the same thread -- and then waits again, keeping
+/// the reference it took in `open_fifo_read`/`open_fifo_write`. The check
+/// and the registration share the entry lock, so an arrival cannot fall
+/// between them.
+pub fn recheck_fifo_open(
+    entry_arc: &Arc<Mutex<FifoEntry>>,
+    for_write: bool,
+    partner_opens_seen: u64,
+) -> FifoOpenResult {
     Cpu::without_interrupts(|| {
-        let entry = entry_arc.lock();
-
-        // Check if the other end is now present
-        if for_write {
-            if entry.readers > 0 {
-                if let Some(ref buffer) = entry.buffer {
-                    return FifoOpenResult::Ready(buffer.clone());
-                }
-            }
+        let mut entry = entry_arc.lock();
+        let partner_opened = if for_write {
+            entry.readers > 0 || entry.reader_opens != partner_opens_seen
         } else {
-            if entry.writers > 0 {
-                if let Some(ref buffer) = entry.buffer {
-                    return FifoOpenResult::Ready(buffer.clone());
-                }
+            entry.writers > 0 || entry.writer_opens != partner_opens_seen
+        };
+        if partner_opened {
+            if let Some(ref buffer) = entry.buffer {
+                return FifoOpenResult::Ready(buffer.clone());
             }
         }
-
-        // Still waiting
-        FifoOpenResult::Block
+        if let Some(tid) = crate::task::scheduler::current_thread_id() {
+            if for_write {
+                entry.add_write_waiter(tid);
+            } else {
+                entry.add_read_waiter(tid);
+            }
+        }
+        FifoOpenResult::Block(partner_opens_seen)
     })
+}
+
+/// A FIFO open that holds the reader or writer reference it took in
+/// `open_fifo_read`/`open_fifo_write` but has no descriptor yet: it is
+/// waiting for the other end, or about to install its descriptor.
+///
+/// A blocked opener is recorded on its process row
+/// (`Process::pending_fifo_opens`) for as long as it waits, because a
+/// SIGKILL terminates a parked thread without returning through the open;
+/// `process::exit_process_and_retire` then gives the reference back. Exactly
+/// one side releases it: whoever takes the record off the row under
+/// PROCESS_MANAGER, the opener before it installs its descriptor or abandons
+/// the open, or the exit. A missing record means the exit already did.
+pub struct PendingFifoOpen {
+    /// The opening thread, registered as a waiter on the entry.
+    pub tid: u64,
+    pub entry: Arc<Mutex<FifoEntry>>,
+    pub for_write: bool,
+}
+
+/// Give back the reference an open took when it ends without a descriptor:
+/// interrupted by a signal, killed while it waited, or refused a descriptor.
+/// Without this the abandoned opener stays counted: a reader that later opens
+/// sees a writer that will never write and blocks in read() instead of
+/// reading EOF.
+///
+/// Must not be called with PROCESS_MANAGER held: the close notifications are
+/// delivered inline.
+pub fn abandon_fifo_open(open: &PendingFifoOpen) {
+    let buffer = Cpu::without_interrupts(|| {
+        let mut entry = open.entry.lock();
+        if open.for_write {
+            entry.remove_write_waiter(open.tid);
+            entry.remove_writer();
+        } else {
+            entry.remove_read_waiter(open.tid);
+            entry.remove_reader();
+        }
+        entry.buffer.clone()
+    });
+    if let Some(buffer) = buffer {
+        if open.for_write {
+            let notifications = buffer.lock().close_write();
+            notifications.deliver();
+        } else {
+            let notifications = buffer.lock().close_read();
+            notifications.deliver();
+        }
+    }
 }
 
 /// Close a FIFO read end

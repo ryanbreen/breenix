@@ -290,6 +290,12 @@ pub struct Process {
     /// File descriptor table for this process
     pub fd_table: FdTable,
 
+    /// Blocking FIFO opens of this row's thread that hold a reader or writer
+    /// reference but no descriptor yet. `exit_process_and_retire` gives them
+    /// back, since a SIGKILL does not return the parked opener through its
+    /// open. See `PendingFifoOpen`.
+    pub pending_fifo_opens: Vec<crate::ipc::fifo::PendingFifoOpen>,
+
     /// Alarm deadline (tick count when SIGALRM should be delivered)
     pub alarm_deadline: Option<u64>,
 
@@ -387,6 +393,7 @@ impl Process {
             mmap_hint: crate::memory::vma::MMAP_REGION_END,
             signals: SignalState::default(),
             fd_table: FdTable::new(),
+            pending_fifo_opens: Vec::new(),
             alarm_deadline: None,
             itimers: crate::signal::IntervalTimers::default(),
             thread_group_id: None,
@@ -529,6 +536,20 @@ impl Process {
         if let Some(ref mut thread) = self.main_thread {
             thread.set_terminated();
         }
+    }
+
+    /// Take the record of `tid`'s blocked open of `entry` out of this row.
+    /// `None` means the row's exit already gave its reference back.
+    pub fn take_pending_fifo_open(
+        &mut self,
+        tid: u64,
+        entry: &alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>,
+    ) -> Option<crate::ipc::fifo::PendingFifoOpen> {
+        let index = self
+            .pending_fifo_opens
+            .iter()
+            .position(|open| open.tid == tid && alloc::sync::Arc::ptr_eq(&open.entry, entry))?;
+        Some(self.pending_fifo_opens.swap_remove(index))
     }
 
     /// This row is terminating (POSIX fcntl record locks). A thread killed

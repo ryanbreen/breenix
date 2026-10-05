@@ -409,6 +409,19 @@ fn sys_open_write_path(
     Ok((ino, ft, is_dir, is_reg, mid, handle))
 }
 
+/// Whether the calling thread's descriptor table has a free slot.
+fn current_fd_table_has_free_slot() -> bool {
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return false;
+    };
+    crate::process::with_process_manager(|manager| {
+        manager
+            .find_process_by_thread(thread_id)
+            .is_some_and(|(_, process)| process.fd_table.has_free_slot())
+    })
+    .unwrap_or(false)
+}
+
 /// Helper: sys_open read path — works on any Ext2Fs instance.
 fn sys_open_read_path(
     fs: &crate::fs::ext2::Ext2Fs,
@@ -521,6 +534,14 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     // Read before taking a filesystem lock; the process manager is not
     // acquired under one.
     let cred = current_file_credentials();
+
+    // An open that creates or truncates must not change the disk and then
+    // fail with EMFILE. A row's descriptor table is filled only by its own
+    // thread, so a slot free now is still free when the descriptor is
+    // installed below.
+    if needs_write && !current_fd_table_has_free_slot() {
+        return SyscallResult::Err(EMFILE as u64);
+    }
 
     let result = if needs_write {
         // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
@@ -1219,6 +1240,33 @@ fn align_up_8(value: usize) -> usize {
     (value + 7) & !7
 }
 
+/// Append one Linux dirent64 record (`d_ino`, `d_off`, `d_reclen`, `d_type`,
+/// NUL-terminated `d_name`, zero padding to 8 bytes) to a kernel buffer.
+/// getdents64 builds its records here and copies them out with
+/// `write_user_bytes`, so an unmapped, read-only or not-yet-grown user page
+/// is EFAULT or a demand fault rather than a kernel store into user memory.
+fn push_dirent64(
+    records: &mut alloc::vec::Vec<u8>,
+    ino: u64,
+    next: i64,
+    d_type: u8,
+    name: &[u8],
+) {
+    let reclen = align_up_8(DIRENT64_HEADER_SIZE + name.len() + 1);
+    let start = records.len();
+    records.extend_from_slice(&ino.to_ne_bytes());
+    records.extend_from_slice(&next.to_ne_bytes());
+    records.extend_from_slice(&(reclen as u16).to_ne_bytes());
+    records.push(d_type);
+    records.extend_from_slice(name);
+    records.resize(start + reclen, 0);
+}
+
+/// Copy the records `push_dirent64` built to the user buffer at `dirp`.
+fn copy_dirents_to_user(dirp: u64, records: &[u8]) -> Result<(), u64> {
+    super::userptr::write_user_bytes(dirp, records.as_ptr(), records.len())
+}
+
 /// sys_getdents64 - Get directory entries
 ///
 /// Reads directory entries into a buffer in Linux dirent64 format.
@@ -1381,7 +1429,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     // byte offset into this directory's own records, so it can never read
     // another directory's bytes. Position 0 is the first record, `.`, so a
     // rewind replays `.` and `..`.
-    let buffer = dirp as *mut u8;
+    let mut records = alloc::vec::Vec::new();
     let buffer_size = count as usize;
     let mut bytes_written = 0usize;
     let mut new_position = start_position;
@@ -1406,42 +1454,14 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
             break;
         }
 
-        // Write entry to user buffer
-        // SAFETY: We've validated the buffer pointer and size
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // Write d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, entry.inode as u64);
-
-            // Write d_off (i64) at offset 8 - the position of the next record
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, positioned.next as i64);
-
-            // Write d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // Write d_type (u8) at offset 18
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = ext2_file_type_to_dt(entry.file_type);
-
-            // Write d_name (variable length, null-terminated) at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(entry.name.as_ptr(), d_name_ptr, name_len);
-            // Null terminator
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero-fill padding to maintain alignment
-            let padding_start = 19 + name_len + 1;
-            for i in padding_start..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, entry.inode as u64, positioned.next as i64, ext2_file_type_to_dt(entry.file_type), entry.name.as_bytes());
 
         bytes_written += reclen;
         new_position = positioned.next as u64;
+    }
+
+    if let Err(errno) = copy_dirents_to_user(dirp, &records) {
+        return SyscallResult::Err(errno);
     }
 
     // Update directory position
@@ -2655,7 +2675,7 @@ fn handle_devfs_getdents64(
 
     // Build entries: ".", "..", then each device
     // We treat position as entry index (0 = ".", 1 = "..", 2+ = devices)
-    let buffer = dirp as *mut u8;
+    let mut records = alloc::vec::Vec::new();
     let mut bytes_written = 0usize;
     let mut entry_index = 0u64;
     let mut new_position = start_position;
@@ -2680,35 +2700,7 @@ fn handle_devfs_getdents64(
             break;
         }
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, *inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18 - DT_DIR for . and ..
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = DT_DIR;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, *inode, (entry_index + 1) as i64, DT_DIR, name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
@@ -2734,39 +2726,15 @@ fn handle_devfs_getdents64(
             .map(|d| d.device_type.inode())
             .unwrap_or(0);
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18 - DT_CHR for character devices
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = DT_CHR;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(device_name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, inode, (entry_index + 1) as i64, DT_CHR, device_name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
         new_position = entry_index;
+    }
+
+    if let Err(errno) = copy_dirents_to_user(dirp, &records) {
+        return SyscallResult::Err(errno);
     }
 
     // Update directory position in the fd
@@ -2806,7 +2774,7 @@ fn handle_devpts_getdents64(
     let entries = devptsfs::list_entries();
 
     // Build entries: ".", "..", then each PTY slave
-    let buffer = dirp as *mut u8;
+    let mut records = alloc::vec::Vec::new();
     let mut bytes_written = 0usize;
     let mut entry_index = 0u64;
     let mut new_position = start_position;
@@ -2831,35 +2799,7 @@ fn handle_devpts_getdents64(
             break;
         }
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, *inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = *dtype;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, *inode, (entry_index + 1) as i64, *dtype, name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
@@ -2881,39 +2821,15 @@ fn handle_devpts_getdents64(
             break;
         }
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, entry.inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18 - DT_CHR for character devices
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = DT_CHR;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, entry.inode, (entry_index + 1) as i64, DT_CHR, name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
         new_position = entry_index;
+    }
+
+    if let Err(errno) = copy_dirents_to_user(dirp, &records) {
+        return SyscallResult::Err(errno);
     }
 
     // Update directory position in the fd
@@ -2971,7 +2887,7 @@ fn handle_procfs_getdents64(
     };
 
     // Build entries: ".", "..", then each entry
-    let buffer = dirp as *mut u8;
+    let mut records = alloc::vec::Vec::new();
     let mut bytes_written = 0usize;
     let mut entry_index = 0u64;
     let mut new_position = start_position;
@@ -2996,35 +2912,7 @@ fn handle_procfs_getdents64(
             break;
         }
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, *inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18 - DT_DIR for . and ..
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = DT_DIR;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, *inode, (entry_index + 1) as i64, DT_DIR, name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
@@ -3066,39 +2954,15 @@ fn handle_procfs_getdents64(
             }
         };
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = dtype;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(entry_name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, inode, (entry_index + 1) as i64, dtype, entry_name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
         new_position = entry_index;
+    }
+
+    if let Err(errno) = copy_dirents_to_user(dirp, &records) {
+        return SyscallResult::Err(errno);
     }
 
     // Update directory position in the fd
@@ -3285,10 +3149,12 @@ fn handle_fifo_open(
     flags: u32,
     entry: alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>,
 ) -> SyscallResult {
-    use super::errno::EMFILE;
-    use crate::ipc::fd::{status_flags, FdKind, FileDescriptor};
-    use crate::ipc::fifo::{complete_fifo_open, open_fifo_read, open_fifo_write, FifoOpenResult};
-    use alloc::string::String;
+    use super::errno::EINTR;
+    use crate::ipc::fd::status_flags;
+    use crate::ipc::fifo::{
+        abandon_fifo_open, open_fifo_read, open_fifo_write, recheck_fifo_open, FifoOpenResult,
+        PendingFifoOpen,
+    };
 
     let access_mode = flags & 3; // O_RDONLY=0, O_WRONLY=1, O_RDWR=2
     let nonblock = (flags & status_flags::O_NONBLOCK) != 0;
@@ -3304,6 +3170,21 @@ fn handle_fifo_open(
     // by opening both read and write ends. For simplicity, treat it as read.
     let for_write = access_mode == O_WRONLY;
 
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(tid) => tid,
+        None => return SyscallResult::Err(3), // ESRCH
+    };
+
+    // From the moment the open takes its reader or writer reference until a
+    // descriptor owns it or the row records it (`PendingFifoOpen`), a SIGKILL
+    // that terminated this thread would leave the reference counted for
+    // good. Inside a kill-custody section the kill is left pending instead,
+    // and ends the wait below.
+    let Some(custody) = crate::task::thread::KillCustody::try_enter() else {
+        // A kill has claimed this thread; it takes no reference.
+        return SyscallResult::Err(EINTR as u64);
+    };
+
     // Attempt to open the FIFO
     let result = if for_write {
         open_fifo_write(&entry, nonblock)
@@ -3313,57 +3194,33 @@ fn handle_fifo_open(
 
     match result {
         FifoOpenResult::Ready(buffer) => {
-            // FIFO is ready - create fd
-            let kind = if for_write {
-                FdKind::FifoWrite(String::from(path), buffer, entry)
-            } else {
-                FdKind::FifoRead(String::from(path), buffer, entry)
+            let open = PendingFifoOpen {
+                tid: thread_id,
+                entry,
+                for_write,
             };
-
-            let fd_entry = FileDescriptor::opened(kind, flags);
-
-            // Allocate fd in current process
-            let thread_id = match crate::task::scheduler::current_thread_id() {
-                Some(tid) => tid,
-                None => return SyscallResult::Err(3), // ESRCH
-            };
-
-            let mut manager_guard = crate::process::manager();
-            let manager = match manager_guard.as_mut() {
-                Some(m) => m,
-                None => return SyscallResult::Err(3), // ESRCH
-            };
-
-            let (_, process) = match manager.find_process_by_thread_mut(thread_id) {
-                Some(p) => p,
-                None => return SyscallResult::Err(3), // ESRCH
-            };
-
-            match process.fd_table.alloc_with_entry(fd_entry) {
-                Ok(fd) => {
-                    log::info!(
-                        "handle_fifo_open: opened FIFO {} as fd {} ({})",
-                        path,
-                        fd,
-                        if for_write { "write" } else { "read" }
-                    );
-                    SyscallResult::Ok(fd as u64)
-                }
-                Err(_) => {
-                    log::error!("handle_fifo_open: too many open files");
-                    SyscallResult::Err(EMFILE as u64)
-                }
-            }
+            let result = install_fifo_descriptor(path, flags, open, buffer, false);
+            drop(custody);
+            result
         }
-        FifoOpenResult::Block => {
+        FifoOpenResult::Block(partner_opens_seen) => {
             // Need to block waiting for the other end
             // Following the TCP blocking pattern with proper HLT loop
-            let path_owned = String::from(path);
-
-            let thread_id = match crate::task::scheduler::current_thread_id() {
-                Some(tid) => tid,
-                None => return SyscallResult::Err(3), // ESRCH
-            };
+            let mut open = Some(PendingFifoOpen {
+                tid: thread_id,
+                entry: entry.clone(),
+                for_write,
+            });
+            crate::process::with_process_manager(|manager| {
+                if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    process.pending_fifo_opens.extend(open.take());
+                }
+            });
+            if let Some(open) = open {
+                abandon_fifo_open(&open);
+                return SyscallResult::Err(3); // ESRCH
+            }
+            drop(custody);
 
             log::debug!(
                 "handle_fifo_open: thread {} blocking for {} end on {}",
@@ -3372,42 +3229,49 @@ fn handle_fifo_open(
                 path
             );
 
-            // Block the current thread AND set blocked_in_syscall flag.
-            // CRITICAL: Setting blocked_in_syscall is essential because:
-            // 1. The thread will enter a kernel-mode HLT loop below
-            // 2. If a context switch happens while in HLT, the scheduler sees
-            //    from_userspace=false (kernel mode) but blocked_in_syscall tells
-            //    it to save/restore kernel context, not userspace context
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current_in_syscall();
-            });
-
-            // CRITICAL RACE CONDITION FIX:
-            // Check if other end opened AGAIN after setting Blocked state.
-            // The other end might have opened between:
-            //   - when open_fifo_read/write returned Block
-            //   - when we set thread state to Blocked
-            // If other end opened during that window, add_reader/add_writer
-            // would have tried to wake us but unblock() would have done nothing.
-            let other_end_ready =
-                Cpu::without_interrupts(|| match complete_fifo_open(&entry, for_write) {
-                    FifoOpenResult::Ready(_) => true,
-                    _ => false,
-                });
-            if other_end_ready {
-                log::debug!(
-                    "FIFO: Thread {} caught race - other end opened during block setup",
-                    thread_id
-                );
-                // Other end opened during the race window - unblock and complete
+            // A wake only means "look again". The open completes once a
+            // partner has opened the other end since we blocked, even if it
+            // has closed again by the time we run (`recheck_fifo_open`). A
+            // signal, or a wake left over from an earlier wait of this thread
+            // (a block-request completion buffered for it after it had
+            // already seen the request finish), ends the HLT loop below with
+            // no partner yet; the open then registers again and keeps
+            // waiting. It used to fail with EAGAIN in both cases while still
+            // counted as a reader or writer, so the peer that opened later
+            // saw a partner that would never do I/O.
+            let buffer = loop {
+                // Block the current thread AND set blocked_in_syscall flag.
+                // CRITICAL: Setting blocked_in_syscall is essential because:
+                // 1. The thread will enter a kernel-mode HLT loop below
+                // 2. If a context switch happens while in HLT, the scheduler sees
+                //    from_userspace=false (kernel mode) but blocked_in_syscall tells
+                //    it to save/restore kernel context, not userspace context
                 crate::task::scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = false;
-                        thread.set_ready();
-                    }
+                    sched.block_current_in_syscall();
                 });
-                // Fall through to complete the open below
-            } else {
+
+                // CRITICAL RACE CONDITION FIX:
+                // Check if other end opened AGAIN after setting Blocked state.
+                // The other end might have opened between:
+                //   - when the open (or the last recheck) returned Block
+                //   - when we set thread state to Blocked
+                // If other end opened during that window, add_reader/add_writer
+                // would have tried to wake us but unblock() would have done nothing.
+                if let FifoOpenResult::Ready(buffer) = recheck_fifo_open(&entry, for_write, partner_opens_seen) {
+                    log::debug!(
+                        "FIFO: Thread {} caught race - other end opened during block setup",
+                        thread_id
+                    );
+                    // Other end opened during the race window - unblock and complete
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.blocked_in_syscall = false;
+                            thread.set_ready();
+                        }
+                    });
+                    break buffer;
+                }
+
                 // CRITICAL: Re-enable preemption before entering blocking loop!
                 // The syscall handler called preempt_disable() at entry, but we need
                 // to allow timer interrupts to schedule other threads while we're blocked.
@@ -3426,6 +3290,19 @@ fn handle_fifo_open(
                             }
                         });
                         crate::per_cpu::preempt_disable();
+                        // Give the reference back unless the row's exit
+                        // already has.
+                        let pending = crate::process::with_process_manager(|manager| {
+                            manager
+                                .find_process_by_thread_mut(thread_id)
+                                .and_then(|(_, process)| {
+                                    process.take_pending_fifo_open(thread_id, &entry)
+                                })
+                        })
+                        .flatten();
+                        if let Some(open) = pending {
+                            abandon_fifo_open(&open);
+                        }
                         log::debug!(
                             "handle_fifo_open: Thread {} interrupted by signal (EINTR)",
                             thread_id
@@ -3467,57 +3344,107 @@ fn handle_fifo_open(
                 #[cfg(target_arch = "aarch64")]
                 {}
                 crate::task::scheduler::check_and_clear_need_resched();
-            }
 
-            // Now complete the FIFO open
-            match complete_fifo_open(&entry, for_write) {
-                FifoOpenResult::Ready(buffer) => {
-                    // Now ready - create fd
-                    let kind = if for_write {
-                        FdKind::FifoWrite(path_owned.clone(), buffer, entry)
-                    } else {
-                        FdKind::FifoRead(path_owned.clone(), buffer, entry)
-                    };
-
-                    let fd_entry = FileDescriptor::opened(kind, flags);
-
-                    let mut manager_guard = crate::process::manager();
-                    let manager = match manager_guard.as_mut() {
-                        Some(m) => m,
-                        None => return SyscallResult::Err(3),
-                    };
-
-                    let (_, process) = match manager.find_process_by_thread_mut(thread_id) {
-                        Some(p) => p,
-                        None => return SyscallResult::Err(3),
-                    };
-
-                    match process.fd_table.alloc_with_entry(fd_entry) {
-                        Ok(fd) => {
-                            log::info!(
-                                "handle_fifo_open: opened FIFO {} as fd {} ({})",
-                                path_owned,
-                                fd,
-                                if for_write { "write" } else { "read" }
-                            );
-                            SyscallResult::Ok(fd as u64)
-                        }
-                        Err(_) => SyscallResult::Err(EMFILE as u64),
-                    }
+                if let FifoOpenResult::Ready(buffer) = recheck_fifo_open(&entry, for_write, partner_opens_seen) {
+                    break buffer;
                 }
-                FifoOpenResult::Block => {
-                    // Should not happen after being woken
-                    log::error!("FIFO: Thread {} still blocked after wake!", thread_id);
-                    SyscallResult::Err(11) // EAGAIN
-                }
-                FifoOpenResult::Error(errno) => SyscallResult::Err(errno as u64),
-            }
+            };
+
+            let open = PendingFifoOpen {
+                tid: thread_id,
+                entry,
+                for_write,
+            };
+            install_fifo_descriptor(path, flags, open, buffer, true)
         }
         FifoOpenResult::Error(errno) => {
+            // Refused before taking a reference.
+            drop(custody);
             log::debug!("handle_fifo_open: error {}", errno);
             SyscallResult::Err(errno as u64)
         }
     }
+}
+
+/// Install the descriptor for a FIFO open that holds its reader or writer
+/// reference, or give the reference back if no descriptor can be installed.
+///
+/// `recorded` is true for an open that blocked: its `PendingFifoOpen` record
+/// is on the row, and is taken off in the same PROCESS_MANAGER hold that
+/// installs the descriptor, so the row's exit finds either the record or the
+/// descriptor and releases the reference exactly once. A missing record means
+/// the exit got there first. An unrecorded open must be called inside
+/// a kill-custody section.
+fn install_fifo_descriptor(
+    path: &str,
+    flags: u32,
+    open: crate::ipc::fifo::PendingFifoOpen,
+    buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
+    recorded: bool,
+) -> SyscallResult {
+    use super::errno::{EINTR, EMFILE};
+    use crate::ipc::fd::{FdKind, FileDescriptor};
+    use alloc::string::String;
+
+    enum Install {
+        Installed(i32),
+        Released,
+        Refused(u64),
+    }
+
+    // A recorded open is outside any custody section while it waits. Once
+    // its record is off the row and before the descriptor is installed, a
+    // kill must not take it, or nothing would give the reference back.
+    let custody = if recorded {
+        match crate::task::thread::KillCustody::try_enter() {
+            Some(custody) => Some(custody),
+            // A kill has claimed this thread; the row's exit gives the
+            // reference back through the record.
+            None => return SyscallResult::Err(EINTR as u64),
+        }
+    } else {
+        None
+    };
+
+    let kind = if open.for_write {
+        FdKind::FifoWrite(String::from(path), buffer, open.entry.clone())
+    } else {
+        FdKind::FifoRead(String::from(path), buffer, open.entry.clone())
+    };
+    let fd_entry = FileDescriptor::opened(kind, flags);
+
+    let outcome = crate::process::with_process_manager(|manager| {
+        let Some((_, process)) = manager.find_process_by_thread_mut(open.tid) else {
+            return Install::Refused(3); // ESRCH
+        };
+        if recorded && process.take_pending_fifo_open(open.tid, &open.entry).is_none() {
+            return Install::Released;
+        }
+        match process.fd_table.alloc_with_entry(fd_entry) {
+            Ok(fd) => Install::Installed(fd),
+            Err(_) => Install::Refused(EMFILE as u64),
+        }
+    })
+    .unwrap_or(Install::Refused(3)); // ESRCH
+
+    let result = match outcome {
+        Install::Installed(fd) => {
+            log::info!(
+                "handle_fifo_open: opened FIFO {} as fd {} ({})",
+                path,
+                fd,
+                if open.for_write { "write" } else { "read" }
+            );
+            SyscallResult::Ok(fd as u64)
+        }
+        Install::Released => SyscallResult::Err(EINTR as u64),
+        Install::Refused(errno) => {
+            crate::ipc::fifo::abandon_fifo_open(&open);
+            SyscallResult::Err(errno)
+        }
+    };
+    drop(custody);
+    result
 }
 
 /// newfstatat(dirfd, pathname, statbuf, flags) - Get file status by path

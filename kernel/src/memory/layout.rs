@@ -535,30 +535,28 @@ const fn is_valid_user_stack_range(addr: u64, last: u64) -> bool {
         && last < USER_STACK_REGION_END
 }
 
-// aarch64: there is no demand-paged stack growth on this arch (no
-// `handle_stack_growth` equivalent exists in `arch_impl::aarch64`) --
-// `kernel/src/process/manager.rs`'s ARM64 process-creation paths
-// allocate and map a single, fully-backed `USER_STACK_SIZE` (64 KiB) stack
-// per process, with its top *always* pinned at the fixed address
+// aarch64: `kernel/src/process/manager.rs`'s ARM64 process-creation and
+// exec paths map a single, fully-backed `USER_STACK_SIZE` (64 KiB) stack per
+// process, with its top *always* pinned at the fixed address
 // USER_STACK_REGION_START (never ascending the way x86_64's does). This
 // pin does NOT rest on "no two stacks are ever co-resident in one address
 // space" -- a CLONE_VM thread genuinely does share its parent's address
 // space and page table. It rests on `sys_clone` taking a caller-supplied
 // `child_stack` (`syscall/clone.rs:59,155,164`), which comes from the
 // mmap region and is covered by that arm instead -- every *non-CLONE_VM*
-// process still gets its own page table with its own single 64 KiB
-// window at this fixed address. USER_STACK_SIZE is
-// therefore the true, complete, exact extent for that window -- not MAX_USER_STACK_SIZE
-// (that constant is x86_64's growth cap; it does not describe anything
-// aarch64's allocator ever actually maps). Before this, the aarch64 arm
-// used a hardcoded, unexplained "1 MiB for multiple stacks" literal that
-// matched neither number and was too narrow for a real process's stack
-// once this predicate became load-bearing on the copy_from_user hot path
-// (#729 B4-a).
+// process still gets its own page table with its own single window at
+// this fixed address. That window grows on demand, as x86_64's does:
+// `arch_impl::aarch64::exception`'s `handle_stack_growth_arm64` maps
+// pages down to, and refuses to grow past,
+// `USER_STACK_REGION_START - MAX_USER_STACK_SIZE`, so that is this
+// predicate's floor too -- a syscall buffer in a grown stack must be
+// accepted. (Before the growth handler existed the floor was
+// `USER_STACK_SIZE`, the fixed window's exact extent; before that, a
+// hardcoded "1 MiB for multiple stacks" literal, #729 B4-a.)
 #[cfg(target_arch = "aarch64")]
 #[inline]
 const fn is_valid_user_stack_range(addr: u64, last: u64) -> bool {
-    let region_bottom = USER_STACK_REGION_START.saturating_sub(USER_STACK_SIZE as u64);
+    let region_bottom = USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE);
     addr >= region_bottom
         && addr < USER_STACK_REGION_START
         && last >= region_bottom
@@ -668,7 +666,10 @@ const _: () = assert!(
 // (An earlier version of this note recorded only the first pair and stated
 // it reddened "only the non-empty assert" as a universal, without having
 // re-run it against the aarch64 target -- PR #744 review C1. It does not:
-// see the second bullet above.) The x86 stack and code/data acceptance
+// see the second bullet above.) Both pairs were measured while aarch64's
+// window bottom was `USER_STACK_SIZE` deep; since aarch64 stacks grow on
+// demand its bottom is `USER_STACK_REGION_START - MAX_USER_STACK_SIZE`,
+// so its own edge today is that address. The x86 stack and code/data acceptance
 // asserts remain sound by the same const-eval mechanism and the same
 // reasoning, but as of this commit no mutation has been run against them
 // specifically -- they are unverified by direct falsification, not yet
@@ -745,9 +746,9 @@ const _: () = assert!(
 // growth handler (`kernel/src/interrupts.rs::handle_stack_growth`) will
 // map down to exactly `USER_STACK_REGION_START - MAX_USER_STACK_SIZE`, and
 // the ascending allocator (`kernel/src/memory/stack.rs`) can hand out a
-// stack top up to `USER_STACK_REGION_END`. aarch64 has no growth handler --
-// every process's stack is the fixed, fully-mapped `USER_STACK_SIZE` window
-// pinned at `USER_STACK_REGION_START` (`kernel/src/process/manager.rs`).
+// stack top up to `USER_STACK_REGION_END`. aarch64's stack is pinned at
+// `USER_STACK_REGION_START` (`kernel/src/process/manager.rs`) and its
+// growth handler maps down to the same `MAX_USER_STACK_SIZE` floor.
 // This is the exact address class whose bottom end was too narrow and
 // refused every aarch64 process's first stack-adjacent access once this
 // predicate became load-bearing on the copy_from_user hot path.
@@ -772,10 +773,10 @@ const _: () = assert!(
 #[cfg(target_arch = "aarch64")]
 const _: () = assert!(
     is_valid_user_range(
-        USER_STACK_REGION_START - USER_STACK_SIZE as u64,
+        USER_STACK_REGION_START - MAX_USER_STACK_SIZE,
         1
     ),
-    "the bottom of the real aarch64 user stack extent (USER_STACK_SIZE) must be accepted"
+    "the deepest address the aarch64 stack growth handler will ever map must be accepted"
 );
 
 // === Compile-time Layout Assertions ===

@@ -443,6 +443,12 @@ impl FdTable {
         Err(24) // EMFILE - too many open files
     }
 
+    /// Whether a descriptor slot is free, so an open can fail with EMFILE
+    /// before it creates or truncates anything.
+    pub fn has_free_slot(&self) -> bool {
+        self.fds.iter().any(|slot| slot.is_none())
+    }
+
     /// Allocate a new file descriptor with a pre-configured FileDescriptor entry
     /// This allows setting flags at allocation time (used by pipe2)
     pub fn alloc_with_entry(&mut self, entry: FileDescriptor) -> Result<i32, i32> {

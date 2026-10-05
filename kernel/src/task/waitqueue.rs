@@ -305,6 +305,34 @@ fn in_interrupt_context() -> bool {
     }
 }
 
+/// Halt a current thread that has published a blocked state, giving the CPU
+/// to any thread that is ready to run.
+///
+/// x86 has no in-kernel `schedule()`: a blocked waiter halts as the current
+/// thread, and the timer tick switches it out only when `need_resched` is set
+/// (`per_cpu::can_schedule()` does not count `BlockedOnIO` as blocked). With
+/// the flag clear, a halted waiter can keep the CPU until its 50 ms quantum
+/// runs out while other threads are ready to run. On the testing kernel,
+/// with every filesystem test issuing virtio-blk requests at once, the disk
+/// completed a few requests per second while the CPU sat mostly idle and the
+/// request gate kept a queue of waiters; with this reschedule request the
+/// same boot completed its requests and its run queue drained.
+///
+/// Requesting a reschedule before the halt lets the next tick switch the
+/// waiter out, as a blocking `schedule()` would, and as the descriptor waits
+/// in `syscall::blocking_io` already do. A waiter with no other thread ready
+/// keeps the CPU and resumes the moment its wake arrives.
+#[cfg(not(target_arch = "aarch64"))]
+pub(crate) fn halt_blocked_current() {
+    let others_ready =
+        crate::task::scheduler::with_scheduler(|sched| sched.ready_queue_length() != 0)
+            .unwrap_or(false);
+    if others_ready {
+        crate::task::scheduler::yield_current();
+    }
+    crate::arch_halt_with_interrupts();
+}
+
 /// Sleep the current prepared waiter until the scheduler wake path makes it
 /// runnable again.
 ///
@@ -336,7 +364,7 @@ pub fn schedule_current_wait() {
             crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
         }
         #[cfg(not(target_arch = "aarch64"))]
-        crate::arch_halt_with_interrupts();
+        halt_blocked_current();
     }
 
     #[cfg(target_arch = "aarch64")]
