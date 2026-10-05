@@ -1084,6 +1084,21 @@ fn readdir_cookie_blocks() -> CaseResult {
         records.extend(batch);
         check(records.len() < 4096, "directory stream did not terminate")?;
     }
+    // The builder makes names 0..n, zero-padded to 200 digits, while 208 * i
+    // stays within three blocks, all linked to one file. Every one of them,
+    // dot and dot-dot appear exactly once with the inode stat gives them.
+    let n = (3 * block / 208 + 1) as usize;
+    let file_ino = stat(&format!("/test/dir-blocks/{:0200}", 0), false)?.st_ino;
+    let mut expected: Vec<(String, u64)> = (0..n).map(|i| (format!("{i:0200}"), file_ino)).collect();
+    expected.push((".".into(), fs::fstat(fd)?.st_ino));
+    expected.push(("..".into(), stat("/test", false)?.st_ino));
+    expected.sort();
+    let mut listed: Vec<(String, u64)> = records.iter().map(|(e, _)| (e.name.clone(), e.ino)).collect();
+    listed.sort();
+    check(
+        listed == expected,
+        &format!("listed {} entries, not the builder's {}", listed.len(), expected.len()),
+    )?;
     check(records[0].0.name == ".", "the first record is not dot")?;
     check(
         records.windows(2).all(|w| w[0].1 < w[1].1),
@@ -1103,32 +1118,42 @@ fn readdir_cookie_blocks() -> CaseResult {
             &format!("cookie {cookie} did not resume at entry {}", i + 1),
         )?;
     }
-    // A position inside a record resumes at a later whole record, never a
-    // partial one: inside the first record of each block, and of every
-    // eighth record.
+    // A position inside a record resumes at the first whole record after
+    // it, and reads nothing only inside the last record.
     for (i, (_, cookie)) in records.iter().enumerate() {
-        if i % 8 != 0 && cookie % block != 0 {
-            continue;
-        }
-        let got = entry_at(fd, cookie + 1)?;
+        let want = records.get(i + 2).map(|(e, _)| e);
         check(
-            got.is_none() || records[i + 1..].iter().take(2).any(|(e, _)| Some(e) == got.as_ref()),
-            &format!("position {} selected a partial record", cookie + 1),
+            entry_at(fd, cookie + 1)?.as_ref() == want,
+            &format!("position {} did not resume at entry {}", cookie + 1, i + 2),
         )?;
     }
     // A cookie from that directory, given to another, positions within the
-    // other's own records: past its end it reads nothing, and before it only
-    // its own entries.
+    // other's own records: at or before one of them it reads that record,
+    // and past the last record's start it reads nothing.
     let f = Tree::new()?;
-    f.file("own", b"")?;
+    let own_path = f.file("own", b"")?;
     let small = Directory::open(&f.root)?;
-    let own: Vec<String> = Directory::open(&f.root)?.all()?.into_iter().map(|e| e.name).collect();
+    let sfd = small.file.fd();
+    let mut identities = vec![
+        (".".to_string(), stat(&f.root, false)?.st_ino),
+        ("..".to_string(), stat("/tmp", false)?.st_ino),
+        ("own".to_string(), stat(&own_path, false)?.st_ino),
+    ];
+    identities.sort();
+    check(fs::lseek(sfd, 0, SEEK_SET)? == 0, "directory seek to 0 failed")?;
+    let own = dirents(sfd)?;
+    let mut own_listed: Vec<(String, u64)> = own.iter().map(|(e, _)| (e.name.clone(), e.ino)).collect();
+    own_listed.sort();
+    check(own_listed == identities, "the small directory's entries are not its own")?;
+    let starts: Vec<u64> = core::iter::once(0).chain(own.iter().map(|(_, c)| *c)).take(own.len()).collect();
     let last = records.last().unwrap().1;
-    check(entry_at(small.file.fd(), last)?.is_none(), "a foreign cookie read past the directory")?;
-    for (_, cookie) in records.iter().filter(|(_, c)| *c < block).step_by(2) {
-        if let Some(e) = entry_at(small.file.fd(), *cookie)? {
-            check(own.contains(&e.name), "a foreign cookie read another directory's entry")?;
-        }
+    check(entry_at(sfd, last)?.is_none(), "a foreign cookie read past the directory")?;
+    for (_, cookie) in records.iter().filter(|(_, c)| *c < block) {
+        let want = starts.iter().position(|s| s >= cookie).map(|k| &own[k].0);
+        check(
+            entry_at(sfd, *cookie)?.as_ref() == want,
+            &format!("foreign cookie {cookie} did not read the small directory's next record"),
+        )?;
     }
     Ok(())
 }
