@@ -602,6 +602,33 @@ pub fn working_dir(resolved: &Resolved) -> Result<WorkingDir, u64> {
     }
 }
 
+/// EACCES unless `cred` may search `dir`, as entering it as the working
+/// directory requires. A removed directory is checked by its inode.
+pub(crate) fn may_search(
+    dir: &WorkingDir,
+    cred: &super::permissions::Credentials,
+) -> Result<(), u64> {
+    let (mount, handle) = match dir {
+        WorkingDir::Virtual(_) => return Ok(()),
+        WorkingDir::Root => (Mount::Root, None),
+        WorkingDir::Ext2 { mount, dir } => (*mount, Some(dir)),
+    };
+    let mut held = Held(None);
+    let fs = held.fs(mount)?;
+    let ino = match handle {
+        Some(handle) => handle.verify(fs).map_err(|_| ENOENT as u64)?,
+        None => EXT2_ROOT_INO,
+    };
+    let inode = fs.read_inode(ino).map_err(|_| EIO as u64)?;
+    if !inode.is_dir() {
+        return Err(ENOTDIR as u64);
+    }
+    if !cred.permits(&inode, 1) {
+        return Err(crate::syscall::errno::EACCES as u64);
+    }
+    Ok(())
+}
+
 /// The physical pathname of a working directory, derived from the directory
 /// itself. ENOENT when it no longer has a name.
 pub fn working_dir_path(dir: &WorkingDir) -> Result<String, u64> {

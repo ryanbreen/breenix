@@ -3202,15 +3202,48 @@ pub fn sys_chdir(pathname: u64) -> SyscallResult {
 
     log::debug!("sys_chdir: path={:?}", resolved.path);
 
-    let dir = match crate::fs::namei::working_dir(&resolved) {
-        Ok(dir) => dir,
+    match crate::fs::namei::working_dir(&resolved) {
+        Ok(dir) => enter_working_dir(dir),
+        Err(errno) => SyscallResult::Err(errno),
+    }
+}
+
+/// sys_fchdir - Change current working directory to an open directory
+///
+/// # Errors
+/// * EBADF - `fd` is not an open descriptor
+/// * ENOTDIR - `fd` does not refer to a directory
+/// * EACCES - The caller may not search the directory
+pub fn sys_fchdir(fd: u64) -> SyscallResult {
+    use crate::fs::namei::WorkingDir;
+    use alloc::string::String;
+    let kind = match super::metadata::descriptor(fd as i32) {
+        Ok(kind) => kind,
         Err(errno) => return SyscallResult::Err(errno),
     };
+    let dir = match kind {
+        FdKind::DevfsDirectory { .. } => Ok(WorkingDir::Virtual(String::from("/dev"))),
+        FdKind::DevptsDirectory { .. } => Ok(WorkingDir::Virtual(String::from("/dev/pts"))),
+        FdKind::ProcfsDirectory { path, .. } => Ok(WorkingDir::Virtual(path)),
+        kind => super::metadata::directory_of(kind),
+    };
+    match dir {
+        Ok(dir) => enter_working_dir(dir),
+        Err(errno) => SyscallResult::Err(errno),
+    }
+}
+
+/// Make `dir` the calling process's working directory, as chdir and fchdir
+/// do once they hold it: the caller must be able to search it.
+fn enter_working_dir(dir: crate::fs::namei::WorkingDir) -> SyscallResult {
+    if let Err(errno) = crate::fs::namei::may_search(&dir, &current_file_credentials()) {
+        return SyscallResult::Err(errno);
+    }
 
     let thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
         None => {
-            log::error!("sys_chdir: No current thread");
+            log::error!("chdir: No current thread");
             return SyscallResult::Err(3); // ESRCH
         }
     };
@@ -3223,19 +3256,18 @@ pub fn sys_chdir(pathname: u64) -> SyscallResult {
             Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
                 Some((_, p)) => p,
                 None => {
-                    log::error!("sys_chdir: Process not found for thread {}", thread_id);
+                    log::error!("chdir: Process not found for thread {}", thread_id);
                     return SyscallResult::Err(3); // ESRCH
                 }
             },
             None => {
-                log::error!("sys_chdir: Process manager not initialized");
+                log::error!("chdir: Process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH
             }
         };
         core::mem::replace(&mut process.cwd, dir)
     };
     drop(previous);
-    log::info!("sys_chdir: changed cwd to {}", resolved.path);
     SyscallResult::Ok(0)
 }
 

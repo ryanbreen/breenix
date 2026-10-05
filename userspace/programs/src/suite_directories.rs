@@ -251,6 +251,9 @@ mod observed {
     pub fn chdir(p: &[u8]) -> i64 {
         call(nr::CHDIR, [p.as_ptr() as u64, 0, 0, 0])
     }
+    pub fn fchdir(fd: u64) -> i64 {
+        call(nr::FCHDIR, [fd, 0, 0, 0])
+    }
     pub fn chmod(p: &str, mode: u32) -> i64 {
         let p = cpath(p);
         call(ABI[0], [AT_FDCWD, p.as_ptr() as u64, mode as u64, 0])
@@ -725,6 +728,13 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("symlink-parent-open", "open resolves symlink before dot-dot", cwd_symlink_parent_open),
         case("symlink-parent-chdir", "chdir resolves symlink before dot-dot", cwd_symlink_parent_chdir),
         case("symlink-physical", "getcwd after chdir of a symlink names the physical directory", cwd_symlink_physical),
+        case("fchdir", "fchdir to an open directory makes getcwd report that directory", cwd_fchdir),
+        case("fchdir-relative", "relative opens and AT_FDCWD lookups after fchdir resolve from the directory", cwd_fchdir_relative),
+        case("fchdir-closed", "the working directory fchdir sets survives closing the descriptor", cwd_fchdir_closed),
+        case("fchdir-bad-fd", "fchdir of a descriptor that is not open fails with EBADF and keeps cwd", cwd_fchdir_bad_fd),
+        case("fchdir-not-dir", "fchdir of a regular-file descriptor fails with ENOTDIR and keeps cwd", cwd_fchdir_not_dir),
+        case("fchdir-search-denied", "fchdir of a directory without search permission fails with EACCES and keeps cwd", cwd_fchdir_search_denied),
+        case("fchdir-renamed", "getcwd follows a directory entered by fchdir to its new pathname after rename", cwd_fchdir_renamed),
     ]),
     category("permissions", "chmod, chown, access & umask", &[
         case("chmod-file", "pathname and descriptor chmod preserve file type and update modes across symlinks and unlink", permissions_chmod_file),
@@ -1618,6 +1628,99 @@ fn cwd_missing() -> CaseResult {
         "failed chdir changed cwd inode",
     )?;
     check(cwd()? == f.root, "failed chdir changed cwd")
+}
+
+fn opened_dir(p: &str) -> Result<File, Error> {
+    File::open(p, O_RDONLY | O_DIRECTORY)
+}
+
+fn kept_cwd(dir: &str, what: &str) -> CaseResult {
+    check(
+        stat(".", false)?.st_ino == stat(dir, false)?.st_ino,
+        &format!("{what} changed cwd inode"),
+    )?;
+    check(cwd()? == dir, &format!("{what} changed cwd"))
+}
+
+fn cwd_fchdir() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    let dir = opened_dir(&d)?;
+    process::fchdir(dir.fd())?;
+    check(cwd()? == d, "getcwd differs from fchdir target")?;
+    check(
+        stat(".", false)?.st_ino == stat(&d, false)?.st_ino,
+        "dot differs from fchdir target",
+    )
+}
+
+fn cwd_fchdir_relative() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    let p = f.file("dir/file", b"data")?;
+    let dir = opened_dir(&d)?;
+    process::chdir(&cpath(&f.root))?;
+    process::fchdir(dir.fd())?;
+    bytes("file", b"data")?;
+    check(
+        stat("file", false)?.st_ino == stat(&p, false)?.st_ino,
+        "AT_FDCWD lookup missed the fchdir directory",
+    )
+}
+
+fn cwd_fchdir_closed() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    f.file("dir/file", b"data")?;
+    let dir = opened_dir(&d)?.into_raw_fd();
+    process::fchdir(dir)?;
+    io::close(dir)?;
+    check(cwd()? == d, "closing the descriptor changed cwd")?;
+    bytes("file", b"data")
+}
+
+fn cwd_fchdir_bad_fd() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    let closed = opened_dir(&d)?.into_raw_fd();
+    io::close(closed)?;
+    process::chdir(&cpath(&f.root))?;
+    errno(observed::fchdir(closed.raw()), 9)?;
+    kept_cwd(&f.root, "failed fchdir")
+}
+
+fn cwd_fchdir_not_dir() -> CaseResult {
+    let f = Tree::new()?;
+    let p = f.file("file", b"x")?;
+    let file = File::open(&p, O_RDONLY)?;
+    process::chdir(&cpath(&f.root))?;
+    errno(observed::fchdir(file.fd().raw()), 20)?;
+    kept_cwd(&f.root, "failed fchdir")
+}
+
+fn cwd_fchdir_search_denied() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    chmod(&d, 0o666)?;
+    let dir = opened_dir(&d)?;
+    process::chdir(&cpath(&f.root))?;
+    unprivileged()?;
+    errno(observed::fchdir(dir.fd().raw()), 13)?;
+    kept_cwd(&f.root, "denied fchdir")
+}
+
+fn cwd_fchdir_renamed() -> CaseResult {
+    let f = Tree::new()?;
+    let a = f.dir("a")?;
+    let b = f.path("b");
+    let dir = opened_dir(&a)?;
+    process::fchdir(dir.fd())?;
+    fs::rename(&a, &b)?;
+    check(
+        stat(".", false)?.st_ino == stat(&b, false)?.st_ino,
+        "fchdir directory lost across rename",
+    )?;
+    check(cwd()? == b, "getcwd retained old name")
 }
 
 fn permissions_chmod_file() -> CaseResult {

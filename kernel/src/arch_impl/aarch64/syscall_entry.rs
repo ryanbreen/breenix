@@ -590,6 +590,7 @@ fn dispatch_syscall_enum(
         SyscallNumber::Access => result_to_u64(crate::syscall::fs::sys_access(arg1, arg2 as u32)),
         SyscallNumber::Getcwd => result_to_u64(crate::syscall::fs::sys_getcwd(arg1, arg2)),
         SyscallNumber::Chdir => result_to_u64(crate::syscall::fs::sys_chdir(arg1)),
+        SyscallNumber::Fchdir => result_to_u64(crate::syscall::fs::sys_fchdir(arg1)),
         SyscallNumber::Open => {
             result_to_u64(crate::syscall::fs::sys_open(arg1, arg2 as u32, arg3 as u32))
         }

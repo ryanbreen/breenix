@@ -338,6 +338,34 @@
         {
           "id": "symlink-physical",
           "title": "getcwd after chdir of a symlink names the physical directory"
+        },
+        {
+          "id": "fchdir",
+          "title": "fchdir to an open directory makes getcwd report that directory"
+        },
+        {
+          "id": "fchdir-relative",
+          "title": "relative opens and AT_FDCWD lookups after fchdir resolve from the directory"
+        },
+        {
+          "id": "fchdir-closed",
+          "title": "the working directory fchdir sets survives closing the descriptor"
+        },
+        {
+          "id": "fchdir-bad-fd",
+          "title": "fchdir of a descriptor that is not open fails with EBADF and keeps cwd"
+        },
+        {
+          "id": "fchdir-not-dir",
+          "title": "fchdir of a regular-file descriptor fails with ENOTDIR and keeps cwd"
+        },
+        {
+          "id": "fchdir-search-denied",
+          "title": "fchdir of a directory without search permission fails with EACCES and keeps cwd"
+        },
+        {
+          "id": "fchdir-renamed",
+          "title": "getcwd follows a directory entered by fchdir to its new pathname after rename"
         }
       ]
     },
