@@ -1,6 +1,6 @@
-//! Directories & links: independent POSIX assertions on the writable filesystem.
+//! Directories & links: POSIX assertions and explicitly named implementation checks.
 //! The shared runner forks each case and enforces its default 10-second deadline.
-//! No missing operation is skipped, and no expected result depends on Breenix.
+//! Unsupported operations fail their cases; ext2 and Linux ABI checks are named.
 use libbreenix::error::Error;
 use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
 use libbreenix::syscall::{nr, raw};
@@ -11,6 +11,10 @@ use libbreenix::{
 };
 use std::cell::RefCell;
 
+#[cfg(target_arch = "x86_64")]
+const O_NOFOLLOW: u32 = 0x20000;
+#[cfg(target_arch = "aarch64")]
+const O_NOFOLLOW: u32 = 0x8000;
 const AT_FDCWD: u64 = (-100i64) as u64;
 const UTIME_NOW: i64 = 1073741823;
 const UTIME_OMIT: i64 = 1073741822;
@@ -24,20 +28,239 @@ fn request(n: u64, args: [u64; 4]) -> Result<u64, Error> {
     let r = unsafe { raw::syscall4(n, args[0], args[1], args[2], args[3]) };
     Error::from_syscall(r as i64).map(|v| v as u64)
 }
-fn errno<T>(result: Result<T, Error>, expected: i32) -> CaseResult {
+fn errno(result: i64, expected: i32) -> CaseResult {
     errno_one_of(result, &[expected])
 }
-fn errno_one_of<T>(result: Result<T, Error>, expected: &[i32]) -> CaseResult {
-    match result {
-        Err(Error::Os(e))
-            if expected
-                .iter()
-                .any(|n| e == libbreenix::Errno::from_raw(*n as i64)) =>
-        {
-            Ok(())
-        }
-        Err(e) => fail(format!("expected errno {expected:?}, got {e}")),
-        Ok(_) => fail(format!("succeeded; expected errno {expected:?}")),
+fn errno_one_of(result: i64, expected: &[i32]) -> CaseResult {
+    check(
+        result < 0 && expected.iter().any(|n| result == -(*n as i64)),
+        &format!("expected errno {expected:?}, got raw return {result}"),
+    )
+}
+// Error assertions retain the raw return: Error::from_syscall loses unknown errno.
+mod observed {
+    use super::*;
+    fn call(n: u64, args: [u64; 4]) -> i64 {
+        // SAFETY: adapters retain their path/buffer storage through the syscall.
+        unsafe { raw::syscall4(n, args[0], args[1], args[2], args[3]) as i64 }
+    }
+    pub fn mkdir(path: &str, mode: u32) -> i64 {
+        let cpath = cpath(path);
+        // SAFETY: NUL-terminated paths and mutable buffers remain alive through the call.
+        let ret = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                raw::syscall2(nr::MKDIR, cpath.as_ptr() as u64, mode as u64) as i64
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                raw::syscall3(nr::MKDIRAT, AT_FDCWD, cpath.as_ptr() as u64, mode as u64) as i64
+            }
+        };
+        ret
+    }
+    pub fn rmdir(path: &str) -> i64 {
+        let cpath = cpath(path);
+        // SAFETY: NUL-terminated paths and mutable buffers remain alive through the call.
+        let ret = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                raw::syscall1(nr::RMDIR, cpath.as_ptr() as u64) as i64
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                raw::syscall3(nr::UNLINKAT, AT_FDCWD, cpath.as_ptr() as u64, 0x200) as i64
+            }
+        };
+        ret
+    }
+    pub fn open(path: &str, flags: u32) -> i64 {
+        // With O_CREAT a new file gets 0666 less the process umask, as creat()
+        // and C's fopen() give; use open_with_mode for any other mode.
+        const DEFAULT_CREATE_MODE: u64 = 0o666;
+        let cpath = cpath(path);
+        // SAFETY: NUL-terminated paths and mutable buffers remain alive through the call.
+        let ret = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                raw::syscall3(
+                    nr::OPEN,
+                    cpath.as_ptr() as u64,
+                    flags as u64,
+                    DEFAULT_CREATE_MODE,
+                ) as i64
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                raw::syscall4(
+                    nr::OPENAT,
+                    AT_FDCWD,
+                    cpath.as_ptr() as u64,
+                    flags as u64,
+                    DEFAULT_CREATE_MODE,
+                ) as i64
+            }
+        };
+        ret
+    }
+    pub fn link(oldpath: &str, newpath: &str) -> i64 {
+        let cold = cpath(oldpath);
+        let cnew = cpath(newpath);
+        // SAFETY: NUL-terminated paths and mutable buffers remain alive through the call.
+        let ret = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                raw::syscall2(nr::LINK, cold.as_ptr() as u64, cnew.as_ptr() as u64) as i64
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                raw::syscall5(
+                    nr::LINKAT,
+                    AT_FDCWD,
+                    cold.as_ptr() as u64,
+                    AT_FDCWD,
+                    cnew.as_ptr() as u64,
+                    0,
+                ) as i64
+            }
+        };
+        ret
+    }
+    pub fn unlink(path: &str) -> i64 {
+        let cpath = cpath(path);
+        // SAFETY: NUL-terminated paths and mutable buffers remain alive through the call.
+        let ret = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                raw::syscall1(nr::UNLINK, cpath.as_ptr() as u64) as i64
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                raw::syscall3(nr::UNLINKAT, AT_FDCWD, cpath.as_ptr() as u64, 0) as i64
+            }
+        };
+        ret
+    }
+    pub fn rename(oldpath: &str, newpath: &str) -> i64 {
+        let cold = cpath(oldpath);
+        let cnew = cpath(newpath);
+        // SAFETY: NUL-terminated paths and mutable buffers remain alive through the call.
+        let ret = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                raw::syscall2(nr::RENAME, cold.as_ptr() as u64, cnew.as_ptr() as u64) as i64
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                raw::syscall4(
+                    nr::RENAMEAT,
+                    AT_FDCWD,
+                    cold.as_ptr() as u64,
+                    AT_FDCWD,
+                    cnew.as_ptr() as u64,
+                ) as i64
+            }
+        };
+        ret
+    }
+    pub fn symlink(target: &str, linkpath: &str) -> i64 {
+        let ctarget = cpath(target);
+        let clink = cpath(linkpath);
+        // SAFETY: NUL-terminated paths and mutable buffers remain alive through the call.
+        let ret = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                raw::syscall2(nr::SYMLINK, ctarget.as_ptr() as u64, clink.as_ptr() as u64) as i64
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                raw::syscall3(
+                    nr::SYMLINKAT,
+                    ctarget.as_ptr() as u64,
+                    AT_FDCWD,
+                    clink.as_ptr() as u64,
+                ) as i64
+            }
+        };
+        ret
+    }
+    pub fn readlink(pathname: &str, buf: &mut [u8]) -> i64 {
+        let cpath = cpath(pathname);
+        // SAFETY: NUL-terminated paths and mutable buffers remain alive through the call.
+        let ret = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                raw::syscall3(
+                    nr::READLINK,
+                    cpath.as_ptr() as u64,
+                    buf.as_mut_ptr() as u64,
+                    buf.len() as u64,
+                ) as i64
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                raw::syscall4(
+                    nr::READLINKAT,
+                    AT_FDCWD,
+                    cpath.as_ptr() as u64,
+                    buf.as_mut_ptr() as u64,
+                    buf.len() as u64,
+                ) as i64
+            }
+        };
+        ret
+    }
+    pub fn access(path: &str, mode: u32) -> i64 {
+        let cpath = cpath(path);
+        // SAFETY: NUL-terminated paths and mutable buffers remain alive through the call.
+        let ret = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                raw::syscall2(nr::ACCESS, cpath.as_ptr() as u64, mode as u64) as i64
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                raw::syscall4(
+                    nr::FACCESSAT,
+                    AT_FDCWD,
+                    cpath.as_ptr() as u64,
+                    mode as u64,
+                    0,
+                ) as i64
+            }
+        };
+        ret
+    }
+    pub fn stat(p: &str, nofollow: bool) -> i64 {
+        let p = cpath(p);
+        let mut s = Stat::new();
+        call(
+            nr::NEWFSTATAT,
+            [
+                AT_FDCWD,
+                p.as_ptr() as u64,
+                &mut s as *mut Stat as u64,
+                if nofollow { 256 } else { 0 },
+            ],
+        )
+    }
+    pub fn getcwd(b: &mut [u8]) -> i64 {
+        call(nr::GETCWD, [b.as_mut_ptr() as u64, b.len() as u64, 0, 0])
+    }
+    pub fn chdir(p: &[u8]) -> i64 {
+        call(nr::CHDIR, [p.as_ptr() as u64, 0, 0, 0])
+    }
+    pub fn chmod(p: &str, mode: u32) -> i64 {
+        let p = cpath(p);
+        call(ABI[0], [AT_FDCWD, p.as_ptr() as u64, mode as u64, 0])
+    }
+    pub fn set_times(p: &str, values: [(i64, i64); 2], flags: u64) -> i64 {
+        let p = cpath(p);
+        let times = values.map(|(sec, nsec)| Timespec { sec, nsec });
+        call(
+            ABI[5],
+            [AT_FDCWD, p.as_ptr() as u64, times.as_ptr() as u64, flags],
+        )
     }
 }
 fn cpath(p: &str) -> Vec<u8> {
@@ -65,7 +288,8 @@ fn chmod(p: &str, mode: u32) -> Result<(), Error> {
 }
 fn chown(p: &str, uid: u32, gid: u32) -> Result<(), Error> {
     let p = cpath(p);
-    // fchownat has five arguments; both architectures use the Linux ABI.
+    // fchownat uses five arguments in the syscall ABI.
+    // SAFETY: p is NUL-terminated and remains alive through the syscall.
     let r = unsafe {
         raw::syscall5(
             ABI[1],
@@ -82,6 +306,13 @@ fn umask(mode: u32) -> Result<u64, Error> {
     request(ABI[2], [mode as u64, 0, 0, 0])
 }
 fn unprivileged() -> CaseResult {
+    // The kernel has no supplementary groups today. Use the real syscall so a
+    // future group implementation must clear them before access is measured.
+    #[cfg(target_arch = "x86_64")]
+    const SETGROUPS: u64 = 116;
+    #[cfg(target_arch = "aarch64")]
+    const SETGROUPS: u64 = 159;
+    request(SETGROUPS, [0, 0, 0, 0])?;
     request(ABI[4], [1001, 0, 0, 0])?;
     request(ABI[3], [1001, 0, 0, 0])?;
     Ok(())
@@ -128,11 +359,16 @@ impl Tree {
 impl Drop for Tree {
     fn drop(&mut self) {
         let _ = process::chdir(b"/\0");
-        // Best-effort cleanup never supplies evidence for an assertion. A broken
-        // cleanup or killed case cannot affect another case's PID-specific tree.
+        // Cleanup supplies no assertion evidence; choose the operation by lstat
+        // type so a broken unlink-on-directory cannot corrupt directory metadata.
         for p in self.paths.get_mut().iter().rev() {
-            let _ = fs::unlink(p);
-            let _ = fs::rmdir(p);
+            if let Ok(meta) = stat(p, true) {
+                if meta.is_dir() {
+                    let _ = fs::rmdir(p);
+                } else {
+                    let _ = fs::unlink(p);
+                }
+            }
         }
         let _ = fs::rmdir(&self.root);
     }
@@ -165,12 +401,10 @@ fn bytes(p: &str, expected: &[u8]) -> CaseResult {
 }
 fn cwd() -> Result<String, libbreenix::suite::CaseError> {
     let mut b = [0xa5; 256];
-    let n = process::getcwd(&mut b)?;
-    check(
-        n > 0 && n <= b.len() && b[n - 1] == 0,
-        "getcwd count or NUL invalid",
-    )?;
-    String::from_utf8(b[..n - 1].to_vec()).map_err(|e| e.to_string().into())
+    process::getcwd(&mut b)?;
+    let end = b.iter().position(|v| *v == 0).ok_or("getcwd lacks NUL")?;
+    check(end > 0 && b[0] == b'/', "getcwd is not absolute")?;
+    String::from_utf8(b[..end].to_vec()).map_err(|e| e.to_string().into())
 }
 #[derive(Debug, PartialEq, Eq)]
 struct Entry {
@@ -242,6 +476,9 @@ fn atomic_replace() -> CaseResult {
     let f = Tree::new()?;
     let src = f.file("src", b"NEW-DATA")?;
     let dst = f.file("dst", b"OLD-DATA")?;
+    // The handshake establishes a live reader, not instruction-level overlap.
+    // A finite scheduled run can detect missing/partial replacement but cannot
+    // prove atomicity against every interleaving.
     let (ready_r, ready_w) = io::pipe()?;
     let (done_r, done_w) = io::pipe()?;
     match process::fork()? {
@@ -303,8 +540,22 @@ fn set_times(p: &str, values: [(i64, i64); 2], flags: u64) -> Result<(), Error> 
     )
     .map(|_| ())
 }
-fn old_times(p: &str) -> Result<(), Error> {
-    set_times(p, [(1000000000, 0), (1000000001, 0)], 0)
+fn old_times(p: &str) -> CaseResult {
+    set_times(p, [(1000000000, 0), (1000000001, 0)], 0)?;
+    let s = stat(p, false)?;
+    check(
+        atime(&s) == (1000000000, 0) && mtime(&s) == (1000000001, 0),
+        "timestamp setup was not stored",
+    )
+}
+fn next_second(old: &Stat) -> Result<(i64, i64), Error> {
+    loop {
+        let now = realtime()?;
+        if now.0 > old.st_ctime {
+            return Ok(now);
+        }
+        time::sleep_ms(10)?;
+    }
 }
 fn atime(s: &Stat) -> (i64, i64) {
     (s.st_atime, s.st_atime_nsec)
@@ -334,12 +585,12 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("missing-parent", "mkdir with a missing parent fails with ENOENT", mkdir_rmdir_missing_parent),
         case("file-parent", "mkdir beneath a regular file fails with ENOTDIR", mkdir_rmdir_file_parent),
         case("empty", "rmdir removes an empty directory", mkdir_rmdir_empty),
-        case("nonempty-file", "rmdir with a file child fails with ENOTEMPTY and preserves the tree", mkdir_rmdir_nonempty_file),
-        case("nonempty-dir", "rmdir with a directory child fails with ENOTEMPTY", mkdir_rmdir_nonempty_dir),
+        case("nonempty-file", "rmdir with a file child fails with EEXIST or ENOTEMPTY and preserves the tree", mkdir_rmdir_nonempty_file),
+        case("nonempty-dir", "rmdir with a directory child fails with EEXIST or ENOTEMPTY", mkdir_rmdir_nonempty_dir),
         case("regular-file", "rmdir on a regular file fails with ENOTDIR", mkdir_rmdir_regular_file),
         case("missing", "rmdir on a missing path fails with ENOENT", mkdir_rmdir_missing),
         case("symlink", "rmdir does not follow a final symlink to a directory", mkdir_rmdir_symlink),
-        case("parent-nlink", "mkdir and rmdir update the parent directory link count", mkdir_rmdir_parent_nlink),
+        case("parent-nlink", "ext2 mkdir and rmdir update the parent directory link count", mkdir_rmdir_parent_nlink),
     ]),
     category("readdir", "readdir & seekdir", &[
         case("entries", "readdir returns every child exactly once without imposing lexical order", readdir_entries),
@@ -360,9 +611,10 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("open-unlink", "an open descriptor sees link counts two, one and zero and retains data", links_open_unlink),
         case("destination-exists", "link to an existing destination fails with EEXIST", links_destination_exists),
         case("source-missing", "link of a missing source fails with ENOENT", links_source_missing),
-        case("directory", "hard linking a directory fails with EPERM", links_directory),
+        case("directory", "implementation prohibits hard linking a directory with EPERM", links_directory),
         case("cross-directory", "hard links across directories share data and link counts", links_cross_directory),
         case("unlink-missing", "unlink of a missing name fails with ENOENT", links_unlink_missing),
+        case("unlink-directory", "implementation prohibits unlink of a directory with EPERM or EISDIR", links_unlink_directory),
     ]),
     category("symlinks", "symlinks & readlink", &[
         case("absolute", "an absolute symlink resolves to its target", symlinks_absolute),
@@ -385,7 +637,7 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("empty-dir", "rename of a directory onto an empty directory replaces it", rename_empty_dir),
         case("nonempty-dir", "rename onto a non-empty directory fails with EEXIST or ENOTEMPTY", rename_nonempty_dir),
         case("cross-directory", "rename moves a file across directories", rename_cross_directory),
-        case("directory-parent", "moving a directory updates dot-dot and both parent link counts", rename_directory_parent),
+        case("directory-parent", "moving a directory updates dot-dot and ext2 parent link counts", rename_directory_parent),
         case("same-name", "rename of a name onto itself succeeds without altering data", rename_same_name),
         case("same-inode", "rename between hard links to the same inode preserves both names", rename_same_inode),
         case("file-to-dir", "rename of a file onto a directory fails with EISDIR", rename_file_to_dir),
@@ -401,10 +653,14 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("relative-create", "mkdir and rename with relative paths operate in the working directory", cwd_relative_create),
         case("renamed", "getcwd follows a renamed working directory to its new pathname", cwd_renamed),
         case("ancestor-renamed", "getcwd follows a renamed ancestor of the working directory", cwd_ancestor_renamed),
-        case("removed", "getcwd of a removed working directory fails with ENOENT", cwd_removed),
+        case("removed", "rmdir of cwd returns EBUSY or Linux getcwd of removed cwd returns ENOENT", cwd_removed),
         case("small-buffer", "getcwd with an insufficient buffer fails with ERANGE", cwd_small_buffer),
         case("not-dir", "chdir to a regular file fails with ENOTDIR and keeps cwd", cwd_not_dir),
         case("missing", "chdir to a missing path fails with ENOENT and keeps cwd", cwd_missing),
+        case("count-abi", "Linux getcwd syscall byte count includes the NUL terminator", cwd_count_abi),
+        case("symlink-parent-open", "open resolves symlink before dot-dot", cwd_symlink_parent_open),
+        case("symlink-parent-chdir", "chdir resolves symlink before dot-dot", cwd_symlink_parent_chdir),
+        case("symlink-physical", "getcwd after chdir of a symlink names the physical directory", cwd_symlink_physical),
     ]),
     category("permissions", "chmod, chown, access & umask", &[
         case("chmod-file", "chmod changes file permission bits reported by fresh stat", permissions_chmod_file),
@@ -422,14 +678,17 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("access-other", "access checks other permission bits using real credentials", permissions_access_other),
         case("access-execute", "access checks execute permission bits using real credentials", permissions_access_execute),
         case("search-denied", "path traversal without directory search permission fails with EACCES", permissions_search_denied),
-        case("root-execute", "root access X_OK on a regular file with no execute bits fails with EACCES", permissions_root_execute),
+        case("root-execute", "Linux policy denies root X_OK on a regular file with no execute bits", permissions_root_execute),
+        case("access-owner-denied", "access denies owner bits even when another class grants them", permissions_access_owner_denied),
+        case("access-group-denied", "access denies group bits even when another class grants them", permissions_access_group_denied),
+        case("access-other-denied", "access denies other bits even when another class grants them", permissions_access_other_denied),
     ]),
     category("timestamps", "utimensat & time updates", &[
         case("explicit", "utimensat sets explicit access and modification times", timestamps_explicit),
         case("now", "UTIME_NOW sets both times to the current realtime clock", timestamps_now),
         case("omit-atime", "UTIME_OMIT preserves atime while setting mtime", timestamps_omit_atime),
         case("omit-mtime", "UTIME_OMIT preserves mtime while setting atime", timestamps_omit_mtime),
-        case("omit-both", "two UTIME_OMIT values preserve atime mtime and ctime", timestamps_omit_both),
+        case("omit-both", "Linux policy preserves atime mtime and ctime for two UTIME_OMIT values", timestamps_omit_both),
         case("now-omit", "UTIME_NOW and UTIME_OMIT can be used in the same request", timestamps_now_omit),
         case("invalid-nsec", "utimensat rejects an ordinary nanosecond value of one billion with EINVAL", timestamps_invalid_nsec),
         case("missing", "utimensat of a missing file fails with ENOENT", timestamps_missing),
@@ -439,6 +698,7 @@ static SUITE: Suite = suite("directories", "Directories & links", &[
         case("parent-create", "creating a child updates its parent directory mtime and ctime", timestamps_parent_create),
         case("parent-unlink", "unlink updates the parent directory mtime and ctime", timestamps_parent_unlink),
         case("parent-rename", "cross-directory rename updates both parent directories timestamps", timestamps_parent_rename),
+        case("directory", "utimensat sets and reads back directory timestamps", timestamps_directory),
     ]),
 ]);
 fn main() {
@@ -458,39 +718,39 @@ fn mkdir_rmdir_create() -> CaseResult {
 
 fn mkdir_rmdir_existing_dir() -> CaseResult {
     let f = Tree::new()?;
-    errno(fs::mkdir(&f.root, 0o777), 17)
+    errno(observed::mkdir(&f.root, 0o777), 17)
 }
 
 fn mkdir_rmdir_existing_file() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("file", b"old")?;
-    errno(fs::mkdir(&p, 0o777), 17)?;
+    errno(observed::mkdir(&p, 0o777), 17)?;
     bytes(&p, b"old")
 }
 
 fn mkdir_rmdir_missing_parent() -> CaseResult {
     let f = Tree::new()?;
-    errno(fs::mkdir(&f.path("absent/dir"), 0o777), 2)
+    errno(observed::mkdir(&f.path("absent/dir"), 0o777), 2)
 }
 
 fn mkdir_rmdir_file_parent() -> CaseResult {
     let f = Tree::new()?;
     f.file("file", b"x")?;
-    errno(fs::mkdir(&f.path("file/dir"), 0o777), 20)
+    errno(observed::mkdir(&f.path("file/dir"), 0o777), 20)
 }
 
 fn mkdir_rmdir_empty() -> CaseResult {
     let f = Tree::new()?;
     let p = f.dir("dir")?;
     fs::rmdir(&p)?;
-    errno(stat(&p, false), 2)
+    errno(observed::stat(&p, false), 2)
 }
 
 fn mkdir_rmdir_nonempty_file() -> CaseResult {
     let f = Tree::new()?;
     let p = f.dir("dir")?;
     let child = f.file("dir/file", b"stay")?;
-    errno(fs::rmdir(&p), 39)?;
+    errno_one_of(observed::rmdir(&p), &[17, 39])?;
     bytes(&child, b"stay")
 }
 
@@ -498,27 +758,27 @@ fn mkdir_rmdir_nonempty_dir() -> CaseResult {
     let f = Tree::new()?;
     let p = f.dir("dir")?;
     let c = f.dir("dir/child")?;
-    errno(fs::rmdir(&p), 39)?;
+    errno_one_of(observed::rmdir(&p), &[17, 39])?;
     check(stat(&c, false)?.is_dir(), "child disappeared")
 }
 
 fn mkdir_rmdir_regular_file() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("file", b"stay")?;
-    errno(fs::rmdir(&p), 20)?;
+    errno(observed::rmdir(&p), 20)?;
     bytes(&p, b"stay")
 }
 
 fn mkdir_rmdir_missing() -> CaseResult {
     let f = Tree::new()?;
-    errno(fs::rmdir(&f.path("absent")), 2)
+    errno(observed::rmdir(&f.path("absent")), 2)
 }
 
 fn mkdir_rmdir_symlink() -> CaseResult {
     let f = Tree::new()?;
     let d = f.dir("dir")?;
     let p = f.sym("sym", &d)?;
-    errno(fs::rmdir(&p), 20)?;
+    errno(observed::rmdir(&p), 20)?;
     check(
         stat(&d, false)?.is_dir() && stat(&p, true)?.is_symlink(),
         "rmdir damaged link or target",
@@ -647,7 +907,7 @@ fn readdir_two_streams() -> CaseResult {
 fn readdir_not_directory() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("file", b"x")?;
-    errno(Directory::open(&p), 20)
+    errno(observed::open(&p, O_RDONLY | O_DIRECTORY), 20)
 }
 
 fn links_identity() -> CaseResult {
@@ -680,7 +940,7 @@ fn links_unlink_one() -> CaseResult {
     let b = f.path("b");
     fs::link(&a, &b)?;
     fs::unlink(&a)?;
-    errno(stat(&a, false), 2)?;
+    errno(observed::stat(&a, false), 2)?;
     check(stat(&b, false)?.st_nlink == 1, "survivor nlink is not one")?;
     bytes(&b, b"stay")
 }
@@ -696,7 +956,7 @@ fn links_open_unlink() -> CaseResult {
     check(fs::fstat(fd.fd())?.st_nlink == 1, "open nlink not one")?;
     fs::unlink(&b)?;
     check(fs::fstat(fd.fd())?.st_nlink == 0, "open nlink not zero")?;
-    errno(stat(&b, false), 2)?;
+    errno(observed::stat(&b, false), 2)?;
     contents(fd.fd(), b"stay")?;
     fs::lseek(fd.fd(), 0, SEEK_SET)?;
     write_all(fd.fd(), b"live")?;
@@ -707,18 +967,18 @@ fn links_destination_exists() -> CaseResult {
     let f = Tree::new()?;
     let a = f.file("a", b"a")?;
     let b = f.file("b", b"b")?;
-    errno(fs::link(&a, &b), 17)?;
+    errno(observed::link(&a, &b), 17)?;
     bytes(&b, b"b")
 }
 
 fn links_source_missing() -> CaseResult {
     let f = Tree::new()?;
-    errno(fs::link(&f.path("absent"), &f.path("b")), 2)
+    errno(observed::link(&f.path("absent"), &f.path("b")), 2)
 }
 
 fn links_directory() -> CaseResult {
     let f = Tree::new()?;
-    errno(fs::link(&f.root, &f.path("b")), 1)
+    errno(observed::link(&f.root, &f.path("b")), 1)
 }
 
 fn links_cross_directory() -> CaseResult {
@@ -736,7 +996,7 @@ fn links_cross_directory() -> CaseResult {
 
 fn links_unlink_missing() -> CaseResult {
     let f = Tree::new()?;
-    errno(fs::unlink(&f.path("absent")), 2)
+    errno(observed::unlink(&f.path("absent")), 2)
 }
 
 fn symlinks_absolute() -> CaseResult {
@@ -762,13 +1022,13 @@ fn symlinks_dangling() -> CaseResult {
         stat(&s, true)?.is_symlink(),
         "lstat did not report a symlink",
     )?;
-    errno(fs::open(&s, O_RDONLY), 2)
+    errno(observed::open(&s, O_RDONLY), 2)
 }
 
 fn symlinks_existing() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("a", b"stay")?;
-    errno(fs::symlink("absent", &p), 17)?;
+    errno(observed::symlink("absent", &p), 17)?;
     bytes(&p, b"stay")
 }
 
@@ -797,35 +1057,36 @@ fn symlinks_truncate() -> CaseResult {
 fn symlinks_readlink_regular() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("a", b"x")?;
-    errno(fs::readlink(&p, &mut [0; 16]), 22)
+    errno(observed::readlink(&p, &mut [0; 16]), 22)
 }
 
 fn symlinks_self_loop() -> CaseResult {
     let f = Tree::new()?;
     let p = f.sym("sym", "sym")?;
-    errno(fs::open(&p, O_RDONLY), 40)
+    errno(observed::open(&p, O_RDONLY), 40)
 }
 
 fn symlinks_mutual_loop() -> CaseResult {
     let f = Tree::new()?;
     let p = f.sym("a", "b")?;
     f.sym("b", "a")?;
-    errno(fs::open(&p, O_RDONLY), 40)
+    errno(observed::open(&p, O_RDONLY), 40)
 }
 
 fn symlinks_nofollow() -> CaseResult {
     let f = Tree::new()?;
     let a = f.file("a", b"x")?;
     let s = f.sym("sym", &a)?;
-    errno(fs::open(&s, O_RDONLY | 0x20000), 40)
+    errno(observed::open(&s, O_RDONLY | O_NOFOLLOW), 40)
 }
 
 fn symlinks_nofollow_prefix() -> CaseResult {
     let f = Tree::new()?;
     let d = f.dir("dir")?;
     f.file("dir/a", b"data")?;
-    f.sym("sym", &d)?;
-    let fd = File::open(&f.path("sym/a"), O_RDONLY | 0x20000)?;
+    let sym = f.sym("sym", &d)?;
+    errno(observed::open(&sym, O_RDONLY | O_NOFOLLOW), 40)?;
+    let fd = File::open(&f.path("sym/a"), O_RDONLY | O_NOFOLLOW)?;
     contents(fd.fd(), b"data")
 }
 
@@ -834,7 +1095,7 @@ fn symlinks_unlink_link() -> CaseResult {
     let a = f.file("a", b"stay")?;
     let p = f.sym("sym", &a)?;
     fs::unlink(&p)?;
-    errno(stat(&p, true), 2)?;
+    errno(observed::stat(&p, true), 2)?;
     bytes(&a, b"stay")
 }
 
@@ -844,7 +1105,7 @@ fn rename_file() -> CaseResult {
     let ino = stat(&a, false)?.st_ino;
     let b = f.path("b");
     fs::rename(&a, &b)?;
-    errno(stat(&a, false), 2)?;
+    errno(observed::stat(&a, false), 2)?;
     check(stat(&b, false)?.st_ino == ino, "rename changed inode")?;
     bytes(&b, b"data")
 }
@@ -856,7 +1117,7 @@ fn rename_replace_open() -> CaseResult {
     let old = File::open(&b, O_RDONLY)?;
     let new = File::open(&a, O_RDONLY)?;
     fs::rename(&a, &b)?;
-    errno(stat(&a, false), 2)?;
+    errno(observed::stat(&a, false), 2)?;
     check(
         stat(&b, false)?.st_ino == fs::fstat(new.fd())?.st_ino
             && fs::fstat(old.fd())?.st_nlink == 0,
@@ -878,7 +1139,7 @@ fn rename_empty_dir() -> CaseResult {
     let b = f.dir("b")?;
     let out = f.path("b/file");
     fs::rename(&a, &b)?;
-    errno(stat(&a, false), 2)?;
+    errno(observed::stat(&a, false), 2)?;
     check(
         stat(&b, false)?.st_ino == ino,
         "directory replacement changed inode",
@@ -891,7 +1152,7 @@ fn rename_nonempty_dir() -> CaseResult {
     let a = f.dir("a")?;
     let b = f.dir("b")?;
     let c = f.file("b/file", b"stay")?;
-    errno_one_of(fs::rename(&a, &b), &[17, 39])?;
+    errno_one_of(observed::rename(&a, &b), &[17, 39])?;
     check(stat(&a, false)?.is_dir(), "source disappeared")?;
     bytes(&c, b"stay")
 }
@@ -903,7 +1164,7 @@ fn rename_cross_directory() -> CaseResult {
     let src = f.file("a/file", b"data")?;
     let dst = f.path("b/file");
     fs::rename(&src, &dst)?;
-    errno(stat(&src, false), 2)?;
+    errno(observed::stat(&src, false), 2)?;
     bytes(&dst, b"data")
 }
 
@@ -916,8 +1177,12 @@ fn rename_directory_parent() -> CaseResult {
     let an = stat(&a, false)?.st_nlink;
     let bn = stat(&b, false)?.st_nlink;
     fs::rename(&src, &dst)?;
+    let parent_ino = stat(&b, false)?.st_ino;
     check(
-        stat(&format!("{dst}/.."), false)?.st_ino == stat(&b, false)?.st_ino,
+        Directory::open(&dst)?
+            .all()?
+            .iter()
+            .any(|e| e.name == ".." && e.ino == parent_ino),
         "dot-dot still names old parent",
     )?;
     check(
@@ -949,7 +1214,7 @@ fn rename_file_to_dir() -> CaseResult {
     let f = Tree::new()?;
     let a = f.file("a", b"stay")?;
     let b = f.dir("b")?;
-    errno(fs::rename(&a, &b), 21)?;
+    errno(observed::rename(&a, &b), 21)?;
     bytes(&a, b"stay")
 }
 
@@ -957,7 +1222,7 @@ fn rename_dir_to_file() -> CaseResult {
     let f = Tree::new()?;
     let a = f.dir("a")?;
     let b = f.file("b", b"stay")?;
-    errno(fs::rename(&a, &b), 20)?;
+    errno(observed::rename(&a, &b), 20)?;
     bytes(&b, b"stay")
 }
 
@@ -965,7 +1230,7 @@ fn rename_descendant() -> CaseResult {
     let f = Tree::new()?;
     let a = f.dir("a")?;
     f.dir("a/dir")?;
-    errno(fs::rename(&a, &f.path("a/dir/moved")), 22)
+    errno(observed::rename(&a, &f.path("a/dir/moved")), 22)
 }
 
 fn rename_symlink() -> CaseResult {
@@ -973,7 +1238,7 @@ fn rename_symlink() -> CaseResult {
     let a = f.sym("a", "absent")?;
     let b = f.path("b");
     fs::rename(&a, &b)?;
-    errno(stat(&a, true), 2)?;
+    errno(observed::stat(&a, true), 2)?;
     let mut buf = [0; 16];
     let n = fs::readlink(&b, &mut buf)?;
     check(
@@ -985,7 +1250,7 @@ fn rename_symlink() -> CaseResult {
 fn rename_missing_source() -> CaseResult {
     let f = Tree::new()?;
     let b = f.file("b", b"stay")?;
-    errno(fs::rename(&f.path("absent"), &b), 2)?;
+    errno(observed::rename(&f.path("absent"), &b), 2)?;
     bytes(&b, b"stay")
 }
 
@@ -1009,6 +1274,10 @@ fn cwd_parent() -> CaseResult {
     let p = f.dir("dir")?;
     process::chdir(&cpath(&p))?;
     process::chdir(b"..\0")?;
+    check(
+        stat(".", false)?.st_ino == stat(&f.root, false)?.st_ino,
+        "dot-dot inode differs",
+    )?;
     check(cwd()? == f.root, "dot-dot cwd differs")
 }
 
@@ -1019,7 +1288,7 @@ fn cwd_relative_create() -> CaseResult {
     process::chdir(&cpath(&f.root))?;
     fs::mkdir("a", 0o755)?;
     fs::rename("a", "b")?;
-    errno(stat(&a, false), 2)?;
+    errno(observed::stat(&a, false), 2)?;
     check(
         stat(&b, false)?.is_dir(),
         "relative rename destination missing",
@@ -1050,28 +1319,49 @@ fn cwd_removed() -> CaseResult {
     let f = Tree::new()?;
     let d = f.dir("dir")?;
     process::chdir(&cpath(&d))?;
-    fs::rmdir(&d)?;
-    errno(process::getcwd(&mut [0; 256]), 2)
+    // POSIX rmdir permits EBUSY for a cwd; successful removal makes getcwd
+    // ENOENT a Linux ABI policy check, rather than a universal POSIX rule.
+    match fs::rmdir(&d) {
+        Err(Error::Os(libbreenix::Errno::EBUSY)) => {
+            check(
+                stat(".", false)?.st_ino == stat(&d, false)?.st_ino,
+                "EBUSY changed cwd",
+            )?;
+            check(cwd()? == d, "EBUSY changed pathname")
+        }
+        other => {
+            other?;
+            errno(observed::getcwd(&mut [0; 256]), 2)
+        }
+    }
 }
 
 fn cwd_small_buffer() -> CaseResult {
     let f = Tree::new()?;
     process::chdir(&cpath(&f.root))?;
-    errno(process::getcwd(&mut [0; 2]), 34)
+    errno(observed::getcwd(&mut [0; 2]), 34)
 }
 
 fn cwd_not_dir() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("file", b"x")?;
     process::chdir(&cpath(&f.root))?;
-    errno(process::chdir(&cpath(&p)), 20)?;
+    errno(observed::chdir(&cpath(&p)), 20)?;
+    check(
+        stat(".", false)?.st_ino == stat(&f.root, false)?.st_ino,
+        "failed chdir changed cwd inode",
+    )?;
     check(cwd()? == f.root, "failed chdir changed cwd")
 }
 
 fn cwd_missing() -> CaseResult {
     let f = Tree::new()?;
     process::chdir(&cpath(&f.root))?;
-    errno(process::chdir(&cpath(&f.path("absent"))), 2)?;
+    errno(observed::chdir(&cpath(&f.path("absent"))), 2)?;
+    check(
+        stat(".", false)?.st_ino == stat(&f.root, false)?.st_ino,
+        "failed chdir changed cwd inode",
+    )?;
     check(cwd()? == f.root, "failed chdir changed cwd")
 }
 
@@ -1097,7 +1387,7 @@ fn permissions_chmod_dir() -> CaseResult {
 
 fn permissions_chmod_missing() -> CaseResult {
     let f = Tree::new()?;
-    errno(chmod(&f.path("absent"), 0o600), 2)
+    errno(observed::chmod(&f.path("absent"), 0o600), 2)
 }
 
 fn permissions_chown() -> CaseResult {
@@ -1177,7 +1467,7 @@ fn permissions_access_exists() -> CaseResult {
     chmod(&p, 0)?;
     unprivileged()?;
     fs::access(&p, F_OK)?;
-    errno(fs::access(&f.path("absent"), F_OK), 2)
+    errno(observed::access(&f.path("absent"), F_OK), 2)
 }
 
 fn permissions_access_owner() -> CaseResult {
@@ -1187,7 +1477,9 @@ fn permissions_access_owner() -> CaseResult {
     chmod(&p, 0o400)?;
     unprivileged()?;
     fs::access(&p, R_OK)?;
-    errno(fs::access(&p, W_OK | X_OK), 13)
+    errno(observed::access(&p, W_OK), 13)?;
+    errno(observed::access(&p, X_OK), 13)?;
+    errno(observed::access(&p, W_OK | X_OK), 13)
 }
 
 fn permissions_access_group() -> CaseResult {
@@ -1197,7 +1489,9 @@ fn permissions_access_group() -> CaseResult {
     chmod(&p, 0o40)?;
     unprivileged()?;
     fs::access(&p, R_OK)?;
-    errno(fs::access(&p, W_OK | X_OK), 13)
+    errno(observed::access(&p, W_OK), 13)?;
+    errno(observed::access(&p, X_OK), 13)?;
+    errno(observed::access(&p, W_OK | X_OK), 13)
 }
 
 fn permissions_access_other() -> CaseResult {
@@ -1207,7 +1501,9 @@ fn permissions_access_other() -> CaseResult {
     chmod(&p, 0o4)?;
     unprivileged()?;
     fs::access(&p, R_OK)?;
-    errno(fs::access(&p, W_OK | X_OK), 13)
+    errno(observed::access(&p, W_OK), 13)?;
+    errno(observed::access(&p, X_OK), 13)?;
+    errno(observed::access(&p, W_OK | X_OK), 13)
 }
 
 fn permissions_access_execute() -> CaseResult {
@@ -1217,7 +1513,9 @@ fn permissions_access_execute() -> CaseResult {
     chmod(&p, 0o100)?;
     unprivileged()?;
     fs::access(&p, X_OK)?;
-    errno(fs::access(&p, R_OK | W_OK), 13)
+    errno(observed::access(&p, R_OK), 13)?;
+    errno(observed::access(&p, W_OK), 13)?;
+    errno(observed::access(&p, R_OK | W_OK), 13)
 }
 
 fn permissions_search_denied() -> CaseResult {
@@ -1226,14 +1524,17 @@ fn permissions_search_denied() -> CaseResult {
     let p = f.file("dir/file", b"x")?;
     chmod(&d, 0o666)?;
     unprivileged()?;
-    errno(fs::access(&p, F_OK), 13)
+    errno(observed::access(&p, F_OK), 13)
 }
 
 fn permissions_root_execute() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("file", b"x")?;
-    chmod(&p, 0o600)?;
-    errno(fs::access(&p, X_OK), 13)
+    check(
+        stat(&p, false)?.st_mode & 0o111 == 0,
+        "fixture unexpectedly executable",
+    )?;
+    errno(observed::access(&p, X_OK), 13)
 }
 
 fn timestamps_explicit() -> CaseResult {
@@ -1292,6 +1593,10 @@ fn timestamps_omit_both() -> CaseResult {
     let p = f.file("file", b"x")?;
     old_times(&p)?;
     let old = stat(&p, false)?;
+    next_second(&old)?;
+    // POSIX.1-2024 says ctime need not be marked for update with two OMITs.
+    // This case measures Linux policy (unchanged ctime), not a POSIX mandate.
+    // https://pubs.opengroup.org/onlinepubs/9799919799/functions/utimensat.html
     set_times(&p, [(0, UTIME_OMIT), (0, UTIME_OMIT)], 0)?;
     let s = stat(&p, false)?;
     check(
@@ -1318,12 +1623,15 @@ fn timestamps_now_omit() -> CaseResult {
 fn timestamps_invalid_nsec() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("file", b"x")?;
-    errno(set_times(&p, [(0, 1000000000), (0, 0)], 0), 22)
+    errno(observed::set_times(&p, [(0, 1000000000), (0, 0)], 0), 22)
 }
 
 fn timestamps_missing() -> CaseResult {
     let f = Tree::new()?;
-    errno(set_times(&f.path("absent"), [(1, 0), (2, 0)], 0), 2)
+    errno(
+        observed::set_times(&f.path("absent"), [(1, 0), (2, 0)], 0),
+        2,
+    )
 }
 
 fn timestamps_symlink_follow() -> CaseResult {
@@ -1355,13 +1663,17 @@ fn timestamps_write_update() -> CaseResult {
     let p = f.file("file", b"x")?;
     old_times(&p)?;
     let fd = File::open(&p, O_WRONLY)?;
-    let before = realtime()?;
+    let old = stat(&p, false)?;
+    let before = next_second(&old)?;
     write_all(fd.fd(), b"y")?;
     drop(fd);
     let after = realtime()?;
     let s = stat(&p, false)?;
     check(
-        in_window(mtime(&s), before, after) && in_window(ctime(&s), before, after),
+        mtime(&s) > mtime(&old)
+            && ctime(&s) > ctime(&old)
+            && in_window(mtime(&s), before, after)
+            && in_window(ctime(&s), before, after),
         "write timestamps not current",
     )
 }
@@ -1369,12 +1681,16 @@ fn timestamps_write_update() -> CaseResult {
 fn timestamps_parent_create() -> CaseResult {
     let f = Tree::new()?;
     old_times(&f.root)?;
-    let before = realtime()?;
+    let old = stat(&f.root, false)?;
+    let before = next_second(&old)?;
     f.file("file", b"x")?;
     let after = realtime()?;
     let s = stat(&f.root, false)?;
     check(
-        in_window(mtime(&s), before, after) && in_window(ctime(&s), before, after),
+        mtime(&s) > mtime(&old)
+            && ctime(&s) > ctime(&old)
+            && in_window(mtime(&s), before, after)
+            && in_window(ctime(&s), before, after),
         "create parent times not current",
     )
 }
@@ -1383,12 +1699,16 @@ fn timestamps_parent_unlink() -> CaseResult {
     let f = Tree::new()?;
     let p = f.file("file", b"x")?;
     old_times(&f.root)?;
-    let before = realtime()?;
+    let old = stat(&f.root, false)?;
+    let before = next_second(&old)?;
     fs::unlink(&p)?;
     let after = realtime()?;
     let s = stat(&f.root, false)?;
     check(
-        in_window(mtime(&s), before, after) && in_window(ctime(&s), before, after),
+        mtime(&s) > mtime(&old)
+            && ctime(&s) > ctime(&old)
+            && in_window(mtime(&s), before, after)
+            && in_window(ctime(&s), before, after),
         "unlink parent times not current",
     )
 }
@@ -1401,15 +1721,93 @@ fn timestamps_parent_rename() -> CaseResult {
     let dst = f.path("b/file");
     old_times(&a)?;
     old_times(&b)?;
-    let before = realtime()?;
+    let olds = [stat(&a, false)?, stat(&b, false)?];
+    next_second(&olds[0])?;
+    let before = next_second(&olds[1])?;
     fs::rename(&src, &dst)?;
     let after = realtime()?;
-    for p in [&a, &b] {
+    for (p, old) in [&a, &b].into_iter().zip(&olds) {
         let s = stat(p, false)?;
         check(
-            in_window(mtime(&s), before, after) && in_window(ctime(&s), before, after),
+            mtime(&s) > mtime(old)
+                && ctime(&s) > ctime(old)
+                && in_window(mtime(&s), before, after)
+                && in_window(ctime(&s), before, after),
             "rename parent times not current",
         )?;
     }
     Ok(())
+}
+
+fn links_unlink_directory() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    errno_one_of(observed::unlink(&d), &[1, 21])?;
+    check(stat(&d, false)?.is_dir(), "unlink damaged directory")
+}
+fn cwd_count_abi() -> CaseResult {
+    let f = Tree::new()?;
+    process::chdir(&cpath(&f.root))?;
+    let mut buf = [0xa5; 256];
+    let n = process::getcwd(&mut buf)?;
+    check(
+        n == f.root.len() + 1 && buf[f.root.len()] == 0,
+        "Linux getcwd byte count excludes NUL",
+    )
+}
+fn symlink_tree() -> Result<(Tree, String, String), libbreenix::suite::CaseError> {
+    let f = Tree::new()?;
+    let parent = f.dir("real")?;
+    let target = f.dir("real/child")?;
+    f.sym("sym", &target)?;
+    f.file("real/file", b"physical")?;
+    f.file("file", b"textual")?;
+    Ok((f, parent, target))
+}
+fn cwd_symlink_parent_open() -> CaseResult {
+    let (f, _, _) = symlink_tree()?;
+    bytes(&f.path("sym/../file"), b"physical")
+}
+fn cwd_symlink_parent_chdir() -> CaseResult {
+    let (f, parent, _) = symlink_tree()?;
+    process::chdir(&cpath(&f.path("sym/..")))?;
+    check(
+        stat(".", false)?.st_ino == stat(&parent, false)?.st_ino,
+        "chdir resolved dot-dot textually",
+    )?;
+    check(cwd()? == parent, "symlink parent pathname differs")
+}
+fn cwd_symlink_physical() -> CaseResult {
+    let (f, _, target) = symlink_tree()?;
+    process::chdir(&cpath(&f.path("sym")))?;
+    check(
+        stat(".", false)?.st_ino == stat(&target, false)?.st_ino,
+        "chdir missed symlink target",
+    )?;
+    check(cwd()? == target, "getcwd retained symlink component")
+}
+fn access_class_denied(uid: u32, gid: u32, mode: u32) -> CaseResult {
+    let f = Tree::new()?;
+    let p = f.file("file", b"x")?;
+    chown(&p, uid, gid)?;
+    chmod(&p, mode)?;
+    unprivileged()?;
+    for bit in [R_OK, W_OK, X_OK] {
+        errno(observed::access(&p, bit), 13)?;
+    }
+    Ok(())
+}
+fn permissions_access_owner_denied() -> CaseResult {
+    access_class_denied(1001, 1001, 0o077)
+}
+fn permissions_access_group_denied() -> CaseResult {
+    access_class_denied(2001, 1001, 0o707)
+}
+fn permissions_access_other_denied() -> CaseResult {
+    access_class_denied(2001, 2001, 0o770)
+}
+fn timestamps_directory() -> CaseResult {
+    let f = Tree::new()?;
+    let d = f.dir("dir")?;
+    old_times(&d)
 }

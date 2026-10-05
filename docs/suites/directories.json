@@ -35,11 +35,11 @@
         },
         {
           "id": "nonempty-file",
-          "title": "rmdir with a file child fails with ENOTEMPTY and preserves the tree"
+          "title": "rmdir with a file child fails with EEXIST or ENOTEMPTY and preserves the tree"
         },
         {
           "id": "nonempty-dir",
-          "title": "rmdir with a directory child fails with ENOTEMPTY"
+          "title": "rmdir with a directory child fails with EEXIST or ENOTEMPTY"
         },
         {
           "id": "regular-file",
@@ -55,7 +55,7 @@
         },
         {
           "id": "parent-nlink",
-          "title": "mkdir and rmdir update the parent directory link count"
+          "title": "ext2 mkdir and rmdir update the parent directory link count"
         }
       ]
     },
@@ -135,7 +135,7 @@
         },
         {
           "id": "directory",
-          "title": "hard linking a directory fails with EPERM"
+          "title": "implementation prohibits hard linking a directory with EPERM"
         },
         {
           "id": "cross-directory",
@@ -144,6 +144,10 @@
         {
           "id": "unlink-missing",
           "title": "unlink of a missing name fails with ENOENT"
+        },
+        {
+          "id": "unlink-directory",
+          "title": "implementation prohibits unlink of a directory with EPERM or EISDIR"
         }
       ]
     },
@@ -231,7 +235,7 @@
         },
         {
           "id": "directory-parent",
-          "title": "moving a directory updates dot-dot and both parent link counts"
+          "title": "moving a directory updates dot-dot and ext2 parent link counts"
         },
         {
           "id": "same-name",
@@ -293,7 +297,7 @@
         },
         {
           "id": "removed",
-          "title": "getcwd of a removed working directory fails with ENOENT"
+          "title": "rmdir of cwd returns EBUSY or Linux getcwd of removed cwd returns ENOENT"
         },
         {
           "id": "small-buffer",
@@ -306,6 +310,22 @@
         {
           "id": "missing",
           "title": "chdir to a missing path fails with ENOENT and keeps cwd"
+        },
+        {
+          "id": "count-abi",
+          "title": "Linux getcwd syscall byte count includes the NUL terminator"
+        },
+        {
+          "id": "symlink-parent-open",
+          "title": "open resolves symlink before dot-dot"
+        },
+        {
+          "id": "symlink-parent-chdir",
+          "title": "chdir resolves symlink before dot-dot"
+        },
+        {
+          "id": "symlink-physical",
+          "title": "getcwd after chdir of a symlink names the physical directory"
         }
       ]
     },
@@ -375,7 +395,19 @@
         },
         {
           "id": "root-execute",
-          "title": "root access X_OK on a regular file with no execute bits fails with EACCES"
+          "title": "Linux policy denies root X_OK on a regular file with no execute bits"
+        },
+        {
+          "id": "access-owner-denied",
+          "title": "access denies owner bits even when another class grants them"
+        },
+        {
+          "id": "access-group-denied",
+          "title": "access denies group bits even when another class grants them"
+        },
+        {
+          "id": "access-other-denied",
+          "title": "access denies other bits even when another class grants them"
         }
       ]
     },
@@ -401,7 +433,7 @@
         },
         {
           "id": "omit-both",
-          "title": "two UTIME_OMIT values preserve atime mtime and ctime"
+          "title": "Linux policy preserves atime mtime and ctime for two UTIME_OMIT values"
         },
         {
           "id": "now-omit",
@@ -438,6 +470,10 @@
         {
           "id": "parent-rename",
           "title": "cross-directory rename updates both parent directories timestamps"
+        },
+        {
+          "id": "directory",
+          "title": "utimensat sets and reads back directory timestamps"
         }
       ]
     }
