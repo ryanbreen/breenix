@@ -442,10 +442,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             const ARCH_SET_FS: u64 = 0x1002;
             const ARCH_GET_FS: u64 = 0x1003;
             match args.0 {
-                ARCH_SET_FS => {
-                    x86_64::registers::model_specific::FsBase::write(x86_64::VirtAddr::new(args.1));
-                    SyscallResult::Ok(0)
-                }
+                ARCH_SET_FS => crate::tls::set_user_fs_base(args.1),
                 ARCH_GET_FS => {
                     let fs_base = x86_64::registers::model_specific::FsBase::read().as_u64();
                     match super::userptr::copy_to_user(args.1 as *mut u64, &fs_base) {
