@@ -357,6 +357,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             super::fs::sys_lseek(args.0 as i32, args.1 as i64, args.2 as i32)
         }
         Some(SyscallNumber::Fstat) => super::fs::sys_fstat(args.0 as i32, args.1),
+        Some(SyscallNumber::Sync) => super::fs::sys_sync(),
+        Some(SyscallNumber::Statfs) => super::fs::sys_statfs(args.0, args.1),
         Some(SyscallNumber::Fstatfs) => super::fs::sys_fstatfs(args.0 as i32, args.1),
         Some(SyscallNumber::Fsync) => super::fs::sys_fsync(args.0 as i32),
         Some(SyscallNumber::Fdatasync) => super::fs::sys_fsync(args.0 as i32),
@@ -401,7 +403,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         }
         Some(SyscallNumber::Dup3) => super::handlers::sys_dup3(args.0, args.1, args.2),
         Some(SyscallNumber::Pselect6) => {
-            super::handlers::sys_select(args.0 as i32, args.1, args.2, args.3, args.4)
+            super::handlers::sys_pselect6(args.0 as i32, args.1, args.2, args.3, args.4, args.5)
         }
         Some(SyscallNumber::CowStats) => super::handlers::sys_cow_stats(args.0),
         Some(SyscallNumber::SimulateOom) => super::handlers::sys_simulate_oom(args.0),
