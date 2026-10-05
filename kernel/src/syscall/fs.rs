@@ -1219,6 +1219,33 @@ fn align_up_8(value: usize) -> usize {
     (value + 7) & !7
 }
 
+/// Append one Linux dirent64 record (`d_ino`, `d_off`, `d_reclen`, `d_type`,
+/// NUL-terminated `d_name`, zero padding to 8 bytes) to a kernel buffer.
+/// getdents64 builds its records here and copies them out with
+/// `write_user_bytes`, so an unmapped, read-only or not-yet-grown user page
+/// is EFAULT or a demand fault rather than a kernel store into user memory.
+fn push_dirent64(
+    records: &mut alloc::vec::Vec<u8>,
+    ino: u64,
+    next: i64,
+    d_type: u8,
+    name: &[u8],
+) {
+    let reclen = align_up_8(DIRENT64_HEADER_SIZE + name.len() + 1);
+    let start = records.len();
+    records.extend_from_slice(&ino.to_ne_bytes());
+    records.extend_from_slice(&next.to_ne_bytes());
+    records.extend_from_slice(&(reclen as u16).to_ne_bytes());
+    records.push(d_type);
+    records.extend_from_slice(name);
+    records.resize(start + reclen, 0);
+}
+
+/// Copy the records `push_dirent64` built to the user buffer at `dirp`.
+fn copy_dirents_to_user(dirp: u64, records: &[u8]) -> Result<(), u64> {
+    super::userptr::write_user_bytes(dirp, records.as_ptr(), records.len())
+}
+
 /// sys_getdents64 - Get directory entries
 ///
 /// Reads directory entries into a buffer in Linux dirent64 format.
@@ -1381,7 +1408,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     // byte offset into this directory's own records, so it can never read
     // another directory's bytes. Position 0 is the first record, `.`, so a
     // rewind replays `.` and `..`.
-    let buffer = dirp as *mut u8;
+    let mut records = alloc::vec::Vec::new();
     let buffer_size = count as usize;
     let mut bytes_written = 0usize;
     let mut new_position = start_position;
@@ -1406,42 +1433,14 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
             break;
         }
 
-        // Write entry to user buffer
-        // SAFETY: We've validated the buffer pointer and size
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // Write d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, entry.inode as u64);
-
-            // Write d_off (i64) at offset 8 - the position of the next record
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, positioned.next as i64);
-
-            // Write d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // Write d_type (u8) at offset 18
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = ext2_file_type_to_dt(entry.file_type);
-
-            // Write d_name (variable length, null-terminated) at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(entry.name.as_ptr(), d_name_ptr, name_len);
-            // Null terminator
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero-fill padding to maintain alignment
-            let padding_start = 19 + name_len + 1;
-            for i in padding_start..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, entry.inode as u64, positioned.next as i64, ext2_file_type_to_dt(entry.file_type), entry.name.as_bytes());
 
         bytes_written += reclen;
         new_position = positioned.next as u64;
+    }
+
+    if let Err(errno) = copy_dirents_to_user(dirp, &records) {
+        return SyscallResult::Err(errno);
     }
 
     // Update directory position
@@ -2655,7 +2654,7 @@ fn handle_devfs_getdents64(
 
     // Build entries: ".", "..", then each device
     // We treat position as entry index (0 = ".", 1 = "..", 2+ = devices)
-    let buffer = dirp as *mut u8;
+    let mut records = alloc::vec::Vec::new();
     let mut bytes_written = 0usize;
     let mut entry_index = 0u64;
     let mut new_position = start_position;
@@ -2680,35 +2679,7 @@ fn handle_devfs_getdents64(
             break;
         }
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, *inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18 - DT_DIR for . and ..
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = DT_DIR;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, *inode, (entry_index + 1) as i64, DT_DIR, name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
@@ -2734,39 +2705,15 @@ fn handle_devfs_getdents64(
             .map(|d| d.device_type.inode())
             .unwrap_or(0);
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18 - DT_CHR for character devices
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = DT_CHR;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(device_name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, inode, (entry_index + 1) as i64, DT_CHR, device_name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
         new_position = entry_index;
+    }
+
+    if let Err(errno) = copy_dirents_to_user(dirp, &records) {
+        return SyscallResult::Err(errno);
     }
 
     // Update directory position in the fd
@@ -2806,7 +2753,7 @@ fn handle_devpts_getdents64(
     let entries = devptsfs::list_entries();
 
     // Build entries: ".", "..", then each PTY slave
-    let buffer = dirp as *mut u8;
+    let mut records = alloc::vec::Vec::new();
     let mut bytes_written = 0usize;
     let mut entry_index = 0u64;
     let mut new_position = start_position;
@@ -2831,35 +2778,7 @@ fn handle_devpts_getdents64(
             break;
         }
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, *inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = *dtype;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, *inode, (entry_index + 1) as i64, *dtype, name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
@@ -2881,39 +2800,15 @@ fn handle_devpts_getdents64(
             break;
         }
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, entry.inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18 - DT_CHR for character devices
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = DT_CHR;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, entry.inode, (entry_index + 1) as i64, DT_CHR, name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
         new_position = entry_index;
+    }
+
+    if let Err(errno) = copy_dirents_to_user(dirp, &records) {
+        return SyscallResult::Err(errno);
     }
 
     // Update directory position in the fd
@@ -2971,7 +2866,7 @@ fn handle_procfs_getdents64(
     };
 
     // Build entries: ".", "..", then each entry
-    let buffer = dirp as *mut u8;
+    let mut records = alloc::vec::Vec::new();
     let mut bytes_written = 0usize;
     let mut entry_index = 0u64;
     let mut new_position = start_position;
@@ -2996,35 +2891,7 @@ fn handle_procfs_getdents64(
             break;
         }
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, *inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18 - DT_DIR for . and ..
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = DT_DIR;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, *inode, (entry_index + 1) as i64, DT_DIR, name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
@@ -3066,39 +2933,15 @@ fn handle_procfs_getdents64(
             }
         };
 
-        unsafe {
-            let entry_ptr = buffer.add(bytes_written);
-
-            // d_ino (u64) at offset 0
-            let d_ino_ptr = entry_ptr as *mut u64;
-            core::ptr::write_unaligned(d_ino_ptr, inode);
-
-            // d_off (i64) at offset 8 - offset to NEXT entry
-            let d_off_ptr = entry_ptr.add(8) as *mut i64;
-            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
-
-            // d_reclen (u16) at offset 16
-            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
-            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
-
-            // d_type (u8) at offset 18
-            let d_type_ptr = entry_ptr.add(18);
-            *d_type_ptr = dtype;
-
-            // d_name at offset 19
-            let d_name_ptr = entry_ptr.add(19);
-            core::ptr::copy_nonoverlapping(entry_name.as_ptr(), d_name_ptr, name_len);
-            *d_name_ptr.add(name_len) = 0;
-
-            // Zero padding
-            for i in (19 + name_len + 1)..reclen {
-                *entry_ptr.add(i) = 0;
-            }
-        }
+        push_dirent64(&mut records, inode, (entry_index + 1) as i64, dtype, entry_name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
         new_position = entry_index;
+    }
+
+    if let Err(errno) = copy_dirents_to_user(dirp, &records) {
+        return SyscallResult::Err(errno);
     }
 
     // Update directory position in the fd
