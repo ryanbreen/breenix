@@ -3679,7 +3679,6 @@ const UTIME_NOW: i64 = 0x3FFFFFFF;
 /// Special timespec value: leave timestamp unchanged
 const UTIME_OMIT: i64 = 0x3FFFFFFE;
 /// AT_SYMLINK_NOFOLLOW flag
-#[allow(dead_code)]
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 
 /// Timespec layout for utimensat (matches Linux ABI)
@@ -3698,6 +3697,10 @@ struct UtimeTimespec {
 /// UTIME_NOW (0x3FFFFFFF): use current time for that field.
 /// UTIME_OMIT (0x3FFFFFFE): don't change that timestamp.
 pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> SyscallResult {
+    // AT_SYMLINK_NOFOLLOW is the only flag utimensat defines.
+    if flags & !AT_SYMLINK_NOFOLLOW != 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
     let now = crate::time::current_unix_time() as u32;
 
     // Determine what atime/mtime to set
@@ -3711,6 +3714,14 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
                 Ok(t) => t,
                 Err(e) => return SyscallResult::Err(e),
             };
+
+        // Each tv_nsec is UTIME_NOW, UTIME_OMIT, or a nanosecond count in
+        // [0, 999999999]; anything else is EINVAL, checked for both before
+        // either is acted on (POSIX utimensat).
+        let valid = |nsec: i64| nsec == UTIME_NOW || nsec == UTIME_OMIT || (0..1_000_000_000).contains(&nsec);
+        if !valid(times[0].tv_nsec) || !valid(times[1].tv_nsec) {
+            return SyscallResult::Err(super::errno::EINVAL as u64);
+        }
 
         let atime = if times[0].tv_nsec == UTIME_NOW {
             Some(now)
