@@ -90,7 +90,7 @@ pub struct LoadedElf {
     pub stack_top: VirtAddr,
     /// End of loaded segments, page-aligned up (start of heap)
     pub segments_end: u64,
-    /// Virtual address of program headers (from PT_PHDR or load_base + phoff)
+    /// Virtual address of program headers in their mapped PT_LOAD segment
     pub phdr_vaddr: u64,
     /// Number of program headers
     pub phnum: u16,
@@ -173,6 +173,7 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
     let mut max_segment_end = 0u64;
     // Track PT_PHDR for auxv
     let mut phdr_vaddr: Option<u64> = None;
+    let mut mapped_phdr_vaddr: Option<u64> = None;
 
     for i in 0..ph_count {
         let ph_start = ph_offset + i * ph_size;
@@ -199,6 +200,9 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
             } else {
                 base_offset.as_u64() + ph.p_vaddr
             };
+            if header.phoff >= ph.p_offset && header.phoff - ph.p_offset < ph.p_filesz {
+                mapped_phdr_vaddr = Some(vaddr + (header.phoff - ph.p_offset));
+            }
             let segment_end = vaddr + ph.p_memsz;
             if segment_end > max_segment_end {
                 max_segment_end = segment_end;
@@ -209,9 +213,9 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
     // Align heap start to next page boundary (4KB)
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
-    // If no PT_PHDR was found, compute from load_base + phoff
-    // For absolute addresses, base_offset is usually zero
-    let phdr_vaddr = phdr_vaddr.unwrap_or(base_offset.as_u64() + header.phoff);
+    // AT_PHDR is a mapped address, not a file offset. Match the PT_LOAD
+    // containing e_phoff, including that segment's load bias and file offset.
+    let phdr_vaddr = phdr_vaddr.or(mapped_phdr_vaddr).unwrap_or(0);
 
     // The entry point should be the header entry point directly
     // since our userspace binaries are compiled with absolute addresses
@@ -380,6 +384,7 @@ pub fn load_elf_into_page_table(
     let mut max_segment_end = 0u64;
     // Track PT_PHDR for auxv
     let mut phdr_vaddr: Option<u64> = None;
+    let mut mapped_phdr_vaddr: Option<u64> = None;
 
     // Load program segments
     for i in 0..header.phnum {
@@ -403,6 +408,9 @@ pub fn load_elf_into_page_table(
 
         if ph.p_type == SegmentType::Load as u32 {
             load_segment_into_page_table(data, ph, page_table)?;
+            if header.phoff >= ph.p_offset && header.phoff - ph.p_offset < ph.p_filesz {
+                mapped_phdr_vaddr = Some(ph.p_vaddr + (header.phoff - ph.p_offset));
+            }
 
             // Calculate end of this segment (vaddr + memsz)
             let segment_end = ph.p_vaddr + ph.p_memsz;
@@ -415,9 +423,8 @@ pub fn load_elf_into_page_table(
     // Align heap start to next page boundary (4KB)
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
-    // If no PT_PHDR was found, compute from header phoff
-    // For position-dependent executables, this is the file offset which matches vaddr for first LOAD at 0
-    let phdr_vaddr = phdr_vaddr.unwrap_or(header.phoff);
+    // This loader maps absolute p_vaddr addresses (load bias zero).
+    let phdr_vaddr = phdr_vaddr.or(mapped_phdr_vaddr).unwrap_or(0);
 
     log::info!(
         "ELF loaded: segments end at {:#x}, heap will start at {:#x}",
