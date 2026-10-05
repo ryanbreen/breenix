@@ -12,6 +12,12 @@ const EXT2_SUPER_MAGIC: u16 = 0xEF53;
 /// Superblock offset from start of device (always 1024 bytes)
 const SUPERBLOCK_OFFSET: usize = 1024;
 
+/// `s_state` bit: errors were detected, so the filesystem needs checking.
+pub const EXT2_ERROR_FS: u16 = 2;
+
+/// The most links an inode may have (Linux `EXT2_LINK_MAX`).
+pub const EXT2_LINK_MAX: u16 = 32000;
+
 /// ext2 superblock - always at byte offset 1024 from start of device
 ///
 /// The superblock contains all the information about the filesystem layout,

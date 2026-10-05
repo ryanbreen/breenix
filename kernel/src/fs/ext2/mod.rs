@@ -5,6 +5,7 @@
 
 pub mod block_group;
 pub mod dir;
+mod mount_device;
 pub mod file;
 pub mod inode;
 pub mod live_inode;
@@ -50,6 +51,9 @@ pub struct Ext2Fs {
     pub block_groups: Vec<Ext2BlockGroupDesc>,
     /// The underlying block device
     pub device: alloc::boxed::Box<dyn BlockDevice>,
+    /// Set when the tree was left inconsistent; the device then refuses
+    /// every write.
+    failed: alloc::sync::Arc<AtomicBool>,
     /// Mount ID for VFS integration
     pub mount_id: usize,
     pub mount_pin: live_inode::MountPin,
@@ -105,10 +109,12 @@ impl Ext2Fs {
         let block_groups = Ext2BlockGroupDesc::read_table(device.as_ref(), &superblock)
             .map_err(|_| "Failed to read block group descriptors")?;
 
+        let failed = alloc::sync::Arc::new(AtomicBool::new(false));
         Ok(Self {
             superblock,
             block_groups,
-            device,
+            device: alloc::boxed::Box::new(mount_device::MountDevice::new(device, failed.clone())),
+            failed,
             mount_id,
             mount_pin: live_inode::MountPin::new(mount_id)?,
             live_inodes: live_inode::LiveInodes::new(),
@@ -117,6 +123,14 @@ impl Ext2Fs {
             eviction_cursor: 0,
             shrink_reclaims: alloc::collections::BTreeMap::new(),
         })
+    }
+
+    /// Stop writing after a failure left the tree inconsistent: record the
+    /// error in the superblock, then refuse every later write. Reads continue.
+    fn fail_writes(&mut self) {
+        self.superblock.s_state |= EXT2_ERROR_FS;
+        let _ = self.superblock.write_to(self.device.as_ref());
+        self.failed.store(true, Ordering::Release);
     }
 
     pub fn pin_inode(&self, inode_num: u32) -> Result<live_inode::FileHandle, &'static str> {
@@ -970,6 +984,10 @@ impl Ext2Fs {
         if !parent_inode.is_dir() {
             return Err("Parent is not a directory");
         }
+        // The new directory's `..` is another link to the parent.
+        if parent_inode.i_links_count >= EXT2_LINK_MAX {
+            return Err("Too many links");
+        }
 
         // Read the parent directory data
         let mut parent_dir_data = self.read_directory(&parent_inode)?;
@@ -1288,6 +1306,9 @@ impl Ext2Fs {
         // Hard links to directories are not allowed (prevents cycles in filesystem)
         if source_inode.is_dir() {
             return Err("Cannot create hard link to directory");
+        }
+        if source_inode.i_links_count >= EXT2_LINK_MAX {
+            return Err("Too many links");
         }
 
         // Parse newpath to get parent directory and new name

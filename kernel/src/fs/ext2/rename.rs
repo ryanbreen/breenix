@@ -6,7 +6,9 @@
 //! Every allocation the rename needs is made while planning. The plan then
 //! runs as a list of writes, each holding the bytes it replaces. When a write
 //! fails, it and the writes before it are rewritten with their old bytes, last
-//! first, so the tree is left as it was.
+//! first, so the tree is left as it was. When one of those rewrites fails too,
+//! the tree cannot be restored: the mount records the error in its superblock
+//! and refuses every later write, so nothing builds on the damage.
 //!
 //! The order keeps the destination name resolving throughout. The block that
 //! gives the new name its inode is written first, while the old name is still
@@ -14,6 +16,12 @@
 //! retargeted in place, one entry in one block, so it names the replaced inode
 //! or the renamed one and never nothing. The caller holds the filesystem write
 //! guard across the whole rename, so no lookup sees the tree between writes.
+//!
+//! ext2 has no journal, so a crash can stop the rename between two writes and
+//! the next check of the filesystem repairs it. Link counts rise before the
+//! names that need them are written and fall after the names they counted
+//! are gone, so a crash leaves a count too high, which a check lowers, and
+//! never a name on an inode whose count could reach zero while it is named.
 //!
 //! Nothing after the last write allocates. A replaced inode left without a
 //! link is handed to the ext2 finalizer, which releases its blocks and inode
@@ -23,13 +31,14 @@ use super::live_inode::FileHandle;
 use super::{
     add_directory_entry, dir_entry_type, find_entry, is_directory_empty,
     remove_entry, update_directory_entry, write_ext2_block, Ext2Fs, Ext2Inode, EXT2_FT_DIR,
-    EXT2_ROOT_INO,
+    EXT2_LINK_MAX, EXT2_ROOT_INO,
 };
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 /// Why a rename did not happen. The tree is unchanged after every one of
-/// them; `Io` also covers a failed write whose rollback failed too.
+/// them, except an `Io` whose rollback failed too, after which the mount
+/// refuses writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenameError {
     /// The old name, or a directory holding either name, no longer exists.
@@ -47,6 +56,8 @@ pub enum RenameError {
     Busy,
     /// The new name's directory has no room for another entry.
     NoSpace,
+    /// The new name's directory already has the most links ext2 allows.
+    TooManyLinks,
     /// A read or write failed.
     Io,
 }
@@ -69,9 +80,12 @@ fn io<T>(_: T) -> RenameError {
     RenameError::Io
 }
 
-fn adjust_links(inode: &mut Ext2Inode, delta: i32) {
-    let links = inode.i_links_count as i32 + delta;
-    inode.i_links_count = links.clamp(0, u16::MAX as i32) as u16;
+/// A count that leaves the range of a link count can only come from a
+/// corrupt one, so the rename is refused before the disk changes.
+fn adjust_links(inode: &mut Ext2Inode, delta: i32) -> Result<(), RenameError> {
+    let links = i32::from(inode.i_links_count) + delta;
+    inode.i_links_count = u16::try_from(links).map_err(io)?;
+    Ok(())
 }
 
 impl Ext2Fs {
@@ -152,6 +166,11 @@ impl Ext2Fs {
         let victim_is_dir = victim
             .as_ref()
             .is_some_and(|(_, inode, _)| inode.is_dir());
+        // The moved directory's `..` is a new link to its new parent.
+        let raise_parent = source_is_dir && !same_dir;
+        if raise_parent && victim.is_none() && new_dir_inode.i_links_count >= EXT2_LINK_MAX {
+            return Err(RenameError::TooManyLinks);
+        }
 
         // The directory images after the rename. In one directory the old
         // name is removed before a new entry is placed, so its room can be
@@ -208,22 +227,46 @@ impl Ext2Fs {
         let gained = i32::from(source_is_dir) - i32::from(victim_is_dir);
         let lost = i32::from(source_is_dir);
         if same_dir {
-            adjust_links(&mut new_dir_after, gained - lost);
+            adjust_links(&mut new_dir_after, gained - lost)?;
         } else {
-            adjust_links(&mut new_dir_after, gained);
-            adjust_links(&mut old_dir_after, -lost);
+            adjust_links(&mut new_dir_after, gained)?;
+            adjust_links(&mut old_dir_after, -lost)?;
         }
         let mut source_after = source_inode;
         source_after.update_timestamps(false, false, true);
         // A replaced directory loses its name and its own `.`.
-        let victim_after = victim.as_ref().map(|(_, inode, _)| {
-            let mut after = *inode;
-            adjust_links(&mut after, if inode.is_dir() { -2 } else { -1 });
-            after.update_timestamps(false, false, true);
-            after
-        });
+        let victim_after = match &victim {
+            None => None,
+            Some((_, inode, _)) => {
+                let mut after = *inode;
+                adjust_links(&mut after, if inode.is_dir() { -2 } else { -1 })?;
+                after.update_timestamps(false, false, true);
+                Some(after)
+            }
+        };
+        // Counts that rise go first: the renamed inode is named twice until
+        // its old name goes, and the new parent is named by the moved `..`
+        // before the old parent's count falls.
+        let mut source_raised = source_inode;
+        adjust_links(&mut source_raised, 1)?;
+        let mut new_dir_raised = new_dir_inode;
+        if raise_parent {
+            adjust_links(&mut new_dir_raised, 1)?;
+        }
 
         let mut writes = Vec::new();
+        writes.push(Write::Inode {
+            ino: source,
+            old: source_inode,
+            new: source_raised,
+        });
+        if raise_parent {
+            writes.push(Write::Inode {
+                ino: new_dir,
+                old: new_dir_inode,
+                new: new_dir_raised,
+            });
+        }
         match (&new_image, &new_data) {
             (Some(image), Some(data)) => {
                 self.plan_blocks(&new_dir_inode, data, image, named_at, &mut writes)?;
@@ -234,18 +277,7 @@ impl Ext2Fs {
         if let Some((data, image)) = &moved {
             self.plan_blocks(&source_inode, data, image, 0, &mut writes)?;
         }
-        writes.push(Write::Inode {
-            ino: new_dir,
-            old: new_dir_inode,
-            new: new_dir_after,
-        });
-        if !same_dir {
-            writes.push(Write::Inode {
-                ino: old_dir,
-                old: old_dir_inode,
-                new: old_dir_after,
-            });
-        }
+        // Counts that fall go last, once the names they counted are gone.
         if let (Some((ino, inode, _)), Some(after)) = (&victim, victim_after) {
             writes.push(Write::Inode {
                 ino: *ino,
@@ -255,17 +287,39 @@ impl Ext2Fs {
         }
         writes.push(Write::Inode {
             ino: source,
-            old: source_inode,
+            old: source_raised,
             new: source_after,
+        });
+        if !same_dir {
+            writes.push(Write::Inode {
+                ino: old_dir,
+                old: old_dir_inode,
+                new: old_dir_after,
+            });
+        }
+        writes.push(Write::Inode {
+            ino: new_dir,
+            old: new_dir_raised,
+            new: new_dir_after,
         });
 
         // The disk changes from here on; nothing below allocates.
         for (done, write) in writes.iter().enumerate() {
             if self.apply(write, false).is_err() {
                 // The failed write may have landed in part, so it is undone
-                // with the rest.
-                for undo in writes[..=done].iter().rev() {
-                    let _ = self.apply(undo, true);
+                // with the rest. Undoing stops at the first rewrite that
+                // fails, so what stays on disk is a prefix of the plan: the
+                // state a crash there leaves, with counts high, never low.
+                let restored = writes[..=done]
+                    .iter()
+                    .rev()
+                    .all(|undo| self.apply(undo, true).is_ok());
+                if !restored {
+                    // The tree is between two states and stays so. The
+                    // replaced inode is not handed to the finalizer, so
+                    // nothing a name may still reach is freed, and the mount
+                    // writes nothing more.
+                    self.fail_writes();
                 }
                 return Err(RenameError::Io);
             }

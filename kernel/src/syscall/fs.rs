@@ -1566,10 +1566,12 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
 /// * EBUSY - an operand is a filesystem root, or newpath is a directory in use
 /// * EXDEV - the names are on different filesystems
 /// * ENOSPC - newpath's directory has no room for the name
+/// * EMLINK - a directory would move into a directory with the most links
+///   ext2 allows
 /// * EIO - I/O error
 pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
     use super::errno::{
-        EBUSY, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EXDEV,
+        EBUSY, EINVAL, EIO, EISDIR, EMLINK, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EXDEV,
     };
     use crate::fs::ext2::RenameError;
     use crate::fs::namei::{Last, Target};
@@ -1637,6 +1639,7 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
                 RenameError::Invalid => EINVAL,
                 RenameError::Busy => EBUSY,
                 RenameError::NoSpace => ENOSPC,
+                RenameError::TooManyLinks => EMLINK,
                 RenameError::Io => EIO,
             };
             SyscallResult::Err(errno as u64)
@@ -1756,6 +1759,7 @@ pub fn sys_rmdir(pathname: u64) -> SyscallResult {
 /// * EPERM - oldpath is a directory
 /// * ENOTDIR - A component in path is not a directory
 /// * ENOSPC - No space in target directory
+/// * EMLINK - oldpath has the most links ext2 allows
 /// * EIO - I/O error
 pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
     use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOTDIR, EPERM, EXDEV};
@@ -1819,7 +1823,9 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
         Err(e) => {
             log::debug!("sys_link: failed: {}", e);
             // Map error to appropriate errno
-            let errno = if e.contains("not found") || e.contains("not exist") {
+            let errno = if e.contains("Too many links") {
+                super::errno::EMLINK
+            } else if e.contains("not found") || e.contains("not exist") {
                 ENOENT
             } else if e.contains("already exists") || e.contains("Destination already exists") {
                 EEXIST
@@ -1855,6 +1861,7 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
 /// * EEXIST - Directory already exists
 /// * ENOTDIR - Component in path is not a directory
 /// * ENOSPC - No space for new directory
+/// * EMLINK - The parent directory has the most links ext2 allows
 /// * EIO - I/O error
 pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
     use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOSPC, ENOTDIR, EPERM};
@@ -1905,7 +1912,9 @@ pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
         Err(e) => {
             log::debug!("sys_mkdir: failed: {}", e);
             // Map error to appropriate errno
-            let errno = if e.contains("not found")
+            let errno = if e.contains("Too many links") {
+                super::errno::EMLINK
+            } else if e.contains("not found")
                 || e.contains("not exist")
                 || e.contains("Path component not found")
             {

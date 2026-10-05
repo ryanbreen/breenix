@@ -78,6 +78,9 @@ pub const ENOSPC: i32 = 28;
 /// Illegal seek (not a seekable fd)
 pub const ESPIPE: i32 = 29;
 
+/// Too many links
+pub const EMLINK: i32 = 31;
+
 /// Broken pipe
 pub const EPIPE: i32 = 32;
 
