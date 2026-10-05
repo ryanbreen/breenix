@@ -4680,7 +4680,6 @@ impl Scheduler {
         })
     }
 
-    /// Make every scheduler-owned thread for a process non-runnable.
     /// Claim every thread of `owner_pid` for an immediate kill, or none of
     /// them: when one is inside a kill-custody section (`KillCustody`) the
     /// kill must wait for that section to close, and nothing is claimed.
@@ -4704,6 +4703,7 @@ impl Scheduler {
         true
     }
 
+    /// Make every scheduler-owned thread for a process non-runnable.
     pub fn terminate_process_threads(&mut self, owner_pid: u64) {
         crate::tracing::providers::teardown::record_quarantine(owner_pid);
         if crate::process::process_manager_held_on_current_cpu() {
