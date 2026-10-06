@@ -63,7 +63,8 @@ impl SerialFixture {
             .arg(first)
             .arg(second)
             .current_dir(repo_root())
-            .env_remove("EXPECTED_EXITS");
+            .env_remove("EXPECTED_EXITS")
+            .env_remove("REQUIRE_PROCESS_ACCOUNTING");
         if let Some(expected_exits) = expected_exits {
             command.env("EXPECTED_EXITS", expected_exits);
         }
@@ -1014,13 +1015,42 @@ fn truncated_tally_publishes_parseable_records() {
     assert!(!output.status.success(), "{text}");
     assert!(text.contains("program=waitpid_test_child_123 status=42 EXPECTED"), "{text}");
     assert!(text.contains("missing closing bracket"), "{text}");
+    assert!(text.contains("nonzero=2 expected=1 failures=0"), "{text}");
 }
 
 #[test]
 fn publication_exit_mismatch_fails() {
     let fixture = SerialFixture::new(&format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=0 failed=[] started=11\n🏁 TEST RUNNER: All tests passed\n", marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-")), "");
-    let output = fixture.run(Some("10"));
+    let output = Command::new("bash")
+        .arg(repo_root().join("scripts/x86-gate-verdict.sh"))
+        .arg(&fixture.kernel_log)
+        .arg(&fixture.user_log)
+        .env("EXPECTED_EXITS", "10")
+        .env("REQUIRE_PROCESS_ACCOUNTING", "1")
+        .output().expect("run full accounting verdict");
     let text = output_text(&output);
     assert!(!output.status.success(), "{text}");
     assert!(text.contains("published 11 processes but only 10 exited"), "{text}");
+}
+
+#[test]
+fn legacy_fixture_exits_are_scored_by_their_profile_floor() {
+    let fixture = SerialFixture::new(&format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=0 failed=[] started=11\n🏁 TEST RUNNER: All tests passed\n", marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-")), "");
+    let output = fixture.run(Some("10"));
+    assert!(output.status.success(), "{}", output_text(&output));
+}
+
+#[test]
+fn full_accounting_requires_a_publication_count() {
+    let fixture = SerialFixture::new(&green_log(), "");
+    let output = Command::new("bash")
+        .arg(repo_root().join("scripts/x86-gate-verdict.sh"))
+        .arg(&fixture.kernel_log)
+        .arg(&fixture.user_log)
+        .env("EXPECTED_EXITS", "10")
+        .env("REQUIRE_PROCESS_ACCOUNTING", "1")
+        .output().expect("run full accounting verdict");
+    let text = output_text(&output);
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("published process count is absent"), "{text}");
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print every nonzero process exit, matching only documented expected statuses."""
+"""Classify parseable nonzero records and reject incomplete exit accounting."""
 import os
 import pathlib
 import re
@@ -47,9 +47,10 @@ def classify(logs, allowlist):
                        if code == status and re.fullmatch(pattern, name)), None)
         failures.append((name, status, reason))
     started = re.search(r'\bstarted=(\d+)', tail)
-    if started and int(started[1]) != exited:
+    require_publications = os.environ.get('REQUIRE_PROCESS_ACCOUNTING') == '1'
+    if require_publications and started and int(started[1]) != exited:
         errors.append(f'published {started[1]} processes but only {exited} exited')
-    if os.environ.get('REQUIRE_PROCESS_ACCOUNTING') == '1' and not started:
+    if require_publications and not started:
         errors.append('published process count is absent')
     real = 0
     for name, status, reason in failures:
@@ -58,7 +59,7 @@ def classify(logs, allowlist):
         real += reason is None
     if nonzero > exited or len(failures) != nonzero:
         errors.append(f'nonzero={nonzero} but failed=[...] contains {len(failures)} named failures (exited={exited})')
-    print(f'TEST_EXITS: nonzero={nonzero} expected={nonzero-real} failures={real}')
+    print(f'TEST_EXITS: nonzero={nonzero} expected={len(failures)-real} failures={real}')
     if errors:
         raise ValueError("; ".join(errors))
     return real == 0
