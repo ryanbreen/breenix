@@ -18,8 +18,19 @@ use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 pub const MAX_BLOCK_DEVICES: usize = 2;
 
 const VIRTIO_IRQ_BASE: u32 = 48;
-const BLOCK_MMIO_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
+/// A request waits for its completion in sleeps of this length, checking
+/// between them that the device has not failed.
+const BLOCK_MMIO_WAIT_SLICE_NS: u64 = 1_000_000_000;
+/// A request outstanding this long is reported, at most once per interval.
+const BLOCK_MMIO_SLOW_REPORT_INTERVAL_NS: u64 = 10_000_000_000;
+/// A wait that cannot sleep (before the scheduler, or on the boot thread
+/// before its timer runs) busy-polls the CPU, so it is bounded: past this the
+/// request is abandoned, the gate is wedged so its DMA buffers are never
+/// reused, and the boot carries on without the disk.
+const BLOCK_MMIO_BOOTSTRAP_WAIT_LIMIT_NS: u64 = 30_000_000_000;
 const BLOCK_MMIO_WEDGED_ERROR: &str = "Block MMIO device wedged after an abandoned request";
+/// When a slow request was last reported, so reports stay rate-limited.
+static LAST_SLOW_REPORT_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 const NO_COMPLETED_DESC: u32 = u32::MAX;
 const NO_COMPLETED_STATUS: u32 = u32::MAX;
 
@@ -382,19 +393,38 @@ impl BlockMmioCompletion {
             .store(NO_COMPLETED_STATUS, Ordering::Release);
     }
 
+    /// Wait for the device to complete the published request.
+    ///
+    /// The device owns the descriptors and DMA buffers until it completes the
+    /// request, and a slow device is not a failed one, so, as in Linux's
+    /// virtio-blk, there is no timeout: the wait ends when the device
+    /// completes the request. It sleeps in slices only to notice a device
+    /// that has failed, the one case where the request is abandoned. A wait
+    /// that cannot sleep spins instead, and is abandoned past the bootstrap
+    /// limit rather than spinning the boot CPU forever.
     fn wait_for_completion(
         &self,
         token: u32,
-        timeout_error: &'static str,
+        state: &BlockDeviceState,
+        request: u32,
     ) -> Result<(), &'static str> {
-        // The request is already published to the device, so abandoning this
-        // wait would leave a device slot and its DMA buffers live.
-        match self
-            .completion
-            .wait_timeout_uninterruptible(token, BLOCK_MMIO_COMPLETION_TIMEOUT_NS)
-        {
-            Ok(true) => Ok(()),
-            Ok(false) | Err(_) => Err(timeout_error),
+        let started_ns = monotonic_now_ns();
+        let sleeps = crate::task::completion::wait_sleeps();
+        loop {
+            if let Ok(true) = self
+                .completion
+                .wait_timeout_uninterruptible(token, BLOCK_MMIO_WAIT_SLICE_NS)
+            {
+                return Ok(());
+            }
+            if device_has_failed(state) {
+                return Err("Block MMIO device failed with a request outstanding");
+            }
+            let waited_ns = monotonic_now_ns().saturating_sub(started_ns);
+            if !sleeps && waited_ns >= BLOCK_MMIO_BOOTSTRAP_WAIT_LIMIT_NS {
+                return Err("Block MMIO request not completed before the kernel could sleep");
+            }
+            report_slow_request(request, waited_ns);
         }
     }
 
@@ -994,7 +1024,7 @@ pub fn read_sector(
         return Err(e);
     }
 
-    if let Err(e) = completion.wait_for_completion(completion_token, "Block MMIO read timeout") {
+    if let Err(e) = completion.wait_for_completion(completion_token, state, request_type::IN) {
         request_guard.wedge();
         return Err(e);
     }
@@ -1120,7 +1150,7 @@ pub fn write_sector(
         return Err(e);
     }
 
-    if let Err(e) = completion.wait_for_completion(completion_token, "Block MMIO write timeout") {
+    if let Err(e) = completion.wait_for_completion(completion_token, state, request_type::OUT) {
         request_guard.wedge();
         return Err(e);
     }
@@ -1153,6 +1183,44 @@ pub fn get_irq(device_index: usize) -> Option<u32> {
 #[inline]
 fn block_mmio_virt_base(state: &BlockDeviceState) -> u64 {
     crate::memory::physical_memory_offset().as_u64() + state.base
+}
+
+/// The device can no longer complete the requests it was given: it asks for
+/// a reset, it has been reset (DRIVER_OK is gone), or it no longer answers
+/// (a register that has gone away reads as all ones).
+fn device_has_failed(state: &BlockDeviceState) -> bool {
+    use super::mmio::status::{DEVICE_NEEDS_RESET, DRIVER_OK};
+    // Offset 0x70 is the MMIO transport's Status register.
+    let status = unsafe { read_volatile((block_mmio_virt_base(state) + 0x70) as *const u32) };
+    status == u32::MAX || status & DRIVER_OK == 0 || status & DEVICE_NEEDS_RESET != 0
+}
+
+fn monotonic_now_ns() -> u64 {
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+}
+
+/// Report a request the device has not completed yet. One line at most per
+/// interval across all devices; it changes nothing about the request.
+fn report_slow_request(request: u32, waited_ns: u64) {
+    if waited_ns < BLOCK_MMIO_SLOW_REPORT_INTERVAL_NS {
+        return;
+    }
+    let now = monotonic_now_ns();
+    let last = LAST_SLOW_REPORT_NS.load(Ordering::Relaxed);
+    if last != 0 && now.saturating_sub(last) < BLOCK_MMIO_SLOW_REPORT_INTERVAL_NS {
+        return;
+    }
+    if LAST_SLOW_REPORT_NS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        log::warn!(
+            "VirtIO block: request type {} still waiting for the device after {} ms",
+            request,
+            waited_ns / 1_000_000
+        );
+    }
 }
 
 /// Handle a VirtIO MMIO block interrupt.
@@ -1331,69 +1399,53 @@ pub fn test_invalid_sector() -> Result<(), &'static str> {
         }
         Err(e) => {
             crate::serial_println!("[virtio-blk] Invalid sector correctly rejected: {}", e);
+            // Only the range check may answer: any other error means the
+            // request reached (or failed to reach) the device.
             if e == "Sector out of range" {
                 crate::serial_println!("[virtio-blk] Invalid sector test passed!");
                 Ok(())
             } else {
                 crate::serial_println!("[virtio-blk] Got unexpected error: {}", e);
-                // Still pass - we got an error which is the expected behavior
-                crate::serial_println!(
-                    "[virtio-blk] Invalid sector test passed (different error message)!"
-                );
-                Ok(())
+                Err("Invalid sector read failed with an error other than 'Sector out of range'")
             }
         }
     }
 }
 
-/// Test behavior when attempting to read from an uninitialized device
+/// Test behavior when attempting to read from a slot with no device
 ///
-/// This test is tricky because BLOCK_DEVICE is a static that may already be initialized
-/// by the time tests run. We check the initialization state and verify error handling.
-///
-/// Note: In production, the device is initialized during boot. This test documents
-/// that read_sector() correctly returns an error for uninitialized state, but cannot
-/// truly test it in isolation without modifying global state (which would be unsafe
-/// in a concurrent environment).
+/// The boot has already initialized the devices it found, so the test reads
+/// from the first slot that holds no device and requires the exact
+/// "Block device not initialized" refusal. If every slot holds a device it
+/// reads from the first index past the table and requires "Invalid device
+/// index" instead, the same lookup's other refusal.
 pub fn test_uninitialized_read() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-blk] Testing uninitialized device handling...");
 
-    // Check current initialization state
-    let is_initialized = capacity(0).is_some();
+    let (device_index, expected) = match (0..MAX_BLOCK_DEVICES).find(|&i| capacity(i).is_none())
+    {
+        Some(free) => (free, "Block device not initialized"),
+        None => (MAX_BLOCK_DEVICES, "Invalid device index"),
+    };
+    crate::serial_println!(
+        "[virtio-blk] Reading from device slot {} (no device there)...",
+        device_index
+    );
 
-    if is_initialized {
-        // Device is already initialized - this is expected in normal boot
-        // We document that read_sector handles uninitialized state by checking the code path
-        crate::serial_println!("[virtio-blk] Device is initialized (expected during normal boot)");
-        crate::serial_println!(
-            "[virtio-blk] Verified: read_sector checks BLOCK_DEVICE.is_none() and returns error"
-        );
-        crate::serial_println!(
-            "[virtio-blk] Uninitialized test passed (device was already initialized)!"
-        );
-        Ok(())
-    } else {
-        // Device is not initialized - we can actually test the error path
-        crate::serial_println!("[virtio-blk] Device is NOT initialized, testing error path...");
-
-        let mut buffer = [0u8; SECTOR_SIZE];
-        match read_sector(0, 0, &mut buffer) {
-            Ok(_) => {
-                crate::serial_println!(
-                    "[virtio-blk] ERROR: Read succeeded on uninitialized device!"
-                );
-                Err("Read should fail on uninitialized device")
-            }
-            Err(e) => {
-                crate::serial_println!("[virtio-blk] Correctly rejected with: {}", e);
-                if e == "Block device not initialized" {
-                    crate::serial_println!("[virtio-blk] Uninitialized test passed!");
-                    Ok(())
-                } else {
-                    crate::serial_println!("[virtio-blk] Unexpected error: {}", e);
-                    Err("Expected 'Block device not initialized' error")
-                }
-            }
+    let mut buffer = [0u8; SECTOR_SIZE];
+    match read_sector(device_index, 0, &mut buffer) {
+        Ok(_) => {
+            crate::serial_println!("[virtio-blk] ERROR: Read succeeded on uninitialized device!");
+            Err("Read should fail on uninitialized device")
+        }
+        Err(e) if e == expected => {
+            crate::serial_println!("[virtio-blk] Correctly rejected with: {}", e);
+            crate::serial_println!("[virtio-blk] Uninitialized test passed!");
+            Ok(())
+        }
+        Err(e) => {
+            crate::serial_println!("[virtio-blk] Unexpected error: {}", e);
+            Err("Read from a slot with no device failed with the wrong error")
         }
     }
 }
@@ -1467,10 +1519,10 @@ pub fn test_write_read_verify() -> Result<(), &'static str> {
             crate::serial_println!("[virtio-blk] Write succeeded");
         }
         Err(e) => {
-            // Write might fail if disk is mounted readonly even without RO feature
-            crate::serial_println!("[virtio-blk] Write failed: {} (may be readonly disk)", e);
-            crate::serial_println!("[virtio-blk] Write test skipped due to write failure");
-            return Ok(()); // Skip gracefully
+            // The device advertised itself writable, so a failed write is a
+            // failed test, not a skip.
+            crate::serial_println!("[virtio-blk] Write failed: {}", e);
+            return Err("Write to a writable device failed");
         }
     }
 
@@ -1499,16 +1551,20 @@ pub fn test_write_read_verify() -> Result<(), &'static str> {
         }
     }
 
-    // Restore original data (best effort)
+    // Restore the original data; a test that leaves its pattern behind fails.
     crate::serial_println!(
         "[virtio-blk] Restoring original data to sector {}...",
         TEST_SECTOR
     );
     if let Err(e) = write_sector(0, TEST_SECTOR, &original) {
-        crate::serial_println!(
-            "[virtio-blk] Warning: Failed to restore original data: {}",
-            e
-        );
+        crate::serial_println!("[virtio-blk] Failed to restore original data: {}", e);
+        return Err("Write-read-verify could not restore the test sector");
+    }
+    let mut restored = [0u8; SECTOR_SIZE];
+    read_sector(0, TEST_SECTOR, &mut restored)?;
+    if restored != original {
+        crate::serial_println!("[virtio-blk] Restored sector does not match the original");
+        return Err("Write-read-verify left the test sector modified");
     }
 
     // Report result

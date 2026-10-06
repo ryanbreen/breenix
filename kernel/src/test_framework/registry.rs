@@ -2293,7 +2293,7 @@ fn test_virtio_blk_write_read_verify() -> TestResult {
 /// Test VirtIO block invalid sector handling (ARM64 only).
 ///
 /// Tests error handling by attempting to read a sector beyond the
-/// device capacity and verifying an appropriate error is returned.
+/// device capacity and requiring the exact "Sector out of range" refusal.
 #[cfg(target_arch = "aarch64")]
 fn test_virtio_blk_invalid_sector() -> TestResult {
     match crate::drivers::virtio::block_mmio::test_invalid_sector() {
@@ -2310,9 +2310,8 @@ fn test_virtio_blk_invalid_sector() -> TestResult {
 
 /// Test VirtIO block uninitialized read handling (ARM64 only).
 ///
-/// Documents that read_sector() correctly returns an error when called
-/// before device initialization. In normal boot, the device is already
-/// initialized so this test just verifies the code path is present.
+/// Reads from a device slot that holds no device and requires the exact
+/// refusal read_sector() gives for it.
 #[cfg(target_arch = "aarch64")]
 fn test_virtio_blk_uninitialized_read() -> TestResult {
     match crate::drivers::virtio::block_mmio::test_uninitialized_read() {

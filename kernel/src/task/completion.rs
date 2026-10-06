@@ -135,6 +135,30 @@ fn syscall_sleep_path_available() -> bool {
     }
 }
 
+/// Idle's saved boot continuation is discarded after Ring 3 starts.
+/// preempt_count > 0 does not identify a syscall: boot holds it too.
+/// Do not release that caller's brake or publish idle as BlockedOnIO.
+/// Before the aarch64 timer runs, idle takes the bounded spin path
+/// instead, since nothing would end a WFI on a lost interrupt.
+fn idle_halt_wait_available(tid: Option<u64>) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    let idle_poll_available = true;
+    #[cfg(target_arch = "aarch64")]
+    let idle_poll_available = crate::arch_impl::aarch64::timer_interrupt::is_initialized();
+    idle_poll_available
+        && crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid)
+            == Some(true)
+}
+
+/// Whether a wait from the current context gives up the CPU until an
+/// interrupt: a thread blocked in the scheduler, or an idle thread halted
+/// between ticks. Before the scheduler runs, and on the boot thread before
+/// its timer does, a wait busy-polls the CPU instead.
+pub fn wait_sleeps() -> bool {
+    let tid = crate::task::scheduler::current_thread_id();
+    tid.is_some() && (idle_halt_wait_available(tid) || syscall_sleep_path_available())
+}
+
 /// The x86 boot continuation is the idle task, not a sleepable worker.
 /// Keep its scheduling brake while allowing IRQ completion and timeout ticks.
 /// The masked check plus STI; HLT closes the completion-before-halt race.
@@ -281,19 +305,7 @@ impl Completion {
         // fall through to the polling path below.
         let tid = crate::task::scheduler::current_thread_id();
 
-        // Idle's saved boot continuation is discarded after Ring 3 starts.
-        // preempt_count > 0 does not identify a syscall: boot holds it too.
-        // Do not release that caller's brake or publish idle as BlockedOnIO.
-        // Before the aarch64 timer runs, idle takes the bounded spin path
-        // below instead, since nothing would end a WFI on a lost interrupt.
-        #[cfg(target_arch = "x86_64")]
-        let idle_poll_available = true;
-        #[cfg(target_arch = "aarch64")]
-        let idle_poll_available = crate::arch_impl::aarch64::timer_interrupt::is_initialized();
-        if idle_poll_available
-            && crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid)
-                == Some(true)
-        {
+        if idle_halt_wait_available(tid) {
             return Ok(wait_idle_completion(self, expected_token, timeout_ns));
         }
 
