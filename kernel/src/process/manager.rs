@@ -566,9 +566,28 @@ impl ProcessManager {
             return Err("Process page table not available for stack mapping");
         }
 
+        // Supply a complete entry stack even when the creator has no argv.
+        // Starting at stack_top - 16 leaves envp at the unmapped stack_top;
+        // libc then inherits that invalid pointer on execv.
+        let initial_rsp = self.setup_argv_on_stack(
+            process
+                .page_table
+                .as_ref()
+                .ok_or("Process page table not available for argv setup")?,
+            stack_top.as_u64(),
+            &[name.as_bytes()],
+            &[],
+            loaded_elf.phdr_vaddr,
+            loaded_elf.phnum,
+            loaded_elf.phentsize,
+            loaded_elf.entry_point.as_u64(),
+        )?;
+
         // Create the main thread
         crate::serial_println!("manager.create_process: Creating main thread");
         let thread = self.create_main_thread(&mut *process, stack_top)?;
+        let mut thread = thread;
+        thread.context.rsp = initial_rsp;
         crate::serial_println!("manager.create_process: Main thread created");
         process.set_main_thread(thread);
         crate::serial_println!("manager.create_process: Main thread set on process");
