@@ -1,6 +1,7 @@
 //! Blocking and nonblocking child waits, followed by a fork-shared signal stack.
 use libbreenix::errno::Errno;
 use libbreenix::error::Error;
+use libbreenix::io;
 use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
 use libbreenix::process::{self, ForkResult, WNOHANG};
 use libbreenix::signal::{self, Sigaction, StackT, SA_ONSTACK, SA_RESTART, SIGCHLD};
@@ -10,6 +11,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static SIGNALS: AtomicUsize = AtomicUsize::new(0);
 static HANDLER_STACK: AtomicUsize = AtomicUsize::new(0);
+
+/// Wait until `pid`'s threads are all blocked. Each waiting parent here does
+/// nothing between fork and its waitpid, so that block is the wait.
+fn wait_until_parked(pid: i32) {
+    let path = format!("/proc/{pid}/status");
+    while !std::fs::read_to_string(&path)
+        .is_ok_and(|status| status.lines().any(|line| line == "State:\tBlocked"))
+    {
+        let _ = process::yield_now();
+    }
+}
 
 extern "C" fn child_exited(_: i32) {
     let local = 0u8;
@@ -32,6 +44,19 @@ fn cow_signal_stack() -> CaseResult {
     let mut action = Sigaction::new(child_exited);
     action.flags |= SA_RESTART | SA_ONSTACK;
     signal::sigaction(SIGCHLD, Some(&action), None)?;
+    // A second child keeps sharing the stack pages through delivery, so the
+    // frame write must copy them, and checks that its own bytes stay intact.
+    let (release_r, release_w) = io::pipe()?;
+    let sharer = match process::fork()? {
+        ForkResult::Child => {
+            let _ = io::close(release_w);
+            let _ = io::read(release_r, &mut [0; 1]);
+            let bytes = unsafe { core::slice::from_raw_parts(stack as *const u8, 16384) };
+            process::exit(if bytes.iter().all(|&byte| byte == 0xa5) { 0 } else { 1 })
+        }
+        ForkResult::Parent(sharer) => sharer,
+    };
+    io::close(release_r)?;
     match process::fork()? {
         ForkResult::Child => process::exit(42),
         ForkResult::Parent(child) => {
@@ -59,6 +84,13 @@ fn cow_signal_stack() -> CaseResult {
                 == 0, "saved signal mask missing on second page")?;
         }
     }
+    io::write(release_w, b"r")?;
+    io::close(release_w)?;
+    let mut status = 0;
+    check(process::waitpid(sharer.raw() as i32, &mut status, 0)? == sharer,
+        "CoW signal stack: wrong sharer")?;
+    check(process::wifexited(status) && process::wexitstatus(status) == 0,
+        "signal frame write changed the other sharer's stack")?;
     signal::sigaltstack(Some(&StackT::default()), None)?;
     memory::munmap(stack, 16384)?;
     Ok(())
@@ -71,10 +103,11 @@ fn repeat_wait(any_child: bool, caught: bool, delayed: bool) -> CaseResult {
         signal::sigaction(SIGCHLD, Some(&action), None)?;
     }
     let count = if delayed { 1 } else { 256 };
+    let parent = process::getpid()?.raw() as i32;
     for iteration in 0..count {
         match process::fork()? {
             ForkResult::Child => {
-                if delayed { time::sleep_ms(20)?; }
+                if delayed { wait_until_parked(parent); }
                 process::exit(42)
             }
             ForkResult::Parent(child) => {
@@ -105,12 +138,20 @@ fn parked_specific_signal() -> CaseResult { repeat_wait(false, true, true) }
 fn parked_any_signal() -> CaseResult { repeat_wait(true, true, true) }
 
 fn nohang() -> CaseResult {
+    // The child exits only once the first WNOHANG has seen it running.
+    let (release_r, release_w) = io::pipe()?;
     match process::fork()? {
-        ForkResult::Child => { time::sleep_ms(20)?; process::exit(42) }
+        ForkResult::Child => {
+            let _ = io::close(release_w);
+            let _ = io::read(release_r, &mut [0; 1]);
+            process::exit(42)
+        }
         ForkResult::Parent(child) => {
+            io::close(release_r)?;
             let mut status = 0;
-            check(process::waitpid(child.raw() as i32, &mut status, WNOHANG)?.raw() == 0,
-                "WNOHANG returned a running child")?;
+            let running = process::waitpid(child.raw() as i32, &mut status, WNOHANG);
+            io::close(release_w)?;
+            check(running?.raw() == 0, "WNOHANG returned a running child")?;
             let start = time::now_monotonic()?.as_nanos();
             loop {
                 let waited = process::waitpid(child.raw() as i32, &mut status, WNOHANG)?;
@@ -131,18 +172,24 @@ fn nohang() -> CaseResult {
 fn interrupted() -> CaseResult {
     signal::sigaction(SIGCHLD, Some(&Sigaction::new(child_exited)), None)?;
     let parent = process::getpid()?;
+    // The signal is sent once the parent is parked in waitpid, and the child
+    // exits only after the interrupted wait has returned.
+    let (release_r, release_w) = io::pipe()?;
     match process::fork()? {
         ForkResult::Child => {
-            time::sleep_ms(20)?;
+            let _ = io::close(release_w);
+            wait_until_parked(parent.raw() as i32);
             signal::kill(parent.raw() as i32, SIGCHLD)?;
-            time::sleep_ms(50)?;
+            let _ = io::read(release_r, &mut [0; 1]);
             process::exit(42)
         }
         ForkResult::Parent(child) => {
+            io::close(release_r)?;
             let mut status = 0;
             check(matches!(process::waitpid(child.raw() as i32, &mut status, 0),
                 Err(Error::Os(Errno::EINTR))), "caught SIGCHLD did not interrupt waitpid")?;
             check(SIGNALS.load(Ordering::Relaxed) == 1, "interrupting handler missing")?;
+            io::close(release_w)?;
             let waited = process::waitpid(child.raw() as i32, &mut status, 0)?;
             check(waited == child && process::wifexited(status)
                 && process::wexitstatus(status) == 42, "wait after EINTR failed")?;
