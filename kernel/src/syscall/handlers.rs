@@ -2247,6 +2247,7 @@ pub fn sys_exec_with_frame(
                             "sys_exec: Successfully replaced process address space, entry point: {:#x}",
                             new_entry_point
                         );
+                        crate::tls::install_exec_fs_base(current_thread_id);
 
                         // CRITICAL FIX: Get the new stack pointer from the process
                         // The exec_process function set up a new stack at USER_STACK_TOP
@@ -2577,6 +2578,7 @@ pub fn sys_execv_with_frame(
             drop(manager_guard);
 
             commit.apply();
+            crate::tls::install_exec_fs_base(current_thread_id);
 
             log::info!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
@@ -2739,6 +2741,7 @@ pub fn sys_execv_with_frame(
             drop(manager_guard);
 
             commit.apply();
+            crate::tls::install_exec_fs_base(current_thread_id);
 
             log::info!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",

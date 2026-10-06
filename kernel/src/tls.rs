@@ -261,6 +261,21 @@ pub fn set_user_fs_base(base: u64) -> crate::syscall::SyscallResult {
     SyscallResult::Ok(0)
 }
 
+/// Exec discards the old image's FS base. Clear the current thread's
+/// ARCH_SET_FS state and install the base its next dispatch would restore,
+/// because exec returns to the new image without a context switch.
+pub fn install_exec_fs_base(thread_id: u64) {
+    if let Some(thread) = crate::per_cpu::current_thread() {
+        if thread.id == thread_id {
+            thread.context.user_fs_base = 0;
+            thread.context.user_fs_base_set = false;
+        }
+    }
+    if switch_tls(thread_id).is_err() {
+        x86_64::registers::model_specific::FsBase::write(VirtAddr::new(0));
+    }
+}
+
 /// Switch to a different thread's TLS
 /// CRITICAL: Now uses FS base for user TLS, leaving GS for per-CPU data
 #[allow(dead_code)]
