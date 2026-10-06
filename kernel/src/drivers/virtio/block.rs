@@ -27,8 +27,13 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
-const BLOCK_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
-const BLOCK_EARLY_COMPLETION_TIMEOUT_NS: u64 = 100_000_000_000;
+/// A request waits for its completion in sleeps of this length, checking
+/// between them that the device has not failed.
+const BLOCK_WAIT_SLICE_NS: u64 = 1_000_000_000;
+/// A request outstanding this long is reported, at most once per interval.
+const BLOCK_SLOW_REPORT_INTERVAL_NS: u64 = 10_000_000_000;
+/// When a slow request was last reported, so reports stay rate-limited.
+static LAST_SLOW_REPORT_NS: AtomicU64 = AtomicU64::new(0);
 const NO_COMPLETED_DESC: u32 = u32::MAX;
 const NO_COMPLETED_STATUS: u32 = u32::MAX;
 
@@ -203,6 +208,46 @@ impl BlockTransport {
             Self::Legacy(device) => device.read_isr(),
             Self::Modern(device) => device.read_interrupt_status() as u8,
         }
+    }
+
+    /// The device can no longer complete the requests it was given: it asks
+    /// for a reset, it has been reset (DRIVER_OK is gone), or it no longer
+    /// answers (a function that has gone away reads as all ones).
+    fn has_failed(&self) -> bool {
+        use super::status::{DEVICE_NEEDS_RESET, DRIVER_OK};
+        let status = match self {
+            Self::Legacy(device) => device.read_status(),
+            Self::Modern(device) => device.read_status(),
+        };
+        status == u8::MAX || status & DRIVER_OK == 0 || status & DEVICE_NEEDS_RESET != 0
+    }
+}
+
+fn monotonic_now_ns() -> u64 {
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+}
+
+/// Report a request the device has not completed yet. One line at most per
+/// interval across all devices; it changes nothing about the request.
+fn report_slow_request(request: u32, waited_ns: u64) {
+    if waited_ns < BLOCK_SLOW_REPORT_INTERVAL_NS {
+        return;
+    }
+    let now = monotonic_now_ns();
+    let last = LAST_SLOW_REPORT_NS.load(Ordering::Relaxed);
+    if last != 0 && now.saturating_sub(last) < BLOCK_SLOW_REPORT_INTERVAL_NS {
+        return;
+    }
+    if LAST_SLOW_REPORT_NS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        log::warn!(
+            "VirtIO block: request type {} still waiting for the device after {} ms",
+            request,
+            waited_ns / 1_000_000
+        );
     }
 }
 
@@ -416,26 +461,26 @@ impl VirtioBlockDevice {
             .store(NO_COMPLETED_STATUS, Ordering::Release);
     }
 
-    fn wait_for_completion(&self, token: u32) -> Result<(), &'static str> {
-        let scheduler_thread_present = crate::task::scheduler::current_thread_id().is_some();
-        let timeout_ns = if scheduler_thread_present {
-            BLOCK_COMPLETION_TIMEOUT_NS
-        } else {
-            // The x86 early-boot Completion path has no scheduler thread to
-            // park, so it uses its internal no-scheduler wait. Keep that path
-            // long enough for the existing boot-time sector-0 probe.
-            BLOCK_EARLY_COMPLETION_TIMEOUT_NS
-        };
-
-        // The request is already published to the device, so abandoning this
-        // wait would leave a device slot and its DMA buffers live.
-        let result = self
-            .completion
-            .wait_timeout_uninterruptible(token, timeout_ns);
-
-        match result {
-            Ok(true) => Ok(()),
-            Ok(false) | Err(_) => Err("Block request timed out"),
+    /// Wait for the device to complete the published request.
+    ///
+    /// The device owns the descriptors and DMA buffers until it completes the
+    /// request, and a slow device is not a failed one, so, as in Linux's
+    /// virtio-blk, there is no timeout: the wait ends when the device
+    /// completes the request. It sleeps in slices only to notice a device
+    /// that has failed, the one case where the request is abandoned.
+    fn wait_for_completion(&self, token: u32, request: u32) -> Result<(), &'static str> {
+        let started_ns = monotonic_now_ns();
+        loop {
+            if let Ok(true) = self
+                .completion
+                .wait_timeout_uninterruptible(token, BLOCK_WAIT_SLICE_NS)
+            {
+                return Ok(());
+            }
+            if self.device.has_failed() {
+                return Err("Block device failed with a request outstanding");
+            }
+            report_slow_request(request, monotonic_now_ns().saturating_sub(started_ns));
         }
     }
 
@@ -448,6 +493,13 @@ impl VirtioBlockDevice {
     #[cfg(not(target_arch = "x86_64"))]
     fn irq_completion_available(&self) -> bool {
         true
+    }
+
+    /// Run `f` with the queue locked and interrupts masked. The interrupt
+    /// handler takes the same lock to drain a completion, so it must never
+    /// find the lock held by the thread it interrupted.
+    fn with_queue<R>(&self, f: impl FnOnce(&mut Virtqueue) -> R) -> R {
+        x86_64::instructions::interrupts::without_interrupts(|| f(&mut self.queue.lock()))
     }
 
     fn take_completed_request(&self) -> Result<(u16, u8), &'static str> {
@@ -532,9 +584,7 @@ impl VirtioBlockDevice {
         let (data_phys, data_virt) = self.dma_buffers.data;
         let (status_phys, status_virt) = self.dma_buffers.status;
 
-        {
-            let mut queue = self.queue.lock();
-
+        let added = self.with_queue(|queue| {
             // Set up request header using volatile writes.
             unsafe {
                 let header = header_virt as *mut VirtioBlkReq;
@@ -551,16 +601,17 @@ impl VirtioBlockDevice {
                 (status_phys, 1, true),                // Status: device writes
             ];
 
-            if queue.add_chain(&buffers).is_none() {
-                self.clear_completion_state();
-                return Err("Queue full");
-            }
+            queue.add_chain(&buffers).is_some()
+        });
+        if !added {
+            self.clear_completion_state();
+            return Err("Queue full");
         }
 
         core::sync::atomic::fence(Ordering::SeqCst);
         self.device.notify_queue(0);
 
-        if let Err(e) = self.wait_for_completion(completion_token) {
+        if let Err(e) = self.wait_for_completion(completion_token, request_type::IN) {
             request_guard.wedge();
             return Err(e);
         }
@@ -572,28 +623,29 @@ impl VirtioBlockDevice {
                 return Err(e);
             }
         };
-        let mut queue = self.queue.lock();
+        let result = self.with_queue(|queue| {
+            // Check status
+            if status != status_code::OK {
+                queue.free_chain(completed_desc);
+                return Err("Device returned error status");
+            }
 
-        // Check status
-        if status != status_code::OK {
+            // Copy data to user buffer
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data_virt as *const u8,
+                    buffer.as_mut_ptr(),
+                    SECTOR_SIZE,
+                );
+            }
+
+            // Free descriptor chain
             queue.free_chain(completed_desc);
-            self.clear_completion_state();
-            return Err("Device returned error status");
-        }
-
-        // Copy data to user buffer
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                data_virt as *const u8,
-                buffer.as_mut_ptr(),
-                SECTOR_SIZE,
-            );
-        }
-
-        // Free descriptor chain
-        queue.free_chain(completed_desc);
+            Ok(())
+        });
 
         self.clear_completion_state();
+        result?;
         self.ops_completed.fetch_add(1, Ordering::Relaxed);
         drop(request_guard);
 
@@ -621,9 +673,7 @@ impl VirtioBlockDevice {
         let (data_phys, data_virt) = self.dma_buffers.data;
         let (status_phys, status_virt) = self.dma_buffers.status;
 
-        {
-            let mut queue = self.queue.lock();
-
+        let added = self.with_queue(|queue| {
             unsafe {
                 let header = header_virt as *mut VirtioBlkReq;
                 core::ptr::write_volatile(&mut (*header).type_, request_type::OUT);
@@ -639,16 +689,17 @@ impl VirtioBlockDevice {
                 (status_phys, 1, true),                 // Status: device writes
             ];
 
-            if queue.add_chain(&buffers).is_none() {
-                self.clear_completion_state();
-                return Err("Queue full");
-            }
+            queue.add_chain(&buffers).is_some()
+        });
+        if !added {
+            self.clear_completion_state();
+            return Err("Queue full");
         }
 
         core::sync::atomic::fence(Ordering::SeqCst);
         self.device.notify_queue(0);
 
-        if let Err(e) = self.wait_for_completion(completion_token) {
+        if let Err(e) = self.wait_for_completion(completion_token, request_type::OUT) {
             request_guard.wedge();
             return Err(e);
         }
@@ -660,19 +711,15 @@ impl VirtioBlockDevice {
                 return Err(e);
             }
         };
-        let mut queue = self.queue.lock();
+        // Free descriptor chain
+        self.with_queue(|queue| queue.free_chain(completed_desc));
+        self.clear_completion_state();
 
         // Check status
         if status != status_code::OK {
-            queue.free_chain(completed_desc);
-            self.clear_completion_state();
             return Err("Device returned error status");
         }
 
-        // Free descriptor chain
-        queue.free_chain(completed_desc);
-
-        self.clear_completion_state();
         self.ops_completed.fetch_add(1, Ordering::Relaxed);
         drop(request_guard);
 
@@ -692,8 +739,7 @@ impl VirtioBlockDevice {
         let token = self.prepare_completion_wait();
         let (header_phys, header_virt) = self.dma_buffers.header;
         let (status_phys, status_virt) = self.dma_buffers.status;
-        {
-            let mut queue = self.queue.lock();
+        let added = self.with_queue(|queue| {
             unsafe {
                 core::ptr::write_volatile(
                     header_virt as *mut VirtioBlkReq,
@@ -706,14 +752,15 @@ impl VirtioBlockDevice {
                 core::ptr::write_volatile(status_virt as *mut u8, 0xff);
             }
             let buffers = [(header_phys, 16, false), (status_phys, 1, true)];
-            if queue.add_chain(&buffers).is_none() {
-                self.clear_completion_state();
-                return Err("Queue full");
-            }
+            queue.add_chain(&buffers).is_some()
+        });
+        if !added {
+            self.clear_completion_state();
+            return Err("Queue full");
         }
         core::sync::atomic::fence(Ordering::SeqCst);
         self.device.notify_queue(0);
-        if let Err(error) = self.wait_for_completion(token) {
+        if let Err(error) = self.wait_for_completion(token, request_type::FLUSH) {
             request_guard.wedge();
             return Err(error);
         }
@@ -724,7 +771,7 @@ impl VirtioBlockDevice {
                 return Err(error);
             }
         };
-        self.queue.lock().free_chain(desc);
+        self.with_queue(|queue| queue.free_chain(desc));
         self.clear_completion_state();
         if status != status_code::OK {
             return Err("Device flush failed");
@@ -751,9 +798,11 @@ impl VirtioBlockDevice {
             return true;
         }
 
-        let Some(mut queue) = self.queue.try_lock() else {
-            return true;
-        };
+        // Every thread-side holder masks interrupts, so on this CPU the lock
+        // is free, and a holder on another CPU releases it within a few
+        // descriptor updates. Skipping the drain would lose the completion:
+        // the ISR read above has already acknowledged it.
+        let mut queue = self.queue.lock();
 
         if let Some((completed_desc, _bytes)) = queue.get_used() {
             let (_, status_virt) = self.dma_buffers.status;

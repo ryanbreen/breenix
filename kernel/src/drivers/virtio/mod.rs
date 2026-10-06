@@ -59,6 +59,8 @@ pub mod status {
     pub const DRIVER_OK: u8 = 4;
     /// Feature negotiation complete
     pub const FEATURES_OK: u8 = 8;
+    /// The device has hit an error it cannot recover from without a reset
+    pub const DEVICE_NEEDS_RESET: u8 = 64;
     /// Something went wrong in the guest
     pub const FAILED: u8 = 128;
 }

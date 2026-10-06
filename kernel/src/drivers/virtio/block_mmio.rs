@@ -18,8 +18,14 @@ use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 pub const MAX_BLOCK_DEVICES: usize = 2;
 
 const VIRTIO_IRQ_BASE: u32 = 48;
-const BLOCK_MMIO_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
+/// A request waits for its completion in sleeps of this length, checking
+/// between them that the device has not failed.
+const BLOCK_MMIO_WAIT_SLICE_NS: u64 = 1_000_000_000;
+/// A request outstanding this long is reported, at most once per interval.
+const BLOCK_MMIO_SLOW_REPORT_INTERVAL_NS: u64 = 10_000_000_000;
 const BLOCK_MMIO_WEDGED_ERROR: &str = "Block MMIO device wedged after an abandoned request";
+/// When a slow request was last reported, so reports stay rate-limited.
+static LAST_SLOW_REPORT_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 const NO_COMPLETED_DESC: u32 = u32::MAX;
 const NO_COMPLETED_STATUS: u32 = u32::MAX;
 
@@ -382,19 +388,31 @@ impl BlockMmioCompletion {
             .store(NO_COMPLETED_STATUS, Ordering::Release);
     }
 
+    /// Wait for the device to complete the published request.
+    ///
+    /// The device owns the descriptors and DMA buffers until it completes the
+    /// request, and a slow device is not a failed one, so, as in Linux's
+    /// virtio-blk, there is no timeout: the wait ends when the device
+    /// completes the request. It sleeps in slices only to notice a device
+    /// that has failed, the one case where the request is abandoned.
     fn wait_for_completion(
         &self,
         token: u32,
-        timeout_error: &'static str,
+        state: &BlockDeviceState,
+        request: u32,
     ) -> Result<(), &'static str> {
-        // The request is already published to the device, so abandoning this
-        // wait would leave a device slot and its DMA buffers live.
-        match self
-            .completion
-            .wait_timeout_uninterruptible(token, BLOCK_MMIO_COMPLETION_TIMEOUT_NS)
-        {
-            Ok(true) => Ok(()),
-            Ok(false) | Err(_) => Err(timeout_error),
+        let started_ns = monotonic_now_ns();
+        loop {
+            if let Ok(true) = self
+                .completion
+                .wait_timeout_uninterruptible(token, BLOCK_MMIO_WAIT_SLICE_NS)
+            {
+                return Ok(());
+            }
+            if device_has_failed(state) {
+                return Err("Block MMIO device failed with a request outstanding");
+            }
+            report_slow_request(request, monotonic_now_ns().saturating_sub(started_ns));
         }
     }
 
@@ -994,7 +1012,7 @@ pub fn read_sector(
         return Err(e);
     }
 
-    if let Err(e) = completion.wait_for_completion(completion_token, "Block MMIO read timeout") {
+    if let Err(e) = completion.wait_for_completion(completion_token, state, request_type::IN) {
         request_guard.wedge();
         return Err(e);
     }
@@ -1120,7 +1138,7 @@ pub fn write_sector(
         return Err(e);
     }
 
-    if let Err(e) = completion.wait_for_completion(completion_token, "Block MMIO write timeout") {
+    if let Err(e) = completion.wait_for_completion(completion_token, state, request_type::OUT) {
         request_guard.wedge();
         return Err(e);
     }
@@ -1153,6 +1171,44 @@ pub fn get_irq(device_index: usize) -> Option<u32> {
 #[inline]
 fn block_mmio_virt_base(state: &BlockDeviceState) -> u64 {
     crate::memory::physical_memory_offset().as_u64() + state.base
+}
+
+/// The device can no longer complete the requests it was given: it asks for
+/// a reset, it has been reset (DRIVER_OK is gone), or it no longer answers
+/// (a register that has gone away reads as all ones).
+fn device_has_failed(state: &BlockDeviceState) -> bool {
+    use super::mmio::status::{DEVICE_NEEDS_RESET, DRIVER_OK};
+    // Offset 0x70 is the MMIO transport's Status register.
+    let status = unsafe { read_volatile((block_mmio_virt_base(state) + 0x70) as *const u32) };
+    status == u32::MAX || status & DRIVER_OK == 0 || status & DEVICE_NEEDS_RESET != 0
+}
+
+fn monotonic_now_ns() -> u64 {
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+}
+
+/// Report a request the device has not completed yet. One line at most per
+/// interval across all devices; it changes nothing about the request.
+fn report_slow_request(request: u32, waited_ns: u64) {
+    if waited_ns < BLOCK_MMIO_SLOW_REPORT_INTERVAL_NS {
+        return;
+    }
+    let now = monotonic_now_ns();
+    let last = LAST_SLOW_REPORT_NS.load(Ordering::Relaxed);
+    if last != 0 && now.saturating_sub(last) < BLOCK_MMIO_SLOW_REPORT_INTERVAL_NS {
+        return;
+    }
+    if LAST_SLOW_REPORT_NS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        log::warn!(
+            "VirtIO block: request type {} still waiting for the device after {} ms",
+            request,
+            waited_ns / 1_000_000
+        );
+    }
 }
 
 /// Handle a VirtIO MMIO block interrupt.
