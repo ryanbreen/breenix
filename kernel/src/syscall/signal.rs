@@ -85,11 +85,11 @@ fn check_target_exists(pid: i64) -> SyscallResult {
         let target_pid = ProcessId::new(pid as u64);
         let manager_guard = manager();
 
+        // A child that has exited is a zombie, still a process, until it is
+        // reaped; only a reaped row (invisible to this lookup) is gone.
         if let Some(ref manager) = *manager_guard {
-            if let Some(process) = manager.get_process(target_pid) {
-                if !process.is_terminated() {
-                    return SyscallResult::Ok(0);
-                }
+            if manager.get_process(target_pid).is_some() {
+                return SyscallResult::Ok(0);
             }
         }
         SyscallResult::Err(3) // ESRCH - No such process
@@ -105,9 +105,9 @@ fn check_target_exists(pid: i64) -> SyscallResult {
             // Find caller's pgid
             if let Some((_, caller)) = manager.find_process_by_thread(current_thread_id) {
                 let caller_pgid = caller.pgid;
-                // Check if any non-terminated process is in this group
+                // Check if any process, a zombie included, is in this group
                 for process in manager.all_processes() {
-                    if process.pgid == caller_pgid && !process.is_terminated() {
+                    if process.pgid == caller_pgid {
                         return SyscallResult::Ok(0);
                     }
                 }
@@ -133,7 +133,7 @@ fn check_target_exists(pid: i64) -> SyscallResult {
         let manager_guard = manager();
         if let Some(ref manager) = *manager_guard {
             for process in manager.all_processes() {
-                if process.pgid == pgid && !process.is_terminated() {
+                if process.pgid == pgid {
                     return SyscallResult::Ok(0);
                 }
             }
@@ -365,10 +365,11 @@ fn send_signal_to_process_group(pgid: ProcessId, sig: u32) -> SyscallResult {
     let target_pids: alloc::vec::Vec<ProcessId> = {
         let manager_guard = manager();
         if let Some(ref manager) = *manager_guard {
+            // Zombies are members until reaped; signalling one has no effect.
             manager
                 .all_processes()
                 .iter()
-                .filter(|p| p.pgid == pgid && !p.is_terminated())
+                .filter(|p| p.pgid == pgid)
                 .map(|p| p.id)
                 .collect()
         } else {
