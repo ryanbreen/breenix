@@ -2020,6 +2020,11 @@ fn load_test_binaries_from_ext2() {
 
     let mut loaded = 0;
     let mut failed = 0;
+    // A testing kernel never launches init, so the boot tests' ProcessContext
+    // cohort runs here instead: once, with the first test process published
+    // and not yet runnable, the state `launch_init_from_elf` gives it.
+    #[cfg(feature = "boot_tests")]
+    let mut process_context_pending = true;
 
     // Search paths for test binaries - try each in order
     let search_dirs = ["/bin", "/usr/local/cbin", "/usr/local/test/bin", "/sbin"];
@@ -2089,7 +2094,22 @@ fn load_test_binaries_from_ext2() {
         }
 
         // Create userspace process (adds to scheduler ready queue)
-        match kernel::process::creation::create_user_process(String::from(*name), &elf_data) {
+        let created = kernel::process::creation::create_user_process_before_run(
+            String::from(*name),
+            &elf_data,
+            |_| {
+                #[cfg(feature = "boot_tests")]
+                if core::mem::take(&mut process_context_pending) {
+                    let failures = kernel::test_framework::advance_to_stage(
+                        kernel::test_framework::TestStage::ProcessContext,
+                    );
+                    if failures > 0 {
+                        serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
+                    }
+                }
+            },
+        );
+        match created {
             Ok(pid) => {
                 serial_println!("[test] Loaded {} (PID {})", name, pid.as_u64());
                 #[cfg(feature = "btrt")]

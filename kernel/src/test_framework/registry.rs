@@ -7759,6 +7759,11 @@ fn test_stale_timer_entry_cannot_end_later_wait() -> TestResult {
 /// scheduler tracks a live current thread for the CPU running the test, and the
 /// user process just created owns the dispatchable main thread that the boot CPU
 /// installs as current a few lines later.
+///
+/// A testing kernel never launches init. Its test loader advances to
+/// `ProcessContext` from inside `create_user_process_before_run` for the first
+/// test binary: the process is published, but its main thread has not been
+/// handed to the scheduler, so the same premise holds there.
 fn test_current_thread_exists() -> TestResult {
     #[cfg(target_arch = "x86_64")]
     {
@@ -7791,7 +7796,8 @@ fn test_current_thread_exists() -> TestResult {
         //    PID, since PIDs are allocated monotonically and no ProcessContext
         //    test creates a process — owns an address space and a dispatchable
         //    main thread. That main thread is exactly what `launch_init_from_elf`
-        //    installs as CPU 0's current thread once this stage returns; without
+        //    installs as CPU 0's current thread once this stage returns (in a
+        //    testing kernel, what the loader hands to the scheduler); without
         //    it, no current thread could ever exist.
         let manager_guard = crate::process::manager();
         let manager = match *manager_guard {
