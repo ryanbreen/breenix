@@ -107,7 +107,11 @@ wait immediately and once a minute. Its serial header records queue waits,
 observed holders/VMs and the host's load averages at enqueue and acquisition.
 The header is prepended after the serial writer closes, before scoring, so guest
 output and Vigil's record/verdict formats remain unchanged. Concurrent beast
-builds keep separate build logs beside their gate output.
+builds keep separate build logs beside their gate output. Each gate seeds a
+private Cargo home from the shared registry/git cache, preserving configuration
+and credentials but using independent cache locks and tracking data. This avoids
+the pinned Cargo GC lock leak that deadlocks nested builds under contention.
+The private home is cleaned up on exit and excluded from run records.
 
 For one deliberately unqueued **manual Mac boot**, prefix the usual command
 with `BREENIX_BOOT_NO_QUEUE=1`. It prints `BYPASS` and records that choice in the

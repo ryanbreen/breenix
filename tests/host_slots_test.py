@@ -95,6 +95,30 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         self.assertEqual(first.wait(timeout=10), 0)
         self.line_matching(third, 'READY')
 
+    def test_cargo_cache_seed_has_independent_data_and_no_shared_locks(self):
+        source = self.root / 'cargo'
+        (source / 'registry' / 'index').mkdir(parents=True)
+        (source / 'git').mkdir()
+        cached = source / 'registry' / 'index' / 'entry'
+        cached.write_text('shared')
+        config = source / 'config.toml'
+        config.write_text('[net]\nretry = 7\n')
+        credentials = source / 'credentials.toml'
+        credentials.write_text('test-only credential fixture')
+        credentials.chmod(0o600)
+        for name in ('.package-cache', '.package-cache-mutate', '.global-cache'):
+            (source / name).write_text('not a seed')
+        destination = slots.isolated_cargo_home(source, self.root / 'target')
+        private = destination / 'registry' / 'index' / 'entry'
+        self.assertEqual(private.read_text(), 'shared')
+        self.assertNotEqual(private.stat().st_ino, cached.stat().st_ino)
+        private.write_text('private')
+        self.assertEqual(cached.read_text(), 'shared')
+        self.assertEqual((destination / 'config.toml').read_bytes(), config.read_bytes())
+        self.assertEqual((destination / 'credentials.toml').stat().st_mode & 0o777, 0o600)
+        for name in ('.package-cache', '.package-cache-mutate', '.global-cache'):
+            self.assertFalse((destination / name).exists())
+
     def test_snapshot_waits_for_holder_metadata_publication(self):
         directory = self.root / 'locks'
         directory.mkdir()

@@ -128,6 +128,27 @@ def write_header(record, serial, context=None):
     temporary.replace(path)
 
 
+def isolated_cargo_home(source, directory):
+    """Seed a private cache without sharing Cargo's lock or tracking database."""
+    source = Path(source)
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = Path(tempfile.mkdtemp(prefix='gate-cargo-home.', dir=directory))
+    try:
+        for name in ('registry', 'git'):
+            entry = source / name
+            if entry.is_dir():
+                shutil.copytree(entry, destination / name, symlinks=True)
+        for name in ('config', 'config.toml', 'credentials', 'credentials.toml'):
+            entry = source / name
+            if entry.is_file():
+                shutil.copy2(entry, destination / name)
+    except BaseException:
+        shutil.rmtree(destination)
+        raise
+    return destination
+
+
 def send_request(request):
     with socket.socket(socket.AF_UNIX) as client:
         client.connect(os.environ['BREENIX_SLOT_SESSION'])
@@ -298,10 +319,13 @@ def supervise(argv):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'vm', 'serial', 'header'))
+    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'vm', 'serial', 'header', 'cargo-home'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     values = args.arguments
+    if args.operation == 'cargo-home':
+        print(isolated_cargo_home(values[0], values[1]))
+        return 0
     if args.operation == 'supervise':
         return supervise(values[1:] if values[0] == '--' else values)
     if args.operation in ('acquire', 'release'):

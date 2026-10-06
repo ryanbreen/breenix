@@ -177,6 +177,12 @@ SUITE_HOLD_SECS="${BREENIX_SUITE_HOLD:-5}"
 
 # Cover every cargo invocation, including userspace and disk packing.
 host_slot_acquire x86-build || exit 1
+# Pinned Cargo can leak its mutation lock when cache GC races a downloader,
+# deadlocking nested Cargo builds. Seed a private cache, with independent locks.
+# Keep it outside gate-tmp: credentials/cache files must not enter run records.
+GATE_CARGO_HOME=$(python3 "$HOST_SLOTS_HELPER" cargo-home "${CARGO_HOME:-$HOME/.cargo}" "$REPO_DIR/target") || exit 1
+export CARGO_HOME="$GATE_CARGO_HOME"
+trap 'rm -rf "$GATE_CARGO_HOME"' EXIT
 mkdir -p "$BREENIX_GATE_TMP" || exit 1
 GATE_BUILD_LOG_DIR=$(mktemp -d "$BREENIX_GATE_TMP/build-logs.XXXXXX") || exit 1
 echo "[gate] === Building userspace ELFs ==="
