@@ -2386,19 +2386,19 @@ fn limits_cpu() -> CaseResult {
 }
 
 fn limits_data() -> CaseResult {
-    let layout = std::alloc::Layout::from_size_align(64 << 20, 16).map_err(|e| e.to_string())?;
+    let layout = std::alloc::Layout::from_size_align(16 << 20, 16).map_err(|e| e.to_string())?;
     // SAFETY: a nonzero size; the block is freed at once.
     let block = unsafe { std::alloc::alloc(layout) };
-    check(!block.is_null(), "a 64 MiB allocation failed with RLIMIT_DATA at its default")?;
+    check(!block.is_null(), "a 16 MiB allocation failed with RLIMIT_DATA at its default")?;
     unsafe { std::alloc::dealloc(block, layout) };
     task(move || {
-        let r = setrlimit(RLIMIT_DATA, 16 << 20, RLIM_INFINITY);
+        let r = setrlimit(RLIMIT_DATA, 4 << 20, RLIM_INFINITY);
         if r != 0 { return Err(format!("setrlimit(RLIMIT_DATA) failed with {}", shown(r))); }
         // SAFETY: as above; it is freed if it was made.
         let block = unsafe { std::alloc::alloc(layout) };
         if block.is_null() { return Ok(()); }
         unsafe { std::alloc::dealloc(block, layout) };
-        Err("a 64 MiB allocation succeeded with RLIMIT_DATA at 16 MiB".into())
+        Err("a 16 MiB allocation succeeded with RLIMIT_DATA at 4 MiB".into())
     })?.finish()
 }
 
@@ -2433,17 +2433,18 @@ fn limits_stack() -> CaseResult {
 }
 
 fn limits_as() -> CaseResult {
-    const LEN: usize = 128 << 20;
+    // A mapping larger than the limit by itself, whatever the process already uses.
+    const LEN: usize = 32 << 20;
     let map = |len: usize| memory::mmap(core::ptr::null_mut(), len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    let unlimited = map(LEN).map_err(|e| format!("a 128 MiB mapping failed with RLIMIT_AS at its default: {e}"))?;
+    let unlimited = map(LEN).map_err(|e| format!("a 32 MiB mapping failed with RLIMIT_AS at its default: {e}"))?;
     memory::munmap(unlimited, LEN)?;
     task(|| {
-        let r = setrlimit(RLIMIT_AS, 64 << 20, RLIM_INFINITY);
+        let r = setrlimit(RLIMIT_AS, 16 << 20, RLIM_INFINITY);
         if r != 0 { return Err(format!("setrlimit(RLIMIT_AS) failed with {}", shown(r))); }
         match map(LEN) {
             Err(Error::Os(Errno::ENOMEM)) => Ok(()),
-            Err(e) => Err(format!("a 128 MiB mapping with RLIMIT_AS at 64 MiB failed with {e}, expected ENOMEM")),
-            Ok(_) => Err("a 128 MiB mapping succeeded with RLIMIT_AS at 64 MiB".into()),
+            Err(e) => Err(format!("a 32 MiB mapping with RLIMIT_AS at 16 MiB failed with {e}, expected ENOMEM")),
+            Ok(_) => Err("a 32 MiB mapping succeeded with RLIMIT_AS at 16 MiB".into()),
         }
     })?.finish()
 }
