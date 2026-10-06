@@ -124,6 +124,40 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Exercise the native Linux ABI, rather than a libc's prlimit64 wrapper.
+    #[cfg(target_arch = "x86_64")]
+    let (getrlimit_nr, setrlimit_nr) = (97, 160);
+    #[cfg(target_arch = "aarch64")]
+    let (getrlimit_nr, setrlimit_nr) = (163, 164);
+    let mut old_as = [0u64; 2];
+    let mut seen_as = [0u64; 2];
+    let limited_as = [64u64 << 20, u64::MAX];
+    unsafe {
+        assert_eq!(libbreenix::syscall::raw::syscall2(getrlimit_nr, 9, old_as.as_mut_ptr() as u64), 0);
+        assert_eq!(libbreenix::syscall::raw::syscall2(setrlimit_nr, 9, limited_as.as_ptr() as u64), 0);
+        assert_eq!(libbreenix::syscall::raw::syscall2(getrlimit_nr, 9, seen_as.as_mut_ptr() as u64), 0);
+    }
+    assert_eq!(seen_as, limited_as);
+    assert!(matches!(mmap(null_mut(), 128usize << 20, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
+        Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOMEM))));
+    unsafe {
+        assert_eq!(libbreenix::syscall::raw::syscall2(setrlimit_nr, 9, old_as.as_ptr() as u64), 0);
+    }
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let mut old_nofile = [0u64; 2];
+        assert_eq!(libbreenix::syscall::raw::syscall2(getrlimit_nr, 7, old_nofile.as_mut_ptr() as u64), 0);
+        let fd = libbreenix::syscall::raw::syscall1(libbreenix::syscall::nr::DUP, 0);
+        assert!((fd as i64) >= 3);
+        let lowered = [fd, old_nofile[1]];
+        assert_eq!(libbreenix::syscall::raw::syscall2(setrlimit_nr, 7, lowered.as_ptr() as u64), 0);
+        assert_eq!(libbreenix::syscall::raw::syscall2(libbreenix::syscall::nr::DUP2, fd, fd), fd);
+        assert_eq!(libbreenix::syscall::raw::syscall2(setrlimit_nr, 7, old_nofile.as_ptr() as u64), 0);
+        assert_eq!(libbreenix::syscall::raw::syscall1(libbreenix::syscall::nr::CLOSE, fd), 0);
+    }
+    println!("  Native resource limit ABI: PASS");
+
     // A large reservation must not require physical backing for untouched pages.
     // Read first and last pages before writing: fresh anonymous backing is zeroed.
     println!("Test 4: Sparse 128 MiB anonymous mapping...");

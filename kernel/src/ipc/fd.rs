@@ -506,7 +506,7 @@ impl FdTable {
         if old_fd < 0 || old_fd as usize >= MAX_FDS {
             return Err(9); // EBADF
         }
-        if new_fd < 0 || new_fd as usize >= self.allocation_limit {
+        if new_fd < 0 || new_fd as usize >= MAX_FDS {
             return Err(9); // EBADF
         }
 
@@ -520,6 +520,9 @@ impl FdTable {
             }
             return Ok((new_fd, None));
         }
+
+        // Equal descriptors allocate nothing, including when the limit was lowered.
+        if new_fd as usize >= self.allocation_limit { return Err(9); }
 
         let mut fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
         fd_entry.flags = if set_cloexec { flags::FD_CLOEXEC } else { 0 };

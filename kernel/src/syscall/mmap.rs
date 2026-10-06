@@ -594,7 +594,10 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
     };
 
     // Update page table flags for each page in the range
-    let new_flags = prot_to_page_flags(new_prot);
+    let new_flags = if process.vmas[vma_index].flags.contains(MmapFlags::ANONYMOUS)
+        && process.vmas[vma_index].flags.contains(MmapFlags::PRIVATE) {
+        crate::memory::anon_map::page_flags(new_prot)
+    } else { prot_to_page_flags(new_prot) };
     let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
     let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr - 1));
 

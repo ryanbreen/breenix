@@ -1,12 +1,12 @@
 //! First-touch backing for private anonymous VMAs, including kernel user copies.
 #[cfg(target_arch = "aarch64")]
-use super::arch_stub::{Page, Size4KiB, VirtAddr};
+use super::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
 use super::file_map::{Access, FaultOutcome};
 use super::vma::{MmapFlags, Protection};
 use crate::process::Process;
 #[cfg(target_arch = "x86_64")]
 use x86_64::{
-    structures::paging::{Page, Size4KiB},
+    structures::paging::{Page, PageTableFlags, Size4KiB},
     VirtAddr,
 };
 
@@ -26,7 +26,7 @@ pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access)
     if !permitted {
         return FaultOutcome::Signal(crate::signal::constants::SIGSEGV);
     }
-    let flags = crate::syscall::memory_common::prot_to_page_flags(vma.prot);
+    let flags = page_flags(vma.prot);
     let Some(table) = process.page_table.as_mut() else {
         return FaultOutcome::NotFile;
     };
@@ -52,4 +52,13 @@ pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access)
     }
     crate::syscall::memory_common::flush_tlb(page.start_address());
     FaultOutcome::Resolved
+}
+
+/// Install the VMA's execute permission as well as its write permission.
+pub(crate) fn page_flags(prot: Protection) -> PageTableFlags {
+    let mut flags = crate::syscall::memory_common::prot_to_page_flags(prot);
+    if !prot.contains(Protection::EXEC) {
+        flags.insert(PageTableFlags::NO_EXECUTE);
+    }
+    flags
 }
