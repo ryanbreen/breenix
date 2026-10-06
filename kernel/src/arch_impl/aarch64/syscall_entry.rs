@@ -572,6 +572,12 @@ fn dispatch_syscall_enum(
             arg2,
             arg3 as u32,
         )),
+        SyscallNumber::Waitid => result_to_u64(crate::syscall::wait::sys_waitid(
+            arg1 as u32,
+            arg2,
+            arg3,
+            arg4 as u32,
+        )),
         SyscallNumber::Yield => {
             crate::task::scheduler::yield_current();
             0
