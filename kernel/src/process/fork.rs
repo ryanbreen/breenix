@@ -482,6 +482,9 @@ pub fn copy_process_state(
     // NOTE: No logging — called from fork under PM lock (interrupts disabled on ARM64).
 
     // 1. Copy file descriptor table (clone increments pipe/PTY refcounts)
+    child_process.limits = parent_process.limits;
+    child_process.image_size = parent_process.image_size;
+    child_process.image_data_size = parent_process.image_data_size;
     child_process.fd_table = parent_process.fd_table.clone();
 
     // 2. Copy signal state (handlers and mask, NOT pending signals)

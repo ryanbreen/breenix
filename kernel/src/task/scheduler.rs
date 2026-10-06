@@ -6471,6 +6471,19 @@ pub fn wake_waitqueue_thread(tid: u64) {
 /// since their last schedule (now - run_start_ticks).
 ///
 /// Used by btop monitor to display CPU% per process.
+/// Nonblocking, allocation-free CPU accounting for resource-limit signal checks.
+pub fn process_cpu_ticks(pid: u64) -> Option<u64> {
+    without_interrupts(|| {
+        let lock = try_lock_scheduler()?;
+        let scheduler = lock.as_ref()?;
+        let now = crate::time::get_ticks();
+        Some(scheduler.threads.iter().filter(|t| t.owner_pid == Some(pid)).map(|t| {
+            t.cpu_ticks_total.saturating_add(if t.state == super::thread::ThreadState::Running
+                && !t.blocked_in_syscall { now.wrapping_sub(t.run_start_ticks) } else { 0 })
+        }).sum())
+    })
+}
+
 pub fn get_process_cpu_ticks() -> alloc::vec::Vec<(u64, u64)> {
     without_interrupts(|| {
         if let Some(scheduler_lock) = try_lock_scheduler() {

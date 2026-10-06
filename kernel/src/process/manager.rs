@@ -520,6 +520,8 @@ impl ProcessManager {
 
         // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
         let heap_base = loaded_elf.segments_end;
+        process.image_size = loaded_elf.image_size;
+        process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
         crate::serial_println!(
@@ -742,6 +744,8 @@ impl ProcessManager {
         let process = unpublished.as_mut();
 
         let heap_base = loaded_elf.segments_end;
+        process.image_size = loaded_elf.image_size;
+        process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
         process.memory_usage.code_size = elf_data.len();
@@ -954,6 +958,8 @@ impl ProcessManager {
 
         // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
         let heap_base = loaded_elf.segments_end;
+        process.image_size = loaded_elf.image_size;
+        process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
         crate::serial_println!(
@@ -1208,6 +1214,8 @@ impl ProcessManager {
 
         // Initialize heap tracking
         let heap_base = loaded_elf.segments_end;
+        process.image_size = loaded_elf.image_size;
+        process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
 
@@ -3436,6 +3444,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program - heap starts after ELF segments
         let heap_base = loaded_elf.segments_end;
+        process.image_size = loaded_elf.image_size;
+        process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
 
@@ -3857,6 +3867,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
+        process.image_size = loaded_elf.image_size;
+        process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
 
@@ -4214,6 +4226,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
+        process.image_size = loaded_elf.image_size;
+        process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
 
@@ -4545,6 +4559,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
+        process.image_size = loaded_elf.image_size;
+        process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
 

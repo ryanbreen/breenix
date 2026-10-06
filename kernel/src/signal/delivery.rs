@@ -1137,6 +1137,7 @@ pub fn check_and_fire_itimer_real(process: &mut Process, elapsed_usec: u64) -> b
 /// Returns true if SIGALRM was queued.
 #[inline]
 pub fn check_and_fire_alarm(process: &mut Process) -> bool {
+    process.check_cpu_limit();
     if let Some(deadline) = process.alarm_deadline {
         let current_ticks = crate::time::get_ticks();
         if current_ticks >= deadline {

@@ -2456,7 +2456,10 @@ fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
     let stack_top = process.user_stack_top;
     let stack_bottom = process.user_stack_bottom;
     let page_aligned_fault = far & !0xFFF;
-    if stack_top == 0 || stack_top - page_aligned_fault > MAX_USER_STACK_SIZE {
+    if stack_top == 0 || page_aligned_fault > stack_top
+        || stack_top - page_aligned_fault > MAX_USER_STACK_SIZE
+        || stack_top - page_aligned_fault > process.limits[crate::process::limits::STACK].soft
+        || (page_aligned_fault < stack_bottom && process.mapped_bytes().saturating_add(stack_bottom - page_aligned_fault) > process.limits[crate::process::limits::AS].soft) {
         return false;
     }
     let Some(page_table) = process.page_table.as_mut() else {

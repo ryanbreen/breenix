@@ -324,6 +324,7 @@ impl FileDescriptor {
 pub struct FdTable {
     /// The file descriptors (None = unused slot)
     fds: SlabBox<[Option<FileDescriptor>; MAX_FDS]>,
+    allocation_limit: usize,
 }
 
 impl Default for FdTable {
@@ -381,11 +382,16 @@ impl Clone for FdTable {
             }
         }
 
-        FdTable { fds: cloned_fds }
+        FdTable { fds: cloned_fds, allocation_limit: self.allocation_limit }
     }
 }
 
 impl FdTable {
+    /// Lowering a limit leaves already open descriptors usable.
+    pub fn set_limit(&mut self, limit: u64) {
+        self.allocation_limit = limit.min(MAX_FDS as u64) as usize;
+    }
+
     /// Create a new file descriptor table with standard I/O pre-allocated
     pub fn new() -> Self {
         // Try slab allocation first (O(1)), fall back to global heap
@@ -407,7 +413,7 @@ impl FdTable {
         fds[STDOUT as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDOUT)));
         fds[STDERR as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDERR)));
 
-        FdTable { fds }
+        FdTable { fds, allocation_limit: MAX_FDS }
     }
 
     /// Take all file descriptor entries out of the table, leaving it empty.
@@ -434,7 +440,7 @@ impl FdTable {
     /// Allocate a new file descriptor >= min_fd
     pub fn alloc_at_least(&mut self, min_fd: i32, kind: FdKind) -> Result<i32, i32> {
         let start = min_fd.max(0) as usize;
-        for i in start..MAX_FDS {
+        for i in start..self.allocation_limit {
             if self.fds[i].is_none() {
                 self.fds[i] = Some(FileDescriptor::new(kind));
                 return Ok(i as i32);
@@ -446,13 +452,13 @@ impl FdTable {
     /// Whether a descriptor slot is free, so an open can fail with EMFILE
     /// before it creates or truncates anything.
     pub fn has_free_slot(&self) -> bool {
-        self.fds.iter().any(|slot| slot.is_none())
+        self.fds[..self.allocation_limit].iter().any(|slot| slot.is_none())
     }
 
     /// Allocate a new file descriptor with a pre-configured FileDescriptor entry
     /// This allows setting flags at allocation time (used by pipe2)
     pub fn alloc_with_entry(&mut self, entry: FileDescriptor) -> Result<i32, i32> {
-        for i in 0..MAX_FDS {
+        for i in 0..self.allocation_limit {
             if self.fds[i].is_none() {
                 self.fds[i] = Some(entry);
                 return Ok(i as i32);
@@ -500,7 +506,7 @@ impl FdTable {
         if old_fd < 0 || old_fd as usize >= MAX_FDS {
             return Err(9); // EBADF
         }
-        if new_fd < 0 || new_fd as usize >= MAX_FDS {
+        if new_fd < 0 || new_fd as usize >= self.allocation_limit {
             return Err(9); // EBADF
         }
 
@@ -585,7 +591,7 @@ impl FdTable {
         if old_fd < 0 || old_fd as usize >= MAX_FDS {
             return Err(9); // EBADF
         }
-        if min_fd < 0 || min_fd as usize >= MAX_FDS {
+        if min_fd < 0 || min_fd as usize >= self.allocation_limit {
             return Err(22); // EINVAL
         }
 
@@ -596,7 +602,7 @@ impl FdTable {
 
         // Reserve a free slot before creating any reference, so EMFILE needs
         // no rollback close or notification while the caller holds PM.
-        let free_slot = ((min_fd as usize)..MAX_FDS)
+        let free_slot = ((min_fd as usize)..self.allocation_limit)
             .find(|&i| self.fds[i].is_none())
             .ok_or(24)?; // EMFILE
 

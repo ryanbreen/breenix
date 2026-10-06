@@ -1083,7 +1083,9 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
     // Check we wouldn't exceed MAX_USER_STACK_SIZE
     let page_aligned_fault = fault_addr & !0xFFF;
     let new_stack_size = stack_top - page_aligned_fault;
-    if new_stack_size > MAX_USER_STACK_SIZE {
+    if new_stack_size > MAX_USER_STACK_SIZE
+        || new_stack_size > process.limits[crate::process::limits::STACK].soft
+        || process.mapped_bytes().saturating_add(stack_bottom - page_aligned_fault) > process.limits[crate::process::limits::AS].soft {
         return false;
     }
 

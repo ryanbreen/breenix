@@ -181,6 +181,10 @@ impl ExitNotificationObligations {
 
 /// A process represents a running program with its own address space
 pub struct Process {
+    pub limits: [super::limits::Rlimit; super::limits::COUNT],
+    pub cpu_limit_next: u64,
+    pub image_size: u64,
+    pub image_data_size: u64,
     /// Unique process identifier
     #[allow(dead_code)]
     pub id: ProcessId,
@@ -357,6 +361,10 @@ impl Process {
     /// Create a new process
     pub fn new(id: ProcessId, name: String, entry_point: VirtAddr) -> Self {
         Process {
+            limits: super::limits::defaults(),
+            cpu_limit_next: 0,
+            image_size: 0,
+            image_data_size: 0,
             id,
             // By default, a process's pgid equals its pid (process is its own group leader)
             pgid: id,

@@ -388,6 +388,14 @@ pub(crate) fn validate_fd_for_degenerate_transfer(fd: i32, write: bool) -> Resul
 ///
 /// Supports stdout/stderr (serial port) and pipe write ends.
 pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
+    let result = write_with_limit(fd, buf_ptr, count);
+    if matches!(result, SyscallResult::Err(e) if e == super::errno::EFBIG as u64) {
+        super::resource::signal_fsize();
+    }
+    result
+}
+
+fn write_with_limit(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     use crate::ipc::FdKind;
 
     // Note: Logging removed from hot path to prevent stack overflow.
@@ -442,6 +450,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>>,
             append: bool,
             unprivileged: bool,
+            size_limit: u64,
         },
         TcpConnection {
             conn_id: crate::net::tcp::ConnectionId,
@@ -513,6 +522,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 file: file.clone(),
                 append: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND) != 0,
                 unprivileged: process.euid != 0,
+                size_limit: process.limits[crate::process::limits::FSIZE].soft,
             },
             FdKind::Directory(_) => WriteOperation::Eisdir,
             FdKind::Device(device_type) => WriteOperation::Device {
@@ -610,7 +620,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
         }
-        WriteOperation::RegularFile { file, append, unprivileged } => {
+        WriteOperation::RegularFile { file, append, unprivileged, size_limit } => {
             // Write to ext2 regular file
             let (handle, position, file_mount_id) = {
                 let file_guard = file.lock();
@@ -640,7 +650,10 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 } else {
                     position
                 };
-                let bw = match fs.write_file_range_as(inode_num as u32, wo, &buffer, unprivileged) {
+                let length = match super::resource::write_length(wo, buffer.len(), size_limit) {
+                    Ok(n) => n, Err(e) => return SyscallResult::Err(e),
+                };
+                let bw = match fs.write_file_range_as(inode_num as u32, wo, &buffer[..length], unprivileged) {
                     Ok(n) => n,
                     Err(error) => {
                         return SyscallResult::Err(crate::memory::file_map::mutation_errno(error))
@@ -662,7 +675,10 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 } else {
                     position
                 };
-                let bw = match fs.write_file_range_as(inode_num as u32, wo, &buffer, unprivileged) {
+                let length = match super::resource::write_length(wo, buffer.len(), size_limit) {
+                    Ok(n) => n, Err(e) => return SyscallResult::Err(e),
+                };
+                let bw = match fs.write_file_range_as(inode_num as u32, wo, &buffer[..length], unprivileged) {
                     Ok(n) => n,
                     Err(error) => {
                         return SyscallResult::Err(crate::memory::file_map::mutation_errno(error))
@@ -2017,6 +2033,9 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
     let mut manager_guard = crate::process::manager();
     let fork_result = match *manager_guard {
         Some(ref mut manager) => {
+            if !crate::process::limits::fork_allowed(manager, parent_pid) {
+                return SyscallResult::Err(super::errno::EAGAIN as u64);
+            }
             manager.fork_process_with_parent_context(parent_pid, parent_context, child_page_table)
         }
         None => Err("Process manager not available"),
@@ -4460,59 +4479,56 @@ pub fn sys_simulate_oom(enable: u64) -> SyscallResult {
 // Resource Limits and System Information
 // =============================================================================
 
-/// Linux rlimit structure
-#[repr(C)]
-#[derive(Copy, Clone)]
-struct Rlimit {
-    rlim_cur: u64,
-    rlim_max: u64,
-}
-
-const RLIMIT_STACK: u64 = 3;
-const RLIMIT_NOFILE: u64 = 7;
-const RLIMIT_CORE: u64 = 4;
-const RLIM_INFINITY: u64 = u64::MAX;
-
-/// getrlimit - Get resource limits
+/// getrlimit and setrlimit use the same atomic per-process operation as prlimit64.
 pub fn sys_getrlimit(resource: u64, rlim_ptr: u64) -> SyscallResult {
-    if rlim_ptr == 0 {
-        return SyscallResult::Err(super::errno::EFAULT as u64);
-    }
-
-    let rlim = match resource {
-        RLIMIT_STACK => Rlimit {
-            rlim_cur: super::exec::DEFAULT_STACK_LIMIT,
-            rlim_max: RLIM_INFINITY,
-        },
-        RLIMIT_NOFILE => Rlimit {
-            rlim_cur: 1024,
-            rlim_max: 4096,
-        },
-        RLIMIT_CORE => Rlimit {
-            rlim_cur: 0,
-            rlim_max: RLIM_INFINITY,
-        },
-        _ => Rlimit {
-            rlim_cur: RLIM_INFINITY,
-            rlim_max: RLIM_INFINITY,
-        },
-    };
-
-    if super::userptr::copy_to_user(rlim_ptr as *mut Rlimit, &rlim).is_err() {
-        return SyscallResult::Err(super::errno::EFAULT as u64);
-    }
-    SyscallResult::Ok(0)
+    if rlim_ptr == 0 { return SyscallResult::Err(super::errno::EFAULT as u64); }
+    sys_prlimit64(0, resource, 0, rlim_ptr)
 }
 
-/// prlimit64 - Get/set resource limits
-pub fn sys_prlimit64(
-    _pid: u64,
-    resource: u64,
-    _new_rlim_ptr: u64,
-    old_rlim_ptr: u64,
-) -> SyscallResult {
-    if old_rlim_ptr != 0 {
-        return sys_getrlimit(resource, old_rlim_ptr);
+pub fn sys_setrlimit(resource: u64, rlim_ptr: u64) -> SyscallResult {
+    if rlim_ptr == 0 { return SyscallResult::Err(super::errno::EFAULT as u64); }
+    sys_prlimit64(0, resource, rlim_ptr, 0)
+}
+
+pub fn sys_prlimit64(pid: u64, resource: u64, new_ptr: u64, old_ptr: u64) -> SyscallResult {
+    use crate::process::limits::{Rlimit, COUNT, NOFILE, CPU};
+    use super::errno::{EFAULT, EINVAL, EPERM, ESRCH};
+    if resource >= COUNT as u64 { return SyscallResult::Err(EINVAL as u64); }
+    let new = if new_ptr == 0 { None } else {
+        match super::userptr::copy_from_user(new_ptr as *const Rlimit) {
+            Ok(value) => Some(value),
+            Err(_) => return SyscallResult::Err(EFAULT as u64),
+        }
+    };
+    if new.is_some_and(|v| v.soft > v.hard) { return SyscallResult::Err(EINVAL as u64); }
+    let Some(thread) = super::memory_common::get_current_thread_id() else {
+        return SyscallResult::Err(ESRCH as u64);
+    };
+    // User copies may fault and acquire PM; never copy while holding it.
+    let old = {
+        let mut guard = crate::process::manager();
+        let Some(manager) = guard.as_mut() else { return SyscallResult::Err(ESRCH as u64) };
+        let Some((caller_pid, caller)) = manager.find_process_by_thread(thread) else {
+            return SyscallResult::Err(ESRCH as u64);
+        };
+        let (euid, uid, gid) = (caller.euid, caller.uid, caller.gid);
+        let target = if pid == 0 { caller_pid } else { crate::process::ProcessId::new(pid) };
+        let Some(process) = manager.get_process_mut(target) else { return SyscallResult::Err(ESRCH as u64) };
+        if target != caller_pid && euid != 0 &&
+            (uid != process.uid || uid != process.euid || gid != process.gid || gid != process.egid) {
+            return SyscallResult::Err(EPERM as u64);
+        }
+        let old = process.limits[resource as usize];
+        if let Some(new) = new {
+            if new.hard > old.hard && euid != 0 { return SyscallResult::Err(EPERM as u64); }
+            process.limits[resource as usize] = new;
+            if resource as usize == NOFILE { process.fd_table.set_limit(new.soft); }
+            if resource as usize == CPU { process.cpu_limit_next = 0; }
+        }
+        old
+    };
+    if old_ptr != 0 && super::userptr::copy_to_user(old_ptr as *mut Rlimit, &old).is_err() {
+        return SyscallResult::Err(EFAULT as u64);
     }
     SyscallResult::Ok(0)
 }
@@ -4917,6 +4933,13 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     let inode_num = handle.object.key.inode;
     let mount_id = handle.object.mount.mount_id;
     let file_offset = offset as u64;
+    let count = match super::resource::write_length(file_offset, count as usize, super::resource::current_fsize()) {
+        Ok(length) => length as u64,
+        Err(errno) => {
+            super::resource::signal_fsize();
+            return SyscallResult::Err(errno);
+        }
+    };
 
     // Read user data (no process lock held)
     let data = match copy_from_user(buf_ptr, count as usize) {

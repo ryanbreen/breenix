@@ -149,6 +149,12 @@ pub fn sys_mmap(
             }
         };
 
+        if process.mapped_bytes().saturating_add(length) > process.limits[crate::process::limits::AS].soft
+            || (is_private && prot.contains(Protection::WRITE) &&
+                process.data_bytes().saturating_add(length) > process.limits[crate::process::limits::DATA].soft) {
+            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        }
+
         // Determine the start address
         let start_addr = if flags.contains(MmapFlags::FIXED) {
             // MAP_FIXED: use addr directly
@@ -279,6 +285,21 @@ pub fn sys_mmap(
             Ok(start) => SyscallResult::Ok(start),
             Err(errno) => give_back(errno),
         };
+    }
+
+    if is_private {
+        let mut guard = crate::process::manager();
+        let Some((_, process)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(current_thread_id)) else {
+            drop(guard);
+            return give_back(ErrorCode::NoSuchProcess as u64);
+        };
+        let vma = Vma::new(VirtAddr::new(start_addr), VirtAddr::new(end_addr), prot, flags);
+        if process.vmas.iter().any(|other| vma.overlaps(other)) || process.vmas.try_reserve(1).is_err() {
+            drop(guard);
+            return give_back(ErrorCode::OutOfMemory as u64);
+        }
+        process.vmas.push(vma);
+        return SyscallResult::Ok(start_addr);
     }
 
     let page_count = ((end_addr - start_addr) / PAGE_SIZE) as usize;
@@ -579,6 +600,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
 
     let mut pages_updated = 0u32;
     for page in Page::range_inclusive(start_page, end_page) {
+        if page_table.translate(page.start_address()).is_none() { continue; }
         match page_table.update_page_flags(page, new_flags) {
             Ok(()) => {
                 // Flush TLB for this page to ensure new flags take effect
@@ -716,6 +738,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
 
     let mut pages_unmapped = 0u32;
     for page in Page::range_inclusive(start_page, end_page) {
+        if page_table.translate(page.start_address()).is_none() { continue; }
         match page_table.unmap_page_deferred(page) {
             Ok(leaf) => {
                 leaf.flush().release();

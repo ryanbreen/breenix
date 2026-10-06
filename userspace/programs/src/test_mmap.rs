@@ -124,6 +124,23 @@ fn main() {
         std::process::exit(1);
     }
 
+    // A large reservation must not require physical backing for untouched pages.
+    // Read first and last pages before writing: fresh anonymous backing is zeroed.
+    println!("Test 4: Sparse 128 MiB anonymous mapping...");
+    let sparse_size = 128usize << 20;
+    let sparse = mmap(null_mut(), sparse_size, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0).expect("large anonymous reservation");
+    unsafe {
+        assert_eq!(sparse.read_volatile(), 0);
+        assert_eq!(sparse.add(sparse_size - 1).read_volatile(), 0);
+        sparse.write_volatile(0x31);
+        sparse.add(sparse_size - 1).write_volatile(0x72);
+        assert_eq!(sparse.read_volatile(), 0x31);
+        assert_eq!(sparse.add(sparse_size - 1).read_volatile(), 0x72);
+    }
+    munmap(sparse, sparse_size).expect("unmap sparse reservation");
+    println!("  Sparse mapping: PASS");
+
     println!("USERSPACE MMAP: ALL TESTS PASSED");
     std::process::exit(0);
 }

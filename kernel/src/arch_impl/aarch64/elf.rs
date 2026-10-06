@@ -86,6 +86,8 @@ pub struct LoadedElf {
     pub entry_point: u64,
     /// End of loaded segments (page-aligned, start of heap)
     pub segments_end: u64,
+    pub image_size: u64,
+    pub data_size: u64,
     /// Lowest loaded address
     pub load_base: u64,
     /// Virtual address of program headers (from PT_PHDR or load_base + phoff)
@@ -150,6 +152,8 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
         header.phnum
     );
 
+    let mut image_size = 0u64;
+    let mut data_size = 0u64;
     let mut max_segment_end: u64 = 0;
     let mut min_load_addr: u64 = u64::MAX;
     let mut phdr_vaddr: Option<u64> = None;
@@ -174,6 +178,10 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
         }
 
         if ph.p_type == SegmentType::Load as u32 {
+            let bytes = (ph.p_vaddr & 4095).checked_add(ph.p_memsz).and_then(|n| n.checked_add(4095))
+                .ok_or("Segment size overflow")? & !4095;
+            image_size = image_size.checked_add(bytes).ok_or("Image size overflow")?;
+            if ph.p_flags & 2 != 0 { data_size = data_size.checked_add(bytes).ok_or("Data size overflow")?; }
             load_segment(data, ph)?;
 
             let phdr_end = header
@@ -240,6 +248,8 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
     Ok(LoadedElf {
         entry_point: header.entry,
         segments_end: heap_start,
+        image_size,
+        data_size,
         load_base,
         phdr_vaddr,
         phnum: header.phnum,
@@ -341,6 +351,8 @@ pub fn load_elf_into_page_table(
         header.phnum
     );
 
+    let mut image_size = 0u64;
+    let mut data_size = 0u64;
     let mut max_segment_end: u64 = 0;
     let mut min_load_addr: u64 = u64::MAX;
     let mut phdr_vaddr: Option<u64> = None;
@@ -368,6 +380,10 @@ pub fn load_elf_into_page_table(
         }
 
         if ph.p_type == SegmentType::Load as u32 {
+            let bytes = (ph.p_vaddr & 4095).checked_add(ph.p_memsz).and_then(|n| n.checked_add(4095))
+                .ok_or("Segment size overflow")? & !4095;
+            image_size = image_size.checked_add(bytes).ok_or("Image size overflow")?;
+            if ph.p_flags & 2 != 0 { data_size = data_size.checked_add(bytes).ok_or("Data size overflow")?; }
             load_segment_into_page_table(data, ph, page_table)?;
 
             let phdr_end = header
@@ -433,6 +449,8 @@ pub fn load_elf_into_page_table(
     Ok(LoadedElf {
         entry_point: header.entry,
         segments_end: heap_start,
+        image_size,
+        data_size,
         load_base,
         phdr_vaddr,
         phnum: header.phnum,

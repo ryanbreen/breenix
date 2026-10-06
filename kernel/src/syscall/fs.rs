@@ -4059,6 +4059,7 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     let Some(handle) = handle else { return SyscallResult::Err(super::errno::EINVAL as u64); };
+    if let Err(errno) = super::resource::check_file_size(length as u64) { return SyscallResult::Err(errno); }
     let unprivileged = current_file_credentials().euid != 0;
     let mut guard = match ext2::write_mount(handle.object.mount) {
         Ok(guard) => guard,
@@ -4109,6 +4110,7 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
         }
     };
     let cred = current_file_credentials();
+    if let Err(errno) = super::resource::check_file_size(length as u64) { return SyscallResult::Err(errno); }
     let mut guard = mount.write();
     let fs = match guard.as_mut() {
         Some(fs) => fs,
