@@ -3568,6 +3568,7 @@ impl ProcessManager {
         // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
         // SIG_IGN handlers are preserved
         process.signals.exec_reset();
+        process.has_exec = true;
         // Reset mmap state for the new address space
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
@@ -4011,6 +4012,7 @@ impl ProcessManager {
 
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
+        process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
 
@@ -4392,6 +4394,7 @@ impl ProcessManager {
         process.heap_end = heap_base;
 
         process.signals.exec_reset();
+        process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
 
@@ -4731,6 +4734,7 @@ impl ProcessManager {
 
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
+        process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         // Close FD_CLOEXEC file descriptors per POSIX
