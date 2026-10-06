@@ -240,6 +240,13 @@ fn load_segment(
     let file_size = ph.p_filesz as usize;
     let mem_size = ph.p_memsz as usize;
 
+    if file_size > mem_size {
+        return Err("Segment file size exceeds memory size");
+    }
+    if mem_size == 0 {
+        return Ok(());
+    }
+
     // Our userspace binaries use absolute addressing starting at USERSPACE_BASE
     // Don't add base_offset for absolute addresses in the userspace range
     let vaddr = if ph.p_vaddr >= crate::memory::layout::USERSPACE_BASE {
@@ -459,6 +466,13 @@ fn load_segment_into_page_table(
     let file_start = ph.p_offset as usize;
     let file_size = ph.p_filesz as usize;
     let mem_size = ph.p_memsz as usize;
+
+    if file_size > mem_size {
+        return Err("Segment file size exceeds memory size");
+    }
+    if mem_size == 0 {
+        return Ok(());
+    }
 
     // Use the virtual address directly - processes have their own address space
     let vaddr = VirtAddr::new(ph.p_vaddr);

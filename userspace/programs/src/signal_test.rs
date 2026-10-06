@@ -22,13 +22,17 @@ fn check_noncanonical_syscall_return() {
     elf[32..40].copy_from_slice(&64u64.to_le_bytes());
     elf[52..54].copy_from_slice(&64u16.to_le_bytes());
     elf[54..56].copy_from_slice(&56u16.to_le_bytes());
-    elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+    elf[56..58].copy_from_slice(&2u16.to_le_bytes());
     elf[64..68].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
     elf[68..72].copy_from_slice(&5u32.to_le_bytes()); // readable/executable
     elf[80..88].copy_from_slice(&0x7fff_ffff_f000u64.to_le_bytes());
     elf[96..104].copy_from_slice(&4096u64.to_le_bytes());
     elf[104..112].copy_from_slice(&4096u64.to_le_bytes());
     elf[112..120].copy_from_slice(&4096u64.to_le_bytes());
+    // An empty PT_LOAD is legal and must not underflow the segment end.
+    elf[120..124].copy_from_slice(&1u32.to_le_bytes());
+    elf[136..144].copy_from_slice(&0x4000_0000u64.to_le_bytes());
+    elf[168..176].copy_from_slice(&4096u64.to_le_bytes());
     elf[4089..].copy_from_slice(&[0xb8, 39, 0, 0, 0, 0x0f, 0x05]); // getpid; syscall
     let path = "/tmp/syscall_edge.elf";
     std::fs::write(path, elf).expect("write syscall edge executable");
