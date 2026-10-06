@@ -1345,6 +1345,9 @@ fn kernel_main_continue() -> ! {
     // Off by default until the strand below is fixed. Turning the feature on is
     // how the two blocking defects are reproduced; leaving it off keeps the
     // shipped x86 boot identical to what it was before this work.
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
+    task::userspace_completion::begin_loading();
+
     #[cfg(all(feature = "boot_tests", feature = "x86_staged_registry"))]
     {
         log::info!("[boot] Running parallel boot tests...");
@@ -1417,9 +1420,6 @@ fn kernel_main_continue() -> ! {
     // idle-task wait retains the brake and uses a masked check plus STI; HLT:
     // IRQs can complete disk requests without donating boot's continuation.
     kernel::per_cpu::preempt_disable();
-
-    #[cfg(all(feature = "testing", not(feature = "interactive")))]
-    task::userspace_completion::begin_loading();
 
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done before int3() which might hang in CI
@@ -2395,9 +2395,6 @@ fn kernel_main_continue() -> ! {
     log::info!("Enabling interrupts (after creating user processes)...");
     x86_64::instructions::interrupts::enable();
     // NOTE: Code below this point may never execute due to scheduler preemption
-
-    #[cfg(all(feature = "testing", not(feature = "interactive")))]
-    task::userspace_completion::begin_loading();
 
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done after interrupts are enabled but before other tests

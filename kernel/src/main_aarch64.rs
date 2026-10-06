@@ -1732,6 +1732,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
+    #[cfg(feature = "testing")]
+    kernel::task::userspace_completion::begin_loading();
+
     // Run parallel boot tests if enabled
     #[cfg(feature = "boot_tests")]
     {
@@ -1960,7 +1963,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     allow(dead_code)
 )]
 fn run_test_loader() {
-    kernel::task::userspace_completion::begin_loading();
     // Each create_user_process() adds a thread to the ready queue, and without
     // a preempt pin the timer would hand this CPU to those test processes
     // between binaries, stretching loading to tens of seconds. The pin keeps
