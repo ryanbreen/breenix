@@ -2,9 +2,11 @@
 //! resource limits and usage, and scheduling priorities, as POSIX specifies them.
 //!
 //! Each case runs in its own forked child under the runner's default 10-second limit.
-//! Every wait on another process inside a case is bounded well inside that limit, and
-//! every process a case starts is killed and reaped when the case ends, so no case
-//! depends on another. Error assertions read the raw syscall return, so an errno the
+//! Every wait on another process inside a case is bounded, and stops early enough to
+//! leave the case time to clean up and report before that limit. The processes a case
+//! starts are killed when the case ends, and the runner, which a suite runs as PID 1,
+//! kills and reaps any that remain before the next case, so no case depends on another.
+//! Error assertions read the raw syscall return, so an errno the
 //! library does not name is still reported. Library-level calls (getrlimit, setrlimit,
 //! nice, getpgrp) are made the way a C library makes them: through prlimit64,
 //! getpriority/setpriority and getpgid(0).
@@ -18,9 +20,9 @@ use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, PROT_READ
 use libbreenix::process::{self, ForkResult, WNOHANG};
 use libbreenix::signal::{
     self, Sigaction, StackT, SA_ONSTACK, SA_RESTART, SIGCHLD, SIGCONT, SIGHUP, SIGKILL, SIGSEGV,
-    SIGSTOP, SIGTERM, SIGUSR1, SIGUSR2, SIGXFSZ, SIG_IGN,
+    SIGQUIT, SIGSTOP, SIGTERM, SIGUSR1, SIGUSR2, SIGXCPU, SIGXFSZ, SIG_IGN,
 };
-use libbreenix::suite::{case, category, check, fail, suite, CaseError, CaseResult, Suite};
+use libbreenix::suite::{case, case_ms_left, category, check, fail, skip, suite, CaseError, CaseResult, Suite};
 use libbreenix::syscall::raw;
 use libbreenix::time;
 use libbreenix::types::Fd;
@@ -327,6 +329,7 @@ mod nr {
 }
 
 const EPERM: i64 = 1;
+const F_GETFD: u64 = 1;
 const ENOENT: i64 = 2;
 const ESRCH: i64 = 3;
 const E2BIG: i64 = 7;
@@ -346,9 +349,14 @@ const O_NONBLOCK: i64 = 0x800;
 const WUNTRACED: i32 = 2;
 const WCONTINUED: i32 = 8;
 const KEEP: u32 = u32::MAX;
+const RLIMIT_CPU: u32 = 0;
 const RLIMIT_FSIZE: u32 = 1;
+const RLIMIT_DATA: u32 = 2;
+const RLIMIT_STACK: u32 = 3;
+const RLIMIT_CORE: u32 = 4;
 const RLIMIT_NPROC: u32 = 6;
 const RLIMIT_NOFILE: u32 = 7;
+const RLIMIT_AS: u32 = 9;
 const RLIM_INFINITY: u64 = u64::MAX;
 const PRIO_PROCESS: u64 = 0;
 const PRIO_PGRP: u64 = 1;
@@ -359,6 +367,10 @@ const PRIO_USER: u64 = 2;
 const WAIT_MS: u64 = 3000;
 /// The same for an exec, which loads a program from disk.
 const EXEC_MS: u64 = 6000;
+/// What a case's waits leave of the runner's limit, for the case to clean up and report.
+const CLEANUP_MS: u64 = 1500;
+/// What cleanup's own waits leave, for the case to report.
+const REPORT_MS: u64 = 300;
 /// The helper the exec cases run (`processes_exec.rs`).
 const HELPER: &str = "/usr/local/test/bin/processes-exec_test";
 /// In an exec case's argument list, replaced by the descriptor the program reports on.
@@ -455,6 +467,9 @@ fn status_text(s: i32) -> String {
     else { format!("status {s:#x}") }
 }
 
+/// `ms`, cut short so that `reserve` ms of the case's limit remain afterwards.
+fn bounded(ms: u64, reserve: u64) -> u64 { ms.min(case_ms_left().saturating_sub(reserve)) }
+
 fn now_ms() -> u64 { time::now_monotonic().map(|t| (t.as_nanos() / 1_000_000) as u64).unwrap_or(0) }
 fn nap() { let _ = time::sleep_ms(2); }
 
@@ -470,6 +485,10 @@ fn burn(ms: u64) {
 
 /// Poll waitpid(pid, options | WNOHANG) until it reports a child, for at most `ms`.
 fn wait_within(pid: i32, options: i32, ms: u64) -> Result<(i32, i32), String> {
+    poll_wait(pid, options, bounded(ms, CLEANUP_MS))
+}
+
+fn poll_wait(pid: i32, options: i32, ms: u64) -> Result<(i32, i32), String> {
     let start = now_ms();
     loop {
         let mut status = 0;
@@ -488,6 +507,7 @@ fn read_to_eof(fd: Fd, ms: u64) -> Result<Vec<u8>, String> { read_up_to(fd, usiz
 
 /// Read until `want` bytes have arrived or end of file, for at most `ms`.
 fn read_up_to(fd: Fd, want: usize, ms: u64) -> Result<Vec<u8>, String> {
+    let ms = bounded(ms, CLEANUP_MS);
     let start = now_ms();
     let mut out = Vec::new();
     let mut buf = vec![0u8; 65536];
@@ -524,10 +544,16 @@ fn write_all(fd: Fd, mut bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Block on `fd` until end of file.
-fn drain(fd: Fd) {
+/// Block on `fd` until end of file; false if a read failed first.
+fn drain(fd: Fd) -> bool {
     let mut b = [0u8; 16];
-    while matches!(io::read(fd, &mut b), Ok(n) if n > 0) {}
+    loop {
+        match io::read(fd, &mut b) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
 }
 
 /// A child process. Dropping it while it may still run kills and reaps it.
@@ -560,12 +586,13 @@ impl Drop for Child {
     fn drop(&mut self) {
         if self.live {
             kill(self.pid, SIGKILL);
-            let _ = wait_within(self.pid, 0, 1000);
+            let _ = poll_wait(self.pid, 0, bounded(1000, REPORT_MS));
         }
     }
 }
 
-/// A process that is not this one's child; dropping it kills it.
+/// A process that is not this one's child; dropping it kills it, and the runner, which
+/// it has been reparented to, reaps it.
 struct Stray(i32);
 
 impl Drop for Stray {
@@ -619,8 +646,7 @@ fn held(setup: impl FnOnce() -> Checked) -> Result<Held, CaseError> {
         let said = match setup() { Ok(()) => "r".to_string(), Err(msg) => format!("!{msg}") };
         let _ = io::write(ready_w, said.as_bytes());
         let _ = io::close(ready_w);
-        drain(rel_r);
-        if said == "r" { 0 } else { 1 }
+        if !drain(rel_r) { 2 } else if said == "r" { 0 } else { 1 }
     });
     let _ = io::close(ready_w);
     let _ = io::close(rel_r);
@@ -750,6 +776,11 @@ fn setreuid(real: u32, effective: u32) -> i64 { sc(nr::SETREUID, &[real as u64, 
 fn setregid(real: u32, effective: u32) -> i64 { sc(nr::SETREGID, &[real as u64, effective as u64]) }
 fn setgroups(list: &[u32]) -> i64 { sc(nr::SETGROUPS, &[list.len() as u64, list.as_ptr() as u64]) }
 fn getgroups(list: &mut [u32]) -> i64 { sc(nr::GETGROUPS, &[list.len() as u64, list.as_mut_ptr() as u64]) }
+/// Whether a getgroups list holds exactly the groups setgroups was given. POSIX leaves
+/// their order, and whether the effective group ID `egid` is listed too, to the system.
+fn groups_are(got: &[u32], set: &[u32], egid: u32) -> bool {
+    set.iter().all(|g| got.contains(g)) && got.iter().all(|g| set.contains(g) || *g == egid)
+}
 
 /// Give up root for good: no supplementary groups, then the group ID, then the user ID.
 fn become_user(uid: u32, gid: u32) -> Checked {
@@ -805,12 +836,12 @@ fn nice_is(which: u64, who: i32, expected: i64, what: &str) -> CaseResult {
         Err(e) => fail(format!("{what}: getpriority failed with {}", errname(e))),
     }
 }
-/// nice() as a C library implements it: getpriority, add, clamp, setpriority, and
-/// report EPERM where setpriority says EACCES.
+/// nice() as glibc implements it: getpriority, add, setpriority, report EPERM where
+/// setpriority says EACCES, and return the nice value getpriority then reads.
 fn nice(inc: i64) -> Result<i64, i64> {
-    let target = (getpriority(PRIO_PROCESS, 0)? + inc).clamp(-20, 19);
+    let target = getpriority(PRIO_PROCESS, 0)? + inc;
     match setpriority(PRIO_PROCESS, 0, target) {
-        0 => Ok(target),
+        0 => getpriority(PRIO_PROCESS, 0),
         r if r == -EACCES => Err(EPERM),
         r => Err(-r),
     }
@@ -994,66 +1025,91 @@ fn fork_pids() -> CaseResult {
 static DATA_WORD: AtomicU64 = AtomicU64::new(0x1111);
 static BSS_WORD: AtomicU64 = AtomicU64::new(0);
 
-fn fork_cow() -> CaseResult {
-    const HEAP_WORDS: usize = 8192;
-    BSS_WORD.store(0x2222, Ordering::Relaxed);
-    let mut stack = [0u64; 512];
-    let mut heap = vec![0x4444u64; HEAP_WORDS];
-    let stack_word = unsafe { stack.as_mut_ptr().add(300) };
-    let heap_ptr = heap.as_mut_ptr();
-    // SAFETY: both pointers stay inside `stack` and `heap`, which outlive the case.
-    unsafe { core::ptr::write_volatile(stack_word, 0x3333) };
+const ORIGINAL: u64 = 0x5a;
+const BY_PARENT: u64 = 0xa5;
+const BY_CHILD: u64 = 0xc3;
+
+/// One fork of a copy-on-write case: `fill(v)` writes `v` to every location under test and
+/// `differs(v)` names one that does not hold `v`. With `parent_first` the parent writes
+/// while every page is still shared and the child then checks it still sees `ORIGINAL`;
+/// otherwise the child writes first and the parent checks it still sees `ORIGINAL`. The
+/// other side writes afterwards, and each must end holding only its own writes.
+fn cow_round(fill: &dyn Fn(u64), differs: &dyn Fn(u64) -> Option<&'static str>, parent_first: bool) -> CaseResult {
+    fill(ORIGINAL);
     let (go_r, go_w) = io::pipe()?;
+    let (wrote_r, wrote_w) = io::pipe()?;
     let child = task(|| {
         let _ = io::close(go_w);
-        drain(go_r);
-        // The parent has stored its own values by now; this copy must not see them.
-        if DATA_WORD.load(Ordering::Relaxed) != 0x1111 { return Err("saw the parent's write to initialized data".into()); }
-        if BSS_WORD.load(Ordering::Relaxed) != 0x2222 { return Err("saw the parent's write to zero-initialized data".into()); }
-        if unsafe { core::ptr::read_volatile(stack_word) } != 0x3333 { return Err("saw the parent's write to its stack".into()); }
-        if !(0..HEAP_WORDS).all(|i| unsafe { core::ptr::read_volatile(heap_ptr.add(i)) } == 0x4444) {
-            return Err("saw the parent's write to its heap".into());
-        }
-        DATA_WORD.store(0xc1, Ordering::Relaxed);
-        BSS_WORD.store(0xc2, Ordering::Relaxed);
-        unsafe {
-            core::ptr::write_volatile(stack_word, 0xc3);
-            for i in 0..HEAP_WORDS { core::ptr::write_volatile(heap_ptr.add(i), 0xc4); }
+        let _ = io::close(wrote_r);
+        if parent_first {
+            drain(go_r);
+            if let Some(region) = differs(ORIGINAL) { return Err(format!("saw the parent's write to {region}")); }
+            fill(BY_CHILD);
+        } else {
+            fill(BY_CHILD);
+            let _ = io::write(wrote_w, b"w");
+            drain(go_r);
+            if let Some(region) = differs(BY_CHILD) { return Err(format!("lost its own write to {region} when the parent wrote")); }
         }
         Ok(())
     })?;
     io::close(go_r)?;
-    DATA_WORD.store(0xa1, Ordering::Relaxed);
-    BSS_WORD.store(0xa2, Ordering::Relaxed);
-    unsafe {
-        core::ptr::write_volatile(stack_word, 0xa3);
-        for i in 0..HEAP_WORDS { core::ptr::write_volatile(heap_ptr.add(i), 0xa4); }
-    }
+    io::close(wrote_w)?;
+    let before = if parent_first { Ok(()) } else {
+        match read_up_to(wrote_r, 1, WAIT_MS) {
+            Ok(said) if said.is_empty() => fail("the child never said it had written"),
+            Ok(_) => match differs(ORIGINAL) {
+                Some(region) => fail(format!("the child's write to {region}, made first, reached the parent")),
+                None => Ok(()),
+            },
+            Err(e) => fail(e),
+        }
+    };
+    if before.is_ok() { fill(BY_PARENT); }
     io::close(go_w)?;
+    io::close(wrote_r)?;
+    before?;
     child.finish()?;
-    let intact = DATA_WORD.load(Ordering::Relaxed) == 0xa1 && BSS_WORD.load(Ordering::Relaxed) == 0xa2
-        && unsafe { core::ptr::read_volatile(stack_word) } == 0xa3
-        && (0..HEAP_WORDS).all(|i| unsafe { core::ptr::read_volatile(heap_ptr.add(i)) } == 0xa4);
-    check(intact, "the child's writes reached the parent's data, stack or heap")
+    match differs(BY_PARENT) {
+        Some(region) => fail(format!("the child's write to {region} reached the parent")),
+        None => Ok(()),
+    }
+}
+
+fn fork_cow() -> CaseResult {
+    const HEAP_WORDS: usize = 8192;
+    let mut stack = [0u64; 512];
+    let mut heap = vec![0u64; HEAP_WORDS];
+    let stack_word = unsafe { stack.as_mut_ptr().add(300) };
+    let heap_ptr = heap.as_mut_ptr();
+    // SAFETY (both closures): the pointers stay inside `stack` and `heap`, which outlive the case.
+    let fill = |v: u64| {
+        DATA_WORD.store(v, Ordering::Relaxed);
+        BSS_WORD.store(v, Ordering::Relaxed);
+        unsafe {
+            core::ptr::write_volatile(stack_word, v);
+            for i in 0..HEAP_WORDS { core::ptr::write_volatile(heap_ptr.add(i), v); }
+        }
+    };
+    let differs = |v: u64| -> Option<&'static str> {
+        if DATA_WORD.load(Ordering::Relaxed) != v { Some("initialized data") }
+        else if BSS_WORD.load(Ordering::Relaxed) != v { Some("zero-initialized data") }
+        else if unsafe { core::ptr::read_volatile(stack_word) } != v { Some("the stack") }
+        else if !(0..HEAP_WORDS).all(|i| unsafe { core::ptr::read_volatile(heap_ptr.add(i)) } == v) { Some("the heap") }
+        else { None }
+    };
+    cow_round(&fill, &differs, true)?;
+    cow_round(&fill, &differs, false)
 }
 
 fn fork_private_mapping() -> CaseResult {
     const LEN: usize = 16384;
     let map = memory::mmap(core::ptr::null_mut(), LEN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
-    unsafe { core::ptr::write_bytes(map, 0x5a, LEN) };
-    let (go_r, go_w) = io::pipe()?;
-    let child = task(|| {
-        let _ = io::close(go_w);
-        drain(go_r);
-        if !bytes_all(map, LEN, 0x5a) { return Err("saw the parent's write to a private mapping".into()); }
-        unsafe { core::ptr::write_bytes(map, 0xc3, LEN) };
-        Ok(())
-    })?;
-    io::close(go_r)?;
-    unsafe { core::ptr::write_bytes(map, 0xa5, LEN) };
-    io::close(go_w)?;
-    child.finish()?;
-    check(bytes_all(map, LEN, 0xa5), "the child's writes to a private mapping reached the parent")
+    // SAFETY: the mapping is LEN bytes and stays mapped through the case.
+    let fill = |v: u64| unsafe { core::ptr::write_bytes(map, v as u8, LEN) };
+    let differs = |v: u64| (!bytes_all(map, LEN, v as u8)).then_some("a private mapping");
+    cow_round(&fill, &differs, true)?;
+    cow_round(&fill, &differs, false)
 }
 
 fn fork_shared_mapping() -> CaseResult {
@@ -1162,16 +1218,21 @@ fn fork_cwd_umask() -> CaseResult {
 }
 
 fn fork_times_reset() -> CaseResult {
-    burn(150);
+    // A child that has done nothing yet has used well under 2 ticks (20 ms at this ABI's
+    // 100 per second) of CPU, so a count above that was carried over from the parent.
+    const FRESH: i64 = 2;
+    burn(400);
     task(|| { burn(150); Ok(()) })?.finish()?;
     let (_, parent) = times()?;
     let own = parent[0] + parent[1];
-    check(own > 0 && parent[2] + parent[3] > 0,
-        &format!("times() in the parent reports {parent:?} after using CPU and waiting for a child that did"))?;
+    check(own > 4 * FRESH && parent[2] + parent[3] > 0,
+        &format!("times() in the parent reports {parent:?} after 400 ms of computation and a waited-for child that did 150 ms"))?;
     task(move || {
         let (_, t) = times()?;
         if t[2] != 0 || t[3] != 0 { return Err(format!("tms_cutime/tms_cstime are {}/{}, not 0", t[2], t[3])); }
-        if t[0] + t[1] >= own { return Err(format!("tms_utime+tms_stime is {}, the parent's {own}: not reset", t[0] + t[1])); }
+        if t[0] + t[1] > FRESH {
+            return Err(format!("tms_utime+tms_stime is {} ticks before the child has computed anything (the parent's is {own}): not reset", t[0] + t[1]));
+        }
         Ok(())
     })?.finish()
 }
@@ -1193,10 +1254,20 @@ fn fork_many() -> CaseResult {
     let (r, w) = io::pipe()?;
     let mut children = Vec::new();
     for i in 0..32 {
-        let child = Child::start(|| { let _ = io::close(w); drain(r); i + 1 });
+        // drain returns only at end of file, which needs the parent's write end closed.
+        let child = Child::start(|| { let _ = io::close(w); if drain(r) { i + 1 } else { 100 + i } });
         match child {
             Ok(child) => children.push(child),
             Err(e) => return fail(format!("fork of child {i} with {i} running failed: {e:?}")),
+        }
+    }
+    for (i, child) in children.iter_mut().enumerate() {
+        let mut status = 0;
+        let r = wait4(child.pid, &mut status, WNOHANG);
+        if r == child.pid as i64 { child.live = false; }
+        if r != 0 {
+            return fail(format!("child {i} was not running once all 32 had started: waitpid returned {} with {}",
+                shown(r), status_text(status)));
         }
     }
     io::close(w)?;
@@ -1242,7 +1313,16 @@ fn exec_many_args() -> CaseResult {
         &format!("259 arguments arrived as {} (last {:?})", argv.len(), argv.last()))
 }
 
+/// {ARG_MAX} as a C library reports it on this ABI (musl's sysconf(_SC_ARG_MAX)): a
+/// quarter of the soft RLIMIT_STACK when that is finite and larger, else 131072.
+fn arg_max() -> Result<u64, CaseError> {
+    let [soft, _] = getrlimit(RLIMIT_STACK)?;
+    Ok(if soft != RLIM_INFINITY && soft / 4 > 131072 { soft / 4 } else { 131072 })
+}
+
 fn exec_long_arg() -> CaseResult {
+    let max = arg_max()?;
+    if max < 2 * 65536 { return skip(format!("ARG_MAX is {max}, too small to hold a 64 KiB argument")); }
     let long: String = (0..65536).map(|i| (b'a' + (i % 26) as u8) as char).collect();
     let out = exec_output(HELPER, &["helper", "report", FD_ARG, &long], &[], || Ok(()))?;
     let (argv, _) = split_report(&out)?;
@@ -1251,12 +1331,15 @@ fn exec_long_arg() -> CaseResult {
 }
 
 fn exec_e2big() -> CaseResult {
-    // 4 MiB of arguments: more than ARG_MAX on any system with an 8 MiB stack limit.
+    let max = arg_max()?;
+    // Strings of 4096 bytes with their NULs, more of them than fit in ARG_MAX.
+    let count = max / 4096 + 1;
+    if count > 2048 { return skip(format!("ARG_MAX is {max}; more than 8 MiB of arguments does not fit the case's limit")); }
     let big = "x".repeat(4095);
     let mut args = strings(&["helper", "ran"]);
-    args.extend((0..1024).map(|_| big.clone()));
+    args.extend((0..count).map(|_| big.clone()));
     let errno = exec_errno(HELPER, &args, || Ok(()))?;
-    want_err("exec with 4 MiB of arguments", -errno, E2BIG)
+    want_err(&format!("exec with {} bytes of arguments, ARG_MAX being {max}", count * 4096), -errno, E2BIG)
 }
 
 fn exec_enoent() -> CaseResult {
@@ -1308,7 +1391,7 @@ fn exec_failed_intact() -> CaseResult {
     let env = cargs(&[]);
     let c = cpath(&path);
     let ret = sc(nr::EXECVE, &[c.as_ptr() as u64, args.ptrs.as_ptr() as u64, env.ptrs.as_ptr() as u64]);
-    check(ret < 0, "exec of a malformed program succeeded")?;
+    want_err("exec of a truncated ELF image", ret, ENOEXEC)?;
     check(MARK.load(Ordering::Relaxed) == 0x5151_5151 && heap.iter().all(|&v| v == 0x6262),
         "the failed exec changed the caller's memory")?;
     check(io::write(w, b"k").is_ok(), "the failed exec closed the caller's descriptors")?;
@@ -1437,10 +1520,13 @@ fn exec_keeps_ids() -> CaseResult {
         }
         Ok(())
     })?;
-    for (key, value) in [("uid", "4903"), ("euid", "4903"), ("gid", "4902"), ("egid", "4902"), ("groups", "4901")] {
+    for (key, value) in [("uid", "4903"), ("euid", "4903"), ("gid", "4902"), ("egid", "4902")] {
         state_is(&state, key, value, "an ordinary program")?;
     }
-    Ok(())
+    let raw = state.get("groups").ok_or("the exec'd program did not report groups")?;
+    let got: Option<Vec<u32>> = raw.split(',').filter(|g| !g.is_empty()).map(|g| g.parse().ok()).collect();
+    check(got.is_some_and(|got| groups_are(&got, &[4901], 4902)),
+        &format!("after exec the supplementary groups are {raw}; setgroups gave 4901"))
 }
 
 fn exec_setuid_bit() -> CaseResult {
@@ -1463,21 +1549,43 @@ fn exec_setgid_bit() -> CaseResult {
     Ok(())
 }
 
+/// Exec a set-ID copy of the helper at `path` with `args`, as user `uid` and group `gid`;
+/// its exit status is 0 or the step that failed, which `steps` describes.
+fn exec_set_id(path: &str, args: &[&str], uid: u32, gid: u32, steps: &[(i32, &str)]) -> CaseResult {
+    let (mut child, errno) = spawn_exec(path, &strings(args), &[], || become_user(uid, gid))?;
+    if let Some(errno) = errno { return fail(format!("exec failed with {}", errname(errno))); }
+    let status = child.wait()?;
+    if exited(status) && exit_code(status) == 0 { return Ok(()); }
+    match steps.iter().find(|(code, _)| exited(status) && exit_code(status) == *code) {
+        Some((_, step)) => fail(*step),
+        None => fail(format!("the set-ID program ended with {}", status_text(status))),
+    }
+}
+
 fn exec_setuid_saved() -> CaseResult {
     let tmp = Tmp::new()?;
     let path = helper_copy(&tmp, "setuid", 4921, 4922, 0o4755)?;
-    let (mut child, errno) = spawn_exec(&path, &strings(&["setuid", "saved", "4924", "4921"]), &[], || become_user(4924, 4923))?;
-    if let Some(errno) = errno { return fail(format!("exec failed with {}", errname(errno))); }
-    let status = child.wait()?;
-    let msg = match (exited(status), exit_code(status)) {
-        (true, 0) => return Ok(()),
-        (true, 10) => "setuid to the real user ID failed in a set-user-ID program".to_string(),
-        (true, 11) => "setuid to the real user ID left the effective ID unchanged".to_string(),
-        (true, 12) => "setuid back to the saved set-user-ID (the owner, 4921) failed".to_string(),
-        (true, 13) => "setuid back to the saved set-user-ID left the effective ID unchanged".to_string(),
-        _ => format!("the set-user-ID program ended with {}", status_text(status)),
-    };
-    fail(msg)
+    exec_set_id(&path, &["setuid", "saved", "4924", "4921"], 4924, 4923, &[
+        (10, "setuid to the real user ID failed in a set-user-ID program"),
+        (11, "setuid to the real user ID left the effective ID unchanged"),
+        (12, "setuid to the real user ID changed the real user ID"),
+        (13, "setuid back to the saved set-user-ID (the owner, 4921) failed"),
+        (14, "setuid back to the saved set-user-ID left the effective ID unchanged"),
+        (15, "setuid back to the saved set-user-ID changed the real user ID"),
+    ])
+}
+
+fn exec_setgid_saved() -> CaseResult {
+    let tmp = Tmp::new()?;
+    let path = helper_copy(&tmp, "setgid", 4931, 4932, 0o2755)?;
+    exec_set_id(&path, &["setgid", "savedgid", "4933", "4932"], 4934, 4933, &[
+        (20, "setgid to the real group ID failed in a set-group-ID program"),
+        (21, "setgid to the real group ID left the effective ID unchanged"),
+        (22, "setgid to the real group ID changed the real group ID"),
+        (23, "setgid back to the saved set-group-ID (the file's group, 4932) failed"),
+        (24, "setgid back to the saved set-group-ID left the effective ID unchanged"),
+        (25, "setgid back to the saved set-group-ID changed the real group ID"),
+    ])
 }
 
 /// exec_state, running a copy of the helper at `path`.
@@ -1670,12 +1778,15 @@ fn wait_reparent() -> CaseResult {
     let parent = read_i32(r, "the orphan's new parent");
     io::close(r)?;
     let parent = parent?;
-    check(parent == 1, &format!("after its parent exited, the orphan's parent is {parent}, expected init (1)"))
+    // POSIX names no PID: the new parent is an implementation-defined system process.
+    check(parent > 0 && parent != middle.pid && parent != pid() && kill(parent, 0) == 0,
+        &format!("after its parent {} exited, the orphan's parent is {parent}, not a live system process", middle.pid))
 }
 
 fn wait_sigchld_ignored() -> CaseResult {
     ignore(SIGCHLD)?;
     let mut child = Child::start(|| 0)?;
+    let limit = bounded(WAIT_MS, CLEANUP_MS);
     let start = now_ms();
     loop {
         let mut status = 0;
@@ -1686,7 +1797,7 @@ fn wait_sigchld_ignored() -> CaseResult {
         }
         if r == -ECHILD { child.live = false; return Ok(()); }
         if r != 0 { return fail(format!("waitpid failed with {}", shown(r))); }
-        if now_ms().saturating_sub(start) >= WAIT_MS {
+        if now_ms().saturating_sub(start) >= limit {
             return fail("waitpid never reported ECHILD for an exited child with SIGCHLD ignored");
         }
         nap();
@@ -1699,40 +1810,55 @@ const WNOWAIT: u64 = 0x0100_0000;
 
 /// waitid(P_PID, pid, WEXITED | extra | WNOHANG) until it reports; the siginfo as words.
 fn waitid_within(pid: i32, extra: u64) -> Result<[i32; 32], CaseError> {
+    let limit = bounded(WAIT_MS, CLEANUP_MS);
     let start = now_ms();
     loop {
         let mut info = [0i32; 32];
         let r = sc(nr::WAITID, &[P_PID, pid as u64, info.as_mut_ptr() as u64, WEXITED | extra | WNOHANG as u64, 0]);
         if r < 0 { return err(format!("waitid failed with {}", errname(-r))); }
         if info[4] != 0 { return Ok(info); }
-        if now_ms().saturating_sub(start) >= WAIT_MS { return err("waitid reported nothing for an exited child"); }
+        if now_ms().saturating_sub(start) >= limit { return err("waitid reported nothing for an exited child"); }
         nap();
     }
+}
+
+/// The fields of a waitid report for `child` that exited with `code`, or what is wrong.
+fn waitid_reports(info: &[i32; 32], child: i32, code: i32) -> CaseResult {
+    check(info[0] == SIGCHLD && info[2] == 1 && info[4] == child && info[6] == code,
+        &format!("waitid gave si_signo {}, si_code {}, si_pid {}, si_status {}; expected SIGCHLD, CLD_EXITED, {child}, {code}",
+            info[0], info[2], info[4], info[6]))
 }
 
 fn wait_waitid() -> CaseResult {
     let mut child = Child::start(|| 9)?;
     let info = waitid_within(child.pid, 0)?;
+    waitid_reports(&info, child.pid, 9)?;
+    let mut status = 0;
+    let after = wait4(child.pid, &mut status, WNOHANG);
+    if after == child.pid as i64 { child.live = false; }
+    want_err("waitpid once waitid without WNOWAIT has reported the child", after, ECHILD)?;
     child.live = false;
-    check(info[0] == SIGCHLD && info[2] == 1 && info[4] == child.pid && info[6] == 9,
-        &format!("waitid gave si_signo {}, si_code {}, si_pid {}, si_status {}; expected SIGCHLD, CLD_EXITED, {}, 9",
-            info[0], info[2], info[4], info[6], child.pid))
+    Ok(())
 }
 
 fn wait_waitid_nowait() -> CaseResult {
     let mut child = Child::start(|| 4)?;
-    waitid_within(child.pid, WNOWAIT)?;
-    child.expect_exit(4, "the child waitid looked at with WNOWAIT")
+    for _ in 0..2 {
+        let info = waitid_within(child.pid, WNOWAIT)?;
+        waitid_reports(&info, child.pid, 4)?;
+    }
+    child.expect_exit(4, "the child waitid looked at twice with WNOWAIT")
 }
 
 fn wait_null_status() -> CaseResult {
     let mut child = Child::start(|| 0)?;
+    let limit = bounded(WAIT_MS, CLEANUP_MS);
     let start = now_ms();
     loop {
         let r = wait4(child.pid, core::ptr::null_mut(), WNOHANG);
         if r == child.pid as i64 { child.live = false; return Ok(()); }
         if r != 0 { return fail(format!("waitpid with a null status pointer failed with {}", shown(r))); }
-        if now_ms().saturating_sub(start) >= WAIT_MS { return fail("waitpid with a null status pointer never reaped the child"); }
+        if now_ms().saturating_sub(start) >= limit { return fail("waitpid with a null status pointer never reaped the child"); }
         nap();
     }
 }
@@ -2016,11 +2142,12 @@ fn creds_setuid_user() -> CaseResult {
 }
 
 fn creds_setuid_saved() -> CaseResult {
+    // The saved set-user-ID takes the new effective user ID, 4105.
     want_eq("setreuid(4104, 4105) as root", setreuid(4104, 4105), 0)?;
     want_eq("setuid to the real user ID as non-root", setuid(4104), 0)?;
-    check(sc(nr::GETEUID, &[]) == 4104, "setuid(real) did not set the effective user ID")?;
+    ids_are([4104, 4104, 0, 0], "after setuid to the real user ID")?;
     want_eq("setuid back to the saved set-user-ID", setuid(4105), 0)?;
-    check(sc(nr::GETEUID, &[]) == 4105, "setuid(saved) did not set the effective user ID")
+    ids_are([4104, 4105, 0, 0], "after setuid back to the saved set-user-ID")
 }
 
 fn creds_setgid_root() -> CaseResult {
@@ -2034,6 +2161,16 @@ fn creds_setgid_user() -> CaseResult {
     become_user(4202, 4202)?;
     want_err("setgid to another group as non-root", setgid(4203), EPERM)?;
     want_eq("setgid to its own group ID", setgid(4202), 0)
+}
+
+fn creds_setgid_saved() -> CaseResult {
+    // The saved set-group-ID takes the new effective group ID, 4107; setuid then gives up root.
+    want_eq("setregid(4106, 4107) as root", setregid(4106, 4107), 0)?;
+    want_eq("setuid(4108) as root", setuid(4108), 0)?;
+    want_eq("setgid to the real group ID as non-root", setgid(4106), 0)?;
+    ids_are([4108, 4108, 4106, 4106], "after setgid to the real group ID")?;
+    want_eq("setgid back to the saved set-group-ID", setgid(4107), 0)?;
+    ids_are([4108, 4108, 4106, 4107], "after setgid back to the saved set-group-ID")
 }
 
 fn creds_setgid_after_setuid() -> CaseResult {
@@ -2093,12 +2230,14 @@ fn creds_setregid_user() -> CaseResult {
 
 fn creds_getgroups() -> CaseResult {
     want_eq("setgroups of three groups", setgroups(&[4501, 4502, 4503]), 0)?;
-    want_eq("getgroups(0, NULL)", sc(nr::GETGROUPS, &[0, 0]), 3)?;
+    let count = want("getgroups(0, NULL)", sc(nr::GETGROUPS, &[0, 0]))?;
     let mut list = [0u32; 8];
-    want_eq("getgroups(8, list)", getgroups(&mut list), 3)?;
-    check(list[..3] == [4501, 4502, 4503], &format!("getgroups returned {:?}", &list[..3]))?;
+    want_eq("getgroups(8, list)", getgroups(&mut list), count)?;
+    let got = &list[..(count as usize).min(list.len())];
+    check(groups_are(got, &[4501, 4502, 4503], 0),
+        &format!("getgroups returned {got:?} after setgroups of 4501, 4502 and 4503"))?;
     let mut small = [0u32; 2];
-    want_err("getgroups with a list too small", getgroups(&mut small), EINVAL)
+    want_err("getgroups with a list shorter than its count", getgroups(&mut small), EINVAL)
 }
 
 fn creds_setgroups_user() -> CaseResult {
@@ -2115,7 +2254,9 @@ fn creds_fork() -> CaseResult {
         if got != [4604, 4604, 4603, 4603] { return Err(format!("the child's IDs are {got:?}")); }
         let mut list = [0u32; 8];
         let n = getgroups(&mut list);
-        if n != 2 || list[..2] != [4601, 4602] { return Err(format!("the child's supplementary groups are {:?}", &list[..n.max(0) as usize])); }
+        if n < 0 { return Err(format!("getgroups in the child failed with {}", errname(-n))); }
+        let got = &list[..n as usize];
+        if !groups_are(got, &[4601, 4602], 4603) { return Err(format!("the child's supplementary groups are {got:?}, expected 4601 and 4602")); }
         Ok(())
     })?.finish()
 }
@@ -2125,7 +2266,13 @@ fn creds_fork() -> CaseResult {
 
 fn limits_getrlimit() -> CaseResult {
     let [soft, hard] = getrlimit(RLIMIT_NOFILE)?;
-    check(soft <= hard && soft >= 20, &format!("RLIMIT_NOFILE is soft {soft}, hard {hard}"))
+    check(soft <= hard && soft >= 20, &format!("RLIMIT_NOFILE is soft {soft}, hard {hard}"))?;
+    for (name, resource) in [("RLIMIT_CORE", RLIMIT_CORE), ("RLIMIT_CPU", RLIMIT_CPU), ("RLIMIT_DATA", RLIMIT_DATA),
+        ("RLIMIT_FSIZE", RLIMIT_FSIZE), ("RLIMIT_STACK", RLIMIT_STACK), ("RLIMIT_AS", RLIMIT_AS)] {
+        let [soft, hard] = getrlimit(resource).map_err(|e| format!("{name}: {e}"))?;
+        check(soft <= hard, &format!("{name} is soft {soft}, above hard {hard}"))?;
+    }
+    Ok(())
 }
 
 fn limits_getrlimit_einval() -> CaseResult {
@@ -2174,7 +2321,12 @@ fn limits_nofile_open() -> CaseResult {
         match fs::open("/dev/null", fs::O_RDONLY) {
             Ok(fd) if fd.raw() < 16 => {}
             Ok(fd) => return fail(format!("open returned descriptor {} with RLIMIT_NOFILE at 16", fd.raw())),
-            Err(Error::Os(Errno::EMFILE)) => return Ok(()),
+            Err(Error::Os(Errno::EMFILE)) => {
+                // open returns the lowest free descriptor, so by now every one below 16 is in use.
+                let free: Vec<u64> = (0..16).filter(|&fd| sc(nr::FCNTL, &[fd, F_GETFD]) == -EBADF).collect();
+                return check(free.is_empty(),
+                    &format!("open failed with EMFILE while descriptors {free:?}, below RLIMIT_NOFILE at 16, were free"));
+            }
             Err(e) => return fail(format!("open failed with {e}, expected EMFILE")),
         }
     }
@@ -2218,6 +2370,101 @@ fn limits_fsize_signal() -> CaseResult {
     let status = child.wait()?;
     check(signaled(status) && term_sig(status) == SIGXFSZ,
         &format!("writing past RLIMIT_FSIZE with SIGXFSZ at its default ended the child with {}", status_text(status)))
+}
+
+fn limits_cpu() -> CaseResult {
+    let mut child = Child::start(|| {
+        if setrlimit(RLIMIT_CPU, 1, RLIM_INFINITY) != 0 { return 1; }
+        burn(4000);
+        0
+    })?;
+    let (_, status) = wait_within(child.pid, 0, 6000)?;
+    child.live = false;
+    check(!(exited(status) && exit_code(status) == 1), "setrlimit(RLIMIT_CPU, 1 s) failed in the child")?;
+    check(signaled(status) && term_sig(status) == SIGXCPU,
+        &format!("a child with RLIMIT_CPU at 1 s that computed for 4 s ended with {}", status_text(status)))
+}
+
+fn limits_data() -> CaseResult {
+    let layout = std::alloc::Layout::from_size_align(64 << 20, 16).map_err(|e| e.to_string())?;
+    // SAFETY: a nonzero size; the block is freed at once.
+    let block = unsafe { std::alloc::alloc(layout) };
+    check(!block.is_null(), "a 64 MiB allocation failed with RLIMIT_DATA at its default")?;
+    unsafe { std::alloc::dealloc(block, layout) };
+    task(move || {
+        let r = setrlimit(RLIMIT_DATA, 16 << 20, RLIM_INFINITY);
+        if r != 0 { return Err(format!("setrlimit(RLIMIT_DATA) failed with {}", shown(r))); }
+        // SAFETY: as above; it is freed if it was made.
+        let block = unsafe { std::alloc::alloc(layout) };
+        if block.is_null() { return Ok(()); }
+        unsafe { std::alloc::dealloc(block, layout) };
+        Err("a 64 MiB allocation succeeded with RLIMIT_DATA at 16 MiB".into())
+    })?.finish()
+}
+
+/// Use about `kib` KiB of stack, in 16 KiB frames.
+#[inline(never)]
+fn deep(kib: usize) -> u8 {
+    let frame = core::hint::black_box([kib as u8; 16384]);
+    if kib <= 16 { frame[0] } else { deep(kib - 16).wrapping_add(frame[kib % 16384]) }
+}
+
+fn limits_stack() -> CaseResult {
+    const DEPTH_KIB: usize = 1024;
+    let [soft, _] = getrlimit(RLIMIT_STACK)?;
+    if soft < 2 * 1024 * DEPTH_KIB as u64 {
+        return skip(format!("RLIMIT_STACK is {soft}, too small for the {DEPTH_KIB} KiB the case uses under it"));
+    }
+    // Default SIGSEGV handling, so an overflow is reported as SIGSEGV whatever the runtime installed.
+    let run = |limit: Option<u64>| -> i32 {
+        if signal::sigaction(SIGSEGV, Some(&Sigaction::default()), None).is_err() { return 1; }
+        if let Some(limit) = limit {
+            if setrlimit(RLIMIT_STACK, limit, RLIM_INFINITY) != 0 { return 2; }
+        }
+        core::hint::black_box(deep(DEPTH_KIB));
+        0
+    };
+    Child::start(|| run(None))?.expect_exit(0,
+        &format!("a child using {DEPTH_KIB} KiB of stack with RLIMIT_STACK at {soft}"))?;
+    let mut child = Child::start(|| run(Some(256 << 10)))?;
+    let status = child.wait()?;
+    check(signaled(status) && term_sig(status) == SIGSEGV,
+        &format!("a child using {DEPTH_KIB} KiB of stack with RLIMIT_STACK at 256 KiB ended with {}", status_text(status)))
+}
+
+fn limits_as() -> CaseResult {
+    const LEN: usize = 128 << 20;
+    let map = |len: usize| memory::mmap(core::ptr::null_mut(), len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    let unlimited = map(LEN).map_err(|e| format!("a 128 MiB mapping failed with RLIMIT_AS at its default: {e}"))?;
+    memory::munmap(unlimited, LEN)?;
+    task(|| {
+        let r = setrlimit(RLIMIT_AS, 64 << 20, RLIM_INFINITY);
+        if r != 0 { return Err(format!("setrlimit(RLIMIT_AS) failed with {}", shown(r))); }
+        match map(LEN) {
+            Err(Error::Os(Errno::ENOMEM)) => Ok(()),
+            Err(e) => Err(format!("a 128 MiB mapping with RLIMIT_AS at 64 MiB failed with {e}, expected ENOMEM")),
+            Ok(_) => Err("a 128 MiB mapping succeeded with RLIMIT_AS at 64 MiB".into()),
+        }
+    })?.finish()
+}
+
+fn limits_core() -> CaseResult {
+    want_eq("setrlimit(RLIMIT_CORE, 1 MiB)", setrlimit(RLIMIT_CORE, 1 << 20, RLIM_INFINITY), 0)?;
+    limit_is(RLIMIT_CORE, [1 << 20, RLIM_INFINITY], "after setting RLIMIT_CORE to 1 MiB")?;
+    want_eq("setrlimit(RLIMIT_CORE, 0)", setrlimit(RLIMIT_CORE, 0, RLIM_INFINITY), 0)?;
+    limit_is(RLIMIT_CORE, [0, RLIM_INFINITY], "after setting RLIMIT_CORE to 0")?;
+    let tmp = Tmp::new()?;
+    let core_file = tmp.path("core");
+    let dir = tmp.dir.clone();
+    let mut child = Child::start(|| {
+        if chdir(&dir) != 0 { return 1; }
+        kill(pid(), SIGQUIT);
+        loop { nap(); }
+    })?;
+    let status = child.wait()?;
+    check(signaled(status) && term_sig(status) == SIGQUIT,
+        &format!("a child that sent itself SIGQUIT ended with {}", status_text(status)))?;
+    check(std::fs::metadata(&core_file).is_err(), "a core file was written with RLIMIT_CORE at 0")
 }
 
 fn limits_fork() -> CaseResult {
@@ -2320,9 +2567,51 @@ fn limits_times_children() -> CaseResult {
 // ---------------------------------------------------------------------------
 // priorities and sched_yield
 
+/// Processors online, from the `processor` lines of /proc/cpuinfo; 1 if it cannot be read.
+fn processors() -> usize {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .map(|info| info.lines().filter(|line| line.starts_with("processor")).count())
+        .unwrap_or(0)
+        .max(1)
+}
+
+/// A ring of `n` processes passes a token: each spins until the token reaches it and
+/// hands it on, calling sched_yield between looks when `yielding`. Returns the passes
+/// made in `window` ms.
+fn ring_passes(n: usize, yielding: bool, window: u64) -> Result<u64, CaseError> {
+    const STOP: u64 = u64::MAX;
+    let map = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)?;
+    // SAFETY: the shared mapping is page-aligned, zero-filled and outlives the ring.
+    let token = unsafe { &*(map as *const AtomicU64) };
+    let mut ring = Vec::new();
+    for i in 0..n as u64 {
+        ring.push(Child::start(|| loop {
+            let t = token.load(Ordering::Acquire);
+            if t == STOP { return 0; }
+            if t % n as u64 == i { let _ = token.compare_exchange(t, t + 1, Ordering::AcqRel, Ordering::Acquire); }
+            else if yielding { sc(nr::SCHED_YIELD, &[]); }
+            else { core::hint::spin_loop(); }
+        })?);
+    }
+    let _ = time::sleep_ms(50);
+    let first = token.load(Ordering::Acquire);
+    let _ = time::sleep_ms(window);
+    let passes = token.load(Ordering::Acquire) - first;
+    token.store(STOP, Ordering::Release);
+    for child in ring.iter_mut() { child.expect_exit(0, "a process of the ring")?; }
+    memory::munmap(map, 4096)?;
+    Ok(passes)
+}
+
 fn sched_yield() -> CaseResult {
     for _ in 0..16 { want_eq("sched_yield", sc(nr::SCHED_YIELD, &[]), 0)?; }
-    Ok(())
+    // More spinning processes than processors, so a token holder is often waiting for one:
+    // sched_yield should hand it the processor, where a bare spin holds it until preempted.
+    let n = (4 * processors()).max(8);
+    let spinning = ring_passes(n, false, 300)?;
+    let yielding = ring_passes(n, true, 300)?;
+    check(yielding > 4 * spinning.max(1),
+        &format!("a ring of {n} processes passed its token {yielding} times in 300 ms with sched_yield and {spinning} times spinning without it"))
 }
 
 fn sched_getpriority() -> CaseResult {
@@ -2403,11 +2692,21 @@ fn sched_group() -> CaseResult {
 }
 
 fn sched_user() -> CaseResult {
-    let target = held(|| become_user(4811, 4811))?;
+    let first = held(|| become_user(4811, 4811))?;
+    let second = held(|| become_user(4811, 4811))?;
+    let other = held(|| become_user(4812, 4812))?;
+    let other_nice = getpriority(PRIO_PROCESS, other.pid())
+        .map_err(|e| format!("getpriority of another user's process failed with {}", errname(e)))?;
     want_eq("setpriority(PRIO_USER, 4811) to 6", setpriority(PRIO_USER, 4811, 6), 0)?;
     nice_is(PRIO_USER, 4811, 6, "getpriority(PRIO_USER)")?;
-    nice_is(PRIO_PROCESS, target.pid(), 6, "the user's process")?;
-    target.release()
+    nice_is(PRIO_PROCESS, first.pid(), 6, "the user's first process")?;
+    nice_is(PRIO_PROCESS, second.pid(), 6, "the user's second process")?;
+    nice_is(PRIO_PROCESS, other.pid(), other_nice, "another user's process, after setpriority(PRIO_USER)")?;
+    want_eq("setpriority on the user's second process to 3", setpriority(PRIO_PROCESS, second.pid(), 3), 0)?;
+    nice_is(PRIO_USER, 4811, 3, "getpriority(PRIO_USER), the lowest nice value of the user's processes,")?;
+    other.release()?;
+    second.release()?;
+    first.release()
 }
 
 fn sched_nice() -> CaseResult {
@@ -2421,7 +2720,10 @@ fn sched_nice_user() -> CaseResult {
     become_user(4821, 4821)?;
     let lowered = nice(-1);
     check(lowered == Err(EPERM), &format!("nice(-1) as non-root returned {lowered:?}, expected Err(EPERM)"))?;
-    check(nice(1) == Ok(1), "nice(1) as non-root did not return 1")
+    nice_is(PRIO_PROCESS, 0, 0, "after the refused nice(-1)")?;
+    let raised = nice(1);
+    check(raised == Ok(1), &format!("nice(1) as non-root returned {raised:?}, expected Ok(1)"))?;
+    nice_is(PRIO_PROCESS, 0, 1, "after nice(1)")
 }
 
 fn sched_fork() -> CaseResult {
@@ -2444,8 +2746,8 @@ static SUITE: Suite = suite(
     "processes", "Processes", &[
         category("fork", "fork & copy-on-write", &[
             case("pids", "fork returns the child's PID to the parent, and the child's getppid is the parent", fork_pids),
-            case("cow-memory", "Writes after fork to data, stack and heap stay in the process that made them", fork_cow),
-            case("private-mapping", "A private anonymous mapping is copied on write across fork", fork_private_mapping),
+            case("cow-memory", "Writes after fork to data, stack and heap stay in the process that made them, whichever writes first", fork_cow),
+            case("private-mapping", "A private anonymous mapping is copied on write across fork, whichever side writes first", fork_private_mapping),
             case("shared-mapping", "A shared anonymous mapping stays shared across fork", fork_shared_mapping),
             case("descriptors", "The child inherits descriptors sharing file offsets, and closing its copy leaves the parent's", fork_descriptors),
             case("descriptor-flags", "FD_CLOEXEC is inherited and status flags are shared through the open file description", fork_descriptor_flags),
@@ -2456,25 +2758,25 @@ static SUITE: Suite = suite(
             case("cwd-umask", "The working directory and umask are inherited", fork_cwd_umask),
             case("times-reset", "The child's times() counts start at zero", fork_times_reset),
             case("nproc-eagain", "fork fails with EAGAIN when the user is at RLIMIT_NPROC", fork_nproc),
-            case("many-children", "32 children alive at once each exit with their own status", fork_many),
+            case("many-children", "32 children are alive at once, and each exits with its own status", fork_many),
         ]),
         category("exec", "exec, argv & environment", &[
             case("argv", "execve passes argv exactly, including an arbitrary argv[0] and empty arguments", exec_argv),
             case("envp", "execve passes envp exactly as the new environment", exec_envp),
             case("empty-env", "An empty envp gives an empty environment", exec_empty_env),
             case("many-args", "259 arguments arrive intact", exec_many_args),
-            case("long-arg", "A 64 KiB argument arrives intact", exec_long_arg),
-            case("e2big", "Arguments beyond ARG_MAX fail with E2BIG", exec_e2big),
+            case("long-arg", "A 64 KiB argument, within the ARG_MAX a C library reports, arrives intact", exec_long_arg),
+            case("e2big", "Arguments beyond the ARG_MAX a C library reports fail with E2BIG", exec_e2big),
             case("enoent", "A missing program fails with ENOENT", exec_enoent),
             case("enotdir", "A path through a regular file fails with ENOTDIR", exec_enotdir),
             case("enametoolong", "A path longer than PATH_MAX fails with ENAMETOOLONG", exec_enametoolong),
             case("eacces-mode", "A file without execute permission fails with EACCES", exec_eacces_mode),
             case("eacces-dir", "A directory fails with EACCES", exec_eacces_dir),
             case("enoexec", "An executable file in no known format fails with ENOEXEC", exec_enoexec),
-            case("failed-intact", "A failed exec leaves the caller's memory, descriptors and handlers intact", exec_failed_intact),
-            case("script", "A #! script runs its interpreter with the optional argument, the script path and the arguments", exec_script),
-            case("script-noarg", "A #! script without an optional argument runs its interpreter with the script path", exec_script_noarg),
-            case("script-missing", "A #! script whose interpreter is missing fails with ENOENT", exec_script_missing),
+            case("failed-intact", "An exec failing with ENOEXEC leaves the caller's memory, descriptors and handlers intact", exec_failed_intact),
+            case("script", "Compatibility, not POSIX: a #! script runs its interpreter with the optional argument, the script path and the arguments", exec_script),
+            case("script-noarg", "Compatibility, not POSIX: a #! script without an optional argument runs its interpreter with the script path", exec_script_noarg),
+            case("script-missing", "Compatibility, not POSIX: a #! script whose interpreter is missing fails with ENOENT", exec_script_missing),
             case("relative-path", "A relative program path is resolved against the working directory", exec_relative),
             case("cloexec", "Close-on-exec descriptors are closed; others stay open at their offsets", exec_cloexec),
             case("signal-reset", "Caught signals reset to default; ignored signals stay ignored", exec_signal_reset),
@@ -2486,6 +2788,7 @@ static SUITE: Suite = suite(
             case("setuid-bit", "A set-user-ID program runs with its owner as the effective user ID", exec_setuid_bit),
             case("setgid-bit", "A set-group-ID program runs with its group as the effective group ID", exec_setgid_bit),
             case("setuid-saved", "A set-user-ID program can switch between its real and saved user IDs", exec_setuid_saved),
+            case("setgid-saved", "A set-group-ID program can switch between its real and saved group IDs", exec_setgid_saved),
         ]),
         category("wait", "wait, waitpid & exit status", &[
             case("specific", "256 immediate exits with waitpid of a specific child", specific),
@@ -2513,10 +2816,10 @@ static SUITE: Suite = suite(
             case("pid-group", "waitpid(-pgid) waits only for children in that process group", wait_pid_group),
             case("any-order", "waitpid(-1) reaps each exited child once, then fails with ECHILD", wait_any_order),
             case("zombie", "An exited child stays a zombie until waited for, then its PID is gone", wait_zombie),
-            case("reparent", "When a parent exits, its child is reparented to init", wait_reparent),
+            case("reparent", "When a parent exits, its child is reparented to a system process", wait_reparent),
             case("sigchld-ignored", "With SIGCHLD ignored, exited children leave no zombie to wait for", wait_sigchld_ignored),
-            case("waitid", "waitid reports an exited child's PID, CLD_EXITED and status", wait_waitid),
-            case("waitid-nowait", "waitid with WNOWAIT leaves the child waitable", wait_waitid_nowait),
+            case("waitid", "waitid reports an exited child's PID, CLD_EXITED and status, and reaps it", wait_waitid),
+            case("waitid-nowait", "waitid with WNOWAIT reports the child and leaves it waitable", wait_waitid_nowait),
             case("null-status", "waitpid with a null status pointer reaps the child", wait_null_status),
             case("exit-closes", "_exit closes every descriptor the child held", wait_exit_closes),
         ]),
@@ -2542,6 +2845,7 @@ static SUITE: Suite = suite(
             case("setuid-root", "setuid as root sets the real, effective and saved user IDs", creds_setuid_root),
             case("setuid-user", "setuid as non-root to another user fails with EPERM", creds_setuid_user),
             case("setuid-saved", "setuid as non-root switches between the real and saved user IDs", creds_setuid_saved),
+            case("setgid-saved", "setgid as non-root switches between the real and saved group IDs", creds_setgid_saved),
             case("setgid-root", "setgid as root sets the real and effective group IDs", creds_setgid_root),
             case("setgid-user", "setgid as non-root to another group fails with EPERM", creds_setgid_user),
             case("setgid-after-setuid", "setgid after setuid has given up root fails with EPERM", creds_setgid_after_setuid),
@@ -2558,17 +2862,22 @@ static SUITE: Suite = suite(
             case("fork", "A child inherits the user, group and supplementary group IDs", creds_fork),
         ]),
         category("limits", "resource limits & usage", &[
-            case("getrlimit", "getrlimit reports RLIMIT_NOFILE with soft at most hard", limits_getrlimit),
+            case("getrlimit", "getrlimit reports every POSIX resource with soft at most hard", limits_getrlimit),
             case("getrlimit-einval", "getrlimit of an unknown resource fails with EINVAL", limits_getrlimit_einval),
             case("setrlimit-soft", "setrlimit lowers the soft limit and getrlimit reads it back", limits_setrlimit_soft),
             case("soft-above-hard", "setrlimit with soft above hard fails with EINVAL", limits_soft_above_hard),
             case("root-raises-hard", "Root may raise a hard limit", limits_root_hard),
             case("user-raises-hard", "Raising a hard limit as non-root fails with EPERM", limits_user_hard),
             case("user-raises-soft", "A non-root process may raise its soft limit up to the hard", limits_user_soft),
-            case("nofile-open", "RLIMIT_NOFILE bounds the descriptors open returns, then EMFILE", limits_nofile_open),
+            case("nofile-open", "RLIMIT_NOFILE bounds the descriptors open returns, then EMFILE once all below it are used", limits_nofile_open),
             case("nofile-dup", "dup2 and F_DUPFD at or above RLIMIT_NOFILE fail with EBADF and EINVAL", limits_nofile_dup),
             case("fsize", "Writing past RLIMIT_FSIZE is cut short, then fails with EFBIG", limits_fsize),
             case("fsize-signal", "Writing past RLIMIT_FSIZE raises SIGXFSZ", limits_fsize_signal),
+            case("cpu", "Exceeding RLIMIT_CPU raises SIGXCPU", limits_cpu),
+            case("data", "An allocation beyond RLIMIT_DATA fails", limits_data),
+            case("stack", "Using more stack than RLIMIT_STACK raises SIGSEGV", limits_stack),
+            case("as", "A mapping beyond RLIMIT_AS fails with ENOMEM", limits_as),
+            case("core", "RLIMIT_CORE is set and read back, and at 0 a core-dumping signal writes no core file", limits_core),
             case("fork", "Resource limits are inherited across fork", limits_fork),
             case("exec", "Resource limits are kept across exec", limits_exec),
             case("prlimit-child", "prlimit sets and reads another process's limit", limits_prlimit_child),
@@ -2581,7 +2890,7 @@ static SUITE: Suite = suite(
             case("times-children", "times counts the CPU time of waited-for children", limits_times_children),
         ]),
         category("scheduling", "priorities & sched_yield", &[
-            case("sched-yield", "sched_yield returns 0", sched_yield),
+            case("sched-yield", "sched_yield returns 0 and hands the processor to a waiting process", sched_yield),
             case("getpriority", "getpriority reports the caller's nice value by 0 and by PID", sched_getpriority),
             case("setpriority", "setpriority sets the caller's nice value", sched_setpriority),
             case("clamp", "Nice values beyond the range are clamped to 19 and -20", sched_clamp),
@@ -2591,9 +2900,9 @@ static SUITE: Suite = suite(
             case("errors", "getpriority and setpriority fail with ESRCH and EINVAL", sched_errors),
             case("child", "setpriority and getpriority work on a child by PID", sched_child),
             case("process-group", "PRIO_PGRP sets every member and reports the lowest nice value", sched_group),
-            case("user", "PRIO_USER sets and reports the nice value of a user's processes", sched_user),
+            case("user", "PRIO_USER sets every process of the user, no other, and reports the lowest nice value", sched_user),
             case("nice", "nice adds to the nice value and returns the new value", sched_nice),
-            case("nice-user", "nice with a negative increment as non-root fails with EPERM", sched_nice_user),
+            case("nice-user", "nice with a negative increment as non-root fails with EPERM and keeps the nice value", sched_nice_user),
             case("fork", "The nice value is inherited across fork", sched_fork),
             case("exec", "The nice value is kept across exec", sched_exec),
         ]),

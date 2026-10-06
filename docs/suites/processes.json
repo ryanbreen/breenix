@@ -15,11 +15,11 @@
         },
         {
           "id": "cow-memory",
-          "title": "Writes after fork to data, stack and heap stay in the process that made them"
+          "title": "Writes after fork to data, stack and heap stay in the process that made them, whichever writes first"
         },
         {
           "id": "private-mapping",
-          "title": "A private anonymous mapping is copied on write across fork"
+          "title": "A private anonymous mapping is copied on write across fork, whichever side writes first"
         },
         {
           "id": "shared-mapping",
@@ -63,7 +63,7 @@
         },
         {
           "id": "many-children",
-          "title": "32 children alive at once each exit with their own status"
+          "title": "32 children are alive at once, and each exits with its own status"
         }
       ]
     },
@@ -89,11 +89,11 @@
         },
         {
           "id": "long-arg",
-          "title": "A 64 KiB argument arrives intact"
+          "title": "A 64 KiB argument, within the ARG_MAX a C library reports, arrives intact"
         },
         {
           "id": "e2big",
-          "title": "Arguments beyond ARG_MAX fail with E2BIG"
+          "title": "Arguments beyond the ARG_MAX a C library reports fail with E2BIG"
         },
         {
           "id": "enoent",
@@ -121,19 +121,19 @@
         },
         {
           "id": "failed-intact",
-          "title": "A failed exec leaves the caller's memory, descriptors and handlers intact"
+          "title": "An exec failing with ENOEXEC leaves the caller's memory, descriptors and handlers intact"
         },
         {
           "id": "script",
-          "title": "A #! script runs its interpreter with the optional argument, the script path and the arguments"
+          "title": "Compatibility, not POSIX: a #! script runs its interpreter with the optional argument, the script path and the arguments"
         },
         {
           "id": "script-noarg",
-          "title": "A #! script without an optional argument runs its interpreter with the script path"
+          "title": "Compatibility, not POSIX: a #! script without an optional argument runs its interpreter with the script path"
         },
         {
           "id": "script-missing",
-          "title": "A #! script whose interpreter is missing fails with ENOENT"
+          "title": "Compatibility, not POSIX: a #! script whose interpreter is missing fails with ENOENT"
         },
         {
           "id": "relative-path",
@@ -178,6 +178,10 @@
         {
           "id": "setuid-saved",
           "title": "A set-user-ID program can switch between its real and saved user IDs"
+        },
+        {
+          "id": "setgid-saved",
+          "title": "A set-group-ID program can switch between its real and saved group IDs"
         }
       ]
     },
@@ -287,7 +291,7 @@
         },
         {
           "id": "reparent",
-          "title": "When a parent exits, its child is reparented to init"
+          "title": "When a parent exits, its child is reparented to a system process"
         },
         {
           "id": "sigchld-ignored",
@@ -295,11 +299,11 @@
         },
         {
           "id": "waitid",
-          "title": "waitid reports an exited child's PID, CLD_EXITED and status"
+          "title": "waitid reports an exited child's PID, CLD_EXITED and status, and reaps it"
         },
         {
           "id": "waitid-nowait",
-          "title": "waitid with WNOWAIT leaves the child waitable"
+          "title": "waitid with WNOWAIT reports the child and leaves it waitable"
         },
         {
           "id": "null-status",
@@ -398,6 +402,10 @@
           "title": "setuid as non-root switches between the real and saved user IDs"
         },
         {
+          "id": "setgid-saved",
+          "title": "setgid as non-root switches between the real and saved group IDs"
+        },
+        {
           "id": "setgid-root",
           "title": "setgid as root sets the real and effective group IDs"
         },
@@ -461,7 +469,7 @@
       "cases": [
         {
           "id": "getrlimit",
-          "title": "getrlimit reports RLIMIT_NOFILE with soft at most hard"
+          "title": "getrlimit reports every POSIX resource with soft at most hard"
         },
         {
           "id": "getrlimit-einval",
@@ -489,7 +497,7 @@
         },
         {
           "id": "nofile-open",
-          "title": "RLIMIT_NOFILE bounds the descriptors open returns, then EMFILE"
+          "title": "RLIMIT_NOFILE bounds the descriptors open returns, then EMFILE once all below it are used"
         },
         {
           "id": "nofile-dup",
@@ -502,6 +510,26 @@
         {
           "id": "fsize-signal",
           "title": "Writing past RLIMIT_FSIZE raises SIGXFSZ"
+        },
+        {
+          "id": "cpu",
+          "title": "Exceeding RLIMIT_CPU raises SIGXCPU"
+        },
+        {
+          "id": "data",
+          "title": "An allocation beyond RLIMIT_DATA fails"
+        },
+        {
+          "id": "stack",
+          "title": "Using more stack than RLIMIT_STACK raises SIGSEGV"
+        },
+        {
+          "id": "as",
+          "title": "A mapping beyond RLIMIT_AS fails with ENOMEM"
+        },
+        {
+          "id": "core",
+          "title": "RLIMIT_CORE is set and read back, and at 0 a core-dumping signal writes no core file"
         },
         {
           "id": "fork",
@@ -551,7 +579,7 @@
       "cases": [
         {
           "id": "sched-yield",
-          "title": "sched_yield returns 0"
+          "title": "sched_yield returns 0 and hands the processor to a waiting process"
         },
         {
           "id": "getpriority",
@@ -591,7 +619,7 @@
         },
         {
           "id": "user",
-          "title": "PRIO_USER sets and reports the nice value of a user's processes"
+          "title": "PRIO_USER sets every process of the user, no other, and reports the lowest nice value"
         },
         {
           "id": "nice",
@@ -599,7 +627,7 @@
         },
         {
           "id": "nice-user",
-          "title": "nice with a negative increment as non-root fails with EPERM"
+          "title": "nice with a negative increment as non-root fails with EPERM and keeps the nice value"
         },
         {
           "id": "fork",

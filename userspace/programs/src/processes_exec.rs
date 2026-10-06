@@ -9,7 +9,9 @@
 //!   including whether each descriptor N is open and at what offset.
 //! - `hold FD`: read FD until end of file, then exit 0.
 //! - `saved REAL SAVED`: switch the effective user ID to REAL and back to SAVED with
-//!   setuid; exit 0 if both succeed, else the step that failed.
+//!   setuid, keeping the real user ID REAL; exit 0 if both succeed, else the step that
+//!   failed (10-15).
+//! - `savedgid REAL SAVED`: the same for the group IDs with setgid (20-25).
 //! - `ran`: exit 77, for exec calls that should have failed.
 use libbreenix::signal::{self, Sigaction, SIG_DFL, SIG_IGN, SIGUSR1, SIGUSR2};
 use libbreenix::syscall::raw;
@@ -30,6 +32,7 @@ mod nr {
     pub const GETRESUID: u64 = 118;
     pub const GETRESGID: u64 = 120;
     pub const SETUID: u64 = 105;
+    pub const SETGID: u64 = 106;
     pub const GETGROUPS: u64 = 115;
     pub const UMASK: u64 = 95;
     pub const GETPRIORITY: u64 = 140;
@@ -51,6 +54,7 @@ mod nr {
     pub const GETRESUID: u64 = 148;
     pub const GETRESGID: u64 = 150;
     pub const SETUID: u64 = 146;
+    pub const SETGID: u64 = 144;
     pub const GETGROUPS: u64 = 158;
     pub const UMASK: u64 = 166;
     pub const GETPRIORITY: u64 = 141;
@@ -58,6 +62,8 @@ mod nr {
     pub const GETITIMER: u64 = 102;
     pub const GETCWD: u64 = 17;
 }
+
+const EBADF: i64 = 9;
 
 fn sys(n: u64, a: [u64; 4]) -> i64 {
     // SAFETY: every caller passes pointers to buffers that live through the call.
@@ -156,8 +162,10 @@ fn state(fd: Fd, fds: &[String]) -> ! {
     for arg in fds {
         let Ok(n) = arg.parse::<u64>() else { process::exit(2) };
         let flags = sys(nr::FCNTL, [n, 1, 0, 0]);
-        if flags < 0 {
+        if flags == -EBADF {
             let _ = writeln!(out, "fd{n}=closed");
+        } else if flags < 0 {
+            let _ = writeln!(out, "fd{n}=E{}", -flags);
         } else {
             let _ = writeln!(out, "fd{n}=open@{}", sys(nr::LSEEK, [n, 0, 1, 0]));
         }
@@ -166,11 +174,15 @@ fn state(fd: Fd, fds: &[String]) -> ! {
     process::exit(0)
 }
 
-fn saved(real: u32, saved: u32) -> ! {
-    if sys(nr::SETUID, [real as u64, 0, 0, 0]) != 0 { process::exit(10) }
-    if sys(nr::GETEUID, [0; 4]) != real as i64 { process::exit(11) }
-    if sys(nr::SETUID, [saved as u64, 0, 0, 0]) != 0 { process::exit(12) }
-    if sys(nr::GETEUID, [0; 4]) != saved as i64 { process::exit(13) }
+/// Set the effective ID to REAL and then to SAVED with `set`, checking after each step that
+/// the effective ID took the value and the real ID stayed REAL. Exits `base` plus the step
+/// that failed, or 0.
+fn switch(set: u64, get_real: u64, get_effective: u64, real: u32, saved: u32, base: i32) -> ! {
+    for (step, id) in [(0, real), (3, saved)] {
+        if sys(set, [id as u64, 0, 0, 0]) != 0 { process::exit(base + step) }
+        if sys(get_effective, [0; 4]) != id as i64 { process::exit(base + step + 1) }
+        if sys(get_real, [0; 4]) != real as i64 { process::exit(base + step + 2) }
+    }
     process::exit(0)
 }
 
@@ -187,9 +199,13 @@ fn main() {
             while matches!(io::read(fd, &mut buf), Ok(n) if n > 0) {}
             process::exit(0)
         }
-        Some("saved") => {
+        Some(mode @ ("saved" | "savedgid")) => {
             let id = |i: usize| args.get(i).and_then(|s| s.parse().ok()).unwrap_or_else(|| process::exit(2));
-            saved(id(2), id(3))
+            if mode == "saved" {
+                switch(nr::SETUID, nr::GETUID, nr::GETEUID, id(2), id(3), 10)
+            } else {
+                switch(nr::SETGID, nr::GETGID, nr::GETEGID, id(2), id(3), 20)
+            }
         }
         Some("ran") => process::exit(77),
         _ => process::exit(2),
