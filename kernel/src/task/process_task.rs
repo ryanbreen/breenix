@@ -874,6 +874,17 @@ impl ProcessScheduler {
 
                     manager.reparent_children_to_init(pid, &children);
 
+                    // Groups this first exit leaves orphaned with a stopped
+                    // member; they are sent SIGHUP and SIGCONT outside PM.
+                    let orphaned_groups = if already_terminated {
+                        alloc::vec::Vec::new()
+                    } else {
+                        manager.groups_orphaned_by_exit(pid, &children)
+                    };
+                    // A parent that declines zombies reaps the row now; it is
+                    // dropped after PM is released.
+                    let auto_reaped = manager.reap_if_parent_declines(pid);
+
                     Some((
                         pid,
                         process_name,
@@ -882,6 +893,8 @@ impl ProcessScheduler {
                         retirement_receipt,
                         report_claimed,
                         reported_exit_code,
+                        orphaned_groups,
+                        auto_reaped,
                     ))
                 } else {
                     None
@@ -900,8 +913,12 @@ impl ProcessScheduler {
             retirement_receipt,
             report_claimed,
             reported_exit_code,
+            orphaned_groups,
+            auto_reaped,
         )) = phase1_result
         {
+            // Condition C8: a row the auto-reap removed is destroyed outside PM.
+            drop(auto_reaped);
             if let Some(mut receipt) = retirement_receipt {
                 if let Some(reclaim) = receipt.take_contents() {
                     enqueue_process_reclaim(reclaim);
@@ -914,6 +931,10 @@ impl ProcessScheduler {
             // Clean up window buffers so the compositor stops reading freed pages
             #[cfg(target_arch = "aarch64")]
             crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
+
+            for pgid in orphaned_groups {
+                crate::syscall::signal::signal_orphaned_group(pgid);
+            }
 
             // Wake parent thread if blocked on waitpid or pause()
             if let Some(parent_tid) = parent_tid {

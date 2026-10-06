@@ -1181,15 +1181,18 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
 
     // Get process manager to find and update parent
     // This is safe because we're called after the caller released their lock
-    let parent_thread_id = {
+    let (parent_thread_id, auto_reaped) = {
         let mut manager_guard = crate::process::manager();
         let Some(ref mut manager) = *manager_guard else {
             log::warn!("notify_parent_of_termination_deferred: no process manager");
             return;
         };
+        // A parent that declines zombies reaps the child now; the row is
+        // dropped once the guard is released (condition C8).
+        let auto_reaped = manager.reap_if_parent_declines(child_pid);
 
         // Find parent process and send SIGCHLD
-        if let Some(parent_process) = manager.get_process_mut(parent_pid) {
+        let parent_thread_id = if let Some(parent_process) = manager.get_process_mut(parent_pid) {
             // Send SIGCHLD to parent
             parent_process.signals.set_pending(SIGCHLD);
             log::debug!(
@@ -1210,9 +1213,11 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
                 child_pid.as_u64()
             );
             None
-        }
+        };
+        (parent_thread_id, auto_reaped)
         // manager_guard is dropped here
     };
+    drop(auto_reaped);
 
     // Unblock parent thread if it's waiting on waitpid or sigsuspend
     if let Some((parent_tid, signal_eligible)) = parent_thread_id {

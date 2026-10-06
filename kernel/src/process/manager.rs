@@ -2041,6 +2041,102 @@ impl ProcessManager {
             .map(|(pid, p)| (*pid, p))
     }
 
+    /// Whether process group `pgid` is orphaned (POSIX): no member has a parent
+    /// in a different process group of the same session. As in Linux, members
+    /// that have exited, `ignore`, and members whose parent is the designated
+    /// init or has exited do not count; a group with no counted member is
+    /// orphaned.
+    pub fn pgrp_is_orphaned(&self, pgid: ProcessId, ignore: Option<ProcessId>) -> bool {
+        let init = self.designated_init;
+        !self.processes.values().any(|member| {
+            !member.is_terminated()
+                && member.pgid == pgid
+                && Some(member.id) != ignore
+                && member
+                    .parent
+                    .filter(|&parent| Some(parent) != init)
+                    .and_then(|parent| self.processes.live_row(&parent))
+                    .is_some_and(|parent| {
+                        !parent.is_terminated() && parent.pgid != pgid && parent.sid == member.sid
+                    })
+        })
+    }
+
+    /// Whether process group `pgid` has a member stopped by a stop signal.
+    pub fn pgrp_has_stopped_member(&self, pgid: ProcessId) -> bool {
+        self.processes.values().any(|member| {
+            !member.is_terminated() && member.pgid == pgid && member.job.stopped.is_some()
+        })
+    }
+
+    /// The process groups the exit of `exiting` leaves orphaned while they have
+    /// a stopped member; POSIX has each sent SIGHUP and then SIGCONT. Called
+    /// once `exiting` has terminated and `children`, its former children, have
+    /// been reparented. As in Linux's `kill_orphaned_pgrp`, a group counts when
+    /// `exiting` was what kept it connected to its session: its own group, when
+    /// its parent is in another group of the same session, and the group of
+    /// each child in another group of the same session.
+    pub fn groups_orphaned_by_exit(
+        &self,
+        exiting: ProcessId,
+        children: &[ProcessId],
+    ) -> Vec<ProcessId> {
+        let mut groups = Vec::new();
+        let Some(me) = self.processes.live_row(&exiting) else {
+            return groups;
+        };
+        let consider = |pgid: ProcessId, groups: &mut Vec<ProcessId>| {
+            if !groups.contains(&pgid)
+                && self.pgrp_is_orphaned(pgid, Some(exiting))
+                && self.pgrp_has_stopped_member(pgid)
+            {
+                groups.push(pgid);
+            }
+        };
+        if let Some(parent) = me
+            .parent
+            .and_then(|parent| self.processes.live_row(&parent))
+        {
+            if parent.pgid != me.pgid && parent.sid == me.sid {
+                consider(me.pgid, &mut groups);
+            }
+        }
+        for child in children {
+            if let Some(child) = self.processes.live_row(child) {
+                if child.pgid != me.pgid && child.sid == me.sid {
+                    consider(child.pgid, &mut groups);
+                }
+            }
+        }
+        groups
+    }
+
+    /// Reap `child`, which has terminated, at once when its parent has SIGCHLD
+    /// ignored or set with SA_NOCLDWAIT: that parent's children do not become
+    /// zombies, so no wait can report them. Returns the row when the join
+    /// removed it, for the caller to drop after releasing PM (condition C8).
+    #[must_use]
+    pub(crate) fn reap_if_parent_declines(&mut self, child: ProcessId) -> Option<Process> {
+        let row = self.processes.live_row(&child)?;
+        if !row.is_terminated() {
+            return None;
+        }
+        let parent_pid = row.parent?;
+        let status = row.exit_code.unwrap_or(0);
+        let parent = self.processes.live_row_mut(&parent_pid)?;
+        let action = parent
+            .signals
+            .get_handler(crate::signal::constants::SIGCHLD);
+        if !action.is_ignore() && action.flags & crate::signal::constants::SA_NOCLDWAIT == 0 {
+            return None;
+        }
+        parent.children.retain(|&id| id != child);
+        match self.reap_row(child, parent_pid, status) {
+            ReapOutcome::Claimed(evicted) => evicted,
+            ReapOutcome::Refused => None,
+        }
+    }
+
     /// The other live rows of `pid`'s thread group: rows created by `clone`
     /// with `CLONE_VM` share a group id (`thread_group_id`, or the leader's own
     /// pid), and together they are one POSIX process.
