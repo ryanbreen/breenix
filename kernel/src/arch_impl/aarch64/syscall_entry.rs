@@ -234,7 +234,9 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
-        if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+        if let Some((_pid, process, shared_table)) =
+            manager.find_process_and_shared_table_by_thread_mut(current_thread_id)
+        {
             // Check alarms
             crate::signal::delivery::check_and_fire_alarm(process);
             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
@@ -260,8 +262,12 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
                 );
 
             // Deliver signals
-            let signal_result =
-                crate::signal::delivery::deliver_pending_signals(process, frame, &mut saved_regs);
+            let signal_result = crate::signal::delivery::deliver_pending_signals(
+                process,
+                shared_table,
+                frame,
+                &mut saved_regs,
+            );
 
             // Apply changes back to frame
             saved_regs.apply_to_frame(frame);
@@ -272,6 +278,11 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
                     super::context::write_sp_el0(saved_regs.sp);
                 }
             }
+
+            let frame_fault = matches!(
+                signal_result,
+                crate::signal::delivery::SignalDeliveryResult::FrameFault
+            );
 
             // Handle termination
             if let crate::signal::delivery::SignalDeliveryResult::Terminated(notification) =
@@ -285,6 +296,11 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
             }
             if let crate::process::ProcessState::Terminated(code) = process.state {
                 group_death = Some((process.id, code));
+            }
+            // The row's own exit is deferred; its thread group dies with it.
+            if frame_fault {
+                crate::task::scheduler::set_need_resched();
+                group_death = Some((process.id, -(crate::signal::constants::SIGSEGV as i32)));
             }
         }
     }

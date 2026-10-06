@@ -1380,7 +1380,11 @@ fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), St
 
     let blocked_mask = code_mask(blocked_branch);
     let lookup_offset =
-        identifier_offsets(blocked_branch, &blocked_mask, "find_process_by_thread_mut")
+        identifier_offsets(
+            blocked_branch,
+            &blocked_mask,
+            "find_process_and_shared_table_by_thread_mut",
+        )
             .first()
             .copied()
             .ok_or_else(|| "blocked-in-syscall branch has no process lookup".to_string())?;
@@ -2150,7 +2154,9 @@ fn synthetic_blocked_syscall_dispatch_source(dispatch_body: &str) -> String {
             }} else if blocked_in_syscall
                 || saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref())
             {{
-                if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {{
+                if let Some((pid, process, shared_table)) =
+                    manager.find_process_and_shared_table_by_thread_mut(thread_id)
+                {{
                     {dispatch_body}
                 }}
             }}
