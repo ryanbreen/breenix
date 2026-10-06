@@ -630,7 +630,9 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
-        if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+        if let Some((_pid, process, shared_table)) =
+            manager.find_process_and_shared_table_by_thread_mut(current_thread_id)
+        {
             // Check interval timers
             crate::signal::delivery::check_and_fire_alarm(process);
             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
@@ -665,14 +667,10 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
                 }
             }
 
-            // Create an interrupt frame wrapper for the signal delivery code
-            // We need to convert SyscallFrame to InterruptStackFrame equivalent
-            let mut interrupt_frame = SyscallInterruptFrameWrapper {
+            let mut user_return = crate::signal::delivery::X86UserReturn {
                 rip: frame.rip,
-                cs: frame.cs,
-                rflags: frame.rflags,
                 rsp: frame.rsp,
-                ss: frame.ss,
+                rflags: frame.rflags,
             };
 
             // Create saved registers from syscall frame
@@ -695,13 +693,23 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
             };
 
             // Deliver the signal
-            let signal_result =
-                deliver_pending_signals_syscall(process, &mut interrupt_frame, &mut saved_regs);
+            let signal_result = crate::signal::delivery::deliver_caught_signal_on_syscall_return(
+                process,
+                shared_table,
+                &mut user_return,
+                &mut saved_regs,
+            );
+
+            // A frame that cannot be installed ends the process outside PM.
+            if let crate::signal::delivery::SignalDeliveryResult::FrameFault = signal_result {
+                drop(manager_guard);
+                crate::signal::delivery::exit_frame_fault_on_syscall_return();
+            }
 
             // Copy modified values back to syscall frame
-            frame.rip = interrupt_frame.rip;
-            frame.rsp = interrupt_frame.rsp;
-            frame.rflags = interrupt_frame.rflags;
+            frame.rip = user_return.rip;
+            frame.rsp = user_return.rsp;
+            frame.rflags = user_return.rflags;
             frame.rax = saved_regs.rax;
             frame.rbx = saved_regs.rbx;
             frame.rcx = saved_regs.rcx;
@@ -729,187 +737,6 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
             }
         }
     }
-}
-
-/// Wrapper to make SyscallFrame work with signal delivery code
-/// This mimics the InterruptStackFrame structure that signal delivery expects
-#[allow(dead_code)]
-struct SyscallInterruptFrameWrapper {
-    rip: u64,
-    cs: u64, // Used for consistency with interrupt frame layout
-    rflags: u64,
-    rsp: u64,
-    ss: u64, // Used for consistency with interrupt frame layout
-}
-
-/// Deliver pending signals during syscall return
-/// This is similar to deliver_pending_signals but works with our wrapper type
-fn deliver_pending_signals_syscall(
-    process: &mut crate::process::Process,
-    frame: &mut SyscallInterruptFrameWrapper,
-    saved_regs: &mut crate::task::process_context::SavedRegisters,
-) -> crate::signal::delivery::SignalDeliveryResult {
-    use crate::signal::constants::*;
-
-    // Process all deliverable signals in a loop
-    loop {
-        // Get next deliverable signal
-        let sig = match process.signals.next_deliverable_signal() {
-            Some(s) => s,
-            None => return crate::signal::delivery::SignalDeliveryResult::NoAction,
-        };
-
-        // Clear pending flag for this signal
-        process.signals.clear_pending(sig);
-
-        // Get the handler for this signal
-        let action = *process.signals.get_handler(sig);
-
-        match action.handler {
-            SIG_DFL => {
-                // Default action - delegate to main delivery code
-                // For simplicity, return NoAction and let timer interrupt handle it
-                // This avoids duplicating termination logic here
-                process.signals.set_pending(sig); // Re-queue for timer interrupt
-                return crate::signal::delivery::SignalDeliveryResult::NoAction;
-            }
-            SIG_IGN => {
-                // Signal ignored - continue to check for more signals
-            }
-            handler_addr => {
-                // User-defined handler - set up signal frame
-                deliver_to_user_handler_syscall(
-                    process,
-                    frame,
-                    saved_regs,
-                    sig,
-                    handler_addr,
-                    &action,
-                );
-                return crate::signal::delivery::SignalDeliveryResult::Delivered;
-            }
-        }
-    }
-}
-
-/// Set up user stack and registers to call a user-defined signal handler (syscall version)
-fn deliver_to_user_handler_syscall(
-    process: &mut crate::process::Process,
-    frame: &mut SyscallInterruptFrameWrapper,
-    saved_regs: &mut crate::task::process_context::SavedRegisters,
-    sig: u32,
-    handler_addr: u64,
-    action: &crate::signal::types::SignalAction,
-) {
-    use crate::signal::constants::*;
-    use crate::signal::types::*;
-
-    // Get current user stack pointer
-    let current_rsp = frame.rsp;
-    let original_rsp = current_rsp;
-
-    // Check if we should use the alternate signal stack
-    let use_alt_stack = (action.flags & SA_ONSTACK) != 0
-        && (process.signals.alt_stack.flags & SS_DISABLE) == 0
-        && process.signals.alt_stack.size > 0
-        && !process.signals.alt_stack.on_stack;
-
-    let user_rsp = if use_alt_stack {
-        // Use alternate stack - stack grows down, so start at top (base + size)
-        let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
-        // Mark that we're now on the alternate stack
-        process.signals.alt_stack.on_stack = true;
-        alt_top
-    } else {
-        current_rsp
-    };
-
-    // Calculate space needed for signal frame (and optionally trampoline)
-    let frame_size = SignalFrame::SIZE as u64;
-
-    // Check if the handler provides a restorer function (SA_RESTORER flag)
-    // If so, use it instead of writing trampoline to the stack.
-    // This is essential for signals delivered on alternate stacks where the
-    // stack may not be executable (NX bit set).
-    let use_restorer = (action.flags & SA_RESTORER) != 0 && action.restorer != 0;
-
-    let (frame_rsp, return_addr) = if use_restorer {
-        // Use the restorer function provided by the application/libc
-        let frame_rsp = (user_rsp - frame_size) & !0xF;
-        (frame_rsp, action.restorer)
-    } else {
-        // Fall back to writing trampoline on the stack
-        let trampoline_size = crate::signal::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
-        let total_size = frame_size + trampoline_size;
-        let frame_rsp = (user_rsp - total_size) & !0xF;
-        let trampoline_rsp = frame_rsp + frame_size;
-
-        // Write trampoline code to user stack
-        unsafe {
-            let trampoline_ptr = trampoline_rsp as *mut u8;
-            core::ptr::copy_nonoverlapping(
-                crate::signal::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
-                trampoline_ptr,
-                crate::signal::trampoline::SIGNAL_TRAMPOLINE_SIZE,
-            );
-        }
-
-        (frame_rsp, trampoline_rsp)
-    };
-
-    // The wait mask selects the signal; its frame must save the original mask.
-    if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
-        process.signals.set_blocked(saved);
-    }
-
-    // Build signal frame with saved context
-    let signal_frame = SignalFrame {
-        trampoline_addr: return_addr,
-        magic: SignalFrame::MAGIC,
-        signal: sig as u64,
-        siginfo_ptr: 0,
-        ucontext_ptr: 0,
-        saved_rip: frame.rip,
-        saved_rsp: original_rsp,
-        saved_rflags: frame.rflags,
-        saved_rax: saved_regs.rax,
-        saved_rbx: saved_regs.rbx,
-        saved_rcx: saved_regs.rcx,
-        saved_rdx: saved_regs.rdx,
-        saved_rdi: saved_regs.rdi,
-        saved_rsi: saved_regs.rsi,
-        saved_rbp: saved_regs.rbp,
-        saved_r8: saved_regs.r8,
-        saved_r9: saved_regs.r9,
-        saved_r10: saved_regs.r10,
-        saved_r11: saved_regs.r11,
-        saved_r12: saved_regs.r12,
-        saved_r13: saved_regs.r13,
-        saved_r14: saved_regs.r14,
-        saved_r15: saved_regs.r15,
-        saved_blocked: process.signals.blocked,
-    };
-
-    // Write signal frame to user stack
-    unsafe {
-        let frame_ptr = frame_rsp as *mut SignalFrame;
-        core::ptr::write_volatile(frame_ptr, signal_frame);
-    }
-
-    // Block signals during handler execution
-    if (action.flags & SA_NODEFER) == 0 {
-        process.signals.block_signals(sig_mask(sig));
-    }
-    process.signals.block_signals(action.mask);
-
-    // Modify frame to jump to signal handler
-    frame.rip = handler_addr;
-    frame.rsp = frame_rsp;
-
-    // Set up arguments for signal handler: void handler(int signum)
-    saved_regs.rdi = sig as u64;
-    saved_regs.rsi = 0;
-    saved_regs.rdx = 0;
 }
 
 #[cfg(test)]

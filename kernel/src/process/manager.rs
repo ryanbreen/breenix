@@ -2134,6 +2134,41 @@ impl ProcessManager {
             .map(|(pid, process)| (*pid, process))
     }
 
+    /// Find a thread's row together with the page table of the address space it
+    /// runs in when another row owns that table. A CLONE_VM thread keeps only
+    /// `inherited_cr3`, so writes into its memory under this guard go through
+    /// the owner's table. The table is `None` when the row owns its own.
+    pub fn find_process_and_shared_table_by_thread_mut(
+        &mut self,
+        thread_id: u64,
+    ) -> Option<(ProcessId, &mut Process, Option<&mut ProcessPageTable>)> {
+        let (pid, shared_root) = self.find_process_by_thread(thread_id).map(|(pid, process)| {
+            let shared_root = if process.page_table.is_none() {
+                process.inherited_cr3
+            } else {
+                None
+            };
+            (pid, shared_root)
+        })?;
+        let Some(root) = shared_root else {
+            return self.get_process_mut(pid).map(|process| (pid, process, None));
+        };
+        let mut row = None;
+        let mut table = None;
+        for (candidate_pid, candidate) in self.processes.iter_mut() {
+            if *candidate_pid == pid {
+                row = Some(candidate);
+            } else if table.is_none() && !candidate.is_tombstone() {
+                if let Some(page_table) = candidate.page_table.as_deref_mut() {
+                    if page_table.level_4_frame().start_address().as_u64() == root {
+                        table = Some(page_table);
+                    }
+                }
+            }
+        }
+        row.map(|process| (pid, process, table))
+    }
+
     /// Find a process by its CR3 (page table frame)
     #[allow(dead_code)]
     pub fn find_process_by_cr3(&self, cr3: u64) -> Option<(ProcessId, &Process)> {

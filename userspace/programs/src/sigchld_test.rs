@@ -19,8 +19,14 @@ static SIGCHLD_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 /// SIGCHLD handler
 extern "C" fn sigchld_handler(_sig: i32) {
-    SIGCHLD_RECEIVED.store(true, Ordering::SeqCst);
-    println!("  SIGCHLD_HANDLER: Child termination signal received!");
+    // Delivery can interrupt formatted stdout while its mutex is held. Use
+    // the write syscall instead of re-entering std's output lock in a handler.
+    let message = b"  SIGCHLD_HANDLER: Child termination signal received!\n";
+    let written = libbreenix::io::write(libbreenix::types::Fd::STDOUT, message);
+    SIGCHLD_RECEIVED.store(
+        matches!(written, Ok(count) if count == message.len()),
+        Ordering::SeqCst,
+    );
 }
 
 fn main() {

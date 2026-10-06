@@ -908,7 +908,9 @@ fn switch_to_thread(
         let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
         if let Some(mut manager_guard) = guard_option {
             if let Some(ref mut manager) = *manager_guard {
-                if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                if let Some((pid, process, shared_table)) =
+                    manager.find_process_and_shared_table_by_thread_mut(thread_id)
+                {
                     if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
                         crate::task::scheduler::set_need_resched();
                         setup_idle_return(interrupt_frame);
@@ -1050,13 +1052,17 @@ fn switch_to_thread(
                         // Now deliver the signal (modifies interrupt_frame and saved_regs)
                         let signal_result = crate::signal::delivery::deliver_pending_signals(
                             process,
+                            shared_table,
                             interrupt_frame,
                             saved_regs,
                         );
 
                         // Handle signal result
                         match signal_result {
-                            crate::signal::delivery::SignalDeliveryResult::Terminated(_) => {
+                            // A frame fault's thread is no longer runnable either;
+                            // idle drains its deferred exit.
+                            crate::signal::delivery::SignalDeliveryResult::Terminated(_)
+                            | crate::signal::delivery::SignalDeliveryResult::FrameFault => {
                                 // Process was terminated - notify parent after releasing locks
                                 // We need to return from this function and let the locks drop naturally
                                 // but first save the notification data
@@ -1369,7 +1375,9 @@ fn restore_userspace_thread_context(
 
     if let Some(mut manager_guard) = guard_option {
         if let Some(ref mut manager) = *manager_guard {
-            if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+            if let Some((pid, process, shared_table)) =
+                manager.find_process_and_shared_table_by_thread_mut(thread_id)
+            {
                 // Get CR3 before borrowing main_thread mutably
                 if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
                     crate::task::scheduler::set_need_resched();
@@ -1490,6 +1498,7 @@ fn restore_userspace_thread_context(
                                 let signal_result =
                                     crate::signal::delivery::deliver_pending_signals(
                                         process,
+                                        shared_table,
                                         interrupt_frame,
                                         saved_regs,
                                     );
@@ -1506,6 +1515,13 @@ fn restore_userspace_thread_context(
                                         crate::task::scheduler::switch_to_idle();
                                         trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedUser);
                                         // Don't return here - fall through to handle notification
+                                    }
+                                    crate::signal::delivery::SignalDeliveryResult::FrameFault => {
+                                        // The thread is no longer runnable; idle drains its exit.
+                                        crate::task::scheduler::set_need_resched();
+                                        setup_idle_return(interrupt_frame);
+                                        crate::task::scheduler::switch_to_idle();
+                                        trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedUser);
                                     }
                                     crate::signal::delivery::SignalDeliveryResult::Delivered => {
                                         // Signal was delivered and frame was modified
@@ -1692,7 +1708,9 @@ fn check_and_deliver_signals_for_current_thread(
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
-        if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+        if let Some((_pid, process, shared_table)) =
+            manager.find_process_and_shared_table_by_thread_mut(current_thread_id)
+        {
             // Note: Debug logging removed from hot path - use GDB if debugging is needed
             crate::signal::delivery::check_and_fire_alarm(process);
             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
@@ -1714,6 +1732,7 @@ fn check_and_deliver_signals_for_current_thread(
                 // Deliver signals
                 let signal_result = crate::signal::delivery::deliver_pending_signals(
                     process,
+                    shared_table,
                     interrupt_frame,
                     saved_regs,
                 );
@@ -1727,6 +1746,13 @@ fn check_and_deliver_signals_for_current_thread(
                         crate::task::scheduler::switch_to_idle();
                         trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedOnReturn);
                         // Don't return here - fall through to handle notification
+                    }
+                    crate::signal::delivery::SignalDeliveryResult::FrameFault => {
+                        // The thread is no longer runnable; idle drains its exit.
+                        crate::task::scheduler::set_need_resched();
+                        setup_idle_return(interrupt_frame);
+                        crate::task::scheduler::switch_to_idle();
+                        trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedOnReturn);
                     }
                     crate::signal::delivery::SignalDeliveryResult::Delivered => {
                         if process.is_terminated() {
@@ -1777,6 +1803,7 @@ pub fn idle_loop() -> ! {
         // claim-lint:ok: the interrupts-enabled refusal is in
         // kernel/src/task/dispatch_strand_census.rs report_heartbeat_if_due().
         crate::task::report_dispatch_strand_census_heartbeat();
+        crate::task::process_task::drain_deferred_fault_sigsegv_exits();
         crate::task::process_task::reclaim_deferred_process_resources();
         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
         // from a context that exists AFTER every userspace thread is gone and

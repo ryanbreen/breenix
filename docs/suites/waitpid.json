@@ -1,0 +1,63 @@
+{
+  "id": "waitpid",
+  "title": "Child exit waits",
+  "area": "Process lifecycle",
+  "summary": "Repeated blocking waits must return the child PID and exit status, and deliver caught SIGCHLD, within the case deadline.",
+  "binary": "/sbin/suite-waitpid",
+  "categories": [
+    {
+      "id": "exit",
+      "title": "Child exit handoff",
+      "cases": [
+        {
+          "id": "specific",
+          "title": "256 immediate exits with waitpid of a specific child"
+        },
+        {
+          "id": "any",
+          "title": "256 immediate exits with waitpid of any child"
+        },
+        {
+          "id": "specific-signal",
+          "title": "256 specific-child waits with a caught SIGCHLD"
+        },
+        {
+          "id": "any-signal",
+          "title": "256 any-child waits with a caught SIGCHLD"
+        },
+        {
+          "id": "parked-specific",
+          "title": "Specific-child wait before a delayed exit"
+        },
+        {
+          "id": "parked-any",
+          "title": "Any-child wait before a delayed exit"
+        },
+        {
+          "id": "parked-specific-signal",
+          "title": "Specific-child wait with SIGCHLD before a delayed exit"
+        },
+        {
+          "id": "parked-any-signal",
+          "title": "Any-child wait with SIGCHLD before a delayed exit"
+        },
+        {
+          "id": "nohang",
+          "title": "WNOHANG returns zero before exit and the PID afterward"
+        },
+        {
+          "id": "interrupted",
+          "title": "Caught SIGCHLD without SA_RESTART interrupts waitpid"
+        },
+        {
+          "id": "stack-trampoline",
+          "title": "SIGCHLD returns through the stack trampoline"
+        },
+        {
+          "id": "cow-signal-stack",
+          "title": "SIGCHLD writes a fork-shared signal frame across two stack pages"
+        }
+      ]
+    }
+  ]
+}

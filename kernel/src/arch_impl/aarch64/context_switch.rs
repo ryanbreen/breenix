@@ -7288,7 +7288,9 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
-        if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+        if let Some((_pid, process, shared_table)) =
+            manager.find_process_and_shared_table_by_thread_mut(current_thread_id)
+        {
             // Check for expired timers
             crate::signal::delivery::check_and_fire_alarm(process);
             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
@@ -7312,6 +7314,7 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                 // Deliver signals
                 let signal_result = crate::signal::delivery::deliver_pending_signals(
                     process,
+                    shared_table,
                     frame,
                     &mut saved_regs,
                 );
@@ -7335,6 +7338,11 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                         crate::task::scheduler::set_need_resched();
                         terminated_child_pid = Some(notification.child_pid.as_u64());
                         signal_termination_info = Some(notification);
+                        setup_idle_return_arm64(frame);
+                        crate::task::scheduler::switch_to_idle();
+                    }
+                    crate::signal::delivery::SignalDeliveryResult::FrameFault => {
+                        crate::task::scheduler::set_need_resched();
                         setup_idle_return_arm64(frame);
                         crate::task::scheduler::switch_to_idle();
                     }

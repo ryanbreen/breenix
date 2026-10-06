@@ -9,6 +9,7 @@
 
 use super::constants::*;
 use super::types::*;
+use crate::memory::process_memory::ProcessPageTable;
 use crate::process::{Process, ProcessState};
 
 /// Check for pending, unblocked signals with an observable disposition.
@@ -32,6 +33,10 @@ pub enum SignalDeliveryResult {
     Delivered,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
+    /// A caught signal's frame could not be installed on the user stack. The
+    /// thread is no longer runnable and its SIGSEGV exit is deferred; the
+    /// caller must not return it to user mode.
+    FrameFault,
 }
 
 // =============================================================================
@@ -44,6 +49,7 @@ pub enum SignalDeliveryResult {
 ///
 /// # Arguments
 /// * `process` - The process to deliver signals to
+/// * `shared_table` - The owner's page table when `process` is a CLONE_VM thread
 /// * `interrupt_frame` - The interrupt frame that will be used to return to userspace
 /// * `saved_regs` - The saved general-purpose registers
 ///
@@ -55,6 +61,7 @@ pub enum SignalDeliveryResult {
 #[cfg(target_arch = "x86_64")]
 pub fn deliver_pending_signals(
     process: &mut Process,
+    mut shared_table: Option<&mut ProcessPageTable>,
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
@@ -108,6 +115,7 @@ pub fn deliver_pending_signals(
                 // Only one user handler can be delivered at a time
                 if deliver_to_user_handler_x86_64(
                     process,
+                    &mut shared_table,
                     interrupt_frame,
                     saved_regs,
                     sig,
@@ -116,7 +124,7 @@ pub fn deliver_pending_signals(
                 ) {
                     return SignalDeliveryResult::Delivered;
                 }
-                return SignalDeliveryResult::NoAction;
+                return defer_frame_fault_exit(process);
             }
         }
     }
@@ -132,6 +140,7 @@ pub fn deliver_pending_signals(
 ///
 /// # Arguments
 /// * `process` - The process to deliver signals to
+/// * `shared_table` - The owner's page table when `process` is a CLONE_VM thread
 /// * `exception_frame` - The exception frame that will be used to return to userspace
 /// * `saved_regs` - The saved general-purpose registers
 ///
@@ -143,6 +152,7 @@ pub fn deliver_pending_signals(
 #[cfg(target_arch = "aarch64")]
 pub fn deliver_pending_signals(
     process: &mut Process,
+    mut shared_table: Option<&mut ProcessPageTable>,
     exception_frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
@@ -196,6 +206,7 @@ pub fn deliver_pending_signals(
                 // Only one user handler can be delivered at a time
                 if deliver_to_user_handler_aarch64(
                     process,
+                    &mut shared_table,
                     exception_frame,
                     saved_regs,
                     sig,
@@ -204,7 +215,7 @@ pub fn deliver_pending_signals(
                 ) {
                     return SignalDeliveryResult::Delivered;
                 }
-                return SignalDeliveryResult::NoAction;
+                return defer_frame_fault_exit(process);
             }
         }
     }
@@ -222,6 +233,37 @@ pub enum DeliverResult {
     Ignored,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
+}
+
+/// An unusable signal stack cannot silently discard a caught signal: the
+/// process dies as a bad user-stack access, through the deferred SIGSEGV exit a
+/// kernel-mode user fault takes. Nothing is torn down under PROCESS_MANAGER
+/// here. The drain runs `handle_thread_exit`, which closes descriptors, tells
+/// and reparents, and retires the row; the scheduler never dispatches the
+/// thread again.
+fn defer_frame_fault_exit(process: &Process) -> SignalDeliveryResult {
+    if let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id) {
+        let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
+        crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.set_terminated());
+    }
+    SignalDeliveryResult::FrameFault
+}
+
+/// Copy `bytes` onto the user stack through the table of the address space the
+/// thread runs in: its own, or for a CLONE_VM thread the owner's.
+fn write_signal_stack(
+    process: &mut Process,
+    shared_table: &mut Option<&mut ProcessPageTable>,
+    addr: u64,
+    bytes: &[u8],
+) -> bool {
+    let pid = process.id.as_u64();
+    match process.page_table.as_deref_mut() {
+        Some(table) => table.write_user_memory(addr, bytes, pid),
+        None => shared_table
+            .as_deref_mut()
+            .is_some_and(|table| table.write_user_memory(addr, bytes, pid)),
+    }
 }
 
 /// Deliver a signal's default action
@@ -342,6 +384,15 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
 // x86_64 User Handler Delivery
 // =============================================================================
 
+/// The user-mode return context an x86-64 signal handler is installed into:
+/// an interrupt frame's, or the syscall return frame's.
+#[cfg(target_arch = "x86_64")]
+pub struct X86UserReturn {
+    pub rip: u64,
+    pub rsp: u64,
+    pub rflags: u64,
+}
+
 /// Set up user stack and registers to call a user-defined signal handler (x86_64)
 ///
 /// This modifies the interrupt frame so that when we return to userspace,
@@ -349,14 +400,100 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
 #[cfg(target_arch = "x86_64")]
 fn deliver_to_user_handler_x86_64(
     process: &mut Process,
+    shared_table: &mut Option<&mut ProcessPageTable>,
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
     sig: u32,
     handler_addr: u64,
     action: &SignalAction,
 ) -> bool {
-    // Get current user stack pointer from interrupt frame
-    let current_rsp = interrupt_frame.stack_pointer.as_u64();
+    let mut user_return = X86UserReturn {
+        rip: interrupt_frame.instruction_pointer.as_u64(),
+        rsp: interrupt_frame.stack_pointer.as_u64(),
+        rflags: interrupt_frame.cpu_flags.bits(),
+    };
+    if !install_user_handler_x86_64(
+        process,
+        shared_table,
+        &mut user_return,
+        saved_regs,
+        sig,
+        handler_addr,
+        action,
+    ) {
+        return false;
+    }
+    // The installer accepted both addresses as canonical.
+    unsafe {
+        interrupt_frame.as_mut().update(|frame| {
+            frame.instruction_pointer = x86_64::VirtAddr::new(user_return.rip);
+            frame.stack_pointer = x86_64::VirtAddr::new(user_return.rsp);
+            // Keep same code segment, stack segment, and flags
+        });
+    }
+    true
+}
+
+/// x86-64 syscall return: deliver the next caught signal. A default
+/// disposition is left pending for the interrupt return path, and a fatal one
+/// was already taken by `take_fatal_default_signal`.
+#[cfg(target_arch = "x86_64")]
+pub fn deliver_caught_signal_on_syscall_return(
+    process: &mut Process,
+    mut shared_table: Option<&mut ProcessPageTable>,
+    user_return: &mut X86UserReturn,
+    saved_regs: &mut crate::task::process_context::SavedRegisters,
+) -> SignalDeliveryResult {
+    loop {
+        let Some(sig) = process.signals.next_deliverable_signal() else {
+            return SignalDeliveryResult::NoAction;
+        };
+        process.signals.clear_pending(sig);
+        let action = *process.signals.get_handler(sig);
+        match action.handler {
+            SIG_DFL => {
+                process.signals.set_pending(sig);
+                return SignalDeliveryResult::NoAction;
+            }
+            SIG_IGN => {}
+            handler_addr => {
+                // The wait mask selects the signal; its frame saves the original mask.
+                if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
+                    process.signals.set_blocked(saved);
+                }
+                if install_user_handler_x86_64(
+                    process,
+                    &mut shared_table,
+                    user_return,
+                    saved_regs,
+                    sig,
+                    handler_addr,
+                    &action,
+                ) {
+                    return SignalDeliveryResult::Delivered;
+                }
+                // The syscall return path exits the thread itself, outside PM.
+                return SignalDeliveryResult::FrameFault;
+            }
+        }
+    }
+}
+
+/// Install the handler frame for `sig` and point `user_return` at the handler.
+/// Returns false, with nothing changed but the stack bytes below the
+/// interrupted stack pointer, when the frame cannot be installed.
+#[cfg(target_arch = "x86_64")]
+fn install_user_handler_x86_64(
+    process: &mut Process,
+    shared_table: &mut Option<&mut ProcessPageTable>,
+    user_return: &mut X86UserReturn,
+    saved_regs: &mut crate::task::process_context::SavedRegisters,
+    sig: u32,
+    handler_addr: u64,
+    action: &SignalAction,
+) -> bool {
+    // Get current user stack pointer from the return context
+    let current_rsp = user_return.rsp;
     let original_rsp = current_rsp;
 
     // Check if we should use the alternate signal stack
@@ -368,15 +505,16 @@ fn deliver_to_user_handler_x86_64(
 
     let user_rsp = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
-        let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
+        let Some(alt_top) = process.signals.alt_stack.base
+            .checked_add(process.signals.alt_stack.size as u64) else {
+            return false;
+        };
         log::debug!(
             "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
             process.signals.alt_stack.base,
             process.signals.alt_stack.size,
             alt_top
         );
-        // Mark that we're now on the alternate stack
-        process.signals.alt_stack.on_stack = true;
         alt_top
     } else {
         current_rsp
@@ -394,7 +532,10 @@ fn deliver_to_user_handler_x86_64(
     let (frame_rsp, return_addr) = if use_restorer {
         // Use the restorer function provided by the application/libc
         // Only allocate space for the signal frame (no trampoline needed)
-        let frame_rsp = (user_rsp - frame_size) & !0xF; // 16-byte align
+        let Some(base) = user_rsp.checked_sub(frame_size) else {
+            return false;
+        };
+        let frame_rsp = base & !0xF; // 16-byte align
         log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
         (frame_rsp, action.restorer)
     } else {
@@ -402,18 +543,22 @@ fn deliver_to_user_handler_x86_64(
         // This works when the stack is executable (main stack without NX)
         let trampoline_size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
         let total_size = frame_size + trampoline_size;
-        let frame_rsp = (user_rsp - total_size) & !0xF; // 16-byte align
+        let Some(base) = user_rsp.checked_sub(total_size) else {
+            return false;
+        };
+        let frame_rsp = base & !0xF; // 16-byte align
         let trampoline_rsp = frame_rsp + frame_size;
 
-        // Write trampoline code to user stack
-        // SAFETY: We're writing to user memory that should be valid stack space
-        unsafe {
-            let trampoline_ptr = trampoline_rsp as *mut u8;
-            core::ptr::copy_nonoverlapping(
-                super::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
-                trampoline_ptr,
-                super::trampoline::SIGNAL_TRAMPOLINE_SIZE,
-            );
+        if use_alt_stack && frame_rsp < process.signals.alt_stack.base {
+            return false;
+        }
+        if !write_signal_stack(
+            process,
+            shared_table,
+            trampoline_rsp,
+            &super::trampoline::SIGNAL_TRAMPOLINE,
+        ) {
+            return false;
         }
 
         (frame_rsp, trampoline_rsp)
@@ -435,9 +580,9 @@ fn deliver_to_user_handler_x86_64(
         ucontext_ptr: 0, // Not implemented yet
 
         // Save current execution state
-        saved_rip: interrupt_frame.instruction_pointer.as_u64(),
+        saved_rip: user_return.rip,
         saved_rsp: original_rsp,
-        saved_rflags: interrupt_frame.cpu_flags.bits(),
+        saved_rflags: user_return.rflags,
 
         // Save all general-purpose registers
         saved_rax: saved_regs.rax,
@@ -460,11 +605,25 @@ fn deliver_to_user_handler_x86_64(
         saved_blocked: process.signals.blocked,
     };
 
-    // Write signal frame to user stack
-    // SAFETY: We're writing to user memory that should be valid stack space
-    unsafe {
-        let frame_ptr = frame_rsp as *mut SignalFrame;
-        core::ptr::write_volatile(frame_ptr, signal_frame);
+    if use_alt_stack && frame_rsp < process.signals.alt_stack.base {
+        return false;
+    }
+    if x86_64::VirtAddr::try_new(handler_addr).is_err()
+        || x86_64::VirtAddr::try_new(frame_rsp).is_err()
+    {
+        return false;
+    }
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::addr_of!(signal_frame) as *const u8,
+            SignalFrame::SIZE,
+        )
+    };
+    if !write_signal_stack(process, shared_table, frame_rsp, bytes) {
+        return false;
+    }
+    if use_alt_stack {
+        process.signals.alt_stack.on_stack = true;
     }
 
     // Block signals during handler execution
@@ -475,40 +634,9 @@ fn deliver_to_user_handler_x86_64(
     // Also block any signals specified in the handler's mask
     process.signals.block_signals(action.mask);
 
-    // Modify interrupt frame to jump to signal handler
-    // Use try_new to avoid kernel panics on non-canonical user-provided addresses
-    let handler_vaddr = match x86_64::VirtAddr::try_new(handler_addr) {
-        Ok(addr) => addr,
-        Err(_) => {
-            log::warn!(
-                "Signal {}: non-canonical handler address {:#x} for process {}",
-                sig,
-                handler_addr,
-                process.id.as_u64()
-            );
-            return false;
-        }
-    };
-    let frame_vaddr = match x86_64::VirtAddr::try_new(frame_rsp) {
-        Ok(addr) => addr,
-        Err(_) => {
-            log::warn!(
-                "Signal {}: non-canonical stack address {:#x} for process {}",
-                sig,
-                frame_rsp,
-                process.id.as_u64()
-            );
-            return false;
-        }
-    };
-
-    unsafe {
-        interrupt_frame.as_mut().update(|frame| {
-            frame.instruction_pointer = handler_vaddr;
-            frame.stack_pointer = frame_vaddr;
-            // Keep same code segment, stack segment, and flags
-        });
-    }
+    // The complete frame is installed before changing the return context.
+    user_return.rip = handler_addr;
+    user_return.rsp = frame_rsp;
 
     // Set up arguments for signal handler
     // void handler(int signum, siginfo_t *info, void *ucontext)
@@ -517,7 +645,7 @@ fn deliver_to_user_handler_x86_64(
     saved_regs.rdx = 0; // Third argument: ucontext_t* (not implemented)
 
     if use_alt_stack {
-        log::info!(
+        log::debug!(
             "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, RSP={:#x}->{:#x}, return={:#x}",
             sig,
             handler_addr,
@@ -526,7 +654,7 @@ fn deliver_to_user_handler_x86_64(
             return_addr
         );
     } else {
-        log::info!(
+        log::debug!(
             "Signal {} delivered to handler at {:#x}, RSP={:#x}->{:#x}, return={:#x}",
             sig,
             handler_addr,
@@ -556,6 +684,7 @@ fn deliver_to_user_handler_x86_64(
 #[cfg(target_arch = "aarch64")]
 fn deliver_to_user_handler_aarch64(
     process: &mut Process,
+    shared_table: &mut Option<&mut ProcessPageTable>,
     exception_frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
     sig: u32,
@@ -576,15 +705,16 @@ fn deliver_to_user_handler_aarch64(
 
     let user_sp = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
-        let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
+        let Some(alt_top) = process.signals.alt_stack.base
+            .checked_add(process.signals.alt_stack.size as u64) else {
+            return false;
+        };
         log::debug!(
             "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
             process.signals.alt_stack.base,
             process.signals.alt_stack.size,
             alt_top
         );
-        // Mark that we're now on the alternate stack
-        process.signals.alt_stack.on_stack = true;
         alt_top
     } else {
         current_sp
@@ -600,7 +730,10 @@ fn deliver_to_user_handler_aarch64(
     let (frame_sp, return_addr) = if use_restorer {
         // Use the restorer function provided by the application/libc
         // Only allocate space for the signal frame (no trampoline needed)
-        let frame_sp = (user_sp - frame_size) & !0xF; // 16-byte align
+        let Some(base) = user_sp.checked_sub(frame_size) else {
+            return false;
+        };
+        let frame_sp = base & !0xF; // 16-byte align
         log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
         (frame_sp, action.restorer)
     } else {
@@ -608,18 +741,25 @@ fn deliver_to_user_handler_aarch64(
         // This works when the stack is executable (main stack without NX)
         let trampoline_size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
         let total_size = frame_size + trampoline_size;
-        let frame_sp = (user_sp - total_size) & !0xF; // 16-byte align
+        let Some(base) = user_sp.checked_sub(total_size) else {
+            return false;
+        };
+        let frame_sp = base & !0xF; // 16-byte align
         let trampoline_sp = frame_sp + frame_size;
+        if use_alt_stack && frame_sp < process.signals.alt_stack.base {
+            return false;
+        }
 
-        // Write trampoline code to user stack
-        // SAFETY: We're writing to user memory that should be valid stack space
-        unsafe {
-            let trampoline_ptr = trampoline_sp as *mut u8;
-            core::ptr::copy_nonoverlapping(
-                super::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
-                trampoline_ptr,
-                super::trampoline::SIGNAL_TRAMPOLINE_SIZE,
-            );
+        // PM is held by the delivery caller. Copy through the owned table:
+        // a raw user-VA write here can fault on fork's CoW stack and deadlock
+        // trying to reacquire PM before child exit can complete its wake.
+        if !write_signal_stack(
+            process,
+            shared_table,
+            trampoline_sp,
+            &super::trampoline::SIGNAL_TRAMPOLINE,
+        ) {
+            return false;
         }
 
         (frame_sp, trampoline_sp)
@@ -685,11 +825,25 @@ fn deliver_to_user_handler_aarch64(
         saved_blocked: process.signals.blocked,
     };
 
-    // Write signal frame to user stack
-    // SAFETY: We're writing to user memory that should be valid stack space
-    unsafe {
-        let frame_ptr = frame_sp as *mut SignalFrame;
-        core::ptr::write_volatile(frame_ptr, signal_frame);
+    if use_alt_stack && frame_sp < process.signals.alt_stack.base {
+        return false;
+    }
+
+    // SignalFrame is a repr(C) collection of initialized u64 fields. Read its
+    // bytes from the kernel buffer rather than faulting through a user VA while PM is
+    // held. The table copy validates permissions and resolves CoW first.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::addr_of!(signal_frame) as *const u8,
+            SignalFrame::SIZE,
+        )
+    };
+    if !write_signal_stack(process, shared_table, frame_sp, bytes) {
+        return false;
+    }
+
+    if use_alt_stack {
+        process.signals.alt_stack.on_stack = true;
     }
 
     // Block signals during handler execution
@@ -810,6 +964,20 @@ pub fn take_fatal_default_signal(process: &mut Process) -> Option<u32> {
 #[cfg(target_arch = "x86_64")]
 pub fn exit_by_signal_on_syscall_return(sig: u32) -> ! {
     let exit_code = fatal_exit_code(sig).unwrap_or(-(sig as i32));
+    exit_on_syscall_return(sig, exit_code)
+}
+
+/// Finish an x86-64 syscall return whose caught signal's frame could not be
+/// installed (`SignalDeliveryResult::FrameFault`). The process dies as a bad
+/// user-stack access, with the status a user page fault reports, through the
+/// same exit as `exit_by_signal_on_syscall_return`.
+#[cfg(target_arch = "x86_64")]
+pub fn exit_frame_fault_on_syscall_return() -> ! {
+    exit_on_syscall_return(SIGSEGV, -(SIGSEGV as i32))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn exit_on_syscall_return(sig: u32, exit_code: i32) -> ! {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         let row = crate::process::with_process_manager(|manager| {
             manager

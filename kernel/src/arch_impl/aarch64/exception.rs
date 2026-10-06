@@ -770,7 +770,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
 
             // Try to handle as CoW fault first
-            if handle_cow_fault_arm64(far, iss) {
+            if handle_cow_fault_arm64(far, iss, ec == exception_class::DATA_ABORT_LOWER) {
                 // CoW fault handled successfully, return to userspace
                 #[cfg(all(
                     target_arch = "aarch64",
@@ -2517,12 +2517,12 @@ fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
 ///
 /// Returns true if the fault was handled (page was copied or made writable)
 /// Returns false if this wasn't a CoW fault or couldn't be handled
-fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
-    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
+fn handle_cow_fault_arm64(far: u64, iss: u32, from_el0: bool) -> bool {
+    // An EL1 write under PM cannot wait for its own interrupted holder.
+    if !from_el0 && crate::process::process_manager_held_on_current_cpu() {
+        return false;
+    }
     use crate::memory::cow_stats;
-    use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
-    use crate::memory::frame_metadata::frame_is_shared;
-    use crate::memory::process_memory::{is_cow_page, make_private_flags};
 
     // Check if this is a CoW fault:
     // - WnR bit (bit 6) = 1 (caused by write)
@@ -2537,8 +2537,6 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
 
     // Track CoW fault count
     cow_stats::TOTAL_FAULTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-
-    let faulting_addr = VirtAddr::new(far);
 
     // Get current TTBR0 (user page table base)
     let ttbr0: u64;
@@ -2565,7 +2563,7 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     };
 
     // Find process by page table
-    let (_pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {
+    let (pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {
         Some(p) => p,
         None => {
             return false;
@@ -2577,98 +2575,5 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
         None => return false,
     };
 
-    let page: Page<Size4KiB> = Page::containing_address(faulting_addr);
-
-    // Get current page info
-    let (old_frame, old_flags) = match page_table.get_page_info(page) {
-        Some(info) => info,
-        None => {
-            return false;
-        }
-    };
-
-    // Check if this is a CoW page
-    if !is_cow_page(old_flags) {
-        return false;
-    }
-
-    // Lock-free trace: CoW handling with known PID
-    crate::tracing::providers::process::trace_cow_fault(_pid.as_u64() as u16, (far >> 12) as u16);
-
-    // If we're the sole owner, just make it writable
-    if !frame_is_shared(old_frame) {
-        let new_flags = make_private_flags(old_flags);
-        if page_table.update_page_flags(page, new_flags).is_err() {
-            return false;
-        }
-        // Flush TLB for the modified page
-        unsafe {
-            let va_for_tlbi = faulting_addr.as_u64() >> 12;
-            core::arch::asm!(
-                "dsb ishst",
-                "tlbi vale1is, {0}",
-                "dsb ish",
-                "isb",
-                in(reg) va_for_tlbi,
-                options(nostack)
-            );
-        }
-        cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        crate::tracing::providers::process::trace_cow_copy(
-            _pid.as_u64() as u16,
-            (far >> 12) as u16,
-        );
-        return true;
-    }
-
-    // Need to copy the page
-    let new_frame = match allocate_frame() {
-        Some(f) => f,
-        None => {
-            return false;
-        }
-    };
-
-    // Copy page contents via HHDM
-    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-    let src = (hhdm_base + old_frame.start_address().as_u64()) as *const u8;
-    let dst = (hhdm_base + new_frame.start_address().as_u64()) as *mut u8;
-
-    let new_flags = make_private_flags(old_flags);
-    unsafe {
-        core::ptr::copy_nonoverlapping(src, dst, 4096);
-        if !new_flags.contains(PageTableFlags::NO_EXECUTE) {
-            super::cache::sync_user_page(dst as u64);
-        }
-    }
-
-    // Break before make: unmap the old page and invalidate its TLB entry on
-    // every CPU while the descriptor is invalid, then map the copy. The old
-    // leaf's frame reference is dropped only after the replacement is in
-    // place: a racing release by the other sharer can make it the last one.
-    let old_leaf = match page_table.unmap_page_deferred(page) {
-        Ok(leaf) => leaf.flush(),
-        Err(_) => {
-            let _ = deallocate_leaf_frame(new_frame);
-            return false;
-        }
-    };
-    let copied = page_table.map_page(page, new_frame, new_flags).is_ok();
-    if !copied {
-        let _ = page_table.map_page(page, old_frame, old_flags);
-    }
-    // Make the new descriptor visible to the table walker before EL0 resumes.
-    unsafe {
-        core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
-    }
-    old_leaf.release();
-    if !copied {
-        let _ = deallocate_leaf_frame(new_frame);
-        return false;
-    }
-
-    cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
-
-    true
+    page_table.resolve_cow_write(far, pid.as_u64())
 }

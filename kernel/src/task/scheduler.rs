@@ -3898,21 +3898,7 @@ impl Scheduler {
     /// unblocked to ensure it gets scheduled promptly. This is critical for pause()
     /// to wake up in a timely manner when a signal arrives.
     pub fn unblock_for_signal(&mut self, thread_id: u64) {
-        // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-        #[cfg(target_arch = "x86_64")]
-        log_serial_println!(
-            "unblock_for_signal: Checking thread {} (current={:?})",
-            thread_id,
-            self.cpu_state[Self::current_cpu_id()].current_thread,
-        );
         if let Some(thread) = self.get_thread_mut(thread_id) {
-            #[cfg(target_arch = "x86_64")]
-            log_serial_println!(
-                "unblock_for_signal: Thread {} state is {:?}, blocked_in_syscall={}",
-                thread_id,
-                thread.state,
-                thread.blocked_in_syscall
-            );
             // Also wake threads blocked on I/O — they check signals in their
             // wait loop and will return EINTR when they resume.
             if thread.state == ThreadState::BlockedOnIO {
@@ -3956,12 +3942,6 @@ impl Scheduler {
                     if let Some(target) = self.find_target_cpu_for_wakeup(thread_id) {
                         self.per_cpu_queues[target].push_back(thread_id);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
-                        #[cfg(target_arch = "x86_64")]
-                        log_serial_println!(
-                            "unblock_for_signal: Thread {} unblocked, added to per_cpu_queues[{}]",
-                            thread_id,
-                            target
-                        );
 
                         // Send IPI to wake an idle CPU
                         #[cfg(target_arch = "aarch64")]
@@ -3973,25 +3953,12 @@ impl Scheduler {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                 } else if already_queued {
                     ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    #[cfg(target_arch = "x86_64")]
-                    log_serial_println!(
-                        "unblock_for_signal: Thread {} already in queue, is idle, or is current on a CPU",
-                        thread_id
-                    );
                 }
                 // CRITICAL: Request reschedule so the unblocked thread can run promptly.
                 // Without this, the thread is added to ready queue but the scheduler
                 // doesn't know to switch to it, causing pause() to timeout waiting for
                 // the next timer tick instead of waking up immediately.
                 set_need_resched();
-            } else {
-                #[cfg(target_arch = "x86_64")]
-                log_serial_println!(
-                    "unblock_for_signal: Thread {} not BlockedOnSignal, state={:?}",
-                    thread_id,
-                    thread.state
-                );
             }
         } else {
             #[cfg(target_arch = "x86_64")]
