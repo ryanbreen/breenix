@@ -933,9 +933,34 @@ fn state_is(state: &HashMap<String, String>, key: &str, expected: &str, what: &s
     }
 }
 
-/// A copy of the helper at `name`, owned by `uid`:`gid` with `mode`.
+/// The part of an ELF64 image a loader reads: up to the end of the furthest segment its
+/// program headers name, with the section header table (and the symbols after the
+/// segments) dropped. Copying only this keeps the set-ID cases well inside their limit.
+fn loadable(mut elf: Vec<u8>) -> Result<Vec<u8>, String> {
+    let word = |elf: &[u8], at: usize, len: usize| -> Option<usize> {
+        let bytes = elf.get(at..at + len)?;
+        Some(bytes.iter().rev().fold(0usize, |v, &b| (v << 8) | b as usize))
+    };
+    let bad = || format!("{HELPER} is not an ELF64 image this case can read");
+    if elf.get(..4) != Some(&b"\x7fELF"[..]) { return Err(bad()); }
+    let phoff = word(&elf, 0x20, 8).ok_or_else(bad)?;
+    let phentsize = word(&elf, 0x36, 2).ok_or_else(bad)?;
+    let phnum = word(&elf, 0x38, 2).ok_or_else(bad)?;
+    let mut end = phoff + phentsize * phnum;
+    for i in 0..phnum {
+        let header = phoff + i * phentsize;
+        end = end.max(word(&elf, header + 8, 8).ok_or_else(bad)? + word(&elf, header + 32, 8).ok_or_else(bad)?);
+    }
+    if end > elf.len() { return Err(bad()); }
+    elf.truncate(end);
+    elf[0x28..0x30].fill(0);
+    elf[0x3c..0x40].fill(0);
+    Ok(elf)
+}
+
+/// A copy of the helper's loadable image at `name`, owned by `uid`:`gid` with `mode`.
 fn helper_copy(tmp: &Tmp, name: &str, uid: u32, gid: u32, mode: u32) -> Result<String, CaseError> {
-    let bytes = std::fs::read(HELPER).map_err(|e| format!("reading {HELPER}: {e}"))?;
+    let bytes = loadable(std::fs::read(HELPER).map_err(|e| format!("reading {HELPER}: {e}"))?)?;
     let path = tmp.file(name, &bytes, 0o755)?;
     want("chown", chown(&path, uid, gid))?;
     want("chmod", chmod(&path, mode))?;
@@ -2197,7 +2222,7 @@ fn limits_fsize_signal() -> CaseResult {
 
 fn limits_fork() -> CaseResult {
     want_eq("setrlimit(RLIMIT_NOFILE, 100, 200)", setrlimit(RLIMIT_NOFILE, 100, 200), 0)?;
-    task(|| limit_is(RLIMIT_NOFILE, [100, 200], "in the child"))?.finish()
+    task(|| limit_is(RLIMIT_NOFILE, [100, 200], "the inherited RLIMIT_NOFILE"))?.finish()
 }
 
 fn limits_exec() -> CaseResult {
