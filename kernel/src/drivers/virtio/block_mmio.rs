@@ -1399,69 +1399,53 @@ pub fn test_invalid_sector() -> Result<(), &'static str> {
         }
         Err(e) => {
             crate::serial_println!("[virtio-blk] Invalid sector correctly rejected: {}", e);
+            // Only the range check may answer: any other error means the
+            // request reached (or failed to reach) the device.
             if e == "Sector out of range" {
                 crate::serial_println!("[virtio-blk] Invalid sector test passed!");
                 Ok(())
             } else {
                 crate::serial_println!("[virtio-blk] Got unexpected error: {}", e);
-                // Still pass - we got an error which is the expected behavior
-                crate::serial_println!(
-                    "[virtio-blk] Invalid sector test passed (different error message)!"
-                );
-                Ok(())
+                Err("Invalid sector read failed with an error other than 'Sector out of range'")
             }
         }
     }
 }
 
-/// Test behavior when attempting to read from an uninitialized device
+/// Test behavior when attempting to read from a slot with no device
 ///
-/// This test is tricky because BLOCK_DEVICE is a static that may already be initialized
-/// by the time tests run. We check the initialization state and verify error handling.
-///
-/// Note: In production, the device is initialized during boot. This test documents
-/// that read_sector() correctly returns an error for uninitialized state, but cannot
-/// truly test it in isolation without modifying global state (which would be unsafe
-/// in a concurrent environment).
+/// The boot has already initialized the devices it found, so the test reads
+/// from the first slot that holds no device and requires the exact
+/// "Block device not initialized" refusal. If every slot holds a device it
+/// reads from the first index past the table and requires "Invalid device
+/// index" instead, the same lookup's other refusal.
 pub fn test_uninitialized_read() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-blk] Testing uninitialized device handling...");
 
-    // Check current initialization state
-    let is_initialized = capacity(0).is_some();
+    let (device_index, expected) = match (0..MAX_BLOCK_DEVICES).find(|&i| capacity(i).is_none())
+    {
+        Some(free) => (free, "Block device not initialized"),
+        None => (MAX_BLOCK_DEVICES, "Invalid device index"),
+    };
+    crate::serial_println!(
+        "[virtio-blk] Reading from device slot {} (no device there)...",
+        device_index
+    );
 
-    if is_initialized {
-        // Device is already initialized - this is expected in normal boot
-        // We document that read_sector handles uninitialized state by checking the code path
-        crate::serial_println!("[virtio-blk] Device is initialized (expected during normal boot)");
-        crate::serial_println!(
-            "[virtio-blk] Verified: read_sector checks BLOCK_DEVICE.is_none() and returns error"
-        );
-        crate::serial_println!(
-            "[virtio-blk] Uninitialized test passed (device was already initialized)!"
-        );
-        Ok(())
-    } else {
-        // Device is not initialized - we can actually test the error path
-        crate::serial_println!("[virtio-blk] Device is NOT initialized, testing error path...");
-
-        let mut buffer = [0u8; SECTOR_SIZE];
-        match read_sector(0, 0, &mut buffer) {
-            Ok(_) => {
-                crate::serial_println!(
-                    "[virtio-blk] ERROR: Read succeeded on uninitialized device!"
-                );
-                Err("Read should fail on uninitialized device")
-            }
-            Err(e) => {
-                crate::serial_println!("[virtio-blk] Correctly rejected with: {}", e);
-                if e == "Block device not initialized" {
-                    crate::serial_println!("[virtio-blk] Uninitialized test passed!");
-                    Ok(())
-                } else {
-                    crate::serial_println!("[virtio-blk] Unexpected error: {}", e);
-                    Err("Expected 'Block device not initialized' error")
-                }
-            }
+    let mut buffer = [0u8; SECTOR_SIZE];
+    match read_sector(device_index, 0, &mut buffer) {
+        Ok(_) => {
+            crate::serial_println!("[virtio-blk] ERROR: Read succeeded on uninitialized device!");
+            Err("Read should fail on uninitialized device")
+        }
+        Err(e) if e == expected => {
+            crate::serial_println!("[virtio-blk] Correctly rejected with: {}", e);
+            crate::serial_println!("[virtio-blk] Uninitialized test passed!");
+            Ok(())
+        }
+        Err(e) => {
+            crate::serial_println!("[virtio-blk] Unexpected error: {}", e);
+            Err("Read from a slot with no device failed with the wrong error")
         }
     }
 }
@@ -1535,10 +1519,10 @@ pub fn test_write_read_verify() -> Result<(), &'static str> {
             crate::serial_println!("[virtio-blk] Write succeeded");
         }
         Err(e) => {
-            // Write might fail if disk is mounted readonly even without RO feature
-            crate::serial_println!("[virtio-blk] Write failed: {} (may be readonly disk)", e);
-            crate::serial_println!("[virtio-blk] Write test skipped due to write failure");
-            return Ok(()); // Skip gracefully
+            // The device advertised itself writable, so a failed write is a
+            // failed test, not a skip.
+            crate::serial_println!("[virtio-blk] Write failed: {}", e);
+            return Err("Write to a writable device failed");
         }
     }
 
@@ -1567,16 +1551,20 @@ pub fn test_write_read_verify() -> Result<(), &'static str> {
         }
     }
 
-    // Restore original data (best effort)
+    // Restore the original data; a test that leaves its pattern behind fails.
     crate::serial_println!(
         "[virtio-blk] Restoring original data to sector {}...",
         TEST_SECTOR
     );
     if let Err(e) = write_sector(0, TEST_SECTOR, &original) {
-        crate::serial_println!(
-            "[virtio-blk] Warning: Failed to restore original data: {}",
-            e
-        );
+        crate::serial_println!("[virtio-blk] Failed to restore original data: {}", e);
+        return Err("Write-read-verify could not restore the test sector");
+    }
+    let mut restored = [0u8; SECTOR_SIZE];
+    read_sector(0, TEST_SECTOR, &mut restored)?;
+    if restored != original {
+        crate::serial_println!("[virtio-blk] Restored sector does not match the original");
+        return Err("Write-read-verify left the test sector modified");
     }
 
     // Report result
