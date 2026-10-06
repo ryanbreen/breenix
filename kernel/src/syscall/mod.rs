@@ -1,7 +1,7 @@
 //! System call infrastructure for Breenix
 //!
 //! This module implements the system call interface:
-//! - x86_64: Uses INT 0x80 (Linux-style)
+//! - x86_64: Uses SYSCALL (Linux AMD64 ABI), with INT 0x80 compatibility
 //! - ARM64: Uses SVC instruction
 //!
 //! Architecture-independent syscall implementations are shared between both
@@ -33,8 +33,6 @@ pub(crate) mod dispatcher;
 pub mod epoll;
 pub mod fifo;
 pub mod fs;
-pub mod metadata;
-mod multiplex;
 pub mod futex;
 #[cfg(feature = "boot_tests")]
 pub mod futex_oracle;
@@ -43,6 +41,8 @@ pub mod graphics;
 pub mod handlers;
 pub mod ioctl;
 pub mod iovec;
+pub mod metadata;
+mod multiplex;
 pub mod pipe;
 pub mod pty;
 pub mod random;
@@ -615,7 +615,17 @@ pub fn check_signals_for_restartable_wait() -> Option<i32> {
     }
 }
 
-/// Initialize the system call infrastructure
+/// Match the IDT entry alias used when the kernel is linked in low memory.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn entry_address(address: u64) -> u64 {
+    if (0x100000..=0x40000000).contains(&address) {
+        crate::memory::layout::high_alias_from_low(address)
+    } else {
+        address
+    }
+}
+
+/// Initialize the system call infrastructure.
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
     log::info!("Initializing system call infrastructure");
@@ -632,9 +642,16 @@ pub fn init() {
     unsafe {
         // GDT: kernel CS/SS = 0x08/0x10, user SS/CS = 0x2b/0x33.
         Star::write_raw(0x23, 0x08);
-        LStar::write(x86_64::VirtAddr::new(syscall_instruction_entry as u64));
-        SFMask::write(RFlags::INTERRUPT_FLAG | RFlags::DIRECTION_FLAG
-            | RFlags::TRAP_FLAG | RFlags::ALIGNMENT_CHECK | RFlags::NESTED_TASK);
+        LStar::write(x86_64::VirtAddr::new(entry_address(
+            syscall_instruction_entry as u64,
+        )));
+        SFMask::write(
+            RFlags::INTERRUPT_FLAG
+                | RFlags::DIRECTION_FLAG
+                | RFlags::TRAP_FLAG
+                | RFlags::ALIGNMENT_CHECK
+                | RFlags::NESTED_TASK,
+        );
         Efer::update(|flags| flags.insert(EferFlags::SYSTEM_CALL_EXTENSIONS));
     }
 

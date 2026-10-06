@@ -230,7 +230,16 @@ impl SignalState {
         Some(bit + 1) // Signal numbers are 1-based
     }
 
-    /// Mark a signal as pending
+    /// Queue a synchronous fault even when its disposition blocks or ignores it.
+    pub fn force_signal(&mut self, sig: u32) {
+        if self.is_blocked(sig) || self.get_handler(sig).is_ignore() {
+            self.unblock_signals(super::constants::sig_mask(sig));
+            self.set_handler(sig, SignalAction::default());
+        }
+        self.set_pending(sig);
+    }
+
+    /// Mark a signal as pending.
     #[inline]
     pub fn set_pending(&mut self, sig: u32) {
         // POSIX.1-2024 2.4.1/2.4.3: choose discard at generation for ignored

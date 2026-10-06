@@ -153,6 +153,7 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
     let mut max_segment_end: u64 = 0;
     let mut min_load_addr: u64 = u64::MAX;
     let mut phdr_vaddr: Option<u64> = None;
+    let mut mapped_phdr_vaddr: Option<u64> = None;
 
     // Process program headers
     let ph_offset = header.phoff as usize;
@@ -174,6 +175,22 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
 
         if ph.p_type == SegmentType::Load as u32 {
             load_segment(data, ph)?;
+
+            let phdr_end = header
+                .phoff
+                .checked_add(header.phnum as u64 * header.phentsize as u64)
+                .ok_or("Program header range overflow")?;
+            let file_end = ph
+                .p_offset
+                .checked_add(ph.p_filesz)
+                .ok_or("Segment file range overflow")?;
+            if header.phoff >= ph.p_offset && phdr_end <= file_end {
+                mapped_phdr_vaddr = Some(
+                    ph.p_vaddr
+                        .checked_add(header.phoff - ph.p_offset)
+                        .ok_or("Program header address overflow")?,
+                );
+            }
 
             // Track address range
             if ph.p_vaddr < min_load_addr {
@@ -210,8 +227,8 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
     } else {
         min_load_addr
     };
-    // If no PT_PHDR was found, compute from load_base + phoff
-    let phdr_vaddr = phdr_vaddr.unwrap_or(load_base + header.phoff);
+    // Both ARM loaders map absolute p_vaddr addresses (load bias zero).
+    let phdr_vaddr = phdr_vaddr.or(mapped_phdr_vaddr).unwrap_or(0);
 
     crate::serial_println!(
         "[elf] Loaded: base={:#x}, end={:#x}, entry={:#x}",
@@ -327,6 +344,7 @@ pub fn load_elf_into_page_table(
     let mut max_segment_end: u64 = 0;
     let mut min_load_addr: u64 = u64::MAX;
     let mut phdr_vaddr: Option<u64> = None;
+    let mut mapped_phdr_vaddr: Option<u64> = None;
 
     // Process program headers
     let ph_offset = header.phoff as usize;
@@ -351,6 +369,22 @@ pub fn load_elf_into_page_table(
 
         if ph.p_type == SegmentType::Load as u32 {
             load_segment_into_page_table(data, ph, page_table)?;
+
+            let phdr_end = header
+                .phoff
+                .checked_add(header.phnum as u64 * header.phentsize as u64)
+                .ok_or("Program header range overflow")?;
+            let file_end = ph
+                .p_offset
+                .checked_add(ph.p_filesz)
+                .ok_or("Segment file range overflow")?;
+            if header.phoff >= ph.p_offset && phdr_end <= file_end {
+                mapped_phdr_vaddr = Some(
+                    ph.p_vaddr
+                        .checked_add(header.phoff - ph.p_offset)
+                        .ok_or("Program header address overflow")?,
+                );
+            }
 
             // Track address range
             if ph.p_vaddr < min_load_addr {
@@ -386,8 +420,8 @@ pub fn load_elf_into_page_table(
     } else {
         min_load_addr
     };
-    // If no PT_PHDR was found, compute from load_base + phoff
-    let phdr_vaddr = phdr_vaddr.unwrap_or(load_base + header.phoff);
+    // Both ARM loaders map absolute p_vaddr addresses (load bias zero).
+    let phdr_vaddr = phdr_vaddr.or(mapped_phdr_vaddr).unwrap_or(0);
 
     log::debug!(
         "[elf-arm64] Loaded: base={:#x}, end={:#x}, entry={:#x}",

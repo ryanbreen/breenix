@@ -71,8 +71,10 @@ impl ProcessContext {
             rflags: frame.cpu_flags.bits(),
             cs: frame.code_segment.0 as u64,
             ss: frame.stack_segment.0 as u64,
-            user_fs_base: crate::per_cpu::current_thread().map_or(0, |thread| thread.context.user_fs_base),
-            user_fs_base_set: crate::per_cpu::current_thread().is_some_and(|thread| thread.context.user_fs_base_set),
+            user_fs_base: crate::per_cpu::current_thread()
+                .map_or(0, |thread| thread.context.user_fs_base),
+            user_fs_base_set: crate::per_cpu::current_thread()
+                .is_some_and(|thread| thread.context.user_fs_base_set),
         };
 
         ProcessContext {

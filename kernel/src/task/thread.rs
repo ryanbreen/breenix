@@ -144,8 +144,10 @@ impl CpuContext {
             rflags: frame.rflags,
             cs: frame.cs,
             ss: frame.ss,
-            user_fs_base: crate::per_cpu::current_thread().map_or(0, |thread| thread.context.user_fs_base),
-            user_fs_base_set: crate::per_cpu::current_thread().is_some_and(|thread| thread.context.user_fs_base_set),
+            user_fs_base: crate::per_cpu::current_thread()
+                .map_or(0, |thread| thread.context.user_fs_base),
+            user_fs_base_set: crate::per_cpu::current_thread()
+                .is_some_and(|thread| thread.context.user_fs_base_set),
         }
     }
 

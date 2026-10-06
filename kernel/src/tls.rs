@@ -279,7 +279,9 @@ pub fn switch_tls(thread_id: u64) -> Result<(), &'static str> {
     if let Some(thread) = crate::per_cpu::current_thread() {
         if thread.id == thread_id {
             if thread.context.user_fs_base_set {
-                x86_64::registers::model_specific::FsBase::write(VirtAddr::new(thread.context.user_fs_base));
+                x86_64::registers::model_specific::FsBase::write(VirtAddr::new(
+                    thread.context.user_fs_base,
+                ));
                 return Ok(());
             }
         }
