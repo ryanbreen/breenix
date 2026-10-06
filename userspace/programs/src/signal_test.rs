@@ -12,7 +12,7 @@ use libbreenix::process::{getpid, wtermsig, yield_now, ForkResult};
 
 #[cfg(target_arch = "x86_64")]
 mod instruction {
-    use libbreenix::signal::{Sigaction, SA_RESTART, SA_RESTORER, SIGALRM, SIGILL, SIGUSR1};
+    use libbreenix::signal::{Sigaction, SA_RESTART, SA_RESTORER, SIGILL, SIGUSR1};
     use libbreenix::{error::Error, process::ForkResult, types::Pid};
     use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
@@ -69,21 +69,46 @@ mod instruction {
         }
         unreachable!();
     }
-    extern "C" fn alarm_handler(sig: i32) {
-        assert_eq!(sig, SIGALRM);
-        let byte = b'R';
-        assert_eq!(
-            unsafe {
-                call(
-                    1,
-                    WRITE_FD.load(Ordering::SeqCst) as u64,
-                    &byte as *const _ as u64,
-                    1,
-                    0,
-                )
-            },
-            1
+    static RESTARTED: AtomicBool = AtomicBool::new(false);
+
+    // Capture the SignalFrame pointer before a Rust prologue changes RSP.
+    #[unsafe(naked)]
+    extern "C" fn restart_handler(_sig: i32) {
+        core::arch::naked_asm!(
+            "mov rsi, rsp",
+            "push rbp",
+            "mov rbp, rsp",
+            "and rsp, -16",
+            "call {body}",
+            "mov rsp, rbp",
+            "pop rbp",
+            "ret",
+            body = sym restart_handler_body,
         );
+    }
+
+    extern "C" fn restart_handler_body(sig: i32, frame: *const u64) {
+        assert_eq!(sig, SIGUSR1);
+        // SignalFrame's saved RIP and RAX are at offsets 40 and 64.
+        // ERESTARTSYS must restore READ's number and rewind onto SYSCALL.
+        let rip = unsafe { *frame.add(5) };
+        let rax = unsafe { *frame.add(8) };
+        if rax == 0 && unsafe { std::ptr::read_unaligned(rip as *const u16) } == 0x050f {
+            RESTARTED.store(true, Ordering::SeqCst);
+            let byte = b'R';
+            assert_eq!(
+                unsafe {
+                    call(
+                        1,
+                        WRITE_FD.load(Ordering::SeqCst) as u64,
+                        &byte as *const _ as u64,
+                        1,
+                        0,
+                    )
+                },
+                1
+            );
+        }
     }
 
     pub fn check() {
@@ -134,23 +159,37 @@ mod instruction {
         let mut fds = [-1i32; 2];
         assert_eq!(unsafe { call(22, fds.as_mut_ptr() as u64, 0, 0, 0) }, 0);
         WRITE_FD.store(fds[1], Ordering::SeqCst);
-        action(SIGALRM, alarm_handler as u64, SA_RESTART);
-        let timer = libbreenix::signal::Itimerval {
-            it_interval: libbreenix::signal::Timeval::default(),
-            it_value: libbreenix::signal::Timeval {
-                tv_sec: 0,
-                tv_usec: 20_000,
+        action(SIGUSR1, restart_handler as u64, SA_RESTART);
+        let sender = match fork().expect("fork restart signal sender") {
+            ForkResult::Child => loop {
+                assert_eq!(unsafe { call(62, pid as u64, SIGUSR1 as u64, 0, 0) }, 0);
+                assert_eq!(unsafe { call(24, 0, 0, 0, 0) }, 0);
             },
+            ForkResult::Parent(child) => child,
         };
-        assert_eq!(unsafe { call(38, 0, &timer as *const _ as u64, 0, 0) }, 0);
         let mut byte = 0u8;
-        // The alarm interrupts this empty-pipe read. Its handler writes the
-        // byte, then SYSCALL sigreturn resumes the rewound read with SA_RESTART.
+        // Signals received before read cannot fill the pipe. Only a handler
+        // observing the rewound read writes, so completion proves SA_RESTART
+        // and SYSCALL sigreturn resumed the interrupted operation.
         assert_eq!(
             unsafe { call(0, fds[0] as u64, &mut byte as *mut _ as u64, 1, 0) },
             1
         );
         assert_eq!(byte, b'R');
+        assert!(RESTARTED.load(Ordering::SeqCst));
+        assert_eq!(
+            unsafe { call(62, sender.raw(), libbreenix::signal::SIGTERM as u64, 0, 0) },
+            0
+        );
+        let mut status = 0;
+        assert_eq!(
+            waitpid(sender.raw() as i32, &mut status, 0).unwrap().raw(),
+            sender.raw()
+        );
+        assert_eq!(
+            libbreenix::process::wtermsig(status),
+            libbreenix::signal::SIGTERM
+        );
         for fd in fds {
             assert_eq!(unsafe { call(3, fd as u64, 0, 0, 0) }, 0);
         }
