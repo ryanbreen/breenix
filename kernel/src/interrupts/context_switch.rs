@@ -425,14 +425,15 @@ pub extern "C" fn check_need_resched_and_switch(
         // preempt_active is false (otherwise we would have returned early).
 
         // Check if current thread is blocked in syscall (pause/waitpid)
-        let (blocked_in_syscall, old_thread_is_user) =
+        let (blocked_in_syscall, old_thread_is_user, old_thread_terminated) =
             scheduler::with_thread_mut(old_thread_id, |thread| {
                 (
                     thread.blocked_in_syscall,
                     thread.privilege == ThreadPrivilege::User,
+                    thread.state == crate::task::thread::ThreadState::Terminated,
                 )
             })
-            .unwrap_or((false, false));
+            .unwrap_or((false, false, false));
 
         // #772 diagnostics: which gate admitted this switch. The blocked or
         // terminated arm is the mandatory switch the refusal is conjoined out
@@ -443,6 +444,10 @@ pub extern "C" fn check_need_resched_and_switch(
 
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
+            // A terminated thread is never dispatched again, so its context
+            // needs no save. Its row may already be reaped (an exit whose
+            // parent declines zombies reaps it at once), and a save that
+            // cannot find the row must not hold the CPU on the dead thread.
             if !save_current_thread_context_with_guard(
                 old_thread_id,
                 saved_regs,
@@ -453,7 +458,8 @@ pub extern "C" fn check_need_resched_and_switch(
                 } else {
                     DispatchSaveReason::UserPreempt
                 },
-            ) {
+            ) && !old_thread_terminated
+            {
                 // Roll back the committed switch and re-arm rescheduling.
                 scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
                 trace_dispatch_abandon(DispatchAbandonSite::RollbackSaveFailed);
