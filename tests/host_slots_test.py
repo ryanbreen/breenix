@@ -95,6 +95,42 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         self.assertEqual(first.wait(timeout=10), 0)
         self.line_matching(third, 'READY')
 
+    def test_snapshot_waits_for_holder_metadata_publication(self):
+        directory = self.root / 'locks'
+        directory.mkdir()
+        (directory / 'x86-boot-1.json').write_text(json.dumps({
+            'worktree': 'previous', 'commit': 'previous', 'started': time.time() - 120}))
+        setup = (f"import importlib.util; spec=importlib.util.spec_from_file_location('m',{str(HELPER)!r}); "
+                 f"m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); "
+                 f"pool=m.Slots({str(directory)!r}); ")
+        writer_code = setup + """import sys
+original = m.json.dumps
+def publish(holder):
+    print('LOCKED', flush=True)
+    sys.stdin.readline()
+    return original(holder)
+m.json.dumps = publish
+pool.try_acquire('x86-boot', {'worktree':'current','commit':'current'})
+print('PUBLISHED', flush=True)
+sys.stdin.readline()
+"""
+        writer = subprocess.Popen([sys.executable, '-c', writer_code], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.processes.append(writer)
+        self.line_matching(writer, 'LOCKED')
+        reader = subprocess.Popen([sys.executable, '-c', setup + 'print(m.json.dumps(pool.snapshot()))'],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.processes.append(reader)
+        with selectors.DefaultSelector() as selector:
+            selector.register(reader.stdout, selectors.EVENT_READ)
+            self.assertFalse(selector.select(timeout=0.2), 'reader saw unpublished metadata')
+        writer.stdin.write(b'publish\n'); writer.stdin.flush()
+        output = reader.communicate(timeout=10)[0]
+        self.assertEqual(reader.returncode, 0, output)
+        self.assertEqual(json.loads(output)[0]['commit'], 'current')
+        writer.stdin.write(b'release\n'); writer.stdin.flush()
+        self.assertEqual(writer.wait(timeout=10), 0)
+
     def test_wait_message_refreshes_holder_after_acquisition_race(self):
         command = self.request('acquire', 'mac-boot') + '; echo READY; read -r release'
         first = self.launch(command)

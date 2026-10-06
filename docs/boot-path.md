@@ -95,7 +95,8 @@ by `pgrep`, `prlctl list` or `vmrun list` are waited for too.
 
 The slots are permanent files under `/tmp/breenix-host-slots`, independent of
 checkout: `x86-build-1.lock`, `x86-build-2.lock`, `x86-boot-1.lock` and
-`mac-boot-1.lock`. Python's `fcntl.flock` supplies the kernel lock on Linux and
+`mac-boot-1.lock`; `metadata.lock` makes holder publication atomic to readers.
+Python's `fcntl.flock` supplies the kernel lock on Linux and
 macOS. A supervisor owns the descriptors, stops the run's descendants (and its
 registered Parallels/VMware VM) before releasing them, and preserves the runner's
 exit status. Process death also releases flock without deleting/reclaiming a

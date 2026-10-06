@@ -56,43 +56,47 @@ class Slots:
         return self.directory / f'{resource}-{number}.lock'
 
     def snapshot(self):
-        holders = []
-        for resource, count in RESOURCES.items():
-            for number in range(1, count + 1):
-                path = self.path(resource, number)
-                with path.open('a+') as handle:
-                    try:
-                        # Observers share their probe; only an exclusive lease
-                        # blocks it. Two observers must not report each other.
-                        fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
-                    except BlockingIOError:
+        with (self.directory / 'metadata.lock').open('a+') as state:
+            fcntl.flock(state, fcntl.LOCK_SH)
+            holders = []
+            for resource, count in RESOURCES.items():
+                for number in range(1, count + 1):
+                    path = self.path(resource, number)
+                    with path.open('a+') as handle:
                         try:
-                            holder = json.loads(path.with_suffix('.json').read_text())
-                        except (OSError, ValueError):
-                            holder = {'resource': resource, 'worktree': 'publishing', 'commit': 'unknown'}
-                        holder['held_seconds'] = round(max(0, time.time() - holder.get('started', time.time())), 1)
-                        holders.append(holder)
-        return holders
+                            # Observers share their probe; only an exclusive lease
+                            # blocks it. Two observers must not report each other.
+                            fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            try:
+                                holder = json.loads(path.with_suffix('.json').read_text())
+                            except (OSError, ValueError):
+                                holder = {'resource': resource, 'worktree': 'publishing', 'commit': 'unknown'}
+                            holder['held_seconds'] = round(max(0, time.time() - holder.get('started', time.time())), 1)
+                            holders.append(holder)
+            return holders
 
     def try_acquire(self, resource, identity):
-        if resource in self.held:
-            raise ValueError(f'{resource} is already held by this run')
-        for number in range(1, RESOURCES[resource] + 1):
-            path = self.path(resource, number)
-            handle = path.open('a+')
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                handle.close()
-                continue
-            holder = dict(identity, resource=resource, slot=number, started=time.time(), pid=os.getpid())
-            # The lock inode is permanent. Metadata is replaced atomically under its lock.
-            temporary = path.with_suffix(f'.{os.getpid()}.tmp')
-            temporary.write_text(json.dumps(holder) + '\n')
-            temporary.replace(path.with_suffix('.json'))
-            self.held[resource] = handle
-            return holder
-        return None
+        with (self.directory / 'metadata.lock').open('a+') as state:
+            fcntl.flock(state, fcntl.LOCK_EX)
+            if resource in self.held:
+                raise ValueError(f'{resource} is already held by this run')
+            for number in range(1, RESOURCES[resource] + 1):
+                path = self.path(resource, number)
+                handle = path.open('a+')
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    handle.close()
+                    continue
+                holder = dict(identity, resource=resource, slot=number, started=time.time(), pid=os.getpid())
+                # The lock inode is permanent. Metadata is replaced atomically under its lock.
+                temporary = path.with_suffix(f'.{os.getpid()}.tmp')
+                temporary.write_text(json.dumps(holder) + '\n')
+                temporary.replace(path.with_suffix('.json'))
+                self.held[resource] = handle
+                return holder
+            return None
 
     def release(self, resource):
         handle = self.held.pop(resource, None)
