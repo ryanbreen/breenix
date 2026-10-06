@@ -197,18 +197,8 @@ pub struct Process {
     /// a controlling terminal. Initially set to pid on process creation.
     pub sid: ProcessId,
 
-    /// Real user ID
-    pub uid: u32,
-    /// Real group ID
-    pub gid: u32,
-    /// Effective user ID
-    pub euid: u32,
-    pub suid: u32,
-    /// Effective group ID
-    pub egid: u32,
-    pub sgid: u32,
-    /// Supplementary group membership, shared until setgroups replaces it.
-    pub supplementary_groups: alloc::sync::Arc<Vec<u32>>,
+    /// User and group IDs and supplementary groups.
+    pub cred: super::credentials::ProcessCredentials,
     /// File creation mask (umask)
     pub umask: u32,
 
@@ -370,14 +360,7 @@ impl Process {
             pgid: id,
             // By default, a process's sid equals its pid (process is its own session leader)
             sid: id,
-            // Single-user OS: everything runs as root (uid=0, gid=0)
-            uid: 0,
-            gid: 0,
-            euid: 0,
-            suid: 0,
-            egid: 0,
-            sgid: 0,
-            supplementary_groups: alloc::sync::Arc::new(Vec::new()),
+            cred: super::credentials::ProcessCredentials::root(),
             // Standard default umask: owner rwx, group/other rx
             umask: 0o022,
             // Default working directory is root

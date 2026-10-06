@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 pub mod creation;
+pub mod credentials;
 pub mod fork;
 pub mod limits;
 pub mod manager;

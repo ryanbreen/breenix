@@ -828,6 +828,12 @@ fn dispatch_syscall_enum(
         SyscallNumber::Getegid => result_to_u64(crate::syscall::handlers::sys_getegid()),
         SyscallNumber::Setuid => result_to_u64(crate::syscall::handlers::sys_setuid(arg1 as u32)),
         SyscallNumber::Setgid => result_to_u64(crate::syscall::handlers::sys_setgid(arg1 as u32)),
+        SyscallNumber::Setreuid => {
+            result_to_u64(crate::syscall::handlers::sys_setreuid(arg1 as u32, arg2 as u32))
+        }
+        SyscallNumber::Setregid => {
+            result_to_u64(crate::syscall::handlers::sys_setregid(arg1 as u32, arg2 as u32))
+        }
         // File creation mask
         SyscallNumber::Umask => result_to_u64(crate::syscall::handlers::sys_umask(arg1 as u32)),
         // Timestamps
@@ -1187,7 +1193,7 @@ fn sys_exec_aarch64(
         Err(errno) => return (-(errno as i64)) as u64,
     };
 
-    let elf_vec = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
+    let (elf_vec, image_identity) = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
         if path.contains('/') {
             load_elf_from_ext2(path)
         } else {
@@ -1287,6 +1293,11 @@ fn sys_exec_aarch64(
 
         let new_ttbr0 = commit.new_page_table_root();
 
+        // The exec has committed: the new image's identity takes effect.
+        if let Some(manager) = manager_guard.as_mut() {
+            manager.apply_exec_identity(current_pid, image_identity);
+        }
+
         // Release the process-manager lock BEFORE taking the scheduler lock: Level 1 (SCHEDULER)
         // must never be acquired under Level 2 (PROCESS_MANAGER). Dropping the guard restores the
         // *saved* DAIF, which the enclosing without_interrupts already masked, so interrupts stay
@@ -1382,7 +1393,10 @@ fn sys_exec_aarch64(
 /// Returns the file content as Vec<u8> on success, or an errno on failure.
 ///
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
-fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
+/// The program image at `path` and the identity its set-ID bits confer.
+fn load_elf_from_ext2(
+    path: &str,
+) -> Result<(alloc::vec::Vec<u8>, crate::process::credentials::ExecIdentity), i32> {
     use crate::syscall::errno::{EACCES, EIO};
 
     // Trace: entering load_elf_from_ext2
@@ -1423,7 +1437,7 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
     })?;
     super::trace::trace_exec(b'7');
 
-    Ok(data)
+    Ok((data, crate::process::credentials::ExecIdentity::of(&inode)))
 }
 
 // =============================================================================
@@ -1594,13 +1608,13 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
     // Load ELF from filesystem (with interrupts enabled for I/O)
     let elf_vec = if program_path.contains('/') {
         match load_elf_from_ext2(&program_path) {
-            Ok(data) => data,
+            Ok((data, _)) => data,
             Err(errno) => return (-(errno as i64)) as u64,
         }
     } else {
         let bin_path = alloc::format!("/bin/{}", program_path);
         match load_elf_from_ext2(&bin_path) {
-            Ok(data) => data,
+            Ok((data, _)) => data,
             Err(errno) => {
                 crate::serial_println!("[spawn] Failed to load /bin/{}: {}", program_path, errno);
                 return (-(errno as i64)) as u64;

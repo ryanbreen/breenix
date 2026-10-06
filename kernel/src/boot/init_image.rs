@@ -37,6 +37,14 @@ pub fn read_init_from_ext2(path: &str) -> Result<Vec<u8>, &'static str> {
 /// a directory.
 #[cfg(target_arch = "x86_64")]
 pub fn read_program(path: &str) -> Result<Vec<u8>, i32> {
+    read_program_image(path).map(|(data, _)| data)
+}
+
+/// `read_program`, with the identity the file's set-ID bits confer at exec.
+#[cfg(target_arch = "x86_64")]
+pub fn read_program_image(
+    path: &str,
+) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity), i32> {
     use crate::syscall::errno::{EACCES, EIO, EISDIR};
 
     // The handle holds the inode until its content is read.
@@ -62,5 +70,5 @@ pub fn read_program(path: &str) -> Result<Vec<u8>, i32> {
 
     drop(fs_guard);
 
-    Ok(elf_data)
+    Ok((elf_data, crate::process::credentials::ExecIdentity::of(&inode)))
 }

@@ -228,6 +228,8 @@ pub fn dispatch_syscall(
         SyscallNumber::Getegid => handlers::sys_getegid(),
         SyscallNumber::Setuid => handlers::sys_setuid(arg1 as u32),
         SyscallNumber::Setgid => handlers::sys_setgid(arg1 as u32),
+        SyscallNumber::Setreuid => handlers::sys_setreuid(arg1 as u32, arg2 as u32),
+        SyscallNumber::Setregid => handlers::sys_setregid(arg1 as u32, arg2 as u32),
         // File creation mask
         SyscallNumber::Umask => handlers::sys_umask(arg1 as u32),
         // Timestamps

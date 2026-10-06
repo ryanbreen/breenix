@@ -847,7 +847,7 @@ impl ProcessManager {
         if !crate::process::limits::fork_allowed(self, parent_pid) {
             return Err("Process limit exceeded");
         }
-        let (parent_pgid, parent_sid, parent_cwd, ids, umask, groups, limits) = {
+        let (parent_pgid, parent_sid, parent_cwd, ids, umask, limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
@@ -856,16 +856,8 @@ impl ProcessManager {
                 parent.pgid,
                 parent.sid,
                 parent.cwd.copy(),
-                (
-                    parent.uid,
-                    parent.gid,
-                    parent.euid,
-                    parent.egid,
-                    parent.suid,
-                    parent.sgid,
-                ),
+                parent.cred.clone(),
                 parent.umask,
-                parent.supplementary_groups.clone(),
                 parent.limits.inherit(),
             )
         };
@@ -879,11 +871,8 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
-            (
-                child.uid, child.gid, child.euid, child.egid, child.suid, child.sgid,
-            ) = ids;
+            child.cred = ids;
             child.umask = umask;
-            child.supplementary_groups = groups;
             child.limits = limits;
             child
                 .fd_table
@@ -1398,7 +1387,7 @@ impl ProcessManager {
         if !crate::process::limits::fork_allowed(self, parent_pid) {
             return Err("Process limit exceeded");
         }
-        let (parent_pgid, parent_sid, parent_cwd, ids, umask, groups, limits) = {
+        let (parent_pgid, parent_sid, parent_cwd, ids, umask, limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
@@ -1407,16 +1396,8 @@ impl ProcessManager {
                 parent.pgid,
                 parent.sid,
                 parent.cwd.copy(),
-                (
-                    parent.uid,
-                    parent.gid,
-                    parent.euid,
-                    parent.egid,
-                    parent.suid,
-                    parent.sgid,
-                ),
+                parent.cred.clone(),
                 parent.umask,
-                parent.supplementary_groups.clone(),
                 parent.limits.inherit(),
             )
         };
@@ -1430,11 +1411,8 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
-            (
-                child.uid, child.gid, child.euid, child.egid, child.suid, child.sgid,
-            ) = ids;
+            child.cred = ids;
             child.umask = umask;
-            child.supplementary_groups = groups;
             child.limits = limits;
             child
                 .fd_table
@@ -1730,6 +1708,18 @@ impl ProcessManager {
             crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_JOIN_REAP_SECOND);
         }
         ReapOutcome::Claimed(evicted)
+    }
+
+    /// An exec of `pid` has committed: apply the new image's set-ID identity
+    /// and the saved-ID transition (`ProcessCredentials::exec`).
+    pub fn apply_exec_identity(
+        &mut self,
+        pid: ProcessId,
+        image: super::credentials::ExecIdentity,
+    ) {
+        if let Some(process) = self.processes.live_row_mut(&pid) {
+            process.cred.exec(image);
+        }
     }
 
     /// Retirement arm of the two-event join: settle one of `pid`'s outstanding
@@ -3528,8 +3518,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program - heap starts after ELF segments
         let heap_base = loaded_elf.segments_end;
-        process.suid = process.euid;
-        process.sgid = process.egid;
+        process.cred.suid = process.cred.euid;
+        process.cred.sgid = process.cred.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -3953,8 +3943,6 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
-        process.suid = process.euid;
-        process.sgid = process.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -4313,8 +4301,6 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
-        process.suid = process.euid;
-        process.sgid = process.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -4648,8 +4634,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
-        process.suid = process.euid;
-        process.sgid = process.egid;
+        process.cred.suid = process.cred.euid;
+        process.cred.sgid = process.cred.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;

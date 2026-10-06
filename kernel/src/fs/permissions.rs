@@ -24,10 +24,11 @@ impl Credentials {
             let guard = crate::process::manager();
             if let Some(manager) = guard.as_ref() {
                 if let Some((_, process)) = manager.find_process_by_thread(tid) {
-                    cred.euid = if real { process.uid } else { process.euid };
-                    cred.egid = if real { process.gid } else { process.egid };
+                    let ids = &process.cred;
+                    cred.euid = if real { ids.uid } else { ids.euid };
+                    cred.egid = if real { ids.gid } else { ids.egid };
                     cred.umask = process.umask;
-                    cred.groups = Some(process.supplementary_groups.clone());
+                    cred.groups = Some(ids.groups.clone());
                 }
             }
         }

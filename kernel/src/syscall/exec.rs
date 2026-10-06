@@ -187,14 +187,17 @@ pub(crate) fn try_box<T>(value: T) -> Result<Box<T>, &'static str> {
 }
 
 /// Expand interpreter scripts, keeping the optional argument as one string.
-pub(crate) fn read_image(
+/// `read` returns a file's bytes and what else its loader learned about it;
+/// that of the ELF image finally loaded is returned with it, so a script's
+/// own set-ID bits confer nothing and its interpreter's do.
+pub(crate) fn read_image<I>(
     path: &str,
     args: &mut Arguments,
-    mut read: impl FnMut(&str) -> Result<Vec<u8>, i32>,
-) -> Result<Vec<u8>, u64> {
+    mut read: impl FnMut(&str) -> Result<(Vec<u8>, I), i32>,
+) -> Result<(Vec<u8>, I), u64> {
     let mut path = copy_string(path)?;
     for depth in 0..=5 {
-        let data = read(&path).map_err(|errno| {
+        let (data, identity) = read(&path).map_err(|errno| {
             if errno == EISDIR {
                 EACCES as u64
             } else {
@@ -203,7 +206,7 @@ pub(crate) fn read_image(
         })?;
         if !data.starts_with(b"#!") {
             validate_elf(&data)?;
-            return Ok(data);
+            return Ok((data, identity));
         }
         if depth == 5 {
             return Err(ELOOP as u64);

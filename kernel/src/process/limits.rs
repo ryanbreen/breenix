@@ -41,10 +41,10 @@ pub fn fork_allowed(manager: &ProcessManager, pid: ProcessId) -> bool {
     let Some(parent) = manager.get_process(pid) else {
         return false;
     };
-    parent.uid == 0
+    parent.cred.uid == 0
         || (manager
             .iter_processes()
-            .filter(|(_, p)| p.uid == parent.uid)
+            .filter(|(_, p)| p.cred.uid == parent.cred.uid)
             .count() as u64)
             < parent.limits.get(NPROC).soft
 }
