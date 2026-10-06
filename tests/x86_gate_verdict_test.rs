@@ -983,3 +983,15 @@ fn documented_child_status_passes_without_unrelated_contracts_running() {
     let output = fixture.run(Some("10"));
     assert!(output.status.success(), "{}", output_text(&output));
 }
+
+#[test]
+fn full_path_applets_and_encoded_signal_contracts_are_reviewable() {
+    let fixture = SerialFixture::new(
+        &format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=4 failed=[/bin/false:1,/bin/cat:1,signal_test_child_104:-132,/tmp/syscall_edge.elf:-11]\nTEST RUNNER: FAILED\n",
+            marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-")), "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+    assert!(output.status.success(), "{text}");
+    assert_eq!(text.matches("TEST_EXIT: program=").count(), 4, "{text}");
+    assert!(text.contains("nonzero=4 expected=4 failures=0"), "{text}");
+}

@@ -16,12 +16,15 @@ sigchld_job_test_child_* 1 # userspace/programs/src/sigchld_job_test.rs: wait-an
 sigchld_job_test_child_* 2 # userspace/programs/src/sigchld_job_test.rs: wait-any child deliberately exits loop index 2.
 sigchld_job_test_child_* 123 # userspace/programs/src/sigchld_job_test.rs: status-macro child exits 123; parent asserts WEXITSTATUS=123.
 sigkill_teardown_test_child_* -9 # userspace/programs/src/sigkill_teardown_test.rs: victims deliberately die by SIGKILL; parent asserts signal status.
-false 1 # userspace/programs/src/false_test.rs: /bin/false must exit exactly 1 without output.
-which 1 # userspace/programs/src/which_test.rs: missing executable and no-argument cases assert exactly 1; successful lookup failures are caught by the parent.
-cat 1 # userspace/programs/src/cat_test.rs: missing-file error case asserts nonzero; parent separately checks all successful reads.
-head 1 # userspace/programs/src/head_test.rs: missing-file error case asserts nonzero; parent separately checks successful output.
-tail 1 # userspace/programs/src/tail_test.rs: missing-file error case asserts nonzero; parent separately checks successful output.
-wc 1 # userspace/programs/src/wc_test.rs: missing-file error case asserts nonzero; parent separately checks successful counts.
-ls 1 # userspace/programs/src/ls_test.rs: missing-directory error case asserts nonzero; parent separately checks successful listings.
+/bin/false 1 # userspace/programs/src/false_test.rs: /bin/false must exit exactly 1 without output.
+/bin/which 1 # userspace/programs/src/which_test.rs: missing executable and no-argument cases assert exactly 1; successful lookup failures are caught by the parent.
+/bin/cat 1 # userspace/programs/src/cat_test.rs: missing-file and partial missing-file cases assert nonzero; parent separately checks all successful reads.
+/bin/head 1 # userspace/programs/src/head_test.rs: missing-file error case asserts nonzero; parent separately checks successful output.
+/bin/tail 1 # userspace/programs/src/tail_test.rs: missing-file error case asserts nonzero; parent separately checks successful output.
+/bin/wc 1 # userspace/programs/src/wc_test.rs: missing-file error case asserts nonzero; parent separately checks successful counts.
+/bin/ls 1 # userspace/programs/src/ls_test.rs: missing-directory error case asserts nonzero; parent separately checks successful listings.
 cow_oom_test_child_* -11 # userspace/programs/src/cow_oom_test.rs: OOM during a CoW store must kill the child with SIGSEGV, not a normal exit.
 wait_stress_child_* -9 # userspace/programs/src/wait_stress.rs: parent terminates the infinite waiter/waker with SIGKILL after measuring progress.
+signal_test_child_* -132 # userspace/programs/src/signal_test.rs: default/ignored/blocked UD2 children assert SIGILL; the core-dump exit encoding is -(128+SIGILL).
+/tmp/syscall_edge.elf -11 # userspace/programs/src/signal_test.rs: noncanonical SYSCALL return child must die by SIGSEGV; parent asserts WTERMSIG=11.
+simple_exit 42 # userspace/programs/src/simple_exit.rs: intentionally exits 42 to test exec/exit status (#781).
