@@ -18,6 +18,16 @@ final class StageCatalogStateMachineTests: XCTestCase {
         }
     }
 
+    func testLoaderAnnouncementDoesNotReachUserspaceStage() throws {
+        let catalog = try StageCatalog.load(for: .x86_64)
+        let stage = try XCTUnwrap(catalog.first { $0.marker == "FILE_READ_TEST_PASSED" })
+        let announcement = "[ INFO] kernel::test_exec:     -> Userspace will emit FILE_READ_TEST_PASSED marker if successful\n"
+        let announced = try StateMachine.evaluate(catalog: [stage], serialText: announcement)
+        XCTAssertFalse(announced[0].isReached)
+        let executed = try StateMachine.evaluate(catalog: [stage], serialText: announcement + "FILE_READ_TEST_PASSED\n")
+        XCTAssertEqual(executed[0].reachedLine, 2)
+    }
+
     func testGreenStrictFixtureReachesAarch64KernelBootPrefix() throws {
         let catalog = try StageCatalog.load(for: .aarch64)
         let bootCompleteIndex = try XCTUnwrap(catalog.firstIndex { $0.name == "ARM64 boot complete" })

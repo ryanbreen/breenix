@@ -1602,6 +1602,37 @@ fn shared_userspace_stages() -> Vec<BootStage> {
 /// These include diagnostic sub-tests, process group kill, kthread, workqueue, and softirq tests.
 fn x86_64_extra_stages() -> Vec<BootStage> {
     vec![
+        BootStage {
+            name: "User invalid opcode delivers SIGILL",
+            marker: "USER_UD_SIGILL_PASSED",
+            failure_meaning: "x86 SYSCALL or synchronous signal test failed",
+            check_hint: "Check signal_test.rs, syscall entry and signal delivery",
+        },
+        BootStage {
+            name: "Noncanonical SYSCALL return terminates user",
+            marker: "USER_NONCANONICAL_SYSCALL_PASSED",
+            failure_meaning: "x86 SYSCALL or synchronous signal test failed",
+            check_hint: "Check signal_test.rs, syscall entry and signal delivery",
+        },
+        BootStage {
+            name: "SYSCALL signal return test passed",
+            marker: "USER_SYSCALL_SIGRETURN_PASSED",
+            failure_meaning: "x86 SYSCALL or synchronous signal test failed",
+            check_hint: "Check signal_test.rs, syscall entry and signal delivery",
+        },
+        BootStage {
+            name: "User SIGILL dispositions test passed",
+            marker: "USER_UD_DISPOSITIONS_PASSED",
+            failure_meaning: "x86 SYSCALL or synchronous signal test failed",
+            check_hint: "Check signal_test.rs, syscall entry and signal delivery",
+        },
+        BootStage {
+            name: "SYSCALL restart test passed",
+            marker: "USER_SYSCALL_RESTART_PASSED",
+            failure_meaning: "x86 SYSCALL or synchronous signal test failed",
+            check_hint: "Check signal_test.rs, syscall entry and signal delivery",
+        },
+
         // Diagnostic sub-tests (Test 41a-e) - x86_64 only (uses x86 inline asm)
         BootStage {
             name: "Diagnostic: Multiple getpid calls",

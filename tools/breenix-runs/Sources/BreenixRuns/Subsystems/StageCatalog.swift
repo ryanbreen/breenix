@@ -68,6 +68,10 @@ public enum StageCatalog {
     public static func catalogURL(for arch: Arch) -> URL? {
         resourceBundle.url(
             forResource: "boot-stages-\(arch.rawValue)",
+            withExtension: "json",
+            subdirectory: "Resources"
+        ) ?? resourceBundle.url(
+            forResource: "boot-stages-\(arch.rawValue)",
             withExtension: "json"
         )
     }

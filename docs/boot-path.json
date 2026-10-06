@@ -397,7 +397,12 @@
           "Select syscall test passed",
           "O_NONBLOCK pipe test passed",
           "Unix socket test passed",
-          "Process group kill semantics test passed"
+          "Process group kill semantics test passed",
+          "User invalid opcode delivers SIGILL",
+          "Noncanonical SYSCALL return terminates user",
+          "SYSCALL signal return test passed",
+          "User SIGILL dispositions test passed",
+          "SYSCALL restart test passed"
         ],
         "probe": [
           {

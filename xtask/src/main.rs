@@ -252,6 +252,13 @@ enum Cmd {
     },
 }
 
+fn stage_marker_present(contents: &str, marker: &str) -> bool {
+    contents.lines().any(|line| {
+        !(line.contains("kernel::test_exec:") && line.contains("marker"))
+            && marker.split('|').any(|alternative| line.contains(alternative))
+    })
+}
+
 fn main() -> Result<()> {
     match Cmd::from_args() {
         Cmd::Ring3Smoke => ring3_smoke(),
@@ -450,8 +457,8 @@ fn dns_test() -> Result<()> {
                 let user_content = fs::read_to_string(user_output_file).unwrap_or_default();
                 for (i, stage) in stages.iter().enumerate() {
                     if !checked_stages[i] {
-                        if kernel_content.contains(stage.marker)
-                            || user_content.contains(stage.marker)
+                        if stage_marker_present(&kernel_content, stage.marker)
+                            || stage_marker_present(&user_content, stage.marker)
                         {
                             checked_stages[i] = true;
                             stages_passed += 1;
@@ -507,7 +514,8 @@ fn dns_test() -> Result<()> {
             // Check all stages against both output sources
             for (i, stage) in stages.iter().enumerate() {
                 if !checked_stages[i] {
-                    if kernel_content.contains(stage.marker) || user_content.contains(stage.marker)
+                    if stage_marker_present(&kernel_content, stage.marker)
+                        || stage_marker_present(&user_content, stage.marker)
                     {
                         checked_stages[i] = true;
                         stages_passed += 1;
@@ -743,11 +751,7 @@ fn validate_boot_stages(
             for (i, stage) in stages.iter().enumerate() {
                 if !checked_stages[i] {
                     // Check if marker is found (support alternative patterns with |)
-                    let found = if stage.marker.contains('|') {
-                        stage.marker.split('|').any(|m| contents.contains(m))
-                    } else {
-                        contents.contains(stage.marker)
-                    };
+                    let found = stage_marker_present(contents, stage.marker);
 
                     if found {
                         checked_stages[i] = true;
@@ -860,11 +864,7 @@ fn validate_boot_stages(
         let contents = &combined_contents;
         for (i, stage) in stages.iter().enumerate() {
             if !checked_stages[i] {
-                let found = if stage.marker.contains('|') {
-                    stage.marker.split('|').any(|m| contents.contains(m))
-                } else {
-                    contents.contains(stage.marker)
-                };
+                let found = stage_marker_present(contents, stage.marker);
 
                 if found {
                     checked_stages[i] = true;
