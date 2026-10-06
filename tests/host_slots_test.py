@@ -37,7 +37,7 @@ class HostSlotsTest(unittest.TestCase):
                 process.communicate()
         self.temporary.cleanup()
 
-    def launch(self, script, bypass=False):
+    def launch(self, script, bypass=False, miss_first_snapshot=False):
         # Only tests inject a directory and disable observational VM discovery.
         # Production's fixed directory has no environment override.
         program = f'''import importlib.util, sys
@@ -46,6 +46,12 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.SLOT_DIR = m.Path({str(self.root / 'locks')!r})
 m.mac_vms = lambda: []
 m.WAIT_MESSAGE_SECONDS = 0.2
+if {miss_first_snapshot!r}:
+    original_snapshot = m.Slots.snapshot
+    def missed_snapshot(self):
+        m.Slots.snapshot = original_snapshot
+        return []
+    m.Slots.snapshot = missed_snapshot
 sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         process = subprocess.Popen([sys.executable, '-u', '-c', program, script],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -88,6 +94,20 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         first.stdin.write(b'release\n'); first.stdin.flush()
         self.assertEqual(first.wait(timeout=10), 0)
         self.line_matching(third, 'READY')
+
+    def test_wait_message_refreshes_holder_after_acquisition_race(self):
+        command = self.request('acquire', 'mac-boot') + '; echo READY; read -r release'
+        first = self.launch(command)
+        self.line_matching(first, 'READY')
+        second = self.launch(command, miss_first_snapshot=True)
+        waiting = self.line_matching(second, 'waiting for mac-boot:')
+        self.assertIn('worktree=', waiting)
+        self.assertIn('commit=', waiting)
+        self.assertIn('held=', waiting)
+        self.assertNotIn('publishing', waiting)
+        first.stdin.write(b'release\n'); first.stdin.flush()
+        self.assertEqual(first.wait(timeout=10), 0)
+        self.line_matching(second, 'READY')
 
     def test_one_boot_slot_and_release_on_sigkill(self):
         command = self.request('acquire', 'x86-boot') + '; echo READY; read -r release'

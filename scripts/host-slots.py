@@ -232,22 +232,30 @@ def supervise(argv):
                     resource = pending['resource']
                     holders = slots.snapshot()
                     external = mac_vms() if resource == 'mac-boot' and not any(h.get('resource') == resource for h in holders) else []
+                    bypass = pending['bypass']
+                    holder = None if external and not bypass else slots.try_acquire(resource, identity) if not bypass else {}
+                    if holder is None:
+                        # A peer can acquire while VM discovery runs. Refresh the
+                        # snapshot after contention, before naming the holder.
+                        holders = slots.snapshot()
+                        if any(h.get('resource') == resource for h in holders):
+                            external = []
                     observed = {'holders': holders, 'vms': external}
                     # Keep each holder identity once, with the age when first observed.
                     for entry in holders + external:
                         if not any(all(old.get(k) == entry.get(k) for k in ('pid', 'resource', 'started', 'vm', 'detail'))
                                    for old in pending['observed']):
                             pending['observed'].append(entry)
-                    bypass = pending['bypass']
-                    holder = None if external and not bypass else slots.try_acquire(resource, identity) if not bypass else {}
                     waited = time.monotonic() - pending['since']
                     if holder is None:
                         if waited >= pending['next_message']:
                             blockers = [h for h in holders if h.get('resource') == resource]
-                            description = '; '.join(f"worktree={h['worktree']} commit={h['commit']} held={h['held_seconds']:.1f}s" for h in blockers)
+                            description = '; '.join(f"worktree={h['worktree']} commit={h['commit']} held={h['held_seconds']:.1f}s" for h in blockers if h['worktree'] != 'publishing')
                             if external:
                                 description = 'unqueued VM ' + json.dumps(external, sort_keys=True)
-                            print(f'[host-slot] waiting for {resource}: {description or "holder publishing metadata"}; waited={waited:.1f}s', file=sys.stderr, flush=True)
+                            if not description:
+                                continue  # Metadata publication is brief; name its owner on the next poll.
+                            print(f'[host-slot] waiting for {resource}: {description}; waited={waited:.1f}s', file=sys.stderr, flush=True)
                             pending['next_message'] = waited + WAIT_MESSAGE_SECONDS
                         continue
                     result = {'resource': resource, 'queue_wait_seconds': round(waited, 3),
