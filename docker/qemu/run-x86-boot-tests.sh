@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # Build and execute the x86_64 frame/page-table custody injection gates.
 # This script deliberately does not treat [BOOT_TESTS:PASS] as test evidence:
 # advance_stage_marker_only

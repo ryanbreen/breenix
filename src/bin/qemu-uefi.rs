@@ -164,62 +164,67 @@ fn main() {
         }
         let test_disk_path = project_root.join("target/test_binaries.img");
 
-        // Build test disk automatically - ALWAYS required
-        eprintln!("[qemu-uefi] Building test disk image...");
-        let build_status = Command::new("cargo")
-            .args(&["run", "-p", "xtask", "--", "create-test-disk"])
-            .current_dir(project_root)
-            .status();
+        if env::var("BREENIX_TEST_DISK_PREBUILT").as_deref() == Ok("1") {
+            eprintln!("[qemu-uefi] Using gate-packed test disk");
+        } else {
+            // Build test disk automatically - ALWAYS required
+            eprintln!("[qemu-uefi] Building test disk image...");
+            let build_status = Command::new("cargo")
+                .args(&["run", "-p", "xtask", "--", "create-test-disk"])
+                .current_dir(project_root)
+                .status();
 
-        match build_status {
-            Ok(status) if status.success() => {
-                eprintln!("[qemu-uefi] Test disk build complete");
+            match build_status {
+                Ok(status) if status.success() => {
+                    eprintln!("[qemu-uefi] Test disk build complete");
+                }
+                Ok(status) => {
+                    eprintln!();
+                    eprintln!("╔══════════════════════════════════════════════════════════════╗");
+                    eprintln!("║  ❌ ERROR: TEST DISK BUILD FAILED                            ║");
+                    eprintln!("╠══════════════════════════════════════════════════════════════╣");
+                    eprintln!(
+                        "║  Exit code: {:?}                                              ",
+                        status.code()
+                    );
+                    eprintln!("║                                                              ║");
+                    eprintln!("║  Test disk is MANDATORY. There is NO fallback.              ║");
+                    eprintln!("║                                                              ║");
+                    eprintln!("║  To fix:                                                     ║");
+                    eprintln!("║    1. cargo run -p xtask -- create-test-disk                ║");
+                    eprintln!("║    2. Ensure userspace/programs/ binaries are compiled         ║");
+                    eprintln!("║                                                              ║");
+                    eprintln!("║  Exiting now to prevent silent test failures.               ║");
+                    eprintln!("╚══════════════════════════════════════════════════════════════╝");
+                    eprintln!();
+                    process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!();
+                    eprintln!("╔══════════════════════════════════════════════════════════════╗");
+                    eprintln!("║  ❌ ERROR: TEST DISK BUILD COMMAND FAILED                    ║");
+                    eprintln!("╠══════════════════════════════════════════════════════════════╣");
+                    eprintln!(
+                        "║  Error: {}                                                   ",
+                        e
+                    );
+                    eprintln!("║                                                              ║");
+                    eprintln!("║  Test disk is MANDATORY. There is NO fallback.              ║");
+                    eprintln!("║                                                              ║");
+                    eprintln!("║  To fix:                                                     ║");
+                    eprintln!("║    1. cargo run -p xtask -- create-test-disk                ║");
+                    eprintln!("║    2. Ensure userspace/programs/ binaries are compiled         ║");
+                    eprintln!("║                                                              ║");
+                    eprintln!("║  Exiting now to prevent silent test failures.               ║");
+                    eprintln!("╚══════════════════════════════════════════════════════════════╝");
+                    eprintln!();
+                    process::exit(1);
+                }
             }
-            Ok(status) => {
-                eprintln!();
-                eprintln!("╔══════════════════════════════════════════════════════════════╗");
-                eprintln!("║  ❌ ERROR: TEST DISK BUILD FAILED                            ║");
-                eprintln!("╠══════════════════════════════════════════════════════════════╣");
-                eprintln!(
-                    "║  Exit code: {:?}                                              ",
-                    status.code()
-                );
-                eprintln!("║                                                              ║");
-                eprintln!("║  Test disk is MANDATORY. There is NO fallback.              ║");
-                eprintln!("║                                                              ║");
-                eprintln!("║  To fix:                                                     ║");
-                eprintln!("║    1. cargo run -p xtask -- create-test-disk                ║");
-                eprintln!("║    2. Ensure userspace/programs/ binaries are compiled         ║");
-                eprintln!("║                                                              ║");
-                eprintln!("║  Exiting now to prevent silent test failures.               ║");
-                eprintln!("╚══════════════════════════════════════════════════════════════╝");
-                eprintln!();
-                process::exit(1);
-            }
-            Err(e) => {
-                eprintln!();
-                eprintln!("╔══════════════════════════════════════════════════════════════╗");
-                eprintln!("║  ❌ ERROR: TEST DISK BUILD COMMAND FAILED                    ║");
-                eprintln!("╠══════════════════════════════════════════════════════════════╣");
-                eprintln!(
-                    "║  Error: {}                                                   ",
-                    e
-                );
-                eprintln!("║                                                              ║");
-                eprintln!("║  Test disk is MANDATORY. There is NO fallback.              ║");
-                eprintln!("║                                                              ║");
-                eprintln!("║  To fix:                                                     ║");
-                eprintln!("║    1. cargo run -p xtask -- create-test-disk                ║");
-                eprintln!("║    2. Ensure userspace/programs/ binaries are compiled         ║");
-                eprintln!("║                                                              ║");
-                eprintln!("║  Exiting now to prevent silent test failures.               ║");
-                eprintln!("╚══════════════════════════════════════════════════════════════╝");
-                eprintln!();
-                process::exit(1);
-            }
+
+            // After successful build, verify disk exists
         }
 
-        // After successful build, verify disk exists
         if !test_disk_path.exists() {
             eprintln!();
             eprintln!("╔══════════════════════════════════════════════════════════════╗");

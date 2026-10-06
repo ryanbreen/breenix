@@ -83,6 +83,6 @@ def main():
 
 
 if __name__ == '__main__':
-    for sig in (signal.SIGTERM, signal.SIGINT):
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, lambda number, frame: sys.exit(128 + number))
     sys.exit(main())

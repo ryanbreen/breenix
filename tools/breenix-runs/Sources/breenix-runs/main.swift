@@ -447,8 +447,16 @@ func main() -> Int32 {
                 let runner = RealProcessRunner()
                 let explicitSHA = runArgs.sha != nil
                 let git = try BeastLauncher.localGitIdentity(repoRoot: root, runner: runner)
-                guard let sha = runArgs.sha ?? git.sha else {
+                guard var sha = runArgs.sha ?? git.sha else {
                     throw CLIError(description: "could not resolve local git SHA; pass --sha explicitly")
+                }
+                if sha.count != 40 {
+                    let resolved = try runner.run(ProcessRequest(executable: "/usr/bin/git",
+                        arguments: ["-C", root.path, "rev-parse", "--verify", sha + "^{commit}"]))
+                    guard resolved.exitCode == 0 else {
+                        throw CLIError(description: "--sha could not resolve a unique local commit")
+                    }
+                    sha = resolved.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
                 if !explicitSHA, git.dirty == true {
                     FileHandle.standardError.write(Data("warning: beast will test the pushed commit \(sha), not the dirty working tree\n".utf8))
@@ -458,7 +466,8 @@ func main() -> Int32 {
                     store: store,
                     runner: runner,
                     timeoutSecs: runArgs.gateTimeout,
-                    pathsTemplate: BeastPaths(host: runArgs.host, clonePath: "")
+                    pathsTemplate: BeastPaths(host: runArgs.host, clonePath: ""),
+                    slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString()
                 )
                 var options = BeastLaunchOptions(
                     boots: runArgs.boots,
@@ -475,35 +484,19 @@ func main() -> Int32 {
                     return 0
                 }
 
-                // Vigil shows a full gate or suite run as running from now, and scores it once its serials arrive.
+                // Vigil reads completed beast records from the Run Inspector store.
+                // Queued preparation and builds are not registered as running boots.
                 let runID = RunManifest.makeID(startedAt: Date(), arch: .x86_64, profile: "gate")
                 options.runID = runID
-                let directory = store.runDirectory(id: runID)
-                let vigilID = runArgs.persist && runArgs.mode == .full ? VigilRegistration.start(
-                    root: root, platform: "beast", mode: "tests", suite: runArgs.suite,
-                    serial: directory.appendingPathComponent("serial_kernel.txt").path,
-                    userSerial: directory.appendingPathComponent("serial_user.txt").path,
-                    profile: runArgs.qemuProfile?.rawValue, id: runID, commit: sha) : nil
-                let result: BeastLaunchResult
-                do {
-                    result = try launcher.runX86(options: options)
-                } catch {
-                    VigilRegistration.finish(root: root, id: vigilID, exitStatus: 1)
-                    throw error
-                }
-                if case .gateScript(_, let exitCode) = result.manifest.verdict {
-                    VigilRegistration.finish(root: root, id: vigilID, exitStatus: exitCode)
-                } else {
-                    VigilRegistration.finish(root: root, id: vigilID, exitStatus: 0)
-                }
+                let result = try launcher.runX86(options: options)
                 print("")
                 let records = (try? store.readBootFacts(manifest: result.manifest)) ?? []
                 printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: records)
-                switch result.manifest.verdict {
+                switch result.manifest.verdictSource {
                 case .gateScript(_, let exitCode):
-                    return Int32(exitCode)
+                    return exitCode != 0 ? Int32(exitCode) : (result.manifest.verdict.isFailure ? 1 : 0)
                 default:
-                    return 0
+                    return result.manifest.verdict.isFailure ? 1 : 0
                 }
             default:
                 throw CLIError(description: "run \(args[1]) is not a recognized architecture (supported: arm, x86)")

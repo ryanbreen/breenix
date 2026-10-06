@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # Run N native ARM64 kthread boots, one host aarch64 QEMU at a time.
 #
 # This script stress tests the ARM64 threading subsystem by running multiple

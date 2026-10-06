@@ -82,6 +82,44 @@ notes the ignored request on its own line. A mode's stages for a milestone are `
 `stages["aarch64"]` when the milestone has `"kernel": true`; otherwise the mode does not
 exercise that milestone.
 
+## Shared host slots
+
+Use `docker/qemu/run-x86-gate.sh` for queued x86 builds and boots: the helper
+provides two build leases and one boot lease. Run Inspector installs its current
+helper outside the tested checkout, including when testing an older revision.
+Historical gates hold both leases for their whole run. Launchers sourcing
+`docker/qemu/lib/qemu-host-lock.sh` also enroll in the host queue; on Linux they
+hold a build lease until boot admission. Mac builds remain unrestricted.
+
+Use `scripts/boot-interactive.sh` or `run.sh` for a Mac boot. The shared helper
+queues QEMU, Parallels and VMware behind one Mac lease. VM deployment and the
+suite panel are part of that lifetime. Stop the run to stop its VM and free the
+lease. An unqueued running, paused or suspended Breenix VM must be stopped by its
+owner before a queued deployment can proceed; launchers must not stop or delete
+other lanes' VMs by name pattern.
+
+Keep the permanent lease files under `/tmp/breenix-host-slots`; do not remove
+them while runs are alive. `metadata.lock` protects holder publication and FIFO
+wait tickets. A worker owns the leases separately from the foreground run handle.
+If that handle is killed, the worker stops its descendants and registered VM
+before releasing the leases. Catchable signals allow up to 120 seconds for the
+runner's cleanup; preserve its own exit status. An unqueued QEMU also blocks
+boot admission, including after a worker itself dies.
+
+Expect wait messages immediately and once a minute, identifying the holder or
+an earlier queued request. Queue context belongs in `*.host-slots.jsonl` sidecars,
+never guest serial inputs. Build logs belong beside the gate output. Create a
+fresh private Cargo home with the shared configuration and credentials; download
+its dependencies rather than copying a registry that another Cargo can mutate.
+The worker removes private homes during cleanup, including after a killed handle.
+
+For one deliberately unqueued **manual Mac boot**, prefix the command with
+`BREENIX_BOOT_NO_QUEUE=1`. Keep it scoped to that command. Retain the legacy
+per-binary QEMU lock even for a bypass; VM cleanup remains limited to the run's
+own registered VM. x86 and VMware gates must ignore this variable.
+
+Run the helper tests without a VM with `python3 tests/host_slots_test.py`.
+
 ## Watching a boot
 
 The VM screen shows the boot, not the log. As soon as the framebuffer exists the kernel

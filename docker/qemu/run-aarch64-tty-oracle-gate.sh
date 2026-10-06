@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # ARM64 production-profile TTY evidence gate (green program, arc 4).
 #
 # Scores /bin/tty_oracle, which init launches on every aarch64 boot. The point

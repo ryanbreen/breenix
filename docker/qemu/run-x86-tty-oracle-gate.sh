@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # x86_64 production-profile TTY evidence gate (green program, TTY-x86 port).
 #
 # The x86 port of docker/qemu/run-aarch64-tty-oracle-gate.sh. Scores

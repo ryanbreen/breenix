@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # Strict ARM64 boot test - runs multiple iterations and requires ALL to pass
 # Used for CI to catch regressions. Does NOT retry failed boots.
 #
