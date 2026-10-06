@@ -5,8 +5,8 @@
 //! the tests won't work correctly.
 
 use crate::task::kthread::{
-    kthread_exit, kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop,
-    kthread_unpark, KthreadError,
+    kthread_exit, kthread_join, kthread_park, kthread_park_if, kthread_run, kthread_should_stop,
+    kthread_stop, kthread_unpark, KthreadError,
 };
 use crate::task::scheduler;
 use crate::{arch_disable_interrupts, arch_enable_interrupts, arch_halt};
@@ -179,12 +179,14 @@ pub fn test_kthread_exit_code() {
 pub fn test_kthread_park_unpark() {
     static KTHREAD_STARTED: AtomicBool = AtomicBool::new(false);
     static KTHREAD_ABOUT_TO_PARK: AtomicBool = AtomicBool::new(false);
+    static UNPARK_SENT: AtomicBool = AtomicBool::new(false);
     static KTHREAD_UNPARKED: AtomicBool = AtomicBool::new(false);
     static KTHREAD_DONE: AtomicBool = AtomicBool::new(false);
 
     // Reset flags
     KTHREAD_STARTED.store(false, Ordering::Release);
     KTHREAD_ABOUT_TO_PARK.store(false, Ordering::Release);
+    UNPARK_SENT.store(false, Ordering::Release);
     KTHREAD_UNPARKED.store(false, Ordering::Release);
     KTHREAD_DONE.store(false, Ordering::Release);
 
@@ -202,8 +204,10 @@ pub fn test_kthread_park_unpark() {
             // before checking that we haven't unparked yet
             KTHREAD_ABOUT_TO_PARK.store(true, Ordering::Release);
 
-            // Park ourselves - will block until unparked
-            kthread_park();
+            // Park ourselves - will block until unparked. An unpark sent
+            // before this thread publishes its park intent finds it running
+            // and is lost, so park only while no unpark has been sent.
+            kthread_park_if(|| !UNPARK_SENT.load(Ordering::Acquire));
 
             // If we get here, we were unparked
             KTHREAD_UNPARKED.store(true, Ordering::Release);
@@ -246,6 +250,7 @@ pub fn test_kthread_park_unpark() {
     );
 
     // Now unpark it
+    UNPARK_SENT.store(true, Ordering::Release);
     kthread_unpark(&handle);
 
     // Yield to give kthread a chance to run
