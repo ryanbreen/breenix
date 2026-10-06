@@ -33,7 +33,8 @@ pub fn defaults() -> [Rlimit; COUNT] {
     limits
 }
 
-/// Count the user's live tasks under the same lock that publishes a fork.
+/// Count the user's unreaped tasks under the same lock that publishes a fork.
+/// Zombies retain their charge until wait reaps them; the iterator excludes tombstones.
 pub fn fork_allowed(manager: &ProcessManager, pid: ProcessId) -> bool {
     let Some(parent) = manager.get_process(pid) else {
         return false;
@@ -41,7 +42,7 @@ pub fn fork_allowed(manager: &ProcessManager, pid: ProcessId) -> bool {
     parent.euid == 0
         || (manager
             .iter_processes()
-            .filter(|(_, p)| p.uid == parent.uid && !p.is_terminated())
+            .filter(|(_, p)| p.uid == parent.uid)
             .count() as u64)
             < parent.limits[NPROC].soft
 }
