@@ -135,18 +135,26 @@ pub fn calibrate() {
     // the shortest of several windows is the measurement (as Linux takes the
     // minimum of its PIT calibration loops).
     const CALIBRATION_WINDOWS: usize = 3;
+    const CALIBRATION_ATTEMPTS: usize = 12;
 
     log::info!("Calibrating TSC frequency using PIT...");
 
-    let mut tsc_base = 0;
+    let mut tsc_base = None;
     let mut tsc_elapsed = u64::MAX;
-    for window in 0..CALIBRATION_WINDOWS {
-        let (start, elapsed) = unsafe { measure_pit_window(CALIBRATION_TICKS) };
-        if window == 0 {
-            tsc_base = start;
+    let mut windows = 0;
+    for _ in 0..CALIBRATION_ATTEMPTS {
+        if windows == CALIBRATION_WINDOWS {
+            break;
         }
-        tsc_elapsed = tsc_elapsed.min(elapsed);
+        if let Some((start, elapsed)) = unsafe { measure_pit_window(CALIBRATION_TICKS) } {
+            tsc_base.get_or_insert(start);
+            tsc_elapsed = tsc_elapsed.min(elapsed);
+            windows += 1;
+        }
     }
+    let Some(tsc_base) = tsc_base else {
+        panic!("TSC calibration observed no PIT channel 2 countdown");
+    };
 
     // TSC frequency = (tsc_elapsed / calibration_time_seconds)
     // = tsc_elapsed * 1000 / CALIBRATION_MS
@@ -172,8 +180,9 @@ pub fn calibrate() {
 }
 
 /// Count TSC cycles across one PIT channel 2 countdown of `ticks`.
-/// Returns the TSC value at the start and the cycles elapsed.
-unsafe fn measure_pit_window(ticks: u16) -> (u64, u64) {
+/// Returns the TSC value at the start and the cycles elapsed, or `None` when
+/// no countdown was observed.
+unsafe fn measure_pit_window(ticks: u16) -> Option<(u64, u64)> {
     // Save original gate state
     let orig_gate = inb(PIT_GATE_PORT);
 
@@ -185,26 +194,18 @@ unsafe fn measure_pit_window(ticks: u16) -> (u64, u64) {
     // Program PIT channel 2 for one-shot mode
     // 0xB0 = channel 2, lobyte/hibyte, mode 0 (interrupt on terminal count), binary
     outb(PIT_COMMAND_PORT, 0xB0);
-
-    // Load the countdown value
     outb(PIT_CHANNEL2_PORT, (ticks & 0xFF) as u8);
-    outb(PIT_CHANNEL2_PORT, (ticks >> 8) as u8);
 
-    // Read initial TSC
+    // Mode 0 starts counting when the high byte completes the load, so read
+    // the TSC before it: a delay here can lengthen the window, never shorten it.
     let tsc_start = rdtsc_serialized();
-
-    // Reset the gate to start counting (toggle bit 0)
-    let g = inb(PIT_GATE_PORT);
-    outb(PIT_GATE_PORT, g & 0xFE); // Disable gate
-    outb(PIT_GATE_PORT, g | 0x01); // Re-enable gate to start countdown
+    outb(PIT_CHANNEL2_PORT, (ticks >> 8) as u8);
 
     // Wait for PIT channel 2 to count down to zero
     // When the count reaches 0, bit 5 of port 0x61 goes high
-    loop {
-        let status = inb(PIT_GATE_PORT);
-        if (status & 0x20) != 0 {
-            break;
-        }
+    let mut polls = 0u64;
+    while inb(PIT_GATE_PORT) & 0x20 == 0 {
+        polls += 1;
     }
 
     // Read final TSC
@@ -213,7 +214,8 @@ unsafe fn measure_pit_window(ticks: u16) -> (u64, u64) {
     // Restore original gate state
     outb(PIT_GATE_PORT, orig_gate);
 
-    (tsc_start, tsc_end.saturating_sub(tsc_start))
+    // OUT already high on the first poll means no countdown was measured.
+    (polls != 0).then(|| (tsc_start, tsc_end.saturating_sub(tsc_start)))
 }
 
 /// Check if TSC has been calibrated.
