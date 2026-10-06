@@ -62,7 +62,9 @@ class Slots:
                 path = self.path(resource, number)
                 with path.open('a+') as handle:
                     try:
-                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        # Observers share their probe; only an exclusive lease
+                        # blocks it. Two observers must not report each other.
+                        fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
                     except BlockingIOError:
                         try:
                             holder = json.loads(path.with_suffix('.json').read_text())

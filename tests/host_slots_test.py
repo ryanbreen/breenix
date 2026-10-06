@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise real flock contention and launcher cleanup without starting a VM."""
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -166,6 +167,14 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         self.assertEqual(context['observed_running'][0]['resource'], 'x86-boot')
         self.assertEqual(len(context['load_at_enqueue']), 3)
         self.assertEqual(len(context['load_at_acquire']), 3)
+
+    def test_parallel_observers_are_not_reported_as_running_builds(self):
+        pool = slots.Slots(self.root / 'locks')
+        # Hold the same shared probe another observer holds during snapshot().
+        with pool.path('x86-build', 1).open('a+') as observer:
+            fcntl.flock(observer, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            self.assertEqual(pool.snapshot(), [])
+        pool.close()
 
     def test_explicit_release_keeps_lock_inode_and_ignores_stale_metadata(self):
         pool = slots.Slots(self.root / 'locks')
