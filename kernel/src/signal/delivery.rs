@@ -204,7 +204,14 @@ pub fn deliver_pending_signals(
                 ) {
                     return SignalDeliveryResult::Delivered;
                 }
-                return SignalDeliveryResult::NoAction;
+                // An unusable signal stack cannot silently discard a caught
+                // signal. Fail the process as a bad user-stack access.
+                return match deliver_default_action(process, SIGSEGV) {
+                    DeliverResult::Terminated(notification) =>
+                        SignalDeliveryResult::Terminated(notification),
+                    DeliverResult::Delivered => SignalDeliveryResult::Delivered,
+                    DeliverResult::Ignored => SignalDeliveryResult::NoAction,
+                };
             }
         }
     }
@@ -583,8 +590,6 @@ fn deliver_to_user_handler_aarch64(
             process.signals.alt_stack.size,
             alt_top
         );
-        // Mark that we're now on the alternate stack
-        process.signals.alt_stack.on_stack = true;
         alt_top
     } else {
         current_sp
@@ -600,7 +605,10 @@ fn deliver_to_user_handler_aarch64(
     let (frame_sp, return_addr) = if use_restorer {
         // Use the restorer function provided by the application/libc
         // Only allocate space for the signal frame (no trampoline needed)
-        let frame_sp = (user_sp - frame_size) & !0xF; // 16-byte align
+        let Some(base) = user_sp.checked_sub(frame_size) else {
+            return false;
+        };
+        let frame_sp = base & !0xF; // 16-byte align
         log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
         (frame_sp, action.restorer)
     } else {
@@ -608,18 +616,21 @@ fn deliver_to_user_handler_aarch64(
         // This works when the stack is executable (main stack without NX)
         let trampoline_size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
         let total_size = frame_size + trampoline_size;
-        let frame_sp = (user_sp - total_size) & !0xF; // 16-byte align
+        let Some(base) = user_sp.checked_sub(total_size) else {
+            return false;
+        };
+        let frame_sp = base & !0xF; // 16-byte align
         let trampoline_sp = frame_sp + frame_size;
 
-        // Write trampoline code to user stack
-        // SAFETY: We're writing to user memory that should be valid stack space
-        unsafe {
-            let trampoline_ptr = trampoline_sp as *mut u8;
-            core::ptr::copy_nonoverlapping(
-                super::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
-                trampoline_ptr,
-                super::trampoline::SIGNAL_TRAMPOLINE_SIZE,
-            );
+        // PM is held by the delivery caller. Copy through the owned table:
+        // a raw user-VA write here can fault on fork's CoW stack and deadlock
+        // trying to reacquire PM before child exit can complete its wake.
+        let pid = process.id.as_u64();
+        let Some(table) = process.page_table.as_mut() else {
+            return false;
+        };
+        if !table.write_user_memory(trampoline_sp, &super::trampoline::SIGNAL_TRAMPOLINE, pid) {
+            return false;
         }
 
         (frame_sp, trampoline_sp)
@@ -685,11 +696,25 @@ fn deliver_to_user_handler_aarch64(
         saved_blocked: process.signals.blocked,
     };
 
-    // Write signal frame to user stack
-    // SAFETY: We're writing to user memory that should be valid stack space
-    unsafe {
-        let frame_ptr = frame_sp as *mut SignalFrame;
-        core::ptr::write_volatile(frame_ptr, signal_frame);
+    // SignalFrame is a repr(C) collection of initialized u64 fields. Read its
+    // bytes from the kernel buffer; never fault through a user VA while PM is
+    // held. The table copy validates permissions and resolves CoW first.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::addr_of!(signal_frame) as *const u8,
+            SignalFrame::SIZE,
+        )
+    };
+    let pid = process.id.as_u64();
+    let Some(table) = process.page_table.as_mut() else {
+        return false;
+    };
+    if !table.write_user_memory(frame_sp, bytes, pid) {
+        return false;
+    }
+
+    if use_alt_stack {
+        process.signals.alt_stack.on_stack = true;
     }
 
     // Block signals during handler execution

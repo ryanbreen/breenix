@@ -677,3 +677,7 @@ path = "src/suite_directories.rs"
 [[bin]]
 name = "umask_exec_test"
 path = "src/umask_exec_test.rs"
+
+[[bin]]
+name = "suite-waitpid"
+path = "src/suite_waitpid.rs"

@@ -1814,6 +1814,154 @@ impl ProcessPageTable {
         Ok(())
     }
 
+    /// Resolve a CoW write while the caller owns this process's page table.
+    /// Signal delivery already holds PROCESS_MANAGER and must not fault into a
+    /// handler that reacquires it. The ordinary data-abort path shares this
+    /// implementation, including break-before-make and leaf retirement.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn resolve_cow_write(&mut self, far: u64, pid: u64) -> bool {
+        use crate::memory::cow_stats;
+        use crate::memory::frame_metadata::frame_is_shared;
+        let faulting_addr = VirtAddr::new(far);
+        let page: Page<Size4KiB> = Page::containing_address(faulting_addr);
+
+        // Get current page info
+        let (old_frame, old_flags) = match self.get_page_info(page) {
+            Some(info) => info,
+            None => {
+                return false;
+            }
+        };
+
+        // Check if this is a CoW page
+        if !is_cow_page(old_flags) {
+            return false;
+        }
+
+        // Lock-free trace: CoW handling with known PID
+        crate::tracing::providers::process::trace_cow_fault(pid as u16, (far >> 12) as u16);
+
+        // If we're the sole owner, just make it writable
+        if !frame_is_shared(old_frame) {
+            let new_flags = make_private_flags(old_flags);
+            if self.update_page_flags(page, new_flags).is_err() {
+                return false;
+            }
+            // Flush TLB for the modified page
+            unsafe {
+                let va_for_tlbi = faulting_addr.as_u64() >> 12;
+                core::arch::asm!(
+                    "dsb ishst",
+                    "tlbi vale1is, {0}",
+                    "dsb ish",
+                    "isb",
+                    in(reg) va_for_tlbi,
+                    options(nostack)
+                );
+            }
+            cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            crate::tracing::providers::process::trace_cow_copy(pid as u16, (far >> 12) as u16);
+            return true;
+        }
+
+        // Need to copy the page
+        let new_frame = match allocate_frame() {
+            Some(f) => f,
+            None => {
+                return false;
+            }
+        };
+
+        // Copy page contents via HHDM
+        let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+        let src = (hhdm_base + old_frame.start_address().as_u64()) as *const u8;
+        let dst = (hhdm_base + new_frame.start_address().as_u64()) as *mut u8;
+
+        let new_flags = make_private_flags(old_flags);
+        unsafe {
+            core::ptr::copy_nonoverlapping(src, dst, 4096);
+            if !new_flags.contains(PageTableFlags::NO_EXECUTE) {
+                crate::arch_impl::aarch64::cache::sync_user_page(dst as u64);
+            }
+        }
+
+        // Break before make: unmap the old page and invalidate its TLB entry on
+        // every CPU while the descriptor is invalid, then map the copy. The old
+        // leaf's frame reference is dropped only after the replacement is in
+        // place: a racing release by the other sharer can make it the last one.
+        let old_leaf = match self.unmap_page_deferred(page) {
+            Ok(leaf) => leaf.flush(),
+            Err(_) => {
+                let _ = deallocate_leaf_frame(new_frame);
+                return false;
+            }
+        };
+        let copied = self.map_page(page, new_frame, new_flags).is_ok();
+        if !copied {
+            let _ = self.map_page(page, old_frame, old_flags);
+        }
+        // Make the new descriptor visible to the table walker before EL0 resumes.
+        unsafe {
+            core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
+        }
+        old_leaf.release();
+        if !copied {
+            let _ = deallocate_leaf_frame(new_frame);
+            return false;
+        }
+
+        cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        crate::tracing::providers::process::trace_cow_copy(pid as u16, (far >> 12) as u16);
+
+        true
+    }
+
+    /// Copy a kernel buffer into this address space without a user-VA fault.
+    /// The caller holds PROCESS_MANAGER, so mappings cannot change underneath
+    /// the copy. Resolve CoW through the owned table rather than reacquiring PM
+    /// from a nested data abort. No byte may bypass EL0 write permissions.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn write_user_memory(&mut self, start: u64, bytes: &[u8], pid: u64) -> bool {
+        if start == 0 || !crate::memory::layout::is_valid_user_range(start, bytes.len()) {
+            return false;
+        }
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let addr = start + offset as u64;
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+            let Some((_, flags)) = self.get_page_info(page) else {
+                return false;
+            };
+            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                return false;
+            }
+            if is_cow_page(flags) && !self.resolve_cow_write(addr, pid) {
+                return false;
+            }
+            let Some((frame, flags)) = self.get_page_info(page) else {
+                return false;
+            };
+            if !flags.contains(PageTableFlags::WRITABLE) {
+                return false;
+            }
+            let within_page = (addr & 0xfff) as usize;
+            let count = core::cmp::min(4096 - within_page, bytes.len() - offset);
+            let dst = crate::arch_impl::aarch64::constants::HHDM_BASE
+                + frame.start_address().as_u64()
+                + within_page as u64;
+            // SAFETY: the mapped frame is owned by this table, the destination
+            // stays within its page, and bytes is a live kernel buffer.
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr().add(offset), dst as *mut u8, count);
+                if !flags.contains(PageTableFlags::NO_EXECUTE) {
+                    crate::arch_impl::aarch64::cache::sync_user_page(dst & !0xfff);
+                }
+            }
+            offset += count;
+        }
+        true
+    }
+
     /// Get frame and flags for a mapped page
     ///
     /// Returns the physical frame and page table flags for a 4KB page.
