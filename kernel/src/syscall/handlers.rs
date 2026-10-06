@@ -170,7 +170,7 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
 
 /// sys_exit - Terminate the current process
 pub fn sys_exit(exit_code: i32) -> SyscallResult {
-    log::info!("USERSPACE: sys_exit called with code: {}", exit_code);
+    log::debug!("USERSPACE: sys_exit called with code: {}", exit_code);
 
     // Get current thread ID from scheduler
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
@@ -2067,7 +2067,7 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
             );
             crate::task::scheduler::spawn_front(child_thread);
 
-            log::info!(
+            log::debug!(
                 "sys_fork: Fork successful - parent {} gets child PID {}, thread {}",
                 parent_pid.as_u64(),
                 child_pid.as_u64(),

@@ -529,7 +529,7 @@ fn deliver_to_user_handler_x86_64(
     saved_regs.rdx = 0; // Third argument: ucontext_t* (not implemented)
 
     if use_alt_stack {
-        log::info!(
+        log::debug!(
             "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, RSP={:#x}->{:#x}, return={:#x}",
             sig,
             handler_addr,
@@ -538,7 +538,7 @@ fn deliver_to_user_handler_x86_64(
             return_addr
         );
     } else {
-        log::info!(
+        log::debug!(
             "Signal {} delivered to handler at {:#x}, RSP={:#x}->{:#x}, return={:#x}",
             sig,
             handler_addr,

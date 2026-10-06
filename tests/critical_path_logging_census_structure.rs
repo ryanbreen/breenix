@@ -1,12 +1,13 @@
 //! Structural ratchet for `scripts/check-critical-path-violations.sh`.
 //!
 //! The shell script greps a fixed file list for a fixed spelling list and
-//! exits 1 today (115 distinct call sites across 9 files -- 135 at the
+//! exits 1 today (110 distinct call sites across 9 files -- 135 at the
 //! classification snapshot in `docs/planning/green-program/gates/
 //! CRITICAL-PATH-DEBT-2026-09-06.md` §1-4, less the 16 PR-1 of that
 //! document's drain plan deleted from
 //! `kernel/src/interrupts/context_switch.rs` and the 4 first-userspace-entry
-//! calls #1048 deleted from the same file). It is not
+//! calls #1048 deleted from the same file, and the five per-wake records
+//! deleted from `Scheduler::unblock_for_signal`). It is not
 //! wired into any gate, so today the only thing that notices a NEW call
 //! creeping in is a human rereading 259 lines of grep output. This suite
 //! pins the census in Rust so a per-`(file, item-path)` INCREASE fails a
@@ -24,12 +25,13 @@
 //! # Two censuses, on purpose
 //!
 //! `CRITICAL_PATH_LOG_ANCHORS` pins the shell script's ORIGINAL twelve
-//! spellings at 115 -- the number the drain plan's PR ledger tracks PR by
-//! PR, 135 before PR-1 and 119 before #1048. A second, WIDER set adds three
+//! spellings at 110 -- the number the drain plan's PR ledger tracks PR by
+//! PR, 135 before PR-1, 119 before #1048 and 115 before the
+//! `unblock_for_signal` drain. A second, WIDER set adds three
 //! spellings the original denylist misses by construction (`serial_print!`,
 //! `log_serial_print!`, `log::log!` -- each reaches the same blocking serial lock as the
 //! `serial_println!`/`log::*!` families the narrow list already denies).
-//! That wider census is 116 today: the 115 plus exactly one escaped site,
+//! That wider census is 111 today: the 110 plus exactly one escaped site,
 //! `kernel/src/arch_impl/aarch64/exception.rs :: fn sys_write`, a
 //! `crate::serial_print!` call inside a per-BYTE loop. This same PR widens
 //! `PROHIBITED_PATTERNS` in the shell script to carry the three new
@@ -680,7 +682,7 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn schedule", 5),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn unblock", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn unblock_for_child_exit", 1),
-    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn unblock_for_signal", 6),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn unblock_for_signal", 1),
 ];
 
 /// The one call the narrow denylist misses: `crate::serial_print!` (no
@@ -705,7 +707,7 @@ const ESCAPED_SITE: (&str, &str, usize) = (
 /// pinned as its own number so a PR that moves rows around without changing
 /// the total -- or changes the total without saying so -- fails on the number
 /// the plan is written in, not only on the per-row diff.
-const CRITICAL_PATH_LOG_TOTAL: usize = 115;
+const CRITICAL_PATH_LOG_TOTAL: usize = 110;
 
 fn wider_anchors() -> Vec<(&'static str, &'static str, usize)> {
     let mut anchors = CRITICAL_PATH_LOG_ANCHORS.to_vec();

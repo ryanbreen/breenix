@@ -1130,7 +1130,7 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
         }
     }
 
-    log::info!(
+    log::debug!(
         "sigreturn: restored context, returning to RIP={:#x} RSP={:#x}",
         signal_frame.saved_rip,
         signal_frame.saved_rsp
