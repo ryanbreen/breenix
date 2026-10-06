@@ -25,6 +25,7 @@
 #                        BREENIX_VMWARE_BOOT_WAIT or the first argument)
 
 set -uo pipefail
+unset BREENIX_BOOT_NO_QUEUE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -37,32 +38,12 @@ RUN_LOG="/tmp/breenix-vmware-gate-run.log"
 VMX_FILE=""
 RUN_SH_PID=""
 
-# run.sh --vmware's own vmware.log monitor is `tail -f "$VM_LOG" | while ...`
-# inside a backgrounded subshell -- a pipeline, so bash forks a SEPARATE
-# process for the `tail -f` half. Killing the subshell (or its parent
-# run.sh) does not touch that already-forked pipe segment; it survives,
-# reparented to PID 1, observed directly across repeated runs of this
-# script. Kill both halves of the tree: the run.sh subtree via SIGTERM then
-# SIGKILL-on-survival, and any leaked `tail -f .../vmware.log` by path
-# (harmless to run broadly -- a leaked tail from a run.sh --vmware this
-# script did not start is exactly as orphaned and exactly as safe to reap).
+# The run handle forwards TERM to the lease worker, which reaps descendants.
 kill_run_sh_tree() {
     local pid="$1"
     [ -n "$pid" ] || return 0
-    kill -0 "$pid" 2>/dev/null || return 0
-    pkill -TERM -P "$pid" 2>/dev/null || true
     kill -TERM "$pid" 2>/dev/null || true
-    for _ in 1 2 3 4 5; do
-        kill -0 "$pid" 2>/dev/null || return 0
-        sleep 1
-    done
-    pkill -KILL -P "$pid" 2>/dev/null || true
-    kill -KILL "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
-}
-
-reap_leaked_vmware_log_tail() {
-    pkill -KILL -f 'tail -f .*\.vmwarevm/vmware\.log' 2>/dev/null || true
 }
 
 # Every exit path -- success, an assertion failure, or a build/start timeout
@@ -71,7 +52,6 @@ reap_leaked_vmware_log_tail() {
 # remembering to stop the VM itself.
 cleanup_vm() {
     kill_run_sh_tree "$RUN_SH_PID"
-    reap_leaked_vmware_log_tail
     if [ -n "$VMX_FILE" ] && [ -f "$VMX_FILE" ]; then
         echo "[vmware-gate] Stopping VM: $VMX_FILE"
         "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
@@ -106,11 +86,12 @@ cd "$BREENIX_ROOT" || fail "repo dir missing: $BREENIX_ROOT"
 BREENIX_VMWARE_NOGUI=1 "$BREENIX_ROOT/run.sh" --vmware >"$RUN_LOG" 2>&1 &
 RUN_SH_PID=$!
 
-# run.sh --vmware execs into `tail -f` on the serial log once the VM is up,
+# run.sh follows serial while its VM is alive, retaining its cleanup traps,
 # printing the VMX path just before that happens (build time varies with
 # cache state, so poll for the line rather than sleeping a fixed window).
 found_vmx=false
-for _ in $(seq 1 "$BUILD_WAIT_SECS"); do
+elapsed=0
+while [ "$elapsed" -lt "$BUILD_WAIT_SECS" ]; do
     line="$(grep -E '^VMX:[[:space:]]+.+\.vmx$' "$RUN_LOG" 2>/dev/null | tail -1)"
     if [ -n "$line" ]; then
         VMX_FILE="${line#VMX:}"
@@ -123,6 +104,11 @@ for _ in $(seq 1 "$BUILD_WAIT_SECS"); do
         break
     fi
     sleep 1
+    # Queue time precedes acquisition; it is not a build/start timeout.
+    if ! grep -q '\[host-slot\] waiting for mac-boot' "$RUN_LOG" ||
+       grep -q '\[host-slot\] acquired mac-boot' "$RUN_LOG"; then
+        elapsed=$((elapsed + 1))
+    fi
 done
 if [ "$found_vmx" != true ] || [ -z "$VMX_FILE" ] || [ ! -f "$VMX_FILE" ]; then
     fail "VM never started within ${BUILD_WAIT_SECS}s build+start window"

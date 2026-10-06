@@ -78,7 +78,7 @@ public enum RemoteCommand {
         }
     }
 
-    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil) -> Plan {
+    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil) -> Plan {
         Plan(
             sha: sha,
             boots: boots,
@@ -86,7 +86,7 @@ public enum RemoteCommand {
             timeoutSecs: timeoutSecs,
             paths: paths,
             prepareClone: prepareCloneRequest(sha: sha, paths: paths),
-            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs),
+            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs, slotHelperBase64: slotHelperBase64),
             pullEvidence: pullEvidenceRequest(paths: paths),
             removeClone: removeCloneRequest(paths: paths)
         )
@@ -118,7 +118,7 @@ public enum RemoteCommand {
     // production kernel running /sbin/suite-<id>, with a QMP socket in gate-tmp for its screen.
     // An id that is not one never reaches the shell: the request fails the gate instead of
     // quietly running the ordinary one (BeastLauncher refuses such an id before this).
-    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil) -> ProcessRequest {
+    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil) -> ProcessRequest {
         let profileEnv: String = qemuProfile.map { " BREENIX_QEMU_PROFILE=\($0.rawValue)" } ?? ""
         var suiteEnv = ""
         if let suite {
@@ -127,7 +127,16 @@ public enum RemoteCommand {
             }
             suiteEnv = " BREENIX_BOOT_SUITE=\(suite) BREENIX_QMP_SOCKET=\(paths.gateTmpPath)/qmp.sock"
         }
-        let script = "mkdir -p \(paths.gateTmpPath)"
+        let helper = paths.gateTmpPath + "/host-slots.py"
+        let installHelper = slotHelperBase64.map {
+            " && printf %s \($0) | base64 -d > \(helper)"
+        } ?? ""
+        let gate = "\(paths.clonePath)/docker/qemu/run-x86-gate.sh \(boots) \(mode.rawValue)"
+        // Historical gates lack an internal supervisor: hold both resources
+        // around that gate, using the current launcher's helper outside checkout.
+        let launch = slotHelperBase64 == nil ? gate :
+            "python3 \(helper) supervise -- bash -c \"if [ ! -f \(paths.clonePath)/scripts/host-slots.py ]; then python3 \(helper) acquire x86-build && python3 \(helper) acquire x86-boot || exit 1; fi; exec \(gate)\""
+        let script = "mkdir -p \(paths.gateTmpPath)" + installHelper
             + " && source \(paths.cargoEnvPath)"
             + " && env BREENIX_GATE_TMP=\(paths.gateTmpPath)"
             + " BREENIX_REPO_DIR=\(paths.clonePath)"
@@ -136,7 +145,7 @@ public enum RemoteCommand {
             + " BREENIX_FULL_BACKSTOP=\(fullBackstopSecs ?? max(1800, timeoutSecs))"
             + " CARGO_BUILD_JOBS=6"
             + profileEnv + suiteEnv
-            + " \(paths.clonePath)/docker/qemu/run-x86-gate.sh \(boots) \(mode.rawValue)"
+            + " " + launch
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }
 

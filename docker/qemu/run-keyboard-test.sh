@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # Test keyboard input in QEMU using QEMU monitor via TCP socket
 #
 # Usage: ./run-keyboard-test.sh

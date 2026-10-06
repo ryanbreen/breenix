@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # Native ARM64 boot test (runs QEMU directly on host)
 # Much faster than Docker version but only works on macOS ARM64
 #

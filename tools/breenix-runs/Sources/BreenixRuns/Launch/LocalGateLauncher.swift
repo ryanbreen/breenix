@@ -45,6 +45,13 @@ public struct FallbackQEMUHostLock: HostLock {
     }
 }
 
+public struct QueuedHostLock: HostLock {
+    public init() {}
+    public func acquire(runner: ProcessRunner) throws {
+        // The gate's shared shell helper acquires the lifetime lease at launch.
+    }
+}
+
 public enum ArmProfile: String, CaseIterable, Sendable {
     case strict
     case prod
@@ -120,7 +127,7 @@ public struct LocalGateLauncher {
     // than the serial (which the preflight never gets far enough to write).
     private static let bootTestsPreflightRefusalMarker = "was not built with --features boot_tests"
 
-    public init(store: RunStore, repoRoot: URL, runner: ProcessRunner = RealProcessRunner(), hostLock: HostLock = FallbackQEMUHostLock()) {
+    public init(store: RunStore, repoRoot: URL, runner: ProcessRunner = RealProcessRunner(), hostLock: HostLock = QueuedHostLock()) {
         self.store = store
         self.repoRoot = repoRoot
         self.runner = runner

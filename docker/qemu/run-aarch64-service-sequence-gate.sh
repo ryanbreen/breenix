@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # ARM64 init service-sequence soak gate for #575.
 #
 # The round gate for #575 is a 100-cycle run of this script per CPU profile

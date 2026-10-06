@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # Run a single ARM64 userspace test
 # Usage: ./run-aarch64-userspace-test.sh <test_name> [timeout]
 #

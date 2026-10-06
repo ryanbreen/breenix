@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # Automated home of the refusal-drain oracle legs: G proves a foreign record is
 # reported and never acted on; H proves a victim dispatched after the record is
 # published is never terminated, dequeued or unpublished. The gate boots a

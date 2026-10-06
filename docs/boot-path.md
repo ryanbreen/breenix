@@ -84,42 +84,41 @@ exercise that milestone.
 
 ## Shared host slots
 
-`docker/qemu/run-x86-gate.sh` queues every cargo build (including userspace and
-packing) behind two build slots and every QEMU boot behind one exclusive boot
-slot in beast's container. The Run Inspector and Vigil beast runners call that
-same gate. On the Mac, `scripts/boot-interactive.sh` and `run.sh` share one boot
-slot across QEMU, Parallels and VMware; their cargo builds remain unrestricted.
-The VM slot covers its entire lifetime, including a suite's displayed panel.
-Stop the run to stop its VM and free the slot. Older or manual Mac VMs discovered
-by `pgrep`, `prlctl list` or `vmrun list` are waited for too.
+Use `docker/qemu/run-x86-gate.sh` for queued x86 builds and boots: the helper
+provides two build leases and one boot lease. Run Inspector installs its current
+helper outside the tested checkout, including when testing an older revision.
+Historical gates hold both leases for their whole run. Launchers sourcing
+`docker/qemu/lib/qemu-host-lock.sh` also enroll in the host queue; on Linux they
+hold a build lease until boot admission. Mac builds remain unrestricted.
 
-The slots are permanent files under `/tmp/breenix-host-slots`, independent of
-checkout: `x86-build-1.lock`, `x86-build-2.lock`, `x86-boot-1.lock` and
-`mac-boot-1.lock`; `metadata.lock` makes holder publication atomic to readers.
-Python's `fcntl.flock` supplies the kernel lock on Linux and
-macOS. A supervisor owns the descriptors, stops the run's descendants (and its
-registered Parallels/VMware VM) before releasing them, and preserves the runner's
-exit status. Process death also releases flock without deleting/reclaiming a
-lock file. Do not remove those files while runs are alive.
+Use `scripts/boot-interactive.sh` or `run.sh` for a Mac boot. The shared helper
+queues QEMU, Parallels and VMware behind one Mac lease. VM deployment and the
+suite panel are part of that lifetime. Stop the run to stop its VM and free the
+lease. An unqueued running, paused or suspended Breenix VM must be stopped by its
+owner before a queued deployment can proceed; launchers must not stop or delete
+other lanes' VMs by name pattern.
 
-A waiting run prints the holder's worktree, commit, holding time and its own
-wait immediately and once a minute. Its serial header records queue waits,
-observed holders/VMs and the host's load averages at enqueue and acquisition.
-The header is prepended after the serial writer closes, before scoring, so guest
-output and Vigil's record/verdict formats remain unchanged. Concurrent beast
-builds keep separate build logs beside their gate output. Each gate seeds a
-private Cargo home from the shared registry/git cache, preserving configuration
-and credentials but using independent cache locks and tracking data. This avoids
-the pinned Cargo GC lock leak that deadlocks nested builds under contention.
-The private home is cleaned up on exit and excluded from run records.
+Keep the permanent lease files under `/tmp/breenix-host-slots`; do not remove
+them while runs are alive. `metadata.lock` protects holder publication and FIFO
+wait tickets. A worker owns the leases separately from the foreground run handle.
+If that handle is killed, the worker stops its descendants and registered VM
+before releasing the leases. Catchable signals allow up to 120 seconds for the
+runner's cleanup; preserve its own exit status. An unqueued QEMU also blocks
+boot admission, including after a worker itself dies.
 
-For one deliberately unqueued **manual Mac boot**, prefix the usual command
-with `BREENIX_BOOT_NO_QUEUE=1`. It prints `BYPASS` and records that choice in the
-serial header. This also skips the legacy QEMU lock. The x86 gate never honors
-this variable, nor does it use it internally. Keep the variable scoped to that
-one command rather than exporting it in a session.
+Expect wait messages immediately and once a minute, identifying the holder or
+an earlier queued request. Queue context belongs in `*.host-slots.jsonl` sidecars,
+never guest serial inputs. Build logs belong beside the gate output. Create a
+fresh private Cargo home with the shared configuration and credentials; download
+its dependencies rather than copying a registry that another Cargo can mutate.
+The worker removes private homes during cleanup, including after a killed handle.
 
-Run the lock helper tests without any VM with `python3 tests/host_slots_test.py`.
+For one deliberately unqueued **manual Mac boot**, prefix the command with
+`BREENIX_BOOT_NO_QUEUE=1`. Keep it scoped to that command. Retain the legacy
+per-binary QEMU lock even for a bypass; VM cleanup remains limited to the run's
+own registered VM. x86 and VMware gates must ignore this variable.
+
+Run the helper tests without a VM with `python3 tests/host_slots_test.py`.
 
 ## Watching a boot
 

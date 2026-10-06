@@ -29,7 +29,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/host-slots.sh"
-host_slots_start "$0" "$@"
+host_slots_start "$ROOT/scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
 SERIAL_LOG="${TMPDIR:-/tmp}/breenix-boot/serial.txt"
 IDLE_EXIT=300
 DISPLAY_MODE=
@@ -148,9 +148,7 @@ cp "$DISK" "$WRITABLE"
 
 # shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
 source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
-if [ "${BREENIX_BOOT_NO_QUEUE:-}" != 1 ]; then
-    qemu_host_lock_acquire
-fi
+qemu_host_lock_acquire
 
 # Vigil shows the boot while it runs and scores it when it ends (does nothing without Vigil).
 VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG")

@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # x86_64 PRODUCTION-PROFILE boot and teardown-census gate (#540).
 #
 # WHAT THIS GATE IS FOR

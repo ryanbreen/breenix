@@ -75,6 +75,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/run-inspector-import.sh" || :
 BREENIX_RUNS_GATE_ARGV=("$0" "$@")
 DEFAULT_REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$DEFAULT_REPO_DIR/scripts/host-slots.sh"
+host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "$@"
 
 COUNT="${1:-1}"
 MODE="${2:-kthread}"
@@ -104,8 +106,6 @@ fi
 
 cd "$REPO_DIR" || { echo "GATE: FAIL (repo dir missing: $REPO_DIR)"; exit 1; }
 
-source "$REPO_DIR/scripts/host-slots.sh"
-host_slots_start "$0" "$@"
 
 # Validate against the catalog before any build or disk packing. An explicitly
 # empty name is invalid, while an unset variable selects default.
@@ -175,12 +175,12 @@ fi
 # Seconds the VM stays up after the suite's DONE line, so its final screen can be captured.
 SUITE_HOLD_SECS="${BREENIX_SUITE_HOLD:-5}"
 
-# Cover every cargo invocation, including userspace and disk packing.
+# Build userspace, disks and the launcher under the build lease.
 host_slot_acquire x86-build || exit 1
 # Pinned Cargo can leak its mutation lock when cache GC races a downloader,
 # deadlocking nested Cargo builds. Seed a private cache, with independent locks.
 # Keep it outside gate-tmp: credentials/cache files must not enter run records.
-GATE_CARGO_HOME=$(python3 "$HOST_SLOTS_HELPER" cargo-home "${CARGO_HOME:-$HOME/.cargo}" "$REPO_DIR/target") || exit 1
+GATE_CARGO_HOME=$(python3 "$HOST_SLOTS_HELPER" cargo-home "${CARGO_HOME:-$HOME/.cargo}" "$REPO_DIR/target") || { echo "GATE: FAIL (private Cargo home creation failed)"; exit 1; }
 export CARGO_HOME="$GATE_CARGO_HOME"
 trap 'rm -rf "$GATE_CARGO_HOME"' EXIT
 mkdir -p "$BREENIX_GATE_TMP" || exit 1
@@ -236,6 +236,7 @@ if grep -qE "^(warning|error)" "$GATE_BUILD_LOG_DIR/gate-build.log"; then
 fi
 BUILD_SECS=$((SECONDS - BUILD_START))
 echo "[gate] Build clean (0 warnings) in ${BUILD_SECS}s"
+export BREENIX_TEST_DISK_PREBUILT=1
 host_slot_release x86-build || exit 1
 
 # Ask the launcher for the selected hardware's census, rather than counting
@@ -292,7 +293,7 @@ for i in $(seq 1 "$COUNT"); do
     fi
     cat "$OUTDIR/stdout.log"
   else
-    BREENIX_NET_MODE=none timeout "$TIMEOUT_SECS" ./target/release/qemu-uefi \
+    BREENIX_NET_MODE=none timeout --foreground "$TIMEOUT_SECS" ./target/release/qemu-uefi \
       -serial file:"$OUTDIR/serial_user.log" \
       -serial file:"$OUTDIR/serial_kernel.log" \
       > "$OUTDIR/stdout.log" 2>&1 &
@@ -320,6 +321,7 @@ for i in $(seq 1 "$COUNT"); do
     wait "$QEMU_TIMEOUT_PID"
   fi
 
+  python3 "$HOST_SLOTS_HELPER" quiesce || exit 1
   host_slot_header "$OUTDIR/serial_kernel.log" || exit 1
 
   # Require enumeration to finish and match the selected profile's block

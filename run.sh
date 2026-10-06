@@ -35,7 +35,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$SCRIPT_DIR"
 cd "$BREENIX_ROOT"
 source "$BREENIX_ROOT/scripts/host-slots.sh"
-host_slots_start "$0" "$@"
+host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "$@"
 
 # #826/#834/#865/R181: this script's native (non-Parallels, non-VMware)
 # QEMU boot runs behind the host-wide lock in
@@ -317,11 +317,32 @@ install_vm_boot_traps() {
 hold_suite_panel() {
     echo "Suite complete; scored panel remains visible. Ctrl-C stops the VM."
     trap 'exit 0' INT
-    while :; do sleep 1; done
+    while vm_is_running; do sleep 1; done
+}
+
+vm_is_running() {
+    if [ "$PARALLELS" = true ]; then
+        prlctl status "$PARALLELS_VM" 2>/dev/null | grep -q 'running'
+    else
+        "$VMRUN" list 2>/dev/null | grep -Fqx "$VMX_FILE"
+    fi
+}
+
+follow_vm_serial() {
+    local offset=0 size
+    while vm_is_running; do
+        size=$(wc -c < "$SERIAL_LOG" | tr -d ' ')
+        if [ "$size" -gt "$offset" ]; then
+            tail -c +$((offset + 1)) "$SERIAL_LOG"
+            offset=$size
+        fi
+        sleep 1
+    done
 }
 
 # BTRT mode: delegate to xtask and exit
 if [ "$BTRT" = true ]; then
+    host_slot_acquire mac-boot
     if [ "$ARCH" = "arm64" ]; then
         BTRT_ARCH="arm64"
     else
@@ -533,16 +554,6 @@ if [ "$PARALLELS" = true ]; then
     PARALLELS_VM="breenix-$(date +%s)"
     echo "VM name: $PARALLELS_VM"
 
-    # Clean up any previous breenix-* VMs (best-effort, don't block on stuck ones)
-    for OLD_VM in $(prlctl list --all 2>/dev/null | grep 'breenix-' | awk '{print $NF}'); do
-        if [ "$OLD_VM" != "$PARALLELS_VM" ]; then
-            echo "  Cleaning up old VM: $OLD_VM"
-            prlctl stop "$OLD_VM" --kill 2>/dev/null || true
-            # Try to delete — if stuck in stopping, just move on
-            prlctl delete "$OLD_VM" 2>/dev/null || true
-        fi
-    done
-
     echo "Creating fresh VM '$PARALLELS_VM'..."
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
     prlctl set "$PARALLELS_VM" --memsize 8192
@@ -681,7 +692,7 @@ if [ "$PARALLELS" = true ]; then
         fi
 
         sleep 1
-        tail -f "$SERIAL_LOG"
+        follow_vm_serial
     fi
 
     # #917 fix-pass C-5: capture=none must also fail for exit-status callers.
@@ -694,6 +705,7 @@ fi
 
 # VMware Fusion mode: build, convert to VMDK, launch
 if [ "$VMWARE" = true ]; then
+    host_slot_acquire mac-boot
     echo ""
     echo "========================================="
     echo "Breenix on VMware Fusion"
@@ -826,24 +838,12 @@ if [ "$VMWARE" = true ]; then
     fi
 
     echo ""
-    host_slot_acquire mac-boot
     echo "--- Configuring VMware VM ---"
 
     # Use a unique VM name to avoid stale state
     VM_NAME="breenix-$(date +%s)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     echo "VM name: $VM_NAME"
-
-    # Clean up old breenix-* VMs (best-effort)
-    for OLD_VM_DIR in "$VM_MACHINES"/breenix-*.vmwarevm; do
-        [ -d "$OLD_VM_DIR" ] || continue
-        OLD_VMX=$(find "$OLD_VM_DIR" -name "*.vmx" -maxdepth 1 | head -1)
-        if [ -n "$OLD_VMX" ]; then
-            "$VMRUN" stop "$OLD_VMX" hard >/dev/null 2>&1 || true
-        fi
-        rm -rf "$OLD_VM_DIR"
-        echo "  Cleaned up: $(basename "$OLD_VM_DIR")"
-    done
 
     # Create VM bundle
     mkdir -p "$VM_BUNDLE"
@@ -992,7 +992,7 @@ VMXEOF
     LOGMON_PID=$!
     # Keep VM cleanup installed while the serial tail runs.
     sleep 1
-    tail -f "$SERIAL_LOG"
+    follow_vm_serial
 
     exit 0
 fi
@@ -1266,9 +1266,7 @@ if [ "$ARCH" = "arm64" ]; then
     # one-line notice (host count, then a wait message if contended) before
     # blocking.
     host_slot_acquire mac-boot
-    if [ "${BREENIX_BOOT_NO_QUEUE:-}" != 1 ]; then
-        qemu_host_lock_acquire
-    fi
+    qemu_host_lock_acquire
     qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -smp 4 \
         -m 512M \
@@ -1304,9 +1302,7 @@ else
     # boot cooperates with a concurrent x86 gate lane without contending
     # with a concurrent arm64 session.
     host_slot_acquire mac-boot
-    if [ "${BREENIX_BOOT_NO_QUEUE:-}" != 1 ]; then
-        qemu_host_lock_acquire qemu-system-x86_64
-    fi
+    qemu_host_lock_acquire qemu-system-x86_64
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \

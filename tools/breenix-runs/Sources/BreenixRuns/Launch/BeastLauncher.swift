@@ -90,12 +90,14 @@ public struct BeastLauncher {
     public var timeoutSecs: Int
     public var fullBackstopSecs: Int
     public var pathsTemplate: BeastPaths
+    public var slotHelperBase64: String?
 
     public init(
         store: RunStore,
         runner: ProcessRunner = RealProcessRunner(),
         timeoutSecs: Int = 900,
-        pathsTemplate: BeastPaths = BeastPaths(clonePath: "")
+        pathsTemplate: BeastPaths = BeastPaths(clonePath: ""),
+        slotHelperBase64: String? = nil
     ) {
         self.store = store
         self.runner = runner
@@ -103,6 +105,7 @@ public struct BeastLauncher {
         self.fullBackstopSecs = Int(ProcessInfo.processInfo.environment["BREENIX_FULL_BACKSTOP"] ?? "")
             .flatMap { $0 > 0 ? $0 : nil } ?? max(1800, timeoutSecs)
         self.pathsTemplate = pathsTemplate
+        self.slotHelperBase64 = slotHelperBase64
     }
 
     public static func localGitIdentity(repoRoot: URL, runner: ProcessRunner) throws -> (sha: String?, dirty: Bool?) {
@@ -123,7 +126,8 @@ public struct BeastLauncher {
             paths: paths(forRunID: id),
             qemuProfile: options.qemuProfile,
             suite: options.suite,
-            fullBackstopSecs: fullBackstopSecs
+            fullBackstopSecs: fullBackstopSecs,
+            slotHelperBase64: slotHelperBase64
         )
     }
 

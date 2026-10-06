@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # Run Breenix ARM64 kernel with graphics in QEMU
 #
 # Usage: ./scripts/run-arm64-graphics.sh [release|debug]

@@ -46,47 +46,12 @@
 //! script's own text every run, so a new script anywhere in this tree's
 //! `.sh` reachable set introducing this shape is caught automatically.
 //! claim-lint:ok: #860 -- structural, checked by
-//! census_reaches_the_known_unfixed_run_sh_instances re-deriving the walk
+//! census_checks_run_sh_has_no_pattern_sweeps re-deriving the walk
 //! from disk on every run rather than a fixed list.
 //!
-//! SCOPE, disclosed rather than silently narrowed: this round fixes only
-//! `scripts/f21-bisect-verdict.sh` (#860's own filed scope). The identical
-//! shape is separately, currently, and un-fixed-by-this-round present in
-//! `run.sh` twice (its pre-build VM stop loop and its pre-launch VM
-//! cleanup loop, both `for OLD_VM in $(prlctl list --all | grep 'breenix-'
-//! | awk '{print $NF}')`) -- #860's own issue body names this file as a
-//! second recurrence and explicitly says fixing the bisect script alone
-//! would not close the class. More specifically and more consequentially
-//! (review round 1, finding F1): `scripts/f21-bisect-verdict.sh` itself
-//! calls `./run.sh` unconditionally on every single invocation (the
-//! statement immediately after its own scoped state-file reap), so
-//! run.sh's two un-fixed sweep loops execute as part of THIS script's
-//! own ordinary operation -- not merely as an unrelated recurrence
-//! sitting somewhere else in the tree. The concurrent-VM-kill scenario
-//! #860 was filed to close is therefore unchanged in practice for this
-//! script's real end-to-end behavior; only the isolated loop this round
-//! replaced is fixed. `f21_bisect_verdict_sh_calls_run_sh_unconditionally`
-//! below checks (not merely asserts) that the `./run.sh` call is present,
-//! uncommented, and ungated. This ratchet does not assert `run.sh` clean
-//! (it is not, and this round did not touch it); instead
-//! `census_reaches_the_known_unfixed_run_sh_instances` asserts the
-//! predicate DOES currently fire on `run.sh`'s real, live text -- proving
-//! the census's reach and shape are correct against a real positive this
-//! round leaves standing, not merely against a synthetic string -- and
-//! records that leaving it stand is a disclosed, tracked gap, not a
-//! silent one. `scripts/parallels/launcher-smoke.sh` also mentions
-//! `prlctl list` (an `EXISTING_VM` read-only serial-run guard that only
-//! ever prints a name and refuses to start, and a `VM_NAME` fallback that
-//! resolves this invocation's OWN just-started VM's name when the
-//! authoritative `run.sh` stdout line is unavailable) but contains no
-//! `for VAR in $(prlctl list ...)` loop at all, so it is a structurally
-//! different, narrower shape this predicate correctly does not flag --
-//! noted here since #860's own issue body named it alongside `run.sh`.
-//! `run.sh`'s gap is tracked as #868 (filed alongside this round) rather than
-//! folded into this one (small-PR mode, R157).
-//! claim-lint:ok: #860,#868 -- the run.sh line/count claims above are
-//! checked, not asserted, by census_reaches_the_known_unfixed_run_sh_instances
-//! below, which re-derives them from run.sh's real text on every run.
+//! #1130 removes run.sh's remaining sweeps as part of #868: queued and
+//! bypass launches clean up only their own registered VM. The existing
+//! whole-tree check below now requires run.sh to be clean.
 
 use std::collections::HashSet;
 use std::fs;
@@ -370,7 +335,7 @@ fn prlctl_pattern_sweep_predicate_is_not_vacuous() {
 /// not merely against a synthetic string or a file this round already
 /// cleaned up.
 #[test]
-fn census_reaches_the_known_unfixed_run_sh_instances() {
+fn census_checks_run_sh_has_no_pattern_sweeps() {
     let scripts = all_shell_scripts();
 
     // Anti-vacuity floor: 94 `.sh` scripts under docker/ and scripts/ plus
@@ -393,14 +358,8 @@ fn census_reaches_the_known_unfixed_run_sh_instances() {
     let run_sh_text = repo_text("run.sh");
     let run_sh_violations = prlctl_pattern_sweep_violations(&run_sh_text);
     assert!(
-        run_sh_violations.len() >= 3,
-        "run.sh is expected to still carry its two known, disclosed, un-fixed-by-#860 \
-         prlctl-pattern-sweep loops (a stop-only pre-build loop, one offending line, and \
-         a stop+delete pre-launch loop, two offending lines -- three offending lines \
-         total) -- found {}: {:?}. If this now reads 0, run.sh has been fixed: update \
-         this test to assert it clean instead of asserting the gap, and #868 tracks \
-         it.",
-        run_sh_violations.len(),
+        run_sh_violations.is_empty(),
+        "run.sh must never stop or delete other lanes' VMs by name pattern: {:?}",
         run_sh_violations
     );
 

@@ -1,4 +1,6 @@
 #!/bin/bash
+BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+BREENIX_HOST_ARGS=("$@")
 # This script IS the #609 arm-A placement oracle. It compares:
 #   A. production placement followed by a symmetric pin: --expect lost
 #   B. ordinary production placement with peer rescue intact: control leg

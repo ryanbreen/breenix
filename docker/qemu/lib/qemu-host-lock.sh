@@ -101,6 +101,21 @@
 # its own. Callers with their own working cleanup trap do not need this;
 # it exists for the callers that had no cleanup trap of their own.
 
+_QHL_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$_QHL_REPO/scripts/host-slots.sh"
+# Entries capture argv before parsing. Already-supervised interactive runners
+# share their existing session; shell-only helper tests need no supervisor.
+_QHL_SLOT_ENROLLED=0
+if [ -n "${BREENIX_HOST_ENTRY:-}" ]; then
+    host_slots_start "$BREENIX_HOST_ENTRY" "${BREENIX_HOST_ARGS[@]}"
+fi
+_QHL_RESOURCE=x86-boot
+if [ "$(uname -s)" = Darwin ]; then _QHL_RESOURCE=mac-boot; fi
+if [ -n "${BREENIX_SLOT_SESSION:-}" ]; then
+    _QHL_SLOT_ENROLLED=1
+    if [ "$(uname -s)" != Darwin ]; then host_slot_acquire x86-build; fi
+fi
+
 _QHL_LOCK_HELD=0
 _QHL_LOCK_DIR=""
 _QHL_DISABLED=0
@@ -264,6 +279,10 @@ _qhl_verdict_banner() {
 # locked and contended, prints a wait message roughly once per 30s span
 # (poll granularity is 1s; the message is not itself the poll interval).
 qemu_host_lock_acquire() {
+    if [ "$_QHL_SLOT_ENROLLED" = 1 ]; then
+        if [ "$(uname -s)" != Darwin ]; then host_slot_release x86-build; fi
+        host_slot_acquire "$_QHL_RESOURCE"
+    fi
     _qhl_resolve_bin "${1:-}" || exit 1
     local qemu_bin="$_QHL_RESOLVED_BIN"
     _qhl_chain_exit_trap
@@ -315,6 +334,7 @@ qemu_host_lock_acquire() {
 # Releases the lock if this process holds it. Safe to call when not held
 # (the EXIT trap's safety-net call after an explicit release is a no-op).
 qemu_host_lock_release() {
+    if [ "$_QHL_SLOT_ENROLLED" = 1 ]; then host_slot_release "$_QHL_RESOURCE"; fi
     [ "$_QHL_LOCK_HELD" = "1" ] || return 0
     rm -rf "$_QHL_LOCK_DIR" 2>/dev/null || true
     _QHL_LOCK_HELD=0

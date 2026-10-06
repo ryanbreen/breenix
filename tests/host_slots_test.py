@@ -95,7 +95,7 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         self.assertEqual(first.wait(timeout=10), 0)
         self.line_matching(third, 'READY')
 
-    def test_cargo_cache_seed_has_independent_data_and_no_shared_locks(self):
+    def test_fresh_cargo_home_preserves_config_without_copying_live_cache(self):
         source = self.root / 'cargo'
         (source / 'registry' / 'index').mkdir(parents=True)
         (source / 'git').mkdir()
@@ -109,10 +109,8 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         for name in ('.package-cache', '.package-cache-mutate', '.global-cache'):
             (source / name).write_text('not a seed')
         destination = slots.isolated_cargo_home(source, self.root / 'target')
-        private = destination / 'registry' / 'index' / 'entry'
-        self.assertEqual(private.read_text(), 'shared')
-        self.assertNotEqual(private.stat().st_ino, cached.stat().st_ino)
-        private.write_text('private')
+        self.assertFalse((destination / 'registry').exists())
+        self.assertFalse((destination / 'git').exists())
         self.assertEqual(cached.read_text(), 'shared')
         self.assertEqual((destination / 'config.toml').read_bytes(), config.read_bytes())
         self.assertEqual((destination / 'credentials.toml').stat().st_mode & 0o777, 0o600)
@@ -170,19 +168,29 @@ sys.stdin.readline()
         self.line_matching(second, 'READY')
 
     def test_one_boot_slot_and_release_on_sigkill(self):
-        command = self.request('acquire', 'x86-boot') + '; echo READY; read -r release'
+        child_pid = self.root / 'detached-pid'
+        child_code = f"import os,time; from pathlib import Path; Path({str(child_pid)!r}).write_text(str(os.getpid())); time.sleep(60)"
+        import shlex
+        command = (self.request('acquire', 'x86-boot') + '; ' +
+                   f'{sys.executable} -c ' + shlex.quote("import subprocess; subprocess.Popen([" + repr(sys.executable) + ", '-c', " + repr(child_code) + "], start_new_session=True)") +
+                   '; echo READY; read -r release')
         first = self.launch(command)
         self.line_matching(first, 'READY')
-        second = self.launch(command)
+        second = self.launch(self.request('acquire', 'x86-boot') + '; echo READY; read -r release')
         self.line_matching(second, 'waiting for x86-boot:')
-        # Kill the actual flock owner: no cleanup handler can release its lock.
+        # Allow discovery of the detached stand-in, then kill the foreground handle.
+        deadline = time.monotonic() + 5
+        while not child_pid.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        pid = int(child_pid.read_text())
+        time.sleep(0.6)
         first.kill()
         first.wait(timeout=10)
         self.line_matching(second, 'READY')
-        # The dead supervisor's shell was a read-only stand-in, not a VM.
+        state = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True, text=True).stdout.strip()
+        self.assertTrue(not state or state.startswith('Z'), state)
         second.stdin.write(b'release\n'); second.stdin.flush()
         self.assertEqual(second.wait(timeout=10), 0)
-        # EOF terminates first's read, leaving no stand-in running.
         first.stdin.close(); first.stdin = None
 
     def test_killed_launcher_stops_registered_vm_before_waiter(self):
@@ -202,11 +210,10 @@ sys.stdin.readline()
         self.assertEqual(first.wait(timeout=10), 137)
         self.line_matching(second, 'READY')
         self.assertTrue(stopped.exists())
-        header, guest = serial.read_text().split('\n', 1)
-        context = json.loads(header.removeprefix('[host-slot] '))
+        context = json.loads(serial.with_name(serial.name + '.host-slots.jsonl').read_text())
         self.assertEqual(context['resource'], 'mac-boot')
         self.assertIn('load_at_acquire', context)
-        self.assertEqual(guest, 'PROBE DONE passed=16 failed=0\n')
+        self.assertEqual(serial.read_text(), 'PROBE DONE passed=16 failed=0\n')
 
     def test_mac_bypass_does_not_bypass_x86_gate_slot(self):
         command = self.request('acquire', 'x86-boot') + '; echo READY; read -r release'
@@ -232,6 +239,28 @@ sys.stdin.readline()
     def test_supervisor_preserves_command_exit_status(self):
         process = self.launch(self.request('acquire', 'x86-boot') + '; exit 23')
         self.assertEqual(process.wait(timeout=10), 23)
+
+    def test_interrupted_child_keeps_its_cleanup_status(self):
+        process = self.launch(self.request('acquire', 'mac-boot') +
+                              "; trap 'exit 0' INT; echo READY; while :; do sleep 1; done")
+        self.line_matching(process, 'READY')
+        process.send_signal(signal.SIGINT)
+        self.assertEqual(process.wait(timeout=10), 0)
+
+    def test_fifo_waiters_precede_a_reacquiring_holder(self):
+        first = slots.Slots(self.root / 'fifo')
+        second = slots.Slots(self.root / 'fifo')
+        identity = {'worktree': 'fixture', 'commit': 'fixture'}
+        first.enqueue('x86-boot')
+        self.assertIsNotNone(first.try_acquire('x86-boot', identity))
+        second.enqueue('x86-boot')
+        first.release('x86-boot')
+        first.enqueue('x86-boot')
+        self.assertIsNone(first.try_acquire('x86-boot', identity))
+        self.assertIsNotNone(second.try_acquire('x86-boot', identity))
+        second.path('x86-boot', 1).with_suffix('.json').write_text('{}')
+        self.assertEqual(first.snapshot()[0]['worktree'], 'unknown')
+        first.close(); second.close()
 
     def test_queue_context_contains_holder_and_wait(self):
         command = self.request('acquire', 'x86-boot') + '; echo READY; read -r release'
