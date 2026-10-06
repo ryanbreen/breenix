@@ -23,6 +23,11 @@ const VIRTIO_IRQ_BASE: u32 = 48;
 const BLOCK_MMIO_WAIT_SLICE_NS: u64 = 1_000_000_000;
 /// A request outstanding this long is reported, at most once per interval.
 const BLOCK_MMIO_SLOW_REPORT_INTERVAL_NS: u64 = 10_000_000_000;
+/// A wait that cannot sleep (before the scheduler, or on the boot thread
+/// before its timer runs) busy-polls the CPU, so it is bounded: past this the
+/// request is abandoned, the gate is wedged so its DMA buffers are never
+/// reused, and the boot carries on without the disk.
+const BLOCK_MMIO_BOOTSTRAP_WAIT_LIMIT_NS: u64 = 30_000_000_000;
 const BLOCK_MMIO_WEDGED_ERROR: &str = "Block MMIO device wedged after an abandoned request";
 /// When a slow request was last reported, so reports stay rate-limited.
 static LAST_SLOW_REPORT_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -394,7 +399,9 @@ impl BlockMmioCompletion {
     /// request, and a slow device is not a failed one, so, as in Linux's
     /// virtio-blk, there is no timeout: the wait ends when the device
     /// completes the request. It sleeps in slices only to notice a device
-    /// that has failed, the one case where the request is abandoned.
+    /// that has failed, the one case where the request is abandoned. A wait
+    /// that cannot sleep spins instead, and is abandoned past the bootstrap
+    /// limit rather than spinning the boot CPU forever.
     fn wait_for_completion(
         &self,
         token: u32,
@@ -402,6 +409,7 @@ impl BlockMmioCompletion {
         request: u32,
     ) -> Result<(), &'static str> {
         let started_ns = monotonic_now_ns();
+        let sleeps = crate::task::completion::wait_sleeps();
         loop {
             if let Ok(true) = self
                 .completion
@@ -412,7 +420,11 @@ impl BlockMmioCompletion {
             if device_has_failed(state) {
                 return Err("Block MMIO device failed with a request outstanding");
             }
-            report_slow_request(request, monotonic_now_ns().saturating_sub(started_ns));
+            let waited_ns = monotonic_now_ns().saturating_sub(started_ns);
+            if !sleeps && waited_ns >= BLOCK_MMIO_BOOTSTRAP_WAIT_LIMIT_NS {
+                return Err("Block MMIO request not completed before the kernel could sleep");
+            }
+            report_slow_request(request, waited_ns);
         }
     }
 
