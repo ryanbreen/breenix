@@ -829,6 +829,13 @@ static BLOCK_DEVICE: Mutex<Option<Arc<VirtioBlockDevice>>> = Mutex::new(None);
 static BLOCK_DEVICES: Mutex<alloc::vec::Vec<Arc<VirtioBlockDevice>>> =
     Mutex::new(alloc::vec::Vec::new());
 
+/// Run `f` with the device list locked and interrupts masked. The shared-line
+/// interrupt handler looks devices up here, so it must never find the lock
+/// held by the thread it interrupted.
+fn with_block_devices<R>(f: impl FnOnce(&mut alloc::vec::Vec<Arc<VirtioBlockDevice>>) -> R) -> R {
+    x86_64::instructions::interrupts::without_interrupts(|| f(&mut BLOCK_DEVICES.lock()))
+}
+
 /// Initialize the VirtIO block driver
 ///
 /// Finds and initializes all VirtIO block devices.
@@ -875,7 +882,8 @@ pub fn init() -> Result<(), &'static str> {
         return Err("Failed to initialize any VirtIO block devices");
     }
 
-    *BLOCK_DEVICES.lock() = initialized_devices;
+    let device_count = initialized_devices.len();
+    with_block_devices(|devices| *devices = initialized_devices);
 
     // NOTE: The VirtIO interrupt handler is registered directly in the IDT.
     // See kernel/src/interrupts.rs -> virtio_block_interrupt_handler()
@@ -883,7 +891,7 @@ pub fn init() -> Result<(), &'static str> {
 
     log::info!(
         "VirtIO block: Driver initialized with {} device(s)",
-        BLOCK_DEVICES.lock().len()
+        device_count
     );
 
     Ok(())
@@ -896,8 +904,7 @@ pub fn get_device() -> Option<Arc<VirtioBlockDevice>> {
 
 /// Get a reference to a specific block device by index
 pub fn get_device_by_index(index: usize) -> Option<Arc<VirtioBlockDevice>> {
-    let devices = BLOCK_DEVICES.lock();
-    devices.get(index).cloned()
+    with_block_devices(|devices| devices.get(index).cloned())
 }
 
 /// Test the block device by reading sector 0
