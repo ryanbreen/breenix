@@ -69,8 +69,7 @@ fi
 
 if [[ ! -d "$BUSYBOX_DIR" ]]; then
     mkdir -p "$PROJECT_ROOT/third-party"
-    archive="$PROJECT_ROOT/third-party/busybox-1.37.0.tar.bz2"
-    curl --fail --location --retry 2 https://busybox.net/downloads/busybox-1.37.0.tar.bz2 -o "$archive"
+    archive="$PROJECT_ROOT/vendor/busybox/busybox-1.37.0.tar.bz2"
     python3 - "$archive" "$SOURCE_SHA256" <<'PYVERIFY'
 import hashlib, pathlib, sys
 if hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest() != sys.argv[2]:

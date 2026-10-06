@@ -467,7 +467,7 @@ else
     mkdir -p "$MOUNT_DIR/usr/local/cbin"
 
     # Install BusyBox with hardlinks for coreutils
-    # Auto-build if missing but build script and source exist
+    # The pinned artifact is verified and installed before disk creation.
     if [[ -f "$USERSPACE_DIR/busybox.elf" ]]; then
         cp "$USERSPACE_DIR/busybox.elf" "$MOUNT_DIR/bin/busybox"
         chmod 755 "$MOUNT_DIR/bin/busybox"
