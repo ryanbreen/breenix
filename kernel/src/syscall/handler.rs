@@ -333,7 +333,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             super::signal::sys_setitimer(args.0 as i32, args.1, args.2)
         }
         Some(SyscallNumber::Wait4) => {
-            super::handlers::sys_waitpid(args.0 as i64, args.1, args.2 as u32)
+            super::wait::sys_waitpid(args.0 as i64, args.1, args.2 as u32)
+        }
+        Some(SyscallNumber::Waitid) => {
+            super::wait::sys_waitid(args.0 as u32, args.1, args.2, args.3 as u32)
         }
         Some(SyscallNumber::SetPgid) => super::session::sys_setpgid(args.0 as i32, args.1 as i32),
         Some(SyscallNumber::SetSid) => super::session::sys_setsid(),
