@@ -130,74 +130,92 @@ pub fn calibrate() {
     // PIT countdown value for ~50ms: 1193182 * 0.05 = 59659
     const CALIBRATION_TICKS: u16 = 59659;
     const CALIBRATION_MS: u64 = 50;
+    // A virtual CPU descheduled inside a window counts the lost time as TSC
+    // cycles, and nothing can make a window shorter than the PIT interval, so
+    // the shortest of several windows is the measurement (as Linux takes the
+    // minimum of its PIT calibration loops).
+    const CALIBRATION_WINDOWS: usize = 3;
+    const CALIBRATION_ATTEMPTS: usize = 12;
 
     log::info!("Calibrating TSC frequency using PIT...");
 
-    unsafe {
-        // Save original gate state
-        let orig_gate = inb(PIT_GATE_PORT);
-
-        // Disable speaker, enable PIT channel 2 gate
-        // Bit 0: Gate for channel 2 (1 = enable counting)
-        // Bit 1: Speaker data enable (0 = disable speaker)
-        outb(PIT_GATE_PORT, (orig_gate & 0xFC) | 0x01);
-
-        // Program PIT channel 2 for one-shot mode
-        // 0xB0 = channel 2, lobyte/hibyte, mode 0 (interrupt on terminal count), binary
-        outb(PIT_COMMAND_PORT, 0xB0);
-
-        // Load the countdown value
-        outb(PIT_CHANNEL2_PORT, (CALIBRATION_TICKS & 0xFF) as u8);
-        outb(PIT_CHANNEL2_PORT, (CALIBRATION_TICKS >> 8) as u8);
-
-        // Read initial TSC
-        let tsc_start = rdtsc_serialized();
-
-        // Reset the gate to start counting (toggle bit 0)
-        let g = inb(PIT_GATE_PORT);
-        outb(PIT_GATE_PORT, g & 0xFE); // Disable gate
-        outb(PIT_GATE_PORT, g | 0x01); // Re-enable gate to start countdown
-
-        // Wait for PIT channel 2 to count down to zero
-        // When the count reaches 0, bit 5 of port 0x61 goes high
-        loop {
-            let status = inb(PIT_GATE_PORT);
-            if (status & 0x20) != 0 {
-                break;
-            }
+    let mut tsc_base = None;
+    let mut tsc_elapsed = u64::MAX;
+    let mut windows = 0;
+    for _ in 0..CALIBRATION_ATTEMPTS {
+        if windows == CALIBRATION_WINDOWS {
+            break;
         }
-
-        // Read final TSC
-        let tsc_end = rdtsc_serialized();
-
-        // Restore original gate state
-        outb(PIT_GATE_PORT, orig_gate);
-
-        // Calculate frequency
-        let tsc_elapsed = tsc_end.saturating_sub(tsc_start);
-
-        // TSC frequency = (tsc_elapsed / calibration_time_seconds)
-        // = tsc_elapsed * 1000 / CALIBRATION_MS
-        let frequency_hz = (tsc_elapsed * 1000) / CALIBRATION_MS;
-
-        TSC_FREQUENCY_HZ.store(frequency_hz, Ordering::SeqCst);
-        TSC_BASE.store(tsc_start, Ordering::SeqCst);
-        TSC_CALIBRATED.store(true, Ordering::SeqCst);
-
-        log::info!(
-            "TSC calibration complete: {} MHz ({} Hz)",
-            frequency_hz / 1_000_000,
-            frequency_hz
-        );
-        log::info!(
-            "TSC cycles during {}ms calibration: {}",
-            CALIBRATION_MS,
-            tsc_elapsed
-        );
-
-        // HAL boot stage marker - proves HAL timer operations are working
-        log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
+        if let Some((start, elapsed)) = unsafe { measure_pit_window(CALIBRATION_TICKS) } {
+            tsc_base.get_or_insert(start);
+            tsc_elapsed = tsc_elapsed.min(elapsed);
+            windows += 1;
+        }
     }
+    let Some(tsc_base) = tsc_base else {
+        panic!("TSC calibration observed no PIT channel 2 countdown");
+    };
+
+    // TSC frequency = (tsc_elapsed / calibration_time_seconds)
+    // = tsc_elapsed * 1000 / CALIBRATION_MS
+    let frequency_hz = (tsc_elapsed * 1000) / CALIBRATION_MS;
+
+    TSC_FREQUENCY_HZ.store(frequency_hz, Ordering::SeqCst);
+    TSC_BASE.store(tsc_base, Ordering::SeqCst);
+    TSC_CALIBRATED.store(true, Ordering::SeqCst);
+
+    log::info!(
+        "TSC calibration complete: {} MHz ({} Hz)",
+        frequency_hz / 1_000_000,
+        frequency_hz
+    );
+    log::info!(
+        "TSC cycles during {}ms calibration: {}",
+        CALIBRATION_MS,
+        tsc_elapsed
+    );
+
+    // HAL boot stage marker - proves HAL timer operations are working
+    log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
+}
+
+/// Count TSC cycles across one PIT channel 2 countdown of `ticks`.
+/// Returns the TSC value at the start and the cycles elapsed, or `None` when
+/// no countdown was observed.
+unsafe fn measure_pit_window(ticks: u16) -> Option<(u64, u64)> {
+    // Save original gate state
+    let orig_gate = inb(PIT_GATE_PORT);
+
+    // Disable speaker, enable PIT channel 2 gate
+    // Bit 0: Gate for channel 2 (1 = enable counting)
+    // Bit 1: Speaker data enable (0 = disable speaker)
+    outb(PIT_GATE_PORT, (orig_gate & 0xFC) | 0x01);
+
+    // Program PIT channel 2 for one-shot mode
+    // 0xB0 = channel 2, lobyte/hibyte, mode 0 (interrupt on terminal count), binary
+    outb(PIT_COMMAND_PORT, 0xB0);
+    outb(PIT_CHANNEL2_PORT, (ticks & 0xFF) as u8);
+
+    // Mode 0 starts counting when the high byte completes the load, so read
+    // the TSC before it: a delay here can lengthen the window, never shorten it.
+    let tsc_start = rdtsc_serialized();
+    outb(PIT_CHANNEL2_PORT, (ticks >> 8) as u8);
+
+    // Wait for PIT channel 2 to count down to zero
+    // When the count reaches 0, bit 5 of port 0x61 goes high
+    let mut polls = 0u64;
+    while inb(PIT_GATE_PORT) & 0x20 == 0 {
+        polls += 1;
+    }
+
+    // Read final TSC
+    let tsc_end = rdtsc_serialized();
+
+    // Restore original gate state
+    outb(PIT_GATE_PORT, orig_gate);
+
+    // OUT already high on the first poll means no countdown was measured.
+    (polls != 0).then(|| (tsc_start, tsc_end.saturating_sub(tsc_start)))
 }
 
 /// Check if TSC has been calibrated.

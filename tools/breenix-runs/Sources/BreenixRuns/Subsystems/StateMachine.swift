@@ -81,6 +81,10 @@ public enum StateMachine {
     private static func firstMarkerLine(for stage: BootStage, in index: SerialIndex) -> Int? {
         let markers = markerAlternatives(stage.marker)
         for line in index.lines {
+            // Loader announcements describe future output, not test execution.
+            if line.text.contains("kernel::test_exec:") && line.text.contains("marker") {
+                continue
+            }
             if markers.contains(where: { marker in line.text.contains(marker) }) {
                 return line.lineNumber
             }

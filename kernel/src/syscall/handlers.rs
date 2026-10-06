@@ -1890,26 +1890,12 @@ pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResul
 /// bare spinlock with no interrupt masking of its own
 /// (`process/mod.rs`'s `#[cfg(not(target_arch = "aarch64"))] manager()` arm).
 ///
-/// Why holding it unmasked is safe here, re-derived at these bytes rather
-/// than copied from the precheck (which is what C1(b) asked for, and what
-/// #745 review round 2 M1 caught round 1 not doing). The census is
-/// `grep -n 'crate::process::manager()\|crate::process::try_manager()\|with_process_manager'`
-/// over `kernel/src/interrupts.rs`, `kernel/src/interrupts/context_switch.rs`
-/// and `kernel/src/interrupts/timer.rs`: nine x86 interrupt-context PM
-/// accesses. SEVEN are non-blocking `try_manager()` (`interrupts.rs:726`,
-/// `:965`; `context_switch.rs:277`, `:601`, `:728`, `:1199`, `:1543`), so a
-/// thread holding PM here never blocks a timer ISR --
-/// `check_need_resched_and_switch` refuses the dispatch and re-arms
-/// `need_resched` instead. The remaining TWO are blocking
-/// `crate::process::with_process_manager` calls (`interrupts.rs:1421` in the
-/// page-fault handler, `:1708` in the GPF handler), so the flat claim "every
-/// x86 interrupt-context PM access is non-blocking" is FALSE. Both sit
-/// inside `if from_userspace` process-kill arms, and a CPU executing this
-/// kernel-mode fork is not taking a userspace fault, so neither is reachable
-/// while this window is held on that CPU; on `-smp 1` (what every x86 gate
-/// boots) that closes it outright, and on SMP the fork holder is runnable
-/// and releases. That is 7 of 9 non-blocking and 2 of 9 blocking-but-
-/// unreachable-from-here, re-derived at these bytes.
+/// Timer dispatch uses non-blocking process-manager acquisition and re-arms
+/// need_resched when the lock is held. Fault handlers also use try_manager,
+/// except the user page-fault and GPF termination arms. Those blocking arms
+/// cannot be reached by a kernel-mode fork on the same CPU; on another CPU
+/// the runnable fork holder can release the lock. See interrupts.rs and
+/// interrupts/context_switch.rs for the acquisition sites.
 ///
 /// This is the same unmasked shape `sys_spawn`'s Window 2 has run in
 /// production since #713. Wrapping the whole operation in a hardware
@@ -2261,6 +2247,7 @@ pub fn sys_exec_with_frame(
                             "sys_exec: Successfully replaced process address space, entry point: {:#x}",
                             new_entry_point
                         );
+                        crate::tls::install_exec_fs_base(current_thread_id);
 
                         // CRITICAL FIX: Get the new stack pointer from the process
                         // The exec_process function set up a new stack at USER_STACK_TOP
@@ -2591,6 +2578,7 @@ pub fn sys_execv_with_frame(
             drop(manager_guard);
 
             commit.apply();
+            crate::tls::install_exec_fs_base(current_thread_id);
 
             log::info!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
@@ -2753,6 +2741,7 @@ pub fn sys_execv_with_frame(
             drop(manager_guard);
 
             commit.apply();
+            crate::tls::install_exec_fs_base(current_thread_id);
 
             log::info!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",

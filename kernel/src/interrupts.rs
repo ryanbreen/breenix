@@ -682,6 +682,39 @@ extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFram
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+    if stack_frame.code_segment.0 & 3 == 3 {
+        // Unlike an assembly interrupt entry, x86-interrupt does not switch GS.
+        // Queue the synchronous fault with kernel GS, then retry the instruction.
+        // The timer return path owns the full register frame and delivers SIGILL
+        // through the ordinary signal dispositions before resuming this thread.
+        unsafe {
+            core::arch::asm!("swapgs", options(nostack, preserves_flags));
+        }
+        if let Some(mut guard) = crate::process::try_manager() {
+            if let Some(manager) = guard.as_mut() {
+                let tid = crate::per_cpu::current_thread_id_lock_free();
+                let cr3 = x86_64::registers::control::Cr3::read()
+                    .0
+                    .start_address()
+                    .as_u64();
+                let target = match tid.and_then(|tid| manager.find_process_by_thread_mut(tid)) {
+                    Some((_, process)) => Some(process),
+                    None => manager
+                        .find_process_by_cr3_mut(cr3)
+                        .map(|(_, process)| process),
+                };
+                if let Some(process) = target {
+                    process
+                        .signals
+                        .force_signal(crate::signal::constants::SIGILL);
+                }
+            }
+        }
+        unsafe {
+            core::arch::asm!("swapgs", options(nostack, preserves_flags));
+        }
+        return;
+    }
     // Increment preempt count on exception entry
     crate::per_cpu::preempt_disable();
 
@@ -1666,6 +1699,26 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     mut stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
+    // IRETQ can reject a user return frame while CS still names Ring 0.
+    // Treat that as a fault of the returning user, not a kernel exception.
+    // Both syscall entries share this IRETQ fallback after restoring user GS.
+    extern "C" {
+        fn syscall_return_to_userspace(rip: u64, rsp: u64, rflags: u64) -> !;
+    }
+    let rip = stack_frame.instruction_pointer.as_u64();
+    let entry = super::syscall::entry_address(syscall_entry as u64);
+    let end = super::syscall::entry_address(syscall_return_to_userspace as u64);
+    let fault_on_user_return = stack_frame.code_segment.0 & 3 == 0
+        && rip >= entry
+        && rip < end
+        && unsafe { core::ptr::read_unaligned(rip as *const u16) == 0xcf48 }
+        && unsafe { *stack_frame.stack_pointer.as_ptr::<u64>().add(1) & 3 == 3 };
+    if fault_on_user_return {
+        unsafe {
+            core::arch::asm!("swapgs", options(nostack, preserves_flags));
+        }
+    }
+
     // DIAGNOSTIC OUTPUT AT THE VERY START
     let cr3 = {
         use x86_64::registers::control::Cr3;
@@ -1702,7 +1755,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     crate::per_cpu::preempt_disable();
 
     // Check if this came from userspace
-    let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
+    let from_userspace = (stack_frame.code_segment.0 & 3) == 3 || fault_on_user_return;
 
     log::error!("EXCEPTION: GENERAL PROTECTION FAULT (#GP)");
 

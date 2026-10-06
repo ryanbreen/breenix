@@ -1729,23 +1729,10 @@ pub(crate) fn handle_fault(
                 .map(|(_, owner)| owner),
         };
         if let Some(process) = target {
-            force_signal(process, signal);
+            process.signals.force_signal(signal);
         }
     }
     outcome
-}
-
-/// Make a synchronous fault signal pending as Linux's force_sig does: a
-/// blocked or ignored signal is unblocked and reset to its default action, so
-/// an installed handler runs and otherwise the default action applies. The
-/// faulting instruction is retried until the return path delivers it.
-fn force_signal(process: &mut Process, signal: u32) {
-    let signals = &mut process.signals;
-    if signals.is_blocked(signal) || signals.get_handler(signal).is_ignore() {
-        signals.unblock_signals(crate::signal::constants::sig_mask(signal));
-        signals.set_handler(signal, crate::signal::types::SignalAction::default());
-    }
-    signals.set_pending(signal);
 }
 
 /// errno for a failed file write: one that could not allocate cache pages for

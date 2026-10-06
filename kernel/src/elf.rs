@@ -90,12 +90,83 @@ pub struct LoadedElf {
     pub stack_top: VirtAddr,
     /// End of loaded segments, page-aligned up (start of heap)
     pub segments_end: u64,
-    /// Virtual address of program headers (from PT_PHDR or load_base + phoff)
+    /// Virtual address of program headers in their mapped PT_LOAD segment
     pub phdr_vaddr: u64,
     /// Number of program headers
     pub phnum: u16,
     /// Size of each program header entry
     pub phentsize: u16,
+}
+
+// Reject malformed user addresses before constructing VirtAddr or mapping pages.
+fn user_address(address: u64) -> Result<VirtAddr, &'static str> {
+    let address = VirtAddr::try_new(address).map_err(|_| "Non-canonical ELF address")?;
+    if address.as_u64() >= crate::memory::layout::USER_STACK_REGION_END {
+        return Err("ELF address outside userspace");
+    }
+    Ok(address)
+}
+
+fn biased_address(address: u64, base: VirtAddr) -> Result<VirtAddr, &'static str> {
+    let address = if address >= crate::memory::layout::USERSPACE_BASE {
+        address
+    } else {
+        base.as_u64()
+            .checked_add(address)
+            .ok_or("ELF address overflow")?
+    };
+    user_address(address)
+}
+
+fn program_header_offset(
+    header: &Elf64Header,
+    index: usize,
+    len: usize,
+) -> Result<usize, &'static str> {
+    if header.phentsize as usize != mem::size_of::<Elf64ProgramHeader>() {
+        return Err("Invalid program header size");
+    }
+    let start = (header.phoff as usize)
+        .checked_add(
+            index
+                .checked_mul(header.phentsize as usize)
+                .ok_or("Program header overflow")?,
+        )
+        .ok_or("Program header overflow")?;
+    if start
+        .checked_add(mem::size_of::<Elf64ProgramHeader>())
+        .ok_or("Program header overflow")?
+        > len
+    {
+        return Err("Program header out of bounds");
+    }
+    Ok(start)
+}
+
+fn mapped_program_headers(
+    header: &Elf64Header,
+    ph: &Elf64ProgramHeader,
+    vaddr: u64,
+) -> Result<Option<u64>, &'static str> {
+    let size = (header.phnum as u64)
+        .checked_mul(header.phentsize as u64)
+        .ok_or("Program header overflow")?;
+    let end = header
+        .phoff
+        .checked_add(size)
+        .ok_or("Program header overflow")?;
+    let file_end = ph
+        .p_offset
+        .checked_add(ph.p_filesz)
+        .ok_or("Segment file range overflow")?;
+    if header.phoff >= ph.p_offset && end <= file_end {
+        let address = vaddr
+            .checked_add(header.phoff - ph.p_offset)
+            .ok_or("Program header address overflow")?;
+        user_address(address)?;
+        return Ok(Some(address));
+    }
+    Ok(None)
 }
 
 /// Load an ELF64 binary into memory
@@ -165,20 +236,16 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
     );
 
     // Process program headers
-    let ph_offset = header.phoff as usize;
-    let ph_size = header.phentsize as usize;
     let ph_count = header.phnum as usize;
 
     // Track the maximum end of all loaded segments for heap start calculation
     let mut max_segment_end = 0u64;
     // Track PT_PHDR for auxv
     let mut phdr_vaddr: Option<u64> = None;
+    let mut mapped_phdr_vaddr: Option<u64> = None;
 
     for i in 0..ph_count {
-        let ph_start = ph_offset + i * ph_size;
-        if ph_start + mem::size_of::<Elf64ProgramHeader>() > data.len() {
-            return Err("Program header out of bounds");
-        }
+        let ph_start = program_header_offset(header, i, data.len())?;
 
         // Copy program header to avoid alignment issues
         let mut ph_bytes = [0u8; mem::size_of::<Elf64ProgramHeader>()];
@@ -187,19 +254,18 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
 
         // Check for PT_PHDR segment
         if ph.p_type == SegmentType::Phdr as u32 {
-            phdr_vaddr = Some(ph.p_vaddr);
+            phdr_vaddr = Some(biased_address(ph.p_vaddr, base_offset)?.as_u64());
         }
 
         if ph.p_type == SegmentType::Load as u32 {
             load_segment(data, ph, base_offset)?;
 
             // Calculate end of this segment (vaddr + memsz) considering base offset
-            let vaddr = if ph.p_vaddr >= crate::memory::layout::USERSPACE_BASE {
-                ph.p_vaddr
-            } else {
-                base_offset.as_u64() + ph.p_vaddr
-            };
-            let segment_end = vaddr + ph.p_memsz;
+            let vaddr = biased_address(ph.p_vaddr, base_offset)?.as_u64();
+            mapped_phdr_vaddr = mapped_phdr_vaddr.or(mapped_program_headers(header, ph, vaddr)?);
+            let segment_end = vaddr
+                .checked_add(ph.p_memsz)
+                .ok_or("Segment address overflow")?;
             if segment_end > max_segment_end {
                 max_segment_end = segment_end;
             }
@@ -207,16 +273,19 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
     }
 
     // Align heap start to next page boundary (4KB)
-    let heap_start = (max_segment_end + 0xfff) & !0xfff;
+    let heap_start = max_segment_end
+        .checked_add(0xfff)
+        .ok_or("Heap address overflow")?
+        & !0xfff;
 
-    // If no PT_PHDR was found, compute from load_base + phoff
-    // For absolute addresses, base_offset is usually zero
-    let phdr_vaddr = phdr_vaddr.unwrap_or(base_offset.as_u64() + header.phoff);
+    // AT_PHDR is a mapped address, not a file offset. Match the PT_LOAD
+    // containing e_phoff, including that segment's load bias and file offset.
+    let phdr_vaddr = phdr_vaddr.or(mapped_phdr_vaddr).unwrap_or(0);
 
     // The entry point should be the header entry point directly
     // since our userspace binaries are compiled with absolute addresses
     Ok(LoadedElf {
-        entry_point: VirtAddr::new(header.entry),
+        entry_point: biased_address(header.entry, base_offset)?,
         stack_top: VirtAddr::zero(), // Stack will be allocated by spawn function
         segments_end: heap_start,
         phdr_vaddr,
@@ -236,17 +305,22 @@ fn load_segment(
     let file_size = ph.p_filesz as usize;
     let mem_size = ph.p_memsz as usize;
 
+    if file_size > mem_size {
+        return Err("Segment file size exceeds memory size");
+    }
+    if mem_size == 0 {
+        return Ok(());
+    }
+
     // Our userspace binaries use absolute addressing starting at USERSPACE_BASE
     // Don't add base_offset for absolute addresses in the userspace range
-    let vaddr = if ph.p_vaddr >= crate::memory::layout::USERSPACE_BASE {
-        // Absolute userspace address - use directly
-        VirtAddr::new(ph.p_vaddr)
-    } else {
-        // Relative address - add base offset
-        base_offset + ph.p_vaddr
-    };
+    let vaddr = biased_address(ph.p_vaddr, base_offset)?;
 
-    if file_start + file_size > data.len() {
+    if file_start
+        .checked_add(file_size)
+        .ok_or("Segment file range overflow")?
+        > data.len()
+    {
         return Err("Segment data out of bounds");
     }
 
@@ -259,9 +333,15 @@ fn load_segment(
     );
 
     // Calculate pages needed
-    let start_page = Page::<Size4KiB>::containing_address(vaddr);
-    let end_addr = vaddr + mem_size as u64 - 1u64;
-    let end_page = Page::<Size4KiB>::containing_address(end_addr);
+    let end_addr = user_address(
+        vaddr
+            .as_u64()
+            .checked_add(mem_size as u64 - 1)
+            .ok_or("Segment address overflow")?,
+    )?;
+    // Iterate integer addresses: PageRangeInclusive advances past its last
+    // page, which panics at the end of the canonical user address range.
+    let page_addresses = vaddr.align_down(4096u64).as_u64()..=end_addr.as_u64();
 
     // Map pages
     let mut mapper = unsafe { crate::memory::paging::get_mapper() };
@@ -282,7 +362,8 @@ fn load_segment(
     );
 
     // Map all pages for the segment
-    for page in Page::range_inclusive(start_page, end_page) {
+    for address in page_addresses.clone().step_by(4096) {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
         log::trace!(
             "Allocating frame for page {:#x}",
             page.start_address().as_u64()
@@ -320,7 +401,12 @@ fn load_segment(
 
     // Zero remaining memory (BSS)
     if mem_size > file_size {
-        let bss_start = vaddr + file_size as u64;
+        let bss_start = user_address(
+            vaddr
+                .as_u64()
+                .checked_add(file_size as u64)
+                .ok_or("BSS address overflow")?,
+        )?;
         let bss_size = mem_size - file_size;
         unsafe {
             core::ptr::write_bytes(bss_start.as_mut_ptr::<u8>(), 0, bss_size);
@@ -332,7 +418,8 @@ fn load_segment(
         log::trace!("Removing write permission from non-writable segment");
         let correct_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
 
-        for page in Page::range_inclusive(start_page, end_page) {
+        for address in page_addresses.step_by(4096) {
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
             unsafe {
                 // Update the page table entry to remove write permission
                 if mapper.update_flags(page, correct_flags).is_ok() {
@@ -380,16 +467,11 @@ pub fn load_elf_into_page_table(
     let mut max_segment_end = 0u64;
     // Track PT_PHDR for auxv
     let mut phdr_vaddr: Option<u64> = None;
+    let mut mapped_phdr_vaddr: Option<u64> = None;
 
     // Load program segments
     for i in 0..header.phnum {
-        let ph_offset = header.phoff as usize + (i as usize * mem::size_of::<Elf64ProgramHeader>());
-
-        if ph_offset + mem::size_of::<Elf64ProgramHeader>() > data.len() {
-            return Err("Program header out of bounds");
-        }
-
-        let ph_start = ph_offset;
+        let ph_start = program_header_offset(header, i as usize, data.len())?;
 
         // Copy program header to avoid alignment issues
         let mut ph_bytes = [0u8; mem::size_of::<Elf64ProgramHeader>()];
@@ -398,14 +480,19 @@ pub fn load_elf_into_page_table(
 
         // Check for PT_PHDR segment
         if ph.p_type == SegmentType::Phdr as u32 {
-            phdr_vaddr = Some(ph.p_vaddr);
+            phdr_vaddr = Some(user_address(ph.p_vaddr)?.as_u64());
         }
 
         if ph.p_type == SegmentType::Load as u32 {
             load_segment_into_page_table(data, ph, page_table)?;
+            mapped_phdr_vaddr =
+                mapped_phdr_vaddr.or(mapped_program_headers(header, ph, ph.p_vaddr)?);
 
             // Calculate end of this segment (vaddr + memsz)
-            let segment_end = ph.p_vaddr + ph.p_memsz;
+            let segment_end = ph
+                .p_vaddr
+                .checked_add(ph.p_memsz)
+                .ok_or("Segment address overflow")?;
             if segment_end > max_segment_end {
                 max_segment_end = segment_end;
             }
@@ -413,11 +500,13 @@ pub fn load_elf_into_page_table(
     }
 
     // Align heap start to next page boundary (4KB)
-    let heap_start = (max_segment_end + 0xfff) & !0xfff;
+    let heap_start = max_segment_end
+        .checked_add(0xfff)
+        .ok_or("Heap address overflow")?
+        & !0xfff;
 
-    // If no PT_PHDR was found, compute from header phoff
-    // For position-dependent executables, this is the file offset which matches vaddr for first LOAD at 0
-    let phdr_vaddr = phdr_vaddr.unwrap_or(header.phoff);
+    // This loader maps absolute p_vaddr addresses (load bias zero).
+    let phdr_vaddr = phdr_vaddr.or(mapped_phdr_vaddr).unwrap_or(0);
 
     log::info!(
         "ELF loaded: segments end at {:#x}, heap will start at {:#x}",
@@ -426,7 +515,7 @@ pub fn load_elf_into_page_table(
     );
 
     Ok(LoadedElf {
-        entry_point: VirtAddr::new(header.entry),
+        entry_point: user_address(header.entry)?,
         stack_top: VirtAddr::zero(), // Stack will be allocated by spawn function
         segments_end: heap_start,
         phdr_vaddr,
@@ -450,10 +539,21 @@ fn load_segment_into_page_table(
     let file_size = ph.p_filesz as usize;
     let mem_size = ph.p_memsz as usize;
 
-    // Use the virtual address directly - processes have their own address space
-    let vaddr = VirtAddr::new(ph.p_vaddr);
+    if file_size > mem_size {
+        return Err("Segment file size exceeds memory size");
+    }
+    if mem_size == 0 {
+        return Ok(());
+    }
 
-    if file_start + file_size > data.len() {
+    // Use the virtual address directly - processes have their own address space
+    let vaddr = user_address(ph.p_vaddr)?;
+
+    if file_start
+        .checked_add(file_size)
+        .ok_or("Segment file range overflow")?
+        > data.len()
+    {
         return Err("Segment data out of bounds");
     }
 
@@ -466,9 +566,13 @@ fn load_segment_into_page_table(
     );
 
     // Calculate pages needed
-    let start_page = Page::<Size4KiB>::containing_address(vaddr);
-    let end_addr = vaddr + mem_size as u64 - 1u64;
-    let end_page = Page::<Size4KiB>::containing_address(end_addr);
+    let end_addr = user_address(
+        vaddr
+            .as_u64()
+            .checked_add(mem_size as u64 - 1)
+            .ok_or("Segment address overflow")?,
+    )?;
+    let page_addresses = vaddr.align_down(4096u64).as_u64()..=end_addr.as_u64();
 
     // Determine final permissions
     let segment_writable = ph.p_flags & 2 != 0;
@@ -491,7 +595,8 @@ fn load_segment_into_page_table(
     }
 
     // Map and load each page - NEVER switch to process page table
-    for page in Page::range_inclusive(start_page, end_page) {
+    for address in page_addresses.step_by(4096) {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
         // Check if page is already mapped (from a previous overlapping segment)
         // This handles cases like RELRO segments that overlap with data segments
         let (frame, already_mapped) =
@@ -593,7 +698,7 @@ fn load_segment_into_page_table(
 
     log::trace!(
         "Successfully loaded segment with {} pages using Linux-style physical memory access",
-        Page::range_inclusive(start_page, end_page).count()
+        (end_addr.as_u64() - vaddr.align_down(4096u64).as_u64()) / 4096 + 1
     );
 
     Ok(())

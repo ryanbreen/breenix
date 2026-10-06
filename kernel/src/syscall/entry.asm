@@ -6,12 +6,26 @@
 section .text.entry
 
 global syscall_entry
+global syscall_instruction_entry
 global syscall_return_to_userspace
 
 ; External Rust functions
 extern rust_syscall_handler
 extern check_need_resched_and_switch
 extern trace_iretq_to_ring3
+
+ ; SYSCALL does not switch stacks. FMASK clears IF/DF before this entry.
+; Only RCX/R11 are clobbered, as specified by the Linux x86-64 ABI.
+syscall_instruction_entry:
+    swapgs
+    mov [gs:40], rsp
+    mov rsp, [gs:16]
+    push qword 0x2b
+    push qword [gs:40]
+    push r11
+    push qword 0x33
+    push rcx
+    jmp syscall_save_registers
 
 ; Syscall entry point from INT 0x80
 ; This is called when userspace executes INT 0x80
@@ -28,6 +42,9 @@ syscall_entry:
     ; atomicity by explicitly disabling interrupts for the entire register save sequence
     cli
 
+    ; INT 0x80 has already switched stacks via TSS.RSP0.
+    swapgs
+syscall_save_registers:
     ; Save all general purpose registers in SavedRegisters order
     ; Must match timer interrupt order: rax first, r15 last
     push rax    ; syscall number (pushed first, at RSP+14*8)
@@ -48,11 +65,6 @@ syscall_entry:
 
     ; Clear direction flag for string operations
     cld
-
-    ; Always switch to kernel GS FIRST for INT 0x80 entry
-    ; We need kernel GS to read kernel_cr3 from per-CPU data
-    ; INT 0x80 is only used from userspace, so we always need swapgs
-    swapgs
 
     ; CRITICAL FIX: Clear PREEMPT_ACTIVE flag at syscall entry
     ; This flag is set during syscall return to prevent context switches
@@ -269,9 +281,30 @@ syscall_entry:
     pop rdx
     pop rax
 
-    ; Return to userspace with IRETQ
-    ; This will restore RIP, CS, RFLAGS, RSP, SS from stack
-    ; IRETQ will re-enable interrupts from the saved RFLAGS
+    ; SYSRET is valid only for an unchanged 64-bit SYSCALL frame. Signal
+    ; delivery, exec, sigreturn and INT 0x80 retain the general IRETQ path.
+    cmp qword [rsp + 8], 0x33
+    jne .iret_return
+    cmp qword [rsp + 32], 0x2b
+    jne .iret_return
+    cmp rcx, [rsp]
+    jne .iret_return
+    cmp r11, [rsp + 16]
+    jne .iret_return
+    test r11, 0x10100             ; RF/TF require IRETQ semantics
+    jnz .iret_return
+    ; Intel SYSRET faults in Ring 0 for non-canonical RCX. Test before
+    ; installing the user RSP; a rejected target must use IRETQ instead.
+    push rax
+    mov rax, rcx
+    shl rax, 16
+    sar rax, 16
+    cmp rax, rcx
+    pop rax
+    jne .iret_return
+    mov rsp, [rsp + 24]
+    o64 sysret
+.iret_return:
     iretq
     
     ; Should never reach here - add marker for triple fault debugging

@@ -114,6 +114,9 @@ pub struct CpuContext {
     /// Segment registers (for userspace support)
     pub cs: u64,
     pub ss: u64,
+    /// Explicit ARCH_SET_FS value, including a valid zero base.
+    pub user_fs_base: u64,
+    pub user_fs_base_set: bool,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -141,6 +144,10 @@ impl CpuContext {
             rflags: frame.rflags,
             cs: frame.cs,
             ss: frame.ss,
+            user_fs_base: crate::per_cpu::current_thread()
+                .map_or(0, |thread| thread.context.user_fs_base),
+            user_fs_base_set: crate::per_cpu::current_thread()
+                .is_some_and(|thread| thread.context.user_fs_base_set),
         }
     }
 
@@ -188,6 +195,8 @@ impl CpuContext {
                 ThreadPrivilege::Kernel => 0x10, // Kernel data segment
                 ThreadPrivilege::User => 0x2b,   // User data segment (based on GDT log)
             },
+            user_fs_base: 0,
+            user_fs_base_set: false,
         }
     }
 }

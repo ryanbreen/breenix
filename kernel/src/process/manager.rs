@@ -3599,6 +3599,8 @@ impl ProcessManager {
             thread.context.r13 = 0;
             thread.context.r14 = 0;
             thread.context.r15 = 0;
+            thread.context.user_fs_base = 0;
+            thread.context.user_fs_base_set = false;
 
             // CRITICAL OS-STANDARD: Set proper segment selectors for userspace
             // These must match what the GDT defines
@@ -3985,6 +3987,8 @@ impl ProcessManager {
 
         thread.context.cs = 0x33;
         thread.context.ss = 0x2b;
+        thread.context.user_fs_base = 0;
+        thread.context.user_fs_base_set = false;
         thread.state = crate::task::thread::ThreadState::Ready;
 
         log::info!(

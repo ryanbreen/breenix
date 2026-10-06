@@ -1317,6 +1317,36 @@
       "checkHint": "Check syscall/graphics.rs sys_fbinfo()"
     },
     {
+      "name": "User invalid opcode delivers SIGILL",
+      "marker": "USER_UD_SIGILL_PASSED",
+      "failureMeaning": "x86 SYSCALL or synchronous signal test failed",
+      "checkHint": "Check signal_test.rs, syscall entry and signal delivery"
+    },
+    {
+      "name": "Noncanonical SYSCALL return terminates user",
+      "marker": "USER_NONCANONICAL_SYSCALL_PASSED",
+      "failureMeaning": "x86 SYSCALL or synchronous signal test failed",
+      "checkHint": "Check signal_test.rs, syscall entry and signal delivery"
+    },
+    {
+      "name": "SYSCALL signal return test passed",
+      "marker": "USER_SYSCALL_SIGRETURN_PASSED",
+      "failureMeaning": "x86 SYSCALL or synchronous signal test failed",
+      "checkHint": "Check signal_test.rs, syscall entry and signal delivery"
+    },
+    {
+      "name": "User SIGILL dispositions test passed",
+      "marker": "USER_UD_DISPOSITIONS_PASSED",
+      "failureMeaning": "x86 SYSCALL or synchronous signal test failed",
+      "checkHint": "Check signal_test.rs, syscall entry and signal delivery"
+    },
+    {
+      "name": "SYSCALL restart test passed",
+      "marker": "USER_SYSCALL_RESTART_PASSED",
+      "failureMeaning": "x86 SYSCALL or synchronous signal test failed",
+      "checkHint": "Check signal_test.rs, syscall entry and signal delivery"
+    },
+    {
       "name": "Diagnostic: Multiple getpid calls",
       "marker": "Test 41a: Multiple no-arg syscalls (getpid)|Result: PASS",
       "failureMeaning": "Multiple no-arg syscalls (getpid) failed - basic syscall mechanism broken",

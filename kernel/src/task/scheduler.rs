@@ -3919,6 +3919,16 @@ impl Scheduler {
                 self.unblock_for_io(thread_id);
                 return;
             }
+            // A syscall wait published as plain Blocked (pipe, FIFO, socket,
+            // PTY reads and accepts) is interruptible: its loop checks signals
+            // before it halts again. Once it has been switched out, only a wake
+            // brings it back to that check, as Linux's signal_wake_up wakes
+            // TASK_INTERRUPTIBLE sleepers.
+            if thread.state == ThreadState::Blocked && thread.blocked_in_syscall {
+                self.unblock(thread_id);
+                set_need_resched();
+                return;
+            }
             if thread.state == ThreadState::BlockedOnSignal {
                 thread.set_ready();
                 WAKE_SITE_SIGNAL.fetch_add(1, Ordering::Relaxed);

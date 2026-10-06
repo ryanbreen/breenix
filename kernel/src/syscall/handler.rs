@@ -442,10 +442,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             const ARCH_SET_FS: u64 = 0x1002;
             const ARCH_GET_FS: u64 = 0x1003;
             match args.0 {
-                ARCH_SET_FS => {
-                    x86_64::registers::model_specific::FsBase::write(x86_64::VirtAddr::new(args.1));
-                    SyscallResult::Ok(0)
-                }
+                ARCH_SET_FS => crate::tls::set_user_fs_base(args.1),
                 ARCH_GET_FS => {
                     let fs_base = x86_64::registers::model_specific::FsBase::read().as_u64();
                     match super::userptr::copy_to_user(args.1 as *mut u64, &fs_base) {
@@ -517,6 +514,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             super::handlers::sys_pwrite64(args.0 as i32, args.1, args.2, args.3 as i64)
         }
         Some(SyscallNumber::Spawn) => super::handlers::sys_spawn(args.0, args.1),
+        // musl uses x86's legacy stat/lstat numbers, with the same Stat ABI.
+        None if syscall_num == 4 => super::fs::sys_newfstatat(-100, args.0, args.1, 0),
+        None if syscall_num == 6 => super::fs::sys_newfstatat(-100, args.0, args.1, 0x100),
         None if syscall_num == super::MSYNC_SYSCALL_NUMBER => {
             super::mmap::sys_msync(args.0, args.1, args.2 as u32)
         }
