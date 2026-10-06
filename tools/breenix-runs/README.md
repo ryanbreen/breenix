@@ -81,8 +81,11 @@ stored run. Launching runs remains in the CLI.
 
 For x86 runs, `--hardware` selects a name from `docs/x86-profiles.json` and records
 `BREENIX_QEMU_PROFILE` in the manifest environment. `list --profile gate` filters
-the run kind. `--gate-timeout` sets the remote per-boot timeout explicitly; the
-Mac shell's `BREENIX_GATE_TIMEOUT` is ignored. The x86 gate requires the virtio
+the run kind. `--gate-timeout` sets the scoring deadline. Full mode collects the
+kernel's `USERSPACE TEST REPORT DONE` before scoring a missed deadline (#1068).
+`BREENIX_FULL_BACKSTOP` overrides its collection limit (default: the larger of
+1800 seconds and the scoring deadline). The manifest records both values.
+The Mac shell's `BREENIX_GATE_TIMEOUT` is ignored. The x86 gate requires the virtio
 storage setting so it can attach all three disks (AHCI/NVMe profiles select their
 own disk devices). SMP4 configures four CPUs but currently brings only one online
 (see issue #629).

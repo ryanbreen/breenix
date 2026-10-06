@@ -14919,13 +14919,13 @@ fn validate_production_tombstone_census(
         return Err(());
     }
     // Review finding B2: the x86 post-userspace samples, and there are two
-    // because one cannot carry both halves of the claim. The `sys_exit` arm runs
+    // because one cannot carry both halves of the claim. The completion reporter runs
     // when the last userspace thread is gone and measures the gauge nonzero on
     // the four real rows the live reaps just claimed; the idle-loop sample is
     // taken a fixed settle later and measures retention at quiesce. Every other
     // x86 census site fires before a user process exists, so without these the
     // arch's retention claim rests on samples taken before any row was reaped.
-    if !function_body(x86_handlers, "sys_exit").contains("emit_tombstone_census();") {
+    if !function_body(x86_handlers, "report_userspace_completion").contains("emit_tombstone_census();") {
         return Err(());
     }
     Ok(())
@@ -15165,7 +15165,7 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
     // Without it the only x86 census samples are the two that precede every live
     // reap, which is exactly the evidence gap this finding named.
     let post_userspace_dropped = x86_handlers.replacen(
-        "                crate::tracing::providers::teardown::emit_tombstone_census();\n",
+        "            crate::tracing::providers::teardown::emit_tombstone_census();\n",
         "",
         1,
     );

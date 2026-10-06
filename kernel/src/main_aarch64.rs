@@ -1669,6 +1669,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]
     kernel::capture_lockup_oracle::run_lockup_capture_oracle();
 
+    // The kthread and workqueue self-tests below return with interrupts
+    // disabled, the state x86 calls them in. This boot thread already runs its
+    // timer and the secondary CPUs, so it takes its own state back afterwards:
+    // left masked, CPU0 stops taking timer ticks and the boot tests that follow
+    // fail on it (#1120).
+    #[cfg(feature = "testing")]
+    let boot_thread_irqs = kernel::arch_interrupts_enabled();
+
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
     #[cfg(feature = "testing")]
@@ -1691,6 +1699,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::task::workqueue_tests::test_workqueue();
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
     kernel::task::softirq_tests::test_softirq();
+    #[cfg(feature = "testing")]
+    if boot_thread_irqs {
+        unsafe { kernel::arch_enable_interrupts() };
+    }
 
     // In kthread_test_only mode, exit immediately after kthread tests pass
     #[cfg(feature = "kthread_test_only")]
@@ -1731,6 +1743,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             }
         }
     }
+
+    #[cfg(feature = "testing")]
+    kernel::task::userspace_completion::begin_loading();
 
     // Run parallel boot tests if enabled
     #[cfg(feature = "boot_tests")]
@@ -2005,6 +2020,13 @@ fn load_test_binaries_from_ext2() {
 
     let mut loaded = 0;
     let mut failed = 0;
+    // A testing kernel never launches init, so the boot tests' ProcessContext
+    // cohort runs here instead: once, with the first test process published
+    // and not yet runnable, the state `launch_init_from_elf` gives it. The
+    // loader's preempt pin is released around it: the cohort's lock oracles
+    // need this CPU to dispatch their network work while the loader waits.
+    #[cfg(feature = "boot_tests")]
+    let mut process_context_pending = true;
 
     // Search paths for test binaries - try each in order
     let search_dirs = ["/bin", "/usr/local/cbin", "/usr/local/test/bin", "/sbin"];
@@ -2074,7 +2096,24 @@ fn load_test_binaries_from_ext2() {
         }
 
         // Create userspace process (adds to scheduler ready queue)
-        match kernel::process::creation::create_user_process(String::from(*name), &elf_data) {
+        let created = kernel::process::creation::create_user_process_before_run(
+            String::from(*name),
+            &elf_data,
+            |_| {
+                #[cfg(feature = "boot_tests")]
+                if core::mem::take(&mut process_context_pending) {
+                    kernel::per_cpu_aarch64::preempt_enable();
+                    let failures = kernel::test_framework::advance_to_stage(
+                        kernel::test_framework::TestStage::ProcessContext,
+                    );
+                    kernel::per_cpu_aarch64::preempt_disable();
+                    if failures > 0 {
+                        serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
+                    }
+                }
+            },
+        );
+        match created {
             Ok(pid) => {
                 serial_println!("[test] Loaded {} (PID {})", name, pid.as_u64());
                 #[cfg(feature = "btrt")]
@@ -2109,6 +2148,7 @@ fn load_test_binaries_from_ext2() {
         "Loaded {} test programs ({} failed); running them",
         loaded, failed
     ));
+    kernel::task::userspace_completion::start();
 }
 
 /// Initialize the scheduler with an idle thread (ARM64)

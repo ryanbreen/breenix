@@ -1,3 +1,20 @@
-# Two-way ratchet: every failure must be listed, and every listed test must still fail.
-# Required entry format: <test-name>   # <issue reference>
-# Remove an entry as soon as its referenced failure is fixed.
+# Nonzero statuses permitted by the source contracts below.
+# Format: program-pattern status # source and asserted reason.
+# A wildcard matches a decimal fork child PID; parents are scored separately.
+waitpid_test_child_* 42 # userspace/programs/src/waitpid_test.rs: child exits 42; parent asserts WEXITSTATUS=42.
+sigchld_test_child_* 42 # userspace/programs/src/sigchld_test.rs: child exits 42 to trigger SIGCHLD; parent asserts WEXITSTATUS=42.
+wnohang_timing_test_child_* 99 # userspace/programs/src/wnohang_timing_test.rs: child exits 99; parent asserts WEXITSTATUS=99.
+ctrl_c_test_child_* -2 # userspace/programs/src/ctrl_c_test.rs: parent asserts child termination by SIGINT.
+kill_process_group_test_child_* -9 # userspace/programs/src/kill_process_group_test.rs: parent asserts SIGKILL termination of the isolated group child.
+signal_test_child_* -15 # userspace/programs/src/signal_test.rs: parent asserts SIGTERM for its victim and restart-signal sender.
+signal_test_child_* 44 # userspace/programs/src/signal_test.rs: handled UD2 child exits 44; parent asserts that code.
+/bin/false 1 # userspace/programs/src/false_test.rs: /bin/false must exit exactly 1 without output.
+/bin/which 1 # userspace/programs/src/which_test.rs: missing executable and no-argument cases assert exactly 1; successful lookup failures are caught by the parent.
+/bin/cat 1 # userspace/programs/src/cat_test.rs: missing-file and partial missing-file cases assert nonzero; parent separately checks all successful reads.
+/bin/head 1 # userspace/programs/src/head_test.rs: missing-file error case asserts nonzero; parent separately checks successful output.
+/bin/tail 1 # userspace/programs/src/tail_test.rs: missing-file error case asserts nonzero; parent separately checks successful output.
+/bin/wc 1 # userspace/programs/src/wc_test.rs: missing-file error case asserts nonzero; parent separately checks successful counts.
+/bin/ls 1 # userspace/programs/src/ls_test.rs: missing-directory error case asserts nonzero; parent separately checks successful listings.
+signal_test_child_* -132 # userspace/programs/src/signal_test.rs: default/ignored/blocked UD2 children assert SIGILL; the core-dump exit encoding is -(128+SIGILL).
+/tmp/syscall_edge.elf -11 # userspace/programs/src/signal_test.rs: noncanonical SYSCALL return child must die by SIGSEGV; parent asserts WTERMSIG=11.
+simple_exit 42 # userspace/programs/src/simple_exit.rs: intentionally exits 42 to test exec/exit status (#781).

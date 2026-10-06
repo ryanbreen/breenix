@@ -1345,6 +1345,9 @@ fn kernel_main_continue() -> ! {
     // Off by default until the strand below is fixed. Turning the feature on is
     // how the two blocking defects are reproduced; leaving it off keeps the
     // shipped x86 boot identical to what it was before this work.
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
+    task::userspace_completion::begin_loading();
+
     #[cfg(all(feature = "boot_tests", feature = "x86_staged_registry"))]
     {
         log::info!("[boot] Running parallel boot tests...");
@@ -2204,6 +2207,7 @@ fn kernel_main_continue() -> ! {
         log::info!("=== GRAPHICS TEST: FbInfo syscall ===");
         test_exec::test_fbinfo();
         log::info!("Boot test program registration complete");
+        task::userspace_completion::start();
     }
 
     // NOTE: Premature success markers removed - tests must verify actual execution

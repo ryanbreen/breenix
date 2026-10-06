@@ -922,6 +922,7 @@ impl Write for LogBuffer {
 }
 
 /// State of the logger
+#[derive(Clone, Copy)]
 enum LoggerState {
     /// Buffering messages until serial is ready
     Buffering,
@@ -1009,8 +1010,16 @@ impl Log for CombinedLogger {
             let target = record.target();
             let args = record.args();
 
-            // Use try_lock to avoid deadlocks from interrupt context
-            let state = match self.state.try_lock() {
+            // Use try_lock to avoid deadlocks from interrupt context, and copy
+            // the state out with interrupts masked, as the framebuffer sink
+            // does, so no holder is ever preempted with the lock held. The x86
+            // boot thread is never scheduled again once it drops its preempt
+            // pin; a tick inside this window used to leave the lock held for
+            // the rest of the boot, sending every later record down this
+            // fallback.
+            let state = match crate::arch_without_interrupts(|| {
+                self.state.try_lock().map(|state| *state)
+            }) {
                 Some(state) => state,
                 None => {
                     // If we can't acquire the lock, fall back to basic log serial output (COM2)
@@ -1024,10 +1033,9 @@ impl Log for CombinedLogger {
             // TEMPORARILY DISABLE TIMESTAMPS TO DEBUG TIMER INTERRUPT HANG
             let timestamp = 0;
 
-            match *state {
+            match state {
                 LoggerState::Buffering => {
                     // Buffer the message without timestamp (we don't have time yet)
-                    drop(state); // Release lock before acquiring buffer lock
                     match self.buffer.try_lock() {
                         Some(mut buffer) => {
                             // Format directly into buffer
@@ -1041,7 +1049,6 @@ impl Log for CombinedLogger {
                 }
                 LoggerState::SerialReady => {
                     // Output to log serial (COM2) only with timestamp if available
-                    drop(state); // Release lock before serial I/O
                     if timestamp > 0 {
                         log_serial_println!(
                             "{} - [{:>5}] {}: {}",
@@ -1061,7 +1068,6 @@ impl Log for CombinedLogger {
                 }
                 LoggerState::FullyInitialized => {
                     // Output to log serial (COM2) - always
-                    drop(state); // Release lock before I/O
 
                     if timestamp > 0 {
                         log_serial_println!(

@@ -182,7 +182,15 @@ fn main() {
             // Kill child2 (it's in a busy loop) and reap
             let _ = kill(child2, SIGKILL);
             let mut status2: i32 = 0;
-            let _ = process::waitpid(child2, &mut status2, 0);
+            let waited = process::waitpid(child2, &mut status2, 0);
+            if !matches!(waited, Ok(pid) if pid.raw() as i32 == child2)
+                || !process::wifsignaled(status2)
+                || process::wtermsig(status2) != SIGKILL
+            {
+                println!("  [Parent] FAIL: expected child2 SIGKILL, status={}", status2);
+                println!("KILL_PGROUP_TEST_FAILED");
+                std::process::exit(1);
+            }
         }
     }
 

@@ -220,77 +220,9 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
                 .unwrap_or(false);
 
         if !has_other_userspace_threads {
-            // No more userspace threads remaining
-            log::info!("No more userspace threads remaining");
-
-            // Wake the keyboard task to ensure it can process any pending input
-            #[cfg(target_arch = "x86_64")]
-            {
-                crate::keyboard::stream::wake_keyboard_task();
-                log::info!("Woke keyboard task to ensure input processing continues");
+            if !crate::task::userspace_completion::reporter_started() {
+                report_userspace_completion();
             }
-
-            // Signal that userspace testing is complete with clear markers
-            log::info!("🎯 USERSPACE TEST COMPLETE - All processes finished successfully");
-            let (exited, nonzero) = crate::task::exit_tally::totals();
-            let (failures, failure_count) = crate::task::exit_tally::snapshot_failures();
-            let failures = &failures[..failure_count];
-            log::info!(
-                "TEST_TALLY: exited={} nonzero={} failed=[{}]",
-                exited,
-                nonzero,
-                crate::task::exit_tally::FailureList::new(failures, nonzero)
-            );
-
-            if nonzero == 0 {
-                log::info!("=====================================");
-                log::info!("✅ USERSPACE EXECUTION SUCCESSFUL ✅");
-                log::info!("✅ Ring 3 execution confirmed       ✅");
-                log::info!("✅ System calls working correctly   ✅");
-                log::info!("✅ Process lifecycle complete       ✅");
-                log::info!("=====================================");
-                log::info!("🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁");
-            } else {
-                log::error!(
-                    "🚨 Failing userspace processes: {} 🚨",
-                    crate::task::exit_tally::FailureList::new(failures, nonzero)
-                );
-                log::error!(
-                    "🚨 TEST RUNNER: FAILED - {} of {} userspace processes exited nonzero 🚨",
-                    nonzero,
-                    exited
-                );
-            }
-
-            // Set flag for automated systems that want to detect completion
-            USERSPACE_TEST_COMPLETE.store(true, Ordering::SeqCst);
-
-            // #775: follow the periodic heartbeat with a final snapshot after
-            // the last userspace exit has been recorded. The accounting itself
-            // is lock-free and allocation-free; no formatting occurs in the
-            // interrupt or context-switch path.
-            #[cfg(target_arch = "x86_64")]
-            crate::task::dispatch_strand_census::report_snapshot();
-
-            // P6a PR-2, review finding B2: sample the tombstone census AFTER a
-            // live reap. x86's other two census sites both fire before any user
-            // process exists, so `removed` never left the join oracle's own two
-            // rows and whether the rows the four live `complete_wait` reaps
-            // claimed completed their join was unmeasured — the x86 half of this
-            // phase's central retention claim had no evidence. This point is the
-            // end of the userspace phase: no userspace thread remains, so no
-            // further reap can occur, and `resident` here is retention at
-            // quiesce. Boot-test profile only, on the exit path, once per boot.
-            #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
-            if !TOMBSTONE_CENSUS_AFTER_USERSPACE.swap(true, Ordering::SeqCst) {
-                crate::tracing::providers::teardown::emit_tombstone_census();
-            }
-
-            // Fallback BTRT finalization: if all userspace threads are gone,
-            // finalize regardless of whether every registered PID called on_process_exit.
-            // This handles forked children, hanging tests, etc.
-            #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::finalize();
         }
     } else {
         log::error!("sys_exit: No current thread in scheduler");
@@ -303,6 +235,105 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     // The terminated thread should never run again
     // The reschedule will happen when we return from the syscall
     SyscallResult::Ok(0)
+}
+
+
+/// One line of the userspace report. x86 sends it through `log`, as the gate
+/// scorers expect; ARM64 installs no `log` backend, so it prints to serial.
+macro_rules! report_line {
+    ($level:ident, $($arg:tt)*) => {{
+        #[cfg(target_arch = "x86_64")]
+        log::$level!($($arg)*);
+        #[cfg(target_arch = "aarch64")]
+        crate::serial_println!($($arg)*);
+    }};
+}
+
+/// Publish the userspace verdict outside process-manager and scheduler locks.
+pub(crate) fn report_userspace_completion() {
+    if USERSPACE_TEST_COMPLETE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let failure_records = crate::task::exit_tally::snapshot_failures();
+    let failures = failure_records.as_slice();
+    crate::arch_without_interrupts(|| {
+        // No more userspace threads remaining
+        report_line!(info, "No more userspace threads remaining");
+
+        // Wake the keyboard task to ensure it can process any pending input
+        #[cfg(target_arch = "x86_64")]
+        {
+            crate::keyboard::stream::wake_keyboard_task();
+            report_line!(info, "Woke keyboard task to ensure input processing continues");
+        }
+
+        // Signal that userspace testing is complete with clear markers
+        report_line!(info, "🎯 USERSPACE TEST COMPLETE - All processes finished");
+        let (exited, nonzero) = crate::task::exit_tally::totals();
+
+
+        report_line!(
+            info,
+            "TEST_TALLY: exited={} nonzero={} failed=[{}] started={}",
+            exited,
+            nonzero,
+            crate::task::exit_tally::FailureList::new(failures, nonzero),
+            crate::task::exit_tally::started()
+        );
+
+        if nonzero == 0 {
+            report_line!(info, "=====================================");
+            report_line!(info, "✅ USERSPACE EXECUTION SUCCESSFUL ✅");
+            report_line!(info, "✅ Ring 3 execution confirmed       ✅");
+            report_line!(info, "✅ System calls working correctly   ✅");
+            report_line!(info, "✅ Process lifecycle complete       ✅");
+            report_line!(info, "=====================================");
+            report_line!(info, "🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁");
+        } else {
+            report_line!(
+                error,
+                "🚨 Failing userspace processes: {} 🚨",
+                crate::task::exit_tally::FailureList::new(failures, nonzero)
+            );
+            report_line!(
+                error,
+                "🚨 TEST RUNNER: FAILED - {} of {} userspace processes exited nonzero 🚨",
+                nonzero,
+                exited
+            );
+        }
+
+        // Set flag for automated systems that want to detect completion
+        USERSPACE_TEST_COMPLETE.store(true, Ordering::SeqCst);
+
+        // #775: follow the periodic heartbeat with a final snapshot after
+        // the last userspace exit has been recorded. The accounting itself
+        // is lock-free and allocation-free; no formatting occurs in the
+        // interrupt or context-switch path.
+        #[cfg(target_arch = "x86_64")]
+        crate::task::dispatch_strand_census::report_snapshot();
+
+        // P6a PR-2, review finding B2: sample the tombstone census AFTER a
+        // live reap. x86's other two census sites both fire before any user
+        // process exists, so `removed` never left the join oracle's own two
+        // rows and whether the rows the four live `complete_wait` reaps
+        // claimed completed their join was unmeasured — the x86 half of this
+        // phase's central retention claim had no evidence. This point is the
+        // end of the userspace phase: no userspace thread remains, so no
+        // further reap can occur, and `resident` here is retention at
+        // quiesce. Boot-test profile only, on the exit path, once per boot.
+        #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+        if !TOMBSTONE_CENSUS_AFTER_USERSPACE.swap(true, Ordering::SeqCst) {
+            crate::tracing::providers::teardown::emit_tombstone_census();
+        }
+
+        // Fallback BTRT finalization: if all userspace threads are gone,
+        // finalize regardless of whether every registered PID called on_process_exit.
+        // This handles forked children, hanging tests, etc.
+        #[cfg(feature = "btrt")]
+        crate::test_framework::btrt::finalize();
+        report_line!(info, "USERSPACE TEST REPORT DONE");
+    });
 }
 
 /// Perform context switch after process exit

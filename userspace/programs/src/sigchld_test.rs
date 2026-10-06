@@ -68,7 +68,11 @@ fn main() {
 
             match wait_result {
                 Ok(pid) if pid.raw() as i32 == child_pid_raw => {
-                    // Verify child exit code
+                    if !wifexited(status) || wexitstatus(status) != 42 {
+                        println!("[PARENT] FAIL: expected normal child exit 42, status={}", status);
+                        println!("SIGCHLD_TEST_FAILED");
+                        std::process::exit(1);
+                    }
                     if wifexited(status) {
                         let exit_code = wexitstatus(status);
                         println!("[PARENT] Child exited with code: {}", exit_code);

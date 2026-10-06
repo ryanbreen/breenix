@@ -88,6 +88,7 @@ public struct BeastLauncher {
     public var store: RunStore
     public var runner: ProcessRunner
     public var timeoutSecs: Int
+    public var fullBackstopSecs: Int
     public var pathsTemplate: BeastPaths
 
     public init(
@@ -99,6 +100,8 @@ public struct BeastLauncher {
         self.store = store
         self.runner = runner
         self.timeoutSecs = timeoutSecs
+        self.fullBackstopSecs = Int(ProcessInfo.processInfo.environment["BREENIX_FULL_BACKSTOP"] ?? "")
+            .flatMap { $0 > 0 ? $0 : nil } ?? max(1800, timeoutSecs)
         self.pathsTemplate = pathsTemplate
     }
 
@@ -119,7 +122,8 @@ public struct BeastLauncher {
             timeoutSecs: timeoutSecs,
             paths: paths(forRunID: id),
             qemuProfile: options.qemuProfile,
-            suite: options.suite
+            suite: options.suite,
+            fullBackstopSecs: fullBackstopSecs
         )
     }
 
@@ -423,7 +427,8 @@ public struct BeastLauncher {
             "BREENIX_GATE_TMP": paths.gateTmpPath,
             "BREENIX_REPO_DIR": paths.clonePath,
             "BREENIX_RUST_FORK": paths.rustForkPath,
-            "BREENIX_GATE_TIMEOUT": "\(timeoutSecs)"
+            "BREENIX_GATE_TIMEOUT": "\(timeoutSecs)",
+            "BREENIX_FULL_BACKSTOP": "\(fullBackstopSecs)"
         ]
         environment["BREENIX_QEMU_PROFILE"] = (qemuProfile ?? .default).rawValue
         if let suite {

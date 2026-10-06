@@ -5,13 +5,20 @@
 //! are recorded, so it is a leaf lock: it must never be held with interrupts
 //! enabled, and nothing may take `PROCESS_MANAGER` while holding it.
 
+use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
+// Test profiles retain up to 1024 nonzero exits. Production retains 8.
+// FailureList prints an ellipsis when the retained table is incomplete.
+#[cfg(any(feature = "testing", feature = "boot_tests"))]
+const MAX_FAILURES: usize = 1024;
+#[cfg(not(any(feature = "testing", feature = "boot_tests")))]
 const MAX_FAILURES: usize = 8;
-const MAX_NAME_BYTES: usize = 24;
+const MAX_NAME_BYTES: usize = 128;
 
+static USERSPACE_STARTED: AtomicU32 = AtomicU32::new(0);
 static USERSPACE_EXITS: AtomicU32 = AtomicU32::new(0);
 static USERSPACE_NONZERO_EXITS: AtomicU32 = AtomicU32::new(0);
 static USERSPACE_FAILURES: Mutex<FailureTable> = Mutex::new(FailureTable::new());
@@ -82,6 +89,15 @@ impl FailureTable {
     }
 }
 
+/// Count a process published into the manager, including fork/clone children.
+pub fn record_start() {
+    USERSPACE_STARTED.fetch_add(1, Ordering::SeqCst);
+}
+
+pub fn started() -> u32 {
+    USERSPACE_STARTED.load(Ordering::SeqCst)
+}
+
 /// Record one real userspace process exit.
 pub fn record_exit(name: &str, exit_code: i32) {
     USERSPACE_EXITS.fetch_add(1, Ordering::SeqCst);
@@ -109,12 +125,15 @@ pub fn totals() -> (u32, u32) {
     )
 }
 
-/// Copy the recorded failure details while holding their small static mutex.
-pub fn snapshot_failures() -> ([ExitFailure; MAX_FAILURES], usize) {
+/// Allocate the snapshot before acquiring the leaf lock.
+/// Called only by the completion reporter, after dropping PROCESS_MANAGER.
+pub fn snapshot_failures() -> Vec<ExitFailure> {
+    let mut snapshot = Vec::with_capacity(MAX_FAILURES);
     with_failure_table_interrupts_disabled(|| {
         let failures = USERSPACE_FAILURES.lock();
-        (failures.failures, failures.len)
-    })
+        snapshot.extend_from_slice(&failures.failures[..failures.len]);
+    });
+    snapshot
 }
 
 /// Allocation-free formatting for the recorded `name:code` failure list.

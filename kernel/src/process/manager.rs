@@ -580,6 +580,7 @@ impl ProcessManager {
             "manager.create_process: SUCCESS - returning PID {}",
             pid.as_u64()
         );
+        crate::task::exit_tally::record_start();
 
         self.processes.insert(pid, unpublished.commit());
         Ok(())
@@ -787,6 +788,7 @@ impl ProcessManager {
             pid.as_u64(),
             argv.len()
         );
+        crate::task::exit_tally::record_start();
 
         self.processes.insert(pid, unpublished.commit());
         Ok(())
@@ -1052,6 +1054,7 @@ impl ProcessManager {
         crate::serial_println!(
             "manager.create_process [ARM64]: Inserting process into process table"
         );
+        crate::task::exit_tally::record_start();
         self.processes.insert(pid, unpublished.commit());
 
         log::info!("ARM64: Created process {} (PID {})", name, pid.as_u64());
@@ -1269,6 +1272,7 @@ impl ProcessManager {
             "manager.create_process_with_argv [ARM64]: SUCCESS - returning PID {}",
             pid.as_u64()
         );
+        crate::task::exit_tally::record_start();
 
         self.processes.insert(pid, unpublished.commit());
         Ok(())
@@ -1764,6 +1768,7 @@ impl ProcessManager {
 
     /// Insert a fully-constructed process into the manager
     pub fn insert_process(&mut self, pid: ProcessId, process: Process) {
+        crate::task::exit_tally::record_start();
         self.processes.insert(pid, process);
     }
 
@@ -2859,6 +2864,7 @@ impl ProcessManager {
         }
 
         // Insert the child process into the process table
+        crate::task::exit_tally::record_start();
         self.processes.insert(child_pid, child_process);
 
         // Lock-free trace: fork exit with child PID
@@ -3048,6 +3054,7 @@ impl ProcessManager {
         }
 
         // Insert the child process into the process table
+        crate::task::exit_tally::record_start();
         self.processes.insert(child_pid, child_process);
 
         // Lock-free trace: fork exit with child PID
@@ -3326,6 +3333,7 @@ impl ProcessManager {
             }
 
             // Add the child process to the process table
+            crate::task::exit_tally::record_start();
             self.processes.insert(child_pid, child_process);
 
             // Add the child to the ready queue so it can be scheduled

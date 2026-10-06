@@ -31,7 +31,10 @@
 #                       committed `rust-fork` symlink names a Mac-only path; the
 #                       beast VM keeps a real clone and needs the repoint. Not
 #                       committed, not required elsewhere.
-#   BREENIX_GATE_TIMEOUT per-boot timeout in seconds (default: 150)
+#   BREENIX_GATE_TIMEOUT scoring deadline in seconds (default: 150). Full
+#                       mode collects the completed report before scoring it.
+#   BREENIX_FULL_BACKSTOP full-mode collection limit (default: max(1800,
+#                       BREENIX_GATE_TIMEOUT)); override for slower execution.
 #   BREENIX_BOOT_SUITE  an effort-suite id (docs/suites/<id>.json). The gate then
 #                       builds the production kernel (no features, whatever the
 #                       mode argument says), boots it with /etc/breenix/boot-target
@@ -78,6 +81,7 @@ MODE="${2:-kthread}"
 MAX_CONCURRENCY=4
 REPO_DIR="${BREENIX_REPO_DIR:-$DEFAULT_REPO_DIR}"
 TIMEOUT_SECS="${BREENIX_GATE_TIMEOUT:-150}"
+export BREENIX_GATE_TIMEOUT="$TIMEOUT_SECS"
 PROFILE="${BREENIX_QEMU_PROFILE-default}"
 export BREENIX_QEMU_PROFILE="$PROFILE"
 echo "[gate] profile=$PROFILE"
@@ -253,32 +257,51 @@ for i in $(seq 1 "$COUNT"); do
   # runs and is not needed for these boot markers.
   # claim-lint:ok: src/bin/qemu-uefi.rs resolves the hostfwd source.
   INSPECTOR_START_MS="$(date +%s)000" || INSPECTOR_START_MS=""
-  BREENIX_NET_MODE=none timeout "$TIMEOUT_SECS" ./target/release/qemu-uefi \
-    -serial file:"$OUTDIR/serial_user.log" \
-    -serial file:"$OUTDIR/serial_kernel.log" \
-    > "$OUTDIR/stdout.log" 2>&1 &
-  QEMU_TIMEOUT_PID=$!
-  if [ -n "$SUITE" ]; then
-    # A suite never exits (it is PID 1 and idles with its final panel up): stop the VM
-    # once its DONE line is out, after saving the screen and holding it briefly. Only a
-    # whole DONE line on the suite's own serial (COM1) counts.
-    done_shape="^SUITE $SUITE DONE passed=[0-9]+ failed=[0-9]+ skipped=[0-9]+ total=[0-9]+\$"
-    while kill -0 "$QEMU_TIMEOUT_PID" 2>/dev/null; do
-      if tr -d '\r' < "$OUTDIR/serial_user.log" 2>/dev/null | grep -qE "$done_shape"; then
-        sleep 2
-        if [ -n "${BREENIX_QMP_SOCKET:-}" ] && \
-            python3 "$REPO_DIR/scripts/qmp-screendump.py" "$BREENIX_QMP_SOCKET" "$OUTDIR/screen.png" >/dev/null 2>&1; then
-          echo "  Final screen: $OUTDIR/screen.png"
+  boot_completed=true
+  scoring_deadline_missed=false
+  if [ "$MODE" = full ]; then
+    # Collect the final report even when the scoring deadline has elapsed.
+    BREENIX_NET_MODE=none python3 "$REPO_DIR/scripts/x86-gate-boot.py" \
+      "$OUTDIR/serial_kernel.log" "$OUTDIR/serial_user.log" \
+      ./target/release/qemu-uefi \
+      -serial file:"$OUTDIR/serial_user.log" \
+      -serial file:"$OUTDIR/serial_kernel.log" \
+      > "$OUTDIR/stdout.log" 2>&1
+    boot_status=$?
+    if [ "$boot_status" -eq 2 ]; then
+      scoring_deadline_missed=true
+    elif [ "$boot_status" -ne 0 ]; then
+      boot_completed=false
+    fi
+    cat "$OUTDIR/stdout.log"
+  else
+    BREENIX_NET_MODE=none timeout "$TIMEOUT_SECS" ./target/release/qemu-uefi \
+      -serial file:"$OUTDIR/serial_user.log" \
+      -serial file:"$OUTDIR/serial_kernel.log" \
+      > "$OUTDIR/stdout.log" 2>&1 &
+    QEMU_TIMEOUT_PID=$!
+    if [ -n "$SUITE" ]; then
+      # A suite never exits (it is PID 1 and idles with its final panel up): stop the VM
+      # once its DONE line is out, after saving the screen and holding it briefly. Only a
+      # whole DONE line on the suite's own serial (COM1) counts.
+      done_shape="^SUITE $SUITE DONE passed=[0-9]+ failed=[0-9]+ skipped=[0-9]+ total=[0-9]+\$"
+      while kill -0 "$QEMU_TIMEOUT_PID" 2>/dev/null; do
+        if tr -d '\r' < "$OUTDIR/serial_user.log" 2>/dev/null | grep -qE "$done_shape"; then
+          sleep 2
+          if [ -n "${BREENIX_QMP_SOCKET:-}" ] && \
+              python3 "$REPO_DIR/scripts/qmp-screendump.py" "$BREENIX_QMP_SOCKET" "$OUTDIR/screen.png" >/dev/null 2>&1; then
+            echo "  Final screen: $OUTDIR/screen.png"
+          fi
+          sleep "$SUITE_HOLD_SECS"
+          # timeout forwards TERM to its process group: qemu-uefi and QEMU itself.
+          kill -TERM "$QEMU_TIMEOUT_PID" 2>/dev/null
+          break
         fi
-        sleep "$SUITE_HOLD_SECS"
-        # timeout forwards TERM to its process group: qemu-uefi and QEMU itself.
-        kill -TERM "$QEMU_TIMEOUT_PID" 2>/dev/null
-        break
-      fi
-      sleep 1
-    done
+        sleep 1
+      done
+    fi
+    wait "$QEMU_TIMEOUT_PID"
   fi
-  wait "$QEMU_TIMEOUT_PID"
 
   # Require enumeration to finish and match the selected profile's block
   # count and network floor. Default still requires 3 VirtIO block and >=1 NIC.
@@ -348,9 +371,9 @@ for i in $(seq 1 "$COUNT"); do
       verdict_reason="${suite_verdict#FAIL: } (see $OUTDIR/serial_user.log)"
     fi
   elif [ "$MODE" = "full" ]; then
-    # EXPECTED_EXITS is mandatory for the verdict script; 10 is the count for
-    # this profile's userspace program set.
-    if EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-10}" \
+    # #1119 measured 181 exits before rebasing; also require publication/exit
+    # equality, which detects unfinished processes without relying on a floor.
+    if REQUIRE_PROCESS_ACCOUNTING=1 EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-181}" \
         "$REPO_DIR/scripts/x86-gate-verdict.sh" \
         "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log"; then
       verdict_ok=true
@@ -367,6 +390,14 @@ for i in $(seq 1 "$COUNT"); do
     verdict_reason="marker '$MARKER_GREP' not found; see $OUTDIR/serial_kernel.log"
   fi
 
+  if [ "$scoring_deadline_missed" = true ]; then
+    verdict_ok=false
+    verdict_reason="completed beyond scoring deadline (#1068); $verdict_reason"
+  fi
+  if [ "$boot_completed" != true ]; then
+    verdict_ok=false
+    verdict_reason="full boot did not complete; see the backstop/launcher diagnosis above; $verdict_reason"
+  fi
   if [ "$census_ok" = true ] && [ "$verdict_ok" = true ]; then
     echo "  Test $i: PASS"
     echo "  Device census: $pci_census_line"

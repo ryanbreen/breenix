@@ -149,6 +149,18 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
 /// will start executing in EL0 userspace.
 #[cfg(target_arch = "aarch64")]
 pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
+    create_user_process_before_run(name, elf_data, |_| {})
+}
+
+/// `create_user_process`, calling `before_run` once the process is in the
+/// process table but before its main thread is handed to the scheduler, so
+/// `before_run` sees a process that has not run yet.
+#[cfg(target_arch = "aarch64")]
+pub fn create_user_process_before_run(
+    name: String,
+    elf_data: &[u8],
+    before_run: impl FnOnce(ProcessId),
+) -> Result<ProcessId, &'static str> {
     log::info!(
         "create_user_process: Creating user process '{}' (ARM64)",
         name
@@ -228,6 +240,8 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         Ok(publication) => publication,
         Err(error) => return Err(error),
     };
+
+    before_run(pid);
 
     // Add directly to scheduler - no spawn thread needed!
     crate::task::scheduler::spawn(scheduler_thread);
