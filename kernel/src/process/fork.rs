@@ -501,7 +501,8 @@ pub fn copy_process_state(
         child_process.sid = parent_process.sid;
     }
 
-    // 4. Copy the credentials and umask
+    // 4. Copy the credentials and umask. CPU time is not inherited: the
+    // child's account and its children's time start at zero.
     child_process.cred = parent_process.cred.clone();
     child_process.umask = parent_process.umask;
 

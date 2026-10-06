@@ -252,6 +252,7 @@ pub fn sys_clone(
         run_start_ticks: 0,
         cpu_ticks_total: 0,
         resource_limits: None,
+        cpu_account: None,
         owner_pid: Some(child_pid.as_u64()),
         cached_ttbr0: 0,
         wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -279,6 +280,8 @@ pub fn sys_clone(
         .expect("parent remains present under PM during clone");
     child_process.limits = parent.limits.clone();
     child_process.cred = parent.cred.clone();
+    // A thread's CPU time is its process's: the group shares one account.
+    child_process.cpu = parent.cpu.clone();
     child_process.umask = parent.umask;
     child_process.parent = Some(parent_pid);
     child_process.inherited_cr3 = Some(parent_cr3);

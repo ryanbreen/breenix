@@ -199,6 +199,11 @@ pub struct Process {
 
     /// User and group IDs and supplementary groups.
     pub cred: super::credentials::ProcessCredentials,
+    /// CPU time charged by this process's threads, shared by a thread group.
+    pub cpu: alloc::sync::Arc<crate::task::thread::CpuAccount>,
+    /// CPU ticks of the children this process has waited for, and of the
+    /// children they waited for.
+    pub children_cpu_ticks: u64,
     /// File creation mask (umask)
     pub umask: u32,
 
@@ -361,6 +366,8 @@ impl Process {
             // By default, a process's sid equals its pid (process is its own session leader)
             sid: id,
             cred: super::credentials::ProcessCredentials::root(),
+            cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::default()),
+            children_cpu_ticks: 0,
             // Standard default umask: owner rwx, group/other rx
             umask: 0o022,
             // Default working directory is root
@@ -405,6 +412,7 @@ impl Process {
     /// Set the main thread for this process
     pub fn set_main_thread(&mut self, mut thread: Thread) {
         thread.resource_limits = Some(self.limits.clone());
+        thread.cpu_account = Some(self.cpu.clone());
         self.main_thread = Some(thread);
         self.state = ProcessState::Ready;
     }
@@ -414,6 +422,7 @@ impl Process {
     /// thread can ever refer to a row that does not yet exist.
     pub fn attach_main_thread_unpublished(&mut self, mut thread: Thread) {
         thread.resource_limits = Some(self.limits.clone());
+        thread.cpu_account = Some(self.cpu.clone());
         self.main_thread = Some(thread);
     }
 

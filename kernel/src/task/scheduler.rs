@@ -2485,7 +2485,7 @@ impl Scheduler {
                         // their ticks charged at block time — charging again here
                         // would count blocked/sleeping time as CPU usage.
                         let published_ready = if !was_blocked && !was_terminated {
-                            current.charge_resource_cpu(crate::time::get_ticks());
+                            current.charge_cpu(crate::time::get_ticks());
                             current.set_ready();
                             WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
                             record_ready_site(current_id, READY_SITE_SCHEDULE);
@@ -3008,7 +3008,7 @@ impl Scheduler {
                         self.cpu_state[Self::current_cpu_id()].previous_thread = Some(current_id);
                     }
                     if let Some(current) = self.get_thread_mut(current_id) {
-                        current.charge_resource_cpu(crate::time::get_ticks());
+                        current.charge_cpu(crate::time::get_ticks());
                         current.set_ready();
                     }
                     WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
@@ -3495,7 +3495,7 @@ impl Scheduler {
 
         if let Some(current) = self.get_thread_mut(current_id) {
             // Charge elapsed CPU ticks before blocking
-            current.charge_resource_cpu(crate::time::get_ticks());
+            current.charge_cpu(crate::time::get_ticks());
 
             current.state = ThreadState::Blocked;
             #[cfg(feature = "coreproof_component_a")]
@@ -3850,7 +3850,7 @@ impl Scheduler {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks before blocking
-                thread.charge_resource_cpu(crate::time::get_ticks());
+                thread.charge_cpu(crate::time::get_ticks());
 
                 // CRITICAL: Save userspace context FIRST, THEN set state.
                 // This ensures that when unblock_for_signal() is called,
@@ -3974,7 +3974,7 @@ impl Scheduler {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks before blocking
-                thread.charge_resource_cpu(crate::time::get_ticks());
+                thread.charge_cpu(crate::time::get_ticks());
 
                 thread.state = ThreadState::BlockedOnChildExit;
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
@@ -4063,7 +4063,7 @@ impl Scheduler {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks before blocking
-                thread.charge_resource_cpu(crate::time::get_ticks());
+                thread.charge_cpu(crate::time::get_ticks());
 
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(wake_time_ns);
@@ -4122,7 +4122,7 @@ impl Scheduler {
         let thread = self.get_thread_mut(current_id)?;
 
         // Charge elapsed CPU ticks before blocking
-        thread.charge_resource_cpu(crate::time::get_ticks());
+        thread.charge_cpu(crate::time::get_ticks());
 
         thread.state = ThreadState::BlockedOnIO;
         thread.wake_time_ns = wake_time_ns;
@@ -4363,7 +4363,7 @@ impl Scheduler {
                 // Charge elapsed CPU ticks NOW, before blocking. Otherwise the
                 // next schedule() call charges all time since last dispatch —
                 // including blocked/sleeping time — as CPU usage.
-                thread.charge_resource_cpu(crate::time::get_ticks());
+                thread.charge_cpu(crate::time::get_ticks());
 
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(timeout_ns);
@@ -4602,7 +4602,7 @@ impl Scheduler {
     pub fn terminate_current(&mut self) {
         if let Some(current) = self.current_thread_mut() {
             if current.state == ThreadState::Running && !current.blocked_in_syscall {
-                current.charge_resource_cpu(crate::time::get_ticks());
+                current.charge_cpu(crate::time::get_ticks());
             }
             current.set_terminated();
             // Don't put back in ready queue
@@ -4692,7 +4692,7 @@ impl Scheduler {
                     continue;
                 }
                 if thread.state == ThreadState::Running && !thread.blocked_in_syscall {
-                    thread.charge_resource_cpu(crate::time::get_ticks());
+                    thread.charge_cpu(crate::time::get_ticks());
                 }
                 thread.set_terminated();
                 thread.id()
@@ -6452,6 +6452,19 @@ impl ExecSchedCommit {
 /// `isr_unblock_for_io` so they never spin on the scheduler lock.
 pub fn wake_waitqueue_thread(tid: u64) {
     with_scheduler(|sched| sched.wake_waitqueue_thread(tid));
+}
+
+/// Charge the calling thread's CPU time up to now, to it and its process, so
+/// an account read next includes the interval it is running in. Returns the
+/// thread's own total, in ticks.
+pub fn charge_current_cpu() -> u64 {
+    with_scheduler(|scheduler| {
+        scheduler.current_thread_mut().map_or(0, |thread| {
+            thread.charge_cpu(crate::time::get_ticks());
+            thread.cpu_ticks_total
+        })
+    })
+    .unwrap_or(0)
 }
 
 /// Get per-process accumulated CPU ticks from all threads in the scheduler.

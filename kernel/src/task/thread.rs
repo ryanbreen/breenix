@@ -496,6 +496,22 @@ pub enum TimerPop {
     WakeTimeCleared,
 }
 
+/// CPU time charged to one process, in timer ticks, by every copy of every
+/// thread it has had. Atomic so the scheduler charges it without the process
+/// manager lock.
+#[derive(Default)]
+pub struct CpuAccount(AtomicU64);
+
+impl CpuAccount {
+    pub fn charge(&self, ticks: u64) {
+        self.0.fetch_add(ticks, Ordering::Relaxed);
+    }
+
+    pub fn ticks(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 /// Extended Thread Control Block for preemptive multitasking
 pub struct Thread {
     /// Thread ID
@@ -596,6 +612,10 @@ pub struct Thread {
     pub cpu_ticks_total: u64,
 
     pub resource_limits: Option<alloc::sync::Arc<crate::process::limits::Limits>>,
+    /// The process account every tick in `cpu_ticks_total` is also charged
+    /// to, so a process's CPU time outlives its threads. Attached when the
+    /// thread becomes a process's main thread; None for kernel threads.
+    pub cpu_account: Option<alloc::sync::Arc<CpuAccount>>,
 
     /// Owner process PID (for mapping thread CPU time to process in btop).
     /// None for idle threads and kernel-internal threads not associated with a process.
@@ -748,13 +768,18 @@ impl CpuPin {
 const KILL_CLAIMED: u64 = 1 << 63;
 
 impl Thread {
-    /// Charge execution before blocking, switching away, or exiting.
-    pub fn charge_resource_cpu(&mut self, now: u64) {
-        let elapsed = now.wrapping_sub(self.run_start_ticks);
-        self.cpu_ticks_total = self.cpu_ticks_total.saturating_add(elapsed);
+    /// Charge the time since `run_start_ticks` to this thread, its process's
+    /// CPU account and its resource limits, and start the next interval at
+    /// `now`. Called before blocking, switching away or exiting.
+    pub fn charge_cpu(&mut self, now: u64) {
+        let ran = now.wrapping_sub(self.run_start_ticks);
+        self.cpu_ticks_total = self.cpu_ticks_total.saturating_add(ran);
         self.run_start_ticks = now;
+        if let Some(account) = &self.cpu_account {
+            account.charge(ran);
+        }
         if let Some(limits) = &self.resource_limits {
-            limits.charge_cpu(elapsed);
+            limits.charge_cpu(ran);
         }
     }
 
@@ -850,6 +875,7 @@ impl Clone for Thread {
             run_start_ticks: self.run_start_ticks,
             cpu_ticks_total: self.cpu_ticks_total,
             resource_limits: self.resource_limits.clone(),
+            cpu_account: self.cpu_account.clone(),
             owner_pid: self.owner_pid,
             cached_ttbr0: self.cached_ttbr0,
             // Carried, not reset: `publish_to_scheduler` clones a process-table
@@ -969,6 +995,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1037,6 +1064,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1092,6 +1120,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1146,6 +1175,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1213,6 +1243,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1275,6 +1306,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1356,6 +1388,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1406,6 +1439,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),

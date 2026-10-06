@@ -834,6 +834,9 @@ fn dispatch_syscall_enum(
         SyscallNumber::Setregid => {
             result_to_u64(crate::syscall::handlers::sys_setregid(arg1 as u32, arg2 as u32))
         }
+        // CPU usage
+        SyscallNumber::Getrusage => result_to_u64(crate::syscall::rusage::sys_getrusage(arg1, arg2)),
+        SyscallNumber::Times => result_to_u64(crate::syscall::rusage::sys_times(arg1)),
         // File creation mask
         SyscallNumber::Umask => result_to_u64(crate::syscall::handlers::sys_umask(arg1 as u32)),
         // Timestamps

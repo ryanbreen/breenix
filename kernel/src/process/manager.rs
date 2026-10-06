@@ -1505,6 +1505,7 @@ impl ProcessManager {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1592,6 +1593,7 @@ impl ProcessManager {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1701,6 +1703,14 @@ impl ProcessManager {
         };
         if !row.claim_reap(reaper, status) {
             return ReapOutcome::Refused;
+        }
+        // The reaped child's CPU time, and that of the children it reaped, is
+        // now the reaper's children's time. A thread's row shares its group's
+        // account, so only a group leader's reap carries the account.
+        let leader = row.thread_group_id.map_or(true, |group| group == pid.as_u64());
+        let child_ticks = row.children_cpu_ticks + if leader { row.cpu.ticks() } else { 0 };
+        if let Some(reaper_row) = self.processes.live_row_mut(&reaper) {
+            reaper_row.children_cpu_ticks += child_ticks;
         }
         crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_RESIDENT);
         let evicted = self.remove_row_joined(pid);
@@ -3223,6 +3233,7 @@ impl ProcessManager {
                 run_start_ticks: 0,
                 cpu_ticks_total: 0,
                 resource_limits: None,
+                cpu_account: None,
                 owner_pid: Some(child_pid.as_u64()),
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
