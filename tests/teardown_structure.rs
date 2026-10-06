@@ -14688,9 +14688,10 @@ fn every_external_schedule_from_kernel_call_reclaims_immediately_beforehand() {
 ///
 /// Two censuses, occurrence-based, and one rule between them: the destructor's
 /// caller set contains no live reap, and the reap arm's caller set contains
-/// both of them — `syscall/wait.rs::complete_wait` (aarch64) and
-/// `syscall/handlers.rs::complete_wait` (x86_64). DEBT-4's "x86 bypasses the
-/// gate" was an evidence problem, not a missing edit; this is the evidence.
+/// every one of them — `syscall/wait.rs::complete_wait`, which both arches
+/// dispatch wait4 and waitid to, and the exit path's reap for a parent that
+/// declines zombies. DEBT-4's "x86 bypasses the gate" was an evidence problem,
+/// not a missing edit; this is the evidence.
 ///
 /// The exempt classes are named, not inferred:
 ///
@@ -15244,8 +15245,9 @@ fn validate_claim_before_copy(body: &str) -> Result<(), &'static str> {
 /// P6a condition C3, review finding F7. Nothing exercises `complete_wait`'s own
 /// return: the join oracle calls `reap_row` directly, so the syscall-level
 /// behaviour C3 specifies — the loser of the claim returns ECHILD and copies
-/// nothing — was established by reading the code. This pins it on both arches
-/// instead, so an edit that reinstates copy-before-claim is red on the host.
+/// nothing — was established by reading the code. This pins it in the one
+/// `complete_wait` both arches dispatch to instead, so an edit that reinstates
+/// copy-before-claim is red on the host.
 ///
 /// What this does **not** prove, stated plainly: that two *concurrent* waiters
 /// serialize correctly. C3's last sentence asks for a concurrent injection and
@@ -15256,11 +15258,8 @@ fn validate_claim_before_copy(body: &str) -> Result<(), &'static str> {
 /// this test. What the test removes is the possibility of the *ordering*
 /// regressing unnoticed, which is the half that lives in the source.
 #[test]
-fn both_complete_wait_arms_claim_before_they_copy() {
-    for path in [
-        "kernel/src/syscall/wait.rs",
-        "kernel/src/syscall/handlers.rs",
-    ] {
+fn complete_wait_claims_before_it_copies() {
+    for path in ["kernel/src/syscall/wait.rs"] {
         let source = repo_text(path);
         let body = function_body(&source, "complete_wait").to_owned();
         assert_eq!(
