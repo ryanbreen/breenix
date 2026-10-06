@@ -25,6 +25,14 @@
 //! crashes or runs past the suite's time limit is reported as a FAIL saying so, and
 //! the suite goes on to the next case; so is a case that cannot be started in a child
 //! at all, since running it in the suite's own process would lose that isolation.
+//! A case can read how much of its limit is left with [`case_ms_left`], to bound its
+//! own waits and fail with its own reason before it is killed.
+//!
+//! A suite runs as PID 1, so any process a case leaves behind is reparented to the
+//! runner once the case ends. Before the next case starts, the runner kills every such
+//! process with kill(-1, SIGKILL) and reaps it, whatever process group or session it
+//! moved to, so no case sees another's processes. A case whose processes outlive
+//! SIGKILL fails saying so.
 //!
 //! The manifest `docs/suites/<id>.json` lists the same categories and cases in the same
 //! order, with the same titles; a host test (`tests/suite_manifests.rs`) checks it
@@ -47,6 +55,7 @@
 //! fn main() { SUITE.run() }
 //! ```
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::fmt::Write as _;
 use std::string::String;
 use std::vec::Vec;
@@ -123,6 +132,22 @@ pub const fn category(id: &'static str, title: &'static str, cases: &'static [Ca
 
 /// How long a case may run before it is killed and fails, unless the suite sets its own.
 pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;
+
+/// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.
+static CASE_DEADLINE_NS: AtomicU64 = AtomicU64::new(0);
+
+/// The milliseconds left before the running case is killed, or `u64::MAX` when called
+/// outside a case.
+pub fn case_ms_left() -> u64 {
+    let deadline = CASE_DEADLINE_NS.load(Ordering::Relaxed);
+    if deadline == 0 {
+        return u64::MAX;
+    }
+    match monotonic_ns() {
+        Some(now) => ((deadline as i128 - now).max(0) / 1_000_000) as u64,
+        None => 0,
+    }
+}
 
 /// A suite: its id, title and categories, run in order.
 pub struct Suite {
@@ -366,6 +391,49 @@ fn stop_child(pid: i32) -> &'static str {
     }
 }
 
+/// How long the runner waits for the processes a case left behind to die once killed.
+const SWEEP_MS: u64 = 2000;
+/// How often the sweep repeats its kill(-1), for a process forked after the last one.
+const SWEEP_REKILL_MS: u64 = 250;
+
+/// Kill and reap every process the case left behind. Running as PID 1, the runner
+/// is by now the parent of each of them, or of an ancestor that is; as any other
+/// PID, the case's orphans went to init and are left alone. Returns a note for the
+/// case's result when some outlived SIGKILL.
+fn sweep() -> Option<&'static str> {
+    let mut status = 0;
+    if !process::getpid().is_ok_and(|pid| pid.raw() == 1)
+        || process::waitpid(-1, &mut status, WNOHANG).is_err()
+    {
+        return None;
+    }
+    let start = monotonic_ns();
+    let mut killed: Option<u64> = None;
+    loop {
+        let ms = ms_since(start);
+        if killed.map_or(true, |at| ms >= at + SWEEP_REKILL_MS) {
+            let _ = signal::kill(-1, SIGKILL);
+            killed = Some(ms);
+        }
+        if process::waitpid(-1, &mut status, WNOHANG).is_err() {
+            return None;
+        }
+        if ms >= SWEEP_MS {
+            return Some("processes it started outlived SIGKILL");
+        }
+        let _ = process::yield_now();
+    }
+}
+
+/// `outcome`, failed with `note` added.
+fn with_note(outcome: Outcome, note: &str) -> Outcome {
+    match outcome {
+        Outcome::Pass { ms } => Outcome::Fail { ms, msg: plain(&std::format!("the case passed, but {note}")) },
+        Outcome::Fail { ms, msg } => Outcome::Fail { ms, msg: plain(&std::format!("{msg}; {note}")) },
+        Outcome::Skip { msg } => Outcome::Fail { ms: 0, msg: plain(&std::format!("skipped ({msg}), but {note}")) },
+    }
+}
+
 /// In the child: send stdout and stderr to /dev/null, so nothing the case prints
 /// reaches the suite's serial lines.
 fn silence_output() -> Result<(), Error> {
@@ -391,6 +459,8 @@ fn run_case(case: &Case, limit_ms: u64) -> Outcome {
     match process::fork() {
         Ok(ForkResult::Child) => {
             let _ = io::close(reader);
+            let deadline = start.map_or(0, |start| (start + limit_ms as i128 * 1_000_000) as u64);
+            CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
             let outcome = match silence_output() {
                 Ok(()) => run_inline(case),
                 Err(error) => Outcome::Fail {
@@ -424,7 +494,10 @@ fn run_case(case: &Case, limit_ms: u64) -> Outcome {
                 }
             };
             let _ = io::close(reader);
-            outcome
+            match sweep() {
+                Some(note) => with_note(outcome, note),
+                None => outcome,
+            }
         }
         Err(error) => {
             let _ = io::close(reader);

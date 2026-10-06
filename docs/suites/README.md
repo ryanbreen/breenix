@@ -53,6 +53,11 @@ one that cannot be started in a child; the suite goes on. The suite waits on a c
 polling, not sleeping, so a monotonic clock that stops is reported as a FAIL too. If the
 suite itself stops, the missing CASE lines show where.
 
+A case can bound its own waits by `case_ms_left()`, the time left before it is killed. When
+a case ends, any process it left behind has been reparented to the suite, which runs as
+PID 1; the suite kills them all with `kill(-1, SIGKILL)` and reaps them before the next case,
+so no case sees another's processes. A case whose processes outlive SIGKILL is a FAIL.
+
 ## Writing a suite
 
 A suite is a static table and a `main` that runs it, using `libbreenix::suite`:
@@ -180,10 +185,19 @@ Cases call the kernel by its Linux numbers and assert on the raw return, so an
 unimplemented call fails with ENOSYS. Library-level interfaces are made as a C library
 makes them: getrlimit and setrlimit through prlimit64, nice through
 getpriority/setpriority, getpgrp as getpgid(0), and fork as clone(SIGCHLD) on ARM64.
-Each case uses the runner's default 10-second deadline; every wait on another process
-inside a case is bounded at 3 seconds (6 for an exec), and every process a case starts
-is killed when the case ends. Cases that need another user switch to a user ID of their
-own after starting; the suite itself runs as root.
+Each case uses the runner's default 10-second deadline. Every wait on another process
+inside a case is bounded at 3 seconds (6 for an exec) and stops 1.5 seconds before the
+deadline, so a failing case still cleans up and reports its own reason. Every process a
+case starts is killed when the case ends, and the runner kills and reaps any that remain
+before the next case. Cases that need another user switch to a user ID of their own after
+starting; the suite itself runs as root.
+
+Where POSIX leaves a value to the system, cases read it rather than assume Linux's: ARG_MAX
+is what a C library's `sysconf(_SC_ARG_MAX)` reports on this ABI, getgroups may list the
+groups in any order and may include the effective group ID, and an orphan's new parent need
+only be a live system process. The three `exec/script*` cases measure `#!` interpreter
+scripts, an extension every Unix system provides but POSIX execve does not require (it may
+fail with ENOEXEC); their titles say so.
 
 The exec cases run `/usr/local/test/bin/processes-exec_test`, which reports its argv,
 environment and the process state exec kept (IDs, process group, signal dispositions,
