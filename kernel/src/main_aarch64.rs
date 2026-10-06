@@ -2022,7 +2022,9 @@ fn load_test_binaries_from_ext2() {
     let mut failed = 0;
     // A testing kernel never launches init, so the boot tests' ProcessContext
     // cohort runs here instead: once, with the first test process published
-    // and not yet runnable, the state `launch_init_from_elf` gives it.
+    // and not yet runnable, the state `launch_init_from_elf` gives it. The
+    // loader's preempt pin is released around it: the cohort's lock oracles
+    // need this CPU to dispatch their network work while the loader waits.
     #[cfg(feature = "boot_tests")]
     let mut process_context_pending = true;
 
@@ -2100,9 +2102,11 @@ fn load_test_binaries_from_ext2() {
             |_| {
                 #[cfg(feature = "boot_tests")]
                 if core::mem::take(&mut process_context_pending) {
+                    kernel::per_cpu_aarch64::preempt_enable();
                     let failures = kernel::test_framework::advance_to_stage(
                         kernel::test_framework::TestStage::ProcessContext,
                     );
+                    kernel::per_cpu_aarch64::preempt_disable();
                     if failures > 0 {
                         serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
                     }
