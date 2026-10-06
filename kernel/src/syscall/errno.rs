@@ -23,6 +23,12 @@ pub const ERESTARTSYS: i32 = 512;
 /// I/O error
 pub const EIO: i32 = 5;
 
+/// Argument and environment list exceeds ARG_MAX.
+pub const E2BIG: i32 = 7;
+
+/// Executable image has an unrecognized or malformed format.
+pub const ENOEXEC: i32 = 8;
+
 /// Bad file descriptor
 pub const EBADF: i32 = 9;
 

@@ -3759,8 +3759,11 @@ impl ProcessManager {
         elf_data: &[u8],
         program_name: Option<&str>,
         argv: &[&[u8]],
+        envp: &[&[u8]],
         closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+        let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+
         log::info!(
             "exec_process_with_argv: Replacing process {} with new program, argc={}",
             pid.as_u64(),
@@ -3811,15 +3814,6 @@ impl ProcessManager {
                 );
                 return Err("exec blocked while CLONE_VM sibling shares old address space");
             }
-        }
-
-        {
-            let process = self
-                .processes
-                .live_row_mut(&pid)
-                .ok_or("Process not found")?;
-            // Drain any pending old page tables from previous exec() calls.
-            process.drain_old_page_tables();
         }
 
         log::info!(
@@ -3874,10 +3868,9 @@ impl ProcessManager {
         );
 
         // Map stack pages into the NEW process page table
-        const USER_STACK_SIZE: usize = 64 * 1024;
         const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
 
-        let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
+        let stack_bottom = VirtAddr::new(USER_STACK_TOP - user_stack_size as u64);
         let stack_top = VirtAddr::new(USER_STACK_TOP);
 
         log::info!("exec_process_with_argv: Mapping stack pages into new process page table");
@@ -3888,31 +3881,27 @@ impl ProcessManager {
             let frame = crate::memory::frame_allocator::allocate_frame()
                 .ok_or("Failed to allocate frame for exec stack")?;
 
-            new_page_table.map_page(
+            if let Err(error) = new_page_table.map_page(
                 page,
                 frame,
                 PageTableFlags::PRESENT
                     | PageTableFlags::WRITABLE
                     | PageTableFlags::USER_ACCESSIBLE,
-            )?;
+            ) {
+                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
+                return Err(error);
+            }
         }
 
         // Set up argc/argv/envp/auxv on the stack following Linux ABI
         // We need to write to the new stack pages that we just mapped
         // Since the new page table is not active yet, we need to translate addresses
         // and write via the physical frames
-        let default_env: [&[u8]; 5] = [
-            b"PATH=/bin:/sbin:/usr/local/cbin\0",
-            b"HOME=/home\0",
-            b"TERM=vt100\0",
-            b"USER=root\0",
-            b"SHELL=/bin/bsh\0",
-        ];
         let initial_rsp = self.setup_argv_on_stack(
             &new_page_table,
             USER_STACK_TOP,
             argv,
-            &default_env,
+            envp,
             loaded_elf.phdr_vaddr,
             loaded_elf.phnum,
             loaded_elf.phentsize,
@@ -3936,16 +3925,10 @@ impl ProcessManager {
         let process = self
             .processes
             .live_row_mut(&pid)
-            .ok_or("Process not found during update")?;
-        // #721 M4: defer the old page table into the process's own pending list right here,
-        // rather than holding it in a local until the end of the function. Two fallible `?`s
-        // below (the published-page-table and main-thread lookups) run after this point; if
-        // either returned Err while the old table sat in a local, dropping that local on the
-        // early return would free its frames while CR3 might still reference them — exactly
-        // the use-after-free the deliberately-late `take()` above (vs. taking it before the
-        // fallible ELF/frame/argv work earlier in this function) exists to prevent. Deferring
-        // immediately closes that window: from here on, a failure leaves the table safely
-        // queued for later reclaim instead of owned by a local that is about to disappear.
+            .expect("exec process validated before preparing its image");
+        process.drain_old_page_tables();
+        // All fallible preparation has succeeded. Keep the old root deferred
+        // until this CPU has adopted the new image; no error returns follow.
         if let Some(mut old_pt) = process.page_table.take() {
             old_pt.retain_file_vmas(&mut process.vmas);
             process.pending_old_page_tables.push(old_pt);
@@ -3988,19 +3971,19 @@ impl ProcessManager {
         let new_cr3 = process
             .page_table
             .as_ref()
-            .ok_or("exec: published page table missing")?
+            .expect("exec published its prepared page table")
             .level_4_frame()
             .start_address()
             .as_u64();
         process.stack = Some(Box::new(new_stack));
         process.user_stack_top = USER_STACK_TOP;
-        process.user_stack_bottom = USER_STACK_TOP - USER_STACK_SIZE as u64;
+        process.user_stack_bottom = USER_STACK_TOP - user_stack_size as u64;
 
         // Update the main thread context for the new program
         let thread = process
             .main_thread
             .as_mut()
-            .ok_or("exec: process lost its main thread during update")?;
+            .expect("exec main thread validated before preparing its image");
         let preserved_kernel_stack_top = thread.kernel_stack_top;
 
         // Reset the CPU context for the new program
@@ -4091,10 +4074,13 @@ impl ProcessManager {
         elf_data: &[u8],
         program_name: Option<&str>,
         argv: &[&[u8]],
+        envp: &[&[u8]],
         closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
+
+        let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
 
         // Lock-free trace: exec entry (must be before any early returns)
         crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
@@ -4143,15 +4129,6 @@ impl ProcessManager {
                 );
                 return Err("exec blocked while CLONE_VM sibling shares old address space");
             }
-        }
-
-        {
-            let process = self
-                .processes
-                .live_row_mut(&pid)
-                .ok_or("Process not found")?;
-            // Drain any pending old page tables from previous exec() calls.
-            process.drain_old_page_tables();
         }
 
         log::info!(
@@ -4203,9 +4180,8 @@ impl ProcessManager {
             new_entry_point
         );
 
-        const USER_STACK_SIZE: usize = 64 * 1024;
 
-        let stack_bottom = VirtAddr::new(user_stack_top - USER_STACK_SIZE as u64);
+        let stack_bottom = VirtAddr::new(user_stack_top - user_stack_size as u64);
         let stack_top = VirtAddr::new(user_stack_top);
 
         log::info!(
@@ -4231,18 +4207,11 @@ impl ProcessManager {
         }
         let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
 
-        let default_env: [&[u8]; 5] = [
-            b"PATH=/bin:/sbin:/usr/local/cbin\0",
-            b"HOME=/home\0",
-            b"TERM=vt100\0",
-            b"USER=root\0",
-            b"SHELL=/bin/bsh\0",
-        ];
         let initial_rsp = self.setup_argv_on_stack(
             &new_page_table,
             user_stack_top,
             argv,
-            &default_env,
+            envp,
             loaded_elf.phdr_vaddr,
             loaded_elf.phnum,
             loaded_elf.phentsize,
@@ -4264,7 +4233,8 @@ impl ProcessManager {
         let process = self
             .processes
             .live_row_mut(&pid)
-            .ok_or("Process not found during update")?;
+            .expect("exec process validated before preparing its image");
+        process.drain_old_page_tables();
         let old_page_table = process.page_table.take().map(|mut pt| {
             pt.retain_file_vmas(&mut process.vmas);
             pt
@@ -4309,18 +4279,18 @@ impl ProcessManager {
         let new_ttbr0 = process
             .page_table
             .as_ref()
-            .ok_or("exec [ARM64]: published page table missing")?
+            .expect("exec published its prepared page table")
             .level_4_frame()
             .start_address()
             .as_u64();
         process.stack = Some(Box::new(new_stack));
         process.user_stack_top = user_stack_top;
-        process.user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
+        process.user_stack_bottom = user_stack_top - user_stack_size as u64;
 
         let thread = process
             .main_thread
             .as_mut()
-            .ok_or("exec [ARM64]: process lost its main thread during update")?;
+            .expect("exec main thread validated before preparing its image");
         let preserved_kernel_stack_top = thread.kernel_stack_top;
 
         let aligned_stack = initial_rsp & !0xF;
@@ -4855,9 +4825,7 @@ impl ProcessManager {
             (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 48) as u8,
             (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 56) as u8,
         ];
-        for (i, byte) in random_bytes.iter().enumerate() {
-            self.write_byte_to_stack(page_table, random_addr + i as u64, *byte)?;
-        }
+        self.write_bytes_to_stack(page_table, random_addr, &random_bytes)?;
 
         // Calculate total space needed for argv and envp strings
         let mut total_string_space: usize = 0;
@@ -4892,15 +4860,13 @@ impl ProcessManager {
         for arg in argv.iter() {
             string_addresses.push(current_string_addr);
 
-            for byte in arg.iter() {
-                self.write_byte_to_stack(page_table, current_string_addr, *byte)?;
-                current_string_addr += 1;
-            }
+            self.write_bytes_to_stack(page_table, current_string_addr, arg)?;
+            current_string_addr += arg.len() as u64;
 
             // Add null terminator if not present
             let len = arg.len();
             if len == 0 || arg[len - 1] != 0 {
-                self.write_byte_to_stack(page_table, current_string_addr, 0)?;
+                self.write_bytes_to_stack(page_table, current_string_addr, &[0])?;
                 current_string_addr += 1;
             }
         }
@@ -4911,15 +4877,13 @@ impl ProcessManager {
         for env in envp.iter() {
             envp_addrs.push(current_string_addr);
 
-            for byte in env.iter() {
-                self.write_byte_to_stack(page_table, current_string_addr, *byte)?;
-                current_string_addr += 1;
-            }
+            self.write_bytes_to_stack(page_table, current_string_addr, env)?;
+            current_string_addr += env.len() as u64;
 
             // Add null terminator if not present
             let len = env.len();
             if len == 0 || env[len - 1] != 0 {
-                self.write_byte_to_stack(page_table, current_string_addr, 0)?;
+                self.write_bytes_to_stack(page_table, current_string_addr, &[0])?;
                 current_string_addr += 1;
             }
         }
@@ -5031,46 +4995,38 @@ impl ProcessManager {
         Ok(rsp)
     }
 
-    /// Write a single byte to the stack via physical address translation
-    fn write_byte_to_stack(
+    /// Copy stack data through each mapped physical page of the new image.
+    fn write_bytes_to_stack(
         &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
-        virt_addr: u64,
-        value: u8,
+        mut virt_addr: u64,
+        mut bytes: &[u8],
     ) -> Result<(), &'static str> {
-        // Translate virtual address to physical
-        // NOTE: translate_page uses translate_addr which returns the FULL physical
-        // address including the page offset - do NOT add page_offset again!
-        let phys_addr = page_table
-            .translate_page(VirtAddr::new(virt_addr))
-            .ok_or("Failed to translate stack address")?;
-
-        // Write via direct physical memory mapping
-        // The kernel has a direct mapping of all physical memory
-        let phys_offset = crate::memory::physical_memory_offset();
-        let kernel_virt = phys_offset + phys_addr.as_u64();
-
-        unsafe {
-            core::ptr::write_volatile(kernel_virt.as_mut_ptr::<u8>(), value);
+        while !bytes.is_empty() {
+            let phys_addr = page_table
+                .translate_page(VirtAddr::new(virt_addr))
+                .ok_or("Failed to translate stack address")?;
+            let count = bytes.len().min(4096 - (virt_addr as usize & 4095));
+            let kernel_virt = crate::memory::physical_memory_offset() + phys_addr.as_u64();
+            // SAFETY: this newly mapped stack page belongs exclusively to the
+            // unpublished image, and count never crosses its physical frame.
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), kernel_virt.as_mut_ptr::<u8>(), count);
+            }
+            virt_addr += count as u64;
+            bytes = &bytes[count..];
         }
-
         Ok(())
     }
 
-    /// Write a u64 to the stack via physical address translation
+    /// Write a u64, including when it straddles a page boundary.
     fn write_u64_to_stack(
         &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
         virt_addr: u64,
         value: u64,
     ) -> Result<(), &'static str> {
-        // Write as 8 individual bytes to handle potential page boundaries
-        // (though in practice argv data shouldn't cross page boundaries)
-        let bytes = value.to_le_bytes();
-        for (i, byte) in bytes.iter().enumerate() {
-            self.write_byte_to_stack(page_table, virt_addr + i as u64, *byte)?;
-        }
-        Ok(())
+        self.write_bytes_to_stack(page_table, virt_addr, &value.to_le_bytes())
     }
 
     /// Return whether a live or creating process row still names a matching

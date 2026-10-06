@@ -2644,6 +2644,7 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
             &corrupt,
             Some("corrupt_exec"),
             &argv,
+            &[],
             &mut closes,
         );
         let argv_kept = manager
@@ -3227,7 +3228,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         if with_argv {
             let argv: [&[u8]; 1] = [b"exec_detach_oracle\0"];
             manager
-                .exec_process_with_argv(pid, elf, Some("exec_detach_oracle"), &argv, closes)
+                .exec_process_with_argv(pid, elf, Some("exec_detach_oracle"), &argv, &[], closes)
                 .map(|(_, _, commit)| {
                     // #721 m1: deliberately not applied. This oracle reads detach/
                     // refusal state straight off the process row and tears the row

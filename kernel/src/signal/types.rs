@@ -362,13 +362,9 @@ impl SignalState {
     /// production `exec_process`/`exec_process_with_argv` call this unconditionally,
     /// same as aarch64's already did.
     ///
-    /// A pending SIGKILL survives: `kill_process_now` leaves one pending when
-    /// the victim is inside an ext2 operation (#1025), and exec loads its
-    /// image under such a guard. Clearing it would let the new program
-    /// outlive the kill; kept, it ends the process at the first return to
-    /// user mode.
+    /// The blocked mask and the entire pending set survive exec, including a
+    /// SIGKILL queued while the old image was reading from ext2.
     pub fn exec_reset(&mut self) {
-        self.pending &= sig_mask(SIGKILL);
         for sig in 1..=NSIG {
             if self.get_handler(sig).is_handler() {
                 self.set_handler(sig, SignalAction::default());

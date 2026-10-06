@@ -1006,22 +1006,23 @@ pub extern "C" fn fork() -> i32 {
 
 /// execve - execute a program
 ///
-/// Wires to libbreenix::process::execv (envp is ignored for now).
+/// Passes all three execve arguments to the kernel.
 #[no_mangle]
 pub unsafe extern "C" fn execve(
     path: *const u8,
     argv: *const *const u8,
-    _envp: *const *const u8,
+    envp: *const *const u8,
 ) -> i32 {
     if path.is_null() {
         ERRNO = EFAULT;
         return -1;
     }
 
-    let result = libbreenix::raw::syscall2(
+    let result = libbreenix::raw::syscall3(
         libbreenix::syscall::nr::EXEC,
         path as u64,
         argv as u64,
+        envp as u64,
     ) as i64;
     // execve should not return on success
     syscall_result_to_c_int(result)
@@ -1541,6 +1542,7 @@ pub unsafe extern "C" fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> i
 /// sysconf - get system configuration values
 #[no_mangle]
 pub extern "C" fn sysconf(name: i32) -> i64 {
+    const _SC_ARG_MAX: i32 = 0;
     const _SC_PAGESIZE: i32 = 30;
     const _SC_NPROCESSORS_ONLN: i32 = 84;
     const _SC_NPROCESSORS_CONF: i32 = 83;
@@ -1548,6 +1550,21 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
     const _SC_GETGR_R_SIZE_MAX: i32 = 69;
 
     match name {
+        _SC_ARG_MAX => {
+            let mut limits = [0u64; 2];
+            let result = unsafe {
+                libbreenix::raw::syscall4(libbreenix::syscall::nr::PRLIMIT64,
+                    0, 3, 0, limits.as_mut_ptr() as u64) as i64
+            };
+            if result < 0 {
+                unsafe { ERRNO = -result as i32; }
+                -1
+            } else {
+                // Match musl's ABI calculation, also enforced by execve.
+                let soft = limits[0];
+                if soft != u64::MAX && soft / 4 > 131072 { (soft / 4) as i64 } else { 131072 }
+            }
+        }
         _SC_PAGESIZE => 4096,
         _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => 1,
         _SC_GETPW_R_SIZE_MAX | _SC_GETGR_R_SIZE_MAX => 1024,

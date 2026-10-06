@@ -9,6 +9,7 @@
 
 // Architecture-independent modules (compile for both x86_64 and ARM64)
 pub mod errno;
+pub(crate) mod exec;
 pub mod memory;
 pub mod memory_common;
 pub mod mmap;
