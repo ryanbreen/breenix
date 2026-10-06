@@ -89,11 +89,17 @@ mod instruction {
 
     extern "C" fn restart_handler_body(sig: i32, frame: *const u64) {
         assert_eq!(sig, SIGUSR1);
-        // SignalFrame's saved RIP and RAX are at offsets 40 and 64.
+        // SignalFrame's saved RIP, RAX and RCX are at offsets 40, 64 and 80.
         // ERESTARTSYS must restore READ's number and rewind onto SYSCALL.
+        // RCX holds the next RIP only if SYSCALL ran: read_entered() loads
+        // zero, so a frame interrupted before READ entered cannot match.
         let rip = unsafe { *frame.add(5) };
         let rax = unsafe { *frame.add(8) };
-        if rax == 0 && unsafe { std::ptr::read_unaligned(rip as *const u16) } == 0x050f {
+        let rcx = unsafe { *frame.add(10) };
+        if rax == 0
+            && rcx == rip.wrapping_add(2)
+            && unsafe { std::ptr::read_unaligned(rip as *const u16) } == 0x050f
+        {
             RESTARTED.store(true, Ordering::SeqCst);
             let byte = b'R';
             assert_eq!(
@@ -109,6 +115,31 @@ mod instruction {
                 1
             );
         }
+    }
+
+    fn read_entered(fd: i32, byte: &mut u8) -> i64 {
+        let result: i64;
+        unsafe {
+            core::arch::asm!("syscall", inlateout("rax") 0i64 => result,
+                in("rdi") fd as u64, in("rsi") byte as *mut u8 as u64, in("rdx") 1u64,
+                inlateout("rcx") 0u64 => _, lateout("r11") _, options(nostack));
+        }
+        result
+    }
+
+    fn blocked(status_path: &[u8]) -> bool {
+        let fd = unsafe { call(2, status_path.as_ptr() as u64, 0, 0, 0) };
+        if fd < 0 {
+            return false;
+        }
+        let mut buf = [0u8; 512];
+        let len = unsafe { call(0, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64, 0) };
+        unsafe { call(3, fd as u64, 0, 0, 0) };
+        const STATE: &[u8] = b"State:\tBlocked";
+        len > 0
+            && buf[..len as usize]
+                .windows(STATE.len())
+                .any(|line| line == STATE)
     }
 
     pub fn check() {
@@ -161,20 +192,25 @@ mod instruction {
         WRITE_FD.store(fds[1], Ordering::SeqCst);
         action(SIGUSR1, restart_handler as u64, SA_RESTART);
         let sender = match fork().expect("fork restart signal sender") {
-            ForkResult::Child => loop {
-                assert_eq!(unsafe { call(62, pid as u64, SIGUSR1 as u64, 0, 0) }, 0);
-                assert_eq!(unsafe { call(24, 0, 0, 0, 0) }, 0);
-            },
+            ForkResult::Child => {
+                // Signal only while the reader sleeps, so the interrupted
+                // READ is one that blocked and had to be woken.
+                let status_path = format!("/proc/{pid}/status\0");
+                loop {
+                    if blocked(status_path.as_bytes()) {
+                        assert_eq!(unsafe { call(62, pid as u64, SIGUSR1 as u64, 0, 0) }, 0);
+                    }
+                    assert_eq!(unsafe { call(24, 0, 0, 0, 0) }, 0);
+                }
+            }
             ForkResult::Parent(child) => child,
         };
         let mut byte = 0u8;
         // Signals received before read cannot fill the pipe. Only a handler
-        // observing the rewound read writes, so completion proves SA_RESTART
-        // and SYSCALL sigreturn resumed the interrupted operation.
-        assert_eq!(
-            unsafe { call(0, fds[0] as u64, &mut byte as *mut _ as u64, 1, 0) },
-            1
-        );
+        // observing the rewound frame of an entered, blocked read writes, so
+        // completion proves the wake, SA_RESTART and SYSCALL sigreturn resumed
+        // the interrupted operation.
+        assert_eq!(read_entered(fds[0], &mut byte), 1);
         assert_eq!(byte, b'R');
         assert!(RESTARTED.load(Ordering::SeqCst));
         assert_eq!(
