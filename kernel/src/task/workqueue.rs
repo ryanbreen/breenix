@@ -32,7 +32,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
 
 use super::kthread::{
-    kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark,
+    kthread_join, kthread_park_if, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark,
     KthreadHandle,
 };
 
@@ -325,8 +325,15 @@ fn worker_thread_fn(wq: Arc<Workqueue>) {
                 work.execute();
             }
             None => {
-                // No work available, park until woken
-                kthread_park();
+                // No work was queued when we looked, but a queue() or flush()
+                // may push and unpark before this thread publishes its park
+                // intent; that unpark finds it running and does nothing. Park
+                // only if the queue is still empty after the intent is
+                // published, so work queued at any point is either seen here
+                // or wakes the park.
+                kthread_park_if(|| {
+                    wq.queue.lock().is_empty() && !wq.shutdown.load(Ordering::Acquire)
+                });
             }
         }
     }
