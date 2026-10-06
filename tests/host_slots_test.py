@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HELPER = Path(__file__).resolve().parents[1] / 'scripts' / 'host-slots.py'
 spec = importlib.util.spec_from_file_location('host_slots', HELPER)
@@ -167,6 +168,35 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         self.assertEqual(context['observed_running'][0]['resource'], 'x86-boot')
         self.assertEqual(len(context['load_at_enqueue']), 3)
         self.assertEqual(len(context['load_at_acquire']), 3)
+
+    def test_zombie_only_process_group_cleanup_succeeds(self):
+        # Keep the zombie's parent outside its group so the group persists.
+        code = ("import os,sys; child=os.fork(); "
+                "(os.setpgid(0,0),os._exit(0)) if child==0 else "
+                "(print(child,flush=True),sys.stdin.readline(),os.waitpid(child,0))")
+        process = subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.processes.append(process)
+        child = int(process.stdout.readline().strip())
+        deadline = time.monotonic() + 5
+        state = ''
+        while time.monotonic() < deadline:
+            state = subprocess.check_output(['ps', '-p', str(child), '-o', 'stat='], text=True).strip()
+            if state.startswith('Z'):
+                break
+            time.sleep(0.01)
+        self.assertTrue(state.startswith('Z'), state)
+        slots.signal_process_group(child, signal.SIGKILL)
+        process.stdin.write(b'reap\n'); process.stdin.flush()
+        self.assertEqual(process.wait(timeout=10), 0)
+
+    def test_cleanup_permission_failure_with_live_group_is_not_hidden(self):
+        process = subprocess.Popen(['sleep', '60'], start_new_session=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.processes.append(process)
+        with mock.patch.object(slots.os, 'killpg', side_effect=PermissionError(1, 'denied')):
+            with self.assertRaises(PermissionError):
+                slots.signal_process_group(process.pid, signal.SIGKILL)
 
     def test_parallel_observers_are_not_reported_as_running_builds(self):
         pool = slots.Slots(self.root / 'locks')

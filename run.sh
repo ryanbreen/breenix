@@ -661,7 +661,7 @@ if [ "$PARALLELS" = true ]; then
         echo "Serial log: $SERIAL_LOG"
     else
         # Interactive mode: tail serial forever
-        echo "Tailing serial output (Ctrl+C to detach)..."
+        echo "Tailing serial output (Ctrl+C stops the VM)..."
         echo ""
 
         # Monitor Parallels VM log for VCPU exceptions in background
@@ -973,7 +973,7 @@ VMXEOF
         hold_suite_panel
     fi
 
-    echo "Tailing serial output (Ctrl+C to detach)..."
+    echo "Tailing serial output (Ctrl+C stops the VM)..."
     echo ""
 
     # Monitor vmware.log for CPU exceptions in background

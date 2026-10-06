@@ -139,6 +139,24 @@ def send_request(request):
             raise RuntimeError(result['error'])
 
 
+def signal_process_group(group, number):
+    try:
+        os.killpg(group, number)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        # Darwin's killpg skips zombies and can return EPERM for a group
+        # containing only zombies. Verify that no live member remains;
+        # a real permission failure must still fail cleanup.
+        table = subprocess.check_output(['ps', '-axo', 'pgid=,stat='], text=True, timeout=10)
+        for row in table.splitlines():
+            fields = row.split()
+            if len(fields) != 2:
+                raise RuntimeError(f'malformed process-group row: {row!r}')
+            if int(fields[0]) == group and not fields[1].startswith('Z'):
+                raise
+
+
 def supervise(argv):
     slots = Slots()
     worktree = str(Path(__file__).resolve().parents[1])
@@ -153,10 +171,7 @@ def supervise(argv):
         nonlocal received_signal
         received_signal = number
         if child is not None:
-            try:
-                os.killpg(child.pid, number)
-            except ProcessLookupError:
-                pass
+            signal_process_group(child.pid, number)
 
     for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(number, forward)
@@ -177,7 +192,7 @@ def supervise(argv):
                         try:
                             child.wait(timeout=10)
                         except subprocess.TimeoutExpired:
-                            os.killpg(child.pid, signal.SIGKILL)
+                            signal_process_group(child.pid, signal.SIGKILL)
                         break
                     for key, _ in selector.select(timeout=0.5):
                         client, _ = key.fileobj.accept()
@@ -248,10 +263,7 @@ def supervise(argv):
             finally:
                 # Clean descendants before releasing any lease, even if the shell was killed.
                 if child is not None:
-                    try:
-                        os.killpg(child.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
+                    signal_process_group(child.pid, signal.SIGTERM)
                 for command in stop_commands:
                     try:
                         subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
@@ -262,10 +274,7 @@ def supervise(argv):
                         child.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         pass
-                    try:
-                        os.killpg(child.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    signal_process_group(child.pid, signal.SIGKILL)
                     child.wait()
                 for serial, context in serials.items():
                     write_header(record, serial, context)
