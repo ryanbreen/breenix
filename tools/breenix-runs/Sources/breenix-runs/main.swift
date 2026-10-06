@@ -64,7 +64,8 @@ func usage() -> String {
     show defaults to subsystems; combine flags to select panes.
     run arm launches local QEMU; run x86 supports the remote gate profile only.
     x86 --hardware selects hardware from docs/x86-profiles.json (unset: default).
-    --gate-timeout sets the remote x86 per-boot timeout (default: 900).
+    --gate-timeout sets the remote suite/kthread deadline (default: 900).
+    Full boots stop on USERSPACE TEST COMPLETE, with a fixed 1800-second hang backstop.
     --no-store avoids persistence; --dry-run prints the x86 remote plan.
     import preserves gate metadata when present; loose serial verdicts remain unknown.
     Use --help or <command> --help to print this usage without accessing the store.

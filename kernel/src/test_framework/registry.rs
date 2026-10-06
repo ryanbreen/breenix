@@ -9259,14 +9259,20 @@ fn test_tty_foreground_pgrp() -> TestResult {
     // Step 3: Load test binary and create a user process
     // =========================================================================
 
-    // Try to load a minimal test binary from disk
-    // On ARM64, this requires the test disk to be properly configured
-    #[cfg(feature = "testing")]
+    // Use each architecture's actual test-binary source.
+    #[cfg(all(feature = "testing", target_arch = "x86_64"))]
     let elf_data = {
         // Use get_test_binary which loads from the test disk
         // This will panic with a clear error if the disk isn't available
         crate::userspace_test::get_test_binary("hello_time")
     };
+
+    #[cfg(all(feature = "testing", target_arch = "aarch64"))]
+    let elf_data = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../userspace/programs/aarch64/hello_time.elf"
+    ))
+    .to_vec();
 
     #[cfg(not(feature = "testing"))]
     {

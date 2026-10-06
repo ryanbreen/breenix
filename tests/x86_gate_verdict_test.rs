@@ -30,6 +30,9 @@ impl SerialFixture {
 
         let kernel_log = directory.join("serial_kernel.txt");
         let user_log = directory.join("serial_user.txt");
+        // These fixtures exercise verdict checks after the mandatory softirq
+        // prerequisite; include a completed daemon record for that prerequisite.
+        let kernel = format!("[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=1:wait_ns=1000000:dispatches=1:iterations=25:verdict=ok]\n{kernel}");
         fs::write(&kernel_log, kernel)
             .unwrap_or_else(|error| panic!("write fixture {}: {error}", kernel_log.display()));
         fs::write(&user_log, user)
@@ -593,7 +596,11 @@ fn a_capture_without_a_completion_marker_says_the_age_is_not_measurable() {
     // claim-lint:ok: 6 of 6 round-4 production captures under
     // docs/planning/green-program/sockets/serials/775/round4/production/
     // carry 0 completion markers.
-    let kernel = format!("{}\n{}\n", marker(1, 100, 500, 4, 0, "-"), marker(2, 900, 40000, 6, 0, "-"));
+    let kernel = format!(
+        "{}\n{}\n",
+        marker(1, 100, 500, 4, 0, "-"),
+        marker(2, 900, 40000, 6, 0, "-")
+    );
     let fixture = SerialFixture::new(&kernel, "");
     let output = fixture.run(Some("10"));
     let text = output_text(&output);
@@ -830,6 +837,13 @@ fn a_census_that_exits_zero_without_a_summary_line_is_not_a_pass() {
         stub_dir.join("x86-gate-verdict.sh"),
     )
     .expect("copy the verdict script beside the stub");
+    for helper in ["x86-gate-exits.py", "score-softirq-deferral.py"] {
+        fs::copy(
+            repo_root().join("scripts").join(helper),
+            stub_dir.join(helper),
+        )
+        .expect("copy the verdict prerequisite helper beside the stub");
+    }
     let stub = stub_dir.join("x86-strand-census.sh");
     fs::write(&stub, "#!/usr/bin/env bash\nexit 0\n").expect("write the silent census stub");
     fs::set_permissions(&stub, fs::Permissions::from_mode(0o755))
@@ -925,4 +939,47 @@ fn a_trailing_field_with_a_non_numeric_value_is_still_malformed() {
         text.contains("latest snapshot seq=2"),
         "the malformed marker was read as the newest snapshot: {text}"
     );
+}
+
+#[test]
+fn publishes_every_exit_beyond_the_old_eight_entry_limit() {
+    let entries = (100..120)
+        .map(|pid| format!("waitpid_test_child_{pid}:42"))
+        .chain(["brk_test:-11".to_owned(), "argv_test:1".to_owned()])
+        .collect::<Vec<_>>()
+        .join(",");
+    let kernel = format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=30 nonzero=22 failed=[{entries}]\nTEST RUNNER: FAILED\n",
+        marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-"));
+    let fixture = SerialFixture::new(&kernel, "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+    assert!(!output.status.success(), "real failures must fail: {text}");
+    assert_eq!(text.matches("TEST_EXIT: program=").count(), 22, "{text}");
+    assert!(
+        text.contains("program=waitpid_test_child_119 status=42 EXPECTED"),
+        "{text}"
+    );
+    assert!(text.contains("program=brk_test status=-11 FAIL"), "{text}");
+    assert!(text.contains("program=argv_test status=1 FAIL"), "{text}");
+}
+
+#[test]
+fn expected_child_name_does_not_allow_an_unexpected_status() {
+    let fixture = SerialFixture::new(&format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=1 failed=[waitpid_test_child_123:-11]\nTEST RUNNER: FAILED\n",
+        marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-")), "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains("program=waitpid_test_child_123 status=-11 FAIL"),
+        "{text}"
+    );
+}
+
+#[test]
+fn documented_child_status_passes_without_unrelated_contracts_running() {
+    let fixture = SerialFixture::new(&format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=1 failed=[waitpid_test_child_123:42]\nTEST RUNNER: FAILED\n",
+        marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-")), "");
+    let output = fixture.run(Some("10"));
+    assert!(output.status.success(), "{}", output_text(&output));
 }

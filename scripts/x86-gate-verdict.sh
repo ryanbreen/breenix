@@ -25,6 +25,10 @@ for serial_log in "$@"; do
     [[ -r "$serial_log" ]] || fail "serial log is not readable: $serial_log"
 done
 
+# Always publish the complete classification before any other check can stop us.
+exit_contracts_ok=true
+python3 "$SCRIPT_DIR/x86-gate-exits.py" "$@" || exit_contracts_ok=false
+
 python3 "$SCRIPT_DIR/score-softirq-deferral.py" "$@" || exit $?
 
 [[ -r "$ALLOWLIST_PATH" ]] || fail "allowlist is not readable: $ALLOWLIST_PATH"
@@ -166,78 +170,6 @@ else
     ! $pass_marker || fail "nonzero=$nonzero but the all-tests-passed marker is present"
 fi
 
-failure_names=()
-if [[ -n "$failed_field" ]]; then
-    [[ "$failed_field" != *...* ]] \
-        || fail "failure list was truncated; not every failing process can be reviewed"
+$exit_contracts_ok || fail "one or more process exits violate their asserted contracts (see every TEST_EXIT above)"
 
-    IFS=',' read -r -a failure_items <<< "$failed_field"
-    failure_item_count=${#failure_items[@]}
-    for ((index = 0; index < failure_item_count; index++)); do
-        failure_item="${failure_items[$index]}"
-        if [[ ! "$failure_item" =~ ^([^,:[:space:]]+):(-?[0-9]+)$ ]]; then
-            fail "malformed failure entry in last tally: $failure_item"
-        fi
-        failure_names+=("${BASH_REMATCH[1]}")
-    done
-fi
-
-failure_count=${#failure_names[@]}
-(( failure_count == nonzero )) \
-    || fail "nonzero=$nonzero but failed=[...] contains $failure_count named failures"
-
-trim_whitespace() {
-    local value="$1"
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-    printf '%s' "$value"
-}
-
-allowlist_names=()
-while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
-    line="$(trim_whitespace "$raw_line")"
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    [[ "$line" == *\#* ]] \
-        || fail "allowlist entry lacks required # <issue reference>: $line"
-
-    allowlist_name="$(trim_whitespace "${line%%#*}")"
-    issue_reference="$(trim_whitespace "${line#*#}")"
-    [[ -n "$allowlist_name" && -n "$issue_reference" ]] \
-        || fail "malformed allowlist entry; expected <test-name> # <issue reference>: $line"
-    [[ "$allowlist_name" != *[[:space:],:]* ]] \
-        || fail "allowlist test name contains unsupported whitespace or punctuation: $allowlist_name"
-
-    allowlist_count=${#allowlist_names[@]}
-    for ((index = 0; index < allowlist_count; index++)); do
-        [[ "${allowlist_names[$index]}" != "$allowlist_name" ]] \
-            || fail "duplicate allowlist entry: $allowlist_name"
-    done
-    allowlist_names+=("$allowlist_name")
-done < "$ALLOWLIST_PATH"
-
-allowlist_count=${#allowlist_names[@]}
-for ((failure_index = 0; failure_index < failure_count; failure_index++)); do
-    failure_name="${failure_names[$failure_index]}"
-    found=false
-    for ((allowlist_index = 0; allowlist_index < allowlist_count; allowlist_index++)); do
-        if [[ "${allowlist_names[$allowlist_index]}" == "$failure_name" ]]; then
-            found=true
-            break
-        fi
-    done
-    $found || fail "failing process is not allowlisted: $failure_name"
-done
-
-for ((allowlist_index = 0; allowlist_index < allowlist_count; allowlist_index++)); do
-    allowlist_name="${allowlist_names[$allowlist_index]}"
-    found=false
-    for ((failure_index = 0; failure_index < failure_count; failure_index++)); do
-        if [[ "${failure_names[$failure_index]}" == "$allowlist_name" ]]; then
-            found=true
-            break
-        fi
-    done
-    $found || fail "allowlisted process is no longer failing; remove its entry: $allowlist_name"
-done
-
-echo "x86 userspace gate: PASS - exited=$exited expected>=$expected_exits nonzero=$nonzero allowlist=$allowlist_count"
+echo "x86 userspace gate: PASS - exited=$exited expected>=$expected_exits nonzero=$nonzero (all statuses match their contracts)"

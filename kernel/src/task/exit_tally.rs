@@ -5,12 +5,16 @@
 //! are recorded, so it is a leaf lock: it must never be held with interrupts
 //! enabled, and nothing may take `PROCESS_MANAGER` while holding it.
 
+use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
-const MAX_FAILURES: usize = 8;
-const MAX_NAME_BYTES: usize = 24;
+// Static storage keeps fault/signal exits allocation-free. Overflow is a gate
+// failure, never silently accepted as complete accounting. The full profile
+// currently exits about 175 processes, including fork children (#1113).
+const MAX_FAILURES: usize = 1024;
+const MAX_NAME_BYTES: usize = 128;
 
 static USERSPACE_EXITS: AtomicU32 = AtomicU32::new(0);
 static USERSPACE_NONZERO_EXITS: AtomicU32 = AtomicU32::new(0);
@@ -35,7 +39,7 @@ where
 #[derive(Clone, Copy)]
 pub struct ExitFailure {
     name: [u8; MAX_NAME_BYTES],
-    name_len: u8,
+    name_len: u16,
     exit_code: i32,
 }
 
@@ -57,7 +61,7 @@ impl ExitFailure {
 
         Self {
             name: stored_name,
-            name_len: name_len as u8,
+            name_len: name_len as u16,
             exit_code,
         }
     }
@@ -109,11 +113,12 @@ pub fn totals() -> (u32, u32) {
     )
 }
 
-/// Copy the recorded failure details while holding their small static mutex.
-pub fn snapshot_failures() -> ([ExitFailure; MAX_FAILURES], usize) {
+/// Copy completed records onto the heap, never onto the bounded kernel stack.
+/// Called only by the completion reporter, after dropping PROCESS_MANAGER.
+pub fn snapshot_failures() -> Vec<ExitFailure> {
     with_failure_table_interrupts_disabled(|| {
         let failures = USERSPACE_FAILURES.lock();
-        (failures.failures, failures.len)
+        failures.failures[..failures.len].to_vec()
     })
 }
 

@@ -231,10 +231,10 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
             }
 
             // Signal that userspace testing is complete with clear markers
-            log::info!("🎯 USERSPACE TEST COMPLETE - All processes finished successfully");
+            log::info!("🎯 USERSPACE TEST COMPLETE - All processes finished");
             let (exited, nonzero) = crate::task::exit_tally::totals();
-            let (failures, failure_count) = crate::task::exit_tally::snapshot_failures();
-            let failures = &failures[..failure_count];
+            let failure_records = crate::task::exit_tally::snapshot_failures();
+            let failures = failure_records.as_slice();
             log::info!(
                 "TEST_TALLY: exited={} nonzero={} failed=[{}]",
                 exited,
