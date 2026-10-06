@@ -196,15 +196,36 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
     crate::task::scheduler::set_need_resched();
 }
 
+/// Send SIGHUP and then SIGCONT to every member of `pgid`, a process group an
+/// exit has just orphaned while one of its members is stopped (POSIX _exit).
+/// Must be called with no process-manager lock held.
+pub(crate) fn signal_orphaned_group(pgid: ProcessId) {
+    let _ = send_signal_to_process_group(pgid, SIGHUP);
+    let _ = send_signal_to_process_group(pgid, SIGCONT);
+}
+
 /// Send a signal to a specific process
 fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
     let mut manager_guard = manager();
 
     if let Some(ref mut manager) = *manager_guard {
+        // POSIX: a process in an orphaned process group is not stopped by
+        // SIGTSTP, SIGTTIN or SIGTTOU with the default action; such a signal
+        // is discarded.
+        let orphaned_stop = matches!(sig, SIGTSTP | SIGTTIN | SIGTTOU)
+            && manager.get_process(target_pid).is_some_and(|process| {
+                process.signals.get_handler(sig).is_default()
+                    && manager.pgrp_is_orphaned(process.pgid, None)
+            });
+        let mut continued: Option<(
+            Option<crate::signal::delivery::JobNotification>,
+            Option<u64>,
+        )> = None;
         if let Some(process) = manager.get_process_mut(target_pid) {
-            // Check if process is alive
+            // A zombie is still a process until it is reaped: the signal is
+            // accepted and has no effect.
             if process.is_terminated() {
-                return SyscallResult::Err(3); // ESRCH
+                return SyscallResult::Ok(0);
             }
 
             // SIGKILL and SIGSTOP are special - cannot be caught or blocked
@@ -215,33 +236,58 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
                 return SyscallResult::Ok(0);
             }
 
-            if sig == SIGSTOP {
-                log::info!("SIGSTOP sent to process {} - stopping", target_pid.as_u64());
-                process.set_blocked();
-                return SyscallResult::Ok(0);
-            }
-
             if sig == SIGCONT {
-                log::info!(
-                    "SIGCONT sent to process {} - continuing",
-                    target_pid.as_u64()
-                );
-                if matches!(process.state, crate::process::ProcessState::Blocked) {
-                    process.set_ready();
-                    crate::task::scheduler::set_need_resched();
+                // SIGCONT continues a stopped process even when it is ignored
+                // or blocked, and discards every pending stop signal.
+                process.signals.discard_pending(STOP_SIGNALS);
+                if process.job.stopped.take().is_some() {
+                    process.job.report = Some(crate::process::process::JobReport::Continued);
+                    let notification =
+                        process
+                            .parent
+                            .map(|parent_pid| crate::signal::delivery::JobNotification {
+                                parent_pid,
+                                child_pid: process.id,
+                            });
+                    continued = Some((
+                        notification,
+                        process.main_thread.as_ref().map(|thread| thread.id),
+                    ));
                 }
-                // SIGCONT also gets queued if there's a handler
-                if !process.signals.get_handler(sig).is_default() {
-                    process.signals.set_pending(sig);
-                }
+                // Queued when caught; discarded at generation otherwise.
+                process.signals.set_pending(sig);
             } else {
+                // A stop signal discards a pending SIGCONT. The stop itself is
+                // the default action, taken where the process returns to user
+                // mode.
+                if sig_mask(sig) & STOP_SIGNALS != 0 {
+                    process.signals.clear_pending(SIGCONT);
+                    if orphaned_stop {
+                        return SyscallResult::Ok(0);
+                    }
+                }
                 // Ignored signals are discarded at generation.
                 process.signals.set_pending(sig);
             }
-
-            // Resume above is unconditional for SIGCONT; all signal wakeups
-            // below require a pending, unblocked, non-ignored disposition.
-            if !process.signals.has_deliverable_signals() {
+        }
+        if let Some((notification, thread_id)) = continued {
+            if let Some(notification) = notification {
+                crate::signal::delivery::notify_parent_of_job_change_locked(manager, &notification);
+            }
+            // The continued thread is parked blocked at its return to user
+            // mode, or was switched out blocked from it.
+            if let Some(thread_id) = thread_id {
+                crate::task::scheduler::with_scheduler(|sched| {
+                    sched.unblock(thread_id);
+                });
+                crate::task::scheduler::set_need_resched();
+            }
+        }
+        if let Some(process) = manager.get_process_mut(target_pid) {
+            // A stopped process runs nothing until SIGCONT; what is pending
+            // waits for it. Every other wakeup below requires a pending,
+            // unblocked, non-ignored disposition.
+            if process.job.stopped.is_some() || !process.signals.has_deliverable_signals() {
                 return SyscallResult::Ok(0);
             }
             log::debug!(

@@ -234,6 +234,8 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
     let mut terminated_child_pid: Option<u64> = None;
     // A signal death ends the whole thread group (pid and exit status).
     let mut group_death: Option<(crate::process::ProcessId, i32)> = None;
+    // A stop in force parks the thread before EL0 runs again.
+    let mut stop: Option<Option<crate::signal::delivery::JobNotification>> = None;
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
@@ -244,8 +246,8 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
             crate::signal::delivery::check_and_fire_alarm(process);
             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
-            // Check if there are any deliverable signals
-            if !crate::signal::delivery::has_deliverable_signals(process) {
+            // Check if there are any deliverable signals, or a stop in force
+            if !crate::signal::delivery::needs_action_on_return_to_user(process) {
                 return;
             }
 
@@ -286,6 +288,11 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
                 signal_result,
                 crate::signal::delivery::SignalDeliveryResult::FrameFault
             );
+            if let crate::signal::delivery::SignalDeliveryResult::Stopped(notification) =
+                signal_result
+            {
+                stop = Some(notification);
+            }
 
             // Handle termination
             if let crate::signal::delivery::SignalDeliveryResult::Terminated(notification) =
@@ -323,6 +330,12 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
 
     if let Some((pid, exit_code)) = group_death {
         crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
+    }
+
+    // Stopped: wait for SIGCONT here, then deliver what is pending by then.
+    if let Some(notification) = stop {
+        crate::signal::delivery::stop_on_syscall_return(notification);
+        check_and_deliver_signals_aarch64(frame);
     }
 }
 

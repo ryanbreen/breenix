@@ -10,13 +10,22 @@
 use super::constants::*;
 use super::types::*;
 use crate::memory::process_memory::ProcessPageTable;
-use crate::process::{Process, ProcessState};
+use crate::process::process::{JobReport, Process};
+use crate::process::{ProcessId, ProcessManager};
 
 /// Check for pending, unblocked signals with an observable disposition.
 /// Ignored dispositions are filtered by SignalState's cached mask.
 #[inline]
 pub fn has_deliverable_signals(process: &Process) -> bool {
     process.signals.has_deliverable_signals()
+}
+
+/// What a return to user mode must act on: a deliverable signal, or a stop in
+/// force. A stopped process's thread does not return to user mode,
+/// even when nothing is pending, and whatever woke it.
+#[inline]
+pub fn needs_action_on_return_to_user(process: &Process) -> bool {
+    has_deliverable_signals(process) || process.job.stopped.is_some()
 }
 
 /// Interruptible waits use the same eligibility check as signal delivery.
@@ -33,6 +42,12 @@ pub enum SignalDeliveryResult {
     Delivered,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
+    /// The process is stopped, by a stop signal's default action taken here
+    /// (with the notification its parent is owed) or by one taken earlier.
+    /// The thread must not return to user mode: on an interrupt return it has
+    /// been blocked and is switched out at the next scheduling point; a
+    /// syscall return parks it with `stop_on_syscall_return`.
+    Stopped(Option<JobNotification>),
     /// A caught signal's frame could not be installed on the user stack. The
     /// thread is no longer runnable and its SIGSEGV exit is deferred; the
     /// caller must not return it to user mode.
@@ -65,6 +80,9 @@ pub fn deliver_pending_signals(
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
+    if let Some(held) = hold_stopped(process) {
+        return held;
+    }
     // Process all deliverable signals in a loop (avoids unbounded recursion)
     loop {
         // Get next deliverable signal
@@ -100,6 +118,9 @@ pub fn deliver_pending_signals(
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
                     DeliverResult::Terminated(notification) => {
                         return SignalDeliveryResult::Terminated(notification)
+                    }
+                    DeliverResult::Stopped(notification) => {
+                        return SignalDeliveryResult::Stopped(notification)
                     }
                     DeliverResult::Ignored => {
                         // Continue loop to check for more signals
@@ -156,6 +177,9 @@ pub fn deliver_pending_signals(
     exception_frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
+    if let Some(held) = hold_stopped(process) {
+        return held;
+    }
     // Process all deliverable signals in a loop (avoids unbounded recursion)
     loop {
         // Get next deliverable signal
@@ -191,6 +215,9 @@ pub fn deliver_pending_signals(
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
                     DeliverResult::Terminated(notification) => {
                         return SignalDeliveryResult::Terminated(notification)
+                    }
+                    DeliverResult::Stopped(notification) => {
+                        return SignalDeliveryResult::Stopped(notification)
                     }
                     DeliverResult::Ignored => {
                         // Continue loop to check for more signals
@@ -233,6 +260,53 @@ pub enum DeliverResult {
     Ignored,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
+    /// The process stopped; its parent is owed the notification, if it has one
+    Stopped(Option<JobNotification>),
+}
+
+/// A pending SIGKILL ends a stopped process: it is not held stopped.
+fn sigkill_pending(process: &Process) -> bool {
+    process.signals.pending & sig_mask(SIGKILL) != 0
+}
+
+/// Keep a stopped process's thread out of user mode, unless a SIGKILL is
+/// pending. Called first by every delivery on the way back to user mode.
+fn hold_stopped(process: &Process) -> Option<SignalDeliveryResult> {
+    if process.job.stopped.is_none() || sigkill_pending(process) {
+        return None;
+    }
+    stop_current_thread(process);
+    Some(SignalDeliveryResult::Stopped(None))
+}
+
+/// Take the stop for `sig`'s default action: the process is stopped, the stop
+/// replaces any continue its parent has not waited for, and the parent is owed
+/// a notification.
+fn enter_stop(process: &mut Process, sig: u32) -> Option<JobNotification> {
+    process.job.stopped = Some(sig);
+    process.job.report = Some(JobReport::Stopped(sig));
+    process.parent.map(|parent_pid| JobNotification {
+        parent_pid,
+        child_pid: process.id,
+    })
+}
+
+/// Block the stopped process's thread when it is the one returning to user
+/// mode on this CPU, so the next scheduling point switches it out. SIGCONT
+/// makes it ready again.
+fn stop_current_thread(process: &Process) {
+    let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id) else {
+        return;
+    };
+    crate::task::scheduler::with_scheduler(|scheduler| {
+        if scheduler
+            .current_thread_mut()
+            .is_some_and(|thread| thread.id == thread_id)
+        {
+            scheduler.block_current();
+        }
+    });
+    crate::task::scheduler::set_need_resched();
 }
 
 /// An unusable signal stack cannot silently discard a caught signal: the
@@ -343,30 +417,13 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             }
         }
         SignalDefaultAction::Stop => {
-            log::info!(
-                "Process {} stopped by signal {} ({})",
-                process.id.as_u64(),
-                sig,
-                signal_name(sig)
-            );
-            process.set_blocked();
-            DeliverResult::Delivered
+            let notification = enter_stop(process, sig);
+            stop_current_thread(process);
+            DeliverResult::Stopped(notification)
         }
-        SignalDefaultAction::Continue => {
-            log::info!(
-                "Process {} continued by signal {} ({})",
-                process.id.as_u64(),
-                sig,
-                signal_name(sig)
-            );
-            // Only change state if process was stopped
-            if matches!(process.state, ProcessState::Blocked) {
-                process.set_ready();
-                DeliverResult::Delivered
-            } else {
-                DeliverResult::Ignored
-            }
-        }
+        // SIGCONT continued the process when it was generated; its default
+        // action leaves nothing to do here.
+        SignalDefaultAction::Continue => DeliverResult::Ignored,
         SignalDefaultAction::Ignore => {
             log::debug!(
                 "Signal {} ({}) ignored (default) by process {}",
@@ -433,9 +490,9 @@ fn deliver_to_user_handler_x86_64(
     true
 }
 
-/// x86-64 syscall return: deliver the next caught signal. A default
-/// disposition is left pending for the interrupt return path, and a fatal one
-/// was already taken by `take_fatal_default_signal`.
+/// x86-64 syscall return: deliver the next caught signal, or take a stop. Any
+/// other default disposition is left pending for the interrupt return path,
+/// and a fatal one was already taken by `take_fatal_default_signal`.
 #[cfg(target_arch = "x86_64")]
 pub fn deliver_caught_signal_on_syscall_return(
     process: &mut Process,
@@ -443,6 +500,9 @@ pub fn deliver_caught_signal_on_syscall_return(
     user_return: &mut X86UserReturn,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
+    if process.job.stopped.is_some() && !sigkill_pending(process) {
+        return SignalDeliveryResult::Stopped(None);
+    }
     loop {
         let Some(sig) = process.signals.next_deliverable_signal() else {
             return SignalDeliveryResult::NoAction;
@@ -451,6 +511,14 @@ pub fn deliver_caught_signal_on_syscall_return(
         let action = *process.signals.get_handler(sig);
         match action.handler {
             SIG_DFL => {
+                // A stop is taken here, before Ring 3 runs again; the caller
+                // parks the thread. Other default actions stay pending.
+                if matches!(default_action(sig), SignalDefaultAction::Stop) {
+                    if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
+                        process.signals.set_blocked(saved);
+                    }
+                    return SignalDeliveryResult::Stopped(enter_stop(process, sig));
+                }
                 process.signals.set_pending(sig);
                 return SignalDeliveryResult::NoAction;
             }
@@ -910,6 +978,88 @@ fn deliver_to_user_handler_aarch64(
 pub struct ParentNotification {
     pub parent_pid: crate::process::ProcessId,
     pub child_pid: crate::process::ProcessId,
+}
+
+/// A child's stop or continue that its parent has to be told about: SIGCHLD,
+/// unless the parent's SIGCHLD action has SA_NOCLDSTOP, and a wake for a
+/// parent waiting in waitpid or waitid.
+#[derive(Debug, Clone, Copy)]
+pub struct JobNotification {
+    pub parent_pid: ProcessId,
+    pub child_pid: ProcessId,
+}
+
+/// Tell the parent of a stop or continue, with the process-manager lock held
+/// by the caller. Takes the scheduler lock for the wake, in the PM-then-
+/// scheduler order signal delivery already uses.
+pub fn notify_parent_of_job_change_locked(
+    manager: &mut ProcessManager,
+    notification: &JobNotification,
+) {
+    let Some(parent) = manager.get_process_mut(notification.parent_pid) else {
+        return;
+    };
+    if parent.signals.get_handler(SIGCHLD).flags & SA_NOCLDSTOP == 0 {
+        parent.signals.set_pending(SIGCHLD);
+    }
+    let signal_eligible = parent.signals.has_deliverable_signals();
+    let Some(parent_tid) = parent.main_thread.as_ref().map(|thread| thread.id) else {
+        return;
+    };
+    crate::task::scheduler::with_scheduler(|scheduler| {
+        scheduler.unblock_for_child_exit(parent_tid);
+        if signal_eligible {
+            scheduler.unblock_for_signal(parent_tid);
+        }
+    });
+}
+
+/// `notify_parent_of_job_change_locked` for a caller holding no
+/// process-manager lock.
+pub fn notify_parent_of_job_change(notification: &JobNotification) {
+    crate::process::with_process_manager(|manager| {
+        notify_parent_of_job_change_locked(manager, notification);
+    });
+}
+
+/// Park the calling thread at a syscall's return to user mode while its
+/// process is stopped, after telling its parent of a stop taken on this
+/// return. The thread waits as a blocked syscall does, until SIGCONT has
+/// continued the process or a SIGKILL is pending; a wake that leaves the
+/// process stopped parks it again. Called with no process-manager lock held
+/// and with the syscall's preempt_disable() in force, which it is again on
+/// return. The caller then delivers whatever signals are pending.
+pub fn stop_on_syscall_return(notification: Option<JobNotification>) {
+    if let Some(notification) = notification {
+        notify_parent_of_job_change(&notification);
+    }
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return;
+    };
+    loop {
+        crate::task::scheduler::with_scheduler(|scheduler| scheduler.block_current_in_syscall());
+        let stopped = crate::process::with_process_manager(|manager| {
+            manager
+                .find_process_by_thread(thread_id)
+                .is_some_and(|(_, process)| {
+                    process.job.stopped.is_some() && !sigkill_pending(process)
+                })
+        })
+        .unwrap_or(false);
+        if !stopped {
+            break;
+        }
+        crate::per_cpu::preempt_enable();
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
+        crate::per_cpu::preempt_disable();
+    }
+    crate::task::scheduler::with_scheduler(|scheduler| {
+        if let Some(thread) = scheduler.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+            thread.set_ready();
+        }
+    });
 }
 
 /// The exit status a death by `sig`'s default action reports, or None when

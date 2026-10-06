@@ -890,6 +890,10 @@ fn switch_to_thread(
             scheduler::with_thread_mut(thread_id, |thread| thread.saved_userspace_context.clone())
                 .flatten();
 
+        // A stop delivered below owes its parent a notification, sent once
+        // the process-manager guard has been released.
+        let mut job_notification: Option<crate::signal::delivery::JobNotification> = None;
+
         // Get the process page table and thread context
         let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
         if let Some(mut manager_guard) = guard_option {
@@ -1078,6 +1082,13 @@ fn switch_to_thread(
                             crate::signal::delivery::SignalDeliveryResult::Delivered => {
                                 note_fact(DispatchLogFact::SignalDeliveredBlocked);
                             }
+                            // The thread was blocked: it is switched out at
+                            // the next scheduling point until SIGCONT.
+                            crate::signal::delivery::SignalDeliveryResult::Stopped(
+                                notification,
+                            ) => {
+                                job_notification = notification;
+                            }
                             crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                         }
                     } else {
@@ -1164,6 +1175,9 @@ fn switch_to_thread(
             trace_dispatch_abandon(DispatchAbandonSite::RollbackKernelContextLock);
             scheduler::set_need_resched();
             return;
+        }
+        if let Some(notification) = job_notification {
+            crate::signal::delivery::notify_parent_of_job_change(&notification);
         }
     } else {
         // Restore userspace thread context
@@ -1356,6 +1370,8 @@ fn restore_userspace_thread_context(
 
     // Track if signal termination happened (for parent notification after borrow ends)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
+    // Likewise a stop, whose parent is owed a notification.
+    let mut job_notification: Option<crate::signal::delivery::JobNotification> = None;
 
     if let Some(mut manager_guard) = guard_option {
         if let Some(ref mut manager) = *manager_guard {
@@ -1515,6 +1531,13 @@ fn restore_userspace_thread_context(
                                             trace_dispatch_abandon(DispatchAbandonSite::IdleProcessTerminatedUser);
                                         }
                                     }
+                                    // The thread was blocked: it is switched out
+                                    // at the next scheduling point until SIGCONT.
+                                    crate::signal::delivery::SignalDeliveryResult::Stopped(
+                                        notification,
+                                    ) => {
+                                        job_notification = notification;
+                                    }
                                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                                 }
                             }
@@ -1528,6 +1551,9 @@ fn restore_userspace_thread_context(
             drop(manager_guard);
             if let Some(notification) = signal_termination_info {
                 crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
+            }
+            if let Some(notification) = job_notification {
+                crate::signal::delivery::notify_parent_of_job_change(&notification);
             }
         }
     } else {
@@ -1687,6 +1713,8 @@ fn check_and_deliver_signals_for_current_thread(
 
     // Track if signal termination happened (for parent notification after borrow ends)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
+    // Likewise a stop, whose parent is owed a notification.
+    let mut job_notification: Option<crate::signal::delivery::JobNotification> = None;
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
@@ -1744,6 +1772,11 @@ fn check_and_deliver_signals_for_current_thread(
                             trace_dispatch_abandon(DispatchAbandonSite::IdleProcessTerminatedOnReturn);
                         }
                     }
+                    // The thread was blocked: it is switched out at the next
+                    // scheduling point until SIGCONT.
+                    crate::signal::delivery::SignalDeliveryResult::Stopped(notification) => {
+                        job_notification = notification;
+                    }
                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                 }
             }
@@ -1756,6 +1789,9 @@ fn check_and_deliver_signals_for_current_thread(
         // Notify parent if signal terminated a child
         if let Some(notification) = signal_termination_info {
             crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
+        }
+        if let Some(notification) = job_notification {
+            crate::signal::delivery::notify_parent_of_job_change(&notification);
         }
     }
 }

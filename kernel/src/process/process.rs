@@ -64,6 +64,27 @@ pub enum ProcessState {
     Terminated(i32), // exit code
 }
 
+/// A stop or continue a parent has not yet collected with `waitpid`
+/// (`WUNTRACED`, `WCONTINUED`) or `waitid` (`WSTOPPED`, `WCONTINUED`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobReport {
+    /// Stopped by the default action of this signal.
+    Stopped(u32),
+    /// Continued by SIGCONT.
+    Continued,
+}
+
+/// Job-control state of a process: whether a stop signal's default action has
+/// stopped it, and the state change its parent has not yet waited for.
+/// Serialized by the process-manager lock.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JobControl {
+    /// The signal that stopped the process, while it is stopped.
+    pub stopped: Option<u32>,
+    /// The latest stop or continue, until a wait reports it.
+    pub report: Option<JobReport>,
+}
+
 /// Where the row sits in the reap/tombstone lifetime.
 ///
 /// P6a deviation **D-1**: `RowState` is a *derived accessor* over the facts the
@@ -340,6 +361,13 @@ pub struct Process {
 
     /// Accumulated CPU ticks for this process (for btop display)
     pub cpu_ticks: u64,
+
+    /// Job-control stop state and the stop or continue not yet waited for.
+    pub job: JobControl,
+
+    /// The process has run a successful exec since its fork, so its parent
+    /// may no longer change its process group (setpgid's EACCES).
+    pub has_exec: bool,
 }
 
 /// Memory usage tracking
@@ -407,6 +435,8 @@ impl Process {
             fb_mmap: None,
             has_display_ownership: false,
             cpu_ticks: 0,
+            job: JobControl::default(),
+            has_exec: false,
         }
     }
 

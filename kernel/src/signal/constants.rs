@@ -23,6 +23,9 @@ pub const SIGSTOP: u32 = 19; // Cannot be caught or blocked
 pub const SIGTSTP: u32 = 20;
 pub const SIGTTIN: u32 = 21;
 pub const SIGTTOU: u32 = 22;
+/// The stop signals whose default action stops the process.
+pub const STOP_SIGNALS: u64 =
+    (1 << (SIGSTOP - 1)) | (1 << (SIGTSTP - 1)) | (1 << (SIGTTIN - 1)) | (1 << (SIGTTOU - 1));
 pub const SIGURG: u32 = 23;
 pub const SIGXCPU: u32 = 24;
 pub const SIGXFSZ: u32 = 25;
@@ -66,6 +69,10 @@ pub const MINSIGSTKSZ: usize = 2048;
 pub const SIGSTKSZ: usize = 8192;
 
 // sigaction flags
+/// SIGCHLD only: no SIGCHLD when a child stops or continues
+pub const SA_NOCLDSTOP: u64 = 0x00000001;
+/// SIGCHLD only: exited children do not become zombies
+pub const SA_NOCLDWAIT: u64 = 0x00000002;
 /// Restart interrupted syscalls
 #[allow(dead_code)] // Part of POSIX sigaction API, used by userspace
 pub const SA_RESTART: u64 = 0x10000000;

@@ -7285,6 +7285,7 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
     // Track if signal termination happened (for parent notification after borrow ends)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
     let mut terminated_child_pid: Option<u64> = None;
+    let mut job_notification: Option<crate::signal::delivery::JobNotification> = None;
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
@@ -7295,7 +7296,7 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
             crate::signal::delivery::check_and_fire_alarm(process);
             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
-            if crate::signal::delivery::has_deliverable_signals(process) {
+            if crate::signal::delivery::needs_action_on_return_to_user(process) {
                 // Read current SP_EL0 (user stack pointer)
                 let sp_el0: u64;
                 unsafe {
@@ -7354,9 +7355,18 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                             crate::task::scheduler::switch_to_idle();
                         }
                     }
+                    // The thread was blocked; the next scheduling point
+                    // switches it out until SIGCONT.
+                    crate::signal::delivery::SignalDeliveryResult::Stopped(notification) => {
+                        job_notification = notification;
+                    }
                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                 }
             }
+        }
+
+        if let Some(notification) = job_notification {
+            crate::signal::delivery::notify_parent_of_job_change_locked(manager, &notification);
         }
 
         // Drop manager guard first to avoid deadlock when notifying parent

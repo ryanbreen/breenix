@@ -256,6 +256,12 @@ impl SignalState {
         }
     }
 
+    /// Discard every pending signal in `mask`.
+    #[inline]
+    pub fn discard_pending(&mut self, mask: u64) {
+        self.pending &= !mask;
+    }
+
     /// Clear a pending signal
     #[inline]
     pub fn clear_pending(&mut self, sig: u32) {
