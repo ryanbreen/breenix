@@ -1,9 +1,9 @@
 //! The boot-target file: which PID 1 a production boot runs when the QEMU command
 //! line does not say (docs/boot-path.md, "Boot modes").
 //!
-//! `/etc/breenix/boot-target` on the ext2 root holds one line, `suite <id>`. It is
+//! The runner writes `suite <id>` or `probe` to `/etc/breenix/boot-target`. It is
 //! written onto a copy of the disk image by `./run.sh --parallels|--vmware --suite <id>`
-//! and by `BREENIX_BOOT_SUITE=<id>` in `docker/qemu/run-x86-gate.sh`; disks built by
+//! or `--probe`, and by `BREENIX_BOOT_SUITE=<id>` in `docker/qemu/run-x86-gate.sh`; disks built by
 //! `scripts/create_ext2_disk.sh` carry none. QEMU's fw_cfg mode is read first;
 //! without either, the default `/sbin/init` runs.
 
@@ -34,24 +34,32 @@ pub fn suite_path(id: &str) -> String {
     format!("/sbin/suite-{}", id)
 }
 
-/// Parse the file's contents: one line, `suite <id>`, with an optional final
-/// newline. Returns the suite id, or why the contents are not a boot target.
-pub fn parse(text: &str) -> Result<String, String> {
+/// A production PID 1 selected by the boot-target file.
+pub enum Target {
+    Probe,
+    Suite(String),
+}
+
+/// Parse one `suite <id>` or `probe` line with an optional final newline.
+pub fn parse(text: &str) -> Result<Target, String> {
     let line = text.strip_suffix('\n').unwrap_or(text);
     let line = line.strip_suffix('\r').unwrap_or(line);
     if line.contains(['\n', '\r']) {
         return Err(String::from("it has more than one line"));
     }
+    if line.trim() == "probe" {
+        return Ok(Target::Probe);
+    }
     match line.trim().split_once(' ') {
-        Some(("suite", id)) if is_suite_id(id) => Ok(String::from(id)),
+        Some(("suite", id)) if is_suite_id(id) => Ok(Target::Suite(String::from(id))),
         Some(("suite", id)) => Err(format!("{:?} is not a suite id", id)),
-        _ => Err(format!("expected \"suite <id>\", found {:?}", line)),
+        _ => Err(format!("expected \"suite <id>\" or \"probe\", found {:?}", line)),
     }
 }
 
 /// Read the boot target from the mounted ext2 root. `Ok(None)` when there is no
 /// file (or no root filesystem); `Err` when the file exists but cannot be used.
-pub fn read() -> Result<Option<String>, String> {
+pub fn read() -> Result<Option<Target>, String> {
     let fs_guard = crate::fs::ext2::root_fs_read();
     let Some(fs) = fs_guard.as_ref() else {
         return Ok(None);

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Breenix Interactive Runner
 # ===========================
-# Runs Breenix with a graphical display
+# Boots Breenix with a display or serial console; probe mode exits after its verdict.
 #
 # Usage:
 #   ./run.sh              # ARM64 with native cocoa display (default)
@@ -15,6 +15,8 @@
 #   ./run.sh --parallels --no-build  # Deploy existing build to Parallels
 #   ./run.sh --parallels --test      # Build, boot, wait, screenshot, exit
 #   ./run.sh --parallels --test 60   # Same with custom wait (default: 35s)
+#   ./run.sh --parallels --probe     # Production probe, stop after PROBE DONE
+#   ./run.sh --vmware --probe        # Same probe on VMware Fusion
 #   ./run.sh --ahci             # ARM64 with AHCI (SATA) disk instead of virtio-blk
 #   ./run.sh --ahci --headless # ARM64 AHCI with serial output only
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
@@ -59,6 +61,9 @@ PARALLELS_TEST=false
 PARALLELS_TEST_WAIT=35
 VMWARE=false
 SUITE=""
+PROBE=false
+BOOT_MODE=default
+GATE_TIMEOUT=1800
 DEBUG=false
 REBUILD_HOME=false
 RESOLUTION=""
@@ -135,6 +140,14 @@ while [[ $# -gt 0 ]]; do
             SERIAL_LOG_OVERRIDE="$2"
             shift 2
             ;;
+        --gate-timeout)
+            GATE_TIMEOUT="${2:-}"
+            shift 2
+            ;;
+        --probe)
+            PROBE=true
+            shift
+            ;;
         --suite)
             SUITE="${2:-}"
             shift 2
@@ -171,6 +184,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-audio                 Disable audio entirely (default: coreaudio output on)"
             echo "  --debug                    Enable GDB stub (port 1234) for debugging"
             echo "  --serial-log PATH          Parallels/VMware: write the VM's serial output to PATH"
+            echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
+            echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
@@ -195,6 +210,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+[[ "$GATE_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "--gate-timeout needs positive seconds"; exit 2; }
+if [ "$VMWARE" = true ] && [ "$PARALLELS_TEST" = true ]; then
+    echo "--test screenshots are supported only on Parallels"
+    exit 2
+fi
+
 # --suite ID: the VM's ext2 disk gets /etc/breenix/boot-target ("suite ID"), so the
 # production kernel runs /sbin/suite-ID as PID 1 (docs/boot-path.md, "Boot modes").
 if [ -n "$SUITE" ]; then
@@ -208,39 +229,92 @@ if [ -n "$SUITE" ]; then
     fi
 fi
 
+if [ "$PROBE" = true ]; then
+    if [ "$PARALLELS" != true ] && [ "$VMWARE" != true ]; then
+        echo "--probe is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode probe)"
+        exit 1
+    fi
+    if [ -n "$SUITE" ] || [ "$PARALLELS_TEST" = true ] || [ "$BTRT" = true ]; then
+        echo "--probe cannot be combined with --suite, --test or --btrt"
+        exit 1
+    fi
+    BOOT_MODE=probe
+elif [ -n "$SUITE" ]; then
+    BOOT_MODE=suite
+fi
+
 # The ext2 disk a Parallels or VMware VM boots: the built disk itself, or with
-# --suite a copy carrying the boot target (the built disk never gets one, so later
-# boots of it are unaffected). Sets BOOT_EXT2_DISK.
+# --suite or --probe a copy carrying the boot target (the built disk never gets one, so later
+# ordinary boots keep using the built disk). Sets BOOT_EXT2_DISK.
 stage_boot_ext2_disk() {
     local built="$1" staging_dir="$2"
     BOOT_EXT2_DISK="$built"
-    [ -n "$SUITE" ] || return 0
+    [ "$BOOT_MODE" != default ] || return 0
     if [ ! -f "$built" ]; then
-        echo "ERROR: --suite needs the ext2 disk at $built (run without --no-build to create it)"
+        echo "ERROR: $BOOT_MODE needs the ext2 disk at $built (run without --no-build to create it)"
         exit 1
     fi
     mkdir -p "$staging_dir"
     BOOT_EXT2_DISK="$staging_dir/ext2-boot-target.img"
     rm -f "$BOOT_EXT2_DISK"
     cp "$built" "$BOOT_EXT2_DISK" || { echo "ERROR: could not copy $built for the boot target"; exit 1; }
-    "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
-        "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" || exit 1
+    if [ "$PROBE" = true ]; then
+        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --probe \
+            "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
+    else
+        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
+            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" || exit 1
+    fi
 }
 
-# Whether the VM's wrapped data disk (whose suite marker file is $1) must be made
-# again from the built disk: when the boot disk was rebuilt (as before --suite
-# existed), when this run boots a suite, and when the wrapped disk is a suite copy
-# from an earlier --suite run that this run must not boot. Otherwise the wrapped
+# Whether the VM's wrapped data disk (whose boot-target marker file is $1) must
+# be made again: when the built disk changed, this run selects a boot target, or
+# an earlier run's boot target must be cleared. Otherwise the wrapped
 # disk, and any changes the guest made to it, is kept.
 ext2_rewrap_needed() {
     local rebuilt="$1" marker="$2"
-    [ "$rebuilt" = true ] || [ -n "$SUITE" ] || [ -f "$marker" ]
+    [ "$rebuilt" = true ] || [ "$BOOT_MODE" != default ] || [ -f "$marker" ]
 }
 
-# Record whether the data disk just wrapped carries a suite boot target.
+# Record whether the data disk just wrapped carries a boot target.
 mark_wrapped_ext2() {
     local marker="$1"
-    if [ -n "$SUITE" ]; then echo "$SUITE" > "$marker"; else rm -f "$marker"; fi
+    if [ "$BOOT_MODE" != default ]; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
+}
+
+# Wait for a userspace completion record and reject missing or failing verdicts.
+wait_boot_done() {
+    python3 "$BREENIX_ROOT/scripts/wait-boot-done.py" "$SERIAL_LOG" "$BOOT_MODE" \
+        --suite "$SUITE" --timeout "$GATE_TIMEOUT"
+}
+
+# Install before starting a VM. Ignore further signals during cleanup so Vigil
+# receives the boot verdict even if stopping the VM fails or Ctrl-C is repeated.
+finish_vm_boot() {
+    local status=$?
+    trap '' INT HUP TERM
+    trap - EXIT
+    if [ "$PARALLELS" = true ]; then
+        prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1 || true
+    else
+        "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
+    fi
+    "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
+    exit "$status"
+}
+
+install_vm_boot_traps() {
+    trap finish_vm_boot EXIT
+    trap 'exit 130' INT
+    trap 'exit 129' HUP
+    trap 'exit 143' TERM
+}
+
+# Suite panels stay visible until the caller leaves; no log-monitor job is needed.
+hold_suite_panel() {
+    echo "Suite complete; scored panel remains visible. Ctrl-C stops the VM."
+    trap 'exit 0' INT
+    while :; do sleep 1; done
 }
 
 # BTRT mode: delegate to xtask and exit
@@ -525,11 +599,10 @@ if [ "$PARALLELS" = true ]; then
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
+    VIGIL_ID=""
+    install_vm_boot_traps
+    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     prlctl start "$PARALLELS_VM"
-
-    # Vigil shows the boot while this script runs and scores it when it ends (does nothing without Vigil).
-    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels default "$SUITE" "$SERIAL_LOG")
-    trap '"$BREENIX_ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" $?' EXIT
     echo ""
     echo "========================================="
     echo "Breenix running on Parallels"
@@ -538,6 +611,12 @@ if [ "$PARALLELS" = true ]; then
     echo "Serial: $SERIAL_LOG"
     echo "Stop:   prlctl stop $PARALLELS_VM --kill"
     echo ""
+
+    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]; then
+        wait_boot_done || exit $?
+        if [ "$BOOT_MODE" = probe ]; then exit 0; fi
+        if [ "$PARALLELS_TEST" != true ]; then hold_suite_panel; fi
+    fi
 
     if [ "$PARALLELS_TEST" = true ]; then
         # Test mode: wait, screenshot, exit
@@ -871,6 +950,9 @@ VMXEOF
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
+    VIGIL_ID=""
+    install_vm_boot_traps
+    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then
         # Headless automation (docker/qemu/run-vmware-gate.sh): `gui` mode
         # "succeeds" (exit 0, no error to fall back from) even when nothing
@@ -886,9 +968,6 @@ VMXEOF
         }
     fi
 
-    # Vigil shows the boot while this script runs and scores it when it ends (does nothing without Vigil).
-    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware default "$SUITE" "$SERIAL_LOG")
-    trap '"$BREENIX_ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" $?' EXIT
     echo ""
     echo "========================================="
     echo "Breenix running on VMware Fusion"
@@ -898,6 +977,12 @@ VMXEOF
     echo "VMX:    $VMX_FILE"
     echo "Stop:   \"$VMRUN\" stop \"$VMX_FILE\" hard"
     echo ""
+    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]; then
+        wait_boot_done || exit $?
+        if [ "$BOOT_MODE" = probe ]; then exit 0; fi
+        hold_suite_panel
+    fi
+
     echo "Tailing serial output (Ctrl+C to detach)..."
     echo ""
 

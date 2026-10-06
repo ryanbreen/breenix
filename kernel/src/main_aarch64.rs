@@ -73,8 +73,8 @@ fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> 
 /// `-fw_cfg name=opt/breenix/mode,string=<mode>`; absent or unknown is `Default`.
 /// `program` also needs `-fw_cfg name=opt/breenix/program,string=<absolute path>`,
 /// and `suite` needs `-fw_cfg name=opt/breenix/suite,string=<id>`. With no fw_cfg
-/// mode (and always on Parallels and VMware), the boot-target file
-/// (`kernel::boot::target`) can select a suite.
+/// mode (including the VM runner configuration), the boot-target file
+/// (`kernel::boot::target`) can select a suite or probe.
 #[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BootMode {
@@ -123,11 +123,12 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
         Some("suite") => BootMode::Suite,
         _ => BootMode::Default,
     };
-    // Without a fw_cfg mode, the boot-target file may name a suite.
+    // Without a fw_cfg mode, the boot-target file may name a suite or probe.
     let mut target_suite = None;
     let mode = match requested.as_deref() {
         None | Some("") => match target::read() {
-            Ok(Some(id)) => {
+            Ok(Some(target::Target::Probe)) => BootMode::Probe,
+            Ok(Some(target::Target::Suite(id))) => {
                 target_suite = Some(id);
                 BootMode::Suite
             }

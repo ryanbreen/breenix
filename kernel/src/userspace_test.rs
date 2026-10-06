@@ -609,7 +609,7 @@ fn fork_creator_thread_fn() {
 /// Create a minimal but valid ELF binary for testing
 ///
 /// This generates x86-64 machine code that:
-/// 1. Calls sys_write(1, "Hello from userspace!\n", 22) via INT 0x80
+/// 1. Calls sys_write(1, "Hello from test code!\n", 22) via INT 0x80
 /// 2. Calls sys_exit(0) via INT 0x80
 ///
 /// This is a simple stub used when external_test_bins is not enabled.
@@ -689,7 +689,7 @@ fn create_minimal_valid_elf() -> alloc::vec::Vec<u8> {
     // Code section (starting at offset 120 = 0x78)
     // Virtual address at runtime: 0x40000000
     //
-    // Simple stub that just prints "Hello from userspace!\n" and exits
+    // Simple stub that just prints "Hello from test code!\n" and exits
     //
     // Layout:
     // 0x00-0x1b: Print hello message (28 bytes)
@@ -701,7 +701,7 @@ fn create_minimal_valid_elf() -> alloc::vec::Vec<u8> {
     // - lea at 0x0e targets hello_msg at 0x22: offset = 0x22 - (0x0e + 7) = 0x22 - 0x15 = 0x0d
 
     elf.extend_from_slice(&[
-        // === Print "Hello from userspace!\n" ===
+        // === Print "Hello from test code!\n" ===
         // 0x00: mov rax, 1 (sys_write)
         0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, // 0x07: mov rdi, 1 (stdout)
         0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
@@ -714,9 +714,9 @@ fn create_minimal_valid_elf() -> alloc::vec::Vec<u8> {
         0x48, 0x31, 0xff, // 0x28: int 0x80
         0xcd, 0x80,
         // === Data: hello message ===
-        // 0x2b: "Hello from userspace!\n" (22 bytes)
-        b'H', b'e', b'l', b'l', b'o', b' ', b'f', b'r', b'o', b'm', b' ', b'u', b's', b'e', b'r',
-        b's', b'p', b'a', b'c', b'e', b'!', b'\n',
+        // 0x2b: "Hello from test code!\n" (22 bytes)
+        b'H', b'e', b'l', b'l', b'o', b' ', b'f', b'r', b'o', b'm', b' ', b't', b'e', b's', b't',
+        b' ', b'c', b'o', b'd', b'e', b'!', b'\n',
     ]);
 
     elf
