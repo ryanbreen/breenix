@@ -78,7 +78,7 @@ public enum RemoteCommand {
         }
     }
 
-    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil) -> Plan {
+    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil) -> Plan {
         Plan(
             sha: sha,
             boots: boots,
@@ -86,7 +86,7 @@ public enum RemoteCommand {
             timeoutSecs: timeoutSecs,
             paths: paths,
             prepareClone: prepareCloneRequest(sha: sha, paths: paths),
-            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite),
+            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs),
             pullEvidence: pullEvidenceRequest(paths: paths),
             removeClone: removeCloneRequest(paths: paths)
         )
@@ -116,7 +116,7 @@ public enum RemoteCommand {
     // production kernel running /sbin/suite-<id>, with a QMP socket in gate-tmp for its screen.
     // An id that is not one never reaches the shell: the request fails the gate instead of
     // quietly running the ordinary one (BeastLauncher refuses such an id before this).
-    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil) -> ProcessRequest {
+    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil) -> ProcessRequest {
         let profileEnv: String = qemuProfile.map { " BREENIX_QEMU_PROFILE=\($0.rawValue)" } ?? ""
         var suiteEnv = ""
         if let suite {
@@ -131,6 +131,8 @@ public enum RemoteCommand {
             + " BREENIX_REPO_DIR=\(paths.clonePath)"
             + " BREENIX_RUST_FORK=\(paths.rustForkPath)"
             + " BREENIX_GATE_TIMEOUT=\(timeoutSecs)"
+            + " BREENIX_FULL_BACKSTOP=\(fullBackstopSecs ?? max(1800, timeoutSecs))"
+            + " CARGO_BUILD_JOBS=6"
             + profileEnv + suiteEnv
             + " \(paths.clonePath)/docker/qemu/run-x86-gate.sh \(boots) \(mode.rawValue)"
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))

@@ -5,7 +5,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ALLOWLIST_PATH="$SCRIPT_DIR/x86-gate-allowlist.txt"
 
 fail() {
     echo "x86 userspace gate: FAIL - $1"
@@ -25,13 +24,11 @@ for serial_log in "$@"; do
     [[ -r "$serial_log" ]] || fail "serial log is not readable: $serial_log"
 done
 
-# Always publish the complete classification before any other check can stop us.
+# Publish the parseable nonzero records before the ordered first-cause checks.
 exit_contracts_ok=true
 python3 "$SCRIPT_DIR/x86-gate-exits.py" "$@" || exit_contracts_ok=false
 
 python3 "$SCRIPT_DIR/score-softirq-deferral.py" "$@" || exit $?
-
-[[ -r "$ALLOWLIST_PATH" ]] || fail "allowlist is not readable: $ALLOWLIST_PATH"
 
 # Run the strand census first. The kernel emits a ledger snapshot from three
 # rate-limited contexts -- the scheduler's idle loop, the loopback pump and the

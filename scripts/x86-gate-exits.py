@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Print every nonzero process exit, matching only documented expected statuses."""
+import os
 import pathlib
 import re
 import sys
@@ -24,29 +25,42 @@ def classify(logs, allowlist):
                if 'TEST_TALLY:' in line]
     if not tallies:
         raise ValueError('TEST_TALLY was absent; no completed exit accounting')
-    match = re.search(r'TEST_TALLY: exited=(\d+) nonzero=(\d+) failed=\[([^]]*)\]', tallies[-1])
+    match = re.search(r'TEST_TALLY: exited=(\d+) nonzero=(\d+) failed=\[([^\r\n]*)', tallies[-1])
     if not match:
         raise ValueError('last TEST_TALLY line is malformed')
     exited, nonzero = map(int, match.group(1, 2))
+    errors = []
+    field, closed, tail = match[3].partition(']')
+    if not closed:
+        errors.append('failure list was truncated or malformed: missing closing bracket')
     failures = []
-    for item in filter(None, match[3].split(',')):
+    for item in filter(None, field.split(',')):
         entry = re.fullmatch(r'([^,:\s]+):(-?\d+)', item)
         if not entry:
-            raise ValueError(f'failure list was truncated or malformed: {item}')
+            errors.append(f'failure list was truncated or malformed: {item}')
+            continue
         name, status = entry[1], int(entry[2])
         if status == 0:
-            raise ValueError(f'zero status in nonzero list: {item}')
+            errors.append(f'zero status in nonzero list: {item}')
+            continue
         reason = next((why for pattern, code, why in contracts
                        if code == status and re.fullmatch(pattern, name)), None)
         failures.append((name, status, reason))
+    started = re.search(r'\bstarted=(\d+)', tail)
+    if started and int(started[1]) != exited:
+        errors.append(f'published {started[1]} processes but only {exited} exited')
+    if os.environ.get('REQUIRE_PROCESS_ACCOUNTING') == '1' and not started:
+        errors.append('published process count is absent')
     real = 0
     for name, status, reason in failures:
         label = f'EXPECTED - {reason}' if reason else 'FAIL - asserted contract does not permit this exit'
         print(f'TEST_EXIT: program={name} status={status} {label}')
         real += reason is None
     if nonzero > exited or len(failures) != nonzero:
-        raise ValueError(f'nonzero={nonzero} but failed=[...] contains {len(failures)} named failures (exited={exited})')
+        errors.append(f'nonzero={nonzero} but failed=[...] contains {len(failures)} named failures (exited={exited})')
     print(f'TEST_EXITS: nonzero={nonzero} expected={nonzero-real} failures={real}')
+    if errors:
+        raise ValueError("; ".join(errors))
     return real == 0
 
 
@@ -55,6 +69,6 @@ if __name__ == '__main__':
         ok = classify([pathlib.Path(p) for p in sys.argv[1:]],
                       pathlib.Path(__file__).with_name('x86-gate-allowlist.txt'))
     except (OSError, ValueError) as error:
-        print(f'x86 userspace gate: FAIL - {error}')
+        print(f'TEST_ACCOUNTING: ERROR - {error}')
         sys.exit(1)
     sys.exit(0 if ok else 1)

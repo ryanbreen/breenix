@@ -995,3 +995,32 @@ fn full_path_applets_and_encoded_signal_contracts_are_reviewable() {
     assert_eq!(text.matches("TEST_EXIT: program=").count(), 4, "{text}");
     assert!(text.contains("nonzero=4 expected=4 failures=0"), "{text}");
 }
+
+#[test]
+fn overflow_publishes_retained_records_and_fails_accounting() {
+    let fixture = SerialFixture::new(&format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=2 failed=[waitpid_test_child_123:42,...]\nTEST RUNNER: FAILED\n", marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-")), "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("program=waitpid_test_child_123 status=42 EXPECTED"), "{text}");
+    assert!(text.contains("truncated or malformed: ..."), "{text}");
+}
+
+#[test]
+fn truncated_tally_publishes_parseable_records() {
+    let fixture = SerialFixture::new("USERSPACE TEST COMPLETE\nTEST_TALLY: exited=10 nonzero=2 failed=[waitpid_test_child_123:42,broken\nTEST RUNNER: FAILED\n", "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("program=waitpid_test_child_123 status=42 EXPECTED"), "{text}");
+    assert!(text.contains("missing closing bracket"), "{text}");
+}
+
+#[test]
+fn publication_exit_mismatch_fails() {
+    let fixture = SerialFixture::new(&format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=0 failed=[] started=11\n🏁 TEST RUNNER: All tests passed\n", marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-")), "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("published 11 processes but only 10 exited"), "{text}");
+}

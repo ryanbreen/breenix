@@ -46,7 +46,7 @@ func usage() -> String {
     """
     Usage:
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
-      breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full] [--suite ID] [--host HOST] [--dry-run] [--tag T] [--no-store]
+      breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full|suite] [--suite ID] [--host HOST] [--dry-run] [--tag T] [--no-store]
       breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
       breenix-runs list [--arch aarch64|x86_64] [--profile NAME] [--verdict pass|fail|attributed|running|unknown]
       breenix-runs facts <run-id|latest> [--json]
@@ -64,7 +64,8 @@ func usage() -> String {
     show defaults to subsystems; combine flags to select panes.
     run arm launches local QEMU; run x86 supports the remote gate profile only.
     x86 --hardware selects hardware from docs/x86-profiles.json (unset: default).
-    --gate-timeout sets the remote suite/kthread deadline (default: 900).
+    --gate-timeout sets the scoring deadline (default: 900); full mode collects completion.
+    BREENIX_FULL_BACKSTOP overrides the full collection limit (default: max(1800, deadline)).
     Full boots stop on USERSPACE TEST COMPLETE, with a fixed 1800-second hang backstop.
     --no-store avoids persistence; --dry-run prints the x86 remote plan.
     import preserves gate metadata when present; loose serial verdicts remain unknown.
@@ -138,8 +139,8 @@ func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
             }
             parsed.sha = value
         case "--mode":
-            guard let value = iterator.next(), let mode = RemoteGateMode(rawValue: value) else {
-                throw CLIError(description: "--mode requires one of: kthread, full")
+            guard let value = iterator.next(), let mode = RemoteGateMode(rawValue: value == "suite" ? "full" : value) else {
+                throw CLIError(description: "--mode requires one of: kthread, full, suite")
             }
             parsed.mode = mode
         case "--suite":

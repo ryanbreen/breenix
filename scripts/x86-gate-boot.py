@@ -8,11 +8,10 @@ import subprocess
 import sys
 import time
 
-# bf95eeb6 needs about 340 seconds with real BusyBox execution (#1068).
-# 1800 seconds is over five times that measurement, solely a hang backstop.
-# The older caller-supplied 300-second gate timeout must not cut off full mode.
-BACKSTOP_SECONDS = 1800
-COMPLETE = re.compile(r'^\[ INFO\] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished[^\r\n]*\r?$', re.M)
+# The scoring deadline and the completion backstop serve different purposes.
+# Full mode reports a missed scoring deadline after collecting the final report.
+COMPLETE = re.compile(r'kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished[^\r\n]*\r?$', re.M)
+REPORT_DONE = re.compile(r'kernel::syscall::handlers: USERSPACE TEST REPORT DONE\r?$', re.M)
 
 
 def stop(process):
@@ -37,22 +36,27 @@ def stop(process):
 def main():
     kernel_log = pathlib.Path(sys.argv[1])
     user_log = pathlib.Path(sys.argv[2])
+    deadline = float(os.environ.get('BREENIX_GATE_TIMEOUT', '1800'))
+    backstop = float(os.environ.get('BREENIX_FULL_BACKSTOP', str(max(1800, deadline))))
+    if deadline <= 0 or backstop <= 0:
+        raise ValueError('gate deadline and full backstop must be positive')
     process = subprocess.Popen(sys.argv[3:], start_new_session=True)
     started = time.monotonic()
     try:
         while True:
             text = kernel_log.read_text(errors='replace') if kernel_log.exists() else ''
-            if COMPLETE.search(text):
-                # Completion precedes the tally and final existing diagnostics.
-                # Drain that trailing output before stopping the idle kernel.
-                time.sleep(2)
-                print(f'[gate] full boot completed after {time.monotonic()-started:.1f}s', flush=True)
+            if COMPLETE.search(text) and REPORT_DONE.search(text):
+                elapsed = time.monotonic() - started
+                print(f'[gate] full boot completed after {elapsed:.1f}s', flush=True)
+                if elapsed > deadline:
+                    print(f'GATE: FAIL (full boot completed beyond {deadline:g}s scoring deadline; #1068)', flush=True)
+                    return 2
                 return 0
             if process.poll() is not None:
                 print(f'GATE: FAIL (full boot exited before USERSPACE TEST COMPLETE; status={process.returncode})', flush=True)
                 return 1
-            if time.monotonic() - started >= BACKSTOP_SECONDS:
-                print(f'GATE: FAIL (full boot reached {BACKSTOP_SECONDS}s hang backstop; userspace testing still unfinished)', flush=True)
+            if time.monotonic() - started >= backstop:
+                print(f'GATE: FAIL (full boot reached {backstop:g}s hang backstop; completion report still unfinished)', flush=True)
                 # Existing strand records name the threads still saved in waits.
                 subprocess.run([str(pathlib.Path(__file__).with_name('x86-strand-census.sh')),
                                 str(user_log), str(kernel_log)], check=False)

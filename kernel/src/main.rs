@@ -1418,6 +1418,9 @@ fn kernel_main_continue() -> ! {
     // IRQs can complete disk requests without donating boot's continuation.
     kernel::per_cpu::preempt_disable();
 
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
+    task::userspace_completion::begin_loading();
+
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done before int3() which might hang in CI
     //
@@ -2204,6 +2207,7 @@ fn kernel_main_continue() -> ! {
         log::info!("=== GRAPHICS TEST: FbInfo syscall ===");
         test_exec::test_fbinfo();
         log::info!("Boot test program registration complete");
+        task::userspace_completion::start();
     }
 
     // NOTE: Premature success markers removed - tests must verify actual execution
@@ -2391,6 +2395,9 @@ fn kernel_main_continue() -> ! {
     log::info!("Enabling interrupts (after creating user processes)...");
     x86_64::instructions::interrupts::enable();
     // NOTE: Code below this point may never execute due to scheduler preemption
+
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
+    task::userspace_completion::begin_loading();
 
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done after interrupts are enabled but before other tests

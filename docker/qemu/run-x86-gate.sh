@@ -31,9 +31,10 @@
 #                       committed `rust-fork` symlink names a Mac-only path; the
 #                       beast VM keeps a real clone and needs the repoint. Not
 #                       committed, not required elsewhere.
-#   BREENIX_GATE_TIMEOUT non-full per-boot timeout in seconds (default: 150)
-#                       Full mode stops on completion; its fixed hang backstop
-#                       is 1800s (>5 times the ~340s measured at bf95eeb6).
+#   BREENIX_GATE_TIMEOUT scoring deadline in seconds (default: 150). Full
+#                       mode collects the completed report before scoring it.
+#   BREENIX_FULL_BACKSTOP full-mode collection limit (default: max(1800,
+#                       BREENIX_GATE_TIMEOUT)); override for slower execution.
 #   BREENIX_BOOT_SUITE  an effort-suite id (docs/suites/<id>.json). The gate then
 #                       builds the production kernel (no features, whatever the
 #                       mode argument says), boots it with /etc/breenix/boot-target
@@ -80,6 +81,7 @@ MODE="${2:-kthread}"
 MAX_CONCURRENCY=4
 REPO_DIR="${BREENIX_REPO_DIR:-$DEFAULT_REPO_DIR}"
 TIMEOUT_SECS="${BREENIX_GATE_TIMEOUT:-150}"
+export BREENIX_GATE_TIMEOUT="$TIMEOUT_SECS"
 PROFILE="${BREENIX_QEMU_PROFILE-default}"
 export BREENIX_QEMU_PROFILE="$PROFILE"
 echo "[gate] profile=$PROFILE"
@@ -256,15 +258,21 @@ for i in $(seq 1 "$COUNT"); do
   # claim-lint:ok: src/bin/qemu-uefi.rs resolves the hostfwd source.
   INSPECTOR_START_MS="$(date +%s)000" || INSPECTOR_START_MS=""
   boot_completed=true
+  scoring_deadline_missed=false
   if [ "$MODE" = full ]; then
-    # Completion-driven, regardless of the legacy BREENIX_GATE_TIMEOUT value.
-    # bf95eeb6 took ~340s; x86-gate-boot.py owns a fixed 1800s hang backstop.
+    # Collect the final report even when the scoring deadline has elapsed.
     BREENIX_NET_MODE=none python3 "$REPO_DIR/scripts/x86-gate-boot.py" \
       "$OUTDIR/serial_kernel.log" "$OUTDIR/serial_user.log" \
       ./target/release/qemu-uefi \
       -serial file:"$OUTDIR/serial_user.log" \
       -serial file:"$OUTDIR/serial_kernel.log" \
-      > "$OUTDIR/stdout.log" 2>&1 || boot_completed=false
+      > "$OUTDIR/stdout.log" 2>&1
+    boot_status=$?
+    if [ "$boot_status" -eq 2 ]; then
+      scoring_deadline_missed=true
+    elif [ "$boot_status" -ne 0 ]; then
+      boot_completed=false
+    fi
     cat "$OUTDIR/stdout.log"
   else
     BREENIX_NET_MODE=none timeout "$TIMEOUT_SECS" ./target/release/qemu-uefi \
@@ -363,9 +371,9 @@ for i in $(seq 1 "$COUNT"); do
       verdict_reason="${suite_verdict#FAIL: } (see $OUTDIR/serial_user.log)"
     fi
   elif [ "$MODE" = "full" ]; then
-    # EXPECTED_EXITS is mandatory for the verdict script; 10 is the count for
-    # this profile's userspace program set.
-    if EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-10}" \
+    # #1119 measured 181 exits before rebasing; also require publication/exit
+    # equality, which detects unfinished processes without relying on a floor.
+    if REQUIRE_PROCESS_ACCOUNTING=1 EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-181}" \
         "$REPO_DIR/scripts/x86-gate-verdict.sh" \
         "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log"; then
       verdict_ok=true
@@ -382,6 +390,10 @@ for i in $(seq 1 "$COUNT"); do
     verdict_reason="marker '$MARKER_GREP' not found; see $OUTDIR/serial_kernel.log"
   fi
 
+  if [ "$scoring_deadline_missed" = true ]; then
+    verdict_ok=false
+    verdict_reason="completed beyond scoring deadline (#1068); $verdict_reason"
+  fi
   if [ "$boot_completed" != true ]; then
     verdict_ok=false
     verdict_reason="full boot did not complete; see the backstop/launcher diagnosis above; $verdict_reason"

@@ -1960,6 +1960,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     allow(dead_code)
 )]
 fn run_test_loader() {
+    kernel::task::userspace_completion::begin_loading();
     // Each create_user_process() adds a thread to the ready queue, and without
     // a preempt pin the timer would hand this CPU to those test processes
     // between binaries, stretching loading to tens of seconds. The pin keeps
@@ -2109,6 +2110,7 @@ fn load_test_binaries_from_ext2() {
         "Loaded {} test programs ({} failed); running them",
         loaded, failed
     ));
+    kernel::task::userspace_completion::start();
 }
 
 /// Initialize the scheduler with an idle thread (ARM64)
