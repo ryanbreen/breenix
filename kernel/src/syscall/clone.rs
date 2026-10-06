@@ -280,6 +280,7 @@ pub fn sys_clone(
         .expect("parent remains present under PM during clone");
     child_process.limits = parent.limits.clone();
     child_process.cred = parent.cred.clone();
+    child_process.nice = parent.nice;
     // A thread's CPU time is its process's: the group shares one account.
     child_process.cpu = parent.cpu.clone();
     child_process.umask = parent.umask;

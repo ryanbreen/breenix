@@ -230,7 +230,9 @@ pub fn dispatch_syscall(
         SyscallNumber::Setgid => handlers::sys_setgid(arg1 as u32),
         SyscallNumber::Setreuid => handlers::sys_setreuid(arg1 as u32, arg2 as u32),
         SyscallNumber::Setregid => handlers::sys_setregid(arg1 as u32, arg2 as u32),
-        // CPU usage
+        // Priorities and CPU usage
+        SyscallNumber::Getpriority => super::priority::sys_getpriority(arg1, arg2),
+        SyscallNumber::Setpriority => super::priority::sys_setpriority(arg1, arg2, arg3),
         SyscallNumber::Getrusage => super::rusage::sys_getrusage(arg1, arg2),
         SyscallNumber::Times => super::rusage::sys_times(arg1),
         // File creation mask

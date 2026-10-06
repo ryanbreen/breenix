@@ -856,7 +856,7 @@ impl ProcessManager {
                 parent.pgid,
                 parent.sid,
                 parent.cwd.copy(),
-                parent.cred.clone(),
+                (parent.cred.clone(), parent.nice),
                 parent.umask,
                 parent.limits.inherit(),
             )
@@ -871,7 +871,7 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
-            child.cred = ids;
+            (child.cred, child.nice) = ids;
             child.umask = umask;
             child.limits = limits;
             child
@@ -1396,7 +1396,7 @@ impl ProcessManager {
                 parent.pgid,
                 parent.sid,
                 parent.cwd.copy(),
-                parent.cred.clone(),
+                (parent.cred.clone(), parent.nice),
                 parent.umask,
                 parent.limits.inherit(),
             )
@@ -1411,7 +1411,7 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
-            child.cred = ids;
+            (child.cred, child.nice) = ids;
             child.umask = umask;
             child.limits = limits;
             child
@@ -2008,6 +2008,14 @@ impl ProcessManager {
     pub fn iter_processes(&self) -> impl Iterator<Item = (ProcessId, &Process)> {
         self.processes
             .iter()
+            .filter(|(_, row)| !row.is_tombstone())
+            .map(|(pid, p)| (*pid, p))
+    }
+
+    /// Iterate mutably over all processes. Tombstone-blind.
+    pub fn iter_processes_mut(&mut self) -> impl Iterator<Item = (ProcessId, &mut Process)> {
+        self.processes
+            .iter_mut()
             .filter(|(_, row)| !row.is_tombstone())
             .map(|(pid, p)| (*pid, p))
     }

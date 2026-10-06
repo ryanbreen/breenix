@@ -199,6 +199,9 @@ pub struct Process {
 
     /// User and group IDs and supplementary groups.
     pub cred: super::credentials::ProcessCredentials,
+    /// Nice value, -20 (most favoured) to 19. Reported and inherited; the
+    /// scheduler does not yet weigh it.
+    pub nice: i8,
     /// CPU time charged by this process's threads, shared by a thread group.
     pub cpu: alloc::sync::Arc<crate::task::thread::CpuAccount>,
     /// CPU ticks of the children this process has waited for, and of the
@@ -366,6 +369,7 @@ impl Process {
             // By default, a process's sid equals its pid (process is its own session leader)
             sid: id,
             cred: super::credentials::ProcessCredentials::root(),
+            nice: 0,
             cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::default()),
             children_cpu_ticks: 0,
             // Standard default umask: owner rwx, group/other rx

@@ -834,7 +834,13 @@ fn dispatch_syscall_enum(
         SyscallNumber::Setregid => {
             result_to_u64(crate::syscall::handlers::sys_setregid(arg1 as u32, arg2 as u32))
         }
-        // CPU usage
+        // Priorities and CPU usage
+        SyscallNumber::Getpriority => {
+            result_to_u64(crate::syscall::priority::sys_getpriority(arg1, arg2))
+        }
+        SyscallNumber::Setpriority => {
+            result_to_u64(crate::syscall::priority::sys_setpriority(arg1, arg2, arg3))
+        }
         SyscallNumber::Getrusage => result_to_u64(crate::syscall::rusage::sys_getrusage(arg1, arg2)),
         SyscallNumber::Times => result_to_u64(crate::syscall::rusage::sys_times(arg1)),
         // File creation mask

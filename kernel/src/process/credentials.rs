@@ -4,7 +4,7 @@
 //! saved set-user-ID and set-group-ID and the supplementary group list. Fork
 //! copies it, exec transforms it (`exec`), and the set-ID calls change it only
 //! through the methods below. A process whose effective user ID is 0 holds every
-//! privilege these rules name (Linux's CAP_SETUID and CAP_SETGID).
+//! privilege these rules name (Linux's CAP_SETUID, CAP_SETGID and CAP_SYS_NICE).
 //! There is no separate filesystem user ID: permission checks use the
 //! effective IDs, which is what a filesystem ID follows unless setfsuid moves it.
 
@@ -120,6 +120,12 @@ impl ProcessCredentials {
         }
         self.suid = self.euid;
         self.sgid = self.egid;
+    }
+
+    /// Whether this process may change `target`'s scheduling priority:
+    /// privileged, or its effective user ID is the target's real or effective one.
+    pub fn may_renice(&self, target: &ProcessCredentials) -> bool {
+        self.privileged() || self.euid == target.uid || self.euid == target.euid
     }
 }
 
