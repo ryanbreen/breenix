@@ -492,11 +492,11 @@ func main() -> Int32 {
                 print("")
                 let records = (try? store.readBootFacts(manifest: result.manifest)) ?? []
                 printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: records)
-                switch result.manifest.verdict {
+                switch result.manifest.verdictSource {
                 case .gateScript(_, let exitCode):
-                    return Int32(exitCode)
+                    return exitCode != 0 ? Int32(exitCode) : (result.manifest.verdict.isFailure ? 1 : 0)
                 default:
-                    return 0
+                    return result.manifest.verdict.isFailure ? 1 : 0
                 }
             default:
                 throw CLIError(description: "run \(args[1]) is not a recognized architecture (supported: arm, x86)")

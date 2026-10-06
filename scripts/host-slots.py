@@ -203,7 +203,8 @@ def signal_process_group(group, number):
 def process_table():
     # Environment ownership survives double-fork and setsid on Darwin as well
     # as Linux; never print the process environment.
-    rows = command_output(['ps', 'eww', '-axo', 'pid=,ppid=,pgid=,stat=,command='])
+    rows = subprocess.check_output(['ps', 'axeww', '-o', 'pid=,ppid=,pgid=,stat=,command='],
+                                   text=True, errors='replace', timeout=10)
     result = {}
     for row in rows.splitlines():
         fields = row.split(None, 4)
@@ -298,15 +299,15 @@ def supervise_worker(argv, parent):
             env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record)
             child = subprocess.Popen(argv, env=env, start_new_session=True)
             try:
-                signal_sent = False
+                forwarded_signal = None
                 stop_deadline = None
                 while child.poll() is None:
                     refresh()
                     if os.getppid() != parent and received_signal is None:
                         received_signal = signal.SIGHUP
-                    if received_signal is not None and not signal_sent:
+                    if received_signal is not None and received_signal != forwarded_signal:
                         signal_tree(received_signal)
-                        signal_sent = True
+                        forwarded_signal = received_signal
                         stop_deadline = time.monotonic() + 120
                     if stop_deadline is not None and time.monotonic() >= stop_deadline:
                         signal_tree(signal.SIGKILL)
