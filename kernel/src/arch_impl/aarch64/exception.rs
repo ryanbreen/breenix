@@ -770,7 +770,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
 
             // Try to handle as CoW fault first
-            if handle_cow_fault_arm64(far, iss) {
+            if handle_cow_fault_arm64(far, iss, ec == exception_class::DATA_ABORT_LOWER) {
                 // CoW fault handled successfully, return to userspace
                 #[cfg(all(
                     target_arch = "aarch64",
@@ -2517,7 +2517,11 @@ fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
 ///
 /// Returns true if the fault was handled (page was copied or made writable)
 /// Returns false if this wasn't a CoW fault or couldn't be handled
-fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
+fn handle_cow_fault_arm64(far: u64, iss: u32, from_el0: bool) -> bool {
+    // An EL1 write under PM cannot wait for its own interrupted holder.
+    if !from_el0 && crate::process::process_manager_held_on_current_cpu() {
+        return false;
+    }
     use crate::memory::cow_stats;
 
     // Check if this is a CoW fault:
@@ -2559,7 +2563,7 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     };
 
     // Find process by page table
-    let (_pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {
+    let (pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {
         Some(p) => p,
         None => {
             return false;
@@ -2571,5 +2575,5 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
         None => return false,
     };
 
-    page_table.resolve_cow_write(far, _pid.as_u64())
+    page_table.resolve_cow_write(far, pid.as_u64())
 }

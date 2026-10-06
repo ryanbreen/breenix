@@ -7,7 +7,6 @@ use crate::memory::arch_stub::{
     Cr3, FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysAddr,
     PhysFrame, Size4KiB, Translate, VirtAddr,
 };
-#[cfg(target_arch = "aarch64")]
 use crate::memory::frame_allocator::allocate_frame;
 use crate::memory::frame_allocator::return_lease;
 use crate::memory::frame_allocator::{
@@ -1818,7 +1817,6 @@ impl ProcessPageTable {
     /// Signal delivery already holds PROCESS_MANAGER and must not fault into a
     /// handler that reacquires it. The ordinary data-abort path shares this
     /// implementation, including break-before-make and leaf retirement.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn resolve_cow_write(&mut self, far: u64, pid: u64) -> bool {
         use crate::memory::cow_stats;
         use crate::memory::frame_metadata::frame_is_shared;
@@ -1848,17 +1846,20 @@ impl ProcessPageTable {
                 return false;
             }
             // Flush TLB for the modified page
+            #[cfg(target_arch = "aarch64")]
             unsafe {
                 let va_for_tlbi = faulting_addr.as_u64() >> 12;
                 core::arch::asm!(
                     "dsb ishst",
-                    "tlbi vale1is, {0}",
+                    "tlbi vaale1is, {0}",
                     "dsb ish",
                     "isb",
                     in(reg) va_for_tlbi,
                     options(nostack)
                 );
             }
+            #[cfg(target_arch = "x86_64")]
+            x86_64::instructions::tlb::flush(faulting_addr);
             cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             crate::tracing::providers::process::trace_cow_copy(pid as u16, (far >> 12) as u16);
             return true;
@@ -1873,20 +1874,21 @@ impl ProcessPageTable {
         };
 
         // Copy page contents via HHDM
-        let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+        let hhdm_base = crate::memory::physical_memory_offset().as_u64();
         let src = (hhdm_base + old_frame.start_address().as_u64()) as *const u8;
         let dst = (hhdm_base + new_frame.start_address().as_u64()) as *mut u8;
 
         let new_flags = make_private_flags(old_flags);
         unsafe {
             core::ptr::copy_nonoverlapping(src, dst, 4096);
+            #[cfg(target_arch = "aarch64")]
             if !new_flags.contains(PageTableFlags::NO_EXECUTE) {
                 crate::arch_impl::aarch64::cache::sync_user_page(dst as u64);
             }
         }
 
         // Break before make: unmap the old page and invalidate its TLB entry on
-        // every CPU while the descriptor is invalid, then map the copy. The old
+        // the CPUs while the descriptor is invalid, then map the copy. The old
         // leaf's frame reference is dropped only after the replacement is in
         // place: a racing release by the other sharer can make it the last one.
         let old_leaf = match self.unmap_page_deferred(page) {
@@ -1901,6 +1903,7 @@ impl ProcessPageTable {
             let _ = self.map_page(page, old_frame, old_flags);
         }
         // Make the new descriptor visible to the table walker before EL0 resumes.
+        #[cfg(target_arch = "aarch64")]
         unsafe {
             core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
         }
@@ -1920,7 +1923,6 @@ impl ProcessPageTable {
     /// The caller holds PROCESS_MANAGER, so mappings cannot change underneath
     /// the copy. Resolve CoW through the owned table rather than reacquiring PM
     /// from a nested data abort. No byte may bypass EL0 write permissions.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn write_user_memory(&mut self, start: u64, bytes: &[u8], pid: u64) -> bool {
         if start == 0 || !crate::memory::layout::is_valid_user_range(start, bytes.len()) {
             return false;
@@ -1946,13 +1948,14 @@ impl ProcessPageTable {
             }
             let within_page = (addr & 0xfff) as usize;
             let count = core::cmp::min(4096 - within_page, bytes.len() - offset);
-            let dst = crate::arch_impl::aarch64::constants::HHDM_BASE
+            let dst = crate::memory::physical_memory_offset().as_u64()
                 + frame.start_address().as_u64()
                 + within_page as u64;
             // SAFETY: the mapped frame is owned by this table, the destination
             // stays within its page, and bytes is a live kernel buffer.
             unsafe {
                 core::ptr::copy_nonoverlapping(bytes.as_ptr().add(offset), dst as *mut u8, count);
+                #[cfg(target_arch = "aarch64")]
                 if !flags.contains(PageTableFlags::NO_EXECUTE) {
                     crate::arch_impl::aarch64::cache::sync_user_page(dst & !0xfff);
                 }
