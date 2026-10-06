@@ -168,3 +168,33 @@ scripts/boot-interactive.sh --mode suite --suite directories
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode full --boots 1 --suite directories --gate-timeout 1800 --sha <pushed-sha>
 ```
+
+## Processes
+
+`processes` measures the processes effort in `docs/efforts/path.json`: one category per
+suite milestone, `fork`, `exec`, `wait`, `groups-sessions`, `credentials`, `limits` and
+`scheduling`. The `wait` category begins with the twelve cases of the former `waitpid`
+suite, moved unchanged (same iterations, checks and limits); that suite is retired.
+
+Cases call the kernel by its Linux numbers and assert on the raw return, so an
+unimplemented call fails with ENOSYS. Library-level interfaces are made as a C library
+makes them: getrlimit and setrlimit through prlimit64, nice through
+getpriority/setpriority, getpgrp as getpgid(0), and fork as clone(SIGCHLD) on ARM64.
+Each case uses the runner's default 10-second deadline; every wait on another process
+inside a case is bounded at 3 seconds (6 for an exec), and every process a case starts
+is killed when the case ends. Cases that need another user switch to a user ID of their
+own after starting; the suite itself runs as root.
+
+The exec cases run `/usr/local/test/bin/processes-exec_test`, which reports its argv,
+environment and the process state exec kept (IDs, process group, signal dispositions,
+mask, pending set, descriptors, limits, nice value, working directory, umask, alarm)
+on a descriptor named on its command line. Set-ID cases run a copy of it chowned and
+chmodded in a per-case directory under `/tmp`.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite processes
+./run.sh --parallels --suite processes
+./run.sh --vmware --suite processes
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode suite --boots 1 --suite processes --gate-timeout 1800 --sha <pushed-sha>
+```

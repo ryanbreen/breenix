@@ -312,8 +312,9 @@ STD_BINARIES=(
     "suite-smoke"
     "suite-files-io"
     "suite-directories"
-    "suite-waitpid"
+    "suite-processes"
     "files-io-exec_test"
+    "processes-exec_test"
     "telnetd"
     "blogd"
 
