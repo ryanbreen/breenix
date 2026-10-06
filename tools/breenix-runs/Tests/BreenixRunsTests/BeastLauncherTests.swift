@@ -26,9 +26,66 @@ final class BeastLauncherTests: XCTestCase {
             "-o",
             "ConnectTimeout=15",
             "beast",
-            "sudo -n incus exec breenix-x86 -- bash -lc 'git -C /root/breenix fetch origin && rm -rf /root/breenix-testclone && git clone --shared /root/breenix /root/breenix-testclone && git -C /root/breenix-testclone checkout --detach abc123def'"
+            "sudo -n incus exec breenix-x86 -- bash -lc 'git -C /root/breenix fetch --no-tags --no-write-fetch-head --no-auto-gc origin abc123def && rm -rf /root/breenix-testclone && git clone --shared /root/breenix /root/breenix-testclone && git -C /root/breenix-testclone checkout --detach abc123def'"
         ])
         XCTAssertTrue(request.combineOutput)
+    }
+
+    func testConcurrentPrepareFetchesSHAWithoutChangingSharedRefs() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let canonical = root.appendingPathComponent("canonical")
+        let runner = RealProcessRunner()
+        func git(_ arguments: [String]) throws -> String {
+            let result = try runner.run(ProcessRequest(executable: "/usr/bin/git", arguments: arguments))
+            XCTAssertEqual(result.exitCode, 0, result.stderrString)
+            return result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        _ = try git(["init", source.path])
+        let commitArguments = ["-C", source.path, "-c", "core.hooksPath=/dev/null",
+                               "-c", "user.name=Slot Test", "-c", "user.email=test@example.invalid",
+                               "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m"]
+        _ = try git(commitArguments + ["initial"])
+        _ = try git(["clone", source.path, canonical.path])
+        _ = try git(commitArguments + ["requested"])
+        let sha = try git(["-C", source.path, "rev-parse", "HEAD"])
+        _ = try git(["-C", source.path, "tag", "new-tag"])
+        let refs = try git(["-C", canonical.path, "for-each-ref", "--format=%(refname) %(objectname)"])
+        let fetchHead = canonical.appendingPathComponent(".git/FETCH_HEAD")
+        try Data("existing fetch record\n".utf8).write(to: fetchHead)
+
+        var processes: [(Process, Pipe, URL)] = []
+        defer {
+            for (process, _, _) in processes where process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+        }
+        for name in ["first", "second"] {
+            let clone = root.appendingPathComponent(name)
+            let request = RemoteCommand.prepareCloneRequest(
+                sha: sha, paths: BeastPaths(canonicalRepoDir: canonical.path, clonePath: clone.path))
+            // Execute the generated preparation body locally; no SSH, Incus or VM.
+            let remote = try XCTUnwrap(request.arguments.last)
+            let body = try XCTUnwrap(remote.split(separator: "'", maxSplits: 2).dropFirst().first)
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", String(body)]
+            process.standardOutput = output
+            process.standardError = output
+            try process.run()
+            processes.append((process, output, clone))
+        }
+        for (process, output, clone) in processes {
+            process.waitUntilExit()
+            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            XCTAssertEqual(process.terminationStatus, 0, text)
+            XCTAssertEqual(try git(["-C", clone.path, "rev-parse", "HEAD"]), sha)
+        }
+        XCTAssertEqual(try git(["-C", canonical.path, "for-each-ref", "--format=%(refname) %(objectname)"]), refs)
+        XCTAssertEqual(try String(contentsOf: fetchHead, encoding: .utf8), "existing fetch record\n")
     }
 
     func testRunGateRequestArgvEncodesBootsModeAndGateTmpInsideClone() {

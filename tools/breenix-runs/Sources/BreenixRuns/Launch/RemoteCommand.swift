@@ -92,7 +92,7 @@ public enum RemoteCommand {
         )
     }
 
-    // Refreshes the canonical checkout from origin, then makes a private
+    // Fetches only the requested object into the canonical cache, then makes a private
     // --shared clone (object storage shared via alternates, no second network
     // fetch needed - verified live 2026-09-06) and checks out the exact sha
     // under test. This is the private-clone-per-run DESIGN.md 5.2 requires
@@ -100,7 +100,9 @@ public enum RemoteCommand {
     // clobbering a shared /tmp path). `rm -rf` before clone is defensive
     // against a stale directory reusing the same id, not expected to fire.
     public static func prepareCloneRequest(sha: String, paths: BeastPaths) -> ProcessRequest {
-        let script = "git -C \(paths.canonicalRepoDir) fetch origin"
+        // Concurrent launchers share this cache: do not update its remote refs,
+        // tags or FETCH_HEAD, or spawn background maintenance during preparation.
+        let script = "git -C \(paths.canonicalRepoDir) fetch --no-tags --no-write-fetch-head --no-auto-gc origin \(sha)"
             + " && rm -rf \(paths.clonePath)"
             + " && git clone --shared \(paths.canonicalRepoDir) \(paths.clonePath)"
             + " && git -C \(paths.clonePath) checkout --detach \(sha)"
