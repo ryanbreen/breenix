@@ -1975,12 +1975,18 @@ impl Scheduler {
             let old_val = cpu_state[0].current_thread.unwrap_or(0xDEAD);
             record_cpu_state_change(0, 18, old_val, idle_id);
         }
+        // CPU 0 has not entered the scheduler yet, so it starts out stale and
+        // accepts no placement until its first entry stamps a real time. On
+        // aarch64 kernel_main takes CPU 0's boot preempt pin before creating
+        // the scheduler, and a pinned CPU never enters it; a creation-time
+        // stamp made the pinned boot CPU look able to dispatch for its first
+        // CPU_STALL_TICKS, so placement could pick it while peers were idle.
         cpu_state[0] = CpuSchedulerState {
             current_thread: Some(idle_id),
             idle_thread: idle_id,
             previous_thread: None,
             pending_next: None,
-            last_schedule_ticks: crate::time::get_ticks(),
+            last_schedule_ticks: crate::time::get_ticks().wrapping_sub(CPU_STALL_TICKS + 1),
             promoted_wake: None,
             last_dispatch_promoted: false,
         };

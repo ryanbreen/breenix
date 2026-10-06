@@ -5,10 +5,11 @@
 //! the tests won't work correctly.
 
 use crate::task::kthread::{
-    kthread_exit, kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop,
-    kthread_unpark, KthreadError,
+    kthread_exit, kthread_join, kthread_park, kthread_park_if, kthread_run, kthread_should_stop,
+    kthread_stop, kthread_unpark, KthreadError,
 };
 use crate::task::scheduler;
+use crate::task::thread::ThreadState;
 use crate::{arch_disable_interrupts, arch_enable_interrupts, arch_halt};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -174,18 +175,24 @@ pub fn test_kthread_exit_code() {
 /// Test kthread park/unpark functionality
 /// This test verifies that:
 /// 1. kthread_park() blocks the kthread
-/// 2. kthread_unpark() wakes it up
-/// 3. The kthread continues execution after unpark
+/// 2. kthread_unpark() wakes the blocked kthread
+/// 3. An unpark recorded before the kthread parks keeps kthread_park_if()
+///    from blocking
+/// 4. The kthread continues execution after each park returns
 pub fn test_kthread_park_unpark() {
     static KTHREAD_STARTED: AtomicBool = AtomicBool::new(false);
     static KTHREAD_ABOUT_TO_PARK: AtomicBool = AtomicBool::new(false);
     static KTHREAD_UNPARKED: AtomicBool = AtomicBool::new(false);
+    static EARLY_UNPARK_SENT: AtomicBool = AtomicBool::new(false);
+    static EARLY_PARK_RETURNED: AtomicBool = AtomicBool::new(false);
     static KTHREAD_DONE: AtomicBool = AtomicBool::new(false);
 
     // Reset flags
     KTHREAD_STARTED.store(false, Ordering::Release);
     KTHREAD_ABOUT_TO_PARK.store(false, Ordering::Release);
     KTHREAD_UNPARKED.store(false, Ordering::Release);
+    EARLY_UNPARK_SENT.store(false, Ordering::Release);
+    EARLY_PARK_RETURNED.store(false, Ordering::Release);
     KTHREAD_DONE.store(false, Ordering::Release);
 
     log::info!("=== KTHREAD PARK TEST: Starting kthread park/unpark test ===");
@@ -199,15 +206,27 @@ pub fn test_kthread_park_unpark() {
             log::info!("KTHREAD_PARK_TEST: started");
 
             // Signal that we're about to park - main thread waits for this
-            // before checking that we haven't unparked yet
+            // and then for the scheduler to show us Blocked
             KTHREAD_ABOUT_TO_PARK.store(true, Ordering::Release);
 
-            // Park ourselves - will block until unparked
+            // Park ourselves - the main thread unparks only once it has seen
+            // this thread Blocked, so this returns through a real wakeup
             kthread_park();
 
             // If we get here, we were unparked
             KTHREAD_UNPARKED.store(true, Ordering::Release);
             log::info!("KTHREAD_PARK_TEST: unparked");
+
+            // Early notification: the main thread records and sends its unpark
+            // while we are running, before we publish a park intent. That
+            // unpark finds us running and does nothing, so only the predicate
+            // can keep this park from blocking forever.
+            while !EARLY_UNPARK_SENT.load(Ordering::Acquire) {
+                scheduler::yield_current();
+                arch_halt();
+            }
+            kthread_park_if(|| !EARLY_UNPARK_SENT.load(Ordering::Acquire));
+            EARLY_PARK_RETURNED.store(true, Ordering::Release);
 
             // Use kthread_park() to wait - kthread_stop() will wake us
             while !kthread_should_stop() {
@@ -223,7 +242,6 @@ pub fn test_kthread_park_unpark() {
     unsafe { arch_enable_interrupts() };
 
     // Wait for kthread to reach the point right before kthread_park()
-    // This is the key fix - we wait for ABOUT_TO_PARK, not just STARTED
     // Use more iterations for CI environments with slow TCG emulation
     for _ in 0..1000 {
         if KTHREAD_ABOUT_TO_PARK.load(Ordering::Acquire) {
@@ -236,10 +254,23 @@ pub fn test_kthread_park_unpark() {
         "kthread never reached park point"
     );
 
-    // Give one more timer tick for kthread to enter kthread_park()
-    arch_halt();
+    // Wait until the park has actually blocked the kthread. An unpark sent
+    // before then would find it running and test no wakeup at all.
+    let is_blocked = || {
+        scheduler::with_thread_mut(handle.tid(), |thread| {
+            thread.state == ThreadState::Blocked
+        })
+        .unwrap_or(false)
+    };
+    for _ in 0..1000 {
+        if is_blocked() {
+            break;
+        }
+        arch_halt();
+    }
+    assert!(is_blocked(), "kthread never blocked in kthread_park");
 
-    // Verify kthread hasn't unparked yet (it should be blocked in park)
+    // Verify kthread hasn't unparked yet (it is blocked in park)
     assert!(
         !KTHREAD_UNPARKED.load(Ordering::Acquire),
         "kthread unparked before kthread_unpark was called"
@@ -262,6 +293,23 @@ pub fn test_kthread_park_unpark() {
     assert!(
         KTHREAD_UNPARKED.load(Ordering::Acquire),
         "kthread never unparked after kthread_unpark"
+    );
+
+    // Early notification: record and send the unpark before the kthread
+    // parks. This is the only unpark it gets, so a park that ignored the
+    // recorded notification would never return.
+    EARLY_UNPARK_SENT.store(true, Ordering::Release);
+    kthread_unpark(&handle);
+
+    for _ in 0..1000 {
+        if EARLY_PARK_RETURNED.load(Ordering::Acquire) {
+            break;
+        }
+        arch_halt();
+    }
+    assert!(
+        EARLY_PARK_RETURNED.load(Ordering::Acquire),
+        "kthread_park_if blocked despite an unpark recorded before the park"
     );
 
     // Send stop signal and verify return value
