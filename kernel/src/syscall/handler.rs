@@ -647,8 +647,8 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
             crate::signal::delivery::check_and_fire_alarm(process);
             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
-            // Check if there are any deliverable signals
-            if !crate::signal::delivery::has_deliverable_signals(process) {
+            // Check if there are any deliverable signals, or a stop in force
+            if !crate::signal::delivery::needs_action_on_return_to_user(process) {
                 return;
             }
 
@@ -714,6 +714,16 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
             if let crate::signal::delivery::SignalDeliveryResult::FrameFault = signal_result {
                 drop(manager_guard);
                 crate::signal::delivery::exit_frame_fault_on_syscall_return();
+            }
+
+            // A stop parks the thread outside PM before Ring 3 runs again;
+            // what is pending once SIGCONT continues it is delivered then.
+            if let crate::signal::delivery::SignalDeliveryResult::Stopped(notification) =
+                signal_result
+            {
+                drop(manager_guard);
+                crate::signal::delivery::stop_on_syscall_return(notification);
+                return check_and_deliver_signals_on_syscall_return(frame);
             }
 
             // Copy modified values back to syscall frame
