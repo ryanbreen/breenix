@@ -238,6 +238,17 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 }
 
 
+/// One line of the userspace report. x86 sends it through `log`, as the gate
+/// scorers expect; ARM64 installs no `log` backend, so it prints to serial.
+macro_rules! report_line {
+    ($level:ident, $($arg:tt)*) => {{
+        #[cfg(target_arch = "x86_64")]
+        log::$level!($($arg)*);
+        #[cfg(target_arch = "aarch64")]
+        crate::serial_println!($($arg)*);
+    }};
+}
+
 /// Publish the userspace verdict outside process-manager and scheduler locks.
 pub(crate) fn report_userspace_completion() {
     if USERSPACE_TEST_COMPLETE.swap(true, Ordering::SeqCst) {
@@ -247,21 +258,22 @@ pub(crate) fn report_userspace_completion() {
     let failures = failure_records.as_slice();
     crate::arch_without_interrupts(|| {
         // No more userspace threads remaining
-        log::info!("No more userspace threads remaining");
+        report_line!(info, "No more userspace threads remaining");
 
         // Wake the keyboard task to ensure it can process any pending input
         #[cfg(target_arch = "x86_64")]
         {
             crate::keyboard::stream::wake_keyboard_task();
-            log::info!("Woke keyboard task to ensure input processing continues");
+            report_line!(info, "Woke keyboard task to ensure input processing continues");
         }
 
         // Signal that userspace testing is complete with clear markers
-        log::info!("🎯 USERSPACE TEST COMPLETE - All processes finished");
+        report_line!(info, "🎯 USERSPACE TEST COMPLETE - All processes finished");
         let (exited, nonzero) = crate::task::exit_tally::totals();
 
 
-        log::info!(
+        report_line!(
+            info,
             "TEST_TALLY: exited={} nonzero={} failed=[{}] started={}",
             exited,
             nonzero,
@@ -270,19 +282,21 @@ pub(crate) fn report_userspace_completion() {
         );
 
         if nonzero == 0 {
-            log::info!("=====================================");
-            log::info!("✅ USERSPACE EXECUTION SUCCESSFUL ✅");
-            log::info!("✅ Ring 3 execution confirmed       ✅");
-            log::info!("✅ System calls working correctly   ✅");
-            log::info!("✅ Process lifecycle complete       ✅");
-            log::info!("=====================================");
-            log::info!("🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁");
+            report_line!(info, "=====================================");
+            report_line!(info, "✅ USERSPACE EXECUTION SUCCESSFUL ✅");
+            report_line!(info, "✅ Ring 3 execution confirmed       ✅");
+            report_line!(info, "✅ System calls working correctly   ✅");
+            report_line!(info, "✅ Process lifecycle complete       ✅");
+            report_line!(info, "=====================================");
+            report_line!(info, "🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁");
         } else {
-            log::error!(
+            report_line!(
+                error,
                 "🚨 Failing userspace processes: {} 🚨",
                 crate::task::exit_tally::FailureList::new(failures, nonzero)
             );
-            log::error!(
+            report_line!(
+                error,
                 "🚨 TEST RUNNER: FAILED - {} of {} userspace processes exited nonzero 🚨",
                 nonzero,
                 exited
@@ -318,7 +332,7 @@ pub(crate) fn report_userspace_completion() {
         // This handles forked children, hanging tests, etc.
         #[cfg(feature = "btrt")]
         crate::test_framework::btrt::finalize();
-        log::info!("USERSPACE TEST REPORT DONE");
+        report_line!(info, "USERSPACE TEST REPORT DONE");
     });
 }
 
