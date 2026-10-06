@@ -1669,6 +1669,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]
     kernel::capture_lockup_oracle::run_lockup_capture_oracle();
 
+    // The kthread and workqueue self-tests below return with interrupts
+    // disabled, the state x86 calls them in. This boot thread already runs its
+    // timer and the secondary CPUs, so it takes its own state back afterwards:
+    // left masked, CPU0 stops taking timer ticks and the boot tests that follow
+    // fail on it (#1120).
+    #[cfg(feature = "testing")]
+    let boot_thread_irqs = kernel::arch_interrupts_enabled();
+
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
     #[cfg(feature = "testing")]
@@ -1691,6 +1699,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::task::workqueue_tests::test_workqueue();
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
     kernel::task::softirq_tests::test_softirq();
+    #[cfg(feature = "testing")]
+    if boot_thread_irqs {
+        unsafe { kernel::arch_enable_interrupts() };
+    }
 
     // In kthread_test_only mode, exit immediately after kthread tests pass
     #[cfg(feature = "kthread_test_only")]
