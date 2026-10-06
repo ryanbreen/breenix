@@ -679,5 +679,9 @@ name = "umask_exec_test"
 path = "src/umask_exec_test.rs"
 
 [[bin]]
-name = "suite-waitpid"
-path = "src/suite_waitpid.rs"
+name = "suite-processes"
+path = "src/suite_processes.rs"
+
+[[bin]]
+name = "processes-exec_test"
+path = "src/processes_exec.rs"

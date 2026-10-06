@@ -1,0 +1,643 @@
+{
+  "id": "processes",
+  "title": "Processes",
+  "area": "Processes",
+  "summary": "fork, exec, wait and exit, process groups and sessions, user and group IDs, resource limits and priorities behave as POSIX specifies.",
+  "binary": "/sbin/suite-processes",
+  "categories": [
+    {
+      "id": "fork",
+      "title": "fork & copy-on-write",
+      "cases": [
+        {
+          "id": "pids",
+          "title": "fork returns the child's PID to the parent, and the child's getppid is the parent"
+        },
+        {
+          "id": "cow-memory",
+          "title": "Writes after fork to data, stack and heap stay in the process that made them, whichever writes first"
+        },
+        {
+          "id": "private-mapping",
+          "title": "A private anonymous mapping is copied on write across fork, whichever side writes first"
+        },
+        {
+          "id": "shared-mapping",
+          "title": "A shared anonymous mapping stays shared across fork"
+        },
+        {
+          "id": "descriptors",
+          "title": "The child inherits descriptors sharing file offsets, and closing its copy leaves the parent's"
+        },
+        {
+          "id": "descriptor-flags",
+          "title": "FD_CLOEXEC is inherited and status flags are shared through the open file description"
+        },
+        {
+          "id": "signal-dispositions",
+          "title": "Signal handlers and ignored signals are inherited and work in the child"
+        },
+        {
+          "id": "signal-mask",
+          "title": "The signal mask is inherited"
+        },
+        {
+          "id": "pending-cleared",
+          "title": "The child starts with no pending signals"
+        },
+        {
+          "id": "timer-cleared",
+          "title": "The child does not inherit the parent's alarm (ITIMER_REAL)"
+        },
+        {
+          "id": "cwd-umask",
+          "title": "The working directory and umask are inherited"
+        },
+        {
+          "id": "times-reset",
+          "title": "The child's times() counts start at zero"
+        },
+        {
+          "id": "nproc-eagain",
+          "title": "fork fails with EAGAIN when the user is at RLIMIT_NPROC"
+        },
+        {
+          "id": "many-children",
+          "title": "32 children are alive at once, and each exits with its own status"
+        }
+      ]
+    },
+    {
+      "id": "exec",
+      "title": "exec, argv & environment",
+      "cases": [
+        {
+          "id": "argv",
+          "title": "execve passes argv exactly, including an arbitrary argv[0] and empty arguments"
+        },
+        {
+          "id": "envp",
+          "title": "execve passes envp exactly as the new environment"
+        },
+        {
+          "id": "empty-env",
+          "title": "An empty envp gives an empty environment"
+        },
+        {
+          "id": "many-args",
+          "title": "259 arguments arrive intact"
+        },
+        {
+          "id": "long-arg",
+          "title": "A 64 KiB argument, within the ARG_MAX a C library reports, arrives intact"
+        },
+        {
+          "id": "e2big",
+          "title": "Arguments beyond the ARG_MAX a C library reports fail with E2BIG"
+        },
+        {
+          "id": "enoent",
+          "title": "A missing program fails with ENOENT"
+        },
+        {
+          "id": "enotdir",
+          "title": "A path through a regular file fails with ENOTDIR"
+        },
+        {
+          "id": "enametoolong",
+          "title": "A path longer than PATH_MAX fails with ENAMETOOLONG"
+        },
+        {
+          "id": "eacces-mode",
+          "title": "A file without execute permission fails with EACCES"
+        },
+        {
+          "id": "eacces-dir",
+          "title": "A directory fails with EACCES"
+        },
+        {
+          "id": "enoexec",
+          "title": "An executable file in no known format fails with ENOEXEC"
+        },
+        {
+          "id": "failed-intact",
+          "title": "An exec failing with ENOEXEC leaves the caller's memory, descriptors and handlers intact"
+        },
+        {
+          "id": "script",
+          "title": "Compatibility, not POSIX: a #! script runs its interpreter with the optional argument, the script path and the arguments"
+        },
+        {
+          "id": "script-noarg",
+          "title": "Compatibility, not POSIX: a #! script without an optional argument runs its interpreter with the script path"
+        },
+        {
+          "id": "script-missing",
+          "title": "Compatibility, not POSIX: a #! script whose interpreter is missing fails with ENOENT"
+        },
+        {
+          "id": "relative-path",
+          "title": "A relative program path is resolved against the working directory"
+        },
+        {
+          "id": "cloexec",
+          "title": "Close-on-exec descriptors are closed; others stay open at their offsets"
+        },
+        {
+          "id": "signal-reset",
+          "title": "Caught signals reset to default; ignored signals stay ignored"
+        },
+        {
+          "id": "mask-pending",
+          "title": "The signal mask and pending signals are kept"
+        },
+        {
+          "id": "keeps-process",
+          "title": "The process ID, parent, process group and session are kept"
+        },
+        {
+          "id": "keeps-cwd-umask",
+          "title": "The working directory and umask are kept"
+        },
+        {
+          "id": "keeps-alarm",
+          "title": "A pending alarm is kept"
+        },
+        {
+          "id": "keeps-ids",
+          "title": "An ordinary program keeps the user, group and supplementary group IDs"
+        },
+        {
+          "id": "setuid-bit",
+          "title": "A set-user-ID program runs with its owner as the effective user ID"
+        },
+        {
+          "id": "setgid-bit",
+          "title": "A set-group-ID program runs with its group as the effective group ID"
+        },
+        {
+          "id": "setuid-saved",
+          "title": "A set-user-ID program can switch between its real and saved user IDs"
+        },
+        {
+          "id": "setgid-saved",
+          "title": "A set-group-ID program can switch between its real and saved group IDs"
+        }
+      ]
+    },
+    {
+      "id": "wait",
+      "title": "wait, waitpid & exit status",
+      "cases": [
+        {
+          "id": "specific",
+          "title": "256 immediate exits with waitpid of a specific child"
+        },
+        {
+          "id": "any",
+          "title": "256 immediate exits with waitpid of any child"
+        },
+        {
+          "id": "specific-signal",
+          "title": "256 specific-child waits with a caught SIGCHLD"
+        },
+        {
+          "id": "any-signal",
+          "title": "256 any-child waits with a caught SIGCHLD"
+        },
+        {
+          "id": "parked-specific",
+          "title": "Specific-child wait before a delayed exit"
+        },
+        {
+          "id": "parked-any",
+          "title": "Any-child wait before a delayed exit"
+        },
+        {
+          "id": "parked-specific-signal",
+          "title": "Specific-child wait with SIGCHLD before a delayed exit"
+        },
+        {
+          "id": "parked-any-signal",
+          "title": "Any-child wait with SIGCHLD before a delayed exit"
+        },
+        {
+          "id": "nohang",
+          "title": "WNOHANG returns zero before exit and the PID afterward"
+        },
+        {
+          "id": "interrupted",
+          "title": "Caught SIGCHLD without SA_RESTART interrupts waitpid"
+        },
+        {
+          "id": "stack-trampoline",
+          "title": "SIGCHLD returns through the stack trampoline"
+        },
+        {
+          "id": "cow-signal-stack",
+          "title": "SIGCHLD writes a fork-shared signal frame across two stack pages"
+        },
+        {
+          "id": "echild-none",
+          "title": "waitpid with no children fails with ECHILD"
+        },
+        {
+          "id": "echild-other",
+          "title": "waitpid on a process that is not a child fails with ECHILD"
+        },
+        {
+          "id": "einval",
+          "title": "waitpid with an undefined option fails with EINVAL"
+        },
+        {
+          "id": "exit-codes",
+          "title": "WIFEXITED and WEXITSTATUS report the low 8 bits of the exit status"
+        },
+        {
+          "id": "signaled",
+          "title": "WIFSIGNALED and WTERMSIG report death by SIGTERM and SIGKILL"
+        },
+        {
+          "id": "fault",
+          "title": "A child that reads an unmapped address is reported killed by SIGSEGV"
+        },
+        {
+          "id": "stopped",
+          "title": "WUNTRACED reports a stopped child once, with WIFSTOPPED and WSTOPSIG"
+        },
+        {
+          "id": "stop-hidden",
+          "title": "Without WUNTRACED a stopped child is not reported"
+        },
+        {
+          "id": "continued",
+          "title": "WCONTINUED reports a stopped child that was continued"
+        },
+        {
+          "id": "pid-zero",
+          "title": "waitpid(0) waits only for children in the caller's process group"
+        },
+        {
+          "id": "pid-group",
+          "title": "waitpid(-pgid) waits only for children in that process group"
+        },
+        {
+          "id": "any-order",
+          "title": "waitpid(-1) reaps each exited child once, then fails with ECHILD"
+        },
+        {
+          "id": "zombie",
+          "title": "An exited child stays a zombie until waited for, then its PID is gone"
+        },
+        {
+          "id": "reparent",
+          "title": "When a parent exits, its child is reparented to a system process"
+        },
+        {
+          "id": "sigchld-ignored",
+          "title": "With SIGCHLD ignored, exited children leave no zombie to wait for"
+        },
+        {
+          "id": "waitid",
+          "title": "waitid reports an exited child's PID, CLD_EXITED and status, and reaps it"
+        },
+        {
+          "id": "waitid-nowait",
+          "title": "waitid with WNOWAIT reports the child and leaves it waitable"
+        },
+        {
+          "id": "null-status",
+          "title": "waitpid with a null status pointer reaps the child"
+        },
+        {
+          "id": "exit-closes",
+          "title": "_exit closes every descriptor the child held"
+        }
+      ]
+    },
+    {
+      "id": "groups-sessions",
+      "title": "process groups & sessions",
+      "cases": [
+        {
+          "id": "inherit",
+          "title": "getpgrp and getsid agree with getpgid, and a child inherits both"
+        },
+        {
+          "id": "setpgid-self",
+          "title": "setpgid(0, 0) makes the caller a process group leader"
+        },
+        {
+          "id": "setpgid-child",
+          "title": "A parent can put its child in a new group"
+        },
+        {
+          "id": "setpgid-join",
+          "title": "A child can join another group in the same session"
+        },
+        {
+          "id": "setpgid-esrch",
+          "title": "setpgid on a process that is neither the caller nor its child fails with ESRCH"
+        },
+        {
+          "id": "setpgid-eacces",
+          "title": "setpgid on a child that has called exec fails with EACCES"
+        },
+        {
+          "id": "setpgid-session-leader",
+          "title": "setpgid on a session leader fails with EPERM"
+        },
+        {
+          "id": "setpgid-other-session",
+          "title": "setpgid across sessions fails with EPERM"
+        },
+        {
+          "id": "setpgid-no-group",
+          "title": "setpgid into a group that does not exist fails with EPERM"
+        },
+        {
+          "id": "setpgid-einval",
+          "title": "setpgid with a negative group fails with EINVAL"
+        },
+        {
+          "id": "setsid",
+          "title": "setsid makes the caller leader of a new session and group"
+        },
+        {
+          "id": "setsid-leader",
+          "title": "setsid by a group or session leader fails with EPERM"
+        },
+        {
+          "id": "lookup-esrch",
+          "title": "getpgid and getsid of a missing process fail with ESRCH"
+        },
+        {
+          "id": "outlives-leader",
+          "title": "A process group outlives its leader while members remain"
+        },
+        {
+          "id": "orphaned-stopped",
+          "title": "A newly orphaned group with a stopped member is sent SIGHUP and SIGCONT"
+        }
+      ]
+    },
+    {
+      "id": "credentials",
+      "title": "user & group IDs",
+      "cases": [
+        {
+          "id": "root",
+          "title": "The suite runs with real and effective user and group IDs 0"
+        },
+        {
+          "id": "setuid-root",
+          "title": "setuid as root sets the real, effective and saved user IDs"
+        },
+        {
+          "id": "setuid-user",
+          "title": "setuid as non-root to another user fails with EPERM"
+        },
+        {
+          "id": "setuid-saved",
+          "title": "setuid as non-root switches between the real and saved user IDs"
+        },
+        {
+          "id": "setgid-saved",
+          "title": "setgid as non-root switches between the real and saved group IDs"
+        },
+        {
+          "id": "setgid-root",
+          "title": "setgid as root sets the real and effective group IDs"
+        },
+        {
+          "id": "setgid-user",
+          "title": "setgid as non-root to another group fails with EPERM"
+        },
+        {
+          "id": "setgid-after-setuid",
+          "title": "setgid after setuid has given up root fails with EPERM"
+        },
+        {
+          "id": "setreuid-root",
+          "title": "setreuid as root sets distinct real and effective user IDs"
+        },
+        {
+          "id": "setreuid-temporary",
+          "title": "setreuid(-1, uid) drops root temporarily and setreuid(-1, 0) restores it"
+        },
+        {
+          "id": "setreuid-permanent",
+          "title": "setreuid(uid, uid) drops root for good"
+        },
+        {
+          "id": "setreuid-swap",
+          "title": "A non-root process can swap its real and effective user IDs"
+        },
+        {
+          "id": "setreuid-user",
+          "title": "setreuid as non-root to another user fails with EPERM"
+        },
+        {
+          "id": "setregid-root",
+          "title": "setregid as root sets distinct real and effective group IDs"
+        },
+        {
+          "id": "setregid-swap",
+          "title": "A non-root process can swap its real and effective group IDs"
+        },
+        {
+          "id": "setregid-user",
+          "title": "setregid as non-root to another group fails with EPERM"
+        },
+        {
+          "id": "getgroups",
+          "title": "getgroups counts and lists the supplementary groups, and EINVAL for a short list"
+        },
+        {
+          "id": "setgroups-user",
+          "title": "setgroups as non-root fails with EPERM"
+        },
+        {
+          "id": "fork",
+          "title": "A child inherits the user, group and supplementary group IDs"
+        }
+      ]
+    },
+    {
+      "id": "limits",
+      "title": "resource limits & usage",
+      "cases": [
+        {
+          "id": "getrlimit",
+          "title": "getrlimit reports every POSIX resource with soft at most hard"
+        },
+        {
+          "id": "getrlimit-einval",
+          "title": "getrlimit of an unknown resource fails with EINVAL"
+        },
+        {
+          "id": "setrlimit-soft",
+          "title": "setrlimit lowers the soft limit and getrlimit reads it back"
+        },
+        {
+          "id": "soft-above-hard",
+          "title": "setrlimit with soft above hard fails with EINVAL"
+        },
+        {
+          "id": "root-raises-hard",
+          "title": "Root may raise a hard limit"
+        },
+        {
+          "id": "user-raises-hard",
+          "title": "Raising a hard limit as non-root fails with EPERM"
+        },
+        {
+          "id": "user-raises-soft",
+          "title": "A non-root process may raise its soft limit up to the hard"
+        },
+        {
+          "id": "nofile-open",
+          "title": "RLIMIT_NOFILE bounds the descriptors open returns, then EMFILE once all below it are used"
+        },
+        {
+          "id": "nofile-dup",
+          "title": "dup2 and F_DUPFD at or above RLIMIT_NOFILE fail with EBADF and EINVAL"
+        },
+        {
+          "id": "fsize",
+          "title": "Writing past RLIMIT_FSIZE is cut short, then fails with EFBIG"
+        },
+        {
+          "id": "fsize-signal",
+          "title": "Writing past RLIMIT_FSIZE raises SIGXFSZ"
+        },
+        {
+          "id": "cpu",
+          "title": "Exceeding RLIMIT_CPU raises SIGXCPU"
+        },
+        {
+          "id": "data",
+          "title": "An allocation beyond RLIMIT_DATA fails"
+        },
+        {
+          "id": "stack",
+          "title": "Using more stack than RLIMIT_STACK raises SIGSEGV"
+        },
+        {
+          "id": "as",
+          "title": "A mapping beyond RLIMIT_AS fails with ENOMEM"
+        },
+        {
+          "id": "core",
+          "title": "RLIMIT_CORE is set and read back, and at 0 a core-dumping signal writes no core file"
+        },
+        {
+          "id": "fork",
+          "title": "Resource limits are inherited across fork"
+        },
+        {
+          "id": "exec",
+          "title": "Resource limits are kept across exec"
+        },
+        {
+          "id": "prlimit-child",
+          "title": "prlimit sets and reads another process's limit"
+        },
+        {
+          "id": "prlimit-swap",
+          "title": "prlimit returns the old limit while installing a new one"
+        },
+        {
+          "id": "prlimit-errors",
+          "title": "prlimit fails with ESRCH for a missing process and EPERM for another user's"
+        },
+        {
+          "id": "rusage-self",
+          "title": "getrusage(RUSAGE_SELF) counts the caller's CPU time"
+        },
+        {
+          "id": "rusage-children",
+          "title": "getrusage(RUSAGE_CHILDREN) counts only children that were waited for"
+        },
+        {
+          "id": "rusage-einval",
+          "title": "getrusage with an unknown who fails with EINVAL"
+        },
+        {
+          "id": "times",
+          "title": "times reports advancing elapsed time and the caller's CPU time"
+        },
+        {
+          "id": "times-children",
+          "title": "times counts the CPU time of waited-for children"
+        }
+      ]
+    },
+    {
+      "id": "scheduling",
+      "title": "priorities & sched_yield",
+      "cases": [
+        {
+          "id": "sched-yield",
+          "title": "sched_yield returns 0 and hands the processor to a waiting process"
+        },
+        {
+          "id": "getpriority",
+          "title": "getpriority reports the caller's nice value by 0 and by PID"
+        },
+        {
+          "id": "setpriority",
+          "title": "setpriority sets the caller's nice value"
+        },
+        {
+          "id": "clamp",
+          "title": "Nice values beyond the range are clamped to 19 and -20"
+        },
+        {
+          "id": "root-lowers",
+          "title": "Root may lower its nice value"
+        },
+        {
+          "id": "user-raise",
+          "title": "A non-root process may raise but not lower its nice value (EACCES)"
+        },
+        {
+          "id": "other-user",
+          "title": "setpriority on another user's process as non-root fails with EPERM"
+        },
+        {
+          "id": "errors",
+          "title": "getpriority and setpriority fail with ESRCH and EINVAL"
+        },
+        {
+          "id": "child",
+          "title": "setpriority and getpriority work on a child by PID"
+        },
+        {
+          "id": "process-group",
+          "title": "PRIO_PGRP sets every member and reports the lowest nice value"
+        },
+        {
+          "id": "user",
+          "title": "PRIO_USER sets every process of the user, no other, and reports the lowest nice value"
+        },
+        {
+          "id": "nice",
+          "title": "nice adds to the nice value and returns the new value"
+        },
+        {
+          "id": "nice-user",
+          "title": "nice with a negative increment as non-root fails with EPERM and keeps the nice value"
+        },
+        {
+          "id": "fork",
+          "title": "The nice value is inherited across fork"
+        },
+        {
+          "id": "exec",
+          "title": "The nice value is kept across exec"
+        }
+      ]
+    }
+  ]
+}

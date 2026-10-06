@@ -312,8 +312,9 @@ STD_BINARIES=(
     "suite-smoke"
     "suite-files-io"
     "suite-directories"
-    "suite-waitpid"
+    "suite-processes"
     "files-io-exec_test"
+    "processes-exec_test"
     "telnetd"
     "blogd"
 
@@ -342,6 +343,15 @@ INSTALLED=0
 FAILED=0
 
 mkdir -p "$TESTS_DIR"
+
+# Binaries no longer built. An incremental build would otherwise keep their ELFs from
+# an earlier build, and the disk image would still install them.
+RETIRED_BINARIES=(
+    "suite-waitpid"
+)
+for name in "${RETIRED_BINARIES[@]}"; do
+    rm -f "$TESTS_DIR/$name.elf"
+done
 
 if [ -d "$TESTS_DIR" ]; then
     for entry in "${STD_BINARIES[@]}"; do
