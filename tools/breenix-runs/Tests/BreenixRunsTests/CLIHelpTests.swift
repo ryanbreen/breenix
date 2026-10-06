@@ -32,4 +32,20 @@ final class CLIHelpTests: XCTestCase {
             XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["a-file"])
         }
     }
+    func testSuiteModeWithoutSuiteIDIsRejected() throws {
+        let package = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let process = Process()
+        process.executableURL = package.appendingPathComponent(".build/debug/breenix-runs")
+        process.arguments = ["run", "x86", "--mode", "suite", "--sha", "0123abcd", "--dry-run"]
+        process.environment = ["PATH": "/nonexistent"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertNotEqual(process.terminationStatus, 0, output)
+        XCTAssertTrue(output.contains("--mode suite requires --suite ID"), output)
+    }
 }

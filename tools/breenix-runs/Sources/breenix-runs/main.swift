@@ -65,8 +65,9 @@ func usage() -> String {
     run arm launches local QEMU; run x86 supports the remote gate profile only.
     x86 --hardware selects hardware from docs/x86-profiles.json (unset: default).
     --gate-timeout sets the scoring deadline (default: 900); full mode collects completion.
-    BREENIX_FULL_BACKSTOP overrides the full collection limit (default: max(1800, deadline)).
-    Full boots stop on USERSPACE TEST COMPLETE, with a fixed 1800-second hang backstop.
+    Full boots stop on USERSPACE TEST REPORT DONE. BREENIX_FULL_BACKSTOP sets the hang
+    backstop for that wait (default: max(1800, deadline)).
+    --mode suite requires --suite ID; it runs the full gate booting that suite.
     --no-store avoids persistence; --dry-run prints the x86 remote plan.
     import preserves gate metadata when present; loose serial verdicts remain unknown.
     Use --help or <command> --help to print this usage without accessing the store.
@@ -114,6 +115,7 @@ func parseRunArm(_ args: ArraySlice<String>) throws -> RunArmArguments {
 
 func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
     var parsed = RunX86Arguments()
+    var suiteModeRequested = false
     var iterator = Array(args).makeIterator()
 
     while let arg = iterator.next() {
@@ -143,6 +145,7 @@ func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
                 throw CLIError(description: "--mode requires one of: kthread, full, suite")
             }
             parsed.mode = mode
+            suiteModeRequested = value == "suite"
         case "--suite":
             guard let value = iterator.next(), RemoteCommand.isSuiteID(value) else {
                 throw CLIError(description: "--suite requires a suite id (lowercase words joined by '-')")
@@ -175,6 +178,12 @@ func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
             parsed.profile = profile
             parsed.profileWasSet = true
         }
+    }
+
+    // `--mode suite` is the full gate booting a suite; without an ID it would
+    // quietly boot the full testing kernel instead.
+    if suiteModeRequested && parsed.suite == nil {
+        throw CLIError(description: "--mode suite requires --suite ID")
     }
 
     return parsed
