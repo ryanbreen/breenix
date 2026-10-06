@@ -82,6 +82,40 @@ notes the ignored request on its own line. A mode's stages for a milestone are `
 `stages["aarch64"]` when the milestone has `"kernel": true`; otherwise the mode does not
 exercise that milestone.
 
+## Shared host slots
+
+`docker/qemu/run-x86-gate.sh` queues every cargo build (including userspace and
+packing) behind two build slots and every QEMU boot behind one exclusive boot
+slot in beast's container. The Run Inspector and Vigil beast runners call that
+same gate. On the Mac, `scripts/boot-interactive.sh` and `run.sh` share one boot
+slot across QEMU, Parallels and VMware; their cargo builds remain unrestricted.
+The VM slot covers its entire lifetime, including a suite's displayed panel.
+Stop the run to stop its VM and free the slot. Older or manual Mac VMs discovered
+by `pgrep`, `prlctl list` or `vmrun list` are waited for too.
+
+The slots are permanent files under `/tmp/breenix-host-slots`, independent of
+checkout: `x86-build-1.lock`, `x86-build-2.lock`, `x86-boot-1.lock` and
+`mac-boot-1.lock`. Python's `fcntl.flock` supplies the kernel lock on Linux and
+macOS. A supervisor owns the descriptors, stops the run's descendants (and its
+registered Parallels/VMware VM) before releasing them, and preserves the runner's
+exit status. Process death also releases flock without deleting/reclaiming a
+lock file. Do not remove those files while runs are alive.
+
+A waiting run prints the holder's worktree, commit, holding time and its own
+wait immediately and once a minute. Its serial header records queue waits,
+observed holders/VMs and the host's load averages at enqueue and acquisition.
+The header is prepended after the serial writer closes, before scoring, so guest
+output and Vigil's record/verdict formats remain unchanged. Concurrent beast
+builds keep separate build logs beside their gate output.
+
+For one deliberately unqueued **manual Mac boot**, prefix the usual command
+with `BREENIX_BOOT_NO_QUEUE=1`. It prints `BYPASS` and records that choice in the
+serial header. This also skips the legacy QEMU lock. The x86 gate never honors
+this variable, nor does it use it internally. Keep the variable scoped to that
+one command rather than exporting it in a session.
+
+Run the lock helper tests without any VM with `python3 tests/host_slots_test.py`.
+
 ## Watching a boot
 
 The VM screen shows the boot, not the log. As soon as the framebuffer exists the kernel

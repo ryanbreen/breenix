@@ -28,6 +28,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/host-slots.sh"
+host_slots_start "$0" "$@"
 SERIAL_LOG="${TMPDIR:-/tmp}/breenix-boot/serial.txt"
 IDLE_EXIT=300
 DISPLAY_MODE=
@@ -137,6 +139,8 @@ fi
 [ -f "$KERNEL" ] || { echo "No kernel at $KERNEL" >&2; exit 1; }
 [ -f "$DISK" ] || { echo "No disk at $DISK" >&2; exit 1; }
 
+host_slot_acquire mac-boot
+host_slot_serial "$SERIAL_LOG"
 mkdir -p "$(dirname "$SERIAL_LOG")"
 : > "$SERIAL_LOG"
 WRITABLE="$(dirname "$SERIAL_LOG")/ext2-writable.img"
@@ -144,7 +148,9 @@ cp "$DISK" "$WRITABLE"
 
 # shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
 source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
-qemu_host_lock_acquire
+if [ "${BREENIX_BOOT_NO_QUEUE:-}" != 1 ]; then
+    qemu_host_lock_acquire
+fi
 
 # Vigil shows the boot while it runs and scores it when it ends (does nothing without Vigil).
 VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG")
@@ -192,4 +198,5 @@ code=$?
 set -e
 echo
 echo "==> VM stopped (qemu exit $code)"
+host_slot_header "$SERIAL_LOG"
 "$ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" "$code"

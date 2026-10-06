@@ -34,6 +34,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$SCRIPT_DIR"
 cd "$BREENIX_ROOT"
+source "$BREENIX_ROOT/scripts/host-slots.sh"
+host_slots_start "$0" "$@"
 
 # #826/#834/#865/R181: this script's native (non-Parallels, non-VMware)
 # QEMU boot runs behind the host-wide lock in
@@ -299,6 +301,7 @@ finish_vm_boot() {
     else
         "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
     fi
+    host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
     exit "$status"
 }
@@ -354,16 +357,6 @@ if [ "$PARALLELS" = true ]; then
     HDD_DIR="$PARALLELS_DIR/breenix-efi.hdd"
     EXT2_HDD_DIR="$PARALLELS_DIR/breenix-ext2.hdd"
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
-
-    # Stop any running breenix VMs before build — if a VM is still running,
-    # rm -rf on the HDD directory may fail to clean locked .hds files.
-    for OLD_VM in $(prlctl list --all 2>/dev/null | grep 'breenix-' | awk '{print $NF}'); do
-        VM_STATUS=$(prlctl status "$OLD_VM" 2>/dev/null | awk '{print $NF}')
-        if [ "$VM_STATUS" = "running" ] || [ "$VM_STATUS" = "paused" ] || [ "$VM_STATUS" = "suspended" ]; then
-            echo "Stopping $OLD_VM before build..."
-            prlctl stop "$OLD_VM" --kill 2>/dev/null || true
-        fi
-    done
 
     LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
     KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -423,6 +416,8 @@ if [ "$PARALLELS" = true ]; then
             echo "  Continuing without ext2 disk"
         fi
     fi
+
+    host_slot_acquire mac-boot
 
     # -------------------------------------------------------------------
     # Deploy/package step: wraps the loader+kernel into the FAT32 ESP,
@@ -602,6 +597,7 @@ if [ "$PARALLELS" = true ]; then
     VIGIL_ID=""
     install_vm_boot_traps
     VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
+    host_slot_vm "$SERIAL_LOG" prlctl stop "$PARALLELS_VM" --kill
     prlctl start "$PARALLELS_VM"
     echo ""
     echo "========================================="
@@ -681,19 +677,11 @@ if [ "$PARALLELS" = true ]; then
                 done
             ) &
             LOGMON_PID=$!
-            # Clean up LOGMON on any exit path, including signals from a dying
-            # parent (Ralph / Claude Code). Without HUP/TERM/INT handlers, a
-            # reparented bash can sit blocked on the foreground tail forever.
-            trap '[ -n "${LOGMON_PID:-}" ] && kill "$LOGMON_PID" 2>/dev/null; exit 0' EXIT HUP INT TERM
+            # The supervisor reaps this monitor when the VM run ends.
         fi
 
-        # Wait a moment for the VM to start producing output, then tail.
-        # exec so this bash is replaced by tail — when tail dies for any reason
-        # (SIGPIPE from a closed stdout, SIGTERM, SIGHUP), the PID is just gone
-        # and no zombie bash is left behind. The trap above runs before exec.
         sleep 1
-        [ -n "${LOGMON_PID:-}" ] && trap - EXIT  # clear EXIT trap; exec discards it anyway
-        exec tail -f "$SERIAL_LOG"
+        tail -f "$SERIAL_LOG"
     fi
 
     # #917 fix-pass C-5: capture=none must also fail for exit-status callers.
@@ -838,6 +826,7 @@ if [ "$VMWARE" = true ]; then
     fi
 
     echo ""
+    host_slot_acquire mac-boot
     echo "--- Configuring VMware VM ---"
 
     # Use a unique VM name to avoid stale state
@@ -953,6 +942,7 @@ VMXEOF
     VIGIL_ID=""
     install_vm_boot_traps
     VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
+    host_slot_vm "$SERIAL_LOG" "$VMRUN" stop "$VMX_FILE" hard
     if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then
         # Headless automation (docker/qemu/run-vmware-gate.sh): `gui` mode
         # "succeeds" (exit 0, no error to fall back from) even when nothing
@@ -1000,15 +990,9 @@ VMXEOF
         fi
     ) &
     LOGMON_PID=$!
-    # Catch signals from a dying parent (Ralph / Claude Code) so we don't leak
-    # this script as a reparented zombie when the foreground tail's pipe dies.
-    trap '[ -n "${LOGMON_PID:-}" ] && kill "$LOGMON_PID" 2>/dev/null; exit 0' EXIT HUP INT TERM
-
+    # Keep VM cleanup installed while the serial tail runs.
     sleep 1
-    # exec so this bash is replaced by tail — when tail dies, the PID is gone
-    # with no zombie bash left behind.
-    trap - EXIT
-    exec tail -f "$SERIAL_LOG"
+    tail -f "$SERIAL_LOG"
 
     exit 0
 fi
@@ -1281,7 +1265,10 @@ if [ "$ARCH" = "arm64" ]; then
     # human, not a gate, is driving it. qemu_host_lock_acquire prints its own
     # one-line notice (host count, then a wait message if contended) before
     # blocking.
-    qemu_host_lock_acquire
+    host_slot_acquire mac-boot
+    if [ "${BREENIX_BOOT_NO_QUEUE:-}" != 1 ]; then
+        qemu_host_lock_acquire
+    fi
     qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -smp 4 \
         -m 512M \
@@ -1316,7 +1303,10 @@ else
     # lock -- one lock domain per QEMU binary, so this qemu-system-x86_64
     # boot cooperates with a concurrent x86 gate lane without contending
     # with a concurrent arm64 session.
-    qemu_host_lock_acquire qemu-system-x86_64
+    host_slot_acquire mac-boot
+    if [ "${BREENIX_BOOT_NO_QUEUE:-}" != 1 ]; then
+        qemu_host_lock_acquire qemu-system-x86_64
+    fi
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \

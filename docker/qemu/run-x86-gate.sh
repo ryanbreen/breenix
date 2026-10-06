@@ -104,6 +104,9 @@ fi
 
 cd "$REPO_DIR" || { echo "GATE: FAIL (repo dir missing: $REPO_DIR)"; exit 1; }
 
+source "$REPO_DIR/scripts/host-slots.sh"
+host_slots_start "$0" "$@"
+
 # Validate against the catalog before any build or disk packing. An explicitly
 # empty name is invalid, while an unset variable selects default.
 if ! python3 - "$PROFILE" "$REPO_DIR/docs/x86-profiles.json" <<'PYPROFILE'
@@ -172,9 +175,13 @@ fi
 # Seconds the VM stays up after the suite's DONE line, so its final screen can be captured.
 SUITE_HOLD_SECS="${BREENIX_SUITE_HOLD:-5}"
 
+# Cover every cargo invocation, including userspace and disk packing.
+host_slot_acquire x86-build || exit 1
+mkdir -p "$BREENIX_GATE_TMP" || exit 1
+GATE_BUILD_LOG_DIR=$(mktemp -d "$BREENIX_GATE_TMP/build-logs.XXXXXX") || exit 1
 echo "[gate] === Building userspace ELFs ==="
-if ! ./userspace/programs/build.sh > /tmp/gate-userspace-build.log 2>&1; then
-  echo "GATE: FAIL (userspace build failed) - see /tmp/gate-userspace-build.log"; exit 1
+if ! ./userspace/programs/build.sh > "$GATE_BUILD_LOG_DIR/gate-userspace-build.log" 2>&1; then
+  echo "GATE: FAIL (userspace build failed) - see $GATE_BUILD_LOG_DIR/gate-userspace-build.log"; exit 1
 fi
 
 # #564: repack every run. The ELF build above does NOT touch the images the
@@ -182,12 +189,12 @@ fi
 # claim-lint:ok: #564 records the separate build and packing steps.
 echo "[gate] === Repacking the userspace test disk and the ext2 image ==="
 rm -f target/test_binaries.img
-if ! cargo run -p xtask -- create-test-disk > /tmp/gate-test-disk.log 2>&1; then
-  echo "GATE: FAIL (create-test-disk failed) - see /tmp/gate-test-disk.log"; exit 1
+if ! cargo run -p xtask -- create-test-disk > "$GATE_BUILD_LOG_DIR/gate-test-disk.log" 2>&1; then
+  echo "GATE: FAIL (create-test-disk failed) - see $GATE_BUILD_LOG_DIR/gate-test-disk.log"; exit 1
 fi
 rm -f target/ext2.img
-if ! ./scripts/create_ext2_disk.sh > /tmp/gate-ext2-disk.log 2>&1; then
-  echo "GATE: FAIL (ext2 disk creation failed) - see /tmp/gate-ext2-disk.log"; exit 1
+if ! ./scripts/create_ext2_disk.sh > "$GATE_BUILD_LOG_DIR/gate-ext2-disk.log" 2>&1; then
+  echo "GATE: FAIL (ext2 disk creation failed) - see $GATE_BUILD_LOG_DIR/gate-ext2-disk.log"; exit 1
 fi
 if [ -n "$SUITE" ]; then
   if [ ! -f "userspace/programs/suite-$SUITE.elf" ]; then
@@ -211,18 +218,19 @@ echo "[gate] === Building (release, features=${FEATURES:-none}) ==="
 BUILD_START=$SECONDS
 FEATURE_ARGS=()
 [ -n "$FEATURES" ] && FEATURE_ARGS=(--features "$FEATURES")
-if ! cargo build --release ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --bin qemu-uefi > /tmp/gate-build.log 2>&1; then
-  echo "GATE: FAIL (build failed) - see /tmp/gate-build.log"
-  tail -40 /tmp/gate-build.log
+if ! cargo build --release ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --bin qemu-uefi > "$GATE_BUILD_LOG_DIR/gate-build.log" 2>&1; then
+  echo "GATE: FAIL (build failed) - see $GATE_BUILD_LOG_DIR/gate-build.log"
+  tail -40 "$GATE_BUILD_LOG_DIR/gate-build.log"
   exit 1
 fi
-if grep -qE "^(warning|error)" /tmp/gate-build.log; then
-  echo "GATE: FAIL (build produced warnings/errors) - see /tmp/gate-build.log"
-  grep -E "^(warning|error)" /tmp/gate-build.log
+if grep -qE "^(warning|error)" "$GATE_BUILD_LOG_DIR/gate-build.log"; then
+  echo "GATE: FAIL (build produced warnings/errors) - see $GATE_BUILD_LOG_DIR/gate-build.log"
+  grep -E "^(warning|error)" "$GATE_BUILD_LOG_DIR/gate-build.log"
   exit 1
 fi
 BUILD_SECS=$((SECONDS - BUILD_START))
 echo "[gate] Build clean (0 warnings) in ${BUILD_SECS}s"
+host_slot_release x86-build || exit 1
 
 # Ask the launcher for the selected hardware's census, rather than counting
 # source strings (AHCI/NVMe attach no VirtIO block devices).
@@ -250,8 +258,11 @@ PASS=0
 FAIL=0
 BOOT_START=$SECONDS
 for i in $(seq 1 "$COUNT"); do
+  # The gate always queues; the manual escape hatch only applies to Mac boots.
+  host_slot_acquire x86-boot || exit 1
   OUTDIR="$BREENIX_GATE_TMP/breenix_gate_$i"
   rm -rf "$OUTDIR"; mkdir -p "$OUTDIR"
+  host_slot_serial "$OUTDIR/serial_kernel.log" || exit 1
   # BREENIX_NET_MODE=none: the qemu-uefi binary hardcodes a SLIRP hostfwd on
   # host port 2323; disabling networking avoids lingering port state between
   # runs and is not needed for these boot markers.
@@ -302,6 +313,8 @@ for i in $(seq 1 "$COUNT"); do
     fi
     wait "$QEMU_TIMEOUT_PID"
   fi
+
+  host_slot_header "$OUTDIR/serial_kernel.log" || exit 1
 
   # Require enumeration to finish and match the selected profile's block
   # count and network floor. Default still requires 3 VirtIO block and >=1 NIC.
@@ -419,6 +432,7 @@ for i in $(seq 1 "$COUNT"); do
     INSPECTOR_STATUS=1
   fi
   breenix_runs_import_nonfatal "$OUTDIR" x86_64 gate "$INSPECTOR_VERDICT" "$INSPECTOR_STATUS" "$INSPECTOR_START_MS" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
+  host_slot_release x86-boot || exit 1
 done
 BOOT_SECS=$((SECONDS - BOOT_START))
 TOTAL_SECS=$((SECONDS - TOTAL_START))
