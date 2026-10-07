@@ -345,6 +345,13 @@ fn defer_signal_exit(process: &Process, exit_code: i32) -> bool {
     let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id()) else {
         return false;
     };
+    // Every caller runs on the dying thread's CPU with its address space
+    // installed. Leave it first, as an exit does: a peer CPU may drain the
+    // exit as soon as it is published, and a root this CPU still holds, or
+    // that a return shadow names, keeps the row's page tables, and the file
+    // mappings they hold, from being released until this CPU next runs user
+    // code.
+    leave_dying_address_space();
     if !crate::task::process_task::defer_thread_exit(thread_id, exit_code) {
         return false;
     }
@@ -355,6 +362,21 @@ fn defer_signal_exit(process: &Process, exit_code: i32) -> bool {
         });
     }
     true
+}
+
+/// Switch this CPU off the running process's address space and clear the
+/// return shadows that would install it again, before a deferred exit is
+/// published.
+fn leave_dying_address_space() {
+    #[cfg(target_arch = "aarch64")]
+    crate::arch_impl::aarch64::quiesce_ttbr0_for_exit();
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: the master kernel PML4 maps everything the kernel runs on.
+        unsafe { crate::memory::process_memory::switch_to_kernel_page_table() };
+        crate::per_cpu::set_next_cr3(0);
+        crate::per_cpu::set_saved_process_cr3(0);
+    }
 }
 
 /// Deliver a signal's default action
