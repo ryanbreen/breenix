@@ -2639,14 +2639,16 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
             .map(|process| process.page_table.is_some())
             .unwrap_or(false);
         let argv: [&[u8]; 1] = [b"corrupt_exec\0"];
-        let with_argv = manager.exec_process_with_argv(
+        let with_argv = crate::process::manager::ProcessManager::prepare_exec_image(
             parent_pid,
             &corrupt,
             Some("corrupt_exec"),
             &argv,
             &[],
-            &mut closes,
-        );
+        )
+        .and_then(|image| {
+            manager.exec_process_with_argv(parent_pid, &mut Some(image), &mut closes)
+        });
         let argv_kept = manager
             .get_process(parent_pid)
             .map(|process| process.page_table.is_some())
@@ -3227,8 +3229,11 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     ) -> Result<(), &'static str> {
         if with_argv {
             let argv: [&[u8]; 1] = [b"exec_detach_oracle\0"];
+            let mut prepared = Some(crate::process::manager::ProcessManager::prepare_exec_image(
+                pid, elf, Some("exec_detach_oracle"), &argv, &[],
+            )?);
             manager
-                .exec_process_with_argv(pid, elf, Some("exec_detach_oracle"), &argv, &[], closes)
+                .exec_process_with_argv(pid, &mut prepared, closes)
                 .map(|(_, _, commit)| {
                     // #721 m1: deliberately not applied. This oracle reads detach/
                     // refusal state straight off the process row and tears the row

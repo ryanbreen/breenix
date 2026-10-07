@@ -1006,7 +1006,7 @@ pub extern "C" fn fork() -> i32 {
 
 /// execve - execute a program
 ///
-/// Passes all three execve arguments to the kernel.
+/// Passes path, argv and envp to the kernel.
 #[no_mangle]
 pub unsafe extern "C" fn execve(
     path: *const u8,
@@ -1550,21 +1550,8 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
     const _SC_GETGR_R_SIZE_MAX: i32 = 69;
 
     match name {
-        _SC_ARG_MAX => {
-            let mut limits = [0u64; 2];
-            let result = unsafe {
-                libbreenix::raw::syscall4(libbreenix::syscall::nr::PRLIMIT64,
-                    0, 3, 0, limits.as_mut_ptr() as u64) as i64
-            };
-            if result < 0 {
-                unsafe { ERRNO = -result as i32; }
-                -1
-            } else {
-                // Match musl's ABI calculation, also enforced by execve.
-                let soft = limits[0];
-                if soft != u64::MAX && soft / 4 > 131072 { (soft / 4) as i64 } else { 131072 }
-            }
-        }
+        // The kernel reserves a quarter of its fixed 2 MiB stack cap for exec.
+        _SC_ARG_MAX => 512 * 1024,
         _SC_PAGESIZE => 4096,
         _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => 1,
         _SC_GETPW_R_SIZE_MAX | _SC_GETGR_R_SIZE_MAX => 1024,

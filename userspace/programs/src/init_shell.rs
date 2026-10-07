@@ -443,7 +443,7 @@ fn resolve_command(cmd: &str) -> Option<Vec<u8>> {
         return None;
     }
 
-    // Read $PATH from environment (kernel sets PATH=/bin:/sbin:/usr/local/cbin)
+    // Use the inherited PATH or the shell default when none is supplied.
     let path_var = std::env::var("PATH").unwrap_or_else(|_| String::from(DEFAULT_PATH));
 
     for dir in path_var.split(':') {

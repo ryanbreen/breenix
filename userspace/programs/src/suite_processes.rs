@@ -1327,7 +1327,16 @@ fn exec_long_arg() -> CaseResult {
     let out = exec_output(HELPER, &["helper", "report", FD_ARG, &long], &[], || Ok(()))?;
     let (argv, _) = split_report(&out)?;
     let got = argv.get(3).map_or(0, String::len);
-    check(argv.len() == 4 && argv[3] == long, &format!("a 65536-byte argument arrived as {got} bytes"))
+    check(argv.len() == 4 && argv[3] == long, &format!("a 65536-byte argument arrived as {got} bytes"))?;
+    // Leave 64 bytes for three short strings and the argument pointer table.
+    let near_limit = "x".repeat(max as usize - 64);
+    let mut old_alt_stack = [0u8; 8192];
+    let out = exec_output(HELPER, &["helper", "stack", FD_ARG, &near_limit], &[], || {
+        let alt = StackT { ss_sp: old_alt_stack.as_mut_ptr() as u64, ss_flags: 0, _pad: 0, ss_size: old_alt_stack.len() };
+        signal::sigaltstack(Some(&alt), None).map_err(|e| format!("enable old alternate stack: {e:?}"))?;
+        Ok(())
+    })?;
+    check(out == b"stack-ok", "near-limit exec lost its argument or rejected a runtime stack buffer")
 }
 
 fn exec_e2big() -> CaseResult {

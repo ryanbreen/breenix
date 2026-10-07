@@ -1221,8 +1221,20 @@ fn sys_exec_aarch64(
         current_thread_id
     );
 
-    let argv_slices: alloc::vec::Vec<&[u8]> = arguments.argv.iter().map(|v| v.as_slice()).collect();
-    let envp_slices: alloc::vec::Vec<&[u8]> = arguments.envp.iter().map(|v| v.as_slice()).collect();
+    let (argv_slices, envp_slices) = match arguments.slices() {
+        Ok(slices) => slices,
+        Err(errno) => return (-(errno as i64)) as u64,
+    };
+    let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
+        current_pid,
+        elf_data,
+        Some(&program_name),
+        &argv_slices,
+        &envp_slices,
+    ) {
+        Ok(image) => Some(image),
+        Err(error) => return (-(crate::syscall::exec::manager_errno(error) as i64)) as u64,
+    };
 
     let result = without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
@@ -1244,7 +1256,7 @@ fn sys_exec_aarch64(
             previous_ttbr0 = read_ttbr0_for_exec();
             super::switch_ttbr0_to_kernel();
 
-            manager.exec_process_with_argv(current_pid, elf_data, Some(&program_name), &argv_slices, &envp_slices, &mut closes)
+            manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes)
         };
 
         let (new_entry_point, new_rsp, commit) = match exec_result {

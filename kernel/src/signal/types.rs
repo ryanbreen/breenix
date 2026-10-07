@@ -365,6 +365,7 @@ impl SignalState {
     /// The blocked mask and the entire pending set survive exec, including a
     /// SIGKILL queued while the old image was reading from ext2.
     pub fn exec_reset(&mut self) {
+        self.alt_stack = AltStack::default();
         for sig in 1..=NSIG {
             if self.get_handler(sig).is_handler() {
                 self.set_handler(sig, SignalAction::default());

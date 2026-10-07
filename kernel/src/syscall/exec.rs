@@ -1,13 +1,11 @@
-//! Exec preparation shared by both architectures. Nothing here changes the
-//! caller's image: user copies, argument limits and interpreter lookup finish
-//! before the process manager publishes a replacement address space.
+//! Copy exec inputs and resolve interpreters before publishing a new image.
 
-use super::errno::{E2BIG, EACCES, EFAULT, EISDIR, ELOOP, ENOEXEC};
-use alloc::{string::String, vec::Vec};
+use super::errno::{E2BIG, EACCES, EFAULT, EISDIR, ELOOP, ENOEXEC, ENOMEM};
+use alloc::{boxed::Box, string::String, vec::Vec};
+use core::ops::Range;
 
-// sysconf(_SC_ARG_MAX) in musl uses a quarter of the soft RLIMIT_STACK,
-// with a 128 KiB floor. Keep the default stack limit shared with getrlimit.
-pub(crate) const DEFAULT_STACK_LIMIT: u64 = 8 * 1024 * 1024;
+// Reserve runtime stack below the arguments within the demand-growth cap.
+pub(crate) const DEFAULT_STACK_LIMIT: u64 = crate::memory::layout::MAX_USER_STACK_SIZE;
 pub(crate) const ARG_MAX: usize = DEFAULT_STACK_LIMIT as usize / 4;
 
 pub(crate) fn manager_errno(error: &str) -> u64 {
@@ -16,43 +14,112 @@ pub(crate) fn manager_errno(error: &str) -> u64 {
             super::errno::EAGAIN as u64
         }
         "exec arguments too large" => E2BIG as u64,
-        _ => super::errno::ENOMEM as u64,
+        _ => ENOMEM as u64,
     }
 }
 
+// Strings share one allocation; ranges are offsets within that owned buffer.
 pub(crate) struct Arguments {
-    pub argv: Vec<Vec<u8>>,
-    pub envp: Vec<Vec<u8>>,
+    bytes: Vec<u8>,
+    argv: Vec<Range<usize>>,
+    envp: Vec<Range<usize>>,
 }
 
 impl Arguments {
+    fn empty() -> Self {
+        Self {
+            bytes: Vec::new(),
+            argv: Vec::new(),
+            envp: Vec::new(),
+        }
+    }
+
     pub fn copy_from_user(path: &str, argv: u64, envp: u64) -> Result<Self, u64> {
+        let mut args = Self::empty();
         let mut budget = ARG_MAX;
-        let mut args = Self {
-            argv: copy_vector(argv, &mut budget)?,
-            envp: copy_vector(envp, &mut budget)?,
-        };
-        // Retain the convenience ABI used by libbreenix::process::exec.
-        // An explicitly supplied empty vector remains empty.
+        args.argv = copy_vector(argv, &mut budget, &mut args.bytes)?;
+        args.envp = copy_vector(envp, &mut budget, &mut args.bytes)?;
+        // libbreenix's no-argv convenience call uses the pathname as argv[0].
         if argv == 0 {
-            args.argv.push(terminated(path.as_bytes()));
+            args.argv.try_reserve(1).map_err(|_| ENOMEM as u64)?;
+            let range = args.append(path.as_bytes())?;
+            args.argv.push(range);
         }
         args.check_size()?;
         Ok(args)
     }
 
+    fn append(&mut self, value: &[u8]) -> Result<Range<usize>, u64> {
+        let start = self.bytes.len();
+        self.bytes
+            .try_reserve(value.len() + 1)
+            .map_err(|_| ENOMEM as u64)?;
+        self.bytes.extend_from_slice(value);
+        self.bytes.push(0);
+        Ok(start..self.bytes.len())
+    }
+
     pub fn check_size(&self) -> Result<(), u64> {
-        argument_bytes(&self.argv, &self.envp).map(|_| ())
+        let size = (self.argv.len() + self.envp.len())
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(self.bytes.len()))
+            .ok_or(E2BIG as u64)?;
+        if size > ARG_MAX {
+            Err(E2BIG as u64)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn slices(&self) -> Result<(Vec<&[u8]>, Vec<&[u8]>), u64> {
+        let mut argv = Vec::new();
+        let mut envp = Vec::new();
+        argv.try_reserve_exact(self.argv.len())
+            .map_err(|_| ENOMEM as u64)?;
+        envp.try_reserve_exact(self.envp.len())
+            .map_err(|_| ENOMEM as u64)?;
+        argv.extend(self.argv.iter().map(|range| &self.bytes[range.clone()]));
+        envp.extend(self.envp.iter().map(|range| &self.bytes[range.clone()]));
+        Ok((argv, envp))
+    }
+
+    fn interpreter(&mut self, interpreter: &[u8], optional: &[u8], path: &[u8]) -> Result<(), u64> {
+        let mut expanded = Self::empty();
+        expanded
+            .argv
+            .try_reserve_exact(self.argv.len() + 3)
+            .map_err(|_| ENOMEM as u64)?;
+        expanded
+            .envp
+            .try_reserve_exact(self.envp.len())
+            .map_err(|_| ENOMEM as u64)?;
+        let range = expanded.append(interpreter)?;
+        expanded.argv.push(range);
+        if !optional.is_empty() {
+            let range = expanded.append(optional)?;
+            expanded.argv.push(range);
+        }
+        let range = expanded.append(path)?;
+        expanded.argv.push(range);
+        for range in self.argv.iter().skip(1) {
+            let range = expanded.append(&self.bytes[range.start..range.end - 1])?;
+            expanded.argv.push(range);
+        }
+        for range in &self.envp {
+            let range = expanded.append(&self.bytes[range.start..range.end - 1])?;
+            expanded.envp.push(range);
+        }
+        expanded.check_size()?;
+        *self = expanded;
+        Ok(())
     }
 }
 
-fn terminated(bytes: &[u8]) -> Vec<u8> {
-    let mut string = bytes.to_vec();
-    string.push(0);
-    string
-}
-
-fn copy_vector(mut vector: u64, budget: &mut usize) -> Result<Vec<Vec<u8>>, u64> {
+fn copy_vector(
+    mut vector: u64,
+    budget: &mut usize,
+    bytes: &mut Vec<u8>,
+) -> Result<Vec<Range<usize>>, u64> {
     let mut strings = Vec::new();
     if vector == 0 {
         return Ok(strings);
@@ -63,65 +130,70 @@ fn copy_vector(mut vector: u64, budget: &mut usize) -> Result<Vec<Vec<u8>>, u64>
             return Ok(strings);
         }
         *budget = budget.checked_sub(8).ok_or(E2BIG as u64)?;
+        let start = bytes.len();
         let mut address = pointer;
-        let mut string = Vec::new();
         loop {
             if *budget == 0 {
                 return Err(E2BIG as u64);
             }
-            // Do not read across a page boundary after a possible terminator.
-            let mut bytes = [0u8; 256];
-            let count = bytes
+            // Never read past a page containing a possible terminator.
+            let mut chunk = [0u8; 256];
+            let count = chunk
                 .len()
                 .min(4096 - (address as usize & 4095))
                 .min(*budget);
-            super::userptr::read_user_bytes(bytes.as_mut_ptr(), address, count)?;
-            let length = bytes[..count]
+            super::userptr::read_user_bytes(chunk.as_mut_ptr(), address, count)?;
+            let length = chunk[..count]
                 .iter()
                 .position(|&byte| byte == 0)
                 .map_or(count, |end| end + 1);
-            string
-                .try_reserve(length)
-                .map_err(|_| super::errno::ENOMEM as u64)?;
-            string.extend_from_slice(&bytes[..length]);
+            bytes.try_reserve(length).map_err(|_| ENOMEM as u64)?;
+            bytes.extend_from_slice(&chunk[..length]);
             *budget -= length;
-            if string.last() == Some(&0) {
+            if bytes.last() == Some(&0) {
                 break;
             }
             address = address.checked_add(length as u64).ok_or(EFAULT as u64)?;
         }
-        strings
-            .try_reserve(1)
-            .map_err(|_| super::errno::ENOMEM as u64)?;
-        strings.push(string);
+        strings.try_reserve(1).map_err(|_| ENOMEM as u64)?;
+        strings.push(start..bytes.len());
         vector = vector.checked_add(8).ok_or(EFAULT as u64)?;
     }
 }
 
-fn argument_bytes(argv: &[Vec<u8>], envp: &[Vec<u8>]) -> Result<usize, u64> {
-    let mut bytes = (argv.len() + envp.len())
-        .checked_mul(8)
-        .ok_or(E2BIG as u64)?;
-    for string in argv.iter().chain(envp) {
-        bytes = bytes.checked_add(string.len()).ok_or(E2BIG as u64)?;
+pub(crate) fn copy_string(value: &str) -> Result<String, u64> {
+    let mut result = String::new();
+    result
+        .try_reserve_exact(value.len())
+        .map_err(|_| ENOMEM as u64)?;
+    result.push_str(value);
+    Ok(result)
+}
+
+pub(crate) fn try_box<T>(value: T) -> Result<Box<T>, &'static str> {
+    let layout = core::alloc::Layout::new::<T>();
+    if layout.size() == 0 {
+        return Ok(Box::new(value));
     }
-    if bytes > ARG_MAX {
-        Err(E2BIG as u64)
-    } else {
-        Ok(bytes)
+    // SAFETY: allocate storage for T, initialize it once, then transfer ownership.
+    unsafe {
+        let pointer = alloc::alloc::alloc(layout) as *mut T;
+        if pointer.is_null() {
+            return Err("exec allocation failed");
+        }
+        pointer.write(value);
+        Ok(Box::from_raw(pointer))
     }
 }
 
-/// Read scripts recursively, replacing argv[0] at each interpreter step. The
-/// optional shebang argument is one string, including any internal whitespace.
-/// Permission/lookup errors apply to each interpreter just as to the script.
+/// Expand interpreter scripts, keeping the optional argument as one string.
 pub(crate) fn read_image(
     path: &str,
     args: &mut Arguments,
     mut read: impl FnMut(&str) -> Result<Vec<u8>, i32>,
 ) -> Result<Vec<u8>, u64> {
-    let mut path = String::from(path);
-    for depth in 0..=4 {
+    let mut path = copy_string(path)?;
+    for depth in 0..=5 {
         let data = read(&path).map_err(|errno| {
             if errno == EISDIR {
                 EACCES as u64
@@ -133,14 +205,12 @@ pub(crate) fn read_image(
             validate_elf(&data)?;
             return Ok(data);
         }
-        if depth == 4 {
+        if depth == 5 {
             return Err(ELOOP as u64);
         }
-        let end = data
-            .iter()
-            .position(|&b| b == b'\n')
-            .ok_or(ENOEXEC as u64)?;
-        let line = core::str::from_utf8(&data[2..end]).map_err(|_| ENOEXEC as u64)?;
+        let end = data.iter().position(|&b| b == b'\n').unwrap_or(data.len());
+        // Pathnames in the filesystem API are UTF-8; invalid bytes cannot resolve.
+        let line = core::str::from_utf8(&data[2..end]).map_err(|_| super::errno::ENOENT as u64)?;
         let line = line.trim_matches([' ', '\t']);
         let split = line.find([' ', '\t']).unwrap_or(line.len());
         let interpreter = &line[..split];
@@ -148,16 +218,19 @@ pub(crate) fn read_image(
             return Err(ENOEXEC as u64);
         }
         let optional = line[split..].trim_matches([' ', '\t']);
-        let mut argv = Vec::new();
-        argv.push(terminated(interpreter.as_bytes()));
-        if !optional.is_empty() {
-            argv.push(terminated(optional.as_bytes()));
+        // The exec convenience ABI searches /bin for bare names. Pass the
+        // loaded script's path, so its interpreter does not resolve it in cwd.
+        if !path.contains('/') {
+            let mut resolved = String::new();
+            resolved
+                .try_reserve_exact(5 + path.len())
+                .map_err(|_| ENOMEM as u64)?;
+            resolved.push_str("/bin/");
+            resolved.push_str(&path);
+            path = resolved;
         }
-        argv.push(terminated(path.as_bytes()));
-        argv.extend(args.argv.drain(..).skip(1));
-        args.argv = argv;
-        args.check_size()?;
-        path = String::from(interpreter);
+        args.interpreter(interpreter.as_bytes(), optional.as_bytes(), path.as_bytes())?;
+        path = copy_string(interpreter)?;
     }
     Err(ELOOP as u64)
 }

@@ -2501,8 +2501,20 @@ pub fn sys_execv_with_frame(
         );
 
         // Borrow the prepared arguments and environment for the stack builder
-        let argv_slices: Vec<&[u8]> = arguments.argv.iter().map(|v| v.as_slice()).collect();
-        let envp_slices: Vec<&[u8]> = arguments.envp.iter().map(|v| v.as_slice()).collect();
+        let (argv_slices, envp_slices) = match arguments.slices() {
+            Ok(slices) => slices,
+            Err(errno) => return SyscallResult::Err(errno),
+        };
+        let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
+            current_pid,
+            elf_data,
+            Some(program_name),
+            &argv_slices,
+            &envp_slices,
+        ) {
+            Ok(image) => Some(image),
+            Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
+        };
 
         // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
         // masked together, same shape as the production arm below (#721 K3/K10).
@@ -2515,10 +2527,7 @@ pub fn sys_execv_with_frame(
 
             let (new_entry_point, new_rsp, commit) = match manager.exec_process_with_argv(
                 current_pid,
-                elf_data,
-                Some(program_name),
-                &argv_slices,
-                &envp_slices,
+                &mut prepared,
                 &mut closes,
             ) {
                 Ok(value) => value,
@@ -2651,24 +2660,23 @@ pub fn sys_execv_with_frame(
             current_thread_id
         );
 
-        let argv_slices: Vec<&[u8]> = arguments.argv.iter().map(|v| v.as_slice()).collect();
-        let envp_slices: Vec<&[u8]> = arguments.envp.iter().map(|v| v.as_slice()).collect();
+        let (argv_slices, envp_slices) = match arguments.slices() {
+            Ok(slices) => slices,
+            Err(errno) => return SyscallResult::Err(errno),
+        };
+        let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
+            current_pid,
+            elf_data,
+            Some(program_name),
+            &argv_slices,
+            &envp_slices,
+        ) {
+            Ok(image) => Some(image),
+            Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
+        };
 
-        // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
-        // masked together (#721 K10: mirrors aarch64's sys_exec_aarch64, which masks this
-        // exact window for exec specifically). #713's sys_spawn deliberately does NOT mask
-        // its own creation window, citing creation.rs's documented worry: disabling
-        // interrupts while holding PROCESS_MANAGER and then acquiring MEMORY_INFO could
-        // deadlock against a concurrent thread doing the reverse. That worry is stale by
-        // the time exec ever runs: MEMORY_INFO (frame_allocator.rs) is a `spin::Once`
-        // populated once at boot and read everywhere thereafter via `.get()` — a non-blocking
-        // load, not a lock acquisition — and `allocate_frame()` itself is CAS-based, so there
-        // is no second lock for a masked exec to block on while holding PROCESS_MANAGER.
-        // aarch64 already masks this identical operation in production with no such hazard
-        // materializing, so the same regime is followed here. (creation.rs's and sys_spawn's
-        // own comments are stale in the same way; not rewritten here to keep this diff
-        // scoped to exec.) The ext2 read and the argv/name parsing above both stay outside
-        // this section (X2).
+        // Mask only publication, scheduler commit, CR3 install and frame patch.
+        // The replacement image and arguments were built above without PM held.
         crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
@@ -2678,10 +2686,7 @@ pub fn sys_execv_with_frame(
 
             let (new_entry_point, new_rsp, commit) = match manager.exec_process_with_argv(
                 current_pid,
-                elf_data,
-                Some(program_name),
-                &argv_slices,
-                &envp_slices,
+                &mut prepared,
                 &mut closes,
             ) {
                 Ok(value) => value,
@@ -2791,10 +2796,7 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     };
     let program_path = program_path.as_str();
 
-    // Read argv from userspace (mirrors sys_execv_with_frame's own loop above,
-    // same MAX_ARGS/MAX_ARG_LEN budget; not factored into a shared helper —
-    // #713 spec section 2.1 marks that pure hygiene, not load-bearing for
-    // this fix, and it is skipped here to keep the diff minimal).
+    // Spawn retains its separate 64-argument, 4096-byte per-string budget.
     let mut argv_vec: Vec<Vec<u8>> = Vec::new();
     if argv_ptr != 0 {
         const MAX_ARGS: usize = 64;

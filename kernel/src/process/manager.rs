@@ -102,6 +102,19 @@ pub(crate) enum ReapOutcome {
     Refused,
 }
 
+pub(crate) struct PreparedExecImage {
+    new_page_table: crate::memory::process_memory::UnpublishedPageTable,
+    loaded_elf: crate::elf::LoadedElf,
+    new_stack: Box<crate::memory::stack::GuardedStack>,
+    program_name: Option<String>,
+    user_stack_size: usize,
+    stack_top: VirtAddr,
+    stack_bottom: VirtAddr,
+    initial_rsp: u64,
+    #[cfg(target_arch = "aarch64")]
+    initial_tpidr_el0: VirtAddr,
+}
+
 /// Process manager handles all processes in the system
 pub struct ProcessManager {
     /// All processes indexed by PID
@@ -570,7 +583,7 @@ impl ProcessManager {
         // argc, argv NULL, envp NULL and the AT_NULL pair, aligned to 16 bytes.
         // Starting at stack_top - 16 instead leaves envp outside the mapping.
         let initial_rsp = stack_top.as_u64() - 48;
-        self.write_bytes_to_stack(
+        Self::write_bytes_to_stack(
             process
                 .page_table
                 .as_ref()
@@ -581,9 +594,8 @@ impl ProcessManager {
 
         // Create the main thread
         crate::serial_println!("manager.create_process: Creating main thread");
-        let thread = self.create_main_thread(&mut *process, stack_top)?;
-        let mut thread = thread;
-        thread.context.rsp = initial_rsp;
+        let thread =
+            self.create_main_thread_with_sp(&mut *process, stack_top, VirtAddr::new(initial_rsp))?;
         crate::serial_println!("manager.create_process: Main thread created");
         process.set_main_thread(thread);
         crate::serial_println!("manager.create_process: Main thread set on process");
@@ -776,7 +788,7 @@ impl ProcessManager {
             b"SHELL=/bin/bsh\0",
         ];
         let initial_rsp = if let Some(ref page_table) = process.page_table {
-            self.setup_argv_on_stack(
+            Self::setup_argv_on_stack(
                 page_table,
                 stack_top.as_u64(),
                 argv,
@@ -1049,11 +1061,25 @@ impl ProcessManager {
             return Err("Process page table not available for stack mapping");
         };
 
+        let initial_sp = VirtAddr::new(user_stack_top - 48);
+        Self::write_bytes_to_stack(
+            process
+                .page_table
+                .as_ref()
+                .ok_or("Process page table unavailable")?,
+            initial_sp.as_u64(),
+            &[0; 48],
+        )?;
+
         // Create the main thread with USERSPACE stack top
         crate::serial_println!("manager.create_process [ARM64]: Creating main thread");
         let user_stack_top_vaddr = VirtAddr::new(user_stack_top);
-        let thread =
-            self.create_main_thread(&mut *process, user_stack_top_vaddr, initial_tpidr_el0)?;
+        let thread = self.create_main_thread_with_sp(
+            &mut *process,
+            user_stack_top_vaddr,
+            initial_sp,
+            initial_tpidr_el0,
+        )?;
         crate::serial_println!("manager.create_process [ARM64]: Main thread created");
         process.set_main_thread(thread);
         crate::serial_println!("manager.create_process [ARM64]: Main thread set on process");
@@ -1249,7 +1275,7 @@ impl ProcessManager {
             b"SHELL=/bin/bsh\0",
         ];
         let initial_sp = if let Some(ref page_table) = process.page_table {
-            self.setup_argv_on_stack(
+            Self::setup_argv_on_stack(
                 page_table,
                 user_stack_top,
                 argv,
@@ -1374,100 +1400,6 @@ impl ProcessManager {
         Ok(child_pid)
     }
 
-    /// Create the main thread for a process
-    /// Note: Uses x86_64-specific TLS and thread creation
-    #[cfg(target_arch = "x86_64")]
-    fn create_main_thread(
-        &mut self,
-        process: &mut Process,
-        stack_top: VirtAddr,
-    ) -> Result<Thread, &'static str> {
-        // For now, use a null TLS block (we'll implement TLS later)
-        let _tls_block = VirtAddr::new(0);
-
-        // Allocate a globally unique thread ID
-        // NOTE: While Unix convention is TID = PID for main thread, we need global
-        // uniqueness across all threads (kernel + user). Using the global allocator
-        // prevents collisions with kernel threads.
-        let thread_id = crate::task::thread::allocate_thread_id();
-
-        // Allocate a TLS block for this thread ID
-        let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
-
-        // Register this thread with the TLS system (x86_64 only for now)
-        #[cfg(target_arch = "x86_64")]
-        if let Err(e) = crate::tls::register_thread_tls(thread_id, actual_tls_block) {
-            log::warn!(
-                "Failed to register thread {} with TLS system: {}",
-                thread_id,
-                e
-            );
-        }
-
-        // Calculate stack bottom (stack grows down)
-        const USER_STACK_SIZE: usize = 64 * 1024;
-        let stack_bottom = stack_top - USER_STACK_SIZE as u64;
-
-        // Allocate a kernel stack using the new global kernel stack allocator
-        // This automatically maps the stack in the global kernel page tables,
-        // making it visible to all processes
-        let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
-            log::error!("Failed to allocate kernel stack: {}", e);
-            "Failed to allocate kernel stack for thread"
-        })?;
-        let kernel_stack_top = kernel_stack.top();
-
-        log::debug!(
-            "✓ Allocated kernel stack at {:#x} (globally visible)",
-            kernel_stack_top
-        );
-
-        // Set up initial context for userspace
-        // CRITICAL: RSP must point WITHIN the mapped stack region, not past it
-        // The stack grows down, so we start RSP at (stack_top - 16) for alignment
-        let initial_rsp = VirtAddr::new(stack_top.as_u64() - 16);
-        let context = crate::task::thread::CpuContext::new(
-            process.entry_point,
-            initial_rsp,
-            crate::task::thread::ThreadPrivilege::User,
-        );
-
-        let thread = Thread {
-            id: thread_id,
-            name: String::from(&process.name),
-            state: crate::task::thread::ThreadState::Ready,
-            context,
-            stack_top,
-            stack_bottom,
-            kernel_stack_top: Some(kernel_stack_top),
-            kernel_stack_allocation: Some(kernel_stack),
-            tls_block: actual_tls_block,
-            priority: 128,
-            time_slice: 10,
-            entry_point: None,
-            privilege: crate::task::thread::ThreadPrivilege::User,
-            has_started: false,
-            blocked_in_syscall: false,
-            saved_by_inline_schedule: false,
-            inline_schedule_spsr: 0,
-            inline_schedule_prev_elr: 0,
-            inline_schedule_caller_lr: 0,
-            inline_schedule_saved_sp: 0,
-            saved_userspace_context: None,
-            wake_time_ns: None,
-            timer_pop: None,
-            run_start_ticks: 0,
-            cpu_ticks_total: 0,
-            owner_pid: Some(process.id.as_u64()),
-            cached_ttbr0: 0,
-            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
-            kill_custody: core::sync::atomic::AtomicU64::new(0),
-            cpu_affinity: None,
-        };
-
-        Ok(thread)
-    }
-
     /// Create the main thread for a process with a specific initial SP (x86_64
     /// version).
     ///
@@ -1523,86 +1455,6 @@ impl ProcessManager {
             kernel_stack_top: Some(kernel_stack_top),
             kernel_stack_allocation: Some(kernel_stack),
             tls_block: actual_tls_block,
-            priority: 128,
-            time_slice: 10,
-            entry_point: None,
-            privilege: crate::task::thread::ThreadPrivilege::User,
-            has_started: false,
-            blocked_in_syscall: false,
-            saved_by_inline_schedule: false,
-            inline_schedule_spsr: 0,
-            inline_schedule_prev_elr: 0,
-            inline_schedule_caller_lr: 0,
-            inline_schedule_saved_sp: 0,
-            saved_userspace_context: None,
-            wake_time_ns: None,
-            timer_pop: None,
-            run_start_ticks: 0,
-            cpu_ticks_total: 0,
-            owner_pid: Some(process.id.as_u64()),
-            cached_ttbr0: 0,
-            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
-            kill_custody: core::sync::atomic::AtomicU64::new(0),
-            cpu_affinity: None,
-        };
-
-        Ok(thread)
-    }
-
-    /// Create the main thread for a process (ARM64 version)
-    ///
-    /// Note: TLS support is not yet implemented for ARM64.
-    #[cfg(target_arch = "aarch64")]
-    fn create_main_thread(
-        &mut self,
-        process: &mut Process,
-        stack_top: VirtAddr,
-        initial_tpidr_el0: VirtAddr,
-    ) -> Result<Thread, &'static str> {
-        // Allocate a globally unique thread ID
-        let thread_id = crate::task::thread::allocate_thread_id();
-
-        // Calculate stack bottom (stack grows down)
-        const USER_STACK_SIZE: usize = 64 * 1024;
-        let stack_bottom = VirtAddr::new(stack_top.as_u64() - USER_STACK_SIZE as u64);
-
-        // Allocate a kernel stack for exception handling
-        let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
-            log::error!("ARM64: Failed to allocate kernel stack: {}", e);
-            "Failed to allocate kernel stack for thread"
-        })?;
-        let kernel_stack_top = kernel_stack.top();
-
-        log::debug!(
-            "ARM64: Allocated kernel stack at {:#x}",
-            kernel_stack_top.as_u64()
-        );
-
-        // Set up initial context for userspace
-        // On ARM64, SP should be 16-byte aligned.
-        // CRITICAL: stack_top is the exclusive end of the stack mapping. The page
-        // at stack_top is NOT mapped (only pages up to stack_top-1 are).
-        // Setting SP = stack_top causes a DATA_ABORT on first stack access.
-        // We set up a minimal argc=0, argv=NULL frame so the SP is within the
-        // mapped region, matching what the Linux ABI expects at process start.
-        let initial_sp = VirtAddr::new((stack_top.as_u64() - 16) & !0xF);
-        let mut context = crate::task::thread::CpuContext::new(
-            process.entry_point,
-            initial_sp,
-            crate::task::thread::ThreadPrivilege::User,
-        );
-        context.tpidr_el0 = initial_tpidr_el0.as_u64();
-
-        let thread = Thread {
-            id: thread_id,
-            name: String::from(&process.name),
-            state: crate::task::thread::ThreadState::Ready,
-            context,
-            stack_top,
-            stack_bottom,
-            kernel_stack_top: Some(kernel_stack_top),
-            kernel_stack_allocation: Some(kernel_stack),
-            tls_block: initial_tpidr_el0,
             priority: 128,
             time_slice: 10,
             entry_point: None,
@@ -3553,7 +3405,7 @@ impl ProcessManager {
         .map_err(|_| "Failed to create stack object")?;
 
         // Re-borrow the process for the remaining updates.
-        // All fallible operations have succeeded — now it's safe to take the old page table.
+        // Preparation and reservations succeeded; publication below has no error return.
         let process = self
             .processes
             .live_row_mut(&pid)
@@ -3767,83 +3619,30 @@ impl ProcessManager {
     ///
     /// Returns: (entry_point, stack_pointer) on success
     /// Note: Exec requires architecture-specific register manipulation
+    /// Build an unpublished image with interrupts enabled and no manager guard.
     #[cfg(target_arch = "x86_64")]
-    pub fn exec_process_with_argv(
-        &mut self,
+    pub(crate) fn prepare_exec_image(
         pid: ProcessId,
         elf_data: &[u8],
         program_name: Option<&str>,
         argv: &[&[u8]],
         envp: &[&[u8]],
-        closes: &mut crate::ipc::fd::DeferredFdCloses,
-    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+    ) -> Result<PreparedExecImage, &'static str> {
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
-
-        log::info!(
-            "exec_process_with_argv: Replacing process {} with new program, argc={}",
-            pid.as_u64(),
-            argv.len()
+        let program_name = program_name
+            .map(crate::syscall::exec::copy_string)
+            .transpose()
+            .map_err(|_| "exec allocation failed")?;
+        // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
+        let mut table_storage =
+            crate::syscall::exec::try_box(core::mem::MaybeUninit::<ProcessPageTable>::uninit())?;
+        table_storage.write(
+            ProcessPageTable::new().map_err(|_| "Failed to create new page table for exec")?,
         );
-
-        // CRITICAL OS-STANDARD CHECK: Is this the current process?
-        let is_current_process = self.current_pid == Some(pid);
-        if is_current_process {
-            log::info!(
-                "exec_process_with_argv: Executing on current process - special handling required"
-            );
-        }
-
-        // For now, assume non-current processes are not actively running
-        let is_scheduled = false;
-
-        // Get thread ID before dropping the mutable borrow (needed for later updates).
-        // NOTE: We deliberately do NOT take the old page table here. Taking it early caused
-        // a use-after-free on exec failure: if any subsequent operation fails, the Err return
-        // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
-        // points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3, thread_group_id) = {
-            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
-            let old_cr3 = process.cr3_value();
-            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
-            let main_thread = process
-                .main_thread
-                .as_ref()
-                .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3, thread_group_id)
-        };
-
-        // #721 B2: refuse to retire this address space while a live CLONE_VM sibling still
-        // holds the same CR3 — matches aarch64's exec_process_with_argv, same relative
-        // position (right after old_cr3/thread_group_id capture, before any fallible
-        // page-table work; #721 precheck K5).
-        if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
-            {
-                log::warn!(
-                    "exec_process_with_argv: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
-                    pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
-                    old_cr3
-                );
-                return Err("exec blocked while CLONE_VM sibling shares old address space");
-            }
-        }
-
-        log::info!(
-            "exec_process_with_argv: Preserving thread ID {} for process {}",
-            thread_id,
-            pid.as_u64()
-        );
-
-        // Create a new page table for the new program
-        log::info!("exec_process_with_argv: Creating new page table...");
-        let mut new_page_table = crate::memory::process_memory::UnpublishedPageTable::new(
-            crate::memory::process_memory::ProcessPageTable::new()
-                .map_err(|_| "Failed to create new page table for exec")?,
-            pid.as_u64(),
-        );
+        // SAFETY: storage contains the initialized table and keeps the same layout.
+        let table = unsafe { Box::from_raw(Box::into_raw(table_storage) as *mut ProcessPageTable) };
+        let mut new_page_table =
+            crate::memory::process_memory::UnpublishedPageTable::from_box(table, pid.as_u64());
 
         // Clear any user mappings that might have been copied
         new_page_table.clear_user_entries();
@@ -3912,7 +3711,7 @@ impl ProcessManager {
         // We need to write to the new stack pages that we just mapped
         // Since the new page table is not active yet, we need to translate addresses
         // and write via the physical frames
-        let initial_rsp = self.setup_argv_on_stack(
+        let initial_rsp = Self::setup_argv_on_stack(
             &new_page_table,
             USER_STACK_TOP,
             argv,
@@ -3935,14 +3734,114 @@ impl ProcessManager {
         )
         .map_err(|_| "Failed to create stack object")?;
 
+        let new_stack = crate::syscall::exec::try_box(new_stack)?;
+        Ok(PreparedExecImage {
+            new_page_table,
+            loaded_elf,
+            new_stack,
+            program_name,
+            user_stack_size,
+            stack_top,
+            stack_bottom,
+            initial_rsp,
+            #[cfg(target_arch = "aarch64")]
+            initial_tpidr_el0,
+        })
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn exec_process_with_argv(
+        &mut self,
+        pid: ProcessId,
+        prepared: &mut Option<PreparedExecImage>,
+        closes: &mut crate::ipc::fd::DeferredFdCloses,
+    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+        let is_current_process = self.current_pid == Some(pid);
+        if is_current_process {
+            log::info!(
+                "exec_process_with_argv: Executing on current process - special handling required"
+            );
+        }
+
+        // For now, assume non-current processes are not actively running
+        let is_scheduled = false;
+
+        // Get thread ID before dropping the mutable borrow (needed for later updates).
+        // NOTE: We deliberately do NOT take the old page table here. Taking it early caused
+        // a use-after-free on exec failure: if any subsequent operation fails, the Err return
+        // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
+        // points to it. The old page table is taken later, after all fallible ops succeed.
+        let (thread_id, old_cr3, thread_group_id) = {
+            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
+            let old_cr3 = process.cr3_value();
+            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
+            let main_thread = process
+                .main_thread
+                .as_ref()
+                .ok_or("Process has no main thread")?;
+            (main_thread.id, old_cr3, thread_group_id)
+        };
+
+        // #721 B2: refuse to retire this address space while a live CLONE_VM sibling still
+        // holds the same CR3 — matches aarch64's exec_process_with_argv, same relative
+        // position (right after old_cr3/thread_group_id capture, before any fallible
+        // page-table work; #721 precheck K5).
+        if let Some(old_cr3) = old_cr3 {
+            if let Some((sibling_pid, sibling_thread_id)) =
+                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
+            {
+                log::warn!(
+                    "exec_process_with_argv: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
+                    pid.as_u64(),
+                    sibling_pid.as_u64(),
+                    sibling_thread_id,
+                    old_cr3
+                );
+                return Err("exec blocked while CLONE_VM sibling shares old address space");
+            }
+        }
+
+        log::info!(
+            "exec_process_with_argv: Preserving thread ID {} for process {}",
+            thread_id,
+            pid.as_u64()
+        );
+
+        self.ready_queue
+            .try_reserve(1)
+            .map_err(|_| "exec allocation failed")?;
+        self.processes
+            .live_row_mut(&pid)
+            .ok_or("Process not found")?
+            .pending_old_page_tables
+            .try_reserve(1)
+            .map_err(|_| "exec allocation failed")?;
+
+        let PreparedExecImage {
+            new_page_table,
+            loaded_elf,
+            new_stack,
+            program_name,
+            user_stack_size,
+            stack_top,
+            stack_bottom,
+            initial_rsp,
+            #[cfg(target_arch = "aarch64")]
+            initial_tpidr_el0,
+        } = prepared.take().expect("prepared exec image");
+        #[cfg(target_arch = "x86_64")]
+        let new_entry_point = loaded_elf.entry_point.as_u64();
+        #[cfg(target_arch = "aarch64")]
+        let new_entry_point = loaded_elf.entry_point;
+
         // Re-borrow the process for the remaining updates.
-        // All fallible operations have succeeded — now it's safe to take the old page table.
+        // Preparation and reservations succeeded; publication below has no error return.
         let process = self
             .processes
             .live_row_mut(&pid)
             .expect("exec process validated before preparing its image");
         process.drain_old_page_tables();
-        // All fallible preparation has succeeded. Keep the old root deferred
+        // Preparation succeeded. Keep the old root deferred
         // until this CPU has adopted the new image; no error returns follow.
         if let Some(mut old_pt) = process.page_table.take() {
             old_pt.retain_file_vmas(&mut process.vmas);
@@ -3951,8 +3850,8 @@ impl ProcessManager {
 
         // Update the process with new program data
         if let Some(name) = program_name {
-            process.name = String::from(name);
             log::info!("exec_process_with_argv: Updated process name to '{}'", name);
+            process.name = name;
         }
         process.entry_point = loaded_elf.entry_point;
 
@@ -3990,9 +3889,9 @@ impl ProcessManager {
             .level_4_frame()
             .start_address()
             .as_u64();
-        process.stack = Some(Box::new(new_stack));
-        process.user_stack_top = USER_STACK_TOP;
-        process.user_stack_bottom = USER_STACK_TOP - user_stack_size as u64;
+        process.stack = Some(new_stack);
+        process.user_stack_top = stack_top.as_u64();
+        process.user_stack_bottom = stack_top.as_u64() - user_stack_size as u64;
 
         // Update the main thread context for the new program
         let thread = process
@@ -4082,81 +3981,34 @@ impl ProcessManager {
     /// Returns the entry point, stack pointer, and a scheduler commit receipt on success.
     /// The caller must release the process-manager lock before applying the receipt so the
     /// scheduler and process-manager locks are never nested in either direction.
+    /// Build an unpublished image with interrupts enabled and no manager guard.
     #[cfg(target_arch = "aarch64")]
-    pub fn exec_process_with_argv(
-        &mut self,
+    pub(crate) fn prepare_exec_image(
         pid: ProcessId,
         elf_data: &[u8],
         program_name: Option<&str>,
         argv: &[&[u8]],
         envp: &[&[u8]],
-        closes: &mut crate::ipc::fd::DeferredFdCloses,
-    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+    ) -> Result<PreparedExecImage, &'static str> {
+        #[cfg(target_arch = "aarch64")]
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
+        #[cfg(target_arch = "aarch64")]
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
-
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
-
-        // Lock-free trace: exec entry (must be before any early returns)
-        crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
-
-        log::info!(
-            "exec_process_with_argv [ARM64]: Replacing process {} with new program, argc={}",
-            pid.as_u64(),
-            argv.len()
+        let program_name = program_name
+            .map(crate::syscall::exec::copy_string)
+            .transpose()
+            .map_err(|_| "exec allocation failed")?;
+        // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
+        let mut table_storage =
+            crate::syscall::exec::try_box(core::mem::MaybeUninit::<ProcessPageTable>::uninit())?;
+        table_storage.write(
+            ProcessPageTable::new().map_err(|_| "Failed to create new page table for exec")?,
         );
-
-        let is_current_process = self.current_pid == Some(pid);
-        if is_current_process {
-            log::info!(
-                "exec_process_with_argv [ARM64]: Executing on current process - special handling required"
-            );
-        }
-
-        let is_scheduled = false;
-
-        // Get thread ID before dropping the mutable borrow (needed for later updates).
-        // NOTE: We deliberately do NOT take the old page table here. Taking it early caused
-        // a use-after-free on exec failure: if any subsequent operation fails, the Err return
-        // would drop the old Box<ProcessPageTable>, freeing physical memory while TTBR0_EL1
-        // still points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3, thread_group_id) = {
-            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
-            let old_cr3 = process.cr3_value();
-            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
-            let main_thread = process
-                .main_thread
-                .as_ref()
-                .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3, thread_group_id)
-        };
-
-        if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
-            {
-                log::warn!(
-                    "exec_process_with_argv [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
-                    pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
-                    old_cr3
-                );
-                return Err("exec blocked while CLONE_VM sibling shares old address space");
-            }
-        }
-
-        log::info!(
-            "exec_process_with_argv [ARM64]: Preserving thread ID {} for process {}",
-            thread_id,
-            pid.as_u64()
-        );
-
-        let mut new_page_table = crate::memory::process_memory::UnpublishedPageTable::new(
-            crate::memory::process_memory::ProcessPageTable::new()
-                .map_err(|_| "Failed to create new page table for exec")?,
-            pid.as_u64(),
-        );
+        // SAFETY: storage contains the initialized table and keeps the same layout.
+        let table = unsafe { Box::from_raw(Box::into_raw(table_storage) as *mut ProcessPageTable) };
+        let mut new_page_table =
+            crate::memory::process_memory::UnpublishedPageTable::from_box(table, pid.as_u64());
 
         new_page_table.clear_user_entries();
 
@@ -4222,7 +4074,7 @@ impl ProcessManager {
         }
         let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
 
-        let initial_rsp = self.setup_argv_on_stack(
+        let initial_rsp = Self::setup_argv_on_stack(
             &new_page_table,
             user_stack_top,
             argv,
@@ -4244,7 +4096,103 @@ impl ProcessManager {
         )
         .map_err(|_| "Failed to create stack object")?;
 
-        // All fallible operations have succeeded — now it's safe to take the old page table.
+        let new_stack = crate::syscall::exec::try_box(new_stack)?;
+        Ok(PreparedExecImage {
+            new_page_table,
+            loaded_elf,
+            new_stack,
+            program_name,
+            user_stack_size,
+            stack_top,
+            stack_bottom,
+            initial_rsp,
+            #[cfg(target_arch = "aarch64")]
+            initial_tpidr_el0,
+        })
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn exec_process_with_argv(
+        &mut self,
+        pid: ProcessId,
+        prepared: &mut Option<PreparedExecImage>,
+        closes: &mut crate::ipc::fd::DeferredFdCloses,
+    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+        crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
+        let is_current_process = self.current_pid == Some(pid);
+        if is_current_process {
+            log::info!(
+                "exec_process_with_argv [ARM64]: Executing on current process - special handling required"
+            );
+        }
+
+        let is_scheduled = false;
+
+        // Get thread ID before dropping the mutable borrow (needed for later updates).
+        // NOTE: We deliberately do NOT take the old page table here. Taking it early caused
+        // a use-after-free on exec failure: if any subsequent operation fails, the Err return
+        // would drop the old Box<ProcessPageTable>, freeing physical memory while TTBR0_EL1
+        // still points to it. The old page table is taken later, after all fallible ops succeed.
+        let (thread_id, old_cr3, thread_group_id) = {
+            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
+            let old_cr3 = process.cr3_value();
+            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
+            let main_thread = process
+                .main_thread
+                .as_ref()
+                .ok_or("Process has no main thread")?;
+            (main_thread.id, old_cr3, thread_group_id)
+        };
+
+        if let Some(old_cr3) = old_cr3 {
+            if let Some((sibling_pid, sibling_thread_id)) =
+                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
+            {
+                log::warn!(
+                    "exec_process_with_argv [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
+                    pid.as_u64(),
+                    sibling_pid.as_u64(),
+                    sibling_thread_id,
+                    old_cr3
+                );
+                return Err("exec blocked while CLONE_VM sibling shares old address space");
+            }
+        }
+
+        log::info!(
+            "exec_process_with_argv [ARM64]: Preserving thread ID {} for process {}",
+            thread_id,
+            pid.as_u64()
+        );
+
+        self.ready_queue
+            .try_reserve(1)
+            .map_err(|_| "exec allocation failed")?;
+        self.processes
+            .live_row_mut(&pid)
+            .ok_or("Process not found")?
+            .pending_old_page_tables
+            .try_reserve(1)
+            .map_err(|_| "exec allocation failed")?;
+
+        let PreparedExecImage {
+            new_page_table,
+            loaded_elf,
+            new_stack,
+            program_name,
+            user_stack_size,
+            stack_top,
+            stack_bottom,
+            initial_rsp,
+            #[cfg(target_arch = "aarch64")]
+            initial_tpidr_el0,
+        } = prepared.take().expect("prepared exec image");
+        #[cfg(target_arch = "x86_64")]
+        let new_entry_point = loaded_elf.entry_point.as_u64();
+        #[cfg(target_arch = "aarch64")]
+        let new_entry_point = loaded_elf.entry_point;
+
+        // Preparation and reservations succeeded; publication below has no error return.
         let process = self
             .processes
             .live_row_mut(&pid)
@@ -4256,11 +4204,11 @@ impl ProcessManager {
         });
 
         if let Some(name) = program_name {
-            process.name = String::from(name);
             log::info!(
                 "exec_process_with_argv [ARM64]: Updated process name to '{}'",
                 name
             );
+            process.name = name;
         }
         process.entry_point = VirtAddr::new(new_entry_point);
 
@@ -4298,9 +4246,9 @@ impl ProcessManager {
             .level_4_frame()
             .start_address()
             .as_u64();
-        process.stack = Some(Box::new(new_stack));
-        process.user_stack_top = user_stack_top;
-        process.user_stack_bottom = user_stack_top - user_stack_size as u64;
+        process.stack = Some(new_stack);
+        process.user_stack_top = stack_top.as_u64();
+        process.user_stack_bottom = stack_top.as_u64() - user_stack_size as u64;
 
         let thread = process
             .main_thread
@@ -4757,7 +4705,7 @@ impl ProcessManager {
     /// Set up argc/argv/envp/auxv on the stack for a new process
     ///
     /// This function writes the full Linux ABI initial stack structure including
-    /// argc, argv pointers, envp (empty), and auxiliary vector entries needed by
+    /// argc, argv pointers, envp pointers, and auxiliary vector entries needed by
     /// musl libc.
     ///
     /// Stack layout (high to low addresses):
@@ -4794,7 +4742,6 @@ impl ProcessManager {
     ///
     /// Returns: The initial RSP value (pointing to argc)
     fn setup_argv_on_stack(
-        &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
         stack_top: u64,
         argv: &[&[u8]],
@@ -4840,7 +4787,7 @@ impl ProcessManager {
             (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 48) as u8,
             (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 56) as u8,
         ];
-        self.write_bytes_to_stack(page_table, random_addr, &random_bytes)?;
+        Self::write_bytes_to_stack(page_table, random_addr, &random_bytes)?;
 
         // Calculate total space needed for argv and envp strings
         let mut total_string_space: usize = 0;
@@ -4869,36 +4816,42 @@ impl ProcessManager {
         let string_area_start = cursor;
 
         // Write argv strings and collect their addresses
-        let mut string_addresses: Vec<u64> = Vec::with_capacity(argc);
+        let mut string_addresses: Vec<u64> = Vec::new();
+        string_addresses
+            .try_reserve_exact(argc)
+            .map_err(|_| "exec allocation failed")?;
         let mut current_string_addr = string_area_start;
 
         for arg in argv.iter() {
             string_addresses.push(current_string_addr);
 
-            self.write_bytes_to_stack(page_table, current_string_addr, arg)?;
+            Self::write_bytes_to_stack(page_table, current_string_addr, arg)?;
             current_string_addr += arg.len() as u64;
 
             // Add null terminator if not present
             let len = arg.len();
             if len == 0 || arg[len - 1] != 0 {
-                self.write_bytes_to_stack(page_table, current_string_addr, &[0])?;
+                Self::write_bytes_to_stack(page_table, current_string_addr, &[0])?;
                 current_string_addr += 1;
             }
         }
 
         // Write envp strings and collect their addresses
-        let mut envp_addrs: Vec<u64> = Vec::with_capacity(envp.len());
+        let mut envp_addrs: Vec<u64> = Vec::new();
+        envp_addrs
+            .try_reserve_exact(envp.len())
+            .map_err(|_| "exec allocation failed")?;
 
         for env in envp.iter() {
             envp_addrs.push(current_string_addr);
 
-            self.write_bytes_to_stack(page_table, current_string_addr, env)?;
+            Self::write_bytes_to_stack(page_table, current_string_addr, env)?;
             current_string_addr += env.len() as u64;
 
             // Add null terminator if not present
             let len = env.len();
             if len == 0 || env[len - 1] != 0 {
-                self.write_bytes_to_stack(page_table, current_string_addr, &[0])?;
+                Self::write_bytes_to_stack(page_table, current_string_addr, &[0])?;
                 current_string_addr += 1;
             }
         }
@@ -4932,70 +4885,70 @@ impl ProcessManager {
         let mut write_pos = rsp;
 
         // 1. Write argc
-        self.write_u64_to_stack(page_table, write_pos, argc as u64)?;
+        Self::write_u64_to_stack(page_table, write_pos, argc as u64)?;
         write_pos += 8;
 
         // 2. Write argv pointers
         for addr in string_addresses.iter() {
-            self.write_u64_to_stack(page_table, write_pos, *addr)?;
+            Self::write_u64_to_stack(page_table, write_pos, *addr)?;
             write_pos += 8;
         }
 
         // 3. Write argv NULL terminator
-        self.write_u64_to_stack(page_table, write_pos, 0)?;
+        Self::write_u64_to_stack(page_table, write_pos, 0)?;
         write_pos += 8;
 
         // 4. Write envp pointers
         for addr in envp_addrs.iter() {
-            self.write_u64_to_stack(page_table, write_pos, *addr)?;
+            Self::write_u64_to_stack(page_table, write_pos, *addr)?;
             write_pos += 8;
         }
 
         // 5. Write envp NULL terminator
-        self.write_u64_to_stack(page_table, write_pos, 0)?;
+        Self::write_u64_to_stack(page_table, write_pos, 0)?;
         write_pos += 8;
 
         // 6. Write auxiliary vector entries
         // AT_ENTRY (9) - program entry point
-        self.write_u64_to_stack(page_table, write_pos, 9)?; // AT_ENTRY
+        Self::write_u64_to_stack(page_table, write_pos, 9)?; // AT_ENTRY
         write_pos += 8;
-        self.write_u64_to_stack(page_table, write_pos, entry_point)?;
+        Self::write_u64_to_stack(page_table, write_pos, entry_point)?;
         write_pos += 8;
 
         // AT_PHDR (3) - address of program headers
-        self.write_u64_to_stack(page_table, write_pos, 3)?; // AT_PHDR
+        Self::write_u64_to_stack(page_table, write_pos, 3)?; // AT_PHDR
         write_pos += 8;
-        self.write_u64_to_stack(page_table, write_pos, phdr_vaddr)?;
+        Self::write_u64_to_stack(page_table, write_pos, phdr_vaddr)?;
         write_pos += 8;
 
         // AT_PHNUM (5) - number of program headers
-        self.write_u64_to_stack(page_table, write_pos, 5)?; // AT_PHNUM
+        Self::write_u64_to_stack(page_table, write_pos, 5)?; // AT_PHNUM
         write_pos += 8;
-        self.write_u64_to_stack(page_table, write_pos, phnum as u64)?;
+        Self::write_u64_to_stack(page_table, write_pos, phnum as u64)?;
         write_pos += 8;
 
         // AT_PHENT (4) - size of each program header entry
-        self.write_u64_to_stack(page_table, write_pos, 4)?; // AT_PHENT
+        Self::write_u64_to_stack(page_table, write_pos, 4)?; // AT_PHENT
         write_pos += 8;
-        self.write_u64_to_stack(page_table, write_pos, phentsize as u64)?;
+        Self::write_u64_to_stack(page_table, write_pos, phentsize as u64)?;
         write_pos += 8;
 
         // AT_PAGESZ (6) - page size
-        self.write_u64_to_stack(page_table, write_pos, 6)?; // AT_PAGESZ
+        Self::write_u64_to_stack(page_table, write_pos, 6)?; // AT_PAGESZ
         write_pos += 8;
-        self.write_u64_to_stack(page_table, write_pos, 4096)?;
+        Self::write_u64_to_stack(page_table, write_pos, 4096)?;
         write_pos += 8;
 
         // AT_RANDOM (25) - pointer to 16 random bytes
-        self.write_u64_to_stack(page_table, write_pos, 25)?; // AT_RANDOM
+        Self::write_u64_to_stack(page_table, write_pos, 25)?; // AT_RANDOM
         write_pos += 8;
-        self.write_u64_to_stack(page_table, write_pos, random_addr)?;
+        Self::write_u64_to_stack(page_table, write_pos, random_addr)?;
         write_pos += 8;
 
         // AT_NULL (0) - terminator
-        self.write_u64_to_stack(page_table, write_pos, 0)?; // AT_NULL
+        Self::write_u64_to_stack(page_table, write_pos, 0)?; // AT_NULL
         write_pos += 8;
-        self.write_u64_to_stack(page_table, write_pos, 0)?;
+        Self::write_u64_to_stack(page_table, write_pos, 0)?;
 
         log::debug!(
             "setup_argv_on_stack: argc={}, RSP={:#x}, argv[0] at {:#x}, auxv with phdr={:#x} phnum={} entry={:#x}",
@@ -5012,7 +4965,6 @@ impl ProcessManager {
 
     /// Copy stack data through each mapped physical page of the new image.
     fn write_bytes_to_stack(
-        &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
         mut virt_addr: u64,
         mut bytes: &[u8],
@@ -5024,7 +4976,7 @@ impl ProcessManager {
             let count = bytes.len().min(4096 - (virt_addr as usize & 4095));
             let kernel_virt = crate::memory::physical_memory_offset() + phys_addr.as_u64();
             // SAFETY: this newly mapped stack page belongs exclusively to the
-            // unpublished image, and count never crosses its physical frame.
+            // unpublished image; count is bounded by the remaining bytes in its frame.
             unsafe {
                 core::ptr::copy_nonoverlapping(bytes.as_ptr(), kernel_virt.as_mut_ptr::<u8>(), count);
             }
@@ -5036,12 +4988,11 @@ impl ProcessManager {
 
     /// Write a u64, including when it straddles a page boundary.
     fn write_u64_to_stack(
-        &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
         virt_addr: u64,
         value: u64,
     ) -> Result<(), &'static str> {
-        self.write_bytes_to_stack(page_table, virt_addr, &value.to_le_bytes())
+        Self::write_bytes_to_stack(page_table, virt_addr, &value.to_le_bytes())
     }
 
     /// Return whether a live or creating process row still names a matching
