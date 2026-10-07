@@ -118,7 +118,7 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
 
     let result = match resolved_num {
         Some(SyscallNumber::Exit) | Some(SyscallNumber::ExitGroup) => {
-            sys_exit_aarch64(arg1 as i32, custody)
+            sys_exit_aarch64(arg1 as i32, Some(custody), true)
         }
         Some(SyscallNumber::Fork) => sys_fork_aarch64(frame),
         Some(SyscallNumber::Exec) => {
@@ -385,7 +385,15 @@ fn result_to_u64(result: crate::syscall::SyscallResult) -> u64 {
 /// If this function returned, the userspace exit() caller (e.g., musl's
 /// `for(;;) __syscall(SYS_exit, ec)` loop) would re-enter exit, causing
 /// double-terminate and double-decrement of COW page refcounts.
-fn sys_exit_aarch64(exit_code: i32, custody: crate::task::thread::KillCustody) -> ! {
+///
+/// `custody` is the exit syscall's own kill-custody section, held until the
+/// row has exited. `report_exit` prints the `[syscall] exit` line; a signal
+/// death (`exit_by_signal_aarch64`) has printed its own.
+fn sys_exit_aarch64(
+    exit_code: i32,
+    custody: Option<crate::task::thread::KillCustody>,
+    report_exit: bool,
+) -> ! {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID).
         // Extract info under PM lock, but do NOT log while holding it.
@@ -415,16 +423,74 @@ fn sys_exit_aarch64(exit_code: i32, custody: crate::task::thread::KillCustody) -
         }
 
         // Log outside PM lock
-        if let (Some(pid), Some(name)) = (pid_for_log, &name_for_log) {
-            crate::serial_println!("[syscall] exit({}) pid={} name={}", exit_code, pid, name);
-        } else {
-            crate::serial_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
+        if report_exit {
+            if let (Some(pid), Some(name)) = (pid_for_log, &name_for_log) {
+                crate::serial_println!("[syscall] exit({}) pid={} name={}", exit_code, pid, name);
+            } else {
+                crate::serial_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
+            }
         }
         // This function never returns, so nothing on its stack is dropped
         // unless it is dropped here.
         drop(name_for_log);
 
-        finish_exit_aarch64(thread_id, exit_code, Some(custody));
+        // Leave the retiring userspace address space before process teardown
+        // drops its page-table root. Clear both assembly return shadows so no
+        // later return path can reinstall that retired root.
+        super::switch_ttbr0_to_kernel();
+        unsafe {
+            Aarch64PerCpu::set_saved_process_cr3(0);
+            Aarch64PerCpu::set_next_cr3(0);
+        }
+
+        // #786 follow-on: the ASID census sample the gates read.
+        //
+        // The boot-path emission in `main_aarch64.rs` fires before any process
+        // root has been published -- measured on a production-profile boot, it
+        // prints all four counters at 0 -- and the userspace heartbeat's cold
+        // `/proc/trace/counters` read, which is the other emission site, first
+        // happens at 20 s of uptime, past the window either gate keeps QEMU
+        // alive for. A process exit is the point that is reached in every
+        // profile after real dispatch has happened, so the census is sampled
+        // here, unconditionally: a census that prints only when it likes the
+        // answer feeds a self-fulfilling gate literal.
+        // claim-lint:ok: the boot-path line reading
+        // `[TTBR0_ASID_CENSUS:untagged=0:tagged=0:kernel=0:cleared=0]` and the
+        // 1 of 1 `[PT_ROOT_CUSTODY:` line in a whole production boot are both in
+        // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt
+        //
+        // This is the ordinary syscall exit path in normal context, not the
+        // ERET corridor, and it already prints twice above; the emission adds
+        // one `serial_println!` per process exit and no work to a hot path.
+        // claim-lint:ok: 1 of 1 emission is this call; the 15 census lines a
+        // production boot prints are in
+        // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt
+        crate::arch_impl::aarch64::ttbr0::emit_asid_census();
+
+        crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
+
+        let has_other_userspace_threads =
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.has_userspace_threads_other_than(thread_id)
+            })
+            .unwrap_or(false);
+
+        if !has_other_userspace_threads {
+            crate::serial_println!();
+            crate::serial_println!("========================================");
+            crate::serial_println!("  Userspace Test Complete!");
+            crate::serial_println!("  Exit code: {}", exit_code);
+            crate::serial_println!("========================================");
+            crate::serial_println!();
+        }
+
+        // The row has exited: a kill now finds it terminated and does nothing.
+        drop(custody);
+
+        // This call first pivots to the neutral per-CPU scheduler stack. Its
+        // trampoline marks this thread Terminated only after that pivot and
+        // immediately dispatches a successor.
+        super::context_switch::schedule_terminated_from_exit(thread_id);
     }
 
     panic!("AArch64 sys_exit invoked without a current scheduler thread");
@@ -432,9 +498,9 @@ fn sys_exit_aarch64(exit_code: i32, custody: crate::task::thread::KillCustody) -
 
 /// Finish a syscall return whose pending signal `sig`, taken by
 /// `take_fatal_default_signal`, ends the calling process. The thread leaves
-/// through the exit `exit` takes, which releases the row's address space and
-/// retires the row once it is reaped, with the signal's status, and the rest
-/// of its thread group dies with it. Called with no process-manager lock held
+/// through `sys_exit_aarch64`, as `exit` does, which releases the row's
+/// address space and retires the row once it is reaped, with the signal's
+/// status, and the rest of its thread group dies with it. Called with no process-manager lock held
 /// and with the syscall's preempt_disable() still in force; never returns.
 fn exit_by_signal_aarch64(sig: u32) -> ! {
     let exit_code = crate::signal::delivery::fatal_exit_code(sig).unwrap_or(-(sig as i32));
@@ -458,74 +524,7 @@ fn exit_by_signal_aarch64(sig: u32) -> ! {
         drop(name);
         crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
     }
-    finish_exit_aarch64(thread_id, exit_code, None)
-}
-
-/// The end of every exit of the current thread: the process's teardown, then
-/// the final switch away. `custody` is the exit syscall's own, held until the
-/// row has exited.
-fn finish_exit_aarch64(
-    thread_id: u64,
-    exit_code: i32,
-    custody: Option<crate::task::thread::KillCustody>,
-) -> ! {
-    // Leave the retiring userspace address space before process teardown
-    // drops its page-table root. Clear both assembly return shadows so no
-    // later return path can reinstall that retired root.
-    super::switch_ttbr0_to_kernel();
-    unsafe {
-        Aarch64PerCpu::set_saved_process_cr3(0);
-        Aarch64PerCpu::set_next_cr3(0);
-    }
-
-    // #786 follow-on: the ASID census sample the gates read.
-    //
-    // The boot-path emission in `main_aarch64.rs` fires before any process
-    // root has been published -- measured on a production-profile boot, it
-    // prints all four counters at 0 -- and the userspace heartbeat's cold
-    // `/proc/trace/counters` read, which is the other emission site, first
-    // happens at 20 s of uptime, past the window either gate keeps QEMU
-    // alive for. A process exit is the point that is reached in every
-    // profile after real dispatch has happened, so the census is sampled
-    // here, unconditionally: a census that prints only when it likes the
-    // answer feeds a self-fulfilling gate literal.
-    // claim-lint:ok: the boot-path line reading
-    // `[TTBR0_ASID_CENSUS:untagged=0:tagged=0:kernel=0:cleared=0]` and the
-    // 1 of 1 `[PT_ROOT_CUSTODY:` line in a whole production boot are both in
-    // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt
-    //
-    // This is the ordinary syscall exit path in normal context, not the
-    // ERET corridor, and it already prints twice above; the emission adds
-    // one `serial_println!` per process exit and no work to a hot path.
-    // claim-lint:ok: 1 of 1 emission is this call; the 15 census lines a
-    // production boot prints are in
-    // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt
-    crate::arch_impl::aarch64::ttbr0::emit_asid_census();
-
-    crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
-
-    let has_other_userspace_threads =
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.has_userspace_threads_other_than(thread_id)
-        })
-        .unwrap_or(false);
-
-    if !has_other_userspace_threads {
-        crate::serial_println!();
-        crate::serial_println!("========================================");
-        crate::serial_println!("  Userspace Test Complete!");
-        crate::serial_println!("  Exit code: {}", exit_code);
-        crate::serial_println!("========================================");
-        crate::serial_println!();
-    }
-
-    // The row has exited: a kill now finds it terminated and does nothing.
-    drop(custody);
-
-    // This call first pivots to the neutral per-CPU scheduler stack. Its
-    // trampoline marks this thread Terminated only after that pivot and
-    // immediately dispatches a successor.
-    super::context_switch::schedule_terminated_from_exit(thread_id);
+    sys_exit_aarch64(exit_code, None, false)
 }
 
 /// Dispatch a syscall to the appropriate handler using the resolved SyscallNumber.
