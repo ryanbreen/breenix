@@ -14,8 +14,9 @@ FATAL = json.loads((ROOT / "docs/boot-path.json").read_text())["fatal"] + ["KERN
 
 def completion(serial, mode, suite):
     """Return None while waiting, or (success, reason) for a completed verdict."""
-    lines = serial.splitlines()
-    for line in lines:
+    # A logfile write can stop anywhere in a record; wait for its newline.
+    lines = [line.rstrip("\r") for line in serial.split("\n")[:-1]]
+    for line in serial.split("\n"):
         if any(re.search(pattern, line) for pattern in FATAL):
             return False, f"fatal kernel output: {line}"
     prefix = "PROBE DONE " if mode == "probe" else f"SUITE {suite} DONE "
@@ -42,7 +43,7 @@ def main():
     deadline = time.monotonic() + args.timeout
     while True:
         try:
-            result = completion(args.serial.read_text(errors="replace"), args.mode, args.suite)
+            result = completion(args.serial.read_bytes().decode("utf-8", errors="replace"), args.mode, args.suite)
         except FileNotFoundError:
             result = None
         if result is not None:
