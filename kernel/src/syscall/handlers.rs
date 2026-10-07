@@ -2363,7 +2363,7 @@ pub fn sys_exec_with_frame(
 /// It's called on every exec syscall, and serial I/O causes CI timing issues.
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
-    use super::errno::{EACCES, EIO, ENOTDIR};
+    use super::errno::{EACCES, EIO};
 
     // The handle holds the inode until its content is read.
     let (mount, inode_num, _held) =
@@ -2374,7 +2374,7 @@ fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
     let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
 
     if inode.is_dir() {
-        return Err(ENOTDIR);
+        return Err(EACCES);
     }
 
     let perms = inode.permissions();
@@ -2409,6 +2409,7 @@ pub fn sys_execv_with_frame(
     frame: &mut super::handler::SyscallFrame,
     program_name_ptr: u64,
     argv_ptr: u64,
+    envp_ptr: u64,
 ) -> SyscallResult {
     let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     // IMPORTANT: Do NOT wrap the entire function in without_interrupts()!
@@ -2446,104 +2447,31 @@ pub fn sys_execv_with_frame(
 
     log::info!("sys_execv: Loading program '{}'", program_name);
 
-    // Read argv array from userspace (with interrupts enabled - safe)
-    let mut argv_vec: Vec<Vec<u8>> = Vec::new();
-
-    if argv_ptr != 0 {
-        // Read up to 64 argument pointers
-        const MAX_ARGS: usize = 64;
-        const MAX_ARG_LEN: usize = 4096;
-
-        for i in 0..MAX_ARGS {
-            let ptr_addr = argv_ptr + (i * 8) as u64;
-            let arg_ptr_bytes = match copy_from_user(ptr_addr, 8) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    log::error!("sys_execv: Failed to read argv[{}] pointer: {}", i, e);
-                    return SyscallResult::Err(14); // EFAULT
-                }
-            };
-
-            // Interpret as u64 pointer
-            let arg_ptr = u64::from_le_bytes([
-                arg_ptr_bytes[0],
-                arg_ptr_bytes[1],
-                arg_ptr_bytes[2],
-                arg_ptr_bytes[3],
-                arg_ptr_bytes[4],
-                arg_ptr_bytes[5],
-                arg_ptr_bytes[6],
-                arg_ptr_bytes[7],
-            ]);
-
-            // NULL pointer marks end of argv
-            if arg_ptr == 0 {
-                break;
-            }
-
-            // Read the argument string
-            let arg_bytes = match copy_string_from_user(arg_ptr, MAX_ARG_LEN) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    log::error!(
-                        "sys_execv: Failed to read argv[{}] string at {:#x}: {}",
-                        i,
-                        arg_ptr,
-                        e
-                    );
-                    return SyscallResult::Err(14); // EFAULT
-                }
-            };
-
-            // Find null terminator and truncate
-            let arg_len = arg_bytes
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(arg_bytes.len());
-            let mut arg = arg_bytes[..arg_len].to_vec();
-            arg.push(0); // Ensure null-terminated
-            argv_vec.push(arg);
-        }
-    }
-
-    // If no argv provided, use program name as argv[0]
-    if argv_vec.is_empty() {
-        let mut arg0 = program_name.as_bytes().to_vec();
-        arg0.push(0);
-        argv_vec.push(arg0);
-    }
-
-    log::info!("sys_execv: argc={}", argv_vec.len());
-    for (i, arg) in argv_vec.iter().enumerate() {
-        if let Ok(s) = core::str::from_utf8(&arg[..arg.len().saturating_sub(1)]) {
-            log::debug!("sys_execv: argv[{}] = '{}'", i, s);
-        }
-    }
+    let mut arguments = match super::exec::Arguments::copy_from_user(program_name, argv_ptr, envp_ptr) {
+        Ok(arguments) => arguments,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
 
     #[cfg(feature = "testing")]
     {
         // Load ELF binary WITH interrupts enabled - ext2 I/O needs timer interrupts
         // for proper VirtIO operation
-        let elf_vec = if program_name.contains('/') {
-            // Path-like name: load from ext2 filesystem
-            match load_elf_from_ext2(program_name) {
-                Ok(data) => data,
-                Err(errno) => return SyscallResult::Err(errno as u64),
-            }
-        } else {
-            // Bare name: try ext2 /bin/ first, then, only when /bin holds no
-            // such name, the test disk.
-            let bin_path = alloc::format!("/bin/{}", program_name);
-            match load_elf_from_ext2(&bin_path) {
-                Ok(data) => data,
-                Err(errno) if errno == super::errno::ENOENT => {
-                    match crate::userspace_test::load_test_binary_from_disk(program_name) {
-                        Ok(data) => data,
-                        Err(_) => return SyscallResult::Err(errno as u64),
+        let elf_vec = match super::exec::read_image(program_name, &mut arguments, |path| {
+            if path.contains('/') {
+                load_elf_from_ext2(path)
+            } else {
+                let bin_path = alloc::format!("/bin/{}", path);
+                match load_elf_from_ext2(&bin_path) {
+                    Ok(data) => Ok(data),
+                    Err(errno) if errno == super::errno::ENOENT => {
+                        crate::userspace_test::load_test_binary_from_disk(path).map_err(|_| errno)
                     }
+                    Err(errno) => Err(errno),
                 }
-                Err(errno) => return SyscallResult::Err(errno as u64),
             }
+        }) {
+            Ok(data) => data,
+            Err(errno) => return SyscallResult::Err(errno),
         };
         let elf_data = elf_vec.as_slice();
 
@@ -2572,8 +2500,21 @@ pub fn sys_execv_with_frame(
             current_thread_id
         );
 
-        // Convert argv_vec to slice of slices for exec_process_with_argv
-        let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+        // Borrow the prepared arguments and environment for the stack builder
+        let (argv_slices, envp_slices) = match arguments.slices() {
+            Ok(slices) => slices,
+            Err(errno) => return SyscallResult::Err(errno),
+        };
+        let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
+            current_pid,
+            elf_data,
+            Some(program_name),
+            &argv_slices,
+            &envp_slices,
+        ) {
+            Ok(image) => Some(image),
+            Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
+        };
 
         // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
         // masked together, same shape as the production arm below (#721 K3/K10).
@@ -2586,9 +2527,7 @@ pub fn sys_execv_with_frame(
 
             let (new_entry_point, new_rsp, commit) = match manager.exec_process_with_argv(
                 current_pid,
-                elf_data,
-                Some(program_name),
-                &argv_slices,
+                &mut prepared,
                 &mut closes,
             ) {
                 Ok(value) => value,
@@ -2597,7 +2536,7 @@ pub fn sys_execv_with_frame(
                 }
                 Err(e) => {
                     log::error!("sys_execv: Failed to exec process: {}", e);
-                    return SyscallResult::Err(12); // ENOMEM
+                    return SyscallResult::Err(super::exec::manager_errno(e));
                 }
             };
 
@@ -2669,15 +2608,15 @@ pub fn sys_execv_with_frame(
         // section 2.1, #713 anti-vacuity / precheck section 4.6). This read happens with
         // interrupts enabled, before any lock is taken — see this function's own
         // top-of-file comment; do not move it inside the masked section below (X2).
-        let resolved_path = if program_name.contains('/') {
-            alloc::string::String::from(program_name)
-        } else {
-            alloc::format!("/bin/{}", program_name)
-        };
-
-        let elf_vec = match crate::boot::init_image::read_program(&resolved_path) {
+        let elf_vec = match super::exec::read_image(program_name, &mut arguments, |path| {
+            if path.contains('/') {
+                crate::boot::init_image::read_program(path)
+            } else {
+                crate::boot::init_image::read_program(&alloc::format!("/bin/{}", path))
+            }
+        }) {
             Ok(data) => data,
-            Err(errno) => return SyscallResult::Err(errno as u64),
+            Err(errno) => return SyscallResult::Err(errno),
         };
         let elf_data = elf_vec.as_slice();
 
@@ -2721,23 +2660,23 @@ pub fn sys_execv_with_frame(
             current_thread_id
         );
 
-        let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+        let (argv_slices, envp_slices) = match arguments.slices() {
+            Ok(slices) => slices,
+            Err(errno) => return SyscallResult::Err(errno),
+        };
+        let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
+            current_pid,
+            elf_data,
+            Some(program_name),
+            &argv_slices,
+            &envp_slices,
+        ) {
+            Ok(image) => Some(image),
+            Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
+        };
 
-        // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
-        // masked together (#721 K10: mirrors aarch64's sys_exec_aarch64, which masks this
-        // exact window for exec specifically). #713's sys_spawn deliberately does NOT mask
-        // its own creation window, citing creation.rs's documented worry: disabling
-        // interrupts while holding PROCESS_MANAGER and then acquiring MEMORY_INFO could
-        // deadlock against a concurrent thread doing the reverse. That worry is stale by
-        // the time exec ever runs: MEMORY_INFO (frame_allocator.rs) is a `spin::Once`
-        // populated once at boot and read everywhere thereafter via `.get()` — a non-blocking
-        // load, not a lock acquisition — and `allocate_frame()` itself is CAS-based, so there
-        // is no second lock for a masked exec to block on while holding PROCESS_MANAGER.
-        // aarch64 already masks this identical operation in production with no such hazard
-        // materializing, so the same regime is followed here. (creation.rs's and sys_spawn's
-        // own comments are stale in the same way; not rewritten here to keep this diff
-        // scoped to exec.) The ext2 read and the argv/name parsing above both stay outside
-        // this section (X2).
+        // Mask only publication, scheduler commit, CR3 install and frame patch.
+        // The replacement image and arguments were built above without PM held.
         crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
@@ -2747,9 +2686,7 @@ pub fn sys_execv_with_frame(
 
             let (new_entry_point, new_rsp, commit) = match manager.exec_process_with_argv(
                 current_pid,
-                elf_data,
-                Some(program_name),
-                &argv_slices,
+                &mut prepared,
                 &mut closes,
             ) {
                 Ok(value) => value,
@@ -2758,7 +2695,7 @@ pub fn sys_execv_with_frame(
                 }
                 Err(e) => {
                     log::error!("sys_execv: Failed to exec process: {}", e);
-                    return SyscallResult::Err(12); // ENOMEM
+                    return SyscallResult::Err(super::exec::manager_errno(e));
                 }
             };
 
@@ -2859,10 +2796,7 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     };
     let program_path = program_path.as_str();
 
-    // Read argv from userspace (mirrors sys_execv_with_frame's own loop above,
-    // same MAX_ARGS/MAX_ARG_LEN budget; not factored into a shared helper —
-    // #713 spec section 2.1 marks that pure hygiene, not load-bearing for
-    // this fix, and it is skipped here to keep the diff minimal).
+    // Spawn retains its separate 64-argument, 4096-byte per-string budget.
     let mut argv_vec: Vec<Vec<u8>> = Vec::new();
     if argv_ptr != 0 {
         const MAX_ARGS: usize = 64;
@@ -4547,7 +4481,7 @@ pub fn sys_getrlimit(resource: u64, rlim_ptr: u64) -> SyscallResult {
 
     let rlim = match resource {
         RLIMIT_STACK => Rlimit {
-            rlim_cur: 8 * 1024 * 1024,
+            rlim_cur: super::exec::DEFAULT_STACK_LIMIT,
             rlim_max: RLIM_INFINITY,
         },
         RLIMIT_NOFILE => Rlimit {

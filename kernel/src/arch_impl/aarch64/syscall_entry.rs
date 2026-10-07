@@ -115,7 +115,7 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     let result = match resolved_num {
         Some(SyscallNumber::Fork) => sys_fork_aarch64(frame),
         Some(SyscallNumber::Exec) => {
-            let exec_result = sys_exec_aarch64(frame, arg1, arg2);
+            let exec_result = sys_exec_aarch64(frame, arg1, arg2, arg3);
             super::trace::trace_exec(b'H');
             exec_result
         }
@@ -1119,7 +1119,8 @@ fn restore_ttbr0_after_failed_exec(ttbr0: u64) {
 /// Arguments:
 /// - frame: Mutable reference to the exception frame (to update ELR_EL1/SP_EL0)
 /// - program_name_ptr: Pointer to null-terminated program name string
-/// - argv_ptr: Pointer to argv array (unused in this simplified implementation)
+/// - argv_ptr: Pointer to the NUL-terminated argument vector
+/// - envp_ptr: Pointer to the NUL-terminated environment vector
 ///
 /// Returns:
 /// - 0 on success (though exec() never returns on success)
@@ -1128,6 +1129,7 @@ fn sys_exec_aarch64(
     frame: &mut Aarch64ExceptionFrame,
     program_name_ptr: u64,
     argv_ptr: u64,
+    envp_ptr: u64,
 ) -> u64 {
     let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     // Trace: exec syscall entered
@@ -1153,7 +1155,7 @@ fn sys_exec_aarch64(
         return (-22_i64) as u64; // -EINVAL
     }
 
-    use crate::syscall::userptr::{copy_cstr_from_user, copy_from_user};
+    use crate::syscall::userptr::copy_cstr_from_user;
 
     if program_name_ptr == 0 {
         log::error!("sys_exec_aarch64: NULL program name");
@@ -1174,82 +1176,20 @@ fn sys_exec_aarch64(
 
     log::info!("sys_exec_aarch64: Loading program '{}'", program_name);
 
-    // Parse argv from userspace
-    let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
-    if argv_ptr != 0 {
-        const MAX_ARGS: usize = 64;
-        const MAX_ARG_LEN: usize = 4096;
-        for i in 0..MAX_ARGS {
-            let arg_ptr_addr = argv_ptr + (i * core::mem::size_of::<u64>()) as u64;
-            let arg_ptr = match copy_from_user(arg_ptr_addr as *const u64) {
-                Ok(ptr) => ptr,
-                Err(errno) => {
-                    log::error!(
-                        "sys_exec_aarch64: Failed to read argv[{}] pointer: {}",
-                        i,
-                        errno
-                    );
-                    return (-(errno as i64)) as u64;
-                }
-            };
+    let mut arguments = match crate::syscall::exec::Arguments::copy_from_user(&program_name, argv_ptr, envp_ptr) {
+        Ok(arguments) => arguments,
+        Err(errno) => return (-(errno as i64)) as u64,
+    };
 
-            if arg_ptr == 0 {
-                break;
-            }
-
-            let arg_string = match copy_cstr_from_user(arg_ptr) {
-                Ok(s) => s,
-                Err(errno) => {
-                    log::error!(
-                        "sys_exec_aarch64: Failed to read argv[{}] string: {}",
-                        i,
-                        errno
-                    );
-                    return (-(errno as i64)) as u64;
-                }
-            };
-
-            let mut arg = arg_string.into_bytes();
-            if arg.len() >= MAX_ARG_LEN {
-                arg.truncate(MAX_ARG_LEN.saturating_sub(1));
-            }
-            arg.push(0);
-            argv_vec.push(arg);
+    let elf_vec = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
+        if path.contains('/') {
+            load_elf_from_ext2(path)
+        } else {
+            load_elf_from_ext2(&alloc::format!("/bin/{}", path))
         }
-    }
-
-    if argv_vec.is_empty() {
-        let mut arg0 = program_name.as_bytes().to_vec();
-        arg0.push(0);
-        argv_vec.push(arg0);
-    }
-
-    // Trace: attempting to open ELF file
-    super::trace::trace_exec(b'O');
-
-    let elf_vec = if program_name.contains('/') {
-        match load_elf_from_ext2(&program_name) {
-            Ok(data) => data,
-            Err(errno) => {
-                super::trace::trace_exec(b'X'); // Error path
-                return (-(errno as i64)) as u64;
-            }
-        }
-    } else {
-        let bin_path = alloc::format!("/bin/{}", program_name);
-        match load_elf_from_ext2(&bin_path) {
-            Ok(data) => data,
-            Err(errno) => {
-                super::trace::trace_exec(b'X'); // Error path
-                                                // ARM64 doesn't have userspace_test module fallback
-                log::error!(
-                    "sys_exec_aarch64: Failed to load /bin/{}: {}",
-                    program_name,
-                    errno
-                );
-                return (-(errno as i64)) as u64;
-            }
-        }
+    }) {
+        Ok(data) => data,
+        Err(errno) => return (-(errno as i64)) as u64,
     };
 
     // Trace: ELF file loaded from filesystem
@@ -1281,7 +1221,20 @@ fn sys_exec_aarch64(
         current_thread_id
     );
 
-    let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+    let (argv_slices, envp_slices) = match arguments.slices() {
+        Ok(slices) => slices,
+        Err(errno) => return (-(errno as i64)) as u64,
+    };
+    let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
+        current_pid,
+        elf_data,
+        Some(&program_name),
+        &argv_slices,
+        &envp_slices,
+    ) {
+        Ok(image) => Some(image),
+        Err(error) => return (-(crate::syscall::exec::manager_errno(error) as i64)) as u64,
+    };
 
     let result = without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
@@ -1303,7 +1256,7 @@ fn sys_exec_aarch64(
             previous_ttbr0 = read_ttbr0_for_exec();
             super::switch_ttbr0_to_kernel();
 
-            manager.exec_process_with_argv(current_pid, elf_data, Some(&program_name), &argv_slices, &mut closes)
+            manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes)
         };
 
         let (new_entry_point, new_rsp, commit) = match exec_result {
@@ -1317,11 +1270,7 @@ fn sys_exec_aarch64(
                 log::error!("sys_exec_aarch64: Failed to exec process: {}", e);
                 // No receipt was produced, so there is nothing to commit; the guard drops on
                 // return from this closure.
-                return if e == "exec blocked while CLONE_VM sibling shares old address space" {
-                    (-11_i64) as u64 // -EAGAIN
-                } else {
-                    (-12_i64) as u64 // -ENOMEM
-                };
+                return (-(crate::syscall::exec::manager_errno(e) as i64)) as u64;
             }
         };
 
@@ -1428,7 +1377,7 @@ fn sys_exec_aarch64(
 ///
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
 fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
-    use crate::syscall::errno::{EACCES, EIO, ENOTDIR};
+    use crate::syscall::errno::{EACCES, EIO};
 
     // Trace: entering load_elf_from_ext2
     super::trace::trace_exec(b'1');
@@ -1452,7 +1401,7 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
 
     if inode.is_dir() {
         super::trace::trace_exec(b'#');
-        return Err(ENOTDIR);
+        return Err(EACCES);
     }
 
     let perms = inode.permissions();

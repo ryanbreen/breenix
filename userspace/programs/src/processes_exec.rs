@@ -86,6 +86,44 @@ fn fd_arg(arg: Option<&String>) -> Fd {
     }
 }
 
+// Touch more than the initially mapped runtime allowance below the arguments.
+#[inline(never)]
+fn runtime_stack_buffer(fd: Fd) {
+    let mut buffer = [0u8; 96 * 1024];
+    for i in (0..buffer.len()).step_by(4096) {
+        // Volatile accesses keep the demand-growth exercise on the actual stack.
+        unsafe {
+            core::ptr::write_volatile(buffer.as_mut_ptr().add(i), b'x');
+        }
+    }
+    buffer[..8].copy_from_slice(b"stack-ok");
+    write_all(fd, &buffer[..8]);
+}
+
+fn stack(fd: Fd, args: &[String]) -> ! {
+    let [soft, _] = {
+        let mut limits = [0u64; 2];
+        if sys(nr::PRLIMIT64, [0, 3, 0, limits.as_mut_ptr() as u64]) != 0 {
+            process::exit(4);
+        }
+        limits
+    };
+    if args.len() != 4
+        || args[3].len() != soft as usize / 4 - 64
+        || !args[3].bytes().all(|b| b == b'x')
+    {
+        process::exit(5);
+    }
+    let mut alt = signal::StackT::default();
+    if signal::sigaltstack(None, Some(&mut alt)).is_err()
+        || alt.ss_flags != signal::SS_DISABLE || alt.ss_sp != 0 || alt.ss_size != 0
+        || signal::sigaltstack(Some(&signal::StackT::default()), None).is_err() {
+        process::exit(6);
+    }
+    runtime_stack_buffer(fd);
+    process::exit(0)
+}
+
 fn report(fd: Fd, args: &[String]) -> ! {
     let mut out = Vec::new();
     for arg in args {
@@ -190,6 +228,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("report") => report(fd_arg(args.get(2)), &args),
+        Some("stack") => stack(fd_arg(args.get(2)), &args),
         Some("script") => report(fd_arg(args.get(3)), &args),
         Some(path) if path.starts_with('/') => report(fd_arg(args.get(2)), &args),
         Some("state") => state(fd_arg(args.get(2)), &args[3..]),

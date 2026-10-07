@@ -4121,9 +4121,7 @@ const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
 /// the P9 admission-interlock question, not this census's.
 #[rustfmt::skip]
 const THREAD_STATE_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_main_thread => Ready", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_main_thread_with_sp => Ready", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_main_thread => Ready", 1),
     // #713: x86 gained an SP-carrying thread creator (mirrors aarch64's sibling
     // row above), a distinct Ready construction.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_main_thread_with_sp => Ready", 1),
@@ -4227,12 +4225,12 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn build_process_with_argv_at", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process_with_argv", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn prepare_exec_image", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_at", 1),
     // #713: x86 spawn()'s own construction path, a distinct page-table constructor.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_with_argv_at", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process_with_argv", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn prepare_exec_image", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context", 1),
     // The unpublished-construction guard's own gate leg builds one table, commits it through the guard, then releases it (issue 588).
     ("kernel/src/process/unpublished.rs", "#[cfg(feature=boot_tests)] fn commit_preserves_live_table_for_gate", 1),
@@ -7585,15 +7583,29 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     if execs.len() != 4 || arm_exec_count != 2 || x86_exec_count != 2 {
         return Err(());
     }
-    for body in execs {
-        let guard = body.find("UnpublishedPageTable::new(").ok_or(())?;
+    let preparations = exec_bodies.get("prepare_exec_image").ok_or(())?;
+    if preparations.len() != 2 { return Err(()); }
+    for publisher in execs {
+        let body = if publisher.contains("prepared.take()") {
+            let preparation = preparations.iter().find(|body|
+                body.contains("[ARM64]") == publisher.contains("[ARM64]")
+            ).ok_or(())?;
+            if !preparation.contains("Ok(PreparedExecImage {")
+                || preparation.contains("process.page_table.take()") {
+                return Err(());
+            }
+            format!("{preparation}\n{publisher}")
+        } else { publisher.to_string() };
+        let carrier = if publisher.contains("prepared.take()") {
+            "UnpublishedPageTable::from_box("
+        } else { "UnpublishedPageTable::new(" };
+        let guard = body.find(carrier).ok_or(())?;
         let load = body.find("load_elf_into_page_table(").ok_or(())?;
         let supersede = body.find("process.page_table.take()").ok_or(())?;
         let publish = body.find("new_page_table.publish()").ok_or(())?;
         if !(guard < load && load < supersede && supersede < publish)
-            || body.matches("UnpublishedPageTable::new(").count() != 1
-            || body.matches("new_page_table.publish()").count() != 1
-        {
+            || body.matches(carrier).count() != 1
+            || body.matches("new_page_table.publish()").count() != 1 {
             return Err(());
         }
         let inherited_reset = body.find("process.inherited_cr3 = None;").ok_or(())?;
@@ -8881,8 +8893,8 @@ fn init_row_builders_insert_only_after_all_fallible_steps() {
     );
 
     let hoisted = manager.replacen(
-        "        let thread = self.create_main_thread(&mut *process, stack_top)?;",
-        "        self.processes.insert(pid, unpublished.commit());\n        let thread = self.create_main_thread(&mut *process, stack_top)?;",
+        "        let thread =\n            self.create_main_thread_with_sp(&mut *process, stack_top, VirtAddr::new(initial_rsp))?;",
+        "        self.processes.insert(pid, unpublished.commit());\n        let thread =\n            self.create_main_thread_with_sp(&mut *process, stack_top, VirtAddr::new(initial_rsp))?;",
         1,
     );
     assert_ne!(hoisted, manager, "init-row insert hoist anchor");
@@ -11664,10 +11676,9 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_leaf_custody(&restored_fork_incref).is_err());
     // File order in manager.rs: the four process builders come first (issue 588's
-    // unpublished-construction guard), then the four exec bodies. n=4 is x86
-    // exec_process, n=5 is x86 exec_process_with_argv, n=6 is aarch64
-    // exec_process_with_argv, and n=7 is aarch64 exec_process.
-    for n in 4..8 {
+    // unpublished-construction guard), then the two no-argv exec bodies.
+    // The argv paths take custody of a fallibly allocated Box in preparation.
+    for n in 4..6 {
         let missing_exec_carrier = replace_nth(
             process_manager,
             "crate::memory::process_memory::UnpublishedPageTable::new(",
@@ -11680,6 +11691,15 @@ fn deliberately_broken_variants_fail_the_ratchet() {
             missing_exec_carrier,
         );
         assert!(validate_leaf_custody(&missing_exec_carrier).is_err());
+    }
+
+    for n in 0..2 {
+        let missing = replace_nth(process_manager,
+            "crate::memory::process_memory::UnpublishedPageTable::from_box(",
+            "crate::memory::process_memory::ProcessPageTable::new_unchecked(", n);
+        assert!(validate_leaf_custody(&with_replaced_source(
+            &sources, "kernel/src/process/manager.rs", missing,
+        )).is_err());
     }
 
     // Restoring the pre-fix early take leaves a live x86 process without an

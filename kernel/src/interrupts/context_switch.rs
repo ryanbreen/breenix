@@ -443,8 +443,6 @@ pub extern "C" fn check_need_resched_and_switch(
 
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
-            // Debug marker: saving userspace context (raw serial, no locks)
-            raw_serial_str("<S>");
             if !save_current_thread_context_with_guard(
                 old_thread_id,
                 saved_regs,
@@ -795,8 +793,6 @@ fn switch_to_thread(
     interrupt_frame: &mut InterruptStackFrame,
     process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) {
-    // Debug marker: entering switch_to_thread (raw serial, no locks)
-    raw_serial_str("[SW]");
     // Update per-CPU current thread and TSS.RSP0
     scheduler::with_thread_mut(thread_id, |thread| {
         // Update per-CPU current thread pointer
@@ -828,8 +824,6 @@ fn switch_to_thread(
             scheduler::set_need_resched();
             return;
         }
-        // Debug marker: TLS switch completed (raw serial, no locks)
-        raw_serial_str("<T>");
     }
 
     // Check if this is the idle thread
@@ -865,20 +859,14 @@ fn switch_to_thread(
 
         if has_saved_context {
             // Restore idle thread's saved context (like a kthread)
-            // Debug marker: idle with saved context (raw serial, no locks)
-            raw_serial_str("<1>");
             log::trace!("Restoring idle thread's saved context");
             setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
         } else {
             // No saved context or was in idle_loop - go to idle loop
-            // Debug marker: switching to idle (raw serial, no locks)
-            raw_serial_str("<I>");
             setup_idle_return(interrupt_frame);
         }
     } else if is_kernel_thread {
         // Set up to return to kernel thread
-        // Debug marker: kernel thread (raw serial, no locks)
-        raw_serial_str("<K>");
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
     // The saved CS is the authoritative record of the ring where the context was
     // captured, even if a remote waker cleared blocked_in_syscall. Evaluate it
@@ -886,8 +874,6 @@ fn switch_to_thread(
     } else if blocked_in_syscall
         || saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref())
     {
-        // Debug marker: blocked in syscall (raw serial, no locks)
-        raw_serial_str("<B>");
         // CRITICAL: Thread was blocked inside a syscall (like pause() or waitpid()).
         // We need to check if there are pending signals. If so, deliver them using
         // the saved userspace context. Otherwise, resume at the kernel HLT loop.
@@ -1181,8 +1167,6 @@ fn switch_to_thread(
         }
     } else {
         // Restore userspace thread context
-        // Debug marker: userspace restore path (raw serial, no locks)
-        raw_serial_str("<U>");
         // Pass the process_manager_guard to avoid double-lock
         restore_userspace_thread_context(
             thread_id,
@@ -1391,8 +1375,6 @@ fn restore_userspace_thread_context(
 
                 if let Some(ref mut thread) = process.main_thread {
                     if thread.privilege == ThreadPrivilege::User {
-                        // Debug marker: restoring userspace context (raw serial, no locks)
-                        raw_serial_str("<R>");
                         if let Err(error) =
                             restore_userspace_context(thread, interrupt_frame, saved_regs)
                         {

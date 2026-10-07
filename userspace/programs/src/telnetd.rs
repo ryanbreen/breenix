@@ -266,7 +266,7 @@ fn handle_connection(client_fd: Fd) {
 
             // Execute shell
             let argv: [*const u8; 2] = [SHELL_PATH.as_ptr(), core::ptr::null()];
-            // envp was just [null] (empty environment), so execv (no envp arg) is equivalent
+            // execv passes the current environment to the shell.
             let _ = libbreenix::process::execv(SHELL_PATH, argv.as_ptr());
 
             // If exec fails

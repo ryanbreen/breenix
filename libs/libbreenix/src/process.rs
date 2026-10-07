@@ -72,7 +72,7 @@ pub fn exec(path: &[u8]) -> Result<core::convert::Infallible, Error> {
     debug_assert!(path.last() == Some(&0), "exec path must be null-terminated");
     // Pass null argv - kernel will use program name as argv[0]
     let ret = unsafe {
-        raw::syscall2(nr::EXEC, path.as_ptr() as u64, 0)
+        raw::syscall3(nr::EXEC, path.as_ptr() as u64, 0, inherited_environment() as u64)
     };
     // exec only returns on error
     Err(Error::from_syscall(ret as i64).unwrap_err())
@@ -105,10 +105,30 @@ pub fn exec(path: &[u8]) -> Result<core::convert::Infallible, Error> {
 pub fn execv(path: &[u8], argv: *const *const u8) -> Result<core::convert::Infallible, Error> {
     debug_assert!(path.last() == Some(&0), "execv path must be null-terminated");
     let ret = unsafe {
-        raw::syscall2(nr::EXEC, path.as_ptr() as u64, argv as u64)
+        raw::syscall3(nr::EXEC, path.as_ptr() as u64, argv as u64, inherited_environment() as u64)
     };
     // exec only returns on error
     Err(Error::from_syscall(ret as i64).unwrap_err())
+}
+
+/// Replace the image with explicit arguments and environment. Both arrays must
+/// end with a null pointer and their strings must be NUL-terminated.
+#[inline]
+pub fn execve(path: &[u8], argv: *const *const u8, envp: *const *const u8) -> Result<core::convert::Infallible, Error> {
+    debug_assert!(path.last() == Some(&0), "execve path must be null-terminated");
+    let ret = unsafe { raw::syscall3(nr::EXEC, path.as_ptr() as u64, argv as u64, envp as u64) };
+    Err(Error::from_syscall(ret as i64).unwrap_err())
+}
+
+fn inherited_environment() -> *const *const u8 {
+    #[cfg(feature = "std")]
+    {
+        extern "C" { static environ: *const *const u8; }
+        // SAFETY: libc owns the process environment, as for its execv wrapper.
+        unsafe { environ }
+    }
+    #[cfg(not(feature = "std"))]
+    { core::ptr::null() }
 }
 
 /// Spawn a new process from an ELF binary path (no fork).
