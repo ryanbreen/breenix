@@ -657,7 +657,12 @@ fn deliver_signals_on_syscall_return(frame: &mut SyscallFrame) -> bool {
     // Try to acquire process manager lock (non-blocking)
     let mut manager_guard = match crate::process::try_manager() {
         Some(guard) => guard,
-        None => return false, // Lock held, skip signal check - will happen on next timer interrupt
+        None => {
+            // Lock held, skip signal check - will happen on next timer
+            // interrupt. A deferred SIGKILL cannot wait for that.
+            crate::signal::delivery::exit_if_killed_on_syscall_return();
+            return false;
+        }
     };
 
     if let Some(ref mut manager) = *manager_guard {
