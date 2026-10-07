@@ -37,7 +37,7 @@ pub fn read_init_from_ext2(path: &str) -> Result<Vec<u8>, &'static str> {
 /// a directory.
 #[cfg(target_arch = "x86_64")]
 pub fn read_program(path: &str) -> Result<Vec<u8>, i32> {
-    use crate::syscall::errno::{EIO, EISDIR};
+    use crate::syscall::errno::{EACCES, EIO, EISDIR};
 
     // The handle holds the inode until its content is read.
     let (mount, inode_num, _held) =
@@ -49,6 +49,11 @@ pub fn read_program(path: &str) -> Result<Vec<u8>, i32> {
 
     if inode.is_dir() {
         return Err(EISDIR);
+    }
+
+    // Even a privileged caller needs at least one execute bit on a program.
+    if inode.permissions() & 0o111 == 0 {
+        return Err(EACCES);
     }
 
     let elf_data = fs
