@@ -1010,6 +1010,16 @@
               "pthread"
             ]
           }
+        },
+        {
+          "id": "busybox",
+          "title": "BusyBox built on our libc",
+          "measure": {
+            "suite": "libc",
+            "categories": [
+              "busybox"
+            ]
+          }
         }
       ]
     },
