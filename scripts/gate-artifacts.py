@@ -139,7 +139,20 @@ def checked(command, repo, log):
 
 def build(repo, logs, label):
     with tree_cache.timing('userspace-build', f'build={label}'):
-        checked([str(repo / 'userspace/programs/build.sh')], repo, logs / f'{label}-userspace.log')
+        # Cargo hashes compiler arguments before rustc remaps source paths.
+        # Stable paths must therefore include -L/linker flags and CARGO_HOME,
+        # not just the strings ultimately embedded in the ELF. Mounts are
+        # private to this foreground build; targets still belong to its lane
+        # and Cargo's mutation locks still belong to its private Cargo home.
+        checked(['unshare', '--mount', '--propagation', 'private', '--',
+                 'bash', '-euc', '''
+mkdir -p /run/breenix-gate/source /run/breenix-gate/cargo
+mount --bind "$1" /run/breenix-gate/source
+mount --bind "$2" /run/breenix-gate/cargo
+export CARGO_HOME=/run/breenix-gate/cargo
+/run/breenix-gate/source/userspace/programs/build.sh
+''', 'gate-userspace', str(repo), os.environ['CARGO_HOME']],
+                repo, logs / f'{label}-userspace.log')
     with tree_cache.timing('disk-repack', f'build={label}'):
         checked(['python3', str(repo / 'scripts/install-busybox.py'), 'x86_64'], repo, logs / f'{label}-busybox.log')
         checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo, logs / f'{label}-test-disk.log')
@@ -183,8 +196,11 @@ def main():
                 with tree_cache.lease(root, 'artifacts-' + cache_key):
                     if (entry / 'verified.json').exists():
                         manifest = json.loads((entry / 'verified.json').read_text())
-                        if inventory(repo) != manifest:
-                            raise RuntimeError('fresh checkout artifacts differ from verified cache')
+                        actual = inventory(repo)
+                        if actual != manifest:
+                            differences = sorted(name for name in manifest.keys() | actual.keys()
+                                                 if manifest.get(name) != actual.get(name))
+                            raise RuntimeError(f'fresh checkout artifacts differ from verified cache: {differences}')
                         print(f'[gate-cache] FRESH key={cache_key} matches-verified=true', flush=True)
         return
     root = Path(os.environ['BREENIX_GATE_CACHE_DIR'])
