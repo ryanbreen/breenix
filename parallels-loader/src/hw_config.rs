@@ -49,7 +49,7 @@ pub struct FramebufferInfo {
 pub struct HardwareConfig {
     /// Magic number for validation: 0x4252_4E58 ("BRNX")
     pub magic: u32,
-    /// Version of this struct (currently 2)
+    /// Version of this struct (`HARDWARE_CONFIG_VERSION`)
     pub version: u32,
 
     // --- UART ---
