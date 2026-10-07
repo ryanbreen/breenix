@@ -853,6 +853,17 @@ impl Thread {
         let word = self.kill_custody.load(Ordering::Acquire);
         word & KILL_PENDING != 0 && word & CUSTODY_COUNT <= 1
     }
+
+    /// Close every section the thread's syscall had open, for a syscall whose
+    /// kernel stack is discarded instead of unwound: x86-64 returns a pause or
+    /// sigsuspend that a signal ends to user mode straight from the context
+    /// switch, so the syscall's `KillCustody` guards are never dropped. Left
+    /// open, they would refuse every later kill claim and make every later
+    /// syscall look nested.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn abandon_syscall_custody(&self) {
+        self.kill_custody.fetch_and(!CUSTODY_COUNT, Ordering::AcqRel);
+    }
 }
 
 /// A kernel section the running thread must be allowed to finish before a

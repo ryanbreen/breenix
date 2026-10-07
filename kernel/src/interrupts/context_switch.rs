@@ -1040,6 +1040,9 @@ fn switch_to_thread(
                         scheduler::with_thread_mut(thread_id, |thread| {
                             thread.blocked_in_syscall = false;
                             thread.saved_userspace_context = None;
+                            // The syscall's kernel stack is discarded here, not
+                            // unwound, so the custody section it opened is too.
+                            thread.abandon_syscall_custody();
                         });
 
                         // CRITICAL: Switch to process CR3 BEFORE delivering signal
