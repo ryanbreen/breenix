@@ -5346,6 +5346,16 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     let need_resched = crate::task::scheduler::check_and_clear_need_resched();
     let exception_cleanup_context = Aarch64PerCpu::exception_cleanup_context();
 
+    // A stopped process's thread is held off EL0 here, before the lock and
+    // the switch decision: it is blocked, so the switch below saves its EL0
+    // context for SIGCONT to resume. Signal delivery arms need_resched for it,
+    // so the ordinary tick, with no reschedule pending, skips the check.
+    if from_el0 && need_resched && (frame.spsr & 0xF) == 0 {
+        if let Some(current_tid) = crate::task::scheduler::current_thread_id() {
+            crate::signal::delivery::hold_stopped_thread_on_interrupt_return(current_tid);
+        }
+    }
+
     // Read real_tid_fixup for stale cpu_state detection (lock-free)
     let real_tid_fixup = if from_el0 && (frame.spsr & 0xF) == 0 {
         let real_thread_ptr = Aarch64PerCpu::current_thread_ptr();
@@ -7295,7 +7305,7 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
             crate::signal::delivery::check_and_fire_alarm(process);
             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
-            if crate::signal::delivery::has_deliverable_signals(process) {
+            if crate::signal::delivery::needs_action_on_return_to_user(process) {
                 // Read current SP_EL0 (user stack pointer)
                 let sp_el0: u64;
                 unsafe {

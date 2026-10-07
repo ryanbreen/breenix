@@ -2041,6 +2041,136 @@ impl ProcessManager {
             .map(|(pid, p)| (*pid, p))
     }
 
+    /// Whether process group `pgid` is orphaned (POSIX): no member has a parent
+    /// in a different process group of the same session. As in Linux, members
+    /// that have exited, `ignore`, and members whose parent is the designated
+    /// init or has exited do not count; a group with no counted member is
+    /// orphaned.
+    pub fn pgrp_is_orphaned(&self, pgid: ProcessId, ignore: Option<ProcessId>) -> bool {
+        let init = self.designated_init;
+        !self.processes.values().any(|member| {
+            !member.is_terminated()
+                && member.pgid == pgid
+                && Some(member.id) != ignore
+                && member
+                    .parent
+                    .filter(|&parent| Some(parent) != init)
+                    .and_then(|parent| self.processes.live_row(&parent))
+                    .is_some_and(|parent| {
+                        !parent.is_terminated() && parent.pgid != pgid && parent.sid == member.sid
+                    })
+        })
+    }
+
+    /// Whether process group `pgid` has a member stopped by a stop signal.
+    pub fn pgrp_has_stopped_member(&self, pgid: ProcessId) -> bool {
+        self.processes.values().any(|member| {
+            !member.is_terminated() && member.pgid == pgid && member.job.stopped.is_some()
+        })
+    }
+
+    /// The process groups the exit of `exiting` leaves orphaned while they have
+    /// a stopped member; POSIX has each sent SIGHUP and then SIGCONT. Called
+    /// once `exiting` has terminated and `children`, its former children, have
+    /// been reparented. As in Linux's `kill_orphaned_pgrp`, a group counts when
+    /// `exiting` was what kept it connected to its session: its own group, when
+    /// its parent is in another group of the same session, and the group of
+    /// each child in another group of the same session.
+    ///
+    /// Answered once per row: an exit can pass through more than one exit path
+    /// (a signal death terminates the row before its thread's exit hook runs),
+    /// and the first to ask is the one that reports.
+    pub fn groups_orphaned_by_exit(
+        &mut self,
+        exiting: ProcessId,
+        children: &[ProcessId],
+    ) -> Vec<ProcessId> {
+        let mut groups = Vec::new();
+        match self.processes.live_row_mut(&exiting) {
+            Some(row) if !row.job.orphan_check_done => row.job.orphan_check_done = true,
+            _ => return groups,
+        }
+        let Some(me) = self.processes.live_row(&exiting) else {
+            return groups;
+        };
+        let consider = |pgid: ProcessId, groups: &mut Vec<ProcessId>| {
+            if !groups.contains(&pgid)
+                && self.pgrp_is_orphaned(pgid, Some(exiting))
+                && self.pgrp_has_stopped_member(pgid)
+            {
+                groups.push(pgid);
+            }
+        };
+        if let Some(parent) = me
+            .parent
+            .and_then(|parent| self.processes.live_row(&parent))
+        {
+            if parent.pgid != me.pgid && parent.sid == me.sid {
+                consider(me.pgid, &mut groups);
+            }
+        }
+        for child in children {
+            if let Some(child) = self.processes.live_row(child) {
+                if child.pgid != me.pgid && child.sid == me.sid {
+                    consider(child.pgid, &mut groups);
+                }
+            }
+        }
+        groups
+    }
+
+    /// Reap `child`, which has terminated, at once when its parent has SIGCHLD
+    /// ignored or set with SA_NOCLDWAIT: that parent's children do not become
+    /// zombies, so no wait can report them. Returns the row when the join
+    /// removed it, for the caller to drop after releasing PM (condition C8).
+    #[must_use]
+    pub(crate) fn reap_if_parent_declines(&mut self, child: ProcessId) -> Option<Process> {
+        let row = self.processes.live_row(&child)?;
+        if !row.is_terminated() {
+            return None;
+        }
+        let parent_pid = row.parent?;
+        let status = row.exit_code.unwrap_or(0);
+        let parent = self.processes.live_row_mut(&parent_pid)?;
+        let action = parent
+            .signals
+            .get_handler(crate::signal::constants::SIGCHLD);
+        if !action.is_ignore() && action.flags & crate::signal::constants::SA_NOCLDWAIT == 0 {
+            return None;
+        }
+        parent.children.retain(|&id| id != child);
+        match self.reap_row(child, parent_pid, status) {
+            ReapOutcome::Claimed(evicted) => evicted,
+            ReapOutcome::Refused => None,
+        }
+    }
+
+    /// The thread group `pid` belongs to: the pid of the row that leads it.
+    pub fn thread_group_of(&self, pid: ProcessId) -> Option<u64> {
+        self.processes
+            .live_row(&pid)
+            .map(|row| row.thread_group_id.unwrap_or(pid.as_u64()))
+    }
+
+    /// The live, unterminated rows of thread group `group`, the leader's
+    /// included. Walks the table in place, so it allocates nothing.
+    pub fn group_rows(&self, group: u64) -> impl Iterator<Item = &Process> {
+        self.processes.values().filter(move |row| {
+            !row.is_tombstone()
+                && !row.is_terminated()
+                && row.thread_group_id.unwrap_or(row.id.as_u64()) == group
+        })
+    }
+
+    /// `group_rows`, mutable.
+    pub fn group_rows_mut(&mut self, group: u64) -> impl Iterator<Item = &mut Process> {
+        self.processes.values_mut().filter(move |row| {
+            !row.is_tombstone()
+                && !row.is_terminated()
+                && row.thread_group_id.unwrap_or(row.id.as_u64()) == group
+        })
+    }
+
     /// The other live rows of `pid`'s thread group: rows created by `clone`
     /// with `CLONE_VM` share a group id (`thread_group_id`, or the leader's own
     /// pid), and together they are one POSIX process.
@@ -3568,6 +3698,7 @@ impl ProcessManager {
         // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
         // SIG_IGN handlers are preserved
         process.signals.exec_reset();
+        process.has_exec = true;
         // Reset mmap state for the new address space
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
@@ -4011,6 +4142,7 @@ impl ProcessManager {
 
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
+        process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
 
@@ -4392,6 +4524,7 @@ impl ProcessManager {
         process.heap_end = heap_base;
 
         process.signals.exec_reset();
+        process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
 
@@ -4731,6 +4864,7 @@ impl ProcessManager {
 
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
+        process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         // Close FD_CLOEXEC file descriptors per POSIX

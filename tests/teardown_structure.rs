@@ -3972,11 +3972,13 @@ const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 2),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn kernel_stack_ownership_oracle_test::fn retire_and_remove_owned_row", 1),
 ];
-/// The join's reap arm. Both arches' `complete_wait` are here — that is DEBT-4
-/// (ii)'s "on BOTH arches", and deleting either is a `-` row.
+/// The join's reap arm. `complete_wait` is the one wait4/waitid implementation
+/// both arches dispatch to — that is DEBT-4 (ii)'s "on BOTH arches", and
+/// deleting it is a `-` row. The other production reaper is the exit path's
+/// reap for a parent that declines zombies (SIGCHLD ignored or SA_NOCLDWAIT).
 #[rustfmt::skip]
 const JOIN_REAP_ARM_CALLS: &[(&str, &str, usize)] = &[
-    ("kernel/src/syscall/handlers.rs", "fn complete_wait", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn reap_if_parent_declines", 1),
     ("kernel/src/syscall/wait.rs", "fn complete_wait", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn tombstone_join_oracle_test::fn reap", 1),
 ];
@@ -4056,11 +4058,12 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait_checked", 1),
 ];
 /// Census A: every right-hand-side publication of a `ThreadState::Blocked*`
-/// value under `kernel/src`. The six production rows are all blocking-family
+/// value under `kernel/src`. The seven production rows are all blocking-family
 /// primitives, which `validate_blocked_state_publication_family` asserts as a
 /// derived rule; the five `#[cfg(test)]` rows are fixtures, exempt from that
 /// rule but still pinned here so a new fixture is re-anchored deliberately.
@@ -4077,6 +4080,7 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_inner", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
@@ -4317,8 +4321,10 @@ const ROW_REMOVAL_EPOCH_BUMPS: &[(&str, &str, usize)] = &[
 /// primitive is caught however it is named: an exact-name list only ever sees
 /// the nine that already exist, so `block_current_probe` would be invisible.
 /// The nine current definitions are still pinned individually by
-/// `BLOCKING_PRIMITIVES`.
-const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "prepare_to_wait"];
+/// `BLOCKING_PRIMITIVES`. `block_ready` is the job-control member: it blocks a
+/// stopped process's ready, off-CPU thread rather than the current one, and
+/// owns that thread's ready-queue departure as the others own theirs.
+const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "block_ready", "prepare_to_wait"];
 
 /// #663 M2: every call site of `remove_from_ready_queue` under `kernel/src`,
 /// by enclosing item, whatever the receiver — `Scheduler`'s tid-keyed queue
@@ -14686,9 +14692,10 @@ fn every_external_schedule_from_kernel_call_reclaims_immediately_beforehand() {
 ///
 /// Two censuses, occurrence-based, and one rule between them: the destructor's
 /// caller set contains no live reap, and the reap arm's caller set contains
-/// both of them — `syscall/wait.rs::complete_wait` (aarch64) and
-/// `syscall/handlers.rs::complete_wait` (x86_64). DEBT-4's "x86 bypasses the
-/// gate" was an evidence problem, not a missing edit; this is the evidence.
+/// every one of them — `syscall/wait.rs::complete_wait`, which both arches
+/// dispatch wait4 and waitid to, and the exit path's reap for a parent that
+/// declines zombies. DEBT-4's "x86 bypasses the gate" was an evidence problem,
+/// not a missing edit; this is the evidence.
 ///
 /// The exempt classes are named, not inferred:
 ///
@@ -15242,8 +15249,9 @@ fn validate_claim_before_copy(body: &str) -> Result<(), &'static str> {
 /// P6a condition C3, review finding F7. Nothing exercises `complete_wait`'s own
 /// return: the join oracle calls `reap_row` directly, so the syscall-level
 /// behaviour C3 specifies — the loser of the claim returns ECHILD and copies
-/// nothing — was established by reading the code. This pins it on both arches
-/// instead, so an edit that reinstates copy-before-claim is red on the host.
+/// nothing — was established by reading the code. This pins it in the one
+/// `complete_wait` both arches dispatch to instead, so an edit that reinstates
+/// copy-before-claim is red on the host.
 ///
 /// What this does **not** prove, stated plainly: that two *concurrent* waiters
 /// serialize correctly. C3's last sentence asks for a concurrent injection and
@@ -15254,11 +15262,8 @@ fn validate_claim_before_copy(body: &str) -> Result<(), &'static str> {
 /// this test. What the test removes is the possibility of the *ordering*
 /// regressing unnoticed, which is the half that lives in the source.
 #[test]
-fn both_complete_wait_arms_claim_before_they_copy() {
-    for path in [
-        "kernel/src/syscall/wait.rs",
-        "kernel/src/syscall/handlers.rs",
-    ] {
+fn complete_wait_claims_before_it_copies() {
+    for path in ["kernel/src/syscall/wait.rs"] {
         let source = repo_text(path);
         let body = function_body(&source, "complete_wait").to_owned();
         assert_eq!(

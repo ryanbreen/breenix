@@ -64,6 +64,38 @@ pub enum ProcessState {
     Terminated(i32), // exit code
 }
 
+/// A stop or continue a parent has not yet collected with `waitpid`
+/// (`WUNTRACED`, `WCONTINUED`) or `waitid` (`WSTOPPED`, `WCONTINUED`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobReport {
+    /// Stopped by the default action of this signal.
+    Stopped(u32),
+    /// Continued by SIGCONT.
+    Continued,
+}
+
+/// Job-control state of one row. `stopped` is kept on every row of a thread
+/// group, since each row's thread is held on its own; `report` and
+/// `report_owed` live on the group's leader, the row its parent waits for.
+/// Serialized by the process-manager lock.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JobControl {
+    /// The signal that stopped the process, while it is stopped.
+    pub stopped: Option<u32>,
+    /// The latest stop or continue, until a wait reports it.
+    pub report: Option<JobReport>,
+    /// The stop has been taken but a thread of the group may still be running
+    /// in user mode on another CPU; the parent is told once none is.
+    pub report_owed: bool,
+    /// This row's thread was blocked by the stop on its way to user mode, and
+    /// SIGCONT makes it ready again. A thread stopped while it waits in a
+    /// syscall is not parked: that wait goes on, and the thread is held at the
+    /// syscall's return.
+    pub parked: bool,
+    /// The row's exit has looked for process groups it left orphaned.
+    pub orphan_check_done: bool,
+}
+
 /// Where the row sits in the reap/tombstone lifetime.
 ///
 /// P6a deviation **D-1**: `RowState` is a *derived accessor* over the facts the
@@ -340,6 +372,13 @@ pub struct Process {
 
     /// Accumulated CPU ticks for this process (for btop display)
     pub cpu_ticks: u64,
+
+    /// Job-control stop state and the stop or continue not yet waited for.
+    pub job: JobControl,
+
+    /// The process has run a successful exec since its fork, so its parent
+    /// may no longer change its process group (setpgid's EACCES).
+    pub has_exec: bool,
 }
 
 /// Memory usage tracking
@@ -362,10 +401,12 @@ impl Process {
             image_size: 0,
             image_data_size: 0,
             id,
-            // By default, a process's pgid equals its pid (process is its own group leader)
-            pgid: id,
-            // By default, a process's sid equals its pid (process is its own session leader)
-            sid: id,
+            // A process the kernel creates starts in init's process group and
+            // session, which init (PID 1) leads, rather than leading its own:
+            // like a child of init, it may then create its own group or session.
+            // fork, spawn and clone give a child its parent's instead.
+            pgid: ProcessId(super::RESERVED_INIT_PID),
+            sid: ProcessId(super::RESERVED_INIT_PID),
             cred: super::credentials::ProcessCredentials::root(),
             nice: 0,
             cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::default()),
@@ -407,6 +448,8 @@ impl Process {
             fb_mmap: None,
             has_display_ownership: false,
             cpu_ticks: 0,
+            job: JobControl::default(),
+            has_exec: false,
         }
     }
 

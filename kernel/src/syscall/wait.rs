@@ -1,12 +1,16 @@
-//! waitpid/wait4 implementation for ARM64
+//! wait4 and waitid: report a child's exit, stop or continue to its parent.
+//!
+//! One implementation for both architectures. A child is selected by PID, by
+//! process group or as any child; its state changes are reported in the order
+//! Linux's `wait_consider_task` takes them: an exit (the child is reaped unless
+//! WNOWAIT), then a stop (WUNTRACED / WSTOPPED), then a continue (WCONTINUED).
+//! A stop or continue is reported once, unless WNOWAIT leaves it in place.
 
-use super::errno::{ECHILD, EFAULT, EINVAL, ENOSYS};
+use super::errno::{ECHILD, EFAULT, EINVAL, ESRCH};
 use super::userptr;
 use super::SyscallResult;
-use crate::arch_impl::traits::CpuOps;
-
-#[cfg(target_arch = "aarch64")]
-type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
+use crate::process::process::JobReport;
+use crate::process::ProcessId;
 
 /// Ensure TTBR0 is set to the current thread's process page tables.
 ///
@@ -36,322 +40,332 @@ fn ensure_current_address_space() {
     // On x86_64, CR3 handling is done differently
 }
 
-/// waitpid options constants
+/// Return at once if no child has a state change to report.
 pub const WNOHANG: u32 = 1;
-#[allow(dead_code)]
+/// wait4: report stopped children. waitid's WSTOPPED has the same value.
 pub const WUNTRACED: u32 = 2;
+/// waitid: report children that have exited (wait4 always does).
+pub const WEXITED: u32 = 4;
+/// Report children continued by SIGCONT.
+pub const WCONTINUED: u32 = 8;
+/// waitid: leave the reported child waitable.
+pub const WNOWAIT: u32 = 0x0100_0000;
+/// Linux's thread and clone selection flags. Each row waits for its own
+/// children here, so __WNOTHREAD changes nothing. __WCLONE selects only
+/// children created by clone (CLONE_VM rows), unless __WALL, which selects
+/// every child as a plain wait does.
+const WNOTHREAD: u32 = 0x2000_0000;
+const WALL: u32 = 0x4000_0000;
+const WCLONE: u32 = 0x8000_0000;
 
-/// sys_waitpid - Wait for a child process to change state
+/// The option bits wait4 accepts; any other is EINVAL.
+const WAIT4_OPTIONS: u32 = WNOHANG | WUNTRACED | WCONTINUED | WNOTHREAD | WALL | WCLONE;
+/// The option bits waitid accepts; any other is EINVAL.
+const WAITID_OPTIONS: u32 =
+    WNOHANG | WUNTRACED | WEXITED | WCONTINUED | WNOWAIT | WNOTHREAD | WALL | WCLONE;
+
+/// waitid idtypes.
+const P_ALL: u32 = 0;
+const P_PID: u32 = 1;
+const P_PGID: u32 = 2;
+
+/// siginfo si_code values for SIGCHLD.
+const CLD_EXITED: i32 = 1;
+const CLD_KILLED: i32 = 2;
+const CLD_DUMPED: i32 = 3;
+const CLD_STOPPED: i32 = 5;
+const CLD_CONTINUED: i32 = 6;
+
+/// Which children a wait considers.
+#[derive(Clone, Copy)]
+enum Selector {
+    /// The child with this PID.
+    Pid(ProcessId),
+    /// Children in this process group.
+    Group(ProcessId),
+    /// Children in the caller's process group, as it was when the wait
+    /// began: `bind_caller_group` makes it a `Group` before the first scan.
+    CallerGroup,
+    /// Any child.
+    Any,
+}
+
+/// A state change a wait reports.
+#[derive(Clone, Copy)]
+enum Event {
+    /// The child exited with this status (negative: killed by signal -status,
+    /// with 0x80 for a core dump).
+    Exited(i32),
+    /// The child was stopped by this signal.
+    Stopped(u32),
+    /// The child was continued.
+    Continued,
+}
+
+/// What a scan found.
+struct Found {
+    /// The waiting process, the reaper an exit's reap claim records.
+    reaper: ProcessId,
+    pid: ProcessId,
+    uid: u32,
+    event: Event,
+}
+
+/// Look once through the calling thread's process's children for a state
+/// change `options` asks for. A stop or continue it reports is consumed here,
+/// unless WNOWAIT; an exit is left for `reap` to claim. ECHILD when no child
+/// matches the selector.
+fn scan(thread_id: u64, selector: Selector, options: u32) -> Result<Option<Found>, u64> {
+    crate::process::with_process_manager(|manager| {
+        let (reaper, caller_pgid, children) = match manager.find_process_by_thread(thread_id) {
+            Some((pid, caller)) => (pid, caller.pgid, caller.children.clone()),
+            None => return Err(EINVAL as u64),
+        };
+        let clone_only = options & WCLONE != 0 && options & WALL == 0;
+        let mut any = false;
+        for child_pid in children {
+            let Some(child) = manager.get_process_mut(child_pid) else {
+                continue;
+            };
+            let selected = match selector {
+                Selector::Pid(pid) => child_pid == pid,
+                Selector::Group(pgid) => child.pgid == pgid,
+                Selector::CallerGroup => child.pgid == caller_pgid,
+                Selector::Any => true,
+            } && (!clone_only || child.thread_group_id.is_some());
+            if !selected {
+                continue;
+            }
+            any = true;
+            let uid = child.cred.uid;
+            if let crate::process::ProcessState::Terminated(code) = child.state {
+                if options & WEXITED != 0 {
+                    return Ok(Some(Found {
+                        reaper,
+                        pid: child_pid,
+                        uid,
+                        event: Event::Exited(code),
+                    }));
+                }
+                continue;
+            }
+            let event = match child.job.report {
+                Some(JobReport::Stopped(sig))
+                    if options & WUNTRACED != 0 && child.job.stopped.is_some() =>
+                {
+                    Event::Stopped(sig)
+                }
+                Some(JobReport::Continued) if options & WCONTINUED != 0 => Event::Continued,
+                _ => continue,
+            };
+            if options & WNOWAIT == 0 {
+                child.job.report = None;
+            }
+            return Ok(Some(Found {
+                reaper,
+                pid: child_pid,
+                uid,
+                event,
+            }));
+        }
+        if any {
+            Ok(None)
+        } else {
+            Err(ECHILD as u64)
+        }
+    })
+    .unwrap_or(Err(ECHILD as u64))
+}
+
+/// The caller's process group, read once when the wait begins: a later
+/// setpgid by the caller does not change which children the wait selects.
+fn bind_caller_group(thread_id: u64, selector: Selector) -> Result<Selector, u64> {
+    let Selector::CallerGroup = selector else {
+        return Ok(selector);
+    };
+    crate::process::with_process_manager(|manager| {
+        manager
+            .find_process_by_thread(thread_id)
+            .map(|(_, caller)| Selector::Group(caller.pgid))
+    })
+    .flatten()
+    .ok_or(EINVAL as u64)
+}
+
+/// Let the calling thread run on after `block_current_for_child_exit`.
+fn unblock_self() {
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+            thread.set_ready();
+        }
+    });
+}
+
+/// Wait for a state change `options` asks for, blocking unless WNOHANG.
+/// Ok(None) only for WNOHANG with nothing to report. A signal interrupts the
+/// wait with EINTR, or ERESTARTSYS when it is to be restarted.
 ///
-/// This implements the wait4/waitpid system call.
+/// Blocking marks the thread BlockedOnChildExit first and scans again after,
+/// so a change landing between the two is seen by the scan or wakes the thread
+/// (`unblock_for_child_exit`); the scheduler lock orders the two.
+fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64> {
+    let thread_id = crate::task::scheduler::current_thread_id().ok_or(EINVAL as u64)?;
+    let selector = bind_caller_group(thread_id, selector)?;
+    if let Some(found) = scan(thread_id, selector, options)? {
+        return Ok(Some(found));
+    }
+    if options & WNOHANG != 0 {
+        return Ok(None);
+    }
+    loop {
+        crate::task::scheduler::with_scheduler(|sched| sched.block_current_for_child_exit());
+        crate::tracing::providers::process::trace_waitpid_block(thread_id as u16, 0);
+        match scan(thread_id, selector, options) {
+            Ok(None) => {}
+            done => {
+                unblock_self();
+                return done;
+            }
+        }
+        if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+            unblock_self();
+            return Err(e as u64);
+        }
+        crate::per_cpu::preempt_enable();
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
+        crate::per_cpu::preempt_disable();
+    }
+}
+
+/// The wait status wait4 reports for `event`.
+fn wait_status(event: Event) -> i32 {
+    match event {
+        Event::Exited(code) if code < 0 => {
+            let signal_number = -code;
+            let core_dump = (signal_number & 0x80) != 0;
+            (signal_number & 0x7f) | if core_dump { 0x80 } else { 0 }
+        }
+        Event::Exited(code) => (code & 0xff) << 8,
+        Event::Stopped(sig) => ((sig as i32) << 8) | 0x7f,
+        Event::Continued => 0xffff,
+    }
+}
+
+/// sys_waitpid - wait4(pid, status, options): wait for a child to change state
+///
+/// pid > 0 waits for that child, pid == -1 for any child, pid == 0 for any
+/// child in the caller's process group, and pid < -1 for any child in process
+/// group -pid. Returns the child's PID, or 0 under WNOHANG when no child has a
+/// state change to report.
 pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
-    log::debug!(
-        "sys_waitpid: pid={}, status_ptr={:#x}, options={}",
+    if options & !WAIT4_OPTIONS != 0 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let pid = pid as i32;
+    let selector = match pid {
+        -1 => Selector::Any,
+        0 => Selector::CallerGroup,
+        i32::MIN => return SyscallResult::Err(ESRCH as u64),
+        p if p < 0 => Selector::Group(ProcessId::new((-p) as u64)),
+        p => Selector::Pid(ProcessId::new(p as u64)),
+    };
+    let found = match wait_for_child(selector, options | WEXITED) {
+        Ok(Some(found)) => found,
+        Ok(None) => return SyscallResult::Ok(0),
+        Err(e) => return SyscallResult::Err(e),
+    };
+    match found.event {
+        Event::Exited(code) => complete_wait(found.pid, code, status_ptr, found.reaper),
+        event => {
+            if status_ptr != 0 {
+                ensure_current_address_space();
+                if userptr::copy_to_user(status_ptr as *mut i32, &wait_status(event)).is_err() {
+                    return SyscallResult::Err(EFAULT as u64);
+                }
+            }
+            SyscallResult::Ok(found.pid.as_u64())
+        }
+    }
+}
+
+/// waitid(idtype, id, infop, options, rusage): wait for a child to change
+/// state and describe it in a siginfo.
+///
+/// idtype P_ALL waits for any child, P_PID for child `id` and P_PGID for any
+/// child in process group `id` (0: the caller's). `options` must ask for at
+/// least one of WEXITED, WSTOPPED and WCONTINUED. Returns 0; under WNOHANG
+/// with nothing to report, the siginfo's si_signo and si_pid are 0.
+pub fn sys_waitid(idtype: u32, id: u64, infop: u64, options: u32) -> SyscallResult {
+    if options & !WAITID_OPTIONS != 0 || options & (WEXITED | WUNTRACED | WCONTINUED) == 0 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let id = id as i32;
+    let selector = match idtype {
+        P_ALL => Selector::Any,
+        P_PID if id > 0 => Selector::Pid(ProcessId::new(id as u64)),
+        P_PGID if id == 0 => Selector::CallerGroup,
+        P_PGID if id > 0 => Selector::Group(ProcessId::new(id as u64)),
+        _ => return SyscallResult::Err(EINVAL as u64),
+    };
+    let found = match wait_for_child(selector, options) {
+        Ok(found) => found,
+        Err(e) => return SyscallResult::Err(e),
+    };
+
+    let mut info = [0i32; 32];
+    if let Some(found) = &found {
+        let (code, status) = match found.event {
+            Event::Exited(code) if code < 0 && (-code) & 0x80 != 0 => (CLD_DUMPED, (-code) & 0x7f),
+            Event::Exited(code) if code < 0 => (CLD_KILLED, (-code) & 0x7f),
+            Event::Exited(code) => (CLD_EXITED, code & 0xff),
+            Event::Stopped(sig) => (CLD_STOPPED, sig as i32),
+            Event::Continued => (CLD_CONTINUED, crate::signal::constants::SIGCONT as i32),
+        };
+        info[0] = crate::signal::constants::SIGCHLD as i32;
+        info[2] = code;
+        info[4] = found.pid.as_u64() as i32;
+        info[5] = found.uid as i32;
+        info[6] = status;
+    }
+
+    if let Some(Found {
+        reaper,
         pid,
-        status_ptr,
-        options
-    );
-
-    // Get current thread ID
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("sys_waitpid: No current thread");
-            return SyscallResult::Err(EINVAL as u64);
-        }
-    };
-
-    // Find current process.
-    let is_wnohang = (options & WNOHANG) != 0;
-    let mut manager_guard = crate::process::manager();
-    let (current_pid, current_process) = match &mut *manager_guard {
-        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((pid, process)) => (pid, process),
-            None => {
-                log::error!("sys_waitpid: Thread {} not in any process", thread_id);
-                return SyscallResult::Err(EINVAL as u64);
+        event: Event::Exited(code),
+        ..
+    }) = found
+    {
+        if options & WNOWAIT == 0 {
+            // The child is reaped as wait4 reaps it; its status goes in the
+            // siginfo, not through a status pointer.
+            if let SyscallResult::Err(e) = complete_wait(pid, code, 0, reaper) {
+                return SyscallResult::Err(e);
             }
-        },
-        None => {
-            log::error!("sys_waitpid: No process manager");
-            return SyscallResult::Err(EINVAL as u64);
         }
-    };
-
-    log::debug!(
-        "sys_waitpid: Current process PID={}, has {} children",
-        current_pid.as_u64(),
-        current_process.children.len()
-    );
-
-    // Check for children
-    if current_process.children.is_empty() {
-        log::debug!("sys_waitpid: No children - returning ECHILD");
-        return SyscallResult::Err(ECHILD as u64);
     }
 
-    match pid {
-        // pid > 0: Wait for specific child
-        p if p > 0 => {
-            let target_pid = crate::process::ProcessId::new(p as u64);
-
-            if !current_process.children.contains(&target_pid) {
-                log::debug!(
-                    "sys_waitpid: PID {} is not a child of {}",
-                    p,
-                    current_pid.as_u64()
-                );
-                return SyscallResult::Err(ECHILD as u64);
-            }
-
-            drop(manager_guard);
-
-            // Check if the specific child is already terminated
-            let child_terminated = {
-                let manager_guard = crate::process::manager();
-                if let Some(ref manager) = *manager_guard {
-                    if let Some(child) = manager.get_process(target_pid) {
-                        if let crate::process::ProcessState::Terminated(exit_code) = child.state {
-                            Some((target_pid, exit_code))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
-
-            if let Some((child_pid, exit_code)) = child_terminated {
-                return complete_wait(child_pid, exit_code, status_ptr, current_pid);
-            }
-
-            if options & WNOHANG != 0 {
-                log::debug!("sys_waitpid: WNOHANG set, child {} not terminated", p);
-                return SyscallResult::Ok(0);
-            }
-
-            // Blocking wait: mark ourselves as BlockedOnChildExit FIRST, then re-check.
-            //
-            // CRITICAL: This ordering prevents a lost-wakeup TOCTOU race:
-            //   1. Set BlockedOnChildExit (now unblock_for_child_exit WILL find us)
-            //   2. Re-check child state (catches exit that happened during the window
-            //      between our first check above and step 1)
-            //
-            // If the child exits BEFORE step 1: step 2 catches it (self-unblock + return)
-            // If the child exits AFTER step 1: unblock_for_child_exit succeeds (we're blocked)
-            // If the child exits DURING step 1: scheduler lock serializes the operations
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current_for_child_exit();
-            });
-            crate::tracing::providers::process::trace_waitpid_block(
-                thread_id as u16,
-                target_pid.as_u64() as u16,
-            );
-
-            // Re-check child state to close the race window
-            {
-                let mg = crate::process::manager();
-                if let Some(ref manager) = *mg {
-                    if let Some(child) = manager.get_process(target_pid) {
-                        if let crate::process::ProcessState::Terminated(exit_code) = child.state {
-                            drop(mg);
-                            // Child exited during the race window — self-unblock and return
-                            crate::task::scheduler::with_scheduler(|sched| {
-                                if let Some(thread) = sched.current_thread_mut() {
-                                    thread.blocked_in_syscall = false;
-                                    thread.set_ready();
-                                }
-                            });
-                            return complete_wait(target_pid, exit_code, status_ptr, current_pid);
-                        }
-                    }
-                }
-            }
-
-            crate::per_cpu::preempt_enable();
-
-            loop {
-                // Check for pending signals that should interrupt this syscall
-                if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                    // Signal pending - clean up thread state and return EINTR
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(thread) = sched.current_thread_mut() {
-                            thread.blocked_in_syscall = false;
-                            thread.set_ready();
-                        }
-                    });
-                    crate::per_cpu::preempt_disable();
-                    log::debug!(
-                        "sys_waitpid: Thread {} interrupted by signal (EINTR)",
-                        thread_id
-                    );
-                    return SyscallResult::Err(e as u64);
-                }
-
-                crate::task::scheduler::yield_current();
-                Cpu::halt_with_interrupts();
-
-                let manager_guard = crate::process::manager();
-                if let Some(ref manager) = *manager_guard {
-                    if let Some(child) = manager.get_process(target_pid) {
-                        if let crate::process::ProcessState::Terminated(exit_code) = child.state {
-                            drop(manager_guard);
-                            crate::per_cpu::preempt_disable();
-                            return complete_wait(target_pid, exit_code, status_ptr, current_pid);
-                        }
-                    }
-                }
-            }
-        }
-
-        // pid == -1: Wait for any child
-        -1 => {
-            let children_copy = current_process.children.clone();
-            drop(manager_guard);
-
-            let terminated_child = {
-                let manager_guard = crate::process::manager();
-                if let Some(ref manager) = *manager_guard {
-                    let mut result = None;
-                    for &child_pid in &children_copy {
-                        if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
-                            {
-                                result = Some((child_pid, exit_code));
-                                break;
-                            }
-                        }
-                    }
-                    result
-                } else {
-                    None
-                }
-            };
-
-            if let Some((child_pid, exit_code)) = terminated_child {
-                return complete_wait(child_pid, exit_code, status_ptr, current_pid);
-            }
-
-            if is_wnohang {
-                log::debug!("sys_waitpid: WNOHANG set, no children terminated");
-                return SyscallResult::Ok(0);
-            }
-
-            // Blocking wait: same TOCTOU prevention as the pid>0 path above.
-            // Set BlockedOnChildExit FIRST, then re-check all children.
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current_for_child_exit();
-            });
-            crate::tracing::providers::process::trace_waitpid_block(
-                thread_id as u16,
-                0, // pid == -1: waiting for any child
-            );
-
-            // Re-check all children to close the race window
-            {
-                let mg = crate::process::manager();
-                if let Some(ref manager) = *mg {
-                    for &child_pid in &children_copy {
-                        if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
-                            {
-                                drop(mg);
-                                // Child exited during the race window — self-unblock and return
-                                crate::task::scheduler::with_scheduler(|sched| {
-                                    if let Some(thread) = sched.current_thread_mut() {
-                                        thread.blocked_in_syscall = false;
-                                        thread.set_ready();
-                                    }
-                                });
-                                return complete_wait(child_pid, exit_code, status_ptr, current_pid);
-                            }
-                        }
-                    }
-                }
-            }
-
-            crate::per_cpu::preempt_enable();
-
-            loop {
-                // Check for pending signals that should interrupt this syscall
-                if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                    // Signal pending - clean up thread state and return EINTR
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(thread) = sched.current_thread_mut() {
-                            thread.blocked_in_syscall = false;
-                            thread.set_ready();
-                        }
-                    });
-                    crate::per_cpu::preempt_disable();
-                    log::debug!(
-                        "sys_waitpid: Thread {} interrupted by signal (EINTR)",
-                        thread_id
-                    );
-                    return SyscallResult::Err(e as u64);
-                }
-
-                crate::task::scheduler::yield_current();
-                Cpu::halt_with_interrupts();
-
-                let manager_guard = crate::process::manager();
-                if let Some(ref manager) = *manager_guard {
-                    for &child_pid in &children_copy {
-                        if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
-                            {
-                                drop(manager_guard);
-                                crate::per_cpu::preempt_disable();
-                                return complete_wait(child_pid, exit_code, status_ptr, current_pid);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // pid == 0 or pid < -1: Process groups not implemented
-        _ => {
-            log::warn!("sys_waitpid: Process groups not implemented (pid={})", pid);
-            SyscallResult::Err(ENOSYS as u64)
+    if infop != 0 {
+        ensure_current_address_space();
+        if userptr::copy_to_user(infop as *mut [i32; 32], &info).is_err() {
+            return SyscallResult::Err(EFAULT as u64);
         }
     }
+    SyscallResult::Ok(0)
 }
 
 /// Helper function to complete a wait operation
 ///
 /// `reaper` is the process calling `waitpid`; it is the identity recorded in the
-/// row's reap claim (P6a's reap arm). It is threaded in from the caller rather
-/// than re-derived here because the caller already holds it and a re-derivation
-/// can fail, which would leave the claim silently unwritten.
+/// row's reap claim (P6a's reap arm).
 fn complete_wait(
     child_pid: crate::process::ProcessId,
     exit_code: i32,
     status_ptr: u64,
     reaper: crate::process::ProcessId,
 ) -> SyscallResult {
-    let wstatus: i32 = if exit_code < 0 {
-        let signal_number = (-exit_code) as i32;
-        let core_dump = (signal_number & 0x80) != 0;
-        let sig = signal_number & 0x7f;
-        sig | (if core_dump { 0x80 } else { 0 })
-    } else {
-        (exit_code & 0xff) << 8
-    };
-
-    log::debug!(
-        "complete_wait: child {} exited with code {}, wstatus={:#x}{}",
-        child_pid.as_u64(),
-        exit_code,
-        wstatus,
-        if exit_code < 0 {
-            " (signal termination)"
-        } else {
-            " (normal exit)"
-        }
-    );
+    let wstatus = wait_status(Event::Exited(exit_code));
 
     // P6a reap arm. Condition C3: the claim is taken under PM *before* any
     // status reaches userspace. Two concurrent waiters can both pass the scan
@@ -405,19 +419,6 @@ fn complete_wait(
             return SyscallResult::Err(EFAULT as u64);
         }
     }
-
-    // Clear blocked_in_syscall flag
-    crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(thread) = sched.current_thread_mut() {
-            if thread.blocked_in_syscall {
-                thread.blocked_in_syscall = false;
-                log::debug!(
-                    "complete_wait: Cleared blocked_in_syscall flag for thread {}",
-                    thread.id
-                );
-            }
-        }
-    });
 
     SyscallResult::Ok(child_pid.as_u64())
 }

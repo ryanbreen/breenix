@@ -53,7 +53,6 @@ pub mod rusage;
 pub mod session;
 pub mod signal;
 pub mod socket;
-#[cfg(target_arch = "aarch64")]
 pub mod wait;
 
 /// System call numbers - semantic names only.
@@ -107,6 +106,7 @@ pub enum SyscallNumber {
     Socketpair,
     Exec,
     Wait4,
+    Waitid,
     Kill,
     Getsockname,
     Getpeername,
@@ -290,6 +290,7 @@ impl SyscallNumber {
             59 => Some(Self::Exec),
             60 => Some(Self::Exit), // was Breenix 0
             61 => Some(Self::Wait4),
+            247 => Some(Self::Waitid),
             62 => Some(Self::Kill),
             63 => Some(Self::Uname),
             72 => Some(Self::Fcntl),
@@ -508,6 +509,7 @@ impl SyscallNumber {
             233 => Some(Self::Madvise),
             // Wait
             260 => Some(Self::Wait4),
+            95 => Some(Self::Waitid),
             261 => Some(Self::Prlimit64),
             // Positional I/O
             67 => Some(Self::Pread64),

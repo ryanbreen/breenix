@@ -212,15 +212,25 @@ pub extern "C" fn trace_eret_to_el0(_elr: u64, _spsr: u64) {
 /// If so, it modifies the exception frame to jump to the signal handler
 /// instead of returning to the original code.
 fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
+    // A stop holds the thread, outside PM, until SIGCONT; what is pending then
+    // is checked again, in this loop rather than by recursion.
+    while deliver_signals_aarch64(frame) {
+        crate::signal::delivery::hold_stopped_thread_on_syscall_return();
+    }
+}
+
+/// One pass of `check_and_deliver_signals_aarch64`: true when the process is
+/// stopped, or has a stop to take, and nothing was delivered.
+fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
     // Get current thread ID
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
-        None => return,
+        None => return false,
     };
 
     // 0 is the no-thread sentinel, not a live thread id - no signals
     if current_thread_id == 0 {
-        return;
+        return false;
     }
 
     // A syscall return must complete signal delivery before allowing EL0 to
@@ -244,9 +254,15 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
             crate::signal::delivery::check_and_fire_alarm(process);
             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
-            // Check if there are any deliverable signals
-            if !crate::signal::delivery::has_deliverable_signals(process) {
-                return;
+            // Check if there are any deliverable signals, or a stop in force
+            if !crate::signal::delivery::needs_action_on_return_to_user(process) {
+                return false;
+            }
+
+            // A stop is acted on before any other signal: the thread is held
+            // until SIGCONT, and what is pending then is delivered after.
+            if crate::signal::delivery::stop_pending_or_in_force(process) {
+                return true;
             }
 
             // Switch to process's page table for signal delivery
@@ -324,6 +340,7 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
     if let Some((pid, exit_code)) = group_death {
         crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
     }
+    false
 }
 
 // =============================================================================
@@ -558,6 +575,12 @@ fn dispatch_syscall_enum(
             arg1 as i64,
             arg2,
             arg3 as u32,
+        )),
+        SyscallNumber::Waitid => result_to_u64(crate::syscall::wait::sys_waitid(
+            arg1 as u32,
+            arg2,
+            arg3,
+            arg4 as u32,
         )),
         SyscallNumber::Yield => {
             crate::task::scheduler::yield_current();

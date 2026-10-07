@@ -429,7 +429,13 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             fifo_opens = core::mem::take(&mut process.pending_fifo_opens);
         }
         let Some(process) = pm.get_process(pid) else {
-            return (ExitOutcome::Missing, None, None, exit_code);
+            return (
+                ExitOutcome::Missing,
+                None,
+                None,
+                exit_code,
+                alloc::vec::Vec::new(),
+            );
         };
         let outcome = if process.is_terminated() {
             ExitOutcome::RepeatCommit
@@ -437,19 +443,29 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             ExitOutcome::FirstCommit
         };
         let thread_id = process.main_thread.as_ref().map(|thread| thread.id);
+        let children = process.children.clone();
         let receipt = pm.exit_process_locked(pid, exit_code);
         let reported_exit_code = pm
             .get_process(pid)
             .and_then(|process| process.exit_code)
             .unwrap_or(exit_code);
-        (outcome, receipt, thread_id, reported_exit_code)
+        // Groups this exit leaves orphaned with a stopped member, asked once
+        // per row whichever exit path gets here first.
+        let orphaned_groups = pm.groups_orphaned_by_exit(pid, &children);
+        (
+            outcome,
+            receipt,
+            thread_id,
+            reported_exit_code,
+            orphaned_groups,
+        )
     });
 
     for open in &fifo_opens {
         crate::ipc::fifo::abandon_fifo_open(open);
     }
 
-    let Some((outcome, receipt, thread_id, reported_exit_code)) = locked else {
+    let Some((outcome, receipt, thread_id, reported_exit_code, orphaned_groups)) = locked else {
         return ExitOutcome::Missing;
     };
 
@@ -460,6 +476,10 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     }
     #[cfg(target_arch = "x86_64")]
     crate::task::process_task::reclaim_deferred_process_resources();
+
+    for pgid in orphaned_groups {
+        crate::syscall::signal::signal_orphaned_group(pgid);
+    }
 
     // The unchanged btrt effect remains in handle_thread_exit. Calling the
     // existing two-phase path here lets a remote commit race a natural thread

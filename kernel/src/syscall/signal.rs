@@ -85,11 +85,11 @@ fn check_target_exists(pid: i64) -> SyscallResult {
         let target_pid = ProcessId::new(pid as u64);
         let manager_guard = manager();
 
+        // A child that has exited is a zombie, still a process, until it is
+        // reaped; only a reaped row (invisible to this lookup) is gone.
         if let Some(ref manager) = *manager_guard {
-            if let Some(process) = manager.get_process(target_pid) {
-                if !process.is_terminated() {
-                    return SyscallResult::Ok(0);
-                }
+            if manager.get_process(target_pid).is_some() {
+                return SyscallResult::Ok(0);
             }
         }
         SyscallResult::Err(3) // ESRCH - No such process
@@ -105,9 +105,9 @@ fn check_target_exists(pid: i64) -> SyscallResult {
             // Find caller's pgid
             if let Some((_, caller)) = manager.find_process_by_thread(current_thread_id) {
                 let caller_pgid = caller.pgid;
-                // Check if any non-terminated process is in this group
+                // Check if any process, a zombie included, is in this group
                 for process in manager.all_processes() {
-                    if process.pgid == caller_pgid && !process.is_terminated() {
+                    if process.pgid == caller_pgid {
                         return SyscallResult::Ok(0);
                     }
                 }
@@ -133,7 +133,7 @@ fn check_target_exists(pid: i64) -> SyscallResult {
         let manager_guard = manager();
         if let Some(ref manager) = *manager_guard {
             for process in manager.all_processes() {
-                if process.pgid == pgid && !process.is_terminated() {
+                if process.pgid == pgid {
                     return SyscallResult::Ok(0);
                 }
             }
@@ -196,52 +196,54 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
     crate::task::scheduler::set_need_resched();
 }
 
+/// Send SIGHUP and then SIGCONT to every member of `pgid`, a process group an
+/// exit has just orphaned while one of its members is stopped (POSIX _exit).
+/// Must be called with no process-manager lock held.
+pub(crate) fn signal_orphaned_group(pgid: ProcessId) {
+    let _ = send_signal_to_process_group(pgid, SIGHUP);
+    let _ = send_signal_to_process_group(pgid, SIGCONT);
+}
+
 /// Send a signal to a specific process
 fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
+    let caller_tid = crate::task::scheduler::current_thread_id();
     let mut manager_guard = manager();
 
     if let Some(ref mut manager) = *manager_guard {
+        match manager.get_process(target_pid) {
+            None => return SyscallResult::Err(3), // ESRCH
+            // A zombie is still a process until it is reaped: the signal is
+            // accepted and has no effect.
+            Some(process) if process.is_terminated() => return SyscallResult::Ok(0),
+            Some(_) => {}
+        }
+
+        // SIGKILL cannot be caught or blocked
+        if sig == SIGKILL {
+            drop(manager_guard);
+            kill_process_now(target_pid, -(SIGKILL as i32));
+            return SyscallResult::Ok(0);
+        }
+
+        if sig == SIGCONT {
+            // SIGCONT continues a stopped process even when it is ignored or
+            // blocked; it is then queued when caught, and discarded otherwise.
+            crate::signal::delivery::continue_thread_group_locked(manager, target_pid);
+        } else if sig_mask(sig) & STOP_SIGNALS != 0
+            && crate::signal::delivery::generate_stop_locked(manager, target_pid, sig, caller_tid)
+        {
+            // The stop was taken, or discarded for an orphaned process group.
+            return SyscallResult::Ok(0);
+        }
+
         if let Some(process) = manager.get_process_mut(target_pid) {
-            // Check if process is alive
-            if process.is_terminated() {
-                return SyscallResult::Err(3); // ESRCH
-            }
+            // Ignored signals are discarded at generation.
+            process.signals.set_pending(sig);
 
-            // SIGKILL and SIGSTOP are special - cannot be caught or blocked
-            if sig == SIGKILL {
-                let victim_pid = process.id;
-                drop(manager_guard);
-                kill_process_now(victim_pid, -(SIGKILL as i32));
-                return SyscallResult::Ok(0);
-            }
-
-            if sig == SIGSTOP {
-                log::info!("SIGSTOP sent to process {} - stopping", target_pid.as_u64());
-                process.set_blocked();
-                return SyscallResult::Ok(0);
-            }
-
-            if sig == SIGCONT {
-                log::info!(
-                    "SIGCONT sent to process {} - continuing",
-                    target_pid.as_u64()
-                );
-                if matches!(process.state, crate::process::ProcessState::Blocked) {
-                    process.set_ready();
-                    crate::task::scheduler::set_need_resched();
-                }
-                // SIGCONT also gets queued if there's a handler
-                if !process.signals.get_handler(sig).is_default() {
-                    process.signals.set_pending(sig);
-                }
-            } else {
-                // Ignored signals are discarded at generation.
-                process.signals.set_pending(sig);
-            }
-
-            // Resume above is unconditional for SIGCONT; all signal wakeups
-            // below require a pending, unblocked, non-ignored disposition.
-            if !process.signals.has_deliverable_signals() {
+            // A stopped process runs nothing until SIGCONT; what is pending
+            // waits for it. Every other wakeup below requires a pending,
+            // unblocked, non-ignored disposition.
+            if process.job.stopped.is_some() || !process.signals.has_deliverable_signals() {
                 return SyscallResult::Ok(0);
             }
             log::debug!(
@@ -365,10 +367,11 @@ fn send_signal_to_process_group(pgid: ProcessId, sig: u32) -> SyscallResult {
     let target_pids: alloc::vec::Vec<ProcessId> = {
         let manager_guard = manager();
         if let Some(ref manager) = *manager_guard {
+            // Zombies are members until reaped; signalling one has no effect.
             manager
                 .all_processes()
                 .iter()
-                .filter(|p| p.pgid == pgid && !p.is_terminated())
+                .filter(|p| p.pgid == pgid)
                 .map(|p| p.id)
                 .collect()
         } else {
@@ -1463,6 +1466,10 @@ pub fn sys_sigsuspend_with_frame(
                     log::error!("sys_sigsuspend: process not found for thread {}", thread_id);
                     return SyscallResult::Err(3); // ESRCH
                 }
+                // A stop signal the temporary mask unblocks is taken now: no
+                // handler runs for it, so the wait goes on, and the thread is
+                // held where it returns.
+                let _ = crate::signal::delivery::take_stop_locked(manager, thread_id);
             } else {
                 log::error!("sys_sigsuspend: process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH
@@ -2218,6 +2225,10 @@ pub fn sys_sigsuspend_with_frame_aarch64(
                     );
                     return SyscallResult::Err(3); // ESRCH
                 }
+                // A stop signal the temporary mask unblocks is taken now: no
+                // handler runs for it, so the wait goes on, and the thread is
+                // held where it returns.
+                let _ = crate::signal::delivery::take_stop_locked(manager, thread_id);
             } else {
                 log::error!("sys_sigsuspend_aarch64: process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH

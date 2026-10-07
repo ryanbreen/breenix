@@ -140,11 +140,8 @@ fn test_setsid_in_child() {
             let my_pid_i32 = my_pid.raw() as i32;
             println!("  CHILD: pid = {}", my_pid_i32);
 
-            match process::setpgid(0, 0) {
-                Ok(()) => println!("  CHILD: setpgid(0, 0) returned: 0"),
-                Err(_) => println!("  CHILD: setpgid(0, 0) failed"),
-            }
-
+            // The forked child is in its parent's process group, so it is not
+            // a group leader and setsid() may make it a session leader.
             match process::setsid() {
                 Ok(new_sid) => {
                     println!("  CHILD: setsid() returned: {}", new_sid.raw() as i32);

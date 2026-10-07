@@ -256,7 +256,7 @@ pub extern "C" fn check_need_resched_and_switch(
     // during a boot-thread disk-completion wait). The two sites are not
     // inconsistent: each recognizes the family that is provably safe for
     // where it sits.
-    let current_thread_blocked_or_terminated = scheduler::with_scheduler(|sched| {
+    let mut current_thread_blocked_or_terminated = scheduler::with_scheduler(|sched| {
         sched.current_thread_mut().is_some_and(|current| {
             current.state.is_blocked()
                 || current.state == crate::task::thread::ThreadState::Terminated
@@ -268,6 +268,17 @@ pub extern "C" fn check_need_resched_and_switch(
     // CRITICAL: If current thread is blocked/terminated, we MUST schedule regardless of need_resched.
     // A blocked thread cannot continue running - we must switch to another thread.
     let need_resched = scheduler::check_and_clear_need_resched();
+
+    // A stopped process's thread is held off Ring 3 here, before the switch
+    // decision, so the mandatory switch below saves its user context for
+    // SIGCONT to resume. Signal delivery arms need_resched for it, so the
+    // ordinary tick, with no reschedule pending, does not pay for the check.
+    if from_userspace && need_resched && !current_thread_blocked_or_terminated {
+        if let Some(current_tid) = scheduler::current_thread_id() {
+            current_thread_blocked_or_terminated =
+                crate::signal::delivery::hold_stopped_thread_on_interrupt_return(current_tid);
+        }
+    }
     if !need_resched && !current_thread_blocked_or_terminated {
         // No reschedule needed, but check for pending signals before returning to userspace
         if from_userspace {
@@ -425,14 +436,15 @@ pub extern "C" fn check_need_resched_and_switch(
         // preempt_active is false (otherwise we would have returned early).
 
         // Check if current thread is blocked in syscall (pause/waitpid)
-        let (blocked_in_syscall, old_thread_is_user) =
+        let (blocked_in_syscall, old_thread_is_user, old_thread_terminated) =
             scheduler::with_thread_mut(old_thread_id, |thread| {
                 (
                     thread.blocked_in_syscall,
                     thread.privilege == ThreadPrivilege::User,
+                    thread.state == crate::task::thread::ThreadState::Terminated,
                 )
             })
-            .unwrap_or((false, false));
+            .unwrap_or((false, false, false));
 
         // #772 diagnostics: which gate admitted this switch. The blocked or
         // terminated arm is the mandatory switch the refusal is conjoined out
@@ -443,6 +455,10 @@ pub extern "C" fn check_need_resched_and_switch(
 
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
+            // A terminated thread is never dispatched again, so its context
+            // needs no save. Its row may already be reaped (an exit whose
+            // parent declines zombies reaps it at once), and a save that
+            // cannot find the row must not hold the CPU on the dead thread.
             if !save_current_thread_context_with_guard(
                 old_thread_id,
                 saved_regs,
@@ -453,7 +469,8 @@ pub extern "C" fn check_need_resched_and_switch(
                 } else {
                     DispatchSaveReason::UserPreempt
                 },
-            ) {
+            ) && !old_thread_terminated
+            {
                 // Roll back the committed switch and re-arm rescheduling.
                 scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
                 trace_dispatch_abandon(DispatchAbandonSite::RollbackSaveFailed);
@@ -940,8 +957,12 @@ fn switch_to_thread(
                     crate::signal::delivery::check_and_fire_alarm(process);
                     crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
+                    // A stopped process's thread, or one with a stop to take,
+                    // resumes its wait in the kernel: the stop is acted on
+                    // where the syscall returns.
                     let has_pending_signals =
-                        crate::signal::delivery::has_deliverable_signals(process);
+                        crate::signal::delivery::has_deliverable_signals(process)
+                            && !crate::signal::delivery::stop_pending_or_in_force(process);
                     // Use context from scheduler's Thread (single source of truth)
                     // Fall back to process.main_thread for backwards compatibility
                     let has_saved_context = saved_context_from_scheduler.is_some()
@@ -1456,7 +1477,10 @@ fn restore_userspace_thread_context(
                             crate::signal::delivery::check_and_fire_alarm(process);
                             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
-                            if crate::signal::delivery::has_deliverable_signals(process) {
+                            // A stop in force or pending is deliverable work too:
+                            // delivery declines it and arms the next scheduling
+                            // point, which holds the thread.
+                            if crate::signal::delivery::needs_action_on_return_to_user(process) {
                                 note_fact(DispatchLogFact::SignalDeliverableUser);
 
                                 // CRITICAL: Switch to process CR3 BEFORE delivering signal
@@ -1697,7 +1721,10 @@ fn check_and_deliver_signals_for_current_thread(
             crate::signal::delivery::check_and_fire_alarm(process);
             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
-            if crate::signal::delivery::has_deliverable_signals(process) {
+            // A stop in force or pending is deliverable work too: delivery
+            // declines it and arms the next scheduling point, which holds the
+            // thread.
+            if crate::signal::delivery::needs_action_on_return_to_user(process) {
                 // Switch to process's page table for signal delivery
                 if let Some(cr3_val) = process.cr3_value() {
                     unsafe {

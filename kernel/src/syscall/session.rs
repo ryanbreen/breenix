@@ -17,6 +17,12 @@ const EPERM: u64 = 1;
 /// ESRCH - No such process
 const ESRCH: u64 = 3;
 
+/// EACCES - Permission denied
+const EACCES: u64 = 13;
+
+/// EINVAL - Invalid argument
+const EINVAL: u64 = 22;
+
 /// setsid() - Create a new session
 ///
 /// Creates a new session if the calling process is not a process group leader.
@@ -27,12 +33,14 @@ const ESRCH: u64 = 3;
 ///
 /// # Returns
 /// * On success: The new session ID (which equals the process ID)
-/// * -EPERM (1): The calling process is already a process group leader
+/// * -EPERM (1): The calling process is already a process group leader, or a
+///   process group with the caller's PID as its ID exists
 ///
 /// # POSIX Semantics
-/// Per POSIX, setsid() fails with EPERM if the calling process is already
-/// a process group leader (pgid == pid). This prevents creating orphaned
-/// process groups.
+/// setsid() fails with EPERM when the calling process is a process group
+/// leader (which a session leader also is). Linux also refuses while any
+/// process group has the caller's PID as its ID, since the new group's ID
+/// would collide with it; that is the same test, made over every process.
 pub fn sys_setsid() -> SyscallResult {
     // Get current thread to find the calling process
     let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -52,42 +60,37 @@ pub fn sys_setsid() -> SyscallResult {
         }
     };
 
-    let (pid, process) = match manager.find_process_by_thread_mut(thread_id) {
-        Some(p) => p,
+    // The calling process is its thread group, identified by the group's
+    // leader: a CLONE_VM thread's own row PID is not the process's.
+    let group = match manager
+        .find_process_by_thread(thread_id)
+        .and_then(|(row, _)| manager.thread_group_of(row))
+    {
+        Some(group) => group,
         None => {
             log::error!("sys_setsid: process not found for thread {}", thread_id);
             return SyscallResult::Err(ESRCH);
         }
     };
+    let pid = ProcessId::new(group);
 
-    // Check if the process is already a process group leader
-    // A process is a process group leader if pgid == pid
-    if process.pgid == pid {
-        // Check if there are other processes in this process group
-        // For simplicity, we check if this is the only process with this pgid
-        // In a full implementation, we'd need to track all processes in each group
-
-        // For now, we allow setsid if the process is the only member of its group
-        // This is a simplification - a full implementation would need to track
-        // process group membership more carefully
-        log::debug!(
-            "sys_setsid: process {} is process group leader (pgid={}), checking if sole member",
-            pid.as_u64(),
-            process.pgid.as_u64()
-        );
-
-        // If the process already has pgid == pid == sid, it's already a session leader
-        // In this case, we can still proceed if it's the only member of its session
-        // For shell job control purposes, we'll allow this case
+    // A process group whose ID is the caller's PID exists: the caller leads
+    // it, or it outlived the caller's leadership. Zombies are still members.
+    if manager
+        .all_processes()
+        .iter()
+        .any(|process| process.pgid == pid)
+    {
+        return SyscallResult::Err(EPERM);
     }
 
-    // Create new session: set sid = pgid = pid
+    // Create new session: set sid = pgid = pid, for every thread of the
+    // process.
     let new_sid = pid;
-    process.sid = new_sid;
-    process.pgid = new_sid;
-
-    // TODO: Detach from controlling terminal when tty support is added
-    // For now, there's no controlling terminal to detach from
+    for row in manager.group_rows_mut(group) {
+        row.sid = new_sid;
+        row.pgid = new_sid;
+    }
 
     log::info!(
         "sys_setsid: process {} created new session (sid={}, pgid={})",
@@ -230,10 +233,17 @@ pub fn sys_getpgid(pid: i32) -> SyscallResult {
 ///
 /// # Returns
 /// * On success: 0
-/// * -ESRCH (3): No process with the specified PID exists
-/// * -EPERM (1): Various permission errors (see POSIX for details)
+/// * -EINVAL (22): `pgid` is negative
+/// * -ESRCH (3): `pid` is neither the caller nor one of its children
+/// * -EACCES (13): `pid` is a child that has called exec
+/// * -EPERM (1): `pid` is a child in another session, or a session leader, or
+///   `pgid` names no process group in the caller's session
 ///
+/// The checks are POSIX's, made in Linux's order.
 pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
+    if pgid < 0 {
+        return SyscallResult::Err(EINVAL);
+    }
     let thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
         None => {
@@ -249,15 +259,28 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
         }
     };
 
-    // Determine target process
-    let target_pid = if pid == 0 {
-        match manager.find_process_by_thread(thread_id) {
-            Some((p, _)) => p,
-            None => return SyscallResult::Err(ESRCH),
-        }
-    } else {
-        ProcessId::new(pid as u64)
+    // Processes are thread groups, identified by their leaders: a CLONE_VM
+    // thread's row stands for its whole process here.
+    let (caller_pid, caller_sid) = match manager
+        .find_process_by_thread(thread_id)
+        .and_then(|(row, caller)| Some((manager.thread_group_of(row)?, caller.sid)))
+    {
+        Some((group, sid)) => (ProcessId::new(group), sid),
+        None => return SyscallResult::Err(ESRCH),
     };
+
+    // Determine target process
+    let target_pid = match pid {
+        0 => caller_pid,
+        p if p < 0 => return SyscallResult::Err(ESRCH),
+        p => ProcessId::new(p as u64),
+    };
+    // A PID naming a thread that does not lead its group is not a process
+    // (Linux: EINVAL).
+    match manager.thread_group_of(target_pid) {
+        Some(group) if group != target_pid.as_u64() => return SyscallResult::Err(EINVAL),
+        _ => {}
+    }
 
     // Determine new pgid
     let new_pgid = if pgid == 0 {
@@ -266,32 +289,48 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
         ProcessId::new(pgid as u64)
     };
 
-    // Get the target process
-    let process = match manager.get_process_mut(target_pid) {
-        Some(p) => p,
-        None => return SyscallResult::Err(ESRCH),
+    let (target_sid, target_parent, target_exec) = match manager.get_process(target_pid) {
+        Some(p) if !p.is_terminated() => (p.sid, p.parent, p.has_exec),
+        _ => return SyscallResult::Err(ESRCH),
     };
+    // The process the target's parent row belongs to: a child forked by one
+    // of the caller's threads is the caller's child.
+    let target_parent = target_parent.and_then(|parent| manager.thread_group_of(parent));
 
-    if process.is_terminated() {
-        return SyscallResult::Err(ESRCH);
+    // The target is the caller, or a child of the caller in the caller's
+    // session that has not called exec.
+    if target_pid != caller_pid {
+        if target_parent != Some(caller_pid.as_u64()) {
+            return SyscallResult::Err(ESRCH);
+        }
+        if target_sid != caller_sid {
+            return SyscallResult::Err(EPERM);
+        }
+        if target_exec {
+            return SyscallResult::Err(EACCES);
+        }
     }
 
-    // POSIX: A session leader cannot change its process group to a different one
-    // However, if new_pgid == current pgid, this is a no-op and should succeed.
-    // This allows setpgid(0, 0) to work on processes that are already their own
-    // process group leader, even if they happen to also be session leaders.
-    if process.sid == target_pid && new_pgid != process.pgid {
-        log::debug!(
-            "sys_setpgid: EPERM - session leader {} cannot change pgid from {} to {}",
-            target_pid.as_u64(),
-            process.pgid.as_u64(),
-            new_pgid.as_u64()
-        );
+    // A session leader cannot change its process group, not even to its own.
+    if target_sid == target_pid {
         return SyscallResult::Err(EPERM);
     }
 
-    // Set the new process group
-    process.pgid = new_pgid;
+    // Joining another group: it must exist in the caller's session. Zombies
+    // are still members of their group.
+    if new_pgid != target_pid
+        && !manager
+            .all_processes()
+            .iter()
+            .any(|process| process.pgid == new_pgid && process.sid == caller_sid)
+    {
+        return SyscallResult::Err(EPERM);
+    }
+
+    // Every thread of the target process joins the group.
+    for row in manager.group_rows_mut(target_pid.as_u64()) {
+        row.pgid = new_pgid;
+    }
 
     log::debug!(
         "sys_setpgid: set pgid of process {} to {}",
