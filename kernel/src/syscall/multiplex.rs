@@ -180,17 +180,18 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
     }
 }
 
+fn descriptor_limit() -> Result<u64, u64> {
+    let tid = crate::syscall::memory_common::get_current_thread_id().ok_or(3u64)?;
+    let guard = crate::process::manager();
+    let (_, process) = guard
+        .as_ref()
+        .and_then(|m| m.find_process_by_thread(tid))
+        .ok_or(3u64)?;
+    Ok(process.limits.get(crate::process::limits::NOFILE).soft)
+}
+
 fn poll_wait(ptr: u64, nfds: u64, timeout: Option<u64>) -> Result<u64, u64> {
-    let limit = crate::syscall::memory_common::get_current_thread_id()
-        .and_then(|tid| {
-            let guard = crate::process::manager();
-            guard
-                .as_ref()?
-                .find_process_by_thread(tid)
-                .map(|(_, p)| p.limits.get(crate::process::limits::NOFILE).soft)
-        })
-        .unwrap_or(MAX_FDS as u64);
-    if nfds > limit {
+    if nfds > descriptor_limit()? {
         return Err(22);
     }
     let mut fds = alloc::vec![PollFd::default(); nfds as usize];
@@ -282,7 +283,7 @@ pub(super) fn ppoll(ptr: u64, nfds: u64, ts: u64, mask: u64, size: u64) -> Sysca
 }
 
 fn select_wait(nfds: i32, ptrs: [u64; 3], timeout: Option<u64>) -> Result<u64, u64> {
-    if nfds < 0 || nfds as usize > MAX_FDS {
+    if nfds < 0 || nfds as u64 > descriptor_limit()? {
         return Err(22);
     }
     let words = (nfds as usize).div_ceil(64);
