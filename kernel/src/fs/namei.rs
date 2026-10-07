@@ -577,6 +577,11 @@ impl SharedWorkingDir {
         Self(self.0.clone())
     }
 
+    /// Whether `other` is this same working directory, shared by `CLONE_FS`.
+    pub fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// A separate working directory that starts where this one is.
     pub fn copy(&self) -> Self {
         Self(Arc::new(spin::Mutex::new(self.get())))

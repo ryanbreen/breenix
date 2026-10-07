@@ -10,9 +10,8 @@ pub(crate) const ARG_MAX: usize = DEFAULT_STACK_LIMIT as usize / 4;
 
 pub(crate) fn manager_errno(error: &str) -> u64 {
     match error {
-        "exec blocked while CLONE_VM sibling shares old address space" => {
-            super::errno::EAGAIN as u64
-        }
+        "exec blocked while CLONE_VM sibling shares old address space"
+        | "exec credentials changed while its image was prepared" => super::errno::EAGAIN as u64,
         "exec arguments too large" => E2BIG as u64,
         _ => ENOMEM as u64,
     }
@@ -309,6 +308,6 @@ pub(crate) fn stack_size(argv: &[&[u8]], envp: &[&[u8]]) -> Result<usize, &'stat
     if size > ARG_MAX {
         return Err("exec arguments too large");
     }
-    // argc, two NULL pointers, seven auxv pairs, AT_RANDOM, and alignment.
-    Ok((size + 8 * 17 + 16 + 23 + 64 * 1024 + 4095) & !4095)
+    // argc, two NULL pointers, twelve auxv pairs, AT_RANDOM, and alignment.
+    Ok((size + 8 * 27 + 16 + 23 + 64 * 1024 + 4095) & !4095)
 }

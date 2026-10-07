@@ -1218,11 +1218,16 @@ fn sys_exec_aarch64(
 
     let elf_data = elf_vec.as_slice();
 
-    let current_pid = {
+    // The new image's credentials are decided before its stack is built, so
+    // the auxiliary vector reports them; the commit refuses if they change.
+    let (current_pid, image_cred) = {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
-                pid
+                match manager.credentials_after_exec(pid, image_identity) {
+                    Some(cred) => (pid, cred),
+                    None => return (-3_i64) as u64, // -ESRCH
+                }
             } else {
                 log::error!(
                     "sys_exec_aarch64: Thread {} not found in any process",
@@ -1252,6 +1257,8 @@ fn sys_exec_aarch64(
         Some(&program_name),
         &argv_slices,
         &envp_slices,
+        image_identity,
+        image_cred,
     ) {
         Ok(image) => Some(image),
         Err(error) => return (-(crate::syscall::exec::manager_errno(error) as i64)) as u64,
@@ -1301,11 +1308,6 @@ fn sys_exec_aarch64(
         );
 
         let new_ttbr0 = commit.new_page_table_root();
-
-        // The exec has committed: the new image's identity takes effect.
-        if let Some(manager) = manager_guard.as_mut() {
-            manager.apply_exec_identity(current_pid, image_identity);
-        }
 
         // Release the process-manager lock BEFORE taking the scheduler lock: Level 1 (SCHEDULER)
         // must never be acquired under Level 2 (PROCESS_MANAGER). Dropping the guard restores the
@@ -1411,6 +1413,9 @@ fn load_elf_from_ext2(
     // Trace: entering load_elf_from_ext2
     super::trace::trace_exec(b'1');
 
+    // Taken before the filesystem lock: who may execute the file.
+    let cred = crate::fs::permissions::Credentials::current(false);
+
     // The handle holds the inode until its content is read.
     let (mount, inode_num, _held) = crate::fs::namei::resolve_file(path).map_err(|errno| {
         super::trace::trace_exec(b'!');
@@ -1433,8 +1438,7 @@ fn load_elf_from_ext2(
         return Err(EACCES);
     }
 
-    let perms = inode.permissions();
-    if (perms & 0o100) == 0 {
+    if !cred.permits(&inode, 1) {
         super::trace::trace_exec(b'$');
         return Err(EACCES);
     }

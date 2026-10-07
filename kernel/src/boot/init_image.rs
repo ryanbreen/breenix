@@ -33,8 +33,8 @@ pub fn read_init_from_ext2(path: &str) -> Result<Vec<u8>, &'static str> {
 }
 
 /// Read a program image for exec or spawn, resolving `path` as every
-/// pathname is resolved. Fails with the resolution's own errno, or EISDIR for
-/// a directory.
+/// pathname is resolved. Fails with the resolution's own errno, EISDIR for a
+/// directory, or EACCES when the caller may not execute the file.
 #[cfg(target_arch = "x86_64")]
 pub fn read_program(path: &str) -> Result<Vec<u8>, i32> {
     read_program_image(path).map(|(data, _)| data)
@@ -47,6 +47,9 @@ pub fn read_program_image(
 ) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity), i32> {
     use crate::syscall::errno::{EACCES, EIO, EISDIR};
 
+    // Taken before the filesystem lock: who may execute the file.
+    let cred = crate::fs::permissions::Credentials::current(false);
+
     // The handle holds the inode until its content is read.
     let (mount, inode_num, _held) =
         crate::fs::namei::resolve_file(path).map_err(|errno| errno as i32)?;
@@ -58,9 +61,8 @@ pub fn read_program_image(
     if inode.is_dir() {
         return Err(EISDIR);
     }
-
-    // Even a privileged caller needs at least one execute bit on a program.
-    if inode.permissions() & 0o111 == 0 {
+    // A privileged caller still needs at least one execute bit (`permits`).
+    if !cred.permits(&inode, 1) {
         return Err(EACCES);
     }
 

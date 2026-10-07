@@ -216,7 +216,8 @@ pub fn run_userspace_from_disk(
     let pid = {
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            manager.create_process_with_argv(String::from(binary_name), &elf_data, &argv)?
+            let root = crate::process::credentials::ProcessCredentials::root();
+            manager.create_process_with_argv(String::from(binary_name), &elf_data, &argv, &root)?
         } else {
             return Err("Process manager not initialized");
         }

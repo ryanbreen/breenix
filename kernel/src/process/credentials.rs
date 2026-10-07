@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 /// The ID argument that leaves an ID unchanged in setreuid and setregid.
 pub const KEEP_ID: u32 = u32::MAX;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProcessCredentials {
     /// Real user ID.
     pub uid: u32,
@@ -34,7 +34,9 @@ pub struct ProcessCredentials {
 }
 
 /// What an executable file confers at exec: its owner when its set-user-ID
-/// bit is set and its group when its set-group-ID bit is set.
+/// bit is set, and its group when its set-group-ID bit and its group execute
+/// bit are both set. Without group execute, set-group-ID marks mandatory
+/// locking, not an identity, as on Linux.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct ExecIdentity {
     pub uid: Option<u32>,
@@ -46,7 +48,7 @@ impl ExecIdentity {
         let mode = inode.permissions();
         Self {
             uid: (mode & 0o4000 != 0).then(|| inode.uid()),
-            gid: (mode & 0o2000 != 0).then(|| inode.gid()),
+            gid: (mode & 0o2010 == 0o2010).then(|| inode.gid()),
         }
     }
 }
@@ -109,17 +111,37 @@ impl ProcessCredentials {
         Ok(())
     }
 
-    /// exec: the image's set-ID bits replace the effective IDs, then the saved
-    /// IDs take the effective ones, whether or not any bit was set.
-    pub fn exec(&mut self, image: ExecIdentity) {
+    /// The credentials an exec of `image` leaves: its set-ID bits replace the
+    /// effective IDs, then the saved IDs take the effective ones, whether or
+    /// not any bit was set.
+    ///
+    /// `shared_fs` says another process shares the caller's working
+    /// directory (CLONE_FS) and outlives the exec. Unless the caller is
+    /// already privileged, such an exec gains no identity: the effective IDs
+    /// fall back to the real ones, as Linux does for LSM_UNSAFE_SHARE.
+    /// Otherwise the sharer could move the privileged program's directory.
+    pub fn after_exec(&self, image: ExecIdentity, shared_fs: bool) -> Self {
+        let mut new = self.clone();
         if let Some(uid) = image.uid {
-            self.euid = uid;
+            new.euid = uid;
         }
         if let Some(gid) = image.gid {
-            self.egid = gid;
+            new.egid = gid;
         }
-        self.suid = self.euid;
-        self.sgid = self.egid;
+        let gains = new.euid != self.uid || new.egid != self.gid;
+        if shared_fs && gains && !self.privileged() {
+            new.euid = new.uid;
+            new.egid = new.gid;
+        }
+        new.suid = new.euid;
+        new.sgid = new.egid;
+        new
+    }
+
+    /// Whether a program running with these credentials must start in secure
+    /// mode (AT_SECURE): its effective identity is not its real one.
+    pub fn secure(&self) -> bool {
+        self.euid != self.uid || self.egid != self.gid
     }
 
     /// Whether this process may change `target`'s scheduling priority:

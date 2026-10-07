@@ -2422,6 +2422,9 @@ fn load_elf_from_ext2(
 ) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity), i32> {
     use super::errno::{EACCES, EIO};
 
+    // Taken before the filesystem lock: who may execute the file.
+    let cred = crate::fs::permissions::Credentials::current(false);
+
     // The handle holds the inode until its content is read.
     let (mount, inode_num, _held) =
         crate::fs::namei::resolve_file(path).map_err(|errno| errno as i32)?;
@@ -2434,8 +2437,7 @@ fn load_elf_from_ext2(
         return Err(EACCES);
     }
 
-    let perms = inode.permissions();
-    if (perms & 0o100) == 0 {
+    if !cred.permits(&inode, 1) {
         return Err(EACCES);
     }
 
@@ -2535,11 +2537,16 @@ pub fn sys_execv_with_frame(
         let elf_data = elf_vec.as_slice();
 
         // Find current process
-        let current_pid = {
+        // The new image's credentials are decided before its stack is built,
+        // so the auxiliary vector reports them; the commit refuses if they change.
+        let (current_pid, image_cred) = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
                 if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
-                    pid
+                    match manager.credentials_after_exec(pid, image_identity) {
+                        Some(cred) => (pid, cred),
+                        None => return SyscallResult::Err(3), // ESRCH
+                    }
                 } else {
                     log::error!(
                         "sys_execv: Thread {} not found in any process",
@@ -2570,6 +2577,8 @@ pub fn sys_execv_with_frame(
             Some(program_name),
             &argv_slices,
             &envp_slices,
+            image_identity,
+            image_cred,
         ) {
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
@@ -2600,9 +2609,6 @@ pub fn sys_execv_with_frame(
             };
 
             let new_cr3 = commit.new_page_table_root();
-
-            // The exec has committed: the new image's identity takes effect.
-            manager.apply_exec_identity(current_pid, image_identity);
 
             // #721 K3/X1: read everything needed off the receipt above, then release PM
             // before taking the SCHEDULER lock inside commit.apply() — never read the
@@ -2698,11 +2704,16 @@ pub fn sys_execv_with_frame(
         crate::task::scheduler::reclaim_terminated_threads();
 
         // Find current process (unmasked PM window, matches the testing arm above)
-        let current_pid = {
+        // The new image's credentials are decided before its stack is built,
+        // so the auxiliary vector reports them; the commit refuses if they change.
+        let (current_pid, image_cred) = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
                 if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
-                    pid
+                    match manager.credentials_after_exec(pid, image_identity) {
+                        Some(cred) => (pid, cred),
+                        None => return SyscallResult::Err(3), // ESRCH
+                    }
                 } else {
                     log::error!(
                         "sys_execv: Thread {} not found in any process",
@@ -2732,6 +2743,8 @@ pub fn sys_execv_with_frame(
             Some(program_name),
             &argv_slices,
             &envp_slices,
+            image_identity,
+            image_cred,
         ) {
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
@@ -2762,9 +2775,6 @@ pub fn sys_execv_with_frame(
             };
 
             let new_cr3 = commit.new_page_table_root();
-
-            // The exec has committed: the new image's identity takes effect.
-            manager.apply_exec_identity(current_pid, image_identity);
 
             // #721 K3/X1: read everything needed off the receipt above, then release PM
             // before taking the SCHEDULER lock inside commit.apply() — the process manager
