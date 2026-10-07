@@ -163,6 +163,22 @@ pub fn frequency_hz() -> u64 {
     }
 }
 
+/// Whole milliseconds the counter has run since calibration, or `None`
+/// before it. The timer interrupt keeps the kernel's tick to this, so the tick
+/// measures the same time as the monotonic clock however late the interrupts
+/// that advance it are delivered.
+#[inline]
+pub fn milliseconds_since_base() -> Option<u64> {
+    if !is_calibrated() {
+        return None;
+    }
+    let per_ms = COUNTER_FREQ.load(Ordering::Relaxed) / 1000;
+    if per_ms == 0 {
+        return None;
+    }
+    Some(read_cntvct().saturating_sub(BASE_TIMESTAMP.load(Ordering::Relaxed)) / per_ms)
+}
+
 /// Get nanoseconds since base was established (calibrate() was called)
 #[inline]
 pub fn nanoseconds_since_base() -> Option<u64> {
