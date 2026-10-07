@@ -1299,6 +1299,7 @@ fn heap_back_within(before_kb: u64, slack_kb: u64, what: &str) -> CaseResult {
 
 /// Wait, for at most a second, until `pid` is blocked (true) or has ended
 /// (false).
+#[cfg(not(target_arch = "x86_64"))]
 fn blocked_or_ended(pid: i32) -> Result<bool, CaseError> {
     let path = format!("/proc/{pid}/status");
     let start = now_ms();
@@ -1344,6 +1345,10 @@ fn kill_readers() -> CaseResult {
 /// calls execve, its only syscall after the write, so once it is seen blocked
 /// it is asleep inside the exec. When the exec finishes first, the new
 /// program exits 77 and the kill is tried again with a new child.
+///
+/// Not run on x86-64, which brings up one CPU: there the parent was never
+/// seen to run while a child was inside an exec, so no kill can land in one.
+#[cfg(not(target_arch = "x86_64"))]
 fn kill_execs() -> CaseResult {
     const EXECS: usize = 16;
     const TRIES: usize = 4;
@@ -1383,10 +1388,13 @@ fn fork_kill_heap() -> CaseResult {
     // Each half has its own workload and allowance: on main, each half alone
     // leaves at least twice its allowance behind. Both halves run, so a
     // failure reports them both.
-    match (kill_readers(), kill_execs()) {
+    #[cfg(not(target_arch = "x86_64"))]
+    return match (kill_readers(), kill_execs()) {
         (Err(CaseError::Fail(readers)), Err(CaseError::Fail(execs))) => fail(format!("{readers}; {execs}")),
         (readers, execs) => readers.and(execs),
-    }
+    };
+    #[cfg(target_arch = "x86_64")]
+    kill_readers()
 }
 
 fn fork_many() -> CaseResult {
