@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Lease a bounded lane checkout for the whole remote gate, outside that checkout."""
 import fcntl
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
@@ -15,6 +16,19 @@ GIB = 1024 ** 3
 
 def phase(name, start, status=0):
     print(f'[gate-phase] phase={name} ended={time.time():.3f} seconds={time.monotonic()-start:.3f} status={status}', flush=True)
+
+
+@contextmanager
+def timing(name, detail=''):
+    started = time.monotonic()
+    print(f'[gate-phase] phase={name} started={time.time():.3f} {detail}'.rstrip(), flush=True)
+    try:
+        yield
+    except BaseException:
+        phase(name, started, 1)
+        raise
+    else:
+        phase(name, started)
 
 
 def size(path):
@@ -89,19 +103,17 @@ def main():
         fresh = os.environ.get('BREENIX_GATE_FRESH') == '1'
         if fresh:
             tree = Path(output).parent / 'clean-tree'
-        start = time.monotonic()
-        print(f'[gate-phase] phase=clone-fetch started={time.time():.3f}', flush=True)
-        run(['git', '-C', canonical, 'fetch', '--no-tags', '--no-write-fetch-head', '--no-auto-gc', 'origin', sha])
-        if not (tree / '.git').exists():
-            tree.parent.mkdir(parents=True, exist_ok=True)
-            run(['git', 'clone', '--shared', canonical, str(tree)])
-        # Reset tracked files, including the host-only rust-fork symlink.
-        run(['git', '-C', str(tree), 'reset', '--hard'])
-        run(['git', '-C', str(tree), 'checkout', '--detach', '--force', sha])
-        # Remove obsolete ignored ELFs; targets remain incremental. Untracked
-        # source files must never survive checkout of an older requested commit.
-        run(['git', '-C', str(tree), 'clean', '-fd', '-e', 'rust-fork-real'])
-        phase('clone-fetch', start)
+        with timing('clone-fetch'):
+            run(['git', '-C', canonical, 'fetch', '--no-tags', '--no-write-fetch-head', '--no-auto-gc', 'origin', sha])
+            if not (tree / '.git').exists():
+                tree.parent.mkdir(parents=True, exist_ok=True)
+                run(['git', 'clone', '--shared', canonical, str(tree)])
+            # Reset tracked files, including the host-only rust-fork symlink.
+            run(['git', '-C', str(tree), 'reset', '--hard'])
+            run(['git', '-C', str(tree), 'checkout', '--detach', '--force', sha])
+            # Remove obsolete ignored ELFs; targets remain incremental. Untracked
+            # source files must never survive checkout of an older requested commit.
+            run(['git', '-C', str(tree), 'clean', '-fd', '-e', 'rust-fork-real'])
         environment = dict(os.environ, BREENIX_REPO_DIR=str(tree), BREENIX_GATE_CACHE_DIR=str(root), CARGO_BUILD_JOBS='6')
         if not (tree / 'scripts/host-slots.py').exists():
             helper = str(Path(output) / 'host-slots.py')

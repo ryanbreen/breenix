@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Cache correctness and bounded eviction without a VM or Rust build."""
 import importlib.util
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -58,6 +60,38 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(build.call_count, 2)
             self.assertEqual(elf.read_bytes(), b'ELF bytes')
             self.assertFalse((elf.parent / 'obsolete.elf').exists())
+
+    def test_fresh_checkout_compares_against_existing_verified_entry(self):
+        with patch.object(artifacts, 'build', side_effect=self.build) as build:
+            self.call()
+            fresh = self.root / 'fresh'
+            fresh.mkdir()
+            self.repo = fresh
+            with patch.dict(os.environ, BREENIX_GATE_FRESH='1'):
+                self.call()
+            self.assertEqual(build.call_count, 3)
+            self.assertEqual((fresh / 'userspace/programs/example.elf').read_bytes(), b'ELF bytes')
+
+    def test_fresh_checkout_mismatch_is_rejected(self):
+        with patch.object(artifacts, 'build', side_effect=self.build):
+            self.call()
+        fresh = self.root / 'fresh'
+        fresh.mkdir()
+        self.repo = fresh
+        def wrong(repo, logs, label):
+            self.build(repo, logs, label)
+            (repo / 'userspace/programs/example.elf').write_bytes(b'path-dependent')
+        with patch.object(artifacts, 'build', side_effect=wrong), patch.dict(os.environ, BREENIX_GATE_FRESH='1'):
+            with self.assertRaisesRegex(RuntimeError, 'fresh checkout artifacts differ'):
+                self.call()
+
+    def test_failed_build_emits_phase_duration_and_failure_status(self):
+        output = io.StringIO()
+        with patch.object(artifacts, 'checked', side_effect=RuntimeError('compiler error')), redirect_stdout(output):
+            with self.assertRaisesRegex(RuntimeError, 'compiler error'):
+                artifacts.build(self.repo, self.logs, 'candidate')
+        lines = output.getvalue().splitlines()
+        self.assertTrue(any('phase=userspace-build' in line and 'ended=' in line and 'seconds=' in line and 'status=1' in line for line in lines))
 
     def test_mismatch_never_publishes_verified_key(self):
         def unequal(repo, logs, label):

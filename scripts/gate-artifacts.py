@@ -42,7 +42,7 @@ def key(repo):
     # Version strings alone cannot distinguish a locally patched compiler.
     rustc = Path(subprocess.check_output(['rustup', 'which', 'rustc'], cwd=repo, text=True).strip())
     sysroot = Path(subprocess.check_output(['rustc', '--print', 'sysroot'], cwd=repo, text=True).strip())
-    for executable in [rustc] + sorted((sysroot / 'lib/rustlib').glob('*/bin/rust-lld')):
+    for executable in [rustc] + sorted((sysroot / 'lib/rustlib').glob('*/bin/rust-lld')) + sorted((sysroot / 'lib').glob('*rustc_driver*')):
         result.update(digest(executable).encode())
     for variable in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'BREENIX_TRACE_DIAG_EARLY',
                      'BREENIX_BSSH_AUTORUN', 'BREENIX_WAIT_STRESS', 'RUSTUP_TOOLCHAIN'):
@@ -122,25 +122,20 @@ def checked(command, repo, log):
         raise RuntimeError(f'{command[0]} failed ({status}); see {log}')
     # Match compile notices at the start of a line, even indented by build.sh.
     warnings = [line for line in log.read_text(errors='replace').splitlines()
-                if line.lstrip().startswith(('warning:', 'warning[', 'error:', 'error['))
-                and 'NEON' not in line and 'neon' not in line]
+                if line.lstrip().startswith(('warning:', 'warning[', 'error:', 'error['))]
     if warnings:
         raise RuntimeError(f'build warnings/errors: {warnings[:5]}; see {log}')
 
 
 def build(repo, logs, label):
-    start = time.monotonic()
-    print(f'[gate-phase] phase=userspace-build started={time.time():.3f} build={label}', flush=True)
-    checked([str(repo / 'userspace/programs/build.sh')], repo, logs / f'{label}-userspace.log')
-    tree_cache.phase('userspace-build', start)
-    start = time.monotonic()
-    print(f'[gate-phase] phase=disk-repack started={time.time():.3f} build={label}', flush=True)
-    checked(['python3', str(repo / 'scripts/install-busybox.py'), 'x86_64'], repo, logs / f'{label}-busybox.log')
-    checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo, logs / f'{label}-test-disk.log')
-    checked([str(repo / 'scripts/create_ext2_disk.sh')], repo, logs / f'{label}-ext2.log')
-    canonical_ext2(repo / 'testdata/ext2.img')
-    shutil.copyfile(repo / 'testdata/ext2.img', repo / 'target/ext2.img')
-    tree_cache.phase('disk-repack', start)
+    with tree_cache.timing('userspace-build', f'build={label}'):
+        checked([str(repo / 'userspace/programs/build.sh')], repo, logs / f'{label}-userspace.log')
+    with tree_cache.timing('disk-repack', f'build={label}'):
+        checked(['python3', str(repo / 'scripts/install-busybox.py'), 'x86_64'], repo, logs / f'{label}-busybox.log')
+        checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo, logs / f'{label}-test-disk.log')
+        checked([str(repo / 'scripts/create_ext2_disk.sh')], repo, logs / f'{label}-ext2.log')
+        canonical_ext2(repo / 'testdata/ext2.img')
+        shutil.copyfile(repo / 'testdata/ext2.img', repo / 'target/ext2.img')
 
 
 def artifacts(repo):
@@ -168,16 +163,29 @@ def main():
     repo, logs = map(Path, sys.argv[1:])
     if os.environ.get('BREENIX_GATE_FRESH') == '1' or 'BREENIX_GATE_CACHE_DIR' not in os.environ:
         build(repo, logs, 'uncached')
+        if 'BREENIX_GATE_CACHE_DIR' in os.environ:
+            # The requested cold comparisons also check relocation to a fresh
+            # clone, rather than assuming path remapping made ELFs portable.
+            root = Path(os.environ['BREENIX_GATE_CACHE_DIR'])
+            with tree_cache.timing('fresh-cache-comparison'):
+                cache_key = key(repo)
+                entry = root / 'artifacts' / cache_key
+                with tree_cache.lease(root, 'artifacts-' + cache_key):
+                    if (entry / 'verified.json').exists():
+                        manifest = json.loads((entry / 'verified.json').read_text())
+                        if inventory(repo) != manifest:
+                            raise RuntimeError('fresh checkout artifacts differ from verified cache')
+                        print(f'[gate-cache] FRESH key={cache_key} matches-verified=true', flush=True)
         return
     root = Path(os.environ['BREENIX_GATE_CACHE_DIR'])
-    start = time.monotonic()
     # These workspaces historically ignore their lockfiles. Resolve as a clean
     # checkout would, then include exact package versions/checksums in the key.
-    for manifest in ('Cargo.toml', 'userspace/programs/Cargo.toml'):
-        checked(['cargo', 'generate-lockfile', '--manifest-path', str(repo / manifest)],
-                repo, logs / (Path(manifest).parent.name + '-resolve.log'))
-    tree_cache.phase('dependency-resolution', start)
-    cache_key = key(repo)
+    with tree_cache.timing('dependency-resolution'):
+        for manifest in ('Cargo.toml', 'userspace/programs/Cargo.toml'):
+            checked(['cargo', 'generate-lockfile', '--manifest-path', str(repo / manifest)],
+                    repo, logs / (Path(manifest).parent.name + '-resolve.log'))
+    with tree_cache.timing('userspace-input-key'):
+        cache_key = key(repo)
     entry = root / 'artifacts' / cache_key
     wait = time.monotonic()
     with tree_cache.lease(root, 'artifacts-' + cache_key):
