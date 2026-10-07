@@ -4,10 +4,10 @@
 # (docs/boot-path.md) with a console you can watch and type into.
 #
 #   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID] [--serial-log FILE]
-#                               [--idle-exit SECONDS] [--display | --no-display]
+#                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
 #                               [--qmp SOCKET] [--fbconsole log] [--no-build]
 #
-#   Suite mode stops at its complete DONE record and exits with the suite verdict.
+#   Suite mode observes DONE, holds the scored panel, then exits with the suite verdict.
 #   --mode MODE          tests (default): the testing kernel and its test loader
 #                        probe | shell | desktop | program | suite: the production kernel, told the mode
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md)
@@ -18,6 +18,8 @@
 #   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
 #   --serial-log FILE    also write everything the guest prints to FILE (default: $TMPDIR/breenix-boot/serial.txt)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 = never)
+#   --gate-timeout SECONDS  suite DONE deadline (default 1800), even with --idle-exit 0
+#   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
 #   --display            open QEMU's display window as well (default: serial only; on for desktop)
 #   --no-display         serial only, even for desktop
 #   --no-build           boot the kernel and disk already in target/
@@ -33,6 +35,7 @@ source "$ROOT/scripts/host-slots.sh"
 host_slots_start "$ROOT/scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
 SERIAL_LOG="${TMPDIR:-/tmp}/breenix-boot/serial.txt"
 IDLE_EXIT=300
+GATE_TIMEOUT=1800
 DISPLAY_MODE=
 BUILD=1
 MODE=tests
@@ -43,7 +46,7 @@ FBCONSOLE=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--serial-log|--idle-exit|--qmp|--fbconsole)
+        --mode|--program|--suite|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -54,6 +57,7 @@ while [ "$#" -gt 0 ]; do
         --fbconsole) FBCONSOLE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;
+        --gate-timeout) GATE_TIMEOUT="$2"; shift 2 ;;
         --display) DISPLAY_MODE=cocoa; shift ;;
         --no-display) DISPLAY_MODE=none; shift ;;
         --no-build) BUILD=0; shift ;;
@@ -155,10 +159,15 @@ qemu_host_lock_acquire
 VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG")
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
 [ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $QMP_SOCKET out.png)"
-# Watch in the foreground; the watcher stops and reaps its own QEMU before returning.
+# Wait interruptibly and register the watcher so a signal to this script also
+# stops and reaps its QEMU before the host lock is released.
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
+exec 3<&0
 set +e
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
-    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --disk "$WRITABLE" -- qemu-system-aarch64 \
+    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
@@ -172,7 +181,10 @@ python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -chardev stdio,id=con,mux=on,signal=off,logfile="$SERIAL_LOG" \
-    -serial chardev:con -mon chardev=con,mode=readline
+    -serial chardev:con -mon chardev=con,mode=readline <&3 &
+WATCHER_PID=$!
+qemu_host_lock_track_pid "$WATCHER_PID"
+wait "$WATCHER_PID"
 code=$?
 set -e
 echo

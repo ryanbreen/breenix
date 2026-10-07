@@ -62,12 +62,17 @@ stage list and shown alongside, but does not block moving on.
   first (x86-64 QEMU reads fw_cfg too, for `default` and `suite`), then that file, else
   `default`. Suite mode exercises the kernel milestones and the first userspace process: the
   suite's `START` and `DONE` lines show PID 1 running in user mode and making syscalls.
-  Suite runners stop the VM as soon as its complete `DONE` line reaches serial,
-  validate the records against the manifest, and release the shared boot slot.
-  A missing DONE or fatal kernel output fails the boot; QEMU retains its idle exit
-  for suites that never finish. `--suite --test` on Parallels
+  ARM64 QEMU waits two seconds after a complete `DONE` line for rendering, then
+  holds the scored panel for `BREENIX_SUITE_HOLD` seconds (default 5), continuing
+  to watch for fatal output. It stops the VM, validates the records against the
+  manifest and releases the shared boot slot. A missing DONE or fatal kernel
+  output fails the boot; its idle exit and `--gate-timeout` DONE deadline also
+  stop unfinished suites. Parallels and VMware retain their scored panel until
+  Ctrl-C stops the VM. `--suite --test` on Parallels
   waits for DONE before its timed screenshot and exit; VMware rejects `--test`.
-  `--gate-timeout N` sets the DONE deadline (default 1800 seconds for suites and probes).
+  `--gate-timeout N` sets the DONE deadline (default 1800 seconds for ARM64 QEMU
+  suites and Parallels/VMware suites and probes); QEMU enforces it even when
+  `--idle-exit 0` disables idle shutdown.
   The `default` boot (what Parallels and VMware run without `--suite` or `--probe`) measures that
   milestone by init's `[init] Breenix init starting (PID 1)` and `[init] Boot script completed`.
 

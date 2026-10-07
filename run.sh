@@ -313,6 +313,13 @@ install_vm_boot_traps() {
     trap 'exit 143' TERM
 }
 
+# Suite panels stay visible until the caller leaves; no log-monitor job is needed.
+hold_suite_panel() {
+    echo "Suite complete; scored panel remains visible. Ctrl-C stops the VM."
+    trap 'exit 0' INT
+    while vm_is_running; do sleep 1; done
+}
+
 vm_is_running() {
     if [ "$PARALLELS" = true ]; then
         prlctl status "$PARALLELS_VM" 2>/dev/null | grep -q 'running'
@@ -614,7 +621,8 @@ if [ "$PARALLELS" = true ]; then
 
     if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]; then
         wait_boot_done || exit $?
-        if [ "$BOOT_MODE" = probe ] || [ "$PARALLELS_TEST" != true ]; then exit 0; fi
+        if [ "$BOOT_MODE" = probe ]; then exit 0; fi
+        if [ "$PARALLELS_TEST" != true ]; then hold_suite_panel; fi
     fi
 
     if [ "$PARALLELS_TEST" = true ]; then
@@ -961,7 +969,8 @@ VMXEOF
     echo ""
     if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]; then
         wait_boot_done || exit $?
-        exit 0
+        if [ "$BOOT_MODE" = probe ]; then exit 0; fi
+        hold_suite_panel
     fi
 
     echo "Tailing serial output (Ctrl+C stops the VM)..."
