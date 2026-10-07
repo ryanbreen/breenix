@@ -75,7 +75,7 @@ fn render_thread_main_kthread() {
         // fbdraw syscalls. Flush any cursor dirty rect, then sleep.
         if DISPLAY_TAKEN.load(Ordering::Acquire) {
             flush_framebuffer();
-            arch_halt();
+            wait_for_next_tick();
             continue;
         }
 
@@ -113,33 +113,85 @@ fn render_thread_main_kthread() {
         // No work was done — yield CPU to other threads
         crate::task::scheduler::yield_current();
 
-        // Check one more time for data before halting. We use WFI/HLT
-        // to sleep until the next interrupt (timer at 200Hz = 5ms max).
+        // Check one more time for data before waiting for the next tick.
         //
         // NOTE: We intentionally do NOT use kthread_park/unpark here.
         // There is a fundamental race between checking for data and parking:
         // if data arrives after the check but before park sets parked=true,
-        // wake_render_thread's kthread_unpark is lost. Instead, WFI wakes
-        // on any interrupt (timer tick) and we re-check all data sources.
+        // wake_render_thread's kthread_unpark is lost. Instead, the thread
+        // runs again on the next timer tick and re-checks all data sources.
         if !RENDER_WAKE.swap(false, Ordering::Acquire)
             && !render_queue::has_pending_data()
             && !log_capture::has_pending_data()
             && !has_pending_flush()
         {
-            arch_halt();
+            wait_for_next_tick();
         }
     }
 
     RENDER_THREAD_RUNNING.store(false, Ordering::SeqCst);
 }
 
+/// One ARM64 timer tick: the timer runs at 1 kHz.
+#[cfg(target_arch = "aarch64")]
+const TICK_NS: u64 = 1_000_000;
+
+/// Wait until the next timer tick, when the loop re-checks its work.
+///
+/// On aarch64 the render thread sleeps on a one-tick timer and gives up its
+/// CPU at once. It used to wait in WFI as the CPU's current thread, which
+/// kept every thread queued on that CPU waiting until something rescheduled
+/// it. While the suite runner owns the display the loop never yields, so
+/// that was the 10-tick quantum: a ring of `sched_yield` processes saw its
+/// members queued there wait about 12 ms to run (#1177). Asleep, the thread
+/// leaves the CPU to the threads queued on it or to its idle thread, which
+/// other CPUs wake with a reschedule IPI when they give it work.
+#[cfg(target_arch = "aarch64")]
+fn wait_for_next_tick() {
+    use crate::task::{scheduler, thread::ThreadState};
+
+    let Some(tid) = scheduler::current_thread_id() else {
+        arch_halt();
+        return;
+    };
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    let wake_at = seconds
+        .saturating_mul(1_000_000_000)
+        .saturating_add(nanos)
+        .saturating_add(TICK_NS);
+    scheduler::with_scheduler(|sched| sched.block_current_for_timer(wake_at));
+    loop {
+        // The switch below answers any reschedule asked of this CPU, as the
+        // idle loop's does; left set, the request would preempt the thread
+        // this CPU switches to.
+        let _ = scheduler::check_and_clear_need_resched();
+        scheduler::schedule();
+        let asleep = scheduler::with_scheduler(|sched| {
+            sched
+                .get_thread(tid)
+                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
+        })
+        .unwrap_or(false);
+        if !asleep {
+            break;
+        }
+    }
+}
+
+/// Wait until the next timer tick, when the loop re-checks its work.
+#[cfg(not(target_arch = "aarch64"))]
+fn wait_for_next_tick() {
+    arch_halt();
+}
+
 /// Architecture-specific halt (wait for interrupt).
 ///
 /// A private park primitive, kept separate from `crate::arch_halt` so the
 /// aarch64 arm keeps the exact `asm!` it emits today. It carries the
-/// same #772 park bump the shared primitives do, so the render thread's own
-/// wait loop above is counted at its 2 park points the way the loops that
-/// use the shared primitives are.
+/// same #772 park bump the shared primitives do, so the render thread's waits
+/// that use it -- x86's wait for the next tick, and aarch64's when the thread
+/// has no scheduler identity -- are counted the way the loops that use the
+/// shared primitives are.
 #[inline(always)]
 fn arch_halt() {
     crate::per_cpu::note_wait_loop_park();

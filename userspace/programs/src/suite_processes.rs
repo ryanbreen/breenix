@@ -2955,9 +2955,9 @@ fn woken_process(shared: &[AtomicI64]) -> i32 {
 /// had a spare processor, the case cannot tell scheduling from contention, and skips.
 fn sched_idle_cpu() -> CaseResult {
     let cpus = processors();
-    // The suite runner, which polls while a case runs, and the kernel's render thread,
-    // which waits for work on its processor, each hold one; so do this process and the
-    // woken one, and a further processor has to be left idle while it sleeps.
+    // The suite runner, which polls while a case runs, this process and the woken one
+    // each hold one, and a further processor has to be left idle while it sleeps. The
+    // kernel's render thread, which runs briefly on every tick, needs room too.
     if cpus < 4 {
         return skip(format!("{cpus} processor(s) online; the case needs 4, so that one is idle"));
     }
