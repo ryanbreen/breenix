@@ -38,10 +38,10 @@ def key(repo):
         if path.is_file() and 'target' not in path.relative_to(library).parts:
             result.update(str(path.relative_to(library)).encode() + b'\0' + path.read_bytes() + b'\0')
     for command in (['rustc', '-Vv'], ['cargo', '-V'], ['mke2fs', '-V'], ['debugfs', '-V']):
-        result.update(subprocess.check_output(command, stderr=subprocess.STDOUT))
+        result.update(subprocess.check_output(command, cwd=repo, stderr=subprocess.STDOUT))
     # Version strings alone cannot distinguish a locally patched compiler.
-    rustc = Path(subprocess.check_output(['rustup', 'which', 'rustc'], text=True).strip())
-    sysroot = Path(subprocess.check_output(['rustc', '--print', 'sysroot'], text=True).strip())
+    rustc = Path(subprocess.check_output(['rustup', 'which', 'rustc'], cwd=repo, text=True).strip())
+    sysroot = Path(subprocess.check_output(['rustc', '--print', 'sysroot'], cwd=repo, text=True).strip())
     for executable in [rustc] + sorted((sysroot / 'lib/rustlib').glob('*/bin/rust-lld')):
         result.update(digest(executable).encode())
     for variable in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'BREENIX_TRACE_DIAG_EARLY',
