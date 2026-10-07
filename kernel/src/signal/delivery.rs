@@ -1317,8 +1317,7 @@ fn abandon_syscall_return() -> ! {
 
 /// The exit status a death by `sig`'s default action reports, or None when
 /// that default action does not end the process.
-#[cfg(target_arch = "x86_64")]
-fn fatal_exit_code(sig: u32) -> Option<i32> {
+pub fn fatal_exit_code(sig: u32) -> Option<i32> {
     match default_action(sig) {
         SignalDefaultAction::Terminate => Some(-(sig as i32)),
         SignalDefaultAction::CoreDump => Some(-((sig as i32) | 0x80)),
@@ -1339,9 +1338,8 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
 
 /// Take the calling process's next deliverable signal off its pending set
 /// when that signal has the default action and the action ends the process,
-/// returning its number. The x86-64 syscall return path calls this under the
+/// returning its number. The syscall return paths call this under the
 /// process-manager lock, so it does no logging, locking or allocation.
-#[cfg(target_arch = "x86_64")]
 pub fn take_fatal_default_signal(process: &mut Process) -> Option<u32> {
     // A stopped process dies of SIGKILL only; anything else waits for SIGCONT.
     if process.job.stopped.is_some() && !sigkill_pending(process) {
@@ -1391,6 +1389,8 @@ fn exit_on_syscall_return(sig: u32, exit_code: i32) -> ! {
                 .map(|(pid, process)| (pid, process.name.clone()))
         })
         .flatten();
+        // This function never returns, so the name is dropped before the
+        // thread stops running rather than with the stack it is on.
         if let Some((pid, name)) = row {
             crate::serial_println!(
                 "[signal] Process {} ({}) terminated by signal {} ({})",
@@ -1399,6 +1399,7 @@ fn exit_on_syscall_return(sig: u32, exit_code: i32) -> ! {
                 sig,
                 signal_name(sig)
             );
+            drop(name);
             terminate_thread_group_peers(pid, exit_code);
         }
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
