@@ -42,11 +42,9 @@ pub enum SignalDeliveryResult {
     Delivered,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
-    /// The thread is no longer runnable and its exit is deferred to
-    /// scheduling context (`defer_thread_exit`): a caught signal's frame could
-    /// not be installed on the user stack, and the process dies of SIGSEGV, or
-    /// a default action ended the process. The caller must not return the
-    /// thread to user mode, and the deferred exit tells the parent.
+    /// A caught signal's frame could not be installed on the user stack. The
+    /// thread is no longer runnable and its SIGSEGV exit is deferred; the
+    /// caller must not return it to user mode.
     FrameFault,
 }
 
@@ -125,7 +123,6 @@ pub fn deliver_pending_signals(
                     DeliverResult::Terminated(notification) => {
                         return SignalDeliveryResult::Terminated(notification)
                     }
-                    DeliverResult::ExitDeferred => return SignalDeliveryResult::FrameFault,
                     DeliverResult::Ignored => {
                         // Continue loop to check for more signals
                     }
@@ -230,7 +227,6 @@ pub fn deliver_pending_signals(
                     DeliverResult::Terminated(notification) => {
                         return SignalDeliveryResult::Terminated(notification)
                     }
-                    DeliverResult::ExitDeferred => return SignalDeliveryResult::FrameFault,
                     DeliverResult::Ignored => {
                         // Continue loop to check for more signals
                     }
@@ -272,9 +268,6 @@ pub enum DeliverResult {
     Ignored,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
-    /// The process is ending and its thread will not run again; the exit
-    /// runs later in scheduling context (`defer_signal_exit`).
-    ExitDeferred,
 }
 
 /// A pending SIGKILL ends a stopped process: it is not held stopped.
@@ -335,50 +328,6 @@ fn write_signal_stack(
         && table.write_user_memory(addr, bytes, pid)
 }
 
-/// End `process` with `exit_code` from an interrupt or exception return, where
-/// the exit itself cannot run: its thread stops being scheduled and
-/// `handle_thread_exit` runs later, as a frame fault's exit does, which
-/// releases the address space, tells the parent and retires the row. The
-/// parent's waits are woken, since a wait finishes the deferred exits it may
-/// be waiting for. False, with nothing changed, when the exit cannot be queued.
-fn defer_signal_exit(process: &Process, exit_code: i32) -> bool {
-    let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id()) else {
-        return false;
-    };
-    // Every caller runs on the dying thread's CPU with its address space
-    // installed. Leave it first, as an exit does: a peer CPU may drain the
-    // exit as soon as it is published, and a root this CPU still holds, or
-    // that a return shadow names, keeps the row's page tables, and the file
-    // mappings they hold, from being released until this CPU next runs user
-    // code.
-    leave_dying_address_space();
-    if !crate::task::process_task::defer_thread_exit(thread_id, exit_code) {
-        return false;
-    }
-    crate::task::scheduler::terminate_thread(thread_id);
-    if let Some(parent) = process.parent {
-        crate::task::scheduler::with_scheduler(|scheduler| {
-            scheduler.wake_child_exit_waiters(parent.as_u64());
-        });
-    }
-    true
-}
-
-/// Switch this CPU off the running process's address space and clear the
-/// return shadows that would install it again, before a deferred exit is
-/// published.
-fn leave_dying_address_space() {
-    #[cfg(target_arch = "aarch64")]
-    crate::arch_impl::aarch64::quiesce_ttbr0_for_exit();
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: the master kernel PML4 maps everything the kernel runs on.
-        unsafe { crate::memory::process_memory::switch_to_kernel_page_table() };
-        crate::per_cpu::set_next_cr3(0);
-        crate::per_cpu::set_saved_process_cr3(0);
-    }
-}
-
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
@@ -395,9 +344,6 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // But we use negative signal number to indicate signal death
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
             let exit_code = signal_death_exit_code(process, sig);
-            if defer_signal_exit(process, exit_code) {
-                return DeliverResult::ExitDeferred;
-            }
             process.terminate(exit_code);
 
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
@@ -435,9 +381,6 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // The 0x80 flag indicates core dump
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
             let exit_code = signal_death_exit_code(process, sig);
-            if defer_signal_exit(process, exit_code) {
-                return DeliverResult::ExitDeferred;
-            }
             process.terminate(exit_code);
 
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
