@@ -499,21 +499,29 @@ fn sys_exit_aarch64(
 /// Finish a syscall return whose pending signal `sig`, taken by
 /// `take_fatal_default_signal`, ends the calling process. The thread leaves
 /// through `sys_exit_aarch64`, as `exit` does, which releases the row's
-/// address space and retires the row once it is reaped, with the signal's
-/// status, and the rest of its thread group dies with it. Called with no process-manager lock held
-/// and with the syscall's preempt_disable() still in force; never returns.
+/// address space and retires the row once it is reaped, with the status
+/// `signal_death_exit_code` gives, and the rest of its thread group dies with
+/// it. Called with no process-manager lock held and with the syscall's
+/// preempt_disable() still in force; never returns.
 fn exit_by_signal_aarch64(sig: u32) -> ! {
-    let exit_code = crate::signal::delivery::fatal_exit_code(sig).unwrap_or(-(sig as i32));
     let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
         panic!("AArch64 signal exit invoked without a current scheduler thread");
     };
     let row = crate::process::with_process_manager(|manager| {
-        manager
-            .find_process_by_thread(thread_id)
-            .map(|(pid, process)| (pid, process.name.clone()))
+        manager.find_process_by_thread(thread_id).map(|(pid, process)| {
+            (
+                pid,
+                process.name.clone(),
+                crate::signal::delivery::signal_death_exit_code(process, sig),
+            )
+        })
     })
     .flatten();
-    if let Some((pid, name)) = row {
+    let exit_code = row.as_ref().map_or_else(
+        || crate::signal::delivery::fatal_exit_code(sig).unwrap_or(-(sig as i32)),
+        |&(_, _, exit_code)| exit_code,
+    );
+    if let Some((pid, name, _)) = row {
         crate::serial_println!(
             "[signal] Process {} ({}) terminated by signal {} ({})",
             pid.as_u64(),

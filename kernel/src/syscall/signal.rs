@@ -177,6 +177,8 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
     crate::process::with_process_manager(|manager| {
         if let Some(process) = manager.get_process_mut(victim) {
             process.signals.set_pending(SIGKILL);
+            // A deferred kill reports this status, not SIGKILL's own.
+            process.group_exit_code.get_or_insert(exit_code);
         }
     });
     let claimed = crate::task::scheduler::with_scheduler(|scheduler| {

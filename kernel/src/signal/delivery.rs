@@ -343,7 +343,8 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // Exit code for signal termination is typically 128 + signal number
             // But we use negative signal number to indicate signal death
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-            process.terminate(-(sig as i32));
+            let exit_code = signal_death_exit_code(process, sig);
+            process.terminate(exit_code);
 
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
             // The process.terminate() call above marks process.main_thread, but
@@ -379,7 +380,8 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // Core dump not implemented, just terminate
             // The 0x80 flag indicates core dump
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-            process.terminate(-((sig as i32) | 0x80));
+            let exit_code = signal_death_exit_code(process, sig);
+            process.terminate(exit_code);
 
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
             if let Some(ref thread) = process.main_thread {
@@ -1325,6 +1327,16 @@ pub fn fatal_exit_code(sig: u32) -> Option<i32> {
     }
 }
 
+/// The exit status `process` reports when `sig`'s default action ends it. A
+/// SIGKILL that a thread-group death left pending reports the status the
+/// group died with (`Process::group_exit_code`), as Linux's group_exit_code.
+pub fn signal_death_exit_code(process: &Process, sig: u32) -> i32 {
+    match process.group_exit_code {
+        Some(code) if sig == SIGKILL => code,
+        _ => fatal_exit_code(sig).unwrap_or(-(sig as i32)),
+    }
+}
+
 /// A signal's default action ends the whole process, not one thread: kill the
 /// other live threads of `pid`'s thread group with the status `pid` died with.
 /// Must be called with no process-manager lock held, from process context.
@@ -1367,7 +1379,16 @@ pub fn take_fatal_default_signal(process: &mut Process) -> Option<u32> {
 /// preempt_disable() still in force.
 #[cfg(target_arch = "x86_64")]
 pub fn exit_by_signal_on_syscall_return(sig: u32) -> ! {
-    let exit_code = fatal_exit_code(sig).unwrap_or(-(sig as i32));
+    let exit_code = crate::task::scheduler::current_thread_id()
+        .and_then(|thread_id| {
+            crate::process::with_process_manager(|manager| {
+                manager
+                    .find_process_by_thread(thread_id)
+                    .map(|(_, process)| signal_death_exit_code(process, sig))
+            })
+            .flatten()
+        })
+        .unwrap_or_else(|| fatal_exit_code(sig).unwrap_or(-(sig as i32)));
     exit_on_syscall_return(sig, exit_code)
 }
 
