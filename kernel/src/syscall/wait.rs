@@ -212,6 +212,11 @@ fn unblock_self() {
 fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64> {
     let thread_id = crate::task::scheduler::current_thread_id().ok_or(EINVAL as u64)?;
     let selector = bind_caller_group(thread_id, selector)?;
+    // A child's exit deferred to scheduling context (a signal death at an
+    // interrupt return) is finished here as well: x86-64 otherwise finishes
+    // it only from its idle loop, which a sleeping thread can keep from
+    // running.
+    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
     if let Some(found) = scan(thread_id, selector, options)? {
         return Ok(Some(found));
     }
@@ -219,6 +224,7 @@ fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64
         return Ok(None);
     }
     loop {
+        crate::task::process_task::drain_deferred_fault_sigsegv_exits();
         crate::task::scheduler::with_scheduler(|sched| sched.block_current_for_child_exit());
         crate::tracing::providers::process::trace_waitpid_block(thread_id as u16, 0);
         match scan(thread_id, selector, options) {

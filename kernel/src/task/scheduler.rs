@@ -4801,6 +4801,19 @@ impl Scheduler {
         }
     }
 
+    /// Wake every thread of `owner_pid` blocked waiting for a child, so that
+    /// its wait finishes a child exit deferred to scheduling context
+    /// (`process_task::defer_thread_exit`) instead of waiting for idle to.
+    pub fn wake_child_exit_waiters(&mut self, owner_pid: u64) {
+        for index in 0..self.threads.len() {
+            let thread = &self.threads[index];
+            if thread.owner_pid == Some(owner_pid) && thread.state == ThreadState::BlockedOnChildExit {
+                let thread_id = thread.id();
+                self.unblock_for_child_exit(thread_id);
+            }
+        }
+    }
+
     /// Make every scheduler-owned thread for a process non-runnable.
     pub fn terminate_process_threads(&mut self, owner_pid: u64) {
         crate::tracing::providers::teardown::record_quarantine(owner_pid);

@@ -337,9 +337,10 @@ fn write_signal_stack(
 
 /// End `process` with `exit_code` from an interrupt or exception return, where
 /// the exit itself cannot run: its thread stops being scheduled and
-/// `handle_thread_exit` runs from scheduling context, as a frame fault's exit
-/// does, which releases the address space, tells the parent and retires the
-/// row. False, with nothing changed, when the exit cannot be queued.
+/// `handle_thread_exit` runs later, as a frame fault's exit does, which
+/// releases the address space, tells the parent and retires the row. The
+/// parent's waits are woken, since a wait finishes the deferred exits it may
+/// be waiting for. False, with nothing changed, when the exit cannot be queued.
 fn defer_signal_exit(process: &Process, exit_code: i32) -> bool {
     let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id()) else {
         return false;
@@ -348,6 +349,11 @@ fn defer_signal_exit(process: &Process, exit_code: i32) -> bool {
         return false;
     }
     crate::task::scheduler::terminate_thread(thread_id);
+    if let Some(parent) = process.parent {
+        crate::task::scheduler::with_scheduler(|scheduler| {
+            scheduler.wake_child_exit_waiters(parent.as_u64());
+        });
+    }
     true
 }
 
