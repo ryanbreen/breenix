@@ -7,6 +7,7 @@
 #                               [--idle-exit SECONDS] [--display | --no-display]
 #                               [--qmp SOCKET] [--fbconsole log] [--no-build]
 #
+#   Suite mode stops at its complete DONE record and exits with the suite verdict.
 #   --mode MODE          tests (default): the testing kernel and its test loader
 #                        probe | shell | desktop | program | suite: the production kernel, told the mode
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md)
@@ -123,9 +124,9 @@ case "$MODE" in
 esac
 if [ "$BUILD" -eq 1 ]; then
     echo "==> Building userspace"
-    userspace/programs/build.sh --arch aarch64
+    "$ROOT/userspace/programs/build.sh" --arch aarch64
     echo "==> Building the ext2 disk"
-    scripts/create_ext2_disk.sh --arch aarch64
+    "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64
     if [ "$MODE" = tests ]; then
         echo "==> Building the testing kernel"
     else
@@ -134,7 +135,7 @@ if [ "$BUILD" -eq 1 ]; then
     # The production build is the prod-profile gate's command: no features at all.
     cargo build --release ${KERNEL_FEATURES[@]+"${KERNEL_FEATURES[@]}"} --target aarch64-breenix-kernel.json \
         -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
-    scripts/check-kernel-no-neon.sh "$KERNEL"
+    "$ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
 fi
 [ -f "$KERNEL" ] || { echo "No kernel at $KERNEL" >&2; exit 1; }
 [ -f "$DISK" ] || { echo "No disk at $DISK" >&2; exit 1; }
@@ -154,9 +155,10 @@ qemu_host_lock_acquire
 VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG")
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
 [ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $QMP_SOCKET out.png)"
-# Without job control a background job's stdin is /dev/null, so hand it the terminal explicitly.
-exec 3<&0
-qemu-system-aarch64 \
+# Watch in the foreground; the watcher stops and reaps its own QEMU before returning.
+set +e
+python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
+    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --disk "$WRITABLE" -- qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
@@ -170,31 +172,12 @@ qemu-system-aarch64 \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -chardev stdio,id=con,mux=on,signal=off,logfile="$SERIAL_LOG" \
-    -serial chardev:con -mon chardev=con,mode=readline <&3 &
-QEMU_PID=$!
-qemu_host_lock_track_pid "$QEMU_PID"
-
-if [ "$IDLE_EXIT" -gt 0 ]; then
-    (
-        last=-1; quiet=0
-        while kill -0 "$QEMU_PID" 2>/dev/null; do
-            sleep 5
-            size=$(wc -c < "$SERIAL_LOG" 2>/dev/null || echo 0)
-            if [ "$size" -eq "$last" ]; then quiet=$((quiet + 5)); else quiet=0; last=$size; fi
-            if [ "$quiet" -ge "$IDLE_EXIT" ]; then
-                printf '\r\n==> No serial output for %ss; stopping the VM\r\n' "$IDLE_EXIT"
-                kill -TERM "$QEMU_PID" 2>/dev/null || true
-                break
-            fi
-        done
-    ) &
-fi
-
-set +e
-wait "$QEMU_PID"
+    -serial chardev:con -mon chardev=con,mode=readline
 code=$?
 set -e
 echo
-echo "==> VM stopped (qemu exit $code)"
+echo "==> VM stopped (exit $code)"
 host_slot_header "$SERIAL_LOG"
 "$ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" "$code"
+
+exit "$code"

@@ -62,8 +62,10 @@ stage list and shown alongside, but does not block moving on.
   first (x86-64 QEMU reads fw_cfg too, for `default` and `suite`), then that file, else
   `default`. Suite mode exercises the kernel milestones and the first userspace process: the
   suite's `START` and `DONE` lines show PID 1 running in user mode and making syscalls.
-  The VM runners validate the suite's `DONE` line, requiring `failed=0`, then keep
-  the scored panel visible until Ctrl-C stops the VM. `--suite --test` on Parallels
+  Suite runners stop the VM as soon as its complete `DONE` line reaches serial,
+  validate the records against the manifest, and release the shared boot slot.
+  A missing DONE or fatal kernel output fails the boot; QEMU retains its idle exit
+  for suites that never finish. `--suite --test` on Parallels
   waits for DONE before its timed screenshot and exit; VMware rejects `--test`.
   `--gate-timeout N` sets the DONE deadline (default 1800 seconds for suites and probes).
   The `default` boot (what Parallels and VMware run without `--suite` or `--probe`) measures that
