@@ -624,21 +624,31 @@ pub extern "C" fn trace_iretq_to_ring3(_frame_ptr: *const u64) {
 /// process manager lock is held. If the lock is unavailable, signals will be
 /// delivered on the next timer interrupt instead.
 fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
+    // A stop holds the thread, outside PM, until SIGCONT; what is pending then
+    // is checked again, in this loop rather than by recursion.
+    while deliver_signals_on_syscall_return(frame) {
+        crate::signal::delivery::hold_stopped_thread_on_syscall_return();
+    }
+}
+
+/// One pass of `check_and_deliver_signals_on_syscall_return`: true when the
+/// process is stopped, or has a stop to take, and nothing was delivered.
+fn deliver_signals_on_syscall_return(frame: &mut SyscallFrame) -> bool {
     // Get current thread ID
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
-        None => return,
+        None => return false,
     };
 
     // Thread 0 is the idle thread - it doesn't have a process with signals
     if current_thread_id == 0 {
-        return;
+        return false;
     }
 
     // Try to acquire process manager lock (non-blocking)
     let mut manager_guard = match crate::process::try_manager() {
         Some(guard) => guard,
-        None => return, // Lock held, skip signal check - will happen on next timer interrupt
+        None => return false, // Lock held, skip signal check - will happen on next timer interrupt
     };
 
     if let Some(ref mut manager) = *manager_guard {
@@ -652,7 +662,13 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
 
             // Check if there are any deliverable signals, or a stop in force
             if !crate::signal::delivery::needs_action_on_return_to_user(process) {
-                return;
+                return false;
+            }
+
+            // A stop is acted on before any other signal: the thread is held
+            // until SIGCONT, and what is pending then is delivered after.
+            if crate::signal::delivery::stop_pending_or_in_force(process) {
+                return true;
             }
 
             // A default action that ends the process must take effect before
@@ -719,16 +735,6 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
                 crate::signal::delivery::exit_frame_fault_on_syscall_return();
             }
 
-            // A stop parks the thread outside PM before Ring 3 runs again;
-            // what is pending once SIGCONT continues it is delivered then.
-            if let crate::signal::delivery::SignalDeliveryResult::Stopped(notification) =
-                signal_result
-            {
-                drop(manager_guard);
-                crate::signal::delivery::stop_on_syscall_return(notification);
-                return check_and_deliver_signals_on_syscall_return(frame);
-            }
-
             // Copy modified values back to syscall frame
             frame.rip = user_return.rip;
             frame.rsp = user_return.rsp;
@@ -760,6 +766,7 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
             }
         }
     }
+    false
 }
 
 #[cfg(test)]
