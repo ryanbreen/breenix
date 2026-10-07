@@ -33,15 +33,21 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
     // holding PROCESS_MANAGER and then try to acquire MEMORY_INFO, we can deadlock
     // with other threads doing the same. The process manager lock itself provides
     // mutual exclusion - interrupt protection is not needed.
+    // argv[0] is the process name, as on ARM64; without it the program sees argc=0.
     crate::serial_println!("create_user_process: Acquiring process manager lock");
+    let mut default_argv_buf = name.as_bytes().to_vec();
+    default_argv_buf.push(0);
+    let argv_slices: &[&[u8]] = &[&default_argv_buf];
     let pid = {
         let mut manager_guard = crate::process::manager();
         crate::serial_println!("create_user_process: Got process manager lock");
         if let Some(ref mut manager) = *manager_guard {
-            crate::serial_println!("create_user_process: Calling manager.create_process");
-            let result = manager.create_process(name.clone(), elf_data);
+            crate::serial_println!("create_user_process: Calling manager.create_process_with_argv");
+            let root = super::credentials::ProcessCredentials::root();
+            let result =
+                manager.create_process_with_argv(name.clone(), elf_data, argv_slices, &root);
             crate::serial_println!(
-                "create_user_process: manager.create_process returned: {:?}",
+                "create_user_process: manager.create_process_with_argv returned: {:?}",
                 result.is_ok()
             );
             result
