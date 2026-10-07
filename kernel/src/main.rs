@@ -605,6 +605,10 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     process::init();
     log::info!("Process management initialized");
 
+    // Secondary CPU bring-up belongs here, after the scheduler and process
+    // manager exist; none is started yet (#629). Report what came online.
+    kernel::arch_impl::x86_64::smp::report_bring_up();
+
     // Initialize workqueue subsystem (depends on kthread infrastructure)
     task::workqueue::init_workqueue();
     kernel::fs::ext2::writeback::init().expect("ext2 finalization service");

@@ -127,6 +127,12 @@ pub struct HardwareConfig {
 
     /// Relocation offset used to load the image and build the linked RAM alias.
     pub ram_base_offset: u64,
+
+    // --- CPUs ---
+    /// GICC (processor) entries in the firmware's MADT flagged Enabled: the
+    /// number of CPUs the firmware reports. 0 if the MADT walk found none.
+    pub firmware_cpu_count: u32,
+    pub _pad7: u32,
 }
 
 pub const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58; // "BRNX"
@@ -180,6 +186,8 @@ impl HardwareConfig {
             xhci_bar_phys: 0,
             boot_wall_time_utc: 0,
             ram_base_offset: 0,
+            firmware_cpu_count: 0,
+            _pad7: 0,
         }
     }
 

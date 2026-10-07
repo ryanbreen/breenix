@@ -6,8 +6,9 @@ pub const HHDM_BASE: u64 = 0xffff_0000_0000_0000;
 pub const LINKED_RAM_START: u64 = 0x4000_0000;
 /// The loader remaps this 512 MiB interval; the rest of L1[1] is device space.
 pub const LINKED_RAM_SIZE: u64 = 0x2000_0000;
-/// HardwareConfig version carrying the loader's RAM relocation offset.
-pub const HARDWARE_CONFIG_VERSION: u32 = 2;
+/// HardwareConfig version carrying the loader's RAM relocation offset and the
+/// firmware's enabled-CPU count.
+pub const HARDWARE_CONFIG_VERSION: u32 = 3;
 
 /// Convert a linked kernel alias or direct RAM/MMIO VA to a device-visible IPA.
 /// Low linked aliases follow the same mapping as their high-half counterparts.

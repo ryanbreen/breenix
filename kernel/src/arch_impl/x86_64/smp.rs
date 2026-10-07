@@ -255,3 +255,32 @@ pub fn init(rsdp_phys: Option<u64>, physical_memory_offset: u64) {
         reason,
     );
 }
+
+/// Report the SMP measurement once secondary bring-up would be complete: how
+/// many CPUs the firmware's MADT reports enabled and how many are online.
+///
+/// The second line is the boot-path stage, printed only when more than one
+/// CPU is reported and every one of them is online. No x86 AP is started yet
+/// (#629), so on a multi-CPU machine this prints `online=1` and no stage line.
+/// A refused MADT walk reports 0: the CPUID cross-check is not an enumeration.
+pub fn report_bring_up() {
+    let online = cpus_online();
+    let reported = u64::from(madt_enabled_count());
+    log::info!(
+        "[smp] online={} reported={} source={}",
+        online,
+        reported,
+        match enumeration_source() {
+            EnumerationSource::Madt => "madt",
+            EnumerationSource::CpuidFallback => "none",
+            EnumerationSource::NotRun => "not-run",
+        }
+    );
+    if reported > 1 && online == reported {
+        log::info!(
+            "[smp] every reported CPU is online ({} of {})",
+            online,
+            reported
+        );
+    }
+}

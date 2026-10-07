@@ -84,6 +84,12 @@ static XHCI_HCRST_DONE: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static BOOT_WALL_TIME_UTC: AtomicU64 = AtomicU64::new(0);
 
+/// CPUs the firmware's MADT reports enabled, from the UEFI loader's
+/// HardwareConfig. 0 when the loader was not used (QEMU direct boot) or its
+/// MADT walk found no enabled GICC entry.
+#[cfg(target_arch = "aarch64")]
+static FIRMWARE_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
+
 // Memory layout defaults (QEMU virt, 512MB RAM at 0x40000000)
 // Kernel image:   0x4000_0000 - 0x4300_0000 (48 MB, image + BSS incl. PCI_3D_FRAMEBUFFER)
 // SMP stacks:     0x4300_0000 - 0x4400_0000 (16 MB, 8 CPUs × 2 MB each)
@@ -473,6 +479,14 @@ pub fn boot_wall_time_utc() -> u64 {
     BOOT_WALL_TIME_UTC.load(Ordering::Relaxed)
 }
 
+/// CPUs the firmware's MADT reports enabled (UEFI loader boots only). 0 if
+/// unknown.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn firmware_cpu_count() -> u64 {
+    FIRMWARE_CPU_COUNT.load(Ordering::Relaxed)
+}
+
 /// Whether a UEFI GOP framebuffer was discovered by the loader.
 #[cfg(target_arch = "aarch64")]
 #[inline]
@@ -565,6 +579,8 @@ pub struct HardwareConfig {
     pub xhci_bar_phys: u64,
     pub boot_wall_time_utc: u64,
     pub ram_base_offset: u64,
+    pub firmware_cpu_count: u32,
+    pub _pad7: u32,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -688,6 +704,8 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
     if config.boot_wall_time_utc != 0 {
         BOOT_WALL_TIME_UTC.store(config.boot_wall_time_utc, Ordering::Relaxed);
     }
+
+    FIRMWARE_CPU_COUNT.store(config.firmware_cpu_count as u64, Ordering::Relaxed);
 
     true
 }
