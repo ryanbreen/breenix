@@ -212,6 +212,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     // (2 atomic loads + branch, no function call on fast path)
     trace_entry(syscall_num);
 
+    // A SIGKILL never takes this thread before the syscall's return path:
+    // see `KillCustody::enter_syscall`.
+    let custody = crate::task::thread::KillCustody::enter_syscall();
+
     // Dispatch to the appropriate syscall handler
     // NOTE: No logging here! This is the hot path.
     let result = match SyscallNumber::from_u64(syscall_num) {
@@ -538,6 +542,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             SyscallResult::Err(super::ErrorCode::NoSys as u64)
         }
     };
+    drop(custody);
 
     // Set return value in RAX
     match result {
