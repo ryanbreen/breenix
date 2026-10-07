@@ -2455,7 +2455,10 @@ fn load_elf_from_ext2(
         return Err(EACCES);
     }
 
-    let data = fs.read_file_content_coherent(inode_num, &inode).map_err(|_| EIO)?;
+    let data = fs
+        .read_file_content_coherent_unless(inode_num, &inode, super::exec::caller_killed)
+        .map_err(|_| EIO)?
+        .ok_or(super::errno::EINTR)?;
     Ok((data, crate::process::credentials::ExecIdentity::of(&inode)))
 }
 

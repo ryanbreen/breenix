@@ -185,6 +185,27 @@ pub(crate) fn try_box<T>(value: T) -> Result<Box<T>, &'static str> {
     }
 }
 
+/// Whether a SIGKILL is pending for the calling thread's process. An exec or
+/// spawn reading a program image for it can stop: the process dies at this
+/// syscall's return whatever the call does (`KillCustody::enter_syscall`).
+/// Never waits for the process manager, so it may be asked with a filesystem
+/// lock held; while the manager is busy the answer is no.
+pub(crate) fn caller_killed() -> bool {
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return false;
+    };
+    let Some(guard) = crate::process::try_manager() else {
+        return false;
+    };
+    guard
+        .as_ref()
+        .and_then(|manager| manager.find_process_by_thread(thread_id))
+        .is_some_and(|(_, process)| {
+            process.signals.pending & crate::signal::constants::sig_mask(crate::signal::constants::SIGKILL)
+                != 0
+        })
+}
+
 /// Expand interpreter scripts, keeping the optional argument as one string.
 /// `read` returns a file's bytes and what else its loader learned about it;
 /// that of the ELF image finally loaded is returned with it, so a script's

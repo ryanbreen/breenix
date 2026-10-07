@@ -1515,10 +1515,13 @@ fn load_elf_from_ext2(
     }
     super::trace::trace_exec(b'6');
 
-    let data = fs.read_file_content_coherent(inode_num, &inode).map_err(|_| {
-        super::trace::trace_exec(b'%');
-        EIO
-    })?;
+    let data = fs
+        .read_file_content_coherent_unless(inode_num, &inode, crate::syscall::exec::caller_killed)
+        .map_err(|_| {
+            super::trace::trace_exec(b'%');
+            EIO
+        })?
+        .ok_or(crate::syscall::errno::EINTR)?;
     super::trace::trace_exec(b'7');
 
     Ok((data, crate::process::credentials::ExecIdentity::of(&inode)))
