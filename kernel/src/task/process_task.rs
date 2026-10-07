@@ -1001,23 +1001,36 @@ fn next_reclaim_pass_id(mut pass: u32) -> u32 {
 
 /// Defer a SIGSEGV-style process exit for a user thread that faulted in kernel mode.
 pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
+    defer_thread_exit(thread_id, -11)
+}
+
+/// Defer the exit, with `exit_code`, of a user thread that will not run again,
+/// for a context that cannot run `handle_thread_exit` itself. The drain runs
+/// it from scheduling context, which closes descriptors, tells the parent and
+/// retires the row. False when the thread cannot be queued; the caller then
+/// ends the row some other way.
+pub fn defer_thread_exit(thread_id: u64, exit_code: i32) -> bool {
+    // An entry is the thread id in the low half and the exit code in the high.
+    if thread_id == 0 || thread_id > u32::MAX as u64 {
+        return false;
+    }
     #[cfg(target_arch = "aarch64")]
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     #[cfg(not(target_arch = "aarch64"))]
     let cpu = 0usize;
 
     let idx = cpu.min(DEFERRED_FAULT_EXIT_BUFFERS.len().saturating_sub(1));
-    DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id)
+    DEFERRED_FAULT_EXIT_BUFFERS[idx].push(((exit_code as u32 as u64) << 32) | thread_id)
 }
 
-/// Drain deferred kernel-fault exits from a normal scheduling context.
+/// Drain deferred exits (`defer_thread_exit`) from a normal scheduling context.
 pub fn drain_deferred_fault_sigsegv_exits() {
-    let mut tids = alloc::vec::Vec::new();
+    let mut entries = alloc::vec::Vec::new();
     for buf in &DEFERRED_FAULT_EXIT_BUFFERS {
-        buf.drain(&mut tids);
+        buf.drain(&mut entries);
     }
-    for tid in tids {
-        ProcessScheduler::handle_thread_exit(tid, -11);
+    for entry in entries {
+        ProcessScheduler::handle_thread_exit(entry & u32::MAX as u64, (entry >> 32) as u32 as i32);
     }
 }
 
