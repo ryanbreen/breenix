@@ -566,21 +566,17 @@ impl ProcessManager {
             return Err("Process page table not available for stack mapping");
         }
 
-        // Supply a complete entry stack even when the creator has no argv.
-        // Starting at stack_top - 16 leaves envp at the unmapped stack_top;
-        // libc then inherits that invalid pointer on execv.
-        let initial_rsp = self.setup_argv_on_stack(
+        // This constructor supplies no arguments or environment. Reserve
+        // argc, argv NULL, envp NULL and the AT_NULL pair, aligned to 16 bytes.
+        // Starting at stack_top - 16 instead leaves envp outside the mapping.
+        let initial_rsp = stack_top.as_u64() - 48;
+        self.write_bytes_to_stack(
             process
                 .page_table
                 .as_ref()
                 .ok_or("Process page table not available for argv setup")?,
-            stack_top.as_u64(),
-            &[name.as_bytes()],
-            &[],
-            loaded_elf.phdr_vaddr,
-            loaded_elf.phnum,
-            loaded_elf.phentsize,
-            loaded_elf.entry_point.as_u64(),
+            initial_rsp,
+            &[0; 48],
         )?;
 
         // Create the main thread
