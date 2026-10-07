@@ -1372,16 +1372,45 @@ fn padded_helper(tmp: &Tmp) -> Result<String, CaseError> {
     Ok(path)
 }
 
+/// Fork a child that writes a byte and then execs `path` (the helper, or
+/// `padded_helper`) to run `ran`. execve is the child's only syscall after the
+/// write, so once `inside_exec_or_ended` finds it inside the exec it is
+/// SIGKILLed there and reaped: true. False when the exec finished first and
+/// the new program exited 77.
+#[cfg(not(target_arch = "x86_64"))]
+fn kill_inside_exec(path: &CString, what: &str) -> Result<bool, CaseError> {
+    let argv = cargs(&strings(&["processes-exec_test", "ran"]));
+    let envp = cargs(&[]);
+    let (ready_r, ready_w) = io::pipe()?;
+    let mut child = Child::start(|| {
+        let _ = io::close(ready_r);
+        let _ = io::write(ready_w, b"x");
+        sc(nr::EXECVE, &[path.as_ptr() as u64, argv.ptrs.as_ptr() as u64, envp.ptrs.as_ptr() as u64]);
+        127
+    })?;
+    io::close(ready_w)?;
+    let said = read_up_to(ready_r, 1, WAIT_MS);
+    let ready_ms = now_ms();
+    io::close(ready_r)?;
+    check(said?.len() == 1, &format!("{what}: the child never reached its exec"))?;
+    if inside_exec_or_ended(child.pid, ready_ms)? {
+        kill_and_reap(&mut child, what)?;
+        return Ok(true);
+    }
+    child.expect_exit(77, what)?;
+    Ok(false)
+}
+
 /// SIGKILL children inside an exec, while it reads the new program from disk.
 /// Killed there, a thread used to leave the old image and the new one's
-/// partly read data behind, about 46 KiB each. A child writes a byte and then
-/// calls execve, its only syscall after the write, and is killed once
-/// `inside_exec_or_ended` finds it inside the exec. When the exec finishes
-/// first, the new program exits 77 and the kill is tried again with a new
-/// child.
+/// partly read data behind, about 46 KiB each. When an exec finishes before
+/// the kill, the kill is tried again with a new child.
 ///
-/// The program run is `padded_helper`: on Parallels the helper's own few
-/// reads finished before the parent ever saw the child inside its exec.
+/// A first, unmeasured kill decides what the children run: the helper, or,
+/// when its exec finished before the kill, `padded_helper`. On Parallels the
+/// helper's own few reads finished before the parent ever saw the child
+/// inside its exec; on ARM64 QEMU even writing the padded copy took most of
+/// the case's time.
 ///
 /// Not run on x86-64, which brings up one CPU: there the parent was never
 /// seen to run while a child was inside an exec, so no kill can land in one.
@@ -1391,32 +1420,23 @@ fn kill_execs() -> CaseResult {
     const TRIES: usize = 4;
     const SLACK_KB: u64 = 256;
     let tmp = Tmp::new()?;
-    let path = cpath(&padded_helper(&tmp)?);
-    let argv = cargs(&strings(&["processes-exec_test", "ran"]));
-    let envp = cargs(&[]);
+    let helper = cpath(HELPER);
+    let padded;
+    let path = if kill_inside_exec(&helper, "exec probe")? {
+        &helper
+    } else {
+        padded = cpath(&padded_helper(&tmp)?);
+        &padded
+    };
     let before = kernel_heap_free_kb()?;
     for round in 0..EXECS {
         let what = format!("exec {round}");
         let mut killed = false;
         for _ in 0..TRIES {
-            let (ready_r, ready_w) = io::pipe()?;
-            let mut child = Child::start(|| {
-                let _ = io::close(ready_r);
-                let _ = io::write(ready_w, b"x");
-                sc(nr::EXECVE, &[path.as_ptr() as u64, argv.ptrs.as_ptr() as u64, envp.ptrs.as_ptr() as u64]);
-                127
-            })?;
-            io::close(ready_w)?;
-            let said = read_up_to(ready_r, 1, WAIT_MS);
-            let ready_ms = now_ms();
-            io::close(ready_r)?;
-            check(said?.len() == 1, &format!("{what}: the child never reached its exec"))?;
-            if inside_exec_or_ended(child.pid, ready_ms)? {
-                kill_and_reap(&mut child, &what)?;
+            if kill_inside_exec(path, &what)? {
                 killed = true;
                 break;
             }
-            child.expect_exit(77, &what)?;
         }
         check(killed, &format!("{what}: the exec finished before the kill in all {TRIES} tries"))?;
     }
