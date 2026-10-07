@@ -1250,6 +1250,216 @@ fn fork_nproc() -> CaseResult {
     want_err("fork beyond RLIMIT_NPROC", r, EAGAIN)
 }
 
+/// The kernel heap's free space in kB, as /proc/meminfo reports it.
+fn kernel_heap_free_kb() -> Result<u64, CaseError> {
+    let text = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
+    text.lines().find_map(|line| line.strip_prefix("KernelHeapFree:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| CaseError::Fail("/proc/meminfo has no KernelHeapFree line".into()))
+}
+
+/// Wait, for at most a second, until `pid`'s threads are all blocked.
+fn parked_within(pid: i32) -> CaseResult {
+    let path = format!("/proc/{pid}/status");
+    let start = now_ms();
+    while !std::fs::read_to_string(&path)
+        .is_ok_and(|status| status.lines().any(|line| line == "State:\tBlocked"))
+    {
+        check(now_ms().saturating_sub(start) < bounded(1000, CLEANUP_MS),
+            &format!("child {pid} never blocked"))?;
+        process::yield_now()?;
+    }
+    Ok(())
+}
+
+/// SIGKILL `child` and reap it, requiring death by SIGKILL.
+fn kill_and_reap(child: &mut Child, what: &str) -> CaseResult {
+    want("kill", kill(child.pid, SIGKILL))?;
+    let (_, status) = wait_within(child.pid, 0, WAIT_MS)?;
+    child.live = false;
+    check(signaled(status) && term_sig(status) == SIGKILL,
+        &format!("{what} ended with {}, expected death by SIGKILL", status_text(status)))
+}
+
+/// Wait, for at most a second, until the kernel heap's free space is back to
+/// within `slack_kb` of `before_kb`: a reaped child's last thread is retired
+/// a little after the reap.
+fn heap_back_within(before_kb: u64, slack_kb: u64, what: &str) -> CaseResult {
+    let start = now_ms();
+    loop {
+        let after_kb = kernel_heap_free_kb()?;
+        if after_kb + slack_kb >= before_kb { return Ok(()); }
+        if now_ms().saturating_sub(start) >= bounded(1000, REPORT_MS) {
+            return fail(&format!("{what}: kernel heap free {before_kb} kB before, {after_kb} kB after"));
+        }
+        nap();
+    }
+}
+
+/// Wait, for at most a second, until `pid`, which wrote its last byte before
+/// its execve at `ready_ms`, is inside the exec (true) or has ended (false).
+/// It is inside once it is seen blocked, or still running 5 ms after that
+/// byte: the few instructions from its write to its execve take far less.
+#[cfg(not(target_arch = "x86_64"))]
+fn inside_exec_or_ended(pid: i32, ready_ms: u64) -> Result<bool, CaseError> {
+    let path = format!("/proc/{pid}/status");
+    loop {
+        if let Ok(status) = std::fs::read_to_string(&path) {
+            let state = |s: &str| status.lines().any(|line| line.strip_prefix("State:\t") == Some(s));
+            if state("Blocked") || (state("Running") && now_ms().saturating_sub(ready_ms) >= 5) {
+                return Ok(true);
+            }
+            if state("Terminated") { return Ok(false); }
+        }
+        check(now_ms().saturating_sub(ready_ms) < bounded(1000, CLEANUP_MS),
+            &format!("child {pid} neither entered its exec nor ended"))?;
+        process::yield_now()?;
+    }
+}
+
+/// SIGKILL children parked in a 64 KiB pipe read. Killed there, a thread used
+/// to be discarded with everything its kernel stack owned: the read's buffer
+/// and the pipe it kept alive, about 130 KiB each.
+fn kill_readers() -> CaseResult {
+    const READERS: usize = 16;
+    const SLACK_KB: u64 = 512;
+    let before = kernel_heap_free_kb()?;
+    for round in 0..READERS {
+        let (reader, writer) = io::pipe()?;
+        let mut child = Child::start(|| {
+            let _ = io::close(writer);
+            let _ = io::read(reader, &mut [0u8; 65536]);
+            0
+        })?;
+        io::close(reader)?;
+        // The writer stays open until the child is reaped, so its read never
+        // sees end of file.
+        let result = parked_within(child.pid)
+            .and_then(|()| kill_and_reap(&mut child, &format!("reader {round}")));
+        io::close(writer)?;
+        result?;
+    }
+    heap_back_within(before, SLACK_KB, &format!("{READERS} readers killed"))
+}
+
+/// A copy of the helper with zeros after it, which the loader ignores but an
+/// exec reads. Zeros are appended for at most 50 ms of writing, up to 8 MiB:
+/// a disk that writes them fast also reads them fast, and needs them to keep
+/// an exec long enough to catch, while on a slow one the helper alone is.
+/// Written 64 KiB per call, so a kill ends the writer within one.
+#[cfg(not(target_arch = "x86_64"))]
+fn padded_helper(tmp: &Tmp) -> Result<String, CaseError> {
+    const CHUNK: usize = 64 * 1024;
+    const MAX_PADDING: usize = 8 << 20;
+    let image = std::fs::read(HELPER).map_err(|e| format!("reading {HELPER}: {e}"))?;
+    let path = tmp.path("padded-helper");
+    let fd = fs::open_with_mode(&path, fs::O_CREAT | fs::O_EXCL | fs::O_WRONLY, 0o600)?;
+    let written = (|| -> Result<(), Error> {
+        for chunk in image.chunks(CHUNK) { write_all(fd, chunk)?; }
+        let zeros = vec![0u8; CHUNK];
+        let start = now_ms();
+        let mut padding = 0;
+        while padding < MAX_PADDING && now_ms().saturating_sub(start) < 50 {
+            write_all(fd, &zeros)?;
+            padding += CHUNK;
+        }
+        Ok(())
+    })();
+    io::close(fd)?;
+    written?;
+    want("chmod", chmod(&path, 0o755))?;
+    Ok(path)
+}
+
+/// Fork a child that writes a byte and then execs `path` (the helper, or
+/// `padded_helper`) to run `ran`. execve is the child's only syscall after the
+/// write, so once `inside_exec_or_ended` finds it inside the exec it is
+/// SIGKILLed there and reaped: true. False when the exec finished first and
+/// the new program exited 77, before the parent looked or before its kill
+/// arrived.
+#[cfg(not(target_arch = "x86_64"))]
+fn kill_inside_exec(path: &CString, what: &str) -> Result<bool, CaseError> {
+    let argv = cargs(&strings(&["processes-exec_test", "ran"]));
+    let envp = cargs(&[]);
+    let (ready_r, ready_w) = io::pipe()?;
+    let mut child = Child::start(|| {
+        let _ = io::close(ready_r);
+        let _ = io::write(ready_w, b"x");
+        sc(nr::EXECVE, &[path.as_ptr() as u64, argv.ptrs.as_ptr() as u64, envp.ptrs.as_ptr() as u64]);
+        127
+    })?;
+    io::close(ready_w)?;
+    let said = read_up_to(ready_r, 1, WAIT_MS);
+    let ready_ms = now_ms();
+    io::close(ready_r)?;
+    check(said?.len() == 1, &format!("{what}: the child never reached its exec"))?;
+    if inside_exec_or_ended(child.pid, ready_ms)? {
+        want("kill", kill(child.pid, SIGKILL))?;
+    }
+    let status = child.wait()?;
+    if exited(status) && exit_code(status) == 77 {
+        return Ok(false);
+    }
+    check(signaled(status) && term_sig(status) == SIGKILL,
+        &format!("{what} ended with {}, expected death by SIGKILL or the helper's exit 77", status_text(status)))?;
+    Ok(true)
+}
+
+/// SIGKILL children inside an exec, while it reads the new program from disk.
+/// Killed there, a thread used to leave the old image and the new one's
+/// partly read data behind, about 46 KiB each. When an exec finishes before
+/// the kill, the kill is tried again with a new child.
+///
+/// A first, unmeasured kill decides what the children run: the helper, or,
+/// when its exec finished before the kill, `padded_helper`. On Parallels the
+/// helper's own few reads finished before the parent ever saw the child
+/// inside its exec; on ARM64 QEMU even writing the padded copy took most of
+/// the case's time.
+///
+/// Not run on x86-64, which brings up one CPU: there the parent was never
+/// seen to run while a child was inside an exec, so no kill can land in one.
+#[cfg(not(target_arch = "x86_64"))]
+fn kill_execs() -> CaseResult {
+    const EXECS: usize = 16;
+    const TRIES: usize = 4;
+    const SLACK_KB: u64 = 256;
+    let tmp = Tmp::new()?;
+    let helper = cpath(HELPER);
+    let padded;
+    let path = if kill_inside_exec(&helper, "exec probe")? {
+        &helper
+    } else {
+        padded = cpath(&padded_helper(&tmp)?);
+        &padded
+    };
+    let before = kernel_heap_free_kb()?;
+    for round in 0..EXECS {
+        let what = format!("exec {round}");
+        let mut killed = false;
+        for _ in 0..TRIES {
+            if kill_inside_exec(path, &what)? {
+                killed = true;
+                break;
+            }
+        }
+        check(killed, &format!("{what}: the exec finished before the kill in all {TRIES} tries"))?;
+    }
+    heap_back_within(before, SLACK_KB, &format!("{EXECS} execs killed"))
+}
+
+fn fork_kill_heap() -> CaseResult {
+    // Each half has its own workload and allowance, and both run, so a
+    // failure reports each.
+    #[cfg(not(target_arch = "x86_64"))]
+    return match (kill_readers(), kill_execs()) {
+        (Err(CaseError::Fail(readers)), Err(CaseError::Fail(execs))) => fail(format!("{readers}; {execs}")),
+        (readers, execs) => readers.and(execs),
+    };
+    #[cfg(target_arch = "x86_64")]
+    kill_readers()
+}
+
 fn fork_many() -> CaseResult {
     let (r, w) = io::pipe()?;
     let mut children = Vec::new();
@@ -2769,6 +2979,7 @@ static SUITE: Suite = suite(
             case("times-reset", "The child's times() counts start at zero", fork_times_reset),
             case("nproc-eagain", "fork fails with EAGAIN when the user is at RLIMIT_NPROC", fork_nproc),
             case("many-children", "32 children are alive at once, and each exits with its own status", fork_many),
+            case("kill-heap", "Children killed inside a read or an exec leave the kernel heap as it was", fork_kill_heap),
         ]),
         category("exec", "exec, argv & environment", &[
             case("argv", "execve passes argv exactly, including an arbitrary argv[0] and empty arguments", exec_argv),

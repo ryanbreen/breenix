@@ -960,9 +960,14 @@ fn switch_to_thread(
                     // A stopped process's thread, or one with a stop to take,
                     // resumes its wait in the kernel: the stop is acted on
                     // where the syscall returns.
+                    // A default action that ends the process is left to the
+                    // syscall's return too, which runs the whole exit: taken
+                    // here, it would end the row in place and never retire it
+                    // (#1175).
                     let has_pending_signals =
                         crate::signal::delivery::has_deliverable_signals(process)
-                            && !crate::signal::delivery::stop_pending_or_in_force(process);
+                            && !crate::signal::delivery::stop_pending_or_in_force(process)
+                            && crate::signal::delivery::fatal_default_signal(process).is_none();
                     // Use context from scheduler's Thread (single source of truth)
                     // Fall back to process.main_thread for backwards compatibility
                     let has_saved_context = saved_context_from_scheduler.is_some()
@@ -1040,6 +1045,9 @@ fn switch_to_thread(
                         scheduler::with_thread_mut(thread_id, |thread| {
                             thread.blocked_in_syscall = false;
                             thread.saved_userspace_context = None;
+                            // The syscall's kernel stack is discarded here, not
+                            // unwound, so the custody section it opened is too.
+                            thread.abandon_syscall_custody();
                         });
 
                         // CRITICAL: Switch to process CR3 BEFORE delivering signal

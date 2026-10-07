@@ -64,6 +64,10 @@
         {
           "id": "many-children",
           "title": "32 children are alive at once, and each exits with its own status"
+        },
+        {
+          "id": "kill-heap",
+          "title": "Children killed inside a read or an exec leave the kernel heap as it was"
         }
       ]
     },

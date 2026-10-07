@@ -343,7 +343,8 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // Exit code for signal termination is typically 128 + signal number
             // But we use negative signal number to indicate signal death
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-            process.terminate(-(sig as i32));
+            let exit_code = signal_death_exit_code(process, sig);
+            process.terminate(exit_code);
 
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
             // The process.terminate() call above marks process.main_thread, but
@@ -379,7 +380,8 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // Core dump not implemented, just terminate
             // The 0x80 flag indicates core dump
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-            process.terminate(-((sig as i32) | 0x80));
+            let exit_code = signal_death_exit_code(process, sig);
+            process.terminate(exit_code);
 
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
             if let Some(ref thread) = process.main_thread {
@@ -1317,12 +1319,21 @@ fn abandon_syscall_return() -> ! {
 
 /// The exit status a death by `sig`'s default action reports, or None when
 /// that default action does not end the process.
-#[cfg(target_arch = "x86_64")]
-fn fatal_exit_code(sig: u32) -> Option<i32> {
+pub fn fatal_exit_code(sig: u32) -> Option<i32> {
     match default_action(sig) {
         SignalDefaultAction::Terminate => Some(-(sig as i32)),
         SignalDefaultAction::CoreDump => Some(-((sig as i32) | 0x80)),
         _ => None,
+    }
+}
+
+/// The exit status `process` reports when `sig`'s default action ends it. A
+/// SIGKILL that a thread-group death left pending reports the status the
+/// group died with (`Process::group_exit_code`), as Linux's group_exit_code.
+pub fn signal_death_exit_code(process: &Process, sig: u32) -> i32 {
+    match process.group_exit_code {
+        Some(code) if sig == SIGKILL => code,
+        _ => fatal_exit_code(sig).unwrap_or(-(sig as i32)),
     }
 }
 
@@ -1339,20 +1350,54 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
 
 /// Take the calling process's next deliverable signal off its pending set
 /// when that signal has the default action and the action ends the process,
-/// returning its number. The x86-64 syscall return path calls this under the
+/// returning its number. The syscall return paths call this under the
 /// process-manager lock, so it does no logging, locking or allocation.
-#[cfg(target_arch = "x86_64")]
 pub fn take_fatal_default_signal(process: &mut Process) -> Option<u32> {
+    let sig = fatal_default_signal(process)?;
+    process.signals.clear_pending(sig);
+    Some(sig)
+}
+
+/// The signal `take_fatal_default_signal` would take, left pending.
+pub fn fatal_default_signal(process: &Process) -> Option<u32> {
+    // A pending SIGKILL ends the process before any other signal is acted on.
+    if sigkill_pending(process) {
+        return Some(SIGKILL);
+    }
     // A stopped process dies of SIGKILL only; anything else waits for SIGCONT.
-    if process.job.stopped.is_some() && !sigkill_pending(process) {
+    if process.job.stopped.is_some() {
         return None;
     }
     let sig = process.signals.next_deliverable_signal()?;
     if !process.signals.get_handler(sig).is_default() || fatal_exit_code(sig).is_none() {
         return None;
     }
-    process.signals.clear_pending(sig);
     Some(sig)
+}
+
+/// The x86-64 syscall return could not take the process-manager lock, so it
+/// leaves pending signals to the next interrupt return. A SIGKILL that a kill
+/// left pending because this thread was inside its syscall
+/// (`Thread::mark_kill_pending`) must not wait for that: an interrupt return
+/// ends the process in place and never retires its row (#1175). Wait for the
+/// lock and leave through the syscall return's exit instead, which does not
+/// return. Does nothing for a thread no such kill is pending for.
+#[cfg(target_arch = "x86_64")]
+pub fn exit_if_killed_on_syscall_return() {
+    if !crate::per_cpu::current_thread().is_some_and(|thread| thread.kill_pending()) {
+        return;
+    }
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return;
+    };
+    let killed = crate::process::with_process_manager(|manager| {
+        let (_, process) = manager.find_process_by_thread_mut(thread_id)?;
+        sigkill_pending(process).then(|| process.signals.clear_pending(SIGKILL))
+    })
+    .flatten();
+    if killed.is_some() {
+        exit_by_signal_on_syscall_return(SIGKILL);
+    }
 }
 
 /// Finish an x86-64 syscall return whose pending signal `sig`, taken by
@@ -1369,7 +1414,16 @@ pub fn take_fatal_default_signal(process: &mut Process) -> Option<u32> {
 /// preempt_disable() still in force.
 #[cfg(target_arch = "x86_64")]
 pub fn exit_by_signal_on_syscall_return(sig: u32) -> ! {
-    let exit_code = fatal_exit_code(sig).unwrap_or(-(sig as i32));
+    let exit_code = crate::task::scheduler::current_thread_id()
+        .and_then(|thread_id| {
+            crate::process::with_process_manager(|manager| {
+                manager
+                    .find_process_by_thread(thread_id)
+                    .map(|(_, process)| signal_death_exit_code(process, sig))
+            })
+            .flatten()
+        })
+        .unwrap_or_else(|| fatal_exit_code(sig).unwrap_or(-(sig as i32)));
     exit_on_syscall_return(sig, exit_code)
 }
 
@@ -1391,6 +1445,8 @@ fn exit_on_syscall_return(sig: u32, exit_code: i32) -> ! {
                 .map(|(pid, process)| (pid, process.name.clone()))
         })
         .flatten();
+        // This function never returns, so the name is dropped before the
+        // thread stops running rather than with the stack it is on.
         if let Some((pid, name)) = row {
             crate::serial_println!(
                 "[signal] Process {} ({}) terminated by signal {} ({})",
@@ -1399,6 +1455,7 @@ fn exit_on_syscall_return(sig: u32, exit_code: i32) -> ! {
                 sig,
                 signal_name(sig)
             );
+            drop(name);
             terminate_thread_group_peers(pid, exit_code);
         }
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);

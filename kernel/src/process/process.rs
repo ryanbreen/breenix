@@ -329,6 +329,12 @@ pub struct Process {
     /// open. See `PendingFifoOpen`.
     pub pending_fifo_opens: Vec<crate::ipc::fifo::PendingFifoOpen>,
 
+    /// The status this row reports when a SIGKILL `kill_process_now` left
+    /// pending ends it: that of the thread-group death that sent it (a member
+    /// dying of SIGTERM takes its peers with -SIGTERM), or -SIGKILL for a
+    /// plain kill. The first kill sets it.
+    pub group_exit_code: Option<i32>,
+
     /// Alarm deadline (tick count when SIGALRM should be delivered)
     pub alarm_deadline: Option<u64>,
 
@@ -436,6 +442,7 @@ impl Process {
             signals: SignalState::default(),
             fd_table: FdTable::new(),
             pending_fifo_opens: Vec::new(),
+            group_exit_code: None,
             alarm_deadline: None,
             itimers: crate::signal::IntervalTimers::default(),
             thread_group_id: None,

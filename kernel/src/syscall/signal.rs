@@ -165,10 +165,11 @@ pub(crate) fn raise_sigpipe() {
 /// members. Must be called with no process-manager lock held, from a thread
 /// that is not one of the victim's.
 ///
-/// A victim thread inside a kill-custody section holds, or is queued for, a
-/// lock that dying would leave held for every other thread (#1025). Then the
-/// kill is left pending as SIGKILL instead: the thread finishes the section,
-/// and its return to user mode ends the process.
+/// A victim thread inside a kill-custody section, which every syscall is, owns
+/// what its kernel stack holds and may hold, or be queued for, a lock that
+/// dying would leave held for every other thread (#1025). Then the kill is
+/// left pending as SIGKILL instead and the victim's waits are woken: the
+/// thread finishes its syscall, and its return to user mode ends the process.
 pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
     // Publish before checking custody: a peer may leave its section and enter
     // a blocking syscall while we acquire the scheduler lock. Its signal check
@@ -176,6 +177,8 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
     crate::process::with_process_manager(|manager| {
         if let Some(process) = manager.get_process_mut(victim) {
             process.signals.set_pending(SIGKILL);
+            // A deferred kill reports this status, not SIGKILL's own.
+            process.group_exit_code.get_or_insert(exit_code);
         }
     });
     let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
@@ -183,6 +186,9 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
     })
     .unwrap_or(true);
     if !claimed {
+        crate::task::scheduler::with_scheduler(|scheduler| {
+            scheduler.wake_process_threads_for_kill(victim.as_u64());
+        });
         return;
     }
     crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);

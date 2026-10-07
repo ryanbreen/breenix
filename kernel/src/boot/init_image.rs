@@ -34,7 +34,8 @@ pub fn read_init_from_ext2(path: &str) -> Result<Vec<u8>, &'static str> {
 
 /// Read a program image for exec or spawn, resolving `path` as every
 /// pathname is resolved. Fails with the resolution's own errno, EISDIR for a
-/// directory, or EACCES when the caller may not execute the file.
+/// directory, EACCES when the caller may not execute the file, or EINTR when
+/// a SIGKILL for the caller arrives during the read.
 #[cfg(target_arch = "x86_64")]
 pub fn read_program(path: &str) -> Result<Vec<u8>, i32> {
     read_program_image(path).map(|(data, _)| data)
@@ -67,8 +68,9 @@ pub fn read_program_image(
     }
 
     let elf_data = fs
-        .read_file_content_coherent(inode_num, &inode)
-        .map_err(|_| EIO)?;
+        .read_file_content_coherent_unless(inode_num, &inode, crate::syscall::exec::caller_killed)
+        .map_err(|_| EIO)?
+        .ok_or(crate::syscall::errno::EINTR)?;
 
     drop(fs_guard);
 

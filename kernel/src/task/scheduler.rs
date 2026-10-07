@@ -3492,8 +3492,12 @@ impl Scheduler {
         let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread else {
             return;
         };
-
         if let Some(current) = self.get_thread_mut(current_id) {
+            // A thread a SIGKILL is pending for does not sleep here:
+            // `Thread::must_not_sleep`. Its wait goes on to its signal check.
+            if current.must_not_sleep() {
+                return;
+            }
             // Charge elapsed CPU ticks before blocking
             current.charge_cpu(crate::time::get_ticks());
 
@@ -3855,6 +3859,11 @@ impl Scheduler {
     ) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // A thread a SIGKILL is pending for does not sleep here:
+                // `Thread::must_not_sleep`.
+                if thread.must_not_sleep() {
+                    return;
+                }
                 // Charge elapsed CPU ticks before blocking
                 thread.charge_cpu(crate::time::get_ticks());
 
@@ -3994,6 +4003,11 @@ impl Scheduler {
     pub fn block_current_for_child_exit(&mut self) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // A thread a SIGKILL is pending for does not sleep here:
+                // `Thread::must_not_sleep`.
+                if thread.must_not_sleep() {
+                    return;
+                }
                 // Charge elapsed CPU ticks before blocking
                 thread.charge_cpu(crate::time::get_ticks());
 
@@ -4134,6 +4148,11 @@ impl Scheduler {
     pub fn block_current_for_timer(&mut self, wake_time_ns: u64) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // A thread a SIGKILL is pending for does not sleep here:
+                // `Thread::must_not_sleep`.
+                if thread.must_not_sleep() {
+                    return;
+                }
                 // Charge elapsed CPU ticks before blocking
                 thread.charge_cpu(crate::time::get_ticks());
 
@@ -4192,6 +4211,11 @@ impl Scheduler {
     fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
         let current_id = self.cpu_state[Self::current_cpu_id()].current_thread?;
         let thread = self.get_thread_mut(current_id)?;
+        // A thread a SIGKILL is pending for does not sleep here:
+        // `Thread::must_not_sleep`.
+        if thread.must_not_sleep() {
+            return None;
+        }
 
         // Charge elapsed CPU ticks before blocking
         thread.charge_cpu(crate::time::get_ticks());
@@ -4432,6 +4456,11 @@ impl Scheduler {
     pub fn block_current_for_compositor(&mut self, timeout_ns: u64) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // A thread a SIGKILL is pending for does not sleep here:
+                // `Thread::must_not_sleep`.
+                if thread.must_not_sleep() {
+                    return;
+                }
                 // Charge elapsed CPU ticks NOW, before blocking. Otherwise the
                 // next schedule() call charges all time since last dispatch —
                 // including blocked/sleeping time — as CPU usage.
@@ -4741,6 +4770,35 @@ impl Scheduler {
             claimed += 1;
         }
         true
+    }
+
+    /// Wake every blocked thread of `owner_pid` for a SIGKILL left pending
+    /// because one of them is inside a kill-custody section, and mark each so
+    /// that it does not sleep again (`Thread::mark_kill_pending`). Each syscall
+    /// wait checks for an interrupting signal when it runs, so the thread
+    /// returns from its syscall and dies there, as Linux's signal_wake_up
+    /// wakes a fatally signalled task's interruptible and killable sleeps.
+    pub fn wake_process_threads_for_kill(&mut self, owner_pid: u64) {
+        for index in 0..self.threads.len() {
+            let (thread_id, state) = {
+                let thread = &self.threads[index];
+                if thread.owner_pid != Some(owner_pid) {
+                    continue;
+                }
+                thread.mark_kill_pending();
+                (thread.id(), thread.state)
+            };
+            match state {
+                ThreadState::BlockedOnChildExit => self.unblock_for_child_exit(thread_id),
+                ThreadState::BlockedOnTimer => {
+                    self.unblock(thread_id);
+                }
+                ThreadState::Blocked | ThreadState::BlockedOnSignal | ThreadState::BlockedOnIO => {
+                    self.unblock_for_signal(thread_id)
+                }
+                ThreadState::Running | ThreadState::Ready | ThreadState::Terminated => {}
+            }
+        }
     }
 
     /// Make every scheduler-owned thread for a process non-runnable.

@@ -212,6 +212,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     // (2 atomic loads + branch, no function call on fast path)
     trace_entry(syscall_num);
 
+    // A SIGKILL never takes this thread before the syscall's return path:
+    // see `KillCustody::enter_syscall`.
+    let custody = crate::task::thread::KillCustody::enter_syscall();
+
     // Dispatch to the appropriate syscall handler
     // NOTE: No logging here! This is the hot path.
     let result = match SyscallNumber::from_u64(syscall_num) {
@@ -282,6 +286,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
                 // Only set return value on error - success case already has RAX set
                 frame.set_return_value((-(errno as i64)) as u64);
             }
+            // A signal that arrived during the call, a deferred SIGKILL
+            // included, is delivered as on every other syscall return.
+            drop(custody);
+            check_and_deliver_signals_on_syscall_return(frame);
             // Perform cleanup that normally happens after result handling
             let kernel_stack_top = crate::per_cpu::kernel_stack_top();
             if kernel_stack_top != 0 {
@@ -538,6 +546,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             SyscallResult::Err(super::ErrorCode::NoSys as u64)
         }
     };
+    drop(custody);
 
     // Set return value in RAX
     match result {
@@ -648,7 +657,12 @@ fn deliver_signals_on_syscall_return(frame: &mut SyscallFrame) -> bool {
     // Try to acquire process manager lock (non-blocking)
     let mut manager_guard = match crate::process::try_manager() {
         Some(guard) => guard,
-        None => return false, // Lock held, skip signal check - will happen on next timer interrupt
+        None => {
+            // Lock held, skip signal check - will happen on next timer
+            // interrupt. A deferred SIGKILL cannot wait for that.
+            crate::signal::delivery::exit_if_killed_on_syscall_return();
+            return false;
+        }
     };
 
     if let Some(ref mut manager) = *manager_guard {

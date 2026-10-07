@@ -496,6 +496,41 @@ impl Ext2Fs {
         Ok(bytes)
     }
 
+    /// `read_file_content_coherent`, read 64 KiB at a time. Before each
+    /// chunk it asks `stop`, and gives up with `Ok(None)` when the reader no
+    /// longer wants the content.
+    pub fn read_file_content_coherent_unless(
+        &self,
+        ino: u32,
+        inode: &Ext2Inode,
+        stop: impl Fn() -> bool,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
+        const CHUNK: u64 = 64 * 1024;
+        let size = inode.size();
+        // The whole-file read's bound: no file holds more than the filesystem.
+        let capacity = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(self.superblock.s_blocks_count)) as u64
+        }
+        .saturating_mul(self.superblock.block_size() as u64);
+        if size > capacity {
+            return Err("Failed to read file content");
+        }
+        let mut bytes = Vec::new();
+        while (bytes.len() as u64) < size {
+            if stop() {
+                return Ok(None);
+            }
+            let offset = bytes.len() as u64;
+            let chunk =
+                self.read_file_range_coherent(ino, inode, offset, CHUNK.min(size - offset) as usize)?;
+            if chunk.is_empty() {
+                break;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(Some(bytes))
+    }
+
     /// Raw writeback bypasses cache overlays and size transitions. The
     /// snapshot is clipped to EOF, so this never extends the inode. Writeback
     /// has no writer credentials and conservatively strips execution privilege.
@@ -1475,6 +1510,10 @@ impl Ext2Fs {
             return Err("File already exists");
         }
 
+        // Read the parent directory before the first disk mutation, so a
+        // failed read or allocation leaves no inode without an entry.
+        let mut dir_data = self.read_directory(&parent_inode)?;
+
         // Allocate a new inode
         let new_inode_num = allocate_inode(
             self.device.as_ref(),
@@ -1527,7 +1566,6 @@ impl Ext2Fs {
             .map_err(|_| "Failed to write symlink inode")?;
 
         // Add directory entry with EXT2_FT_SYMLINK type
-        let mut dir_data = self.read_directory(&parent_inode)?;
         add_directory_entry(&mut dir_data, new_inode_num, link_name, EXT2_FT_SYMLINK)?;
 
         // Update parent directory timestamps

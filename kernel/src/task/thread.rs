@@ -669,7 +669,8 @@ pub struct Thread {
 
     /// Kill custody: the low bits count the kernel sections this thread is
     /// inside that a SIGKILL must let it finish, and `KILL_CLAIMED` records
-    /// that `kill_process_now` has taken the thread. Entry and claim are both
+    /// that `kill_process_now` has taken the thread, and `KILL_PENDING` that
+    /// it left SIGKILL pending instead. Entry and claim are both
     /// compare-and-swap on this one word, so a thread is never killed inside a
     /// section and never enters one once claimed. See `KillCustody`.
     pub kill_custody: AtomicU64,
@@ -780,6 +781,13 @@ impl CpuPin {
 /// Set in `Thread::kill_custody` once a kill has claimed the thread.
 const KILL_CLAIMED: u64 = 1 << 63;
 
+/// Set in `Thread::kill_custody` once a kill has been left pending for the
+/// thread because it was inside a section: see `mark_kill_pending`.
+const KILL_PENDING: u64 = 1 << 62;
+
+/// The bits of `Thread::kill_custody` that count open sections.
+const CUSTODY_COUNT: u64 = !(KILL_CLAIMED | KILL_PENDING);
+
 impl Thread {
     /// Charge the time since `run_start_ticks` to this thread, its process's
     /// CPU account and its resource limits, and start the next interval at
@@ -810,7 +818,7 @@ impl Thread {
     pub(crate) fn claim_for_kill(&self) -> bool {
         self.kill_custody
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |word| {
-                (word & !KILL_CLAIMED == 0).then_some(word | KILL_CLAIMED)
+                (word & CUSTODY_COUNT == 0).then_some(word | KILL_CLAIMED)
             })
             .is_ok()
     }
@@ -822,7 +830,46 @@ impl Thread {
 
     /// Whether the thread is inside a kill-custody section.
     pub(crate) fn in_kill_custody(&self) -> bool {
-        self.kill_custody.load(Ordering::Acquire) & !KILL_CLAIMED != 0
+        self.kill_custody.load(Ordering::Acquire) & CUSTODY_COUNT != 0
+    }
+
+    /// Record that a SIGKILL left pending for this thread waits for it to
+    /// leave its section. From here on the thread must not sleep in a wait
+    /// the signal ends: a wake that found it still running is not repeated,
+    /// so such a wait started afterwards could last for ever. The scheduler's
+    /// block primitives refuse to block it (`must_not_sleep`), and its wait
+    /// goes on to its signal check. Set and read under the scheduler lock, so
+    /// each block either sees it or comes before the wake that follows it.
+    pub(crate) fn mark_kill_pending(&self) {
+        self.kill_custody.fetch_or(KILL_PENDING, Ordering::AcqRel);
+    }
+
+    /// Whether a block primitive must refuse to block this thread: a SIGKILL
+    /// is pending for it and it is inside no section but its syscall's own.
+    /// A nested section (an ext2 lock it holds or is queued for) is one the
+    /// kill lets it finish; its waits end when the lock is released, and the
+    /// holder they wait for may need this CPU, so they still sleep.
+    pub(crate) fn must_not_sleep(&self) -> bool {
+        let word = self.kill_custody.load(Ordering::Acquire);
+        word & KILL_PENDING != 0 && word & CUSTODY_COUNT <= 1
+    }
+
+    /// Whether a SIGKILL was left pending for this thread while it was inside
+    /// a section (`mark_kill_pending`).
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn kill_pending(&self) -> bool {
+        self.kill_custody.load(Ordering::Acquire) & KILL_PENDING != 0
+    }
+
+    /// Close every section the thread's syscall had open, for a syscall whose
+    /// kernel stack is discarded instead of unwound: x86-64 returns a pause or
+    /// sigsuspend that a signal ends to user mode straight from the context
+    /// switch, so the syscall's `KillCustody` guards are never dropped. Left
+    /// open, they would refuse every later kill claim and make every later
+    /// syscall look nested.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn abandon_syscall_custody(&self) {
+        self.kill_custody.fetch_and(!CUSTODY_COUNT, Ordering::AcqRel);
     }
 }
 
@@ -855,6 +902,26 @@ impl KillCustody {
         })
         .ok()
         .map(|_| KillCustody(Some(word)))
+    }
+
+    /// Open the section a syscall runs in, from syscall entry to the start of
+    /// its return to user mode. Everything a syscall owns lives on its kernel
+    /// stack, which a termination discards without running a destructor, so a
+    /// SIGKILL never takes a thread inside one: it stays pending, wakes the
+    /// thread's wait, and ends the process at the syscall's return, once the
+    /// stack has been unwound. A thread a kill claimed while it was in user
+    /// mode has not started the syscall and owns nothing yet. It waits,
+    /// preemptible, for the termination to switch it away, or for the claim to
+    /// be withdrawn. Called with the syscall's preempt_disable() in force.
+    pub fn enter_syscall() -> Self {
+        loop {
+            if let Some(custody) = Self::try_enter() {
+                return custody;
+            }
+            crate::per_cpu::preempt_enable();
+            crate::arch_halt_with_interrupts();
+            crate::per_cpu::preempt_disable();
+        }
     }
 }
 

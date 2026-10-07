@@ -112,7 +112,14 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
 
     let resolved_num = SyscallNumber::from_u64(syscall_num);
 
+    // A SIGKILL never takes this thread before the syscall's return path:
+    // see `KillCustody::enter_syscall`.
+    let custody = crate::task::thread::KillCustody::enter_syscall();
+
     let result = match resolved_num {
+        Some(SyscallNumber::Exit) | Some(SyscallNumber::ExitGroup) => {
+            sys_exit_aarch64(arg1 as i32, Some(custody), true)
+        }
         Some(SyscallNumber::Fork) => sys_fork_aarch64(frame),
         Some(SyscallNumber::Exec) => {
             let exec_result = sys_exec_aarch64(frame, arg1, arg2, arg3);
@@ -123,6 +130,7 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
             // SIGRETURN restores ALL registers from signal frame - don't overwrite X0 after
             match crate::syscall::signal::sys_sigreturn_with_frame_aarch64(frame) {
                 crate::syscall::SyscallResult::Ok(_) => {
+                    drop(custody);
                     check_and_deliver_signals_aarch64(frame);
                     Aarch64PerCpu::preempt_enable();
                     return;
@@ -170,6 +178,8 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
             (-38_i64) as u64 // -ENOSYS
         }
     };
+
+    drop(custody);
 
     // Set return value in X0
     trace_exit(result as i64);
@@ -263,6 +273,14 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
             // until SIGCONT, and what is pending then is delivered after.
             if crate::signal::delivery::stop_pending_or_in_force(process) {
                 return true;
+            }
+
+            // A default action that ends the process must take effect before
+            // EL0 runs again. It is carried out without the lock held and does
+            // not return.
+            if let Some(sig) = crate::signal::delivery::take_fatal_default_signal(process) {
+                drop(manager_guard);
+                exit_by_signal_aarch64(sig);
             }
 
             // Switch to process's page table for signal delivery
@@ -367,7 +385,15 @@ fn result_to_u64(result: crate::syscall::SyscallResult) -> u64 {
 /// If this function returned, the userspace exit() caller (e.g., musl's
 /// `for(;;) __syscall(SYS_exit, ec)` loop) would re-enter exit, causing
 /// double-terminate and double-decrement of COW page refcounts.
-fn sys_exit_aarch64(exit_code: i32) -> u64 {
+///
+/// `custody` is the exit syscall's own kill-custody section, held until the
+/// row has exited. `report_exit` prints the `[syscall] exit` line; a signal
+/// death (`exit_by_signal_aarch64`) has printed its own.
+fn sys_exit_aarch64(
+    exit_code: i32,
+    custody: Option<crate::task::thread::KillCustody>,
+    report_exit: bool,
+) -> ! {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID).
         // Extract info under PM lock, but do NOT log while holding it.
@@ -397,11 +423,16 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
         }
 
         // Log outside PM lock
-        if let (Some(pid), Some(name)) = (pid_for_log, &name_for_log) {
-            crate::serial_println!("[syscall] exit({}) pid={} name={}", exit_code, pid, name);
-        } else {
-            crate::serial_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
+        if report_exit {
+            if let (Some(pid), Some(name)) = (pid_for_log, &name_for_log) {
+                crate::serial_println!("[syscall] exit({}) pid={} name={}", exit_code, pid, name);
+            } else {
+                crate::serial_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
+            }
         }
+        // This function never returns, so nothing on its stack is dropped
+        // unless it is dropped here.
+        drop(name_for_log);
 
         // Leave the retiring userspace address space before process teardown
         // drops its page-table root. Clear both assembly return shadows so no
@@ -453,6 +484,9 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
             crate::serial_println!();
         }
 
+        // The row has exited: a kill now finds it terminated and does nothing.
+        drop(custody);
+
         // This call first pivots to the neutral per-CPU scheduler stack. Its
         // trampoline marks this thread Terminated only after that pivot and
         // immediately dispatches a successor.
@@ -462,11 +496,50 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
     panic!("AArch64 sys_exit invoked without a current scheduler thread");
 }
 
+/// Finish a syscall return whose pending signal `sig`, taken by
+/// `take_fatal_default_signal`, ends the calling process. The thread leaves
+/// through `sys_exit_aarch64`, as `exit` does, which releases the row's
+/// address space and retires the row once it is reaped, with the status
+/// `signal_death_exit_code` gives, and the rest of its thread group dies with
+/// it. Called with no process-manager lock held and with the syscall's
+/// preempt_disable() still in force; never returns.
+fn exit_by_signal_aarch64(sig: u32) -> ! {
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        panic!("AArch64 signal exit invoked without a current scheduler thread");
+    };
+    let row = crate::process::with_process_manager(|manager| {
+        manager.find_process_by_thread(thread_id).map(|(pid, process)| {
+            (
+                pid,
+                process.name.clone(),
+                crate::signal::delivery::signal_death_exit_code(process, sig),
+            )
+        })
+    })
+    .flatten();
+    let exit_code = row.as_ref().map_or_else(
+        || crate::signal::delivery::fatal_exit_code(sig).unwrap_or(-(sig as i32)),
+        |&(_, _, exit_code)| exit_code,
+    );
+    if let Some((pid, name, _)) = row {
+        crate::serial_println!(
+            "[signal] Process {} ({}) terminated by signal {} ({})",
+            pid.as_u64(),
+            name,
+            sig,
+            crate::signal::constants::signal_name(sig)
+        );
+        drop(name);
+        crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
+    }
+    sys_exit_aarch64(exit_code, None, false)
+}
+
 /// Dispatch a syscall to the appropriate handler using the resolved SyscallNumber.
 ///
 /// Uses the shared SyscallNumber enum to ensure new syscalls are automatically
-/// picked up by both architectures. Only EXIT requires arch-specific handling
-/// (wfi vs hlt). All other syscalls delegate to shared implementations.
+/// picked up by both architectures. The syscalls `rust_syscall_handler_aarch64`
+/// handles itself never reach it; all others delegate to shared implementations.
 ///
 /// Returns the syscall result (positive for success, negative errno for error).
 fn dispatch_syscall_enum(
@@ -484,13 +557,14 @@ fn dispatch_syscall_enum(
     // Dispatch using the shared enum — adding a new SyscallNumber variant
     // without adding a match arm here will produce a compiler warning.
     match syscall {
-        // EXIT is arch-specific (uses wfi instead of hlt)
-        SyscallNumber::Exit | SyscallNumber::ExitGroup => sys_exit_aarch64(arg1 as i32),
-
-        // FORK, EXEC, SIGRETURN, PAUSE, SIGSUSPEND are handled before
-        // dispatch_syscall_enum is called (they need frame access).
-        // If they somehow reach here, return ENOSYS.
-        SyscallNumber::Fork | SyscallNumber::Exec | SyscallNumber::Sigreturn => (-38_i64) as u64,
+        // EXIT, FORK, EXEC and SIGRETURN are handled before dispatch_syscall_enum
+        // is called (exit owns the syscall's kill custody; the others need frame
+        // access). If they somehow reach here, return ENOSYS.
+        SyscallNumber::Exit
+        | SyscallNumber::ExitGroup
+        | SyscallNumber::Fork
+        | SyscallNumber::Exec
+        | SyscallNumber::Sigreturn => (-38_i64) as u64,
         // PAUSE and SIGSUSPEND also handled before dispatch
         SyscallNumber::Pause | SyscallNumber::Sigsuspend => (-38_i64) as u64,
 
@@ -1467,10 +1541,13 @@ fn load_elf_from_ext2(
     }
     super::trace::trace_exec(b'6');
 
-    let data = fs.read_file_content_coherent(inode_num, &inode).map_err(|_| {
-        super::trace::trace_exec(b'%');
-        EIO
-    })?;
+    let data = fs
+        .read_file_content_coherent_unless(inode_num, &inode, crate::syscall::exec::caller_killed)
+        .map_err(|_| {
+            super::trace::trace_exec(b'%');
+            EIO
+        })?
+        .ok_or(crate::syscall::errno::EINTR)?;
     super::trace::trace_exec(b'7');
 
     Ok((data, crate::process::credentials::ExecIdentity::of(&inode)))
