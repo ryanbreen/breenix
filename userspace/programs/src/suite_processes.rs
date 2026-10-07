@@ -1376,7 +1376,8 @@ fn padded_helper(tmp: &Tmp) -> Result<String, CaseError> {
 /// `padded_helper`) to run `ran`. execve is the child's only syscall after the
 /// write, so once `inside_exec_or_ended` finds it inside the exec it is
 /// SIGKILLed there and reaped: true. False when the exec finished first and
-/// the new program exited 77.
+/// the new program exited 77, before the parent looked or before its kill
+/// arrived.
 #[cfg(not(target_arch = "x86_64"))]
 fn kill_inside_exec(path: &CString, what: &str) -> Result<bool, CaseError> {
     let argv = cargs(&strings(&["processes-exec_test", "ran"]));
@@ -1394,11 +1395,15 @@ fn kill_inside_exec(path: &CString, what: &str) -> Result<bool, CaseError> {
     io::close(ready_r)?;
     check(said?.len() == 1, &format!("{what}: the child never reached its exec"))?;
     if inside_exec_or_ended(child.pid, ready_ms)? {
-        kill_and_reap(&mut child, what)?;
-        return Ok(true);
+        want("kill", kill(child.pid, SIGKILL))?;
     }
-    child.expect_exit(77, what)?;
-    Ok(false)
+    let status = child.wait()?;
+    if exited(status) && exit_code(status) == 77 {
+        return Ok(false);
+    }
+    check(signaled(status) && term_sig(status) == SIGKILL,
+        &format!("{what} ended with {}, expected death by SIGKILL or the helper's exit 77", status_text(status)))?;
+    Ok(true)
 }
 
 /// SIGKILL children inside an exec, while it reads the new program from disk.
