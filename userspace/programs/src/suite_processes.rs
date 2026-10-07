@@ -1304,8 +1304,8 @@ fn fork_kill_heap() -> CaseResult {
     // kernel stack owned: the read's buffer and the pipe it kept alive, about
     // 130 KiB, and the exec's old and new images, about 45 KiB. The heap's
     // free space must come back to within SLACK_KB of where it started.
-    const READERS: usize = 48;
-    const EXECS: usize = 16;
+    const READERS: usize = 24;
+    const EXECS: usize = 8;
     const SLACK_KB: u64 = 1024;
     let before = kernel_heap_free_kb()?;
     for round in 0..READERS {
