@@ -390,10 +390,12 @@ impl Process {
             image_size: 0,
             image_data_size: 0,
             id,
-            // By default, a process's pgid equals its pid (process is its own group leader)
-            pgid: id,
-            // By default, a process's sid equals its pid (process is its own session leader)
-            sid: id,
+            // A process the kernel creates starts in init's process group and
+            // session, which init (PID 1) leads, rather than leading its own:
+            // like a child of init, it may then create its own group or session.
+            // fork, spawn and clone give a child its parent's instead.
+            pgid: ProcessId(super::RESERVED_INIT_PID),
+            sid: ProcessId(super::RESERVED_INIT_PID),
             cred: super::credentials::ProcessCredentials::root(),
             nice: 0,
             cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::default()),
