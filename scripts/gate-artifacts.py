@@ -67,7 +67,7 @@ def canonical_ext2(path):
         superblock = disk.read(1024)
         u16 = lambda offset: struct.unpack_from('<H', superblock, offset)[0]
         u32 = lambda offset: struct.unpack_from('<I', superblock, offset)[0]
-        if u16(56) != 0xef53 or u32(96) & ~2:
+        if u16(56) != 0xef53 or u32(96) & ~2 or u32(92) & 0x200:
             raise ValueError('canonicalization requires an ext2 filesystem with no unsupported incompat features')
         block = 1024 << u32(24)
         first, blocks, per_group, per_inode = u32(20), u32(4), u32(32), u32(40)
@@ -75,6 +75,17 @@ def canonical_ext2(path):
         inode_size = u16(88) if u32(76) else 128
         disk.seek((first + 1) * block)
         descriptors = disk.read(groups * 32)
+        def has_super(group):
+            if not u32(100) & 1 or group in (0, 1):
+                return True
+            for base in (3, 5, 7):
+                power = base
+                while power < group:
+                    power *= base
+                if power == group:
+                    return True
+            return False
+
         for group in range(groups):
             table = struct.unpack_from('<I', descriptors, group * 32 + 8)[0]
             disk.seek(table * block)
@@ -88,6 +99,8 @@ def canonical_ext2(path):
                     inodes[offset + 132:offset + 152] = bytes(20)  # extra time fields/crtime
             disk.seek(table * block)
             disk.write(inodes)
+            if not has_super(group):
+                continue
             position = 1024 if group == 0 else (first + group * per_group) * block
             disk.seek(position)
             backup = bytearray(disk.read(1024))

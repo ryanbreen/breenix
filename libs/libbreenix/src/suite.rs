@@ -224,9 +224,8 @@ impl Suite {
             if let Some(index) = ids.iter().position(|id| *id == self.id) {
                 if let Some(next) = ids.get(index + 1) {
                     let path = std::format!("/sbin/suite-{}\0", next);
-                    if let Err(error) = process::exec(path.as_bytes()) {
-                        emit(&std::format!("SUITE_SEQUENCE FAIL exec {}: {:?}", next, error));
-                    }
+                    let error = process::exec(path.as_bytes()).unwrap_err();
+                    emit(&std::format!("SUITE_SEQUENCE FAIL exec {}: {:?}", next, error));
                 }
             }
         }

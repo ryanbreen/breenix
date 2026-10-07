@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -18,7 +19,16 @@ def phase(name, start, status=0):
 
 def size(path):
     # Allocated bytes: ext2/test disk copies can be sparse.
-    return sum(p.stat().st_blocks * 512 for p in path.rglob('*') if p.is_file() and not p.is_symlink())
+    total = 0
+    for directory, _, files in os.walk(path):
+        for name in files:
+            try:
+                info = (Path(directory) / name).lstat()
+            except FileNotFoundError:
+                continue  # an active lane may be cleaning temporary Cargo files
+            if stat.S_ISREG(info.st_mode):
+                total += info.st_blocks * 512
+    return total
 
 
 def lease(root, name, blocking=True):

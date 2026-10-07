@@ -203,7 +203,6 @@ fn main() {
                         tail_of(&output.stderr),
                     );
                 }
-
             }
 
             // Tell cargo to rerun if userspace sources change

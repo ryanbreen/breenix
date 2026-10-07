@@ -8,7 +8,7 @@
 # its properties lived nowhere else. Both are now versioned here:
 # claim-lint:ok: #564 records the gate migration and stale-image failure.
 #
-#   1. IT REPACKS THE USERSPACE TEST DISK. `./userspace/programs/build.sh`
+#   1. IT REPACKS OR CLEAN-VERIFIES THE USERSPACE TEST DISK. `./userspace/programs/build.sh`
 #      rebuilds the ELFs but `target/test_binaries.img` is only PACKED by
 #      `cargo run -p xtask -- create-test-disk`. Both are gitignored build
 #      outputs, so without the repack a gate run on a branch that touches
@@ -55,7 +55,7 @@
 #                       score its serial as its own; a concurrent-lane
 #                       launcher sets this to a per-clone directory instead.
 #
-# What is NOT here, and cannot be: the fetch/checkout of the branch under test.
+# Fetch/checkout stays outside the tree in scripts/gate-tree.py.
 # Something outside the working tree has to put the code there before a script
 # inside it can run, and a script that `git reset --hard`s the checkout it is
 # itself being read from is a self-modification hazard. The VM keeps a ~10-line
