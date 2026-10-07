@@ -38,7 +38,8 @@ fn exec_check(fd_str: &str) -> ! {
             // Expected
         }
         Err(e) => {
-            println!("WARN: expected EBADF, got {:?}", e);
+            println!("FAIL: expected EBADF, got {:?}", e);
+            std::process::exit(1);
         }
     }
     println!("CLOEXEC_TEST_PASSED");
@@ -116,7 +117,13 @@ fn main() {
             let _ = io::close(read_fd);
 
             let mut status: i32 = 0;
-            let _ = process::waitpid(child_pid.raw() as i32, &mut status, 0);
+            match process::waitpid(child_pid.raw() as i32, &mut status, 0) {
+                Ok(pid) if pid.raw() == child_pid.raw() => {}
+                waited => {
+                    println!("FAIL: waitpid did not reap the child: {:?}", waited);
+                    std::process::exit(1);
+                }
+            }
 
             if wifexited(status) {
                 std::process::exit(wexitstatus(status));

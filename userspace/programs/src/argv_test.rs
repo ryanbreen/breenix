@@ -4,8 +4,9 @@
 //! 1. std::env::args() works correctly
 //! 2. Arguments are passed correctly through execv()
 //!
-//! The test expects to be run with specific arguments and prints
-//! "ARGV_TEST_PASSED" if all checks pass.
+//! It accepts no arguments, "hello world" (exec_argv_test) or
+//! "stackarg test123" (exec_stack_argv_test), and prints "ARGV_TEST_PASSED"
+//! only when argv[0] names the program and the rest match one of those exactly.
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -39,31 +40,35 @@ fn main() {
         passed = false;
     }
 
-    // Check that argv[0] exists and is the program name
+    // argv[0] is the program name or its path.
     if let Some(argv0) = args.first() {
         println!("argv[0] = '{}'", argv0);
-        // argv[0] should contain "argv_test" somewhere
-        if !argv0.contains("argv_test") {
-            // This is OK - the kernel might use a different name
-            println!("Note: argv[0] does not contain 'argv_test' (this may be OK)");
+        if !argv0.ends_with("argv_test") {
+            println!("FAIL: argv[0] '{}' does not name argv_test", argv0);
+            passed = false;
         }
     } else {
         println!("FAIL: argv[0] is null");
         passed = false;
     }
 
-    // If we have additional arguments, verify them
-    if argc >= 2 {
-        println!("Received argument 1: '{}'", args[1]);
+    // The callers that pass arguments: exec_argv_test passes "hello world",
+    // exec_stack_argv_test passes "stackarg test123". Anything else is a
+    // dropped, reordered or altered argument.
+    let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+    for (i, arg) in rest.iter().enumerate() {
+        println!("Received argument {}: '{}'", i + 1, arg);
     }
-
-    if argc >= 3 {
-        println!("Received argument 2: '{}'", args[2]);
+    const EXPECTED: [&[&str]; 3] = [&[], &["hello", "world"], &["stackarg", "test123"]];
+    if !EXPECTED.iter().any(|expected| *expected == rest.as_slice()) {
+        println!("FAIL: arguments {:?} match no expected argument list", rest);
+        passed = false;
     }
-
-    // Test for special characters in arguments
-    if argc >= 4 {
-        println!("Received argument 3 (special chars test): '{}'", args[3]);
+    // The exec parents hand us a pipe on fd 3 and compare what we write there
+    // with what they passed, so a child that lost every argument cannot pass.
+    if !rest.is_empty() {
+        let report = format!("{}\n", rest.join(" "));
+        let _ = libbreenix::io::write(libbreenix::types::Fd::from_raw(3), report.as_bytes());
     }
 
     // Test that we can iterate over arguments

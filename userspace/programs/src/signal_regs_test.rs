@@ -11,10 +11,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use libbreenix::signal::SIGUSR1;
 use libbreenix::{sigaction, Sigaction};
 use libbreenix::process::getpid;
-#[cfg(target_arch = "x86_64")]
-use libbreenix::kill;
-#[cfg(target_arch = "x86_64")]
-use libbreenix::process::yield_now;
 
 static HANDLER_RAN: AtomicBool = AtomicBool::new(false);
 
@@ -66,21 +62,7 @@ fn main() {
         let r14_expected: u64 = 0x5555_6666_7777_8888;
         let r15_expected: u64 = 0x9999_AAAA_BBBB_CCCC;
 
-        println!("Step 1: Setting callee-saved registers (r12-r15) to known values");
-
-        unsafe {
-            std::arch::asm!(
-                "mov r12, {0}",
-                "mov r13, {1}",
-                "mov r14, {2}",
-                "mov r15, {3}",
-                in(reg) r12_expected,
-                in(reg) r13_expected,
-                in(reg) r14_expected,
-                in(reg) r15_expected,
-            );
-        }
-
+        println!("Step 1: Will set callee-saved registers (r12-r15) to known values");
         println!("  R12 = {:#018x}", r12_expected);
         println!("  R13 = {:#018x}", r13_expected);
         println!("  R14 = {:#018x}", r14_expected);
@@ -96,34 +78,12 @@ fn main() {
         }
         println!("  Handler registered successfully");
 
-        // Send signal to self
-        println!("\nStep 3: Sending SIGUSR1 to self");
         let my_pid = getpid().unwrap().raw() as i32;
-        if kill(my_pid, SIGUSR1).is_err() {
-            println!("  FAIL: kill failed");
-            std::process::exit(1);
-        }
-        println!("  Signal sent successfully");
 
-        // Yield to allow signal delivery
-        println!("\nStep 4: Yielding to allow signal delivery");
-        for i in 0..100 {
-            let _ = yield_now();
-            if HANDLER_RAN.load(Ordering::SeqCst) && i > 10 {
-                break;
-            }
-        }
-
-        if !HANDLER_RAN.load(Ordering::SeqCst) {
-            println!("  FAIL: Handler never ran");
-            println!("SIGNAL_REGS_CORRUPTED");
-            std::process::exit(1);
-        }
-
-        println!("  Handler executed and returned");
-
-        // Read back register values after signal handling
-        println!("\nStep 5: Checking register values after signal return");
+        // One asm block sets r12-r15, sends the signal, yields for delivery and
+        // reads the registers back, so the compiler never owns r12-r15 in between.
+        // Breenix x86-64 syscalls: int 0x80, number in rax; kill=62, sched_yield=24.
+        println!("\nStep 3: Setting registers, sending signal, yielding (all in asm)");
 
         let r12_actual: u64;
         let r13_actual: u64;
@@ -132,16 +92,56 @@ fn main() {
 
         unsafe {
             std::arch::asm!(
-                "mov {0}, r12",
-                "mov {1}, r13",
-                "mov {2}, r14",
-                "mov {3}, r15",
-                out(reg) r12_actual,
-                out(reg) r13_actual,
-                out(reg) r14_actual,
-                out(reg) r15_actual,
+                "mov r12, {e12}",
+                "mov r13, {e13}",
+                "mov r14, {e14}",
+                "mov r15, {e15}",
+                "mov rax, 62",
+                "mov rdi, {pid}",
+                "mov rsi, 10",
+                "int 0x80",
+                "mov rdx, 100",
+                "2:",
+                "mov rax, 24",
+                "int 0x80",
+                "dec rdx",
+                "jnz 2b",
+                "mov {a12}, r12",
+                "mov {a13}, r13",
+                "mov {a14}, r14",
+                "mov {a15}, r15",
+                e12 = in(reg) r12_expected,
+                e13 = in(reg) r13_expected,
+                e14 = in(reg) r14_expected,
+                e15 = in(reg) r15_expected,
+                pid = in(reg) my_pid as u64,
+                a12 = lateout(reg) r12_actual,
+                a13 = lateout(reg) r13_actual,
+                a14 = lateout(reg) r14_actual,
+                a15 = lateout(reg) r15_actual,
+                out("rax") _,
+                out("rdi") _,
+                out("rsi") _,
+                out("rdx") _,
+                out("r12") _,
+                out("r13") _,
+                out("r14") _,
+                out("r15") _,
             );
         }
+
+        println!("  Signal sent and yields completed");
+
+        println!("\nStep 4: Checking if handler ran");
+        if !HANDLER_RAN.load(Ordering::SeqCst) {
+            println!("  FAIL: Handler never ran");
+            println!("SIGNAL_REGS_CORRUPTED");
+            std::process::exit(1);
+        }
+
+        println!("  Handler executed and returned");
+
+        println!("\nStep 5: Checking register values after signal return");
 
         println!("  R12 = {:#018x}", r12_actual);
         println!("  R13 = {:#018x}", r13_actual);
@@ -213,7 +213,7 @@ fn main() {
         // Use a single asm block for the critical path: set registers, send
         // signal via syscall, yield to allow delivery, then read registers back.
         // This prevents the compiler from using x20-x23 between set and read.
-        // Breenix syscall numbers: kill=62, sched_yield=3
+        // Breenix ARM64 syscall numbers: kill=129, sched_yield=124
         println!("\nStep 3: Setting registers, sending signal, yielding (all in asm)");
 
         let x20_actual: u64;

@@ -37,13 +37,16 @@ fn main() {
     // Verify handler was set
     let mut verify_action = Sigaction::default();
     let ret = sigaction(SIGUSR1, None, Some(&mut verify_action));
-    if ret.is_ok() {
-        println!("  Handler address: {}", verify_action.handler);
-        if verify_action.handler == SIG_DFL || verify_action.handler == SIG_IGN {
-            println!("  WARN: Handler appears to be default/ignore, test may not be valid");
-        }
-    } else {
-        println!("  WARN: Could not verify handler was set");
+    if ret.is_err() {
+        println!("  FAIL: could not read back the SIGUSR1 handler");
+        println!("SIGNAL_EXEC_TEST_FAILED");
+        std::process::exit(1);
+    }
+    println!("  Handler address: {}", verify_action.handler);
+    if verify_action.handler == SIG_DFL || verify_action.handler == SIG_IGN {
+        println!("  FAIL: SIGUSR1 handler is default/ignore after sigaction");
+        println!("SIGNAL_EXEC_TEST_FAILED");
+        std::process::exit(1);
     }
 
     // Step 2: Fork child
@@ -57,12 +60,16 @@ fn main() {
             // Verify child inherited the handler (before exec)
             let mut child_action = Sigaction::default();
             let ret = sigaction(SIGUSR1, None, Some(&mut child_action));
-            if ret.is_ok() {
-                println!("[CHILD] Pre-exec handler: {}", child_action.handler);
-                if child_action.handler != SIG_DFL && child_action.handler != SIG_IGN {
-                    println!("[CHILD] Handler inherited from parent (as expected)");
-                }
+            if ret.is_err() {
+                println!("[CHILD] FAIL: could not read the inherited SIGUSR1 handler");
+                std::process::exit(4);
             }
+            println!("[CHILD] Pre-exec handler: {}", child_action.handler);
+            if child_action.handler == SIG_DFL || child_action.handler == SIG_IGN {
+                println!("[CHILD] FAIL: fork did not inherit the SIGUSR1 handler");
+                std::process::exit(4);
+            }
+            println!("[CHILD] Handler inherited from parent (as expected)");
 
             // Step 3: Exec into signal_exec_check
             println!("[CHILD] Calling exec(signal_exec_check)...");
@@ -115,11 +122,15 @@ fn main() {
                     println!("SIGNAL_EXEC_TEST_PASSED");
                     std::process::exit(0);
                 } else if exit_code == 1 {
-                    // signal_exec_check found SIG_IGN (acceptable per POSIX but not ideal)
-                    println!("[PARENT] Child reported handler is SIG_IGN (partial pass per POSIX)");
-                    println!("\n=== Signal exec reset test passed (SIG_IGN) ===");
-                    println!("SIGNAL_EXEC_TEST_PASSED");
-                    std::process::exit(0);
+                    // A caught signal must reset to SIG_DFL across exec; only an
+                    // ignored one stays SIG_IGN.
+                    println!("[PARENT] FAIL: caught handler became SIG_IGN after exec, not SIG_DFL");
+                    println!("SIGNAL_EXEC_TEST_FAILED");
+                    std::process::exit(1);
+                } else if exit_code == 4 {
+                    println!("[PARENT] FAIL: child did not inherit the handler before exec");
+                    println!("SIGNAL_EXEC_TEST_FAILED");
+                    std::process::exit(1);
                 } else if exit_code == 2 {
                     // signal_exec_check found user handler NOT reset
                     println!("[PARENT] FAIL: Handler was NOT reset to SIG_DFL after exec!");
