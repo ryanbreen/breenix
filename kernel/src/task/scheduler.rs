@@ -2650,19 +2650,41 @@ impl Scheduler {
         }
 
         // Important: Don't skip if it's the same thread when there are other threads waiting
-        // This was causing the issue where yielding wouldn't switch to other ready threads
+        // This was causing the issue where yielding wouldn't switch to other ready threads.
+        // An idle CPU whose search fell through to idle has already declined every
+        // queued entry and takes no second pick (#1173).
         let any_queued = self.per_cpu_queues.iter().any(|q| !q.is_empty());
-        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread && any_queued {
+        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread
+            && next_thread_id != self.cpu_state[current_cpu].idle_thread
+            && any_queued
+        {
             // Put current thread back in its CPU queue and get the next one
             self.per_cpu_queues[current_cpu].push_back(next_thread_id);
-            // Pop from local queue first; fall back to any CPU
+            // Pop from local queue first; fall back to any CPU. A Terminated
+            // entry is declined here exactly as in the search above.
             next_thread_id = {
                 let mut found = None;
                 #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
                 let mut retained_injector = false;
-                if let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
+                let local_candidates = self.per_cpu_queues[current_cpu].len();
+                for _ in 0..local_candidates {
+                    let Some(n) = self.per_cpu_queues[current_cpu].pop_front() else {
+                        break;
+                    };
+                    let (terminated, owner_pid) = self
+                        .get_thread(n)
+                        .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
+                        .unwrap_or((false, None));
+                    if terminated {
+                        if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                            self.per_cpu_queues[current_cpu].push_back(n);
+                        }
+                        continue;
+                    }
                     found = Some(n);
-                } else {
+                    break;
+                }
+                if found.is_none() {
                     for steal_cpu in 0..MAX_CPUS {
                         if steal_cpu == current_cpu {
                             continue;
@@ -2697,6 +2719,18 @@ impl Scheduler {
                                 continue;
                             }
                             if self.retain_cpu_affine_thread(n, current_cpu) {
+                                continue;
+                            }
+                            let (terminated, owner_pid) = self
+                                .get_thread(n)
+                                .map(|thread| {
+                                    (thread.state == ThreadState::Terminated, thread.owner_pid)
+                                })
+                                .unwrap_or((false, None));
+                            if terminated {
+                                if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                                    self.per_cpu_queues[steal_cpu].push_back(n);
+                                }
                                 continue;
                             }
                             found = Some(n);
@@ -3204,19 +3238,46 @@ impl Scheduler {
             self.ready_queue_length() as u32,
         );
 
-        // Handle same-thread cases
+        // Handle same-thread cases.
+        //
+        // The second pick below is for a current thread that the search above
+        // popped off a queue while other threads wait. Idle is never queued, so
+        // an idle CPU whose search fell through to idle has already been offered
+        // every queued entry and declined them all -- teardown tokens of threads
+        // that are still running elsewhere among them -- and must not pick again
+        // (#1173).
         let any_other_queued = self.per_cpu_queues.iter().any(|q| !q.is_empty());
-        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread && any_other_queued {
+        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread
+            && next_thread_id != self.cpu_state[current_cpu].idle_thread
+            && any_other_queued
+        {
             // Current thread was popped but other threads are waiting.
             // DON'T push current back to queue yet — defer until after context save.
             // Just pop the next different thread.
             should_requeue_old = true;
-            // Try local queue first, then steal
+            // Try local queue first, then steal. A Terminated entry is declined
+            // here exactly as in the search above.
             next_thread_id = {
                 let mut found = None;
-                if let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
+                let local_candidates = self.per_cpu_queues[current_cpu].len();
+                for _ in 0..local_candidates {
+                    let Some(n) = self.per_cpu_queues[current_cpu].pop_front() else {
+                        break;
+                    };
+                    let (terminated, owner_pid) = self
+                        .get_thread(n)
+                        .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
+                        .unwrap_or((false, None));
+                    if terminated {
+                        if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                            self.per_cpu_queues[current_cpu].push_back(n);
+                        }
+                        continue;
+                    }
                     found = Some(n);
-                } else {
+                    break;
+                }
+                if found.is_none() {
                     for steal_cpu in 0..MAX_CPUS {
                         if steal_cpu == current_cpu {
                             continue;
@@ -3252,6 +3313,18 @@ impl Scheduler {
                             if self.retain_cpu_affine_thread(n, current_cpu) {
                                 continue;
                             }
+                            let (terminated, owner_pid) = self
+                                .get_thread(n)
+                                .map(|thread| {
+                                    (thread.state == ThreadState::Terminated, thread.owner_pid)
+                                })
+                                .unwrap_or((false, None));
+                            if terminated {
+                                if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                                    self.per_cpu_queues[steal_cpu].push_back(n);
+                                }
+                                continue;
+                            }
                             found = Some(n);
                             break;
                         }
@@ -3259,7 +3332,21 @@ impl Scheduler {
                 }
                 match found {
                     Some(id) => id,
-                    None => return None,
+                    None => {
+                        // Everything queued was declined -- teardown tokens
+                        // among them -- so the current thread keeps this CPU.
+                        // It was published Ready above; it is still running.
+                        let current_id = self.cpu_state[current_cpu]
+                            .current_thread
+                            .unwrap_or(self.cpu_state[current_cpu].idle_thread);
+                        if self.cpu_state[current_cpu].previous_thread == Some(current_id) {
+                            self.cpu_state[current_cpu].previous_thread = None;
+                        }
+                        if let Some(t) = self.get_thread_mut(current_id) {
+                            t.set_running();
+                        }
+                        return None;
+                    }
                 }
             };
         } else if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread {
