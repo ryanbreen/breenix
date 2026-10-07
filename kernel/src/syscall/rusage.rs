@@ -30,7 +30,7 @@ fn cpu_ticks() -> Result<(u64, u64, u64), u64> {
             .as_ref()
             .and_then(|manager| manager.find_process_by_thread(tid))
             .ok_or(ESRCH as u64)?;
-        Ok((thread, process.cpu.ticks(), process.children_cpu_ticks))
+        Ok((thread, process.cpu.ticks(), process.cpu.children_ticks()))
     })
 }
 

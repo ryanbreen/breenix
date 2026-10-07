@@ -1726,9 +1726,9 @@ impl ProcessManager {
         // now the reaper's children's time. A thread's row shares its group's
         // account, so only a group leader's reap carries the account.
         let leader = row.thread_group_id.map_or(true, |group| group == pid.as_u64());
-        let child_ticks = row.children_cpu_ticks + if leader { row.cpu.ticks() } else { 0 };
-        if let Some(reaper_row) = self.processes.live_row_mut(&reaper) {
-            reaper_row.children_cpu_ticks += child_ticks;
+        let child_ticks = if leader { row.cpu.ticks() + row.cpu.children_ticks() } else { 0 };
+        if let Some(reaper_row) = self.processes.live_row(&reaper) {
+            reaper_row.cpu.add_children(child_ticks);
         }
         crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_RESIDENT);
         let evicted = self.remove_row_joined(pid);
@@ -3592,6 +3592,7 @@ impl ProcessManager {
         // before this point, so nothing here observes a sibling that still
         // holds the old root.
         process.detach_lock_owner();
+        process.detach_cpu_account();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
 
@@ -4028,6 +4029,7 @@ impl ProcessManager {
         // that byte-identical claim true for a failed exec: it runs before this
         // point, so nothing here observes a sibling that still holds the old root.
         process.detach_lock_owner();
+        process.detach_cpu_account();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
         process.cred = cred;
@@ -4095,8 +4097,10 @@ impl ProcessManager {
         let sb = thread.stack_bottom;
         let kst = thread.kernel_stack_top;
         let tls = thread.tls_block;
-        let sched_commit =
-            crate::task::scheduler::ExecSchedCommit::new(thread_id, ctx, st, sb, kst, tls, new_cr3);
+        let account = thread.cpu_account.clone();
+        let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
+            thread_id, ctx, st, sb, kst, tls, new_cr3, account,
+        );
 
         // Handle page table switching
         if is_current_process {
@@ -4407,6 +4411,7 @@ impl ProcessManager {
         // before this point, so nothing here observes a sibling that still holds
         // the old root).
         process.detach_lock_owner();
+        process.detach_cpu_account();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
         process.cred = cred;
@@ -4466,8 +4471,9 @@ impl ProcessManager {
         let sb = thread.stack_bottom;
         let kst = thread.kernel_stack_top;
         let tls = thread.tls_block;
+        let account = thread.cpu_account.clone();
         let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
-            thread_id, ctx, st, sb, kst, tls, new_ttbr0,
+            thread_id, ctx, st, sb, kst, tls, new_ttbr0, account,
         );
 
         if is_current_process {
@@ -4749,6 +4755,7 @@ impl ProcessManager {
         // before this point, so nothing here observes a sibling that still holds
         // the old root).
         process.detach_lock_owner();
+        process.detach_cpu_account();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
         let new_ttbr0 = process
@@ -4824,8 +4831,9 @@ impl ProcessManager {
         let sb = thread.stack_bottom;
         let kst = thread.kernel_stack_top;
         let tls = thread.tls_block;
+        let account = thread.cpu_account.clone();
         let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
-            thread_id, ctx, st, sb, kst, tls, new_ttbr0,
+            thread_id, ctx, st, sb, kst, tls, new_ttbr0, account,
         );
 
         log::info!(

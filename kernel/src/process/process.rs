@@ -202,11 +202,9 @@ pub struct Process {
     /// Nice value, -20 (most favoured) to 19. Reported and inherited; the
     /// scheduler does not yet weigh it.
     pub nice: i8,
-    /// CPU time charged by this process's threads, shared by a thread group.
+    /// CPU time charged by this process's threads and by the children it has
+    /// waited for, shared by a thread group.
     pub cpu: alloc::sync::Arc<crate::task::thread::CpuAccount>,
-    /// CPU ticks of the children this process has waited for, and of the
-    /// children they waited for.
-    pub children_cpu_ticks: u64,
     /// File creation mask (umask)
     pub umask: u32,
 
@@ -371,7 +369,6 @@ impl Process {
             cred: super::credentials::ProcessCredentials::root(),
             nice: 0,
             cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::default()),
-            children_cpu_ticks: 0,
             // Standard default umask: owner rwx, group/other rx
             umask: 0o022,
             // Default working directory is root
@@ -583,6 +580,22 @@ impl Process {
         }
         let own = crate::fs::locks::LockOwner::new(id);
         core::mem::replace(&mut self.lock_owner, own).hand_over(id);
+    }
+
+    /// An exec is detaching this row from its thread group. A row that was
+    /// not the group's leader stops sharing the group's CPU account: the time
+    /// it ran as a thread stays the group's, and from here on its time is its
+    /// own, so the group and the new process are never both charged for it.
+    /// Call before `thread_group_id` is cleared.
+    pub fn detach_cpu_account(&mut self) {
+        let id = self.id.as_u64();
+        if self.thread_group_id.map_or(true, |group| group == id) {
+            return;
+        }
+        self.cpu = alloc::sync::Arc::new(crate::task::thread::CpuAccount::default());
+        if let Some(thread) = self.main_thread.as_mut() {
+            thread.cpu_account = Some(self.cpu.clone());
+        }
     }
 
     /// Extract all file descriptor entries for deferred cleanup outside PM lock.

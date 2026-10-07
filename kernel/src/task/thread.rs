@@ -496,19 +496,32 @@ pub enum TimerPop {
     WakeTimeCleared,
 }
 
-/// CPU time charged to one process, in timer ticks, by every copy of every
-/// thread it has had. Atomic so the scheduler charges it without the process
-/// manager lock.
+/// CPU time of one process, in timer ticks: what every copy of every thread it
+/// has had was charged, and what the children it has waited for used. Shared
+/// by the rows of a thread group, so each thread reads the same totals.
+/// Atomic so the scheduler charges it without the process manager lock.
 #[derive(Default)]
-pub struct CpuAccount(AtomicU64);
+pub struct CpuAccount {
+    own: AtomicU64,
+    children: AtomicU64,
+}
 
 impl CpuAccount {
     pub fn charge(&self, ticks: u64) {
-        self.0.fetch_add(ticks, Ordering::Relaxed);
+        self.own.fetch_add(ticks, Ordering::Relaxed);
     }
 
     pub fn ticks(&self) -> u64 {
-        self.0.load(Ordering::Relaxed)
+        self.own.load(Ordering::Relaxed)
+    }
+
+    /// Add a waited-for child's time, its own and its children's.
+    pub fn add_children(&self, ticks: u64) {
+        self.children.fetch_add(ticks, Ordering::Relaxed);
+    }
+
+    pub fn children_ticks(&self) -> u64 {
+        self.children.load(Ordering::Relaxed)
     }
 }
 
@@ -780,6 +793,15 @@ impl Thread {
         }
         if let Some(limits) = &self.resource_limits {
             limits.charge_cpu(ran);
+        }
+    }
+
+    /// Charge the interval this thread is running in, when it is: a thread
+    /// that dies where it runs keeps that time. A blocked thread was charged
+    /// when it blocked, so nothing is added for it.
+    pub fn charge_cpu_if_running(&mut self, now: u64) {
+        if self.state == ThreadState::Running && !self.blocked_in_syscall {
+            self.charge_cpu(now);
         }
     }
 

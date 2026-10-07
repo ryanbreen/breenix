@@ -4601,9 +4601,7 @@ impl Scheduler {
     #[allow(dead_code)]
     pub fn terminate_current(&mut self) {
         if let Some(current) = self.current_thread_mut() {
-            if current.state == ThreadState::Running && !current.blocked_in_syscall {
-                current.charge_cpu(crate::time::get_ticks());
-            }
+            current.charge_cpu_if_running(crate::time::get_ticks());
             current.set_terminated();
             // Don't put back in ready queue
         }
@@ -4685,15 +4683,16 @@ impl Scheduler {
         // pass after publication consumes it. No CPU-residency predicate is
         // needed, and unobserved collision cases age out with thread retirement.
         let online_cpus = self.online_cpu_count();
+        let now = crate::time::get_ticks();
         for index in 0..self.threads.len() {
             let thread_id = {
                 let thread = &mut self.threads[index];
                 if thread.owner_pid != Some(owner_pid) {
                     continue;
                 }
-                if thread.state == ThreadState::Running && !thread.blocked_in_syscall {
-                    thread.charge_cpu(crate::time::get_ticks());
-                }
+                // A victim running on a CPU keeps the time it ran up to the
+                // kill, charged before its row can be reaped.
+                thread.charge_cpu_if_running(now);
                 thread.set_terminated();
                 thread.id()
             };
@@ -6368,6 +6367,7 @@ pub struct ExecSchedCommit {
     kernel_stack_top: Option<VirtAddr>,
     tls_block: VirtAddr,
     new_page_table_root: u64,
+    cpu_account: Option<alloc::sync::Arc<super::thread::CpuAccount>>,
 }
 
 impl ExecSchedCommit {
@@ -6379,6 +6379,7 @@ impl ExecSchedCommit {
         kernel_stack_top: Option<VirtAddr>,
         tls_block: VirtAddr,
         new_page_table_root: u64,
+        cpu_account: Option<alloc::sync::Arc<super::thread::CpuAccount>>,
     ) -> Self {
         Self {
             thread_id,
@@ -6388,6 +6389,7 @@ impl ExecSchedCommit {
             kernel_stack_top,
             tls_block,
             new_page_table_root,
+            cpu_account,
         }
     }
 
@@ -6404,6 +6406,8 @@ impl ExecSchedCommit {
             // thread (a current thread is in no run queue, so no peer can dispatch it in the gap).
             let mut unpinned = false;
             let mut applied = false;
+            // The account the thread charged before, dropped once SCHEDULER is released.
+            let mut replaced_account = None;
             {
                 let mut scheduler_lock = lock_scheduler();
                 if let Some(sched) = scheduler_lock.as_mut() {
@@ -6417,6 +6421,7 @@ impl ExecSchedCommit {
                         t.stack_bottom = self.stack_bottom;
                         t.kernel_stack_top = self.kernel_stack_top;
                         t.tls_block = self.tls_block;
+                        replaced_account = core::mem::replace(&mut t.cpu_account, self.cpu_account);
                         t.state = crate::task::thread::ThreadState::Ready;
                         #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
                         crate::task::ret_zero_pc_oracle::record_exec_commit_inline_state(t);
@@ -6424,6 +6429,7 @@ impl ExecSchedCommit {
                     }
                 }
             }
+            drop(replaced_account);
 
             // Gate-pinned lines must take the serial lock so a concurrent writer cannot
             // tear their bytes. The scheduler guard above is already out of scope.
@@ -6452,6 +6458,19 @@ impl ExecSchedCommit {
 /// `isr_unblock_for_io` so they never spin on the scheduler lock.
 pub fn wake_waitqueue_thread(tid: u64) {
     with_scheduler(|sched| sched.wake_waitqueue_thread(tid));
+}
+
+/// Mark `tid` Terminated. If it is running, the interval it is running in is
+/// charged first: a thread that dies where it runs keeps that time, and its
+/// parent can reap it only after this.
+pub fn terminate_thread(tid: u64) -> Option<()> {
+    with_scheduler(|scheduler| {
+        let thread = scheduler.get_thread_mut(tid)?;
+        thread.charge_cpu_if_running(crate::time::get_ticks());
+        thread.set_terminated();
+        Some(())
+    })
+    .flatten()
 }
 
 /// Charge the calling thread's CPU time up to now, to it and its process, so
