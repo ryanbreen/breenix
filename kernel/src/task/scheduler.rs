@@ -3492,11 +3492,12 @@ impl Scheduler {
         let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread else {
             return;
         };
-        if self.kill_pending(current_id) {
-            return;
-        }
-
         if let Some(current) = self.get_thread_mut(current_id) {
+            // A thread a SIGKILL is pending for does not sleep:
+            // `Thread::mark_kill_pending`. Its wait goes on to its signal check.
+            if current.kill_pending() {
+                return;
+            }
             // Charge elapsed CPU ticks before blocking
             current.charge_cpu(crate::time::get_ticks());
 
@@ -3857,10 +3858,12 @@ impl Scheduler {
         userspace_context: Option<super::thread::CpuContext>,
     ) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
-            if self.kill_pending(current_id) {
-                return;
-            }
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // A thread a SIGKILL is pending for does not sleep:
+                // `Thread::mark_kill_pending`.
+                if thread.kill_pending() {
+                    return;
+                }
                 // Charge elapsed CPU ticks before blocking
                 thread.charge_cpu(crate::time::get_ticks());
 
@@ -3999,10 +4002,12 @@ impl Scheduler {
     /// will check the thread state and not put it back in ready queue.
     pub fn block_current_for_child_exit(&mut self) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
-            if self.kill_pending(current_id) {
-                return;
-            }
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // A thread a SIGKILL is pending for does not sleep:
+                // `Thread::mark_kill_pending`.
+                if thread.kill_pending() {
+                    return;
+                }
                 // Charge elapsed CPU ticks before blocking
                 thread.charge_cpu(crate::time::get_ticks());
 
@@ -4142,10 +4147,12 @@ impl Scheduler {
     /// Block current thread until a timer expires (nanosleep syscall)
     pub fn block_current_for_timer(&mut self, wake_time_ns: u64) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
-            if self.kill_pending(current_id) {
-                return;
-            }
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // A thread a SIGKILL is pending for does not sleep:
+                // `Thread::mark_kill_pending`.
+                if thread.kill_pending() {
+                    return;
+                }
                 // Charge elapsed CPU ticks before blocking
                 thread.charge_cpu(crate::time::get_ticks());
 
@@ -4203,10 +4210,12 @@ impl Scheduler {
 
     fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
         let current_id = self.cpu_state[Self::current_cpu_id()].current_thread?;
-        if self.kill_pending(current_id) {
+        let thread = self.get_thread_mut(current_id)?;
+        // A thread a SIGKILL is pending for does not sleep:
+        // `Thread::mark_kill_pending`.
+        if thread.kill_pending() {
             return None;
         }
-        let thread = self.get_thread_mut(current_id)?;
 
         // Charge elapsed CPU ticks before blocking
         thread.charge_cpu(crate::time::get_ticks());
@@ -4446,10 +4455,12 @@ impl Scheduler {
     /// exactly the compositor's display rate.
     pub fn block_current_for_compositor(&mut self, timeout_ns: u64) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
-            if self.kill_pending(current_id) {
-                return;
-            }
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // A thread a SIGKILL is pending for does not sleep:
+                // `Thread::mark_kill_pending`.
+                if thread.kill_pending() {
+                    return;
+                }
                 // Charge elapsed CPU ticks NOW, before blocking. Otherwise the
                 // next schedule() call charges all time since last dispatch —
                 // including blocked/sleeping time — as CPU usage.
@@ -4788,12 +4799,6 @@ impl Scheduler {
                 ThreadState::Running | ThreadState::Ready | ThreadState::Terminated => {}
             }
         }
-    }
-
-    /// Whether a block primitive must refuse to block `thread_id`: a SIGKILL
-    /// is pending for it (`Thread::mark_kill_pending`).
-    fn kill_pending(&self, thread_id: u64) -> bool {
-        self.get_thread(thread_id).is_some_and(|thread| thread.kill_pending())
     }
 
     /// Make every scheduler-owned thread for a process non-runnable.
