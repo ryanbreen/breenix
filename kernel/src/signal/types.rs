@@ -36,7 +36,7 @@ impl Default for StackT {
 ///
 /// Stores the configured alternate stack and whether we're currently
 /// executing on it.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct AltStack {
     /// Base address of the alternate stack
     pub base: u64,
@@ -46,6 +46,12 @@ pub struct AltStack {
     pub flags: u32,
     /// True if currently executing a signal handler on this stack
     pub on_stack: bool,
+}
+
+impl Default for AltStack {
+    fn default() -> Self {
+        Self { base: 0, size: 0, flags: SS_DISABLE, on_stack: false }
+    }
 }
 
 /// Default action for a signal
