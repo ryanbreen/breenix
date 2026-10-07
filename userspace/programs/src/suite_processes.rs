@@ -1250,6 +1250,100 @@ fn fork_nproc() -> CaseResult {
     want_err("fork beyond RLIMIT_NPROC", r, EAGAIN)
 }
 
+/// The kernel heap's free space in kB, as /proc/meminfo reports it.
+fn kernel_heap_free_kb() -> Result<u64, CaseError> {
+    let text = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
+    text.lines().find_map(|line| line.strip_prefix("KernelHeapFree:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| CaseError::Fail("/proc/meminfo has no KernelHeapFree line".into()))
+}
+
+/// Wait, for at most a second, until `pid`'s threads are all blocked.
+fn parked_within(pid: i32) -> CaseResult {
+    let path = format!("/proc/{pid}/status");
+    let start = now_ms();
+    while !std::fs::read_to_string(&path)
+        .is_ok_and(|status| status.lines().any(|line| line == "State:\tBlocked"))
+    {
+        check(now_ms().saturating_sub(start) < bounded(1000, CLEANUP_MS),
+            &format!("child {pid} never blocked"))?;
+        process::yield_now()?;
+    }
+    Ok(())
+}
+
+/// SIGKILL `child` and reap it, requiring death by SIGKILL.
+fn kill_and_reap(child: &mut Child, what: &str) -> CaseResult {
+    want("kill", kill(child.pid, SIGKILL))?;
+    let (_, status) = wait_within(child.pid, 0, WAIT_MS)?;
+    child.live = false;
+    check(signaled(status) && term_sig(status) == SIGKILL,
+        &format!("{what} ended with {}, expected death by SIGKILL", status_text(status)))
+}
+
+/// Wait, for at most a second, until the kernel heap's free space is back to
+/// within `slack_kb` of `before_kb`: a reaped child's last thread is retired
+/// a little after the reap.
+fn heap_back_within(before_kb: u64, slack_kb: u64, what: &str) -> CaseResult {
+    let start = now_ms();
+    loop {
+        let after_kb = kernel_heap_free_kb()?;
+        if after_kb + slack_kb >= before_kb { return Ok(()); }
+        if now_ms().saturating_sub(start) >= bounded(1000, REPORT_MS) {
+            return fail(&format!("{what}: kernel heap free {before_kb} kB before, {after_kb} kB after"));
+        }
+        nap();
+    }
+}
+
+fn fork_kill_heap() -> CaseResult {
+    // Each kill lands inside a syscall: a 64 KiB pipe read the child is parked
+    // in, or an exec somewhere between its start and the new image's read of
+    // a pipe. Killed there, a thread used to be discarded with everything its
+    // kernel stack owned: the read's buffer and the pipe it kept alive, about
+    // 130 KiB, and the exec's old and new images, about 45 KiB. The heap's
+    // free space must come back to within SLACK_KB of where it started.
+    const READERS: usize = 48;
+    const EXECS: usize = 16;
+    const SLACK_KB: u64 = 1024;
+    let before = kernel_heap_free_kb()?;
+    for round in 0..READERS {
+        let (reader, writer) = io::pipe()?;
+        let mut child = Child::start(|| {
+            let _ = io::close(writer);
+            let _ = io::read(reader, &mut [0u8; 65536]);
+            0
+        })?;
+        io::close(reader)?;
+        // The writer stays open until the child is reaped, so its read never
+        // sees end of file.
+        let result = parked_within(child.pid)
+            .and_then(|()| kill_and_reap(&mut child, &format!("reader {round}")));
+        io::close(writer)?;
+        result?;
+    }
+    heap_back_within(before, SLACK_KB, &format!("{READERS} readers killed"))?;
+    let path = cpath(HELPER);
+    for round in 0..EXECS {
+        let (reader, writer) = io::pipe()?;
+        let fd = reader.raw().to_string();
+        let argv = cargs(&strings(&["processes-exec_test", "hold", &fd]));
+        let envp = cargs(&[]);
+        let mut child = Child::start(|| {
+            let _ = io::close(writer);
+            sc(nr::EXECVE, &[path.as_ptr() as u64, argv.ptrs.as_ptr() as u64, envp.ptrs.as_ptr() as u64]);
+            127
+        })?;
+        io::close(reader)?;
+        for _ in 0..round % 8 { process::yield_now()?; }
+        let result = kill_and_reap(&mut child, &format!("exec {round}"));
+        io::close(writer)?;
+        result?;
+    }
+    heap_back_within(before, SLACK_KB, &format!("{READERS} readers and {EXECS} execs killed"))
+}
+
 fn fork_many() -> CaseResult {
     let (r, w) = io::pipe()?;
     let mut children = Vec::new();
@@ -2769,6 +2863,7 @@ static SUITE: Suite = suite(
             case("times-reset", "The child's times() counts start at zero", fork_times_reset),
             case("nproc-eagain", "fork fails with EAGAIN when the user is at RLIMIT_NPROC", fork_nproc),
             case("many-children", "32 children are alive at once, and each exits with its own status", fork_many),
+            case("kill-heap", "Children killed inside a read or an exec leave the kernel heap as it was", fork_kill_heap),
         ]),
         category("exec", "exec, argv & environment", &[
             case("argv", "execve passes argv exactly, including an arbitrary argv[0] and empty arguments", exec_argv),
