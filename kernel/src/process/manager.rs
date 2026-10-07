@@ -2076,12 +2076,20 @@ impl ProcessManager {
     /// `exiting` was what kept it connected to its session: its own group, when
     /// its parent is in another group of the same session, and the group of
     /// each child in another group of the same session.
+    ///
+    /// Answered once per row: an exit can pass through more than one exit path
+    /// (a signal death terminates the row before its thread's exit hook runs),
+    /// and the first to ask is the one that reports.
     pub fn groups_orphaned_by_exit(
-        &self,
+        &mut self,
         exiting: ProcessId,
         children: &[ProcessId],
     ) -> Vec<ProcessId> {
         let mut groups = Vec::new();
+        match self.processes.live_row_mut(&exiting) {
+            Some(row) if !row.job.orphan_check_done => row.job.orphan_check_done = true,
+            _ => return groups,
+        }
         let Some(me) = self.processes.live_row(&exiting) else {
             return groups;
         };
@@ -2135,6 +2143,32 @@ impl ProcessManager {
             ReapOutcome::Claimed(evicted) => evicted,
             ReapOutcome::Refused => None,
         }
+    }
+
+    /// The thread group `pid` belongs to: the pid of the row that leads it.
+    pub fn thread_group_of(&self, pid: ProcessId) -> Option<u64> {
+        self.processes
+            .live_row(&pid)
+            .map(|row| row.thread_group_id.unwrap_or(pid.as_u64()))
+    }
+
+    /// The live, unterminated rows of thread group `group`, the leader's
+    /// included. Walks the table in place, so it allocates nothing.
+    pub fn group_rows(&self, group: u64) -> impl Iterator<Item = &Process> {
+        self.processes.values().filter(move |row| {
+            !row.is_tombstone()
+                && !row.is_terminated()
+                && row.thread_group_id.unwrap_or(row.id.as_u64()) == group
+        })
+    }
+
+    /// `group_rows`, mutable.
+    pub fn group_rows_mut(&mut self, group: u64) -> impl Iterator<Item = &mut Process> {
+        self.processes.values_mut().filter(move |row| {
+            !row.is_tombstone()
+                && !row.is_terminated()
+                && row.thread_group_id.unwrap_or(row.id.as_u64()) == group
+        })
     }
 
     /// The other live rows of `pid`'s thread group: rows created by `clone`

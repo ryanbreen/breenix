@@ -5346,6 +5346,16 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     let need_resched = crate::task::scheduler::check_and_clear_need_resched();
     let exception_cleanup_context = Aarch64PerCpu::exception_cleanup_context();
 
+    // A stopped process's thread is held off EL0 here, before the lock and
+    // the switch decision: it is blocked, so the switch below saves its EL0
+    // context for SIGCONT to resume. Signal delivery arms need_resched for it,
+    // so the ordinary tick, with no reschedule pending, skips the check.
+    if from_el0 && need_resched && (frame.spsr & 0xF) == 0 {
+        if let Some(current_tid) = crate::task::scheduler::current_thread_id() {
+            crate::signal::delivery::hold_stopped_thread_on_interrupt_return(current_tid);
+        }
+    }
+
     // Read real_tid_fixup for stale cpu_state detection (lock-free)
     let real_tid_fixup = if from_el0 && (frame.spsr & 0xF) == 0 {
         let real_thread_ptr = Aarch64PerCpu::current_thread_ptr();
@@ -7285,7 +7295,6 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
     // Track if signal termination happened (for parent notification after borrow ends)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
     let mut terminated_child_pid: Option<u64> = None;
-    let mut job_notification: Option<crate::signal::delivery::JobNotification> = None;
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
@@ -7355,18 +7364,9 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                             crate::task::scheduler::switch_to_idle();
                         }
                     }
-                    // The thread was blocked; the next scheduling point
-                    // switches it out until SIGCONT.
-                    crate::signal::delivery::SignalDeliveryResult::Stopped(notification) => {
-                        job_notification = notification;
-                    }
                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                 }
             }
-        }
-
-        if let Some(notification) = job_notification {
-            crate::signal::delivery::notify_parent_of_job_change_locked(manager, &notification);
         }
 
         // Drop manager guard first to avoid deadlock when notifying parent

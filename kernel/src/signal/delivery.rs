@@ -42,12 +42,6 @@ pub enum SignalDeliveryResult {
     Delivered,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
-    /// The process is stopped, by a stop signal's default action taken here
-    /// (with the notification its parent is owed) or by one taken earlier.
-    /// The thread must not return to user mode: on an interrupt return it has
-    /// been blocked and is switched out at the next scheduling point; a
-    /// syscall return parks it with `stop_on_syscall_return`.
-    Stopped(Option<JobNotification>),
     /// A caught signal's frame could not be installed on the user stack. The
     /// thread is no longer runnable and its SIGSEGV exit is deferred; the
     /// caller must not return it to user mode.
@@ -80,8 +74,12 @@ pub fn deliver_pending_signals(
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
-    if let Some(held) = hold_stopped(process) {
-        return held;
+    // A stopped process runs no handler, and a stop is taken where its thread
+    // can be held off user mode (`take_stop_locked`), not here: the next
+    // scheduling point does that.
+    if stop_pending_or_in_force(process) {
+        crate::task::scheduler::set_need_resched();
+        return SignalDeliveryResult::NoAction;
     }
     // Process all deliverable signals in a loop (avoids unbounded recursion)
     loop {
@@ -90,6 +88,12 @@ pub fn deliver_pending_signals(
             Some(s) => s,
             None => return SignalDeliveryResult::NoAction,
         };
+
+        // A stop found behind ignored signals is left the same way.
+        if is_default_stop(process, sig) {
+            crate::task::scheduler::set_need_resched();
+            return SignalDeliveryResult::NoAction;
+        }
 
         // Select under the temporary wait mask, then restore before creating
         // the handler frame or stopping. Each nested frame owns its own mask.
@@ -118,9 +122,6 @@ pub fn deliver_pending_signals(
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
                     DeliverResult::Terminated(notification) => {
                         return SignalDeliveryResult::Terminated(notification)
-                    }
-                    DeliverResult::Stopped(notification) => {
-                        return SignalDeliveryResult::Stopped(notification)
                     }
                     DeliverResult::Ignored => {
                         // Continue loop to check for more signals
@@ -177,8 +178,12 @@ pub fn deliver_pending_signals(
     exception_frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
-    if let Some(held) = hold_stopped(process) {
-        return held;
+    // A stopped process runs no handler, and a stop is taken where its thread
+    // can be held off user mode (`take_stop_locked`), not here: the next
+    // scheduling point does that.
+    if stop_pending_or_in_force(process) {
+        crate::task::scheduler::set_need_resched();
+        return SignalDeliveryResult::NoAction;
     }
     // Process all deliverable signals in a loop (avoids unbounded recursion)
     loop {
@@ -187,6 +192,12 @@ pub fn deliver_pending_signals(
             Some(s) => s,
             None => return SignalDeliveryResult::NoAction,
         };
+
+        // A stop found behind ignored signals is left the same way.
+        if is_default_stop(process, sig) {
+            crate::task::scheduler::set_need_resched();
+            return SignalDeliveryResult::NoAction;
+        }
 
         // Select under the temporary wait mask, then restore before creating
         // the handler frame or stopping. Each nested frame owns its own mask.
@@ -215,9 +226,6 @@ pub fn deliver_pending_signals(
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
                     DeliverResult::Terminated(notification) => {
                         return SignalDeliveryResult::Terminated(notification)
-                    }
-                    DeliverResult::Stopped(notification) => {
-                        return SignalDeliveryResult::Stopped(notification)
                     }
                     DeliverResult::Ignored => {
                         // Continue loop to check for more signals
@@ -260,8 +268,6 @@ pub enum DeliverResult {
     Ignored,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
-    /// The process stopped; its parent is owed the notification, if it has one
-    Stopped(Option<JobNotification>),
 }
 
 /// A pending SIGKILL ends a stopped process: it is not held stopped.
@@ -269,44 +275,23 @@ fn sigkill_pending(process: &Process) -> bool {
     process.signals.pending & sig_mask(SIGKILL) != 0
 }
 
-/// Keep a stopped process's thread out of user mode, unless a SIGKILL is
-/// pending. Called first by every delivery on the way back to user mode.
-fn hold_stopped(process: &Process) -> Option<SignalDeliveryResult> {
-    if process.job.stopped.is_none() || sigkill_pending(process) {
-        return None;
-    }
-    stop_current_thread(process);
-    Some(SignalDeliveryResult::Stopped(None))
+/// Whether `sig` takes its default action in `process` and that action stops
+/// the process.
+fn is_default_stop(process: &Process, sig: u32) -> bool {
+    matches!(default_action(sig), SignalDefaultAction::Stop)
+        && process.signals.get_handler(sig).is_default()
 }
 
-/// Take the stop for `sig`'s default action: the process is stopped, the stop
-/// replaces any continue its parent has not waited for, and the parent is owed
-/// a notification.
-fn enter_stop(process: &mut Process, sig: u32) -> Option<JobNotification> {
-    process.job.stopped = Some(sig);
-    process.job.report = Some(JobReport::Stopped(sig));
-    process.parent.map(|parent_pid| JobNotification {
-        parent_pid,
-        child_pid: process.id,
-    })
-}
-
-/// Block the stopped process's thread when it is the one returning to user
-/// mode on this CPU, so the next scheduling point switches it out. SIGCONT
-/// makes it ready again.
-fn stop_current_thread(process: &Process) {
-    let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id) else {
-        return;
-    };
-    crate::task::scheduler::with_scheduler(|scheduler| {
-        if scheduler
-            .current_thread_mut()
-            .is_some_and(|thread| thread.id == thread_id)
-        {
-            scheduler.block_current();
-        }
-    });
-    crate::task::scheduler::set_need_resched();
+/// Whether a thread of `process` has a stop to act on before it returns to
+/// user mode: the process is stopped, or its next deliverable signal stops
+/// it. A pending SIGKILL overrides both.
+pub fn stop_pending_or_in_force(process: &Process) -> bool {
+    !sigkill_pending(process)
+        && (process.job.stopped.is_some()
+            || process
+                .signals
+                .next_deliverable_signal()
+                .is_some_and(|sig| is_default_stop(process, sig)))
 }
 
 /// An unusable signal stack cannot silently discard a caught signal: the
@@ -416,11 +401,8 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
                 DeliverResult::Delivered
             }
         }
-        SignalDefaultAction::Stop => {
-            let notification = enter_stop(process, sig);
-            stop_current_thread(process);
-            DeliverResult::Stopped(notification)
-        }
+        // Unreached: delivery leaves a stop pending for `take_stop_locked`.
+        SignalDefaultAction::Stop => DeliverResult::Ignored,
         // SIGCONT continued the process when it was generated; its default
         // action leaves nothing to do here.
         SignalDefaultAction::Continue => DeliverResult::Ignored,
@@ -490,9 +472,10 @@ fn deliver_to_user_handler_x86_64(
     true
 }
 
-/// x86-64 syscall return: deliver the next caught signal, or take a stop. Any
-/// other default disposition is left pending for the interrupt return path,
-/// and a fatal one was already taken by `take_fatal_default_signal`.
+/// x86-64 syscall return: deliver the next caught signal. A default
+/// disposition is left pending for the interrupt return path; a fatal one was
+/// already taken by `take_fatal_default_signal`, and the caller has already
+/// held the thread for a stop (`stop_pending_or_in_force`).
 #[cfg(target_arch = "x86_64")]
 pub fn deliver_caught_signal_on_syscall_return(
     process: &mut Process,
@@ -500,9 +483,6 @@ pub fn deliver_caught_signal_on_syscall_return(
     user_return: &mut X86UserReturn,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
-    if process.job.stopped.is_some() && !sigkill_pending(process) {
-        return SignalDeliveryResult::Stopped(None);
-    }
     loop {
         let Some(sig) = process.signals.next_deliverable_signal() else {
             return SignalDeliveryResult::NoAction;
@@ -511,13 +491,11 @@ pub fn deliver_caught_signal_on_syscall_return(
         let action = *process.signals.get_handler(sig);
         match action.handler {
             SIG_DFL => {
-                // A stop is taken here, before Ring 3 runs again; the caller
-                // parks the thread. Other default actions stay pending.
+                // A stop found behind ignored signals stays pending, with the
+                // sigsuspend mask, and the next scheduling point holds the
+                // thread; the caller has already held it for any other stop.
                 if matches!(default_action(sig), SignalDefaultAction::Stop) {
-                    if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
-                        process.signals.set_blocked(saved);
-                    }
-                    return SignalDeliveryResult::Stopped(enter_stop(process, sig));
+                    crate::task::scheduler::set_need_resched();
                 }
                 process.signals.set_pending(sig);
                 return SignalDeliveryResult::NoAction;
@@ -990,8 +968,10 @@ pub struct JobNotification {
 }
 
 /// Tell the parent of a stop or continue, with the process-manager lock held
-/// by the caller. Takes the scheduler lock for the wake, in the PM-then-
-/// scheduler order signal delivery already uses.
+/// by the caller. The wake takes the scheduler lock, in the PM-then-scheduler
+/// order signal delivery uses, and writes no serial output: a stop can be
+/// reported from an interrupt return (`hold_stopped_thread_on_interrupt_return`),
+/// with the try-locked guard that path already holds.
 pub fn notify_parent_of_job_change_locked(
     manager: &mut ProcessManager,
     notification: &JobNotification,
@@ -1007,59 +987,332 @@ pub fn notify_parent_of_job_change_locked(
         return;
     };
     crate::task::scheduler::with_scheduler(|scheduler| {
-        scheduler.unblock_for_child_exit(parent_tid);
-        if signal_eligible {
-            scheduler.unblock_for_signal(parent_tid);
+        scheduler.unblock_for_job_change(parent_tid, signal_eligible);
+    });
+}
+
+/// Stop `pid`'s process for stop signal `sig`, with PM held: every row of its
+/// thread group is stopped, a pending SIGCONT is discarded, and a thread
+/// waiting on no CPU to resume in user mode is parked at once. A thread
+/// running on another CPU is sent there to a scheduling point, where it is
+/// held; one waiting in a syscall is held at that syscall's return, and its
+/// wait goes on meanwhile. The parent is told once no thread can still be
+/// running in user mode. `caller_tid` is the thread taking the stop, which is
+/// in the kernel and is held before it returns to user mode.
+fn stop_thread_group(
+    manager: &mut ProcessManager,
+    pid: ProcessId,
+    sig: u32,
+    caller_tid: Option<u64>,
+) {
+    let Some(group) = manager.thread_group_of(pid) else {
+        return;
+    };
+    crate::task::scheduler::with_scheduler(|scheduler| {
+        for row in manager.group_rows_mut(group) {
+            row.job.stopped = Some(sig);
+            row.signals.clear_pending(SIGCONT);
+            let Some(thread_id) = row.main_thread.as_ref().map(|thread| thread.id) else {
+                continue;
+            };
+            if scheduler.block_ready_user_thread(thread_id) {
+                row.job.parked = true;
+            } else if Some(thread_id) != caller_tid {
+                scheduler.kick_thread(thread_id);
+            }
         }
     });
-}
-
-/// `notify_parent_of_job_change_locked` for a caller holding no
-/// process-manager lock.
-pub fn notify_parent_of_job_change(notification: &JobNotification) {
-    crate::process::with_process_manager(|manager| {
-        notify_parent_of_job_change_locked(manager, notification);
-    });
-}
-
-/// Park the calling thread at a syscall's return to user mode while its
-/// process is stopped, after telling its parent of a stop taken on this
-/// return. The thread waits as a blocked syscall does, until SIGCONT has
-/// continued the process or a SIGKILL is pending; a wake that leaves the
-/// process stopped parks it again. Called with no process-manager lock held
-/// and with the syscall's preempt_disable() in force, which it is again on
-/// return. The caller then delivers whatever signals are pending.
-pub fn stop_on_syscall_return(notification: Option<JobNotification>) {
-    if let Some(notification) = notification {
-        notify_parent_of_job_change(&notification);
+    if let Some(leader) = manager.get_process_mut(ProcessId::new(group)) {
+        // The stop replaces a continue the parent has not waited for.
+        leader.job.report = None;
+        leader.job.report_owed = true;
     }
+    complete_stop_report(manager, group, caller_tid);
+}
+
+/// Report thread group `group`'s stop to its parent once no thread of it can
+/// still be running in user mode: each is blocked, terminated, or
+/// `caller_tid`, which is in the kernel and is held before it returns. Called
+/// where a stop is taken and wherever one of the group's threads is held.
+fn complete_stop_report(manager: &mut ProcessManager, group: u64, caller_tid: Option<u64>) {
+    let leader = ProcessId::new(group);
+    if !manager
+        .get_process(leader)
+        .is_some_and(|row| row.job.report_owed)
+    {
+        return;
+    }
+    let quiescent = crate::task::scheduler::with_scheduler(|scheduler| {
+        manager.group_rows(group).all(|row| {
+            row.main_thread.as_ref().is_none_or(|thread| {
+                Some(thread.id) == caller_tid || !scheduler.thread_may_run(thread.id)
+            })
+        })
+    })
+    .unwrap_or(false);
+    if !quiescent {
+        return;
+    }
+    let Some(row) = manager.get_process_mut(leader) else {
+        return;
+    };
+    let Some(sig) = row.job.stopped else {
+        return;
+    };
+    row.job.report_owed = false;
+    row.job.report = Some(JobReport::Stopped(sig));
+    if let Some(parent_pid) = row.parent {
+        notify_parent_of_job_change_locked(
+            manager,
+            &JobNotification {
+                parent_pid,
+                child_pid: leader,
+            },
+        );
+    }
+}
+
+/// Generate stop signal `sig` for `pid`, with PM held. When its action is the
+/// default and `pid` does not block it, the stop is taken now for the whole
+/// process, or discarded when `sig` is not SIGSTOP and the process group is
+/// orphaned (POSIX); either way the signal is consumed and this returns true.
+/// Otherwise it returns false and the caller queues the signal: a caught stop
+/// signal runs its handler, and a blocked one is taken where it is unblocked
+/// (`take_stop_locked`). `caller_tid` is the generating thread, in the kernel,
+/// or None from an interrupt handler.
+pub fn generate_stop_locked(
+    manager: &mut ProcessManager,
+    pid: ProcessId,
+    sig: u32,
+    caller_tid: Option<u64>,
+) -> bool {
+    let Some(group) = manager.thread_group_of(pid) else {
+        return true;
+    };
+    // A stop signal discards a pending SIGCONT.
+    for row in manager.group_rows_mut(group) {
+        row.signals.clear_pending(SIGCONT);
+    }
+    let Some(process) = manager.get_process(pid) else {
+        return true;
+    };
+    if !is_default_stop(process, sig) || process.signals.is_blocked(sig) {
+        return false;
+    }
+    // Already stopped: there is nothing more to take or report.
+    if process.job.stopped.is_some() {
+        return true;
+    }
+    if sig != SIGSTOP && manager.pgrp_is_orphaned(process.pgid, None) {
+        return true;
+    }
+    stop_thread_group(manager, pid, sig, caller_tid);
+    true
+}
+
+/// SIGCONT generated for `pid`, with PM held: every pending stop signal of
+/// its process is discarded, and a stopped process is continued, its threads
+/// the stop parked are made ready, and its parent is told. SIGCONT does this
+/// even when it is blocked or ignored; the caller then queues it as usual.
+pub fn continue_thread_group_locked(manager: &mut ProcessManager, pid: ProcessId) {
+    let Some(group) = manager.thread_group_of(pid) else {
+        return;
+    };
+    let mut was_stopped = false;
+    crate::task::scheduler::with_scheduler(|scheduler| {
+        for row in manager.group_rows_mut(group) {
+            row.signals.discard_pending(STOP_SIGNALS);
+            was_stopped |= row.job.stopped.take().is_some();
+            if core::mem::take(&mut row.job.parked) {
+                if let Some(thread) = row.main_thread.as_ref() {
+                    let _ = scheduler.unblock(thread.id);
+                }
+            }
+        }
+    });
+    if !was_stopped {
+        return;
+    }
+    crate::task::scheduler::set_need_resched();
+    let leader = ProcessId::new(group);
+    let Some(row) = manager.get_process_mut(leader) else {
+        return;
+    };
+    // A stop the parent was never told of is not reported as continued.
+    if core::mem::take(&mut row.job.report_owed) {
+        return;
+    }
+    row.job.report = Some(JobReport::Continued);
+    if let Some(parent_pid) = row.parent {
+        notify_parent_of_job_change_locked(
+            manager,
+            &JobNotification {
+                parent_pid,
+                child_pid: leader,
+            },
+        );
+    }
+}
+
+/// At `thread_id`'s return to user mode, with PM held: take a pending stop
+/// signal whose action is the default, and say whether the thread is to be
+/// held because its process is stopped. A pending SIGKILL is never held. A
+/// SIGTSTP, SIGTTIN or SIGTTOU that would stop a process in an orphaned
+/// process group is discarded, judged here where the stop is taken, as
+/// Linux's get_signal does, rather than where it was queued.
+pub fn take_stop_locked(manager: &mut ProcessManager, thread_id: u64) -> bool {
+    let Some((pid, _)) = manager.find_process_by_thread(thread_id) else {
+        return false;
+    };
+    loop {
+        let Some(process) = manager.get_process_mut(pid) else {
+            return false;
+        };
+        if sigkill_pending(process) {
+            return false;
+        }
+        if process.job.stopped.is_some() {
+            return true;
+        }
+        let Some(sig) = process.signals.next_deliverable_signal() else {
+            return false;
+        };
+        if !is_default_stop(process, sig) {
+            return false;
+        }
+        process.signals.clear_pending(sig);
+        let pgid = process.pgid;
+        if sig != SIGSTOP && manager.pgrp_is_orphaned(pgid, None) {
+            continue;
+        }
+        stop_thread_group(manager, pid, sig, Some(thread_id));
+    }
+}
+
+/// Hold the current thread, `thread_id`, on an interrupt's return to user
+/// mode while its process is stopped, taking a pending stop first. Called
+/// before the switch decision with no lock held. Returns true when the thread
+/// has been blocked: the caller then switches away, saving its user context
+/// for SIGCONT to resume. Interrupt-path rules: the process manager is only
+/// try-locked (false when it is busy, and the next scheduling point retries),
+/// the scheduler lock is the interrupt-safe one the switch takes anyway, and
+/// nothing here writes serial output.
+pub fn hold_stopped_thread_on_interrupt_return(thread_id: u64) -> bool {
+    let Some(mut guard) = crate::process::try_manager() else {
+        return false;
+    };
+    let Some(manager) = guard.as_mut() else {
+        return false;
+    };
+    if !take_stop_locked(manager, thread_id) {
+        return false;
+    }
+    let blocked = crate::task::scheduler::with_scheduler(|scheduler| {
+        let current = scheduler.current_thread_mut().map(|thread| thread.id);
+        if current == Some(thread_id) {
+            scheduler.block_current();
+        }
+        current == Some(thread_id)
+    })
+    .unwrap_or(false);
+    if !blocked {
+        return false;
+    }
+    let Some(group) = manager
+        .find_process_by_thread_mut(thread_id)
+        .map(|(pid, row)| {
+            row.job.parked = true;
+            pid
+        })
+        .and_then(|pid| manager.thread_group_of(pid))
+    else {
+        return true;
+    };
+    complete_stop_report(manager, group, None);
+    true
+}
+
+/// Hold the calling thread at a syscall's return to user mode while its
+/// process is stopped, taking a pending stop first. It waits as a blocked
+/// syscall does, parked for SIGCONT, and returns once the process is no
+/// longer stopped or a SIGKILL is pending; the caller then delivers what is
+/// pending. A thread the kill path terminated, or whose row has been reaped,
+/// never returns to user mode: it waits for the scheduler to switch away.
+/// Called with no process-manager lock held and with the syscall's
+/// preempt_disable() in force, which it is again on return.
+pub fn hold_stopped_thread_on_syscall_return() {
     let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
         return;
     };
     loop {
-        crate::task::scheduler::with_scheduler(|scheduler| scheduler.block_current_in_syscall());
-        let stopped = crate::process::with_process_manager(|manager| {
-            manager
-                .find_process_by_thread(thread_id)
-                .is_some_and(|(_, process)| {
-                    process.job.stopped.is_some() && !sigkill_pending(process)
-                })
+        // Block first, then look: a SIGCONT after the look finds the thread
+        // parked and wakes it.
+        let terminated = crate::task::scheduler::with_scheduler(|scheduler| {
+            match scheduler.current_thread_mut() {
+                Some(thread) if thread.state != crate::task::thread::ThreadState::Terminated => {
+                    scheduler.block_current_in_syscall();
+                    false
+                }
+                _ => true,
+            }
         })
-        .unwrap_or(false);
-        if !stopped {
-            break;
+        .unwrap_or(true);
+        if terminated {
+            abandon_syscall_return();
         }
-        crate::per_cpu::preempt_enable();
-        crate::task::scheduler::yield_current();
-        crate::arch_halt_with_interrupts();
-        crate::per_cpu::preempt_disable();
+        let held = crate::process::with_process_manager(|manager| {
+            let held = take_stop_locked(manager, thread_id);
+            let (pid, row) = manager.find_process_by_thread_mut(thread_id)?;
+            row.job.parked = held;
+            if held {
+                if let Some(group) = manager.thread_group_of(pid) {
+                    complete_stop_report(manager, group, None);
+                }
+            }
+            Some(held)
+        })
+        .flatten();
+        match held {
+            Some(true) => {
+                crate::per_cpu::preempt_enable();
+                crate::task::scheduler::yield_current();
+                crate::arch_halt_with_interrupts();
+                crate::per_cpu::preempt_disable();
+            }
+            Some(false) => break,
+            // The row is gone: the process has exited under the thread.
+            None => abandon_syscall_return(),
+        }
     }
+    let terminated =
+        crate::task::scheduler::with_scheduler(|scheduler| match scheduler.current_thread_mut() {
+            Some(thread) if thread.state != crate::task::thread::ThreadState::Terminated => {
+                thread.blocked_in_syscall = false;
+                thread.set_ready();
+                false
+            }
+            _ => true,
+        })
+        .unwrap_or(true);
+    if terminated {
+        abandon_syscall_return();
+    }
+}
+
+/// End a syscall return whose thread must never run user code again: it was
+/// terminated, or its process's row is gone. The thread is marked terminated
+/// and waits, preemptible, for the scheduler to switch away for good.
+fn abandon_syscall_return() -> ! {
     crate::task::scheduler::with_scheduler(|scheduler| {
         if let Some(thread) = scheduler.current_thread_mut() {
-            thread.blocked_in_syscall = false;
-            thread.set_ready();
+            thread.set_terminated();
         }
     });
+    crate::task::scheduler::set_need_resched();
+    crate::per_cpu::preempt_enable();
+    loop {
+        crate::arch_halt_with_interrupts();
+    }
 }
 
 /// The exit status a death by `sig`'s default action reports, or None when
@@ -1090,6 +1343,10 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
 /// process-manager lock, so it does no logging, locking or allocation.
 #[cfg(target_arch = "x86_64")]
 pub fn take_fatal_default_signal(process: &mut Process) -> Option<u32> {
+    // A stopped process dies of SIGKILL only; anything else waits for SIGCONT.
+    if process.job.stopped.is_some() && !sigkill_pending(process) {
+        return None;
+    }
     let sig = process.signals.next_deliverable_signal()?;
     if !process.signals.get_handler(sig).is_default() || fatal_exit_code(sig).is_none() {
         return None;

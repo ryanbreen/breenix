@@ -60,13 +60,19 @@ pub fn sys_setsid() -> SyscallResult {
         }
     };
 
-    let pid = match manager.find_process_by_thread(thread_id) {
-        Some((pid, _)) => pid,
+    // The calling process is its thread group, identified by the group's
+    // leader: a CLONE_VM thread's own row PID is not the process's.
+    let group = match manager
+        .find_process_by_thread(thread_id)
+        .and_then(|(row, _)| manager.thread_group_of(row))
+    {
+        Some(group) => group,
         None => {
             log::error!("sys_setsid: process not found for thread {}", thread_id);
             return SyscallResult::Err(ESRCH);
         }
     };
+    let pid = ProcessId::new(group);
 
     // A process group whose ID is the caller's PID exists: the caller leads
     // it, or it outlived the caller's leadership. Zombies are still members.
@@ -78,14 +84,13 @@ pub fn sys_setsid() -> SyscallResult {
         return SyscallResult::Err(EPERM);
     }
 
-    let Some(process) = manager.get_process_mut(pid) else {
-        return SyscallResult::Err(ESRCH);
-    };
-
-    // Create new session: set sid = pgid = pid
+    // Create new session: set sid = pgid = pid, for every thread of the
+    // process.
     let new_sid = pid;
-    process.sid = new_sid;
-    process.pgid = new_sid;
+    for row in manager.group_rows_mut(group) {
+        row.sid = new_sid;
+        row.pgid = new_sid;
+    }
 
     log::info!(
         "sys_setsid: process {} created new session (sid={}, pgid={})",
@@ -254,8 +259,13 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
         }
     };
 
-    let (caller_pid, caller_sid) = match manager.find_process_by_thread(thread_id) {
-        Some((pid, caller)) => (pid, caller.sid),
+    // Processes are thread groups, identified by their leaders: a CLONE_VM
+    // thread's row stands for its whole process here.
+    let (caller_pid, caller_sid) = match manager
+        .find_process_by_thread(thread_id)
+        .and_then(|(row, caller)| Some((manager.thread_group_of(row)?, caller.sid)))
+    {
+        Some((group, sid)) => (ProcessId::new(group), sid),
         None => return SyscallResult::Err(ESRCH),
     };
 
@@ -265,6 +275,12 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
         p if p < 0 => return SyscallResult::Err(ESRCH),
         p => ProcessId::new(p as u64),
     };
+    // A PID naming a thread that does not lead its group is not a process
+    // (Linux: EINVAL).
+    match manager.thread_group_of(target_pid) {
+        Some(group) if group != target_pid.as_u64() => return SyscallResult::Err(EINVAL),
+        _ => {}
+    }
 
     // Determine new pgid
     let new_pgid = if pgid == 0 {
@@ -277,11 +293,14 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
         Some(p) if !p.is_terminated() => (p.sid, p.parent, p.has_exec),
         _ => return SyscallResult::Err(ESRCH),
     };
+    // The process the target's parent row belongs to: a child forked by one
+    // of the caller's threads is the caller's child.
+    let target_parent = target_parent.and_then(|parent| manager.thread_group_of(parent));
 
     // The target is the caller, or a child of the caller in the caller's
     // session that has not called exec.
     if target_pid != caller_pid {
-        if target_parent != Some(caller_pid) {
+        if target_parent != Some(caller_pid.as_u64()) {
             return SyscallResult::Err(ESRCH);
         }
         if target_sid != caller_sid {
@@ -308,10 +327,10 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
         return SyscallResult::Err(EPERM);
     }
 
-    let Some(process) = manager.get_process_mut(target_pid) else {
-        return SyscallResult::Err(ESRCH);
-    };
-    process.pgid = new_pgid;
+    // Every thread of the target process joins the group.
+    for row in manager.group_rows_mut(target_pid.as_u64()) {
+        row.pgid = new_pgid;
+    }
 
     log::debug!(
         "sys_setpgid: set pgid of process {} to {}",

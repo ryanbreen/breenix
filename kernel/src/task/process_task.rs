@@ -874,13 +874,11 @@ impl ProcessScheduler {
 
                     manager.reparent_children_to_init(pid, &children);
 
-                    // Groups this first exit leaves orphaned with a stopped
-                    // member; they are sent SIGHUP and SIGCONT outside PM.
-                    let orphaned_groups = if already_terminated {
-                        alloc::vec::Vec::new()
-                    } else {
-                        manager.groups_orphaned_by_exit(pid, &children)
-                    };
+                    // Groups this exit leaves orphaned with a stopped member;
+                    // they are sent SIGHUP and SIGCONT outside PM. Asked once
+                    // per row: a signal death has already terminated the row
+                    // (`already_terminated`), and this is still its first ask.
+                    let orphaned_groups = manager.groups_orphaned_by_exit(pid, &children);
                     // A parent that declines zombies reaps the row now; it is
                     // dropped after PM is released.
                     let auto_reaped = manager.reap_if_parent_declines(pid);

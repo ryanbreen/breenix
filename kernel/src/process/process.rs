@@ -74,8 +74,9 @@ pub enum JobReport {
     Continued,
 }
 
-/// Job-control state of a process: whether a stop signal's default action has
-/// stopped it, and the state change its parent has not yet waited for.
+/// Job-control state of one row. `stopped` is kept on every row of a thread
+/// group, since each row's thread is held on its own; `report` and
+/// `report_owed` live on the group's leader, the row its parent waits for.
 /// Serialized by the process-manager lock.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JobControl {
@@ -83,6 +84,16 @@ pub struct JobControl {
     pub stopped: Option<u32>,
     /// The latest stop or continue, until a wait reports it.
     pub report: Option<JobReport>,
+    /// The stop has been taken but a thread of the group may still be running
+    /// in user mode on another CPU; the parent is told once none is.
+    pub report_owed: bool,
+    /// This row's thread was blocked by the stop on its way to user mode, and
+    /// SIGCONT makes it ready again. A thread stopped while it waits in a
+    /// syscall is not parked: that wait goes on, and the thread is held at the
+    /// syscall's return.
+    pub parked: bool,
+    /// The row's exit has looked for process groups it left orphaned.
+    pub orphan_check_done: bool,
 }
 
 /// Where the row sits in the reap/tombstone lifetime.

@@ -449,11 +449,9 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             .get_process(pid)
             .and_then(|process| process.exit_code)
             .unwrap_or(exit_code);
-        // Groups the first exit leaves orphaned with a stopped member.
-        let orphaned_groups = match outcome {
-            ExitOutcome::FirstCommit => pm.groups_orphaned_by_exit(pid, &children),
-            _ => alloc::vec::Vec::new(),
-        };
+        // Groups this exit leaves orphaned with a stopped member, asked once
+        // per row whichever exit path gets here first.
+        let orphaned_groups = pm.groups_orphaned_by_exit(pid, &children);
         (
             outcome,
             receipt,

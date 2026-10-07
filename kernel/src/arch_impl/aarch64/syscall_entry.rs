@@ -212,15 +212,25 @@ pub extern "C" fn trace_eret_to_el0(_elr: u64, _spsr: u64) {
 /// If so, it modifies the exception frame to jump to the signal handler
 /// instead of returning to the original code.
 fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
+    // A stop holds the thread, outside PM, until SIGCONT; what is pending then
+    // is checked again, in this loop rather than by recursion.
+    while deliver_signals_aarch64(frame) {
+        crate::signal::delivery::hold_stopped_thread_on_syscall_return();
+    }
+}
+
+/// One pass of `check_and_deliver_signals_aarch64`: true when the process is
+/// stopped, or has a stop to take, and nothing was delivered.
+fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
     // Get current thread ID
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
-        None => return,
+        None => return false,
     };
 
     // 0 is the no-thread sentinel, not a live thread id - no signals
     if current_thread_id == 0 {
-        return;
+        return false;
     }
 
     // A syscall return must complete signal delivery before allowing EL0 to
@@ -234,8 +244,6 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
     let mut terminated_child_pid: Option<u64> = None;
     // A signal death ends the whole thread group (pid and exit status).
     let mut group_death: Option<(crate::process::ProcessId, i32)> = None;
-    // A stop in force parks the thread before EL0 runs again.
-    let mut stop: Option<Option<crate::signal::delivery::JobNotification>> = None;
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
@@ -248,7 +256,13 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
 
             // Check if there are any deliverable signals, or a stop in force
             if !crate::signal::delivery::needs_action_on_return_to_user(process) {
-                return;
+                return false;
+            }
+
+            // A stop is acted on before any other signal: the thread is held
+            // until SIGCONT, and what is pending then is delivered after.
+            if crate::signal::delivery::stop_pending_or_in_force(process) {
+                return true;
             }
 
             // Switch to process's page table for signal delivery
@@ -288,11 +302,6 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
                 signal_result,
                 crate::signal::delivery::SignalDeliveryResult::FrameFault
             );
-            if let crate::signal::delivery::SignalDeliveryResult::Stopped(notification) =
-                signal_result
-            {
-                stop = Some(notification);
-            }
 
             // Handle termination
             if let crate::signal::delivery::SignalDeliveryResult::Terminated(notification) =
@@ -331,12 +340,7 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
     if let Some((pid, exit_code)) = group_death {
         crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
     }
-
-    // Stopped: wait for SIGCONT here, then deliver what is pending by then.
-    if let Some(notification) = stop {
-        crate::signal::delivery::stop_on_syscall_return(notification);
-        check_and_deliver_signals_aarch64(frame);
-    }
+    false
 }
 
 // =============================================================================

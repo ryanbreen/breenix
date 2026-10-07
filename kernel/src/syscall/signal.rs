@@ -206,84 +206,40 @@ pub(crate) fn signal_orphaned_group(pgid: ProcessId) {
 
 /// Send a signal to a specific process
 fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
+    let caller_tid = crate::task::scheduler::current_thread_id();
     let mut manager_guard = manager();
 
     if let Some(ref mut manager) = *manager_guard {
-        // POSIX: a process in an orphaned process group is not stopped by
-        // SIGTSTP, SIGTTIN or SIGTTOU with the default action; such a signal
-        // is discarded.
-        let orphaned_stop = matches!(sig, SIGTSTP | SIGTTIN | SIGTTOU)
-            && manager.get_process(target_pid).is_some_and(|process| {
-                process.signals.get_handler(sig).is_default()
-                    && manager.pgrp_is_orphaned(process.pgid, None)
-            });
-        let mut continued: Option<(
-            Option<crate::signal::delivery::JobNotification>,
-            Option<u64>,
-        )> = None;
-        if let Some(process) = manager.get_process_mut(target_pid) {
+        match manager.get_process(target_pid) {
+            None => return SyscallResult::Err(3), // ESRCH
             // A zombie is still a process until it is reaped: the signal is
             // accepted and has no effect.
-            if process.is_terminated() {
-                return SyscallResult::Ok(0);
-            }
-
-            // SIGKILL and SIGSTOP are special - cannot be caught or blocked
-            if sig == SIGKILL {
-                let victim_pid = process.id;
-                drop(manager_guard);
-                kill_process_now(victim_pid, -(SIGKILL as i32));
-                return SyscallResult::Ok(0);
-            }
-
-            if sig == SIGCONT {
-                // SIGCONT continues a stopped process even when it is ignored
-                // or blocked, and discards every pending stop signal.
-                process.signals.discard_pending(STOP_SIGNALS);
-                if process.job.stopped.take().is_some() {
-                    process.job.report = Some(crate::process::process::JobReport::Continued);
-                    let notification =
-                        process
-                            .parent
-                            .map(|parent_pid| crate::signal::delivery::JobNotification {
-                                parent_pid,
-                                child_pid: process.id,
-                            });
-                    continued = Some((
-                        notification,
-                        process.main_thread.as_ref().map(|thread| thread.id),
-                    ));
-                }
-                // Queued when caught; discarded at generation otherwise.
-                process.signals.set_pending(sig);
-            } else {
-                // A stop signal discards a pending SIGCONT. The stop itself is
-                // the default action, taken where the process returns to user
-                // mode.
-                if sig_mask(sig) & STOP_SIGNALS != 0 {
-                    process.signals.clear_pending(SIGCONT);
-                    if orphaned_stop {
-                        return SyscallResult::Ok(0);
-                    }
-                }
-                // Ignored signals are discarded at generation.
-                process.signals.set_pending(sig);
-            }
+            Some(process) if process.is_terminated() => return SyscallResult::Ok(0),
+            Some(_) => {}
         }
-        if let Some((notification, thread_id)) = continued {
-            if let Some(notification) = notification {
-                crate::signal::delivery::notify_parent_of_job_change_locked(manager, &notification);
-            }
-            // The continued thread is parked blocked at its return to user
-            // mode, or was switched out blocked from it.
-            if let Some(thread_id) = thread_id {
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.unblock(thread_id);
-                });
-                crate::task::scheduler::set_need_resched();
-            }
+
+        // SIGKILL cannot be caught or blocked
+        if sig == SIGKILL {
+            drop(manager_guard);
+            kill_process_now(target_pid, -(SIGKILL as i32));
+            return SyscallResult::Ok(0);
         }
+
+        if sig == SIGCONT {
+            // SIGCONT continues a stopped process even when it is ignored or
+            // blocked; it is then queued when caught, and discarded otherwise.
+            crate::signal::delivery::continue_thread_group_locked(manager, target_pid);
+        } else if sig_mask(sig) & STOP_SIGNALS != 0
+            && crate::signal::delivery::generate_stop_locked(manager, target_pid, sig, caller_tid)
+        {
+            // The stop was taken, or discarded for an orphaned process group.
+            return SyscallResult::Ok(0);
+        }
+
         if let Some(process) = manager.get_process_mut(target_pid) {
+            // Ignored signals are discarded at generation.
+            process.signals.set_pending(sig);
+
             // A stopped process runs nothing until SIGCONT; what is pending
             // waits for it. Every other wakeup below requires a pending,
             // unblocked, non-ignored disposition.
@@ -1510,6 +1466,10 @@ pub fn sys_sigsuspend_with_frame(
                     log::error!("sys_sigsuspend: process not found for thread {}", thread_id);
                     return SyscallResult::Err(3); // ESRCH
                 }
+                // A stop signal the temporary mask unblocks is taken now: no
+                // handler runs for it, so the wait goes on, and the thread is
+                // held where it returns.
+                let _ = crate::signal::delivery::take_stop_locked(manager, thread_id);
             } else {
                 log::error!("sys_sigsuspend: process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH
@@ -2265,6 +2225,10 @@ pub fn sys_sigsuspend_with_frame_aarch64(
                     );
                     return SyscallResult::Err(3); // ESRCH
                 }
+                // A stop signal the temporary mask unblocks is taken now: no
+                // handler runs for it, so the wait goes on, and the thread is
+                // held where it returns.
+                let _ = crate::signal::delivery::take_stop_locked(manager, thread_id);
             } else {
                 log::error!("sys_sigsuspend_aarch64: process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH

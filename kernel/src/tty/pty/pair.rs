@@ -355,13 +355,26 @@ impl PtyPair {
             return;
         }
 
-        // Set signal pending on each process
+        // Set signal pending on each process. A stop signal is taken, or
+        // discarded, as kill() takes it, and a stopped process is not woken.
+        let mut woken: Vec<u64> = Vec::new();
         {
+            let caller_tid = crate::task::scheduler::current_thread_id();
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut pm) = *manager_guard {
                 for &(pid, _) in &targets {
+                    if crate::signal::constants::sig_mask(sig)
+                        & crate::signal::constants::STOP_SIGNALS
+                        != 0
+                        && crate::signal::delivery::generate_stop_locked(pm, pid, sig, caller_tid)
+                    {
+                        continue;
+                    }
                     if let Some(proc) = pm.get_process_mut(pid) {
                         proc.signals.set_pending(sig);
+                        if proc.job.stopped.is_none() {
+                            woken.extend(proc.main_thread.as_ref().map(|thread| thread.id));
+                        }
                         if matches!(proc.state, crate::process::ProcessState::Blocked) {
                             proc.set_ready();
                         }
@@ -378,13 +391,11 @@ impl PtyPair {
         }
 
         // Wake threads that may be blocked on signals or waitpid
-        for &(_, thread_id) in &targets {
-            if let Some(tid) = thread_id {
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.unblock_for_signal(tid);
-                    sched.unblock_for_child_exit(tid);
-                });
-            }
+        for tid in woken {
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.unblock_for_signal(tid);
+                sched.unblock_for_child_exit(tid);
+            });
         }
         crate::task::scheduler::set_need_resched();
     }

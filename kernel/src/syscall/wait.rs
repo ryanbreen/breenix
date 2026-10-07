@@ -50,7 +50,10 @@ pub const WEXITED: u32 = 4;
 pub const WCONTINUED: u32 = 8;
 /// waitid: leave the reported child waitable.
 pub const WNOWAIT: u32 = 0x0100_0000;
-/// Linux's thread and clone selection flags, accepted and without effect here.
+/// Linux's thread and clone selection flags. Each row waits for its own
+/// children here, so __WNOTHREAD changes nothing. __WCLONE selects only
+/// children created by clone (CLONE_VM rows), unless __WALL, which selects
+/// every child as a plain wait does.
 const WNOTHREAD: u32 = 0x2000_0000;
 const WALL: u32 = 0x4000_0000;
 const WCLONE: u32 = 0x8000_0000;
@@ -80,7 +83,8 @@ enum Selector {
     Pid(ProcessId),
     /// Children in this process group.
     Group(ProcessId),
-    /// Children in the caller's process group, as it is when the wait looks.
+    /// Children in the caller's process group, as it was when the wait
+    /// began: `bind_caller_group` makes it a `Group` before the first scan.
     CallerGroup,
     /// Any child.
     Any,
@@ -117,6 +121,7 @@ fn scan(thread_id: u64, selector: Selector, options: u32) -> Result<Option<Found
             Some((pid, caller)) => (pid, caller.pgid, caller.children.clone()),
             None => return Err(EINVAL as u64),
         };
+        let clone_only = options & WCLONE != 0 && options & WALL == 0;
         let mut any = false;
         for child_pid in children {
             let Some(child) = manager.get_process_mut(child_pid) else {
@@ -127,7 +132,7 @@ fn scan(thread_id: u64, selector: Selector, options: u32) -> Result<Option<Found
                 Selector::Group(pgid) => child.pgid == pgid,
                 Selector::CallerGroup => child.pgid == caller_pgid,
                 Selector::Any => true,
-            };
+            } && (!clone_only || child.thread_group_id.is_some());
             if !selected {
                 continue;
             }
@@ -172,6 +177,21 @@ fn scan(thread_id: u64, selector: Selector, options: u32) -> Result<Option<Found
     .unwrap_or(Err(ECHILD as u64))
 }
 
+/// The caller's process group, read once when the wait begins: a later
+/// setpgid by the caller does not change which children the wait selects.
+fn bind_caller_group(thread_id: u64, selector: Selector) -> Result<Selector, u64> {
+    let Selector::CallerGroup = selector else {
+        return Ok(selector);
+    };
+    crate::process::with_process_manager(|manager| {
+        manager
+            .find_process_by_thread(thread_id)
+            .map(|(_, caller)| Selector::Group(caller.pgid))
+    })
+    .flatten()
+    .ok_or(EINVAL as u64)
+}
+
 /// Let the calling thread run on after `block_current_for_child_exit`.
 fn unblock_self() {
     crate::task::scheduler::with_scheduler(|sched| {
@@ -191,6 +211,7 @@ fn unblock_self() {
 /// (`unblock_for_child_exit`); the scheduler lock orders the two.
 fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64> {
     let thread_id = crate::task::scheduler::current_thread_id().ok_or(EINVAL as u64)?;
+    let selector = bind_caller_group(thread_id, selector)?;
     if let Some(found) = scan(thread_id, selector, options)? {
         return Ok(Some(found));
     }

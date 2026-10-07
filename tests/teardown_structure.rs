@@ -4058,11 +4058,12 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait_checked", 1),
 ];
 /// Census A: every right-hand-side publication of a `ThreadState::Blocked*`
-/// value under `kernel/src`. The six production rows are all blocking-family
+/// value under `kernel/src`. The seven production rows are all blocking-family
 /// primitives, which `validate_blocked_state_publication_family` asserts as a
 /// derived rule; the five `#[cfg(test)]` rows are fixtures, exempt from that
 /// rule but still pinned here so a new fixture is re-anchored deliberately.
@@ -4079,6 +4080,7 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_inner", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
@@ -4319,8 +4321,10 @@ const ROW_REMOVAL_EPOCH_BUMPS: &[(&str, &str, usize)] = &[
 /// primitive is caught however it is named: an exact-name list only ever sees
 /// the nine that already exist, so `block_current_probe` would be invisible.
 /// The nine current definitions are still pinned individually by
-/// `BLOCKING_PRIMITIVES`.
-const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "prepare_to_wait"];
+/// `BLOCKING_PRIMITIVES`. `block_ready` is the job-control member: it blocks a
+/// stopped process's ready, off-CPU thread rather than the current one, and
+/// owns that thread's ready-queue departure as the others own theirs.
+const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "block_ready", "prepare_to_wait"];
 
 /// #663 M2: every call site of `remove_from_ready_queue` under `kernel/src`,
 /// by enclosing item, whatever the receiver — `Scheduler`'s tid-keyed queue

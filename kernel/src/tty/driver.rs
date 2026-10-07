@@ -786,6 +786,18 @@ impl TtyDevice {
             // Get the process manager and set the signal pending
             let mut manager = process::manager();
             if let Some(ref mut pm) = *manager {
+                // A stop signal is taken, or discarded, as kill() takes it.
+                if crate::signal::constants::sig_mask(sig) & crate::signal::constants::STOP_SIGNALS
+                    != 0
+                    && crate::signal::delivery::generate_stop_locked(
+                        pm,
+                        pid,
+                        sig,
+                        crate::task::scheduler::current_thread_id(),
+                    )
+                {
+                    return;
+                }
                 if let Some(proc) = pm.get_process_mut(pid) {
                     proc.signals.set_pending(sig);
 
@@ -802,8 +814,13 @@ impl TtyDevice {
                         pid.as_u64()
                     );
 
-                    // If process is blocked waiting for signal, wake it
-                    if let Some(ref thread) = proc.main_thread {
+                    // If process is blocked waiting for signal, wake it. A
+                    // stopped process waits for SIGCONT instead.
+                    if let Some(thread) = proc
+                        .main_thread
+                        .as_ref()
+                        .filter(|_| proc.job.stopped.is_none())
+                    {
                         let thread_id = thread.id;
                         drop(manager);
 
@@ -851,6 +868,14 @@ impl TtyDevice {
         // Try to get the process manager without blocking
         if let Some(mut manager) = process::try_manager() {
             if let Some(ref mut pm) = *manager {
+                // A stop signal is taken, or discarded, as kill() takes it;
+                // from an interrupt, no thread here is the generating one.
+                if crate::signal::constants::sig_mask(sig) & crate::signal::constants::STOP_SIGNALS
+                    != 0
+                    && crate::signal::delivery::generate_stop_locked(pm, pid, sig, None)
+                {
+                    return;
+                }
                 if let Some(proc) = pm.get_process_mut(pid) {
                     proc.signals.set_pending(sig);
 
@@ -872,7 +897,12 @@ impl TtyDevice {
                     // Use unblock() instead of unblock_for_signal() because:
                     // - unblock_for_signal() only handles BlockedOnSignal state
                     // - unblock() handles BOTH Blocked (stdin read) and BlockedOnSignal
-                    if let Some(ref thread) = proc.main_thread {
+                    // A stopped process waits for SIGCONT instead.
+                    if let Some(thread) = proc
+                        .main_thread
+                        .as_ref()
+                        .filter(|_| proc.job.stopped.is_none())
+                    {
                         let thread_id = thread.id;
                         drop(manager);
 
