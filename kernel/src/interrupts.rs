@@ -1026,6 +1026,17 @@ fn handle_cow_direct(
     }
 }
 
+/// Whether `fault_addr` is in or near the user stack region, the only place
+/// `handle_stack_growth` grows a stack. A stack grows downward, so its faults
+/// land BELOW the current stack bottom but still within the overall region.
+fn in_user_stack_growth_range(fault_addr: u64) -> bool {
+    use crate::memory::layout::{
+        MAX_USER_STACK_SIZE, USER_STACK_REGION_END, USER_STACK_REGION_START,
+    };
+    fault_addr < USER_STACK_REGION_END
+        && fault_addr >= USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE)
+}
+
 /// Handle demand-paged stack growth
 ///
 /// When a userspace process accesses memory just below its current stack bottom,
@@ -1034,19 +1045,12 @@ fn handle_cow_direct(
 ///
 /// Returns true if the fault was handled (stack was grown), false otherwise.
 fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
-    use crate::memory::layout::{
-        MAX_USER_STACK_SIZE, USER_STACK_REGION_END, USER_STACK_REGION_START,
-    };
+    use crate::memory::layout::MAX_USER_STACK_SIZE;
     use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
 
     let fault_addr = faulting_addr.as_u64();
 
-    // Quick check: is this in or near the user stack region?
-    // Stack grows downward, so faults happen BELOW the current stack bottom
-    // but should still be within the overall stack region
-    if fault_addr >= USER_STACK_REGION_END
-        || fault_addr < USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE)
-    {
+    if !in_user_stack_growth_range(fault_addr) {
         return false;
     }
 
@@ -1158,6 +1162,14 @@ extern "x86-interrupt" fn page_fault_handler(
     // If so, skip verbose diagnostics to avoid polluting output and slowing down
     let is_potential_cow = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
         && error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
+    // A user stack growing is resolved below without diagnostics too: printed
+    // for each page, they made a 1 MiB stack take seconds to grow. One that
+    // cannot grow is still reported as EXCEPTION: PAGE FAULT.
+    let is_potential_stack_growth = (stack_frame.code_segment.0 & 3) == 3
+        && !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+        && !error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH)
+        && in_user_stack_growth_range(cr2);
+    let quiet = is_potential_cow || is_potential_stack_growth;
 
     // A kernel fault inside the user-copy routine on a user address is the
     // syscall's bad pointer, not a kernel bug: a copy-on-write write or a
@@ -1218,8 +1230,8 @@ extern "x86-interrupt" fn page_fault_handler(
         }
     }
 
-    // Only print verbose diagnostics for non-CoW faults
-    if !is_potential_cow {
+    // Only print verbose diagnostics for faults not resolved quietly
+    if !quiet {
         crate::serial_println!("[DIAG:PAGEFAULT] ==============================");
         crate::serial_println!("[DIAG:PAGEFAULT] Fault addr: {:#x}", cr2);
         crate::serial_println!("[DIAG:PAGEFAULT] Error code: {:#x}", error_code.bits());
@@ -1247,8 +1259,8 @@ extern "x86-interrupt" fn page_fault_handler(
     // Use the cr2 value we already read safely above (line 894)
     let accessed_addr = x86_64::VirtAddr::new(cr2);
 
-    // Skip raw serial output for potential CoW faults
-    if !is_potential_cow {
+    // Skip raw serial output for faults resolved quietly
+    if !quiet {
         // Use raw serial output for critical info to avoid recursion
         unsafe {
             // Output 'P' for page fault
@@ -1313,8 +1325,8 @@ extern "x86-interrupt" fn page_fault_handler(
         }
     }
 
-    // Only print verbose diagnostics for non-CoW faults
-    if !is_potential_cow {
+    // Only print verbose diagnostics for faults not resolved quietly
+    if !quiet {
         // Emergency output to confirm we're in page fault handler
         crate::serial_println!("PF_ENTRY!");
 
@@ -1347,8 +1359,8 @@ extern "x86-interrupt" fn page_fault_handler(
         );
     }
 
-    // Quick debug output for int3 test - only for non-CoW faults
-    if !is_potential_cow {
+    // Quick debug output for int3 test - only for faults not resolved quietly
+    if !quiet {
         unsafe {
             // Output 'F' for Fault
             core::arch::asm!(
