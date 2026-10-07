@@ -1343,6 +1343,35 @@ fn kill_readers() -> CaseResult {
     heap_back_within(before, SLACK_KB, &format!("{READERS} readers killed"))
 }
 
+/// A copy of the helper with zeros after it, which the loader ignores but an
+/// exec reads. Zeros are appended for at most 50 ms of writing, up to 2 MiB:
+/// a disk that writes them fast also reads them fast, and needs them to keep
+/// an exec long enough to catch, while on a slow one the helper alone is.
+/// Written 64 KiB per call, so a kill ends the writer within one.
+#[cfg(not(target_arch = "x86_64"))]
+fn padded_helper(tmp: &Tmp) -> Result<String, CaseError> {
+    const CHUNK: usize = 64 * 1024;
+    const MAX_PADDING: usize = 2 << 20;
+    let image = std::fs::read(HELPER).map_err(|e| format!("reading {HELPER}: {e}"))?;
+    let path = tmp.path("padded-helper");
+    let fd = fs::open_with_mode(&path, fs::O_CREAT | fs::O_EXCL | fs::O_WRONLY, 0o600)?;
+    let written = (|| -> Result<(), Error> {
+        for chunk in image.chunks(CHUNK) { write_all(fd, chunk)?; }
+        let zeros = vec![0u8; CHUNK];
+        let start = now_ms();
+        let mut padding = 0;
+        while padding < MAX_PADDING && now_ms().saturating_sub(start) < 50 {
+            write_all(fd, &zeros)?;
+            padding += CHUNK;
+        }
+        Ok(())
+    })();
+    io::close(fd)?;
+    written?;
+    want("chmod", chmod(&path, 0o755))?;
+    Ok(path)
+}
+
 /// SIGKILL children inside an exec, while it reads the new program from disk.
 /// Killed there, a thread used to leave the old image and the new one's
 /// partly read data behind, about 46 KiB each. A child writes a byte and then
@@ -1351,9 +1380,8 @@ fn kill_readers() -> CaseResult {
 /// first, the new program exits 77 and the kill is tried again with a new
 /// child.
 ///
-/// The program run is the helper with 2 MiB of zeros after it, which the
-/// loader ignores but an exec reads: on Parallels the helper's own few reads
-/// finished before the parent ever saw the child inside its exec.
+/// The program run is `padded_helper`: on Parallels the helper's own few
+/// reads finished before the parent ever saw the child inside its exec.
 ///
 /// Not run on x86-64, which brings up one CPU: there the parent was never
 /// seen to run while a child was inside an exec, so no kill can land in one.
@@ -1362,12 +1390,8 @@ fn kill_execs() -> CaseResult {
     const EXECS: usize = 16;
     const TRIES: usize = 4;
     const SLACK_KB: u64 = 256;
-    const PADDING: usize = 2 << 20;
     let tmp = Tmp::new()?;
-    let mut image = std::fs::read(HELPER).map_err(|e| format!("reading {HELPER}: {e}"))?;
-    image.resize(image.len() + PADDING, 0);
-    let path = cpath(&tmp.file("padded-helper", &image, 0o755)?);
-    drop(image);
+    let path = cpath(&padded_helper(&tmp)?);
     let argv = cargs(&strings(&["processes-exec_test", "ran"]));
     let envp = cargs(&[]);
     let before = kernel_heap_free_kb()?;
