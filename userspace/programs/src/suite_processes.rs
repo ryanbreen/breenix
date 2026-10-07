@@ -1297,16 +1297,28 @@ fn heap_back_within(before_kb: u64, slack_kb: u64, what: &str) -> CaseResult {
     }
 }
 
-fn fork_kill_heap() -> CaseResult {
-    // Each kill lands inside a syscall: a 64 KiB pipe read the child is parked
-    // in, or an exec somewhere between its start and the new image's read of
-    // a pipe. Killed there, a thread used to be discarded with everything its
-    // kernel stack owned: the read's buffer and the pipe it kept alive, about
-    // 130 KiB, and the exec's old and new images, about 45 KiB. The heap's
-    // free space must come back to within SLACK_KB of where it started.
-    const READERS: usize = 24;
-    const EXECS: usize = 8;
-    const SLACK_KB: u64 = 1024;
+/// Wait, for at most a second, until `pid` is blocked (true) or has ended
+/// (false).
+fn blocked_or_ended(pid: i32) -> Result<bool, CaseError> {
+    let path = format!("/proc/{pid}/status");
+    let start = now_ms();
+    loop {
+        if let Ok(status) = std::fs::read_to_string(&path) {
+            if status.lines().any(|line| line == "State:\tBlocked") { return Ok(true); }
+            if status.lines().any(|line| line == "State:\tTerminated") { return Ok(false); }
+        }
+        check(now_ms().saturating_sub(start) < bounded(1000, CLEANUP_MS),
+            &format!("child {pid} neither blocked nor ended"))?;
+        process::yield_now()?;
+    }
+}
+
+/// SIGKILL children parked in a 64 KiB pipe read. Killed there, a thread used
+/// to be discarded with everything its kernel stack owned: the read's buffer
+/// and the pipe it kept alive, about 130 KiB each.
+fn kill_readers() -> CaseResult {
+    const READERS: usize = 16;
+    const SLACK_KB: u64 = 512;
     let before = kernel_heap_free_kb()?;
     for round in 0..READERS {
         let (reader, writer) = io::pipe()?;
@@ -1323,25 +1335,58 @@ fn fork_kill_heap() -> CaseResult {
         io::close(writer)?;
         result?;
     }
-    heap_back_within(before, SLACK_KB, &format!("{READERS} readers killed"))?;
+    heap_back_within(before, SLACK_KB, &format!("{READERS} readers killed"))
+}
+
+/// SIGKILL children inside an exec, while it reads the new program from disk.
+/// Killed there, a thread used to leave the old image and the new one's
+/// partly read data behind, about 46 KiB each. A child writes a byte and then
+/// calls execve, its only syscall after the write, so once it is seen blocked
+/// it is asleep inside the exec. When the exec finishes first, the new
+/// program exits 77 and the kill is tried again with a new child.
+fn kill_execs() -> CaseResult {
+    const EXECS: usize = 16;
+    const TRIES: usize = 4;
+    const SLACK_KB: u64 = 256;
     let path = cpath(HELPER);
+    let argv = cargs(&strings(&["processes-exec_test", "ran"]));
+    let envp = cargs(&[]);
+    let before = kernel_heap_free_kb()?;
     for round in 0..EXECS {
-        let (reader, writer) = io::pipe()?;
-        let fd = reader.raw().to_string();
-        let argv = cargs(&strings(&["processes-exec_test", "hold", &fd]));
-        let envp = cargs(&[]);
-        let mut child = Child::start(|| {
-            let _ = io::close(writer);
-            sc(nr::EXECVE, &[path.as_ptr() as u64, argv.ptrs.as_ptr() as u64, envp.ptrs.as_ptr() as u64]);
-            127
-        })?;
-        io::close(reader)?;
-        for _ in 0..round % 8 { process::yield_now()?; }
-        let result = kill_and_reap(&mut child, &format!("exec {round}"));
-        io::close(writer)?;
-        result?;
+        let what = format!("exec {round}");
+        let mut killed = false;
+        for _ in 0..TRIES {
+            let (ready_r, ready_w) = io::pipe()?;
+            let mut child = Child::start(|| {
+                let _ = io::close(ready_r);
+                let _ = io::write(ready_w, b"x");
+                sc(nr::EXECVE, &[path.as_ptr() as u64, argv.ptrs.as_ptr() as u64, envp.ptrs.as_ptr() as u64]);
+                127
+            })?;
+            io::close(ready_w)?;
+            let said = read_up_to(ready_r, 1, WAIT_MS);
+            io::close(ready_r)?;
+            check(said?.len() == 1, &format!("{what}: the child never reached its exec"))?;
+            if blocked_or_ended(child.pid)? {
+                kill_and_reap(&mut child, &what)?;
+                killed = true;
+                break;
+            }
+            child.expect_exit(77, &what)?;
+        }
+        check(killed, &format!("{what}: the exec finished before the kill in all {TRIES} tries"))?;
     }
-    heap_back_within(before, SLACK_KB, &format!("{READERS} readers and {EXECS} execs killed"))
+    heap_back_within(before, SLACK_KB, &format!("{EXECS} execs killed"))
+}
+
+fn fork_kill_heap() -> CaseResult {
+    // Each half has its own workload and allowance: on main, each half alone
+    // leaves at least twice its allowance behind. Both halves run, so a
+    // failure reports them both.
+    match (kill_readers(), kill_execs()) {
+        (Err(CaseError::Fail(readers)), Err(CaseError::Fail(execs))) => fail(format!("{readers}; {execs}")),
+        (readers, execs) => readers.and(execs),
+    }
 }
 
 fn fork_many() -> CaseResult {
