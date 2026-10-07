@@ -2911,6 +2911,7 @@ const OFF_CPU_LIMIT_MS: i64 = 30;
 const STATE: usize = 0;
 const WAIT_TICKS: usize = 1;
 const WAIT_IDLE: usize = 2;
+const SLEPT_MS: usize = 3;
 const STARTING: i64 = 0;
 const COMPUTING: i64 = 1;
 const DONE: i64 = 2;
@@ -2920,12 +2921,13 @@ const WOKEN_SLEEP_FAILED: i32 = 2;
 const WOKEN_NO_SAMPLE: i32 = 3;
 const WOKEN_LATE: i32 = 4;
 const WOKEN_OUTLASTED: i32 = 5;
+const WOKEN_SHORT_SLEEP: i32 = 6;
 const WOKEN_SLEEP_MS: i64 = 100;
 
 /// The process woken while its parent computes. Once the parent says it is computing, it
 /// sleeps WOKEN_SLEEP_MS and records how many ticks passed before it ran again, then
-/// computes for 100 ms. It must wake, and finish computing, while the parent is still
-/// computing.
+/// computes for 100 ms. The sleep must last the time asked for by the monotonic clock,
+/// and it must wake, and finish computing, while the parent is still computing.
 fn woken_process(shared: &[AtomicI64]) -> i32 {
     let deadline = now_ms() + 5000;
     while shared[STATE].load(Ordering::Acquire) == STARTING {
@@ -2933,10 +2935,14 @@ fn woken_process(shared: &[AtomicI64]) -> i32 {
         sc(nr::SCHED_YIELD, &[]);
     }
     let Ok(before) = tick_sample() else { return WOKEN_NO_SAMPLE };
+    let asleep = now_ms();
     if time::sleep_ms(WOKEN_SLEEP_MS as u64).is_err() { return WOKEN_SLEEP_FAILED; }
+    let slept = now_ms().saturating_sub(asleep) as i64;
     let Ok(after) = tick_sample() else { return WOKEN_NO_SAMPLE };
     shared[WAIT_TICKS].store(after.tick - before.tick, Ordering::Release);
     shared[WAIT_IDLE].store(after.idle - before.idle, Ordering::Release);
+    shared[SLEPT_MS].store(slept, Ordering::Release);
+    if slept < WOKEN_SLEEP_MS { return WOKEN_SHORT_SLEEP; }
     if shared[STATE].load(Ordering::Acquire) != COMPUTING { return WOKEN_LATE; }
     burn(100);
     if shared[STATE].load(Ordering::Acquire) != COMPUTING { return WOKEN_OUTLASTED; }
@@ -2963,7 +2969,7 @@ fn sched_idle_cpu() -> CaseResult {
     }
     let map = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)?;
     // SAFETY: the shared mapping is page-aligned, zero-filled and outlives both processes' use of it.
-    let shared = unsafe { core::slice::from_raw_parts(map as *const AtomicI64, WAIT_IDLE + 1) };
+    let shared = unsafe { core::slice::from_raw_parts(map as *const AtomicI64, SLEPT_MS + 1) };
     let mut woken = Child::start(|| woken_process(shared))?;
     shared[STATE].store(COMPUTING, Ordering::Release);
     let ran = burn_off_cpu(600);
@@ -2975,6 +2981,7 @@ fn sched_idle_cpu() -> CaseResult {
     let status = woken.wait()?;
     let wait = shared[WAIT_TICKS].load(Ordering::Acquire);
     let wait_idle = shared[WAIT_IDLE].load(Ordering::Acquire);
+    let slept = shared[SLEPT_MS].load(Ordering::Acquire);
     memory::munmap(map, 4096)?;
     let code = if exited(status) { exit_code(status) } else { -1 };
     let wait_measured = spare_processor(wait_idle, 0, wait);
@@ -2985,6 +2992,7 @@ fn sched_idle_cpu() -> CaseResult {
             "ran again {wait} ms after beginning a {WOKEN_SLEEP_MS} ms sleep, after the computing process had finished, though the processors were idle for {wait_idle} ticks of that time")),
         WOKEN_NO_START => Some("never saw the computing process start".to_string()),
         WOKEN_SLEEP_FAILED => Some(format!("failed its {WOKEN_SLEEP_MS} ms sleep")),
+        WOKEN_SHORT_SLEEP => Some(format!("returned from a {WOKEN_SLEEP_MS} ms sleep after {slept} ms")),
         WOKEN_NO_SAMPLE => Some("could not read /proc/stat or getrusage".to_string()),
         WOKEN_OUTLASTED => Some("was still computing when the computing process finished".to_string()),
         _ => Some(format!("ended with {}", status_text(status))),
