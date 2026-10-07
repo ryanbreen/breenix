@@ -133,7 +133,7 @@ between runs. Evidence remains private to each run and is removed remotely after
 It keeps fresh private Cargo homes for nested builds. The userspace cache hashes sources,
 local libraries, build/packing scripts, the pinned BusyBox, fonts, Cargo configuration,
 external Rust library contents and toolchain identity. A key is published only after a
-clean rebuild produces byte-identical ELFs and disk images. Gate ext2 images normalize
+clean rebuild produces byte-identical ELFs and disk images. Gate ext2 images populate through libext2fs for deterministic block placement, then normalize
 host timestamps, UUID, directory hash seed and inode generations before that comparison.
 Every hit checks artifact checksums and copies images rather than sharing writable disks.
 

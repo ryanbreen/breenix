@@ -447,8 +447,11 @@ else
     # Create empty image
     dd if=/dev/zero of="$OUTPUT_FILE" bs=1M count=$SIZE_MB status=none
 
-    # Create ext2 filesystem
-    mke2fs -t ext2 -F "$OUTPUT_FILE" >/dev/null 2>&1
+    # Mounted ext2 allocation depends on host process IDs. Gate cache builds
+    # populate through libext2fs instead, giving clean builds identical placement.
+    if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" != 1 ]]; then
+        mke2fs -t ext2 -F "$OUTPUT_FILE" >/dev/null 2>&1
+    fi
 
     # Mount and populate (requires root)
     if [[ $EUID -ne 0 ]]; then
@@ -458,7 +461,12 @@ else
     fi
 
     MOUNT_DIR=$(mktemp -d)
-    mount "$OUTPUT_FILE" "$MOUNT_DIR"
+    if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
+        chmod 755 "$MOUNT_DIR"
+        trap 'rm -rf "$MOUNT_DIR"' EXIT
+    else
+        mount "$OUTPUT_FILE" "$MOUNT_DIR"
+    fi
 
     # Create /bin, /sbin, /usr/local/test/bin, and /usr/local/cbin directories
     mkdir -p "$MOUNT_DIR/bin"
@@ -595,7 +603,11 @@ BSHRC
     mkdir -p "$MOUNT_DIR/test"
     echo "Nested file content" > "$MOUNT_DIR/test/nested.txt"
     # Match the dense fixtures installed by the Docker path above.
-    fixture_block_size=$(stat -f -c %S "$MOUNT_DIR")
+    if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
+        fixture_block_size=4096
+    else
+        fixture_block_size=$(stat -f -c %S "$MOUNT_DIR")
+    fi
     for fixture in files-io-large-shrink files-io-large-open; do
         dd if=/dev/zero bs="$fixture_block_size" count=129 status=none |
             tr "\000" Z > "$MOUNT_DIR/test/$fixture"
@@ -716,8 +728,14 @@ INITJS
     find "$MOUNT_DIR" -type f -not -path "$MOUNT_DIR/bin/*" -not -path "$MOUNT_DIR/usr/local/test/bin/*" -exec ls -la {} \;
 
     # Unmount and cleanup
-    umount "$MOUNT_DIR"
-    rmdir "$MOUNT_DIR"
+    if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
+        mke2fs -t ext2 -b 4096 -F -d "$MOUNT_DIR" "$OUTPUT_FILE" >/dev/null 2>&1
+        rm -rf "$MOUNT_DIR"
+        trap - EXIT
+    else
+        umount "$MOUNT_DIR"
+        rmdir "$MOUNT_DIR"
+    fi
 
     echo "ext2 image created successfully"
 fi

@@ -115,7 +115,7 @@ def canonical_ext2(path):
 
 
 def checked(command, repo, log):
-    environment = dict(os.environ, CARGO_BUILD_JOBS='6', BREENIX_USERSPACE_REMAP='1')
+    environment = dict(os.environ, CARGO_BUILD_JOBS='6', BREENIX_USERSPACE_REMAP='1', BREENIX_REPRODUCIBLE_EXT2='1')
     with log.open('w') as output:
         status = subprocess.call(command, cwd=repo, env=environment, stdout=output, stderr=subprocess.STDOUT)
     if status:
