@@ -277,10 +277,11 @@ fn validate_elf(data: &[u8]) -> Result<(), u64> {
         let file_size = u64_at(at + 32);
         let memory_size = u64_at(at + 40);
         let file_end = file_offset.checked_add(file_size).ok_or(bad)?;
+        // Exclusive: a segment may fill the last user page.
         let memory_end = address.checked_add(memory_size).ok_or(bad)?;
         if file_size > memory_size
             || file_end > data.len() as u64
-            || memory_end >= crate::memory::layout::USER_STACK_REGION_END
+            || memory_end > crate::memory::layout::USER_STACK_REGION_END
         {
             return Err(bad);
         }
