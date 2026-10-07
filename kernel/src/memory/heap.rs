@@ -173,6 +173,12 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Bytes free in the kernel heap. Physical frames are not heap and are
+/// counted by the frame allocator instead.
+pub fn free_bytes() -> usize {
+    ALLOCATOR.with_inner(|inner| inner.lock().free())
+}
+
 /// Handle allocation errors
 #[alloc_error_handler]
 fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
