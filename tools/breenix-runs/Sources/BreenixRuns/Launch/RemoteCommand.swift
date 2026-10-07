@@ -139,6 +139,12 @@ public enum RemoteCommand {
             }
             suiteEnv = " BREENIX_BOOT_SUITE=\(suite) BREENIX_QMP_SOCKET=\(paths.gateTmpPath)/qmp.sock"
         }
+        var slotIdentity = ""
+        if let lane = paths.laneKey, let sha = paths.requestedSHA {
+            let parent = URL(fileURLWithPath: paths.canonicalRepoDir).deletingLastPathComponent().path
+            let worktree = paths.fresh ? paths.clonePath + "/clean-tree" : "${BREENIX_GATE_CACHE_DIR:-\(parent)/breenix-gate-cache}/trees/\(lane)"
+            slotIdentity = " BREENIX_SLOT_WORKTREE=\"\(worktree)\" BREENIX_SLOT_COMMIT=\(sha)"
+        }
         let helper = paths.gateTmpPath + "/host-slots.py"
         let installHelper = slotHelperBase64.map {
             " && printf %s \($0) | base64 -d > \(helper)"
@@ -163,7 +169,7 @@ public enum RemoteCommand {
             + " BREENIX_FULL_BACKSTOP=\(fullBackstopSecs ?? max(1800, timeoutSecs))"
             + " CARGO_BUILD_JOBS=6"
             + (paths.fresh ? " BREENIX_GATE_FRESH=1" : "")
-            + profileEnv + suiteEnv
+            + profileEnv + suiteEnv + slotIdentity
             + " " + launch
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }

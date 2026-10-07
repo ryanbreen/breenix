@@ -112,7 +112,7 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(build.call_count, 2)
 
     def test_content_key_tracks_source_script_busybox_toolchain_and_external_library(self):
-        names = ['Cargo.lock', 'userspace/programs/Cargo.lock', 'userspace/source.rs', 'scripts/pack.sh', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
+        names = ['Cargo.lock', 'userspace/programs/Cargo.lock', 'userspace/source.rs', 'scripts/create_ext2_disk.sh', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
         for name in names:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,6 +140,11 @@ class CacheTests(unittest.TestCase):
                 self.assertNotEqual(previous, current, name)
                 previous = current
             version[0] = b'tool v2'
+            self.assertNotEqual(previous, artifacts.key(self.repo))
+            previous = artifacts.key(self.repo)
+            stock = self.root / 'lib/rustlib/src/rust/library/core/src/lib.rs'
+            stock.parent.mkdir(parents=True)
+            stock.write_text('stock core source')
             self.assertNotEqual(previous, artifacts.key(self.repo))
 
     def test_eviction_skips_leased_entries_and_removes_old_idle_entry(self):

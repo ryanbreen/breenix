@@ -93,6 +93,8 @@ def main():
     if not re.fullmatch('[0-9a-f]{64}', lane) or not re.fullmatch('[0-9a-f]{40}', sha):
         raise ValueError('invalid lane key or commit')
     root = Path(os.environ.get('BREENIX_GATE_CACHE_DIR', str(Path(canonical).parent / 'breenix-gate-cache')))
+    if not root.is_absolute():
+        raise ValueError('BREENIX_GATE_CACHE_DIR must be an absolute path')
     root.mkdir(parents=True, exist_ok=True)
     tree = root / 'trees' / lane
     start = time.monotonic()

@@ -32,6 +32,8 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertFalse(prepare.arguments.last!.contains("git clone"))
         let gate = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: paths, slotHelperBase64: "c2xvdHM=")
         XCTAssertTrue(gate.arguments.last!.contains("gate-tree.py /root/breenix " + paths.laneKey!))
+        XCTAssertTrue(gate.arguments.last!.contains("BREENIX_SLOT_WORKTREE=\"${BREENIX_GATE_CACHE_DIR:-/root/breenix-gate-cache}/trees/" + paths.laneKey!))
+        XCTAssertTrue(gate.arguments.last!.contains("BREENIX_SLOT_COMMIT=" + paths.requestedSHA!))
         XCTAssertFalse(gate.arguments.last!.contains("acquire x86-boot"), "current gates acquire and release their own distinct build/boot leases")
         XCTAssertEqual(RemoteCommand.removeCloneRequest(paths: paths).arguments.last,
             "sudo -n incus exec breenix-x86 -- rm -rf /root/run")

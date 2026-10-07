@@ -27,7 +27,8 @@ def digest(path):
 def key(repo):
     result = hashlib.sha256(b'breenix-x86-userspace-v1\0')
     paths = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', '--',
-        'userspace', 'libs', 'fonts', 'vendor/busybox', 'scripts', 'xtask',
+        'userspace', 'libs', 'fonts', 'vendor/busybox', 'xtask',
+        'scripts/gate-artifacts.py', 'scripts/create_ext2_disk.sh', 'scripts/install-busybox.py',
         '.cargo', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'x86_64-breenix.json']).split(b'\0')
     for name in sorted(filter(None, paths)):
         path = repo / os.fsdecode(name)
@@ -37,21 +38,30 @@ def key(repo):
     for path in sorted(library.rglob('*')):
         if path.is_file() and 'target' not in path.relative_to(library).parts:
             result.update(str(path.relative_to(library)).encode() + b'\0' + path.read_bytes() + b'\0')
+    for name in ('Cargo.toml', 'Cargo.lock', '.cargo/config.toml'):
+        path = library.parent / name
+        if path.exists():
+            result.update(name.encode() + b'\0' + path.read_bytes())
     for command in (['rustc', '-Vv'], ['cargo', '-V'], ['mke2fs', '-V'], ['debugfs', '-V']):
         result.update(subprocess.check_output(command, cwd=repo, stderr=subprocess.STDOUT))
     # Version strings alone cannot distinguish a locally patched compiler.
     rustc = Path(subprocess.check_output(['rustup', 'which', 'rustc'], cwd=repo, text=True).strip())
     sysroot = Path(subprocess.check_output(['rustc', '--print', 'sysroot'], cwd=repo, text=True).strip())
-    for executable in [rustc] + sorted((sysroot / 'lib/rustlib').glob('*/bin/rust-lld')) + sorted((sysroot / 'lib').glob('*rustc_driver*')):
-        result.update(digest(executable).encode())
+    result.update(digest(rustc).encode())
+    # This includes stock build-std sources used by libc and precompiled host
+    # libraries used by xtask, as well as the compiler backend and linker.
+    for path in sorted((sysroot / 'bin').rglob('*')) + sorted((sysroot / 'lib').rglob('*')):
+        if path.is_file():
+            result.update(str(path.relative_to(sysroot)).encode() + b'\0' + digest(path).encode())
     for variable in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'BREENIX_TRACE_DIAG_EARLY',
                      'BREENIX_BSSH_AUTORUN', 'BREENIX_WAIT_STRESS', 'RUSTUP_TOOLCHAIN'):
         result.update(variable.encode() + b'=' + os.environ.get(variable, '').encode() + b'\0')
     for lockfile in ('Cargo.lock', 'userspace/programs/Cargo.lock'):
         result.update(lockfile.encode() + b'\0' + (repo / lockfile).read_bytes())
-    config = Path(os.environ['CARGO_HOME']) / 'config.toml'
-    if config.exists():
-        result.update(config.read_bytes())
+    for name in ('config', 'config.toml'):
+        config = Path(os.environ['CARGO_HOME']) / name
+        if config.exists():
+            result.update(name.encode() + b'\0' + config.read_bytes())
     return result.hexdigest()
 
 

@@ -444,7 +444,11 @@ public struct BeastLauncher {
     }
 
     private func readableGateCommand(paths: BeastPaths, boots: Int, mode: RemoteGateMode) -> [String] {
-        ["\(paths.clonePath)/docker/qemu/run-x86-gate.sh", "\(boots)", mode.rawValue]
+        if let lane = paths.laneKey, let sha = paths.requestedSHA {
+            return ["python3", paths.gateTmpPath + "/gate-tree.py", paths.canonicalRepoDir,
+                    lane, sha, paths.gateTmpPath, "\(boots)", mode.rawValue]
+        }
+        return ["\(paths.clonePath)/docker/qemu/run-x86-gate.sh", "\(boots)", mode.rawValue]
     }
 
     private func gateEnvironment(paths: BeastPaths, timeoutSecs: Int, qemuProfile: X86HardwareProfile?, suite: String?) -> [String: String] {
