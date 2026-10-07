@@ -2398,6 +2398,43 @@ impl Scheduler {
         self.cpu_state[Self::current_cpu_id()].idle_thread
     }
 
+    /// Stop the kernel before a thread is dispatched on two CPUs at once, or
+    /// after it was terminated.
+    ///
+    /// Both scheduling paths call this for the thread they have selected,
+    /// before marking it Running. Another CPU names a thread in `current_thread`
+    /// from the commit of its switch to that thread until the commit of its
+    /// switch away, and in `pending_next` from its selection to that first
+    /// commit. A second CPU that ran the thread in either interval would run it
+    /// on the same kernel stack from a context its first CPU never saved. A
+    /// Terminated thread is a teardown token or a dead thread: `set_running`
+    /// would overwrite the Terminated state that the dispatch path checks, so
+    /// a selected Terminated thread would be dispatched anyway (#1173).
+    fn assert_dispatchable(&self, thread_id: u64, cpu: usize) {
+        if self.cpu_state.iter().any(|state| state.idle_thread == thread_id) {
+            return;
+        }
+        if let Some(other) = (0..MAX_CPUS).find(|&other| {
+            other != cpu
+                && (self.cpu_state[other].current_thread == Some(thread_id)
+                    || self.cpu_state[other].pending_next == Some(thread_id))
+        }) {
+            panic!(
+                "scheduler: thread {} selected on CPU {} while it runs on CPU {}",
+                thread_id, cpu, other
+            );
+        }
+        if self
+            .get_thread(thread_id)
+            .is_some_and(|thread| thread.state == ThreadState::Terminated)
+        {
+            panic!(
+                "scheduler: terminated thread {} selected on CPU {}",
+                thread_id, cpu
+            );
+        }
+    }
+
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
@@ -2753,6 +2790,8 @@ impl Scheduler {
                 return None;
             }
         }
+
+        self.assert_dispatchable(next_thread_id, current_cpu);
 
         // If current is idle and we have a real next thread, allow switch even if idle
         let old_thread_id = self.cpu_state[current_cpu]
@@ -3289,6 +3328,7 @@ impl Scheduler {
         // shows the old thread as "current", unblock() will see is_current_on_any_cpu()=true
         // and skip the ready_queue addition (the CPU running the thread will handle it).
 
+        self.assert_dispatchable(next_thread_id, current_cpu);
         if let Some(next) = self.get_thread_mut(next_thread_id) {
             next.set_running();
             next.run_start_ticks = crate::time::get_ticks();
