@@ -74,6 +74,9 @@ impl Process {
 
     /// Consume scheduler-produced CPU signals without taking its lock.
     pub fn check_cpu_limit(&mut self) {
+        if self.limits.pending.load(Ordering::Acquire) == 0 {
+            return;
+        }
         let pending = self.limits.pending.fetch_and(!1, Ordering::AcqRel);
         if pending & 1 != 0 {
             self.signals.set_pending(crate::signal::constants::SIGXCPU);

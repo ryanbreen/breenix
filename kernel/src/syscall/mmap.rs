@@ -19,7 +19,7 @@ use crate::memory::arch_stub::VirtAddr;
 // Import common memory syscall helpers
 use crate::syscall::memory_common::{
     allocate_zeroed_frames, flush_tlb, get_current_thread_id, is_page_aligned, map_prepared_frames,
-    prot_to_page_flags, round_down_to_page, round_up_to_page, PAGE_SIZE,
+    round_down_to_page, round_up_to_page, PAGE_SIZE,
 };
 
 extern crate alloc;
@@ -330,7 +330,7 @@ pub fn sys_mmap(
         root,
         start_addr,
         frames,
-        prot_to_page_flags(prot),
+        crate::memory::anon_map::page_flags(prot),
         vma,
     ) {
         return give_back(error as u64);

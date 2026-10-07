@@ -134,6 +134,11 @@ pub fn allocate_zeroed_frames(count: usize) -> Option<alloc::vec::Vec<PhysFrame<
         }
         frames.push(frame);
     }
+    // Publish initialized contents before any caller installs a user PTE.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb ishst", options(nostack, preserves_flags));
+    }
     Some(frames)
 }
 
