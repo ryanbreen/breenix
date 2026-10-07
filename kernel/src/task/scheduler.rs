@@ -765,9 +765,6 @@ pub(crate) fn clear_cpu_affinity_for_test(thread_id: u64) {
     crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(thread_id);
 }
 
-/// Global need_resched flag for timer interrupt
-static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
-
 /// Global context switch counter - incremented on every successful context switch.
 /// Used by the soft lockup detector to detect CPU stalls.
 static CONTEXT_SWITCH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -2180,15 +2177,16 @@ impl Scheduler {
         state.last_dispatch_promoted = promoted;
     }
 
-    pub fn add_thread(&mut self, thread: Box<Thread>) {
-        self.add_thread_inner(thread, false);
+    /// Queue a new thread and return the CPU whose queue it went to.
+    pub fn add_thread(&mut self, thread: Box<Thread>) -> usize {
+        self.add_thread_inner(thread, false)
     }
 
     /// Add a new thread to the front of the ready queue.
     /// Used for fork children so they run before other waiting threads,
     /// following the Linux convention where children exec quickly and exit.
-    pub fn add_thread_front(&mut self, thread: Box<Thread>) {
-        self.add_thread_inner(thread, true);
+    pub fn add_thread_front(&mut self, thread: Box<Thread>) -> usize {
+        self.add_thread_inner(thread, true)
     }
 
     #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
@@ -2199,15 +2197,16 @@ impl Scheduler {
         self.per_cpu_queues[cpu].push_back(thread_id);
     }
 
-    fn add_thread_inner(&mut self, thread: Box<Thread>, front: bool) {
+    fn add_thread_inner(&mut self, thread: Box<Thread>, front: bool) -> usize {
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         let cpu_affinity = thread.cpu_affinity;
         self.threads.push(thread);
         // A thread that carries a CPU pin is queued to the CPU that pin names.
-        // A thread without one routes to the least-loaded CPU queue (or the
-        // current CPU if tied), which is the path taken today: `spawn_on_cpu`
+        // A thread without one routes to the least-loaded CPU (an idle one if
+        // there is one, the current CPU if tied), which is the path taken
+        // today: `spawn_on_cpu`
         // is the 1 function that stamps a pin and it has 0 callers, so
         // `cpu_affinity` reads `None` here and the fall-through is the whole
         // behaviour.
@@ -2253,6 +2252,7 @@ impl Scheduler {
         );
         #[cfg(not(target_arch = "x86_64"))]
         let _ = (thread_id, thread_name, is_user);
+        target
     }
 
     /// Drop terminated threads only after their stack is architecturally dead.
@@ -3062,6 +3062,13 @@ impl Scheduler {
                 if steal_cpu == current_cpu {
                     continue;
                 }
+                // While this CPU's own thread can still run, a thread queued
+                // on an idle CPU is left for that CPU, which has been sent a
+                // reschedule IPI for it. Taking it here would preempt the
+                // running thread while the CPU it was placed on stays idle.
+                if should_requeue_old && self.cpu_is_idle(steal_cpu) {
+                    continue;
+                }
                 let steal_candidates = self.per_cpu_queues[steal_cpu].len();
                 for _ in 0..steal_candidates {
                     let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
@@ -3118,6 +3125,37 @@ impl Scheduler {
             }
             break self.cpu_state[current_cpu].idle_thread;
         };
+
+        // Nothing else is runnable. The outgoing thread is not on any queue --
+        // it is requeued only after its context is saved -- so the search
+        // above could not find it and fell through to idle. A user thread that
+        // can still run keeps this CPU, exactly as the same-thread branch below
+        // keeps a user thread that is alone. Switching it to idle instead would
+        // leave it off the CPU until this CPU's next tick, with nothing else
+        // running in its place (#1172).
+        if should_requeue_old
+            && next_thread_id == self.cpu_state[current_cpu].idle_thread
+            && self.cpu_state[current_cpu].current_thread.is_some_and(|tid| {
+                self.get_thread(tid)
+                    .is_some_and(|t| t.privilege == super::thread::ThreadPrivilege::User)
+            })
+        {
+            let current_id = self.cpu_state[current_cpu].current_thread.unwrap_or(0);
+            if self.cpu_state[current_cpu].previous_thread == Some(current_id) {
+                self.cpu_state[current_cpu].previous_thread = None;
+            }
+            if let Some(t) = self.get_thread_mut(current_id) {
+                t.set_running();
+            }
+            trace_sched_diag(
+                TRACE_SCHED_DIAG_RETURN_NONE,
+                current_id,
+                current_id,
+                current_id,
+                self.ready_queue_length() as u32,
+            );
+            return None;
+        }
 
         trace_sched_diag(
             TRACE_SCHED_DIAG_PICK,
@@ -3747,16 +3785,15 @@ impl Scheduler {
             if cpu == current_cpu {
                 continue;
             }
-            if cpu < MAX_CPUS {
-                if let Some(current) = self.cpu_state[cpu].current_thread {
-                    if current == self.cpu_state[cpu].idle_thread {
-                        crate::arch_impl::aarch64::gic::send_sgi(
-                            crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
-                            cpu as u8,
-                        );
-                        // Continue to wake ALL idle CPUs
-                    }
-                }
+            // A CPU committed to switching to idle counts as idle: it is about
+            // to wait for an interrupt, and without this one it would sleep
+            // until its next tick with the new thread on its queue.
+            if cpu < MAX_CPUS && self.cpu_is_idle(cpu) {
+                crate::arch_impl::aarch64::gic::send_sgi(
+                    crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+                    cpu as u8,
+                );
+                // Continue to wake ALL idle CPUs
             }
         }
     }
@@ -4670,6 +4707,12 @@ impl Scheduler {
                         } else {
                             self.per_cpu_queues[target].push_back(tid);
                         }
+                        // Placement prefers an idle CPU, which may not be this
+                        // one: wake it, or the thread waits for its next tick.
+                        #[cfg(target_arch = "aarch64")]
+                        if self.cpu_is_idle(target) {
+                            self.send_resched_ipi_to_cpu(target);
+                        }
                         ENQUEUE_TIMER_WAKE.fetch_add(1, Ordering::Relaxed);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     } else {
@@ -4924,11 +4967,12 @@ impl Scheduler {
                 return Some(cpu);
             }
         }
-        // Otherwise pick the least-loaded CPU.
+        // Otherwise pick the least-loaded CPU, by the same key as
+        // `least_loaded_cpu`.
         Some(
             (0..self.online_cpu_count())
                 .filter(|&cpu| self.cpu_accepts_wakeups(cpu))
-                .min_by_key(|&cpu| self.per_cpu_queues[cpu].len())
+                .min_by_key(|&cpu| (self.cpu_load(cpu), cpu != current_cpu))
                 .unwrap_or(current_cpu),
         )
     }
@@ -5353,13 +5397,34 @@ impl Scheduler {
         ))
     }
 
-    /// Find the CPU with the fewest threads in its queue.
-    /// Used when spawning new threads.
+    /// Whether `cpu` is running its idle thread or is committed to switching to
+    /// it, so a thread queued there runs as soon as that CPU is woken.
+    fn cpu_is_idle(&self, cpu: usize) -> bool {
+        let state = &self.cpu_state[cpu];
+        state.pending_next.or(state.current_thread) == Some(state.idle_thread)
+    }
+
+    /// Threads `cpu` already has to run: its queue, plus the thread it is
+    /// running or about to run unless that is its idle thread.
+    ///
+    /// Counting the running thread is what lets placement tell an idle CPU from
+    /// a busy one whose queue happens to be empty. By queue length alone the two
+    /// tie, and a woken thread placed on the busy one preempts the thread
+    /// running there while the idle CPU stays idle (#1172).
+    fn cpu_load(&self, cpu: usize) -> usize {
+        let state = &self.cpu_state[cpu];
+        let busy = state.pending_next.or(state.current_thread).is_some() && !self.cpu_is_idle(cpu);
+        self.per_cpu_queues[cpu].len() + busy as usize
+    }
+
+    /// The least-loaded CPU that accepts wakeups, preferring the current CPU
+    /// among equals; the current CPU when none accepts them.
+    /// Used when spawning new threads and when waking threads without a home.
     fn least_loaded_cpu(&self) -> usize {
         let current_cpu = Self::current_cpu_id();
         (0..self.online_cpu_count())
             .filter(|&cpu| self.cpu_accepts_wakeups(cpu))
-            .min_by_key(|&cpu| self.per_cpu_queues[cpu].len())
+            .min_by_key(|&cpu| (self.cpu_load(cpu), cpu != current_cpu))
             .unwrap_or(current_cpu)
     }
 
@@ -5547,10 +5612,9 @@ impl Scheduler {
         (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].previous_thread == Some(thread_id))
     }
 
-    /// Set the need_resched flag (called from within lock hold, no lock needed).
+    /// Set this CPU's need_resched flag (called from within lock hold, no lock needed).
     #[cfg(target_arch = "aarch64")]
     pub fn set_need_resched_inner(&self) {
-        NEED_RESCHED.store(true, Ordering::Release);
         crate::per_cpu_aarch64::set_need_resched(true);
     }
 
@@ -5737,19 +5801,17 @@ pub fn spawn(thread: Box<Thread>) {
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
-            scheduler.add_thread(thread);
-            // Ensure a switch happens ASAP (especially in CI smoke runs)
-            NEED_RESCHED.store(true, Ordering::Relaxed);
-            // Mirror to per-CPU flag so IRQ-exit path sees it
-            #[cfg(target_arch = "x86_64")]
-            crate::per_cpu::set_need_resched(true);
-            #[cfg(target_arch = "aarch64")]
-            {
-                crate::per_cpu_aarch64::set_need_resched(true);
-                // Wake idle CPUs so they can pick up the new thread immediately
-                // rather than waiting up to 1ms for their next timer tick.
-                scheduler.send_resched_ipi();
+            let target = scheduler.add_thread(thread);
+            // Reschedule this CPU only if the thread was queued here; a thread
+            // queued on another CPU is that CPU's to run, and asking this one
+            // to reschedule would only preempt whatever it is running (#1172).
+            if target == Scheduler::current_cpu_id() {
+                set_need_resched();
             }
+            // Wake idle CPUs so they can pick up the new thread immediately
+            // rather than waiting up to 1ms for their next timer tick.
+            #[cfg(target_arch = "aarch64")]
+            scheduler.send_resched_ipi();
         } else {
             panic!("Scheduler not initialized");
         }
@@ -5776,14 +5838,11 @@ pub fn spawn_on_cpu(mut thread: Box<Thread>, cpu: usize) {
         );
         thread.cpu_affinity = Some(super::thread::CpuPin::per_cpu_worker(cpu));
         scheduler.add_thread(thread);
-        NEED_RESCHED.store(true, Ordering::Relaxed);
-        #[cfg(target_arch = "x86_64")]
-        crate::per_cpu::set_need_resched(true);
-        #[cfg(target_arch = "aarch64")]
-        {
-            crate::per_cpu_aarch64::set_need_resched(true);
-            scheduler.send_resched_ipi_to_cpu(cpu);
+        if cpu == Scheduler::current_cpu_id() {
+            set_need_resched();
         }
+        #[cfg(target_arch = "aarch64")]
+        scheduler.send_resched_ipi_to_cpu(cpu);
     });
 }
 
@@ -5798,7 +5857,6 @@ pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
             .expect("scheduler not initialized for test placement");
         BOOT_TEST_CPU_AFFINITY[cpu].store(thread_id, Ordering::Release);
         scheduler.add_thread_on_cpu_for_test(thread, cpu);
-        NEED_RESCHED.store(true, Ordering::Relaxed);
         crate::per_cpu_aarch64::set_need_resched(true);
         scheduler.send_resched_ipi_to_cpu(cpu);
     });
@@ -5859,7 +5917,6 @@ pub(crate) fn spawn_pinned_where_placed_for_test(thread: Box<Thread>) -> usize {
             .position(|queue| queue.contains(&thread_id))
             .unwrap_or_else(Scheduler::current_cpu_id);
         BOOT_TEST_CPU_AFFINITY[placed_cpu].store(thread_id, Ordering::Release);
-        NEED_RESCHED.store(true, Ordering::Relaxed);
         crate::per_cpu_aarch64::set_need_resched(true);
         scheduler.send_resched_ipi();
         placed_cpu
@@ -5873,19 +5930,17 @@ pub fn spawn_front(thread: Box<Thread>) {
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
-            scheduler.add_thread_front(thread);
-            NEED_RESCHED.store(true, Ordering::Relaxed);
-            #[cfg(target_arch = "x86_64")]
-            crate::per_cpu::set_need_resched(true);
-            #[cfg(target_arch = "aarch64")]
-            {
-                crate::per_cpu_aarch64::set_need_resched(true);
-                // Wake idle CPUs so the fork child is picked up immediately
-                // rather than waiting up to 1ms for their next timer tick.
-                // Without this, all 7 idle CPUs sleep through the spawn and only
-                // the spawning CPU's next timer tick dispatches the child.
-                scheduler.send_resched_ipi();
+            let target = scheduler.add_thread_front(thread);
+            // As in `spawn`: only the CPU the child was queued on reschedules.
+            if target == Scheduler::current_cpu_id() {
+                set_need_resched();
             }
+            // Wake idle CPUs so the fork child is picked up immediately
+            // rather than waiting up to 1ms for their next timer tick.
+            // Without this, all 7 idle CPUs sleep through the spawn and only
+            // the spawning CPU's next timer tick dispatches the child.
+            #[cfg(target_arch = "aarch64")]
+            scheduler.send_resched_ipi();
         } else {
             panic!("Scheduler not initialized");
         }
@@ -6749,16 +6804,22 @@ pub fn allocate_thread_id() -> Option<u64> {
     Some(super::thread::allocate_thread_id())
 }
 
-/// Set the need_resched flag (called from timer interrupt)
+/// Ask this CPU to reschedule at its next preemption point.
+///
+/// The request is this CPU's alone. Another CPU is asked with a reschedule
+/// IPI, whose handler sets that CPU's own flag. There used to be a global flag
+/// beside the per-CPU one, set by every request and cleared by whichever CPU
+/// looked first: an idle CPU's tick, a quantum expiring or a spawn on one CPU
+/// then made a busy thread on another CPU give up its CPU at its next syscall
+/// return, once a millisecond on a machine with an idle CPU (#1172).
 pub fn set_need_resched() {
-    NEED_RESCHED.store(true, Ordering::Relaxed);
     #[cfg(target_arch = "x86_64")]
     crate::per_cpu::set_need_resched(true);
     #[cfg(target_arch = "aarch64")]
     crate::per_cpu_aarch64::set_need_resched(true);
 }
 
-/// Check and clear the need_resched flag (called from interrupt return path)
+/// Check and clear this CPU's need_resched flag (called from interrupt return path)
 pub fn check_and_clear_need_resched() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
@@ -6766,36 +6827,28 @@ pub fn check_and_clear_need_resched() -> bool {
         if per_cpu {
             crate::per_cpu::set_need_resched(false);
         }
-        let global = NEED_RESCHED.swap(false, Ordering::Relaxed);
-        per_cpu || global
+        per_cpu
     }
     #[cfg(target_arch = "aarch64")]
     {
-        // ARM64: Check per-CPU flag AND global atomic.
-        // CRITICAL: Both sources must be checked. spawn/spawn_front set the
-        // global flag from one CPU but the target CPU may be different.
-        // Previously, the global flag was cleared but its value was discarded,
-        // meaning cross-CPU need_resched signals were silently lost.
         let per_cpu = crate::per_cpu_aarch64::need_resched();
         if per_cpu {
             crate::per_cpu_aarch64::set_need_resched(false);
         }
-        let global = NEED_RESCHED.swap(false, Ordering::Relaxed);
-        per_cpu || global
+        per_cpu
     }
 }
 
-/// Check if the need_resched flag is set (without clearing it)
+/// Check if this CPU's need_resched flag is set (without clearing it)
 /// Used by can_schedule() to determine if kernel threads should be rescheduled
 pub fn is_need_resched() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        crate::per_cpu::need_resched() || NEED_RESCHED.load(Ordering::Relaxed)
+        crate::per_cpu::need_resched()
     }
     #[cfg(target_arch = "aarch64")]
     {
-        // ARM64: Check per-CPU flag and global atomic
-        crate::per_cpu_aarch64::need_resched() || NEED_RESCHED.load(Ordering::Relaxed)
+        crate::per_cpu_aarch64::need_resched()
     }
 }
 
