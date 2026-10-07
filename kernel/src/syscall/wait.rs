@@ -224,8 +224,10 @@ fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64
         return Ok(None);
     }
     loop {
-        crate::task::process_task::drain_deferred_fault_sigsegv_exits();
         crate::task::scheduler::with_scheduler(|sched| sched.block_current_for_child_exit());
+        // Drained after blocking: an exit published before this drain is
+        // finished by it, and one published after it wakes this thread.
+        crate::task::process_task::drain_deferred_fault_sigsegv_exits();
         crate::tracing::providers::process::trace_waitpid_block(thread_id as u16, 0);
         match scan(thread_id, selector, options) {
             Ok(None) => {}
