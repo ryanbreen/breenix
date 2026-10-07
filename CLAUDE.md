@@ -329,12 +329,23 @@ pub extern "C" fn _start() -> ! {
 - `#[no_std]` program template
 - Core abstractions (File, Process types)
 
-### Stage 3: C libc Port - 📋 Planned
+### Stage 3: Breenix's own C library - 📋 Planned
 - C-compatible ABI wrappers
 - stdio (printf, scanf, etc.)
 - stdlib (malloc, free, etc.)
 - string.h, unistd.h functions
-- Option: Port musl-libc or write custom
+
+**The C library is a clean-room implementation written for Breenix (operator decision, 2026-10-07).**
+Breenix will not port, vendor or link musl, glibc, newlib, bionic or any other existing libc.
+- Implement from the specifications only: ISO C, POSIX (the Open Group Base Specifications) and the Linux
+  man pages for ABI and errno behaviour. Never read, copy or adapt another libc's source, including when
+  debugging; the kernel's own syscall ABI and published standards are the references.
+- Linux syscall numbers and struct layouts are interface facts and may come from the published ABI headers
+  or kernel documentation; implementations may not.
+- `libs/libbreenix-libc` is the seed. Rust std on Breenix and the SDK will sit on this library.
+- Today's musl-built BusyBox (scripts/build-busybox.sh, the pinned gate BusyBox from #1108) is a temporary
+  stand-in so the coreutils stages can run; it is replaced once our libc can build those programs, and no new
+  work may take a dependency on musl or glibc.
 
 ### Stage 4: Shell - 📋 Planned
 Requires: Stage 3, filesystem syscalls, pipe/dup
