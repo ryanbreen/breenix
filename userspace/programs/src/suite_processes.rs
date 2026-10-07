@@ -809,6 +809,8 @@ fn limit_is(resource: u32, expected: [u64; 2], what: &str) -> Checked {
     if got == expected { Ok(()) } else { Err(format!("{what}: limit is {got:?}, expected {expected:?}")) }
 }
 
+/// getrusage's who for the calling thread alone.
+const RUSAGE_THREAD: i64 = 1;
 fn getrusage(who: i64) -> Result<[i64; 18], String> {
     let mut usage = [0i64; 18];
     let r = sc(nr::GETRUSAGE, &[who as u64, usage.as_mut_ptr() as u64]);
@@ -2834,6 +2836,63 @@ fn sched_yield() -> CaseResult {
         &format!("a ring of {n} processes passed its token {yielding} times in 300 ms with sched_yield and {spinning} times spinning without it"))
 }
 
+/// Elapsed time and the CPU time charged to the calling thread across `ms` ms of
+/// computation, both in ms. Both are counted by the kernel's tick, so a pause of the
+/// whole machine shortens them alike; what separates them is time the thread spent
+/// off its processor.
+fn burn_charged(ms: u64) -> Result<(i64, i64), String> {
+    let (start, _) = times()?;
+    let before = getrusage(RUSAGE_THREAD)?;
+    burn(ms);
+    let after = getrusage(RUSAGE_THREAD)?;
+    let (end, _) = times()?;
+    // times() counts in hundredths of a second.
+    Ok(((end - start) * 10, (cpu_us(&after) - cpu_us(&before)) / 1000))
+}
+
+/// Off-processor time a computation may show without having been switched out: the
+/// 10 ms granularity of times() at each end, and a little more.
+const OFF_CPU_LIMIT_MS: i64 = 30;
+
+/// A process that is computing is not switched out while another processor is idle,
+/// and a process woken in the meantime runs on the idle processor rather than on
+/// this one. Before #1172 a computing process lost its processor about once a
+/// millisecond on a machine with an idle processor, and spent about half of it off.
+fn sched_idle_cpu() -> CaseResult {
+    let cpus = processors();
+    // This process and the suite runner, which polls while a case runs, each take a
+    // processor; a third has to be left idle.
+    if cpus < 3 {
+        return skip(format!("{cpus} processor(s) online; the case needs 3, so that one is idle"));
+    }
+    // With a fourth, a process woken from a sleep computes alongside this one and
+    // there is still an idle processor for it.
+    let woken = if cpus >= 4 {
+        Some(Child::start(|| {
+            let _ = time::sleep_ms(100);
+            match burn_charged(300) {
+                Ok((elapsed, charged)) => (elapsed - charged).clamp(0, 250) as i32,
+                Err(_) => 255,
+            }
+        })?)
+    } else {
+        None
+    };
+    let (elapsed, charged) = burn_charged(600)?;
+    check(elapsed - charged <= OFF_CPU_LIMIT_MS, &format!(
+        "with {cpus} processors online, a process computing for {elapsed} ms was charged {charged} ms: it spent {} ms off its processor while another was idle",
+        elapsed - charged))?;
+    if let Some(mut child) = woken {
+        let status = child.wait()?;
+        check(exited(status) && exit_code(status) != 255,
+            &format!("the woken process ended with {}", status_text(status)))?;
+        let off = exit_code(status) as i64;
+        check(off <= OFF_CPU_LIMIT_MS, &format!(
+            "with {cpus} processors online, a process woken while another computed spent {off} ms of 300 off its processor"))?;
+    }
+    Ok(())
+}
+
 fn sched_getpriority() -> CaseResult {
     let own = getpriority(PRIO_PROCESS, 0).map_err(|e| format!("getpriority failed with {}", errname(e)))?;
     check((-20..=19).contains(&own), &format!("getpriority returned nice value {own}"))?;
@@ -3126,6 +3185,7 @@ static SUITE: Suite = suite(
             case("nice-user", "nice with a negative increment as non-root fails with EPERM and keeps the nice value", sched_nice_user),
             case("fork", "The nice value is inherited across fork", sched_fork),
             case("exec", "The nice value is kept across exec", sched_exec),
+            case("idle-cpu", "A computing process keeps its processor while another processor is idle", sched_idle_cpu),
         ]),
     ],
 );
