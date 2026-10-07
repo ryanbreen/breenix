@@ -112,7 +112,14 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
 
     let resolved_num = SyscallNumber::from_u64(syscall_num);
 
+    // A SIGKILL never takes this thread before the syscall's return path:
+    // see `KillCustody::enter_syscall`.
+    let custody = crate::task::thread::KillCustody::enter_syscall();
+
     let result = match resolved_num {
+        Some(SyscallNumber::Exit) | Some(SyscallNumber::ExitGroup) => {
+            sys_exit_aarch64(arg1 as i32, custody)
+        }
         Some(SyscallNumber::Fork) => sys_fork_aarch64(frame),
         Some(SyscallNumber::Exec) => {
             let exec_result = sys_exec_aarch64(frame, arg1, arg2, arg3);
@@ -123,6 +130,7 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
             // SIGRETURN restores ALL registers from signal frame - don't overwrite X0 after
             match crate::syscall::signal::sys_sigreturn_with_frame_aarch64(frame) {
                 crate::syscall::SyscallResult::Ok(_) => {
+                    drop(custody);
                     check_and_deliver_signals_aarch64(frame);
                     Aarch64PerCpu::preempt_enable();
                     return;
@@ -170,6 +178,8 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
             (-38_i64) as u64 // -ENOSYS
         }
     };
+
+    drop(custody);
 
     // Set return value in X0
     trace_exit(result as i64);
@@ -375,7 +385,7 @@ fn result_to_u64(result: crate::syscall::SyscallResult) -> u64 {
 /// If this function returned, the userspace exit() caller (e.g., musl's
 /// `for(;;) __syscall(SYS_exit, ec)` loop) would re-enter exit, causing
 /// double-terminate and double-decrement of COW page refcounts.
-fn sys_exit_aarch64(exit_code: i32) -> ! {
+fn sys_exit_aarch64(exit_code: i32, custody: crate::task::thread::KillCustody) -> ! {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID).
         // Extract info under PM lock, but do NOT log while holding it.
@@ -414,7 +424,7 @@ fn sys_exit_aarch64(exit_code: i32) -> ! {
         // unless it is dropped here.
         drop(name_for_log);
 
-        finish_exit_aarch64(thread_id, exit_code);
+        finish_exit_aarch64(thread_id, exit_code, Some(custody));
     }
 
     panic!("AArch64 sys_exit invoked without a current scheduler thread");
@@ -448,12 +458,17 @@ fn exit_by_signal_aarch64(sig: u32) -> ! {
         drop(name);
         crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
     }
-    finish_exit_aarch64(thread_id, exit_code)
+    finish_exit_aarch64(thread_id, exit_code, None)
 }
 
 /// The end of every exit of the current thread: the process's teardown, then
-/// the final switch away.
-fn finish_exit_aarch64(thread_id: u64, exit_code: i32) -> ! {
+/// the final switch away. `custody` is the exit syscall's own, held until the
+/// row has exited.
+fn finish_exit_aarch64(
+    thread_id: u64,
+    exit_code: i32,
+    custody: Option<crate::task::thread::KillCustody>,
+) -> ! {
     // Leave the retiring userspace address space before process teardown
     // drops its page-table root. Clear both assembly return shadows so no
     // later return path can reinstall that retired root.
@@ -504,6 +519,9 @@ fn finish_exit_aarch64(thread_id: u64, exit_code: i32) -> ! {
         crate::serial_println!();
     }
 
+    // The row has exited: a kill now finds it terminated and does nothing.
+    drop(custody);
+
     // This call first pivots to the neutral per-CPU scheduler stack. Its
     // trampoline marks this thread Terminated only after that pivot and
     // immediately dispatches a successor.
@@ -513,8 +531,8 @@ fn finish_exit_aarch64(thread_id: u64, exit_code: i32) -> ! {
 /// Dispatch a syscall to the appropriate handler using the resolved SyscallNumber.
 ///
 /// Uses the shared SyscallNumber enum to ensure new syscalls are automatically
-/// picked up by both architectures. Only EXIT requires arch-specific handling
-/// (wfi vs hlt). All other syscalls delegate to shared implementations.
+/// picked up by both architectures. The syscalls `rust_syscall_handler_aarch64`
+/// handles itself never reach it; all others delegate to shared implementations.
 ///
 /// Returns the syscall result (positive for success, negative errno for error).
 fn dispatch_syscall_enum(
@@ -532,13 +550,14 @@ fn dispatch_syscall_enum(
     // Dispatch using the shared enum — adding a new SyscallNumber variant
     // without adding a match arm here will produce a compiler warning.
     match syscall {
-        // EXIT is arch-specific (uses wfi instead of hlt)
-        SyscallNumber::Exit | SyscallNumber::ExitGroup => sys_exit_aarch64(arg1 as i32),
-
-        // FORK, EXEC, SIGRETURN, PAUSE, SIGSUSPEND are handled before
-        // dispatch_syscall_enum is called (they need frame access).
-        // If they somehow reach here, return ENOSYS.
-        SyscallNumber::Fork | SyscallNumber::Exec | SyscallNumber::Sigreturn => (-38_i64) as u64,
+        // EXIT, FORK, EXEC and SIGRETURN are handled before dispatch_syscall_enum
+        // is called (exit owns the syscall's kill custody; the others need frame
+        // access). If they somehow reach here, return ENOSYS.
+        SyscallNumber::Exit
+        | SyscallNumber::ExitGroup
+        | SyscallNumber::Fork
+        | SyscallNumber::Exec
+        | SyscallNumber::Sigreturn => (-38_i64) as u64,
         // PAUSE and SIGSUSPEND also handled before dispatch
         SyscallNumber::Pause | SyscallNumber::Sigsuspend => (-38_i64) as u64,
 

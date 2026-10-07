@@ -4743,6 +4743,33 @@ impl Scheduler {
         true
     }
 
+    /// Wake every blocked thread of `owner_pid` for a SIGKILL left pending
+    /// because one of them is inside a kill-custody section. Each syscall wait
+    /// checks for an interrupting signal when it runs, so the woken thread
+    /// returns from its syscall and dies there, as Linux's signal_wake_up
+    /// wakes a fatally signalled task's interruptible and killable sleeps.
+    pub fn wake_process_threads_for_kill(&mut self, owner_pid: u64) {
+        for index in 0..self.threads.len() {
+            let (thread_id, state) = {
+                let thread = &self.threads[index];
+                if thread.owner_pid != Some(owner_pid) {
+                    continue;
+                }
+                (thread.id(), thread.state)
+            };
+            match state {
+                ThreadState::BlockedOnChildExit => self.unblock_for_child_exit(thread_id),
+                ThreadState::BlockedOnTimer => {
+                    self.unblock(thread_id);
+                }
+                ThreadState::Blocked | ThreadState::BlockedOnSignal | ThreadState::BlockedOnIO => {
+                    self.unblock_for_signal(thread_id)
+                }
+                ThreadState::Running | ThreadState::Ready | ThreadState::Terminated => {}
+            }
+        }
+    }
+
     /// Make every scheduler-owned thread for a process non-runnable.
     pub fn terminate_process_threads(&mut self, owner_pid: u64) {
         crate::tracing::providers::teardown::record_quarantine(owner_pid);

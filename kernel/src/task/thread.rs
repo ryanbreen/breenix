@@ -856,6 +856,26 @@ impl KillCustody {
         .ok()
         .map(|_| KillCustody(Some(word)))
     }
+
+    /// Open the section a syscall runs in, from syscall entry to the start of
+    /// its return to user mode. Everything a syscall owns lives on its kernel
+    /// stack, which a termination discards without running a destructor, so a
+    /// SIGKILL never takes a thread inside one: it stays pending, wakes the
+    /// thread's wait, and ends the process at the syscall's return, once the
+    /// stack has been unwound. A thread a kill claimed while it was in user
+    /// mode has not started the syscall and owns nothing yet. It waits,
+    /// preemptible, for the termination to switch it away, or for the claim to
+    /// be withdrawn. Called with the syscall's preempt_disable() in force.
+    pub fn enter_syscall() -> Self {
+        loop {
+            if let Some(custody) = Self::try_enter() {
+                return custody;
+            }
+            crate::per_cpu::preempt_enable();
+            crate::arch_halt_with_interrupts();
+            crate::per_cpu::preempt_disable();
+        }
+    }
 }
 
 impl Drop for KillCustody {
