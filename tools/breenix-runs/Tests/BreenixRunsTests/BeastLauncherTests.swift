@@ -12,6 +12,31 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertEqual(X86HardwareProfile.allCases.map(\.rawValue), rows.map { $0["name"]! })
     }
 
+    func testSuiteListsPreserveOrderAndRejectDuplicatesOrShellSyntax() {
+        XCTAssertTrue(RemoteCommand.isSuiteList("files-io,directories,processes"))
+        XCTAssertTrue(RemoteCommand.isSuiteList("files-io"))
+        for value in ["", ",files-io", "files-io,", "files-io,files-io", "files-io, directories", "files-io;exit", "files-io\n"] {
+            XCTAssertFalse(RemoteCommand.isSuiteList(value), value)
+        }
+        let request = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 900,
+            paths: BeastPaths(clonePath: "/root/run"), suite: "files-io,directories,processes")
+        XCTAssertTrue(request.arguments.last!.contains("BREENIX_BOOT_SUITE=files-io,directories,processes"))
+    }
+
+    func testPersistentTreePreparationAndCleanupKeepRunEvidencePrivate() {
+        var paths = BeastPaths(clonePath: "/root/run")
+        paths.laneKey = String(repeating: "a", count: 64)
+        paths.requestedSHA = String(repeating: "b", count: 40)
+        let prepare = RemoteCommand.prepareCloneRequest(sha: paths.requestedSHA!, paths: paths, treeHelperBase64: "aGVscGVy")
+        XCTAssertTrue(prepare.arguments.last!.contains("/root/run/gate-tmp/gate-tree.py"))
+        XCTAssertFalse(prepare.arguments.last!.contains("git clone"))
+        let gate = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: paths, slotHelperBase64: "c2xvdHM=")
+        XCTAssertTrue(gate.arguments.last!.contains("gate-tree.py /root/breenix " + paths.laneKey!))
+        XCTAssertFalse(gate.arguments.last!.contains("acquire x86-boot"), "current gates acquire and release their own distinct build/boot leases")
+        XCTAssertEqual(RemoteCommand.removeCloneRequest(paths: paths).arguments.last,
+            "sudo -n incus exec breenix-x86 -- rm -rf /root/run")
+    }
+
     func testPrepareCloneRequestArgv() {
         let request = RemoteCommand.prepareCloneRequest(
             sha: "abc123def",

@@ -127,6 +127,33 @@ own registered VM. x86 and VMware gates must ignore this variable.
 
 Run the helper tests without a VM with `python3 tests/host_slots_test.py`.
 
+The x86 Run Inspector launcher leases a persistent checkout keyed by the requesting
+worktree, fetches and checks out the exact requested commit, and retains Cargo targets
+between runs. Evidence remains private to each run and is removed remotely after harvest.
+It keeps fresh private Cargo homes for nested builds. The userspace cache hashes sources,
+local libraries, build/packing scripts, the pinned BusyBox, fonts, Cargo configuration,
+external Rust library contents and toolchain identity. A key is published only after a
+clean rebuild produces byte-identical ELFs and disk images. Gate ext2 images normalize
+host timestamps, UUID, directory hash seed and inode generations before that comparison.
+Every hit checks artifact checksums and copies images rather than sharing writable disks.
+
+`breenix-runs run x86 --fresh` uses a disposable clean checkout and bypasses artifact
+reuse for timing comparisons on the same commit. `[gate-phase]` output records checkout,
+userspace build, repacking, clean verification, kernel build, lease waits and boot times;
+cache hits report their key and restore time. The shared cache defaults to 12 GiB total
+for lane trees and artifacts, with 2 GiB kept free and additional headroom checked before
+building. `BREENIX_GATE_CACHE_DIR`, `BREENIX_GATE_CACHE_GB` and `BREENIX_GATE_FREE_GB` on
+the execution host override these settings. LRU eviction skips leased entries; an unmet
+budget fails before building rather than deleting another run's inputs.
+
+`--mode suite --suite files-io,directories,processes` boots once. A sequence file on the
+private boot-target disk instructs each suite to exec the next after emitting its own
+DONE, keeping PID 1 and giving the next suite a fresh address space. The gate waits for
+all requested DONE lines and scores each suite independently with its unchanged manifest
+and raw disk checks. Duplicate suite IDs are rejected. Single-suite boots keep their
+final panel as before. Run cache helper tests with `python3 tests/gate_cache_test.py`.
+
+
 ## Watching a boot
 
 The VM screen shows the boot, not the log. As soon as the framebuffer exists the kernel

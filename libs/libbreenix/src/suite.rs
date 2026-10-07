@@ -216,6 +216,20 @@ impl Suite {
             counts.passed, counts.failed, counts.skipped, total);
         let verdict = if counts.failed == 0 { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         screen.draw(self, &title, &subtitle, &states, verdict);
+        // A sequence replaces PID 1 with the next suite after this suite has
+        // emitted its own DONE. Exec discards the runner's address space and FDs.
+        // Single-suite disks have no sequence file and retain their final panel.
+        if let Ok(sequence) = std::fs::read_to_string("/etc/breenix/suite-sequence") {
+            let ids: Vec<&str> = sequence.trim_end().split(',').collect();
+            if let Some(index) = ids.iter().position(|id| *id == self.id) {
+                if let Some(next) = ids.get(index + 1) {
+                    let path = std::format!("/sbin/suite-{}\0", next);
+                    if let Err(error) = process::exec(path.as_bytes()) {
+                        emit(&std::format!("SUITE_SEQUENCE FAIL exec {}: {:?}", next, error));
+                    }
+                }
+            }
+        }
         idle()
     }
 }

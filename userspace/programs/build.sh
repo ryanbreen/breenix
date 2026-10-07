@@ -49,11 +49,17 @@ else
     LIBC_RELEASE_DIR="$PROJECT_ROOT/libs/libbreenix-libc/target/x86_64-breenix/release"
 fi
 
+# Gate cache builds use a stable source name across private lane trees/Cargo homes.
+REMAP_FLAGS=""
+if [ "${BREENIX_USERSPACE_REMAP:-0}" = 1 ]; then
+    REMAP_FLAGS="--remap-path-prefix=$PROJECT_ROOT=/breenix --remap-path-prefix=$CARGO_HOME=/cargo"
+fi
+
 # Rustflags for linking against libbreenix-libc
 # These are passed explicitly because cargo's [target.xxx] config sections
 # don't match reliably when --target is a relative path (the path prefix
 # prevents matching against the normalized target name).
-STD_RUSTFLAGS="-L native=$LIBC_RELEASE_DIR -C link-arg=-T$SCRIPT_DIR/linker.ld -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
+STD_RUSTFLAGS="$REMAP_FLAGS -L native=$LIBC_RELEASE_DIR -C link-arg=-T$SCRIPT_DIR/linker.ld -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
 
 echo "========================================"
 echo "  STD USERSPACE BUILD (Rust std library)"
@@ -79,7 +85,7 @@ if ! (
     set -o pipefail
     cd "$LIBC_DIR" && \
     CARGO_ENCODED_RUSTFLAGS= \
-    RUSTFLAGS= \
+    RUSTFLAGS="$REMAP_FLAGS" \
     cargo build --release --target "$TARGET_JSON" 2>&1 | while read line; do
         echo "  $line"
     done
@@ -387,5 +393,6 @@ echo "  STD BUILD COMPLETE ($ARCH)"
 echo "  Installed: $INSTALLED binaries"
 if [ $FAILED -gt 0 ]; then
     echo "  Failed: $FAILED binaries"
+    exit 1
 fi
 echo "========================================"

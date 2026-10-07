@@ -126,6 +126,20 @@ if [ "${BREENIX_QEMU_STORAGE:-virtio}" != virtio ]; then
 fi
 export BREENIX_QEMU_STORAGE=virtio
 
+phase_start() {
+  PHASE_NAME="$1"
+  PHASE_STARTED="$(date +%s.%N)"
+  echo "[gate-phase] phase=$PHASE_NAME started=$PHASE_STARTED"
+}
+phase_end() {
+  python3 - "$PHASE_NAME" "$PHASE_STARTED" "${1:-0}" <<'PYPHASE'
+import sys, time
+name, started, status = sys.argv[1:]
+now = time.time()
+print(f"[gate-phase] phase={name} ended={now:.3f} seconds={now-float(started):.3f} status={status}")
+PYPHASE
+  PHASE_NAME=""
+}
 TOTAL_START=$SECONDS
 echo "[gate] repo: $REPO_DIR  head: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
@@ -162,12 +176,20 @@ esac
 # Suite mode: the production kernel (no features) runs /sbin/suite-<id> as PID 1.
 SUITE="${BREENIX_BOOT_SUITE:-}"
 if [ -n "$SUITE" ]; then
-  if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-    echo "GATE: FAIL (BREENIX_BOOT_SUITE is not a suite id: $SUITE)"; exit 1
+  IFS=',' read -r -a SUITES <<< "$SUITE"
+  if ! python3 - "$SUITE" <<'PYIDS'
+import re, sys
+ids = sys.argv[1].split(',')
+sys.exit(0 if len(set(ids)) == len(ids) and all(re.fullmatch(r'[a-z0-9]+(-[a-z0-9]+)*', x) for x in ids) else 1)
+PYIDS
+  then
+    echo "GATE: FAIL (invalid or duplicate suite ids: $SUITE)"; exit 1
   fi
-  if [ ! -f "docs/suites/$SUITE.json" ]; then
-    echo "GATE: FAIL (no manifest docs/suites/$SUITE.json)"; exit 1
-  fi
+  for suite_id in "${SUITES[@]}"; do
+    if [ ! -f "$REPO_DIR/docs/suites/$suite_id.json" ]; then
+      echo "GATE: FAIL (no manifest docs/suites/$suite_id.json)"; exit 1
+    fi
+  done
   MODE="suite"
   FEATURES=""
   echo "[gate] suite=$SUITE (production kernel, /sbin/suite-$SUITE as PID 1)"
@@ -176,52 +198,50 @@ fi
 SUITE_HOLD_SECS="${BREENIX_SUITE_HOLD:-5}"
 
 # Build userspace, disks and the launcher under the build lease.
-host_slot_acquire x86-build || exit 1
+phase_start build-slot-wait
+host_slot_acquire x86-build || { phase_end 1; exit 1; }
+phase_end
 # Pinned Cargo can leak its mutation lock when cache GC races a downloader,
 # deadlocking nested Cargo builds. Seed a private cache, with independent locks.
 # Keep it outside gate-tmp: credentials/cache files must not enter run records.
 GATE_CARGO_HOME=$(python3 "$HOST_SLOTS_HELPER" cargo-home "${CARGO_HOME:-$HOME/.cargo}" "$REPO_DIR/target") || { echo "GATE: FAIL (private Cargo home creation failed)"; exit 1; }
 export CARGO_HOME="$GATE_CARGO_HOME"
-trap 'rm -rf "$GATE_CARGO_HOME"' EXIT
+gate_cleanup() {
+  status=$?
+  [ -z "${PHASE_NAME:-}" ] || phase_end "$status"
+  rm -rf "$GATE_CARGO_HOME"
+}
+trap gate_cleanup EXIT
 mkdir -p "$BREENIX_GATE_TMP" || exit 1
 GATE_BUILD_LOG_DIR=$(mktemp -d "$BREENIX_GATE_TMP/build-logs.XXXXXX") || exit 1
-echo "[gate] === Building userspace ELFs ==="
-if ! ./userspace/programs/build.sh > "$GATE_BUILD_LOG_DIR/gate-userspace-build.log" 2>&1; then
-  echo "GATE: FAIL (userspace build failed) - see $GATE_BUILD_LOG_DIR/gate-userspace-build.log"; exit 1
-fi
-
-# #564: repack every run. The ELF build above does NOT touch the images the
-# kernel actually boots from.
-# claim-lint:ok: #564 records the separate build and packing steps.
-echo "[gate] === Repacking the userspace test disk and the ext2 image ==="
-rm -f target/test_binaries.img
-if ! cargo run -p xtask -- create-test-disk > "$GATE_BUILD_LOG_DIR/gate-test-disk.log" 2>&1; then
-  echo "GATE: FAIL (create-test-disk failed) - see $GATE_BUILD_LOG_DIR/gate-test-disk.log"; exit 1
-fi
-rm -f target/ext2.img
-if ! ./scripts/create_ext2_disk.sh > "$GATE_BUILD_LOG_DIR/gate-ext2-disk.log" 2>&1; then
-  echo "GATE: FAIL (ext2 disk creation failed) - see $GATE_BUILD_LOG_DIR/gate-ext2-disk.log"; exit 1
+if ! python3 "$REPO_DIR/scripts/gate-artifacts.py" "$REPO_DIR" "$GATE_BUILD_LOG_DIR"; then
+  exit 1
 fi
 if [ -n "$SUITE" ]; then
-  if [ ! -f "userspace/programs/suite-$SUITE.elf" ]; then
-    echo "GATE: FAIL (no suite binary userspace/programs/suite-$SUITE.elf; is suite-$SUITE in userspace/programs/build.sh?)"; exit 1
-  fi
+  for suite_id in "${SUITES[@]}"; do
+    if [ ! -f "$REPO_DIR/userspace/programs/suite-$suite_id.elf" ]; then
+      echo "GATE: FAIL (missing suite binary: $suite_id)"; exit 1
+    fi
+  done
   # The boot target goes on a copy: qemu-uefi.rs copies BREENIX_EXT2_SOURCE (default
   # testdata/ext2.img) to target/ext2.img for each boot, and testdata/ext2.img stays clean.
   # write-boot-target.sh also checks that the copy's /sbin/suite-$SUITE is the binary
   # just built, so a stale or partial copy is never booted.
+  phase_start boot-target
   rm -f target/ext2-boot-target.img
   if ! cp testdata/ext2.img target/ext2-boot-target.img; then
     echo "GATE: FAIL (could not copy testdata/ext2.img for the boot target)"; exit 1
   fi
-  if ! ./scripts/write-boot-target.sh target/ext2-boot-target.img "$SUITE" "userspace/programs/suite-$SUITE.elf"; then
+  if ! "$REPO_DIR/scripts/write-boot-target.sh" "$REPO_DIR/target/ext2-boot-target.img" "${SUITES[0]}" "$REPO_DIR/userspace/programs/suite-${SUITES[0]}.elf" "$SUITE"; then
     echo "GATE: FAIL (could not write the boot target onto the ext2 disk)"; exit 1
   fi
+  phase_end
   export BREENIX_EXT2_SOURCE="$REPO_DIR/target/ext2-boot-target.img"
 fi
 
 echo "[gate] === Building (release, features=${FEATURES:-none}) ==="
 BUILD_START=$SECONDS
+phase_start kernel-build
 FEATURE_ARGS=()
 [ -n "$FEATURES" ] && FEATURE_ARGS=(--features "$FEATURES")
 if ! cargo build --release ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --bin qemu-uefi > "$GATE_BUILD_LOG_DIR/gate-build.log" 2>&1; then
@@ -234,6 +254,7 @@ if grep -qE "^(warning|error)" "$GATE_BUILD_LOG_DIR/gate-build.log"; then
   grep -E "^(warning|error)" "$GATE_BUILD_LOG_DIR/gate-build.log"
   exit 1
 fi
+phase_end
 BUILD_SECS=$((SECONDS - BUILD_START))
 echo "[gate] Build clean (0 warnings) in ${BUILD_SECS}s"
 export BREENIX_TEST_DISK_PREBUILT=1
@@ -263,10 +284,12 @@ echo "[gate] === Running $COUNT boot test(s), mode=$MODE ==="
 # write lock. Back-to-back runs still exercise N independent boots.
 PASS=0
 FAIL=0
-BOOT_START=$SECONDS
+BOOT_SECS=0
 for i in $(seq 1 "$COUNT"); do
   # The gate always queues; the manual escape hatch only applies to Mac boots.
-  host_slot_acquire x86-boot || exit 1
+  phase_start boot-slot-wait
+  host_slot_acquire x86-boot || { phase_end 1; exit 1; }
+  phase_end
   OUTDIR="$BREENIX_GATE_TMP/breenix_gate_$i"
   rm -rf "$OUTDIR"; mkdir -p "$OUTDIR"
   host_slot_serial "$OUTDIR/serial_kernel.log" || exit 1
@@ -275,6 +298,8 @@ for i in $(seq 1 "$COUNT"); do
   # runs and is not needed for these boot markers.
   # claim-lint:ok: src/bin/qemu-uefi.rs resolves the hostfwd source.
   INSPECTOR_START_MS="$(date +%s)000" || INSPECTOR_START_MS=""
+  phase_start boot
+  BOOT_START=$SECONDS
   boot_completed=true
   scoring_deadline_missed=false
   if [ "$MODE" = full ]; then
@@ -302,9 +327,16 @@ for i in $(seq 1 "$COUNT"); do
       # A suite never exits (it is PID 1 and idles with its final panel up): stop the VM
       # once its DONE line is out, after saving the screen and holding it briefly. Only a
       # whole DONE line on the suite's own serial (COM1) counts.
-      done_shape="^SUITE $SUITE DONE passed=[0-9]+ failed=[0-9]+ skipped=[0-9]+ total=[0-9]+\$"
+
       while kill -0 "$QEMU_TIMEOUT_PID" 2>/dev/null; do
-        if tr -d '\r' < "$OUTDIR/serial_user.log" 2>/dev/null | grep -qE "$done_shape"; then
+        all_done=true
+        for suite_id in "${SUITES[@]}"; do
+          done_shape="^SUITE $suite_id DONE passed=[0-9]+ failed=[0-9]+ skipped=[0-9]+ total=[0-9]+\$"
+          if ! tr -d '\r' < "$OUTDIR/serial_user.log" 2>/dev/null | grep -qE "$done_shape"; then
+            all_done=false
+          fi
+        done
+        if [ "$all_done" = true ]; then
           sleep 2
           if [ -n "${BREENIX_QMP_SOCKET:-}" ] && \
               python3 "$REPO_DIR/scripts/qmp-screendump.py" "$BREENIX_QMP_SOCKET" "$OUTDIR/screen.png" >/dev/null 2>&1; then
@@ -322,6 +354,8 @@ for i in $(seq 1 "$COUNT"); do
   fi
 
   python3 "$HOST_SLOTS_HELPER" quiesce || exit 1
+  phase_end
+  BOOT_SECS=$((BOOT_SECS + SECONDS - BOOT_START))
   host_slot_header "$OUTDIR/serial_kernel.log" || exit 1
 
   # Require enumeration to finish and match the selected profile's block
@@ -381,16 +415,18 @@ for i in $(seq 1 "$COUNT"); do
   # snapshot `seq`, not by argument order.
   # claim-lint:ok: #775 ruling R134 defines the census input contract.
   if [ -n "$SUITE" ]; then
-    suite_verdict=$(python3 "$REPO_DIR/scripts/suite-verdict.py" "docs/suites/$SUITE.json" \
-        "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log" --disk "$REPO_DIR/target/ext2.img" 2>&1)
-    if [ $? -eq 0 ]; then
-      verdict_ok=true
-      verdict_reason=""
-      echo "  ${suite_verdict#PASS: }"
-    else
-      verdict_ok=false
-      verdict_reason="${suite_verdict#FAIL: } (see $OUTDIR/serial_user.log)"
-    fi
+    verdict_ok=true
+    verdict_reason=""
+    for suite_id in "${SUITES[@]}"; do
+      suite_verdict=$(python3 "$REPO_DIR/scripts/suite-verdict.py" "$REPO_DIR/docs/suites/$suite_id.json" \
+          "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log" --disk "$REPO_DIR/target/ext2.img" 2>&1)
+      suite_status=$?
+      echo "  Suite $suite_id: $suite_verdict"
+      if [ "$suite_status" -ne 0 ]; then
+        verdict_ok=false
+        verdict_reason="${verdict_reason:+$verdict_reason; }$suite_id: ${suite_verdict#FAIL: }"
+      fi
+    done
   elif [ "$MODE" = "full" ]; then
     # #1119 measured 181 exits before rebasing; also require publication/exit
     # equality, which detects unfinished processes without relying on a floor.
@@ -442,7 +478,6 @@ for i in $(seq 1 "$COUNT"); do
   breenix_runs_import_nonfatal "$OUTDIR" x86_64 gate "$INSPECTOR_VERDICT" "$INSPECTOR_STATUS" "$INSPECTOR_START_MS" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
   host_slot_release x86-boot || exit 1
 done
-BOOT_SECS=$((SECONDS - BOOT_START))
 TOTAL_SECS=$((SECONDS - TOTAL_START))
 
 if [ "$FAIL" -eq 0 ]; then

@@ -6,6 +6,7 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
     case missingLocalSHA
     case invalidBootCount(Int)
     case invalidSuiteID(String)
+    case invalidLaneKey(String)
 
     public var description: String {
         switch self {
@@ -17,6 +18,8 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
             return "could not resolve local git SHA; pass --sha explicitly"
         case .invalidBootCount(let boots):
             return "--boots requires a positive integer, got \(boots)"
+        case .invalidLaneKey(let key):
+            return "invalid lane key \(key.debugDescription)"
         case .invalidSuiteID(let id):
             return "--suite requires a suite id (lowercase words of a-z and 0-9 joined by '-'), got \(id.debugDescription)"
         }
@@ -46,6 +49,8 @@ public struct BeastLaunchOptions: Sendable {
     public var tags: [String]
     public var persist: Bool
     public var runID: String?
+    public var laneKey: String?
+    public var fresh: Bool
 
     public init(
         boots: Int = 1,
@@ -56,10 +61,14 @@ public struct BeastLaunchOptions: Sendable {
         persist: Bool = true,
         runID: String? = nil,
         qemuProfile: X86HardwareProfile? = nil,
-        suite: String? = nil
+        suite: String? = nil,
+        laneKey: String? = nil,
+        fresh: Bool = false
     ) {
         self.qemuProfile = qemuProfile
         self.suite = suite
+        self.laneKey = laneKey
+        self.fresh = fresh
         self.boots = boots
         self.mode = mode
         self.sha = sha
@@ -91,13 +100,15 @@ public struct BeastLauncher {
     public var fullBackstopSecs: Int
     public var pathsTemplate: BeastPaths
     public var slotHelperBase64: String?
+    public var treeHelperBase64: String?
 
     public init(
         store: RunStore,
         runner: ProcessRunner = RealProcessRunner(),
         timeoutSecs: Int = 900,
         pathsTemplate: BeastPaths = BeastPaths(clonePath: ""),
-        slotHelperBase64: String? = nil
+        slotHelperBase64: String? = nil,
+        treeHelperBase64: String? = nil
     ) {
         self.store = store
         self.runner = runner
@@ -106,6 +117,7 @@ public struct BeastLauncher {
             .flatMap { $0 > 0 ? $0 : nil } ?? max(1800, timeoutSecs)
         self.pathsTemplate = pathsTemplate
         self.slotHelperBase64 = slotHelperBase64
+        self.treeHelperBase64 = treeHelperBase64
     }
 
     public static func localGitIdentity(repoRoot: URL, runner: ProcessRunner) throws -> (sha: String?, dirty: Bool?) {
@@ -118,16 +130,21 @@ public struct BeastLauncher {
     public func plan(options: BeastLaunchOptions) throws -> RemoteCommand.Plan {
         try validate(options: options)
         let id = options.runID ?? RunManifest.makeID(startedAt: Date(), arch: .x86_64, profile: "gate")
+        var paths = paths(forRunID: id)
+        paths.laneKey = options.laneKey
+        paths.requestedSHA = options.sha
+        paths.fresh = options.fresh
         return RemoteCommand.plan(
             sha: options.sha,
             boots: options.boots,
             mode: options.mode,
             timeoutSecs: timeoutSecs,
-            paths: paths(forRunID: id),
+            paths: paths,
             qemuProfile: options.qemuProfile,
             suite: options.suite,
             fullBackstopSecs: fullBackstopSecs,
-            slotHelperBase64: slotHelperBase64
+            slotHelperBase64: slotHelperBase64,
+            treeHelperBase64: treeHelperBase64
         )
     }
 
@@ -250,7 +267,11 @@ public struct BeastLauncher {
         guard !options.sha.isEmpty else {
             throw BeastLauncherError.missingLocalSHA
         }
-        if let suite = options.suite, !RemoteCommand.isSuiteID(suite) {
+        if let lane = options.laneKey,
+           lane.count != 64 || !lane.unicodeScalars.allSatisfy({ ("a"..."f").contains($0) || ("0"..."9").contains($0) }) {
+            throw BeastLauncherError.invalidLaneKey(lane)
+        }
+        if let suite = options.suite, !RemoteCommand.isSuiteList(suite) {
             throw BeastLauncherError.invalidSuiteID(suite)
         }
     }
