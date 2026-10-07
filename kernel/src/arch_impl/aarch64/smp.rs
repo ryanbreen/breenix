@@ -35,6 +35,7 @@ static LAST_PSCI_RETURN_CODE: [AtomicI64; MAX_CPUS] =
 /// PSCI function IDs (SMCCC compliant).
 const PSCI_CPU_ON_64: u64 = 0xC400_0003;
 const PSCI_CPU_ON_32: u64 = 0x8400_0003;
+const PSCI_AFFINITY_INFO_64: u64 = 0xC400_0004;
 
 extern "C" {
     /// Physical address of secondary_cpu_entry, stored in .rodata by boot.S.
@@ -281,6 +282,63 @@ fn psci_cpu_on_32(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
         );
     }
     ret
+}
+
+/// PSCI AFFINITY_INFO via HVC, asking about affinity level 0 of `mpidr`.
+///
+/// Returns 0 (ON), 1 (OFF) or 2 (ON_PENDING) for a processor the firmware
+/// knows, INVALID_PARAMETERS for an MPIDR that names no processor.
+fn psci_affinity_info(mpidr: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "hvc #0",
+            inout("x0") PSCI_AFFINITY_INFO_64 => ret,
+            in("x1") mpidr,
+            in("x2") 0u64,
+            options(nomem, nostack),
+        );
+    }
+    ret
+}
+
+/// Count the processors PSCI knows by asking AFFINITY_INFO about every
+/// Aff1.Aff0 pair, a cluster at a time, until a whole cluster answers
+/// INVALID_PARAMETERS for every Aff0. The bounds are the architectural
+/// width of the two affinity fields, not a CPU count.
+///
+/// Only called on QEMU: there an absent MPIDR is answered INVALID_PARAMETERS.
+/// Parallels' PSCI is not asked about absent processors (a CPU_ON for one
+/// blocks forever), and its count comes from the MADT instead.
+fn psci_enumerated_cpus() -> u64 {
+    let mut total = 0u64;
+    for aff1 in 0u64..=0xFF {
+        let mut in_cluster = 0u64;
+        for aff0 in 0u64..=0xFF {
+            if psci_affinity_info((aff1 << 8) | aff0) >= 0 {
+                in_cluster += 1;
+            }
+        }
+        if in_cluster == 0 {
+            break;
+        }
+        total += in_cluster;
+    }
+    total
+}
+
+/// The number of processors the firmware reports, and where that came from.
+///
+/// QEMU boots the kernel directly and passes no device tree to an ELF image,
+/// so its count is PSCI's own enumeration. Parallels and VMware boot through
+/// the UEFI loader, which counts the enabled GICC entries of the firmware's
+/// MADT. 0 means the firmware reported nothing usable.
+pub fn reported_cpus() -> (u64, &'static str) {
+    if crate::platform_config::is_qemu() {
+        (psci_enumerated_cpus(), "psci")
+    } else {
+        (crate::platform_config::firmware_cpu_count(), "madt")
+    }
 }
 
 fn psci_cpu_on_was_accepted(ret: i64) -> bool {

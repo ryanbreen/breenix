@@ -45,15 +45,20 @@ final class StageCatalogStateMachineTests: XCTestCase {
     func testGreenStrictFixtureReachesAarch64KernelBootPrefix() throws {
         let catalog = try StageCatalog.load(for: .aarch64)
         let bootCompleteIndex = try XCTUnwrap(catalog.firstIndex { $0.name == "ARM64 boot complete" })
-        let kernelBootPrefix = Array(catalog[...bootCompleteIndex])
-        let states = try StateMachine.evaluate(
-            catalog: kernelBootPrefix,
-            index: MarkerScanner().scanFile(at: fixtureURL("05-runtime-anti-vacuity-strict-serial.txt"))
-        )
+        let index = try MarkerScanner().scanFile(at: fixtureURL("05-runtime-anti-vacuity-strict-serial.txt"))
+        // The fixture predates the `[smp] every reported CPU is online` line,
+        // so its kernel prefix reaches every stage except that one.
+        let smpStage = "All reported CPUs online"
+        let kernelBootPrefix = Array(catalog[...bootCompleteIndex]).filter { $0.name != smpStage }
+        let states = StateMachine.evaluate(catalog: kernelBootPrefix, index: index)
 
         XCTAssertEqual(states.map(\.stage.name).last, "ARM64 boot complete")
         XCTAssertTrue(states.allSatisfy(\.isReached))
         XCTAssertEqual(states.filter(\.isStoppedHere).count, 0)
+
+        let smp = StateMachine.evaluate(catalog: catalog.filter { $0.name == smpStage }, index: index)
+        XCTAssertEqual(smp.count, 1)
+        XCTAssertFalse(smp[0].isReached)
     }
 
     func testPartialAarch64BootReportsExactlyOneStoppedHereStage() throws {
@@ -63,9 +68,11 @@ final class StageCatalogStateMachineTests: XCTestCase {
             index: MarkerScanner().scanFile(at: fixtureURL("testing-boot1-562-panic.txt"))
         )
 
+        // The fixture predates the SMP stage's marker, so the first stage it
+        // does not reach is that one rather than "ARM64 boot complete".
         let stopped = states.filter(\.isStoppedHere)
         XCTAssertEqual(stopped.count, 1)
-        XCTAssertEqual(stopped.first?.stage.name, "ARM64 boot complete")
+        XCTAssertEqual(stopped.first?.stage.name, "All reported CPUs online")
         XCTAssertEqual(states.first { $0.stage.name == "SMP CPUs online" }?.reachedLine, 158)
         XCTAssertNil(states.first { $0.stage.name == "ARM64 boot complete" }?.reachedLine)
     }

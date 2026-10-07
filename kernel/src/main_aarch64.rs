@@ -1285,6 +1285,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
 
+    // What the firmware reports, read before any secondary is started.
+    let (reported_cpus, reported_cpus_source) = kernel::arch_impl::aarch64::smp::reported_cpus();
+
     // Bring up secondary CPUs via PSCI CPU_ON.
     // Probe-based: try each CPU ID and let PSCI tell us which exist.
     //
@@ -1653,6 +1656,24 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         boot_screen::stage(Stage::SmpOnline);
         kernel::arch_impl::aarch64::gic::init_gicr_rdist_map(
             kernel::arch_impl::aarch64::smp::cpus_online() as usize,
+        );
+    }
+
+    // The SMP measurement: how many CPUs the firmware reported and how many
+    // came online. The second line is the boot-path stage, printed only when
+    // there is more than one CPU and every one of them is online.
+    let online_cpus = kernel::arch_impl::aarch64::smp::cpus_online();
+    serial_println!(
+        "[smp] online={} reported={} source={}",
+        online_cpus,
+        reported_cpus,
+        reported_cpus_source
+    );
+    if reported_cpus > 1 && online_cpus == reported_cpus {
+        serial_println!(
+            "[smp] every reported CPU is online ({} of {})",
+            online_cpus,
+            reported_cpus
         );
     }
 

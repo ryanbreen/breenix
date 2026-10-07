@@ -94,6 +94,10 @@ fn parse_madt(
                 );
             }
             MadtEntry::Gicc(gicc) => {
+                // ACPI 6.x MADT GICC Flags bit 0: the processor is enabled.
+                if gicc.flags & 1 != 0 {
+                    config.firmware_cpu_count += 1;
+                }
                 let gicc_base = gicc.gic_registers_address;
                 if gicc_base != 0 && config.gicc_base == 0 {
                     config.gicc_base = gicc_base;
@@ -134,6 +138,7 @@ fn parse_madt(
     }
 
     config.gicr_range_count = gicr_idx as u32;
+    log::info!("  Enabled GICC (CPU) entries: {}", config.firmware_cpu_count);
 
     if config.gicd_base == 0 {
         return Err("No GICD found in MADT");

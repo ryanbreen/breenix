@@ -72,7 +72,7 @@ fn default_hardware_components_match_expected_values() {
     default.add_controllers(&mut command);
     assert_eq!(command.get_args().count(), 0);
     assert_eq!(default.machine(), "pc");
-    assert_eq!(default.cpus(), "1");
+    assert_eq!(default.cpus(), "4");
     assert_eq!(default.nic_device(), "e1000");
     assert_eq!(
         default.disk_device("hd", 0, true),

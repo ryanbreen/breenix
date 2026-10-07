@@ -86,7 +86,7 @@ pub fn get_dns_stages() -> Vec<BootStage> {
     ]
 }
 
-/// x86_64 kernel-specific boot stages (56 stages).
+/// x86_64 kernel-specific boot stages (57 stages).
 /// These cover the x86_64 boot sequence from kernel entry through Ring 3 execution.
 fn x86_64_kernel_stages() -> Vec<BootStage> {
     vec![
@@ -313,6 +313,12 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "process::init() - ProcessManager allocation",
         },
         BootStage {
+            name: "All reported CPUs online",
+            marker: "[smp] every reported CPU is online",
+            failure_meaning: "Fewer CPUs came online than the firmware's MADT reports, or only one CPU is configured: x86 starts no application processor yet (#1179)",
+            check_hint: "Read the `[smp] online=N reported=M` line from arch_impl::x86_64::smp::report_bring_up()",
+        },
+        BootStage {
             name: "First userspace process scheduled",
             marker: "RING3_SMOKE: created userspace PID",
             failure_meaning: "Failed to schedule first userspace process",
@@ -435,7 +441,7 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
     ]
 }
 
-/// ARM64 kernel-specific boot stages (21 stages).
+/// ARM64 kernel-specific boot stages (22 stages).
 /// These cover the ARM64 boot sequence from kernel entry through scheduler idle loop.
 fn arm64_kernel_stages() -> Vec<BootStage> {
     vec![
@@ -541,6 +547,12 @@ fn arm64_kernel_stages() -> Vec<BootStage> {
             marker: "[smp]",
             failure_meaning: "Secondary CPU startup via PSCI failed or timed out",
             check_hint: "Check arch_impl::aarch64::smp::release_cpu() and PSCI CPU_ON",
+        },
+        BootStage {
+            name: "All reported CPUs online",
+            marker: "[smp] every reported CPU is online",
+            failure_meaning: "Fewer CPUs came online than the firmware reports (PSCI on QEMU, the MADT on Parallels and VMware), or only one CPU is configured",
+            check_hint: "Read the `[smp] online=N reported=M` line in main_aarch64.rs and the `[smp]` bring-up lines before it",
         },
         BootStage {
             name: "ARM64 boot complete",

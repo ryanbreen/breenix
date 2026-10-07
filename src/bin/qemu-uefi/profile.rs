@@ -59,11 +59,12 @@ impl Profile {
         }
     }
 
+    /// The default gate boots four CPUs so the SMP stage can fail; the
+    /// device variants keep one CPU to isolate their hardware difference.
     pub fn cpus(self) -> &'static str {
-        if self == Self::Smp4 {
-            "4"
-        } else {
-            "1"
+        match self {
+            Self::Default | Self::Smp4 => "4",
+            _ => "1",
         }
     }
 

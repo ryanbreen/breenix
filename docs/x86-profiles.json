@@ -2,8 +2,8 @@
   {
     "name": "default",
     "title": "Default PC",
-    "summary": "Uses the existing PC hardware with one CPU and legacy VirtIO disks.",
-    "devices": "pc; OVMF; 3 legacy virtio-blk; e1000 (auto-attached in the gate); virtio-vga; 1 CPU"
+    "summary": "Uses the existing PC hardware with four CPUs and legacy VirtIO disks.",
+    "devices": "pc; OVMF; 3 legacy virtio-blk; e1000 (auto-attached in the gate); virtio-vga; 4 configured CPUs"
   },
   {
     "name": "q35",
@@ -50,7 +50,7 @@
   {
     "name": "smp4",
     "title": "Four CPUs",
-    "summary": "Configures four CPUs; Breenix currently brings only the boot CPU online (issue #629).",
-    "devices": "pc; OVMF; 3 legacy virtio-blk; e1000; virtio-vga; 4 configured CPUs, 1 online"
+    "summary": "Configures four CPUs, as the default profile now does; Breenix currently brings only the boot CPU online (issue #1179).",
+    "devices": "pc; OVMF; 3 legacy virtio-blk; e1000; virtio-vga; 4 configured CPUs"
   }
 ]
