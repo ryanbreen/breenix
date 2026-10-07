@@ -669,7 +669,8 @@ pub struct Thread {
 
     /// Kill custody: the low bits count the kernel sections this thread is
     /// inside that a SIGKILL must let it finish, and `KILL_CLAIMED` records
-    /// that `kill_process_now` has taken the thread. Entry and claim are both
+    /// that `kill_process_now` has taken the thread, and `KILL_PENDING` that
+    /// it left SIGKILL pending instead. Entry and claim are both
     /// compare-and-swap on this one word, so a thread is never killed inside a
     /// section and never enters one once claimed. See `KillCustody`.
     pub kill_custody: AtomicU64,
@@ -780,6 +781,13 @@ impl CpuPin {
 /// Set in `Thread::kill_custody` once a kill has claimed the thread.
 const KILL_CLAIMED: u64 = 1 << 63;
 
+/// Set in `Thread::kill_custody` once a kill has been left pending for the
+/// thread because it was inside a section: see `mark_kill_pending`.
+const KILL_PENDING: u64 = 1 << 62;
+
+/// The bits of `Thread::kill_custody` that count open sections.
+const CUSTODY_COUNT: u64 = !(KILL_CLAIMED | KILL_PENDING);
+
 impl Thread {
     /// Charge the time since `run_start_ticks` to this thread, its process's
     /// CPU account and its resource limits, and start the next interval at
@@ -810,7 +818,7 @@ impl Thread {
     pub(crate) fn claim_for_kill(&self) -> bool {
         self.kill_custody
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |word| {
-                (word & !KILL_CLAIMED == 0).then_some(word | KILL_CLAIMED)
+                (word & CUSTODY_COUNT == 0).then_some(word | KILL_CLAIMED)
             })
             .is_ok()
     }
@@ -822,7 +830,23 @@ impl Thread {
 
     /// Whether the thread is inside a kill-custody section.
     pub(crate) fn in_kill_custody(&self) -> bool {
-        self.kill_custody.load(Ordering::Acquire) & !KILL_CLAIMED != 0
+        self.kill_custody.load(Ordering::Acquire) & CUSTODY_COUNT != 0
+    }
+
+    /// Record that a SIGKILL left pending for this thread waits for it to
+    /// leave its section. From here on the thread must not sleep: a wake
+    /// that found it still running is not repeated, so a wait it started
+    /// afterwards could last for ever. The scheduler's block primitives
+    /// refuse to block it, and its wait goes on to its signal check. Set and
+    /// read under the scheduler lock, so each block either sees it or comes
+    /// before the wake that follows it.
+    pub(crate) fn mark_kill_pending(&self) {
+        self.kill_custody.fetch_or(KILL_PENDING, Ordering::AcqRel);
+    }
+
+    /// Whether a SIGKILL has been left pending for this thread.
+    pub(crate) fn kill_pending(&self) -> bool {
+        self.kill_custody.load(Ordering::Acquire) & KILL_PENDING != 0
     }
 }
 
