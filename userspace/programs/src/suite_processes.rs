@@ -1299,7 +1299,7 @@ fn heap_back_within(before_kb: u64, slack_kb: u64, what: &str) -> CaseResult {
 
 /// Wait, for at most a second, until `pid`, which wrote its last byte before
 /// its execve at `ready_ms`, is inside the exec (true) or has ended (false).
-/// It is inside once it is seen blocked, or still running 20 ms after that
+/// It is inside once it is seen blocked, or still running 5 ms after that
 /// byte: the few instructions from its write to its execve take far less.
 #[cfg(not(target_arch = "x86_64"))]
 fn inside_exec_or_ended(pid: i32, ready_ms: u64) -> Result<bool, CaseError> {
@@ -1307,7 +1307,7 @@ fn inside_exec_or_ended(pid: i32, ready_ms: u64) -> Result<bool, CaseError> {
     loop {
         if let Ok(status) = std::fs::read_to_string(&path) {
             let state = |s: &str| status.lines().any(|line| line.strip_prefix("State:\t") == Some(s));
-            if state("Blocked") || (state("Running") && now_ms().saturating_sub(ready_ms) >= 20) {
+            if state("Blocked") || (state("Running") && now_ms().saturating_sub(ready_ms) >= 5) {
                 return Ok(true);
             }
             if state("Terminated") { return Ok(false); }
@@ -1344,14 +1344,14 @@ fn kill_readers() -> CaseResult {
 }
 
 /// A copy of the helper with zeros after it, which the loader ignores but an
-/// exec reads. Zeros are appended for at most 50 ms of writing, up to 2 MiB:
+/// exec reads. Zeros are appended for at most 50 ms of writing, up to 8 MiB:
 /// a disk that writes them fast also reads them fast, and needs them to keep
 /// an exec long enough to catch, while on a slow one the helper alone is.
 /// Written 64 KiB per call, so a kill ends the writer within one.
 #[cfg(not(target_arch = "x86_64"))]
 fn padded_helper(tmp: &Tmp) -> Result<String, CaseError> {
     const CHUNK: usize = 64 * 1024;
-    const MAX_PADDING: usize = 2 << 20;
+    const MAX_PADDING: usize = 8 << 20;
     let image = std::fs::read(HELPER).map_err(|e| format!("reading {HELPER}: {e}"))?;
     let path = tmp.path("padded-helper");
     let fd = fs::open_with_mode(&path, fs::O_CREAT | fs::O_EXCL | fs::O_WRONLY, 0o600)?;
