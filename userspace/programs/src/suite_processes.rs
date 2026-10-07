@@ -1297,19 +1297,23 @@ fn heap_back_within(before_kb: u64, slack_kb: u64, what: &str) -> CaseResult {
     }
 }
 
-/// Wait, for at most a second, until `pid` is blocked (true) or has ended
-/// (false).
+/// Wait, for at most a second, until `pid`, which wrote its last byte before
+/// its execve at `ready_ms`, is inside the exec (true) or has ended (false).
+/// It is inside once it is seen blocked, or still running 20 ms after that
+/// byte: the few instructions from its write to its execve take far less.
 #[cfg(not(target_arch = "x86_64"))]
-fn blocked_or_ended(pid: i32) -> Result<bool, CaseError> {
+fn inside_exec_or_ended(pid: i32, ready_ms: u64) -> Result<bool, CaseError> {
     let path = format!("/proc/{pid}/status");
-    let start = now_ms();
     loop {
         if let Ok(status) = std::fs::read_to_string(&path) {
-            if status.lines().any(|line| line == "State:\tBlocked") { return Ok(true); }
-            if status.lines().any(|line| line == "State:\tTerminated") { return Ok(false); }
+            let state = |s: &str| status.lines().any(|line| line.strip_prefix("State:\t") == Some(s));
+            if state("Blocked") || (state("Running") && now_ms().saturating_sub(ready_ms) >= 20) {
+                return Ok(true);
+            }
+            if state("Terminated") { return Ok(false); }
         }
-        check(now_ms().saturating_sub(start) < bounded(1000, CLEANUP_MS),
-            &format!("child {pid} neither blocked nor ended"))?;
+        check(now_ms().saturating_sub(ready_ms) < bounded(1000, CLEANUP_MS),
+            &format!("child {pid} neither entered its exec nor ended"))?;
         process::yield_now()?;
     }
 }
@@ -1342,13 +1346,14 @@ fn kill_readers() -> CaseResult {
 /// SIGKILL children inside an exec, while it reads the new program from disk.
 /// Killed there, a thread used to leave the old image and the new one's
 /// partly read data behind, about 46 KiB each. A child writes a byte and then
-/// calls execve, its only syscall after the write, so once it is seen blocked
-/// it is asleep inside the exec. When the exec finishes first, the new
-/// program exits 77 and the kill is tried again with a new child.
+/// calls execve, its only syscall after the write, and is killed once
+/// `inside_exec_or_ended` finds it inside the exec. When the exec finishes
+/// first, the new program exits 77 and the kill is tried again with a new
+/// child.
 ///
 /// The program run is the helper with 2 MiB of zeros after it, which the
 /// loader ignores but an exec reads: on Parallels the helper's own few reads
-/// finished before the parent ever saw the child blocked in one.
+/// finished before the parent ever saw the child inside its exec.
 ///
 /// Not run on x86-64, which brings up one CPU: there the parent was never
 /// seen to run while a child was inside an exec, so no kill can land in one.
@@ -1379,9 +1384,10 @@ fn kill_execs() -> CaseResult {
             })?;
             io::close(ready_w)?;
             let said = read_up_to(ready_r, 1, WAIT_MS);
+            let ready_ms = now_ms();
             io::close(ready_r)?;
             check(said?.len() == 1, &format!("{what}: the child never reached its exec"))?;
-            if blocked_or_ended(child.pid)? {
+            if inside_exec_or_ended(child.pid, ready_ms)? {
                 kill_and_reap(&mut child, &what)?;
                 killed = true;
                 break;
