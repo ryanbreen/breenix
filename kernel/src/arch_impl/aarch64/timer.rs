@@ -172,11 +172,12 @@ pub fn milliseconds_since_base() -> Option<u64> {
     if !is_calibrated() {
         return None;
     }
-    let per_ms = COUNTER_FREQ.load(Ordering::Relaxed) / 1000;
-    if per_ms == 0 {
+    let freq = COUNTER_FREQ.load(Ordering::Relaxed);
+    if freq == 0 {
         return None;
     }
-    Some(read_cntvct().saturating_sub(BASE_TIMESTAMP.load(Ordering::Relaxed)) / per_ms)
+    let ticks = read_cntvct().saturating_sub(BASE_TIMESTAMP.load(Ordering::Relaxed));
+    Some(((ticks as u128 * 1000) / freq as u128) as u64)
 }
 
 /// Get nanoseconds since base was established (calibrate() was called)
