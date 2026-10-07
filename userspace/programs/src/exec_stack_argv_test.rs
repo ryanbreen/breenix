@@ -51,7 +51,7 @@ fn main() {
             // This mimics how init_shell.rs try_execute_external() builds argv
 
             // Program path - must be null-terminated for the kernel
-            let program = b"argv_test\0";
+            let program = b"/usr/local/test/bin/argv_test\0";
 
             // Build argument strings ON THE STACK (not static)
             let mut arg0_buf = [0u8; 64];

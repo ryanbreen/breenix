@@ -95,7 +95,7 @@ fn main() {
             // Child: re-exec self with --exec-check <read_fd>
             let fd_string = format!("{}\0", read_fd.raw());
 
-            let program = b"cloexec_test\0";
+            let program = b"/usr/local/test/bin/cloexec_test\0";
             let arg0 = b"cloexec_test\0";
             let arg1 = b"--exec-check\0";
             let argv: [*const u8; 4] = [
