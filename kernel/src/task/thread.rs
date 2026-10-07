@@ -834,19 +834,24 @@ impl Thread {
     }
 
     /// Record that a SIGKILL left pending for this thread waits for it to
-    /// leave its section. From here on the thread must not sleep: a wake
-    /// that found it still running is not repeated, so a wait it started
-    /// afterwards could last for ever. The scheduler's block primitives
-    /// refuse to block it, and its wait goes on to its signal check. Set and
-    /// read under the scheduler lock, so each block either sees it or comes
-    /// before the wake that follows it.
+    /// leave its section. From here on the thread must not sleep in a wait
+    /// the signal ends: a wake that found it still running is not repeated,
+    /// so such a wait started afterwards could last for ever. The scheduler's
+    /// block primitives refuse to block it (`must_not_sleep`), and its wait
+    /// goes on to its signal check. Set and read under the scheduler lock, so
+    /// each block either sees it or comes before the wake that follows it.
     pub(crate) fn mark_kill_pending(&self) {
         self.kill_custody.fetch_or(KILL_PENDING, Ordering::AcqRel);
     }
 
-    /// Whether a SIGKILL has been left pending for this thread.
-    pub(crate) fn kill_pending(&self) -> bool {
-        self.kill_custody.load(Ordering::Acquire) & KILL_PENDING != 0
+    /// Whether a block primitive must refuse to block this thread: a SIGKILL
+    /// is pending for it and it is inside no section but its syscall's own.
+    /// A nested section (an ext2 lock it holds or is queued for) is one the
+    /// kill lets it finish; its waits end when the lock is released, and the
+    /// holder they wait for may need this CPU, so they still sleep.
+    pub(crate) fn must_not_sleep(&self) -> bool {
+        let word = self.kill_custody.load(Ordering::Acquire);
+        word & KILL_PENDING != 0 && word & CUSTODY_COUNT <= 1
     }
 }
 

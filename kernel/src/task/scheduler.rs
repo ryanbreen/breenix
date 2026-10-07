@@ -3493,9 +3493,9 @@ impl Scheduler {
             return;
         };
         if let Some(current) = self.get_thread_mut(current_id) {
-            // A thread a SIGKILL is pending for does not sleep:
-            // `Thread::mark_kill_pending`. Its wait goes on to its signal check.
-            if current.kill_pending() {
+            // A thread a SIGKILL is pending for does not sleep here:
+            // `Thread::must_not_sleep`. Its wait goes on to its signal check.
+            if current.must_not_sleep() {
                 return;
             }
             // Charge elapsed CPU ticks before blocking
@@ -3859,9 +3859,9 @@ impl Scheduler {
     ) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
-                // A thread a SIGKILL is pending for does not sleep:
-                // `Thread::mark_kill_pending`.
-                if thread.kill_pending() {
+                // A thread a SIGKILL is pending for does not sleep here:
+                // `Thread::must_not_sleep`.
+                if thread.must_not_sleep() {
                     return;
                 }
                 // Charge elapsed CPU ticks before blocking
@@ -4003,9 +4003,9 @@ impl Scheduler {
     pub fn block_current_for_child_exit(&mut self) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
-                // A thread a SIGKILL is pending for does not sleep:
-                // `Thread::mark_kill_pending`.
-                if thread.kill_pending() {
+                // A thread a SIGKILL is pending for does not sleep here:
+                // `Thread::must_not_sleep`.
+                if thread.must_not_sleep() {
                     return;
                 }
                 // Charge elapsed CPU ticks before blocking
@@ -4148,9 +4148,9 @@ impl Scheduler {
     pub fn block_current_for_timer(&mut self, wake_time_ns: u64) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
-                // A thread a SIGKILL is pending for does not sleep:
-                // `Thread::mark_kill_pending`.
-                if thread.kill_pending() {
+                // A thread a SIGKILL is pending for does not sleep here:
+                // `Thread::must_not_sleep`.
+                if thread.must_not_sleep() {
                     return;
                 }
                 // Charge elapsed CPU ticks before blocking
@@ -4211,9 +4211,9 @@ impl Scheduler {
     fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
         let current_id = self.cpu_state[Self::current_cpu_id()].current_thread?;
         let thread = self.get_thread_mut(current_id)?;
-        // A thread a SIGKILL is pending for does not sleep:
-        // `Thread::mark_kill_pending`.
-        if thread.kill_pending() {
+        // A thread a SIGKILL is pending for does not sleep here:
+        // `Thread::must_not_sleep`.
+        if thread.must_not_sleep() {
             return None;
         }
 
@@ -4456,9 +4456,9 @@ impl Scheduler {
     pub fn block_current_for_compositor(&mut self, timeout_ns: u64) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
-                // A thread a SIGKILL is pending for does not sleep:
-                // `Thread::mark_kill_pending`.
-                if thread.kill_pending() {
+                // A thread a SIGKILL is pending for does not sleep here:
+                // `Thread::must_not_sleep`.
+                if thread.must_not_sleep() {
                     return;
                 }
                 // Charge elapsed CPU ticks NOW, before blocking. Otherwise the
