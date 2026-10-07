@@ -871,8 +871,8 @@ pub fn is_cpu_idle(cpu_id: usize) -> bool {
 /// Called from the scheduling decision path.
 #[cfg(target_arch = "aarch64")]
 fn set_cpu_idle(cpu_id: usize, idle: bool) {
-    if cpu_id < MAX_CPUS {
-        CPU_IS_IDLE[cpu_id].store(idle, Ordering::Relaxed);
+    if cpu_id < MAX_CPUS && CPU_IS_IDLE[cpu_id].swap(idle, Ordering::Relaxed) != idle {
+        crate::arch_impl::aarch64::timer_interrupt::note_cpu_idle_change(cpu_id, idle);
     }
 }
 
