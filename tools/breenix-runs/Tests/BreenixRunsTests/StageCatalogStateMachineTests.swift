@@ -28,6 +28,20 @@ final class StageCatalogStateMachineTests: XCTestCase {
         XCTAssertEqual(executed[0].reachedLine, 2)
     }
 
+    func testLongerMarkerDoesNotCreditTheMarkerItContains() throws {
+        let catalog = try StageCatalog.load(for: .x86_64)
+        let argv = try XCTUnwrap(catalog.first { $0.marker == "ARGV_TEST_PASSED" })
+        let execArgv = try XCTUnwrap(catalog.first { $0.marker == "EXEC_ARGV_TEST_PASSED" })
+        let parentOnly = try StateMachine.evaluate(catalog: [argv, execArgv], serialText: "EXEC_ARGV_TEST_PASSED\n")
+        XCTAssertFalse(parentOnly[0].isReached)
+        XCTAssertEqual(parentOnly[1].reachedLine, 1)
+        let both = try StateMachine.evaluate(
+            catalog: [argv, execArgv],
+            serialText: "EXEC_ARGV_TEST_PASSED\nARGV_TEST_PASSED\n"
+        )
+        XCTAssertEqual(both[0].reachedLine, 2)
+    }
+
     func testGreenStrictFixtureReachesAarch64KernelBootPrefix() throws {
         let catalog = try StageCatalog.load(for: .aarch64)
         let bootCompleteIndex = try XCTUnwrap(catalog.firstIndex { $0.name == "ARM64 boot complete" })

@@ -56,7 +56,7 @@ public enum StateMachine {
     public static func evaluate(catalog: [BootStage], index: SerialIndex) -> [StageState] {
         let failureArms = detectedFailureArms(in: index)
         var states: [StageState] = catalog.enumerated().map { offset, stage in
-            if let line = firstMarkerLine(for: stage, in: index) {
+            if let line = firstMarkerLine(for: stage, in: index, catalog: catalog) {
                 return StageState(index: offset + 1, stage: stage, outcome: .reached(line: line), isStoppedHere: false)
             }
 
@@ -78,15 +78,27 @@ public enum StateMachine {
         try evaluate(catalog: catalog, index: MarkerScanner().scan(data: Data(serialText.utf8)))
     }
 
-    private static func firstMarkerLine(for stage: BootStage, in index: SerialIndex) -> Int? {
+    private static func firstMarkerLine(for stage: BootStage, in index: SerialIndex, catalog: [BootStage]) -> Int? {
         let markers = markerAlternatives(stage.marker)
+        let catalogMarkers = catalog.flatMap { markerAlternatives($0.marker) }
+        // A marker found only inside a longer catalog marker that contains it
+        // does not count: EXEC_ARGV_TEST_PASSED must not credit ARGV_TEST_PASSED.
+        let longerMarkers = markers.map { marker in
+            catalogMarkers.filter { $0.count > marker.count && $0.contains(marker) }
+        }
         for line in index.lines {
             // Loader announcements describe future output, not test execution.
             if line.text.contains("kernel::test_exec:") && line.text.contains("marker") {
                 continue
             }
-            if markers.contains(where: { marker in line.text.contains(marker) }) {
-                return line.lineNumber
+            for (marker, longer) in zip(markers, longerMarkers) where line.text.contains(marker) {
+                var masked = line.text
+                for other in longer {
+                    masked = masked.replacingOccurrences(of: other, with: "\u{0}")
+                }
+                if masked.contains(marker) {
+                    return line.lineNumber
+                }
             }
         }
         return nil
