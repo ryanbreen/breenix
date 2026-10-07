@@ -23,15 +23,20 @@ fn now() -> u64 {
 /// Publish the sleep before rechecking readiness, closing the wake-before-block
 /// race. Pipe readers use their existing event notifications; descriptor kinds
 /// without a notification source retain a short timer fallback.
+///
+/// The recheck runs before preemption is enabled. It takes descriptor locks
+/// (a pipe buffer's) while the thread is already marked blocked, and an
+/// interrupt that preempted it there would switch it out holding the lock,
+/// for good: the writer that would wake it spins on that lock first.
 fn park(deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
     crate::task::scheduler::with_scheduler(|s| {
         s.block_current_for_io_with_timeout((deadline != u64::MAX).then_some(deadline));
     });
+    let already_ready = ready();
     #[cfg(target_arch = "aarch64")]
     crate::per_cpu_aarch64::preempt_enable();
     #[cfg(target_arch = "x86_64")]
     crate::per_cpu::preempt_enable();
-    let already_ready = ready();
     let mut interrupted = false;
     while !already_ready {
         if super::check_signals_for_eintr().is_some() {

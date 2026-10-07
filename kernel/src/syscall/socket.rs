@@ -1108,6 +1108,9 @@ fn sys_accept_tcp(
         loop {
             // Check for pending signals that should interrupt this syscall
             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+                // Not preemptible from here: a kill must never find this thread
+                // switched out while it holds the lock its waiter list is under.
+                crate::per_cpu::preempt_disable();
                 // Signal pending - unblock and return EINTR
                 crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
                 crate::task::scheduler::with_scheduler(|sched| {
@@ -1116,7 +1119,6 @@ fn sys_accept_tcp(
                         thread.set_ready();
                     }
                 });
-                crate::per_cpu::preempt_disable();
                 log::debug!(
                     "TCP accept: Thread {} interrupted by signal (EINTR)",
                     thread_id
