@@ -261,7 +261,7 @@ pub fn init(rsdp_phys: Option<u64>, physical_memory_offset: u64) {
 ///
 /// The second line is the boot-path stage, printed only when more than one
 /// CPU is reported and every one of them is online. No x86 AP is started yet
-/// (#629), so on a multi-CPU machine this prints `online=1` and no stage line.
+/// (#1179), so on a multi-CPU machine this prints `online=1` and no stage line.
 /// A refused MADT walk reports 0: the CPUID cross-check is not an enumeration.
 pub fn report_bring_up() {
     let online = cpus_online();

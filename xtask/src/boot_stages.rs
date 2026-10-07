@@ -315,7 +315,7 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
         BootStage {
             name: "All reported CPUs online",
             marker: "[smp] every reported CPU is online",
-            failure_meaning: "Fewer CPUs came online than the firmware's MADT reports, or only one CPU is configured: x86 starts no application processor yet (#629)",
+            failure_meaning: "Fewer CPUs came online than the firmware's MADT reports, or only one CPU is configured: x86 starts no application processor yet (#1179)",
             check_hint: "Read the `[smp] online=N reported=M` line from arch_impl::x86_64::smp::report_bring_up()",
         },
         BootStage {
