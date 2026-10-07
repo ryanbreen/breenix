@@ -1718,10 +1718,7 @@ pub(crate) fn handle_fault(
     user_thread: Option<u64>,
 ) -> FaultOutcome {
     let outcome = match manager.find_process_by_cr3_mut(root) {
-        Some((_, owner)) => match super::anon_map::resolve_fault(owner, address, access) {
-            FaultOutcome::NotFile => resolve_fault(owner, address, access),
-            outcome => outcome,
-        },
+        Some((_, owner)) => resolve_fault(owner, address, access),
         None => return FaultOutcome::NotFile,
     };
     if let (FaultOutcome::Signal(signal), Some(tid)) = (outcome, user_thread) {

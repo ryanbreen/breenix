@@ -345,9 +345,9 @@ pub static SIGNAL_HANDLERS_SLAB: SlabCache = SlabCache::uninit("signal_handlers"
 ///
 /// Must be called after the global heap allocator is initialized.
 pub fn init() {
-    use crate::ipc::fd::MAX_FDS;
+    use crate::ipc::fd::INITIAL_FDS;
     use core::mem::size_of;
 
-    FD_TABLE_SLAB.init(size_of::<[Option<FileDescriptor>; MAX_FDS]>(), 64);
+    FD_TABLE_SLAB.init(size_of::<[Option<FileDescriptor>; INITIAL_FDS]>(), 64);
     SIGNAL_HANDLERS_SLAB.init(size_of::<[SignalAction; 64]>(), 64);
 }

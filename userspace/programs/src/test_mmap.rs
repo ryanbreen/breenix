@@ -2,7 +2,9 @@
 //!
 //! Tests mmap, munmap, and mprotect syscalls.
 
-use libbreenix::memory::{mmap, munmap, mprotect, PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_ANONYMOUS};
+use libbreenix::memory::{
+    mmap, mprotect, munmap, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE,
+};
 use std::ptr::null_mut;
 
 fn main() {
@@ -133,28 +135,65 @@ fn main() {
     let mut seen_as = [0u64; 2];
     let limited_as = [64u64 << 20, u64::MAX];
     unsafe {
-        assert_eq!(libbreenix::syscall::raw::syscall2(getrlimit_nr, 9, old_as.as_mut_ptr() as u64), 0);
-        assert_eq!(libbreenix::syscall::raw::syscall2(setrlimit_nr, 9, limited_as.as_ptr() as u64), 0);
-        assert_eq!(libbreenix::syscall::raw::syscall2(getrlimit_nr, 9, seen_as.as_mut_ptr() as u64), 0);
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(getrlimit_nr, 9, old_as.as_mut_ptr() as u64),
+            0
+        );
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(setrlimit_nr, 9, limited_as.as_ptr() as u64),
+            0
+        );
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(getrlimit_nr, 9, seen_as.as_mut_ptr() as u64),
+            0
+        );
     }
     assert_eq!(seen_as, limited_as);
-    assert!(matches!(mmap(null_mut(), 128usize << 20, PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
-        Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOMEM))));
+    assert!(matches!(
+        mmap(
+            null_mut(),
+            128usize << 20,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+            -1,
+            0
+        ),
+        Err(libbreenix::error::Error::Os(
+            libbreenix::errno::Errno::ENOMEM
+        ))
+    ));
     unsafe {
-        assert_eq!(libbreenix::syscall::raw::syscall2(setrlimit_nr, 9, old_as.as_ptr() as u64), 0);
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(setrlimit_nr, 9, old_as.as_ptr() as u64),
+            0
+        );
     }
-    #[cfg(target_arch = "x86_64")]
     unsafe {
         let mut old_nofile = [0u64; 2];
-        assert_eq!(libbreenix::syscall::raw::syscall2(getrlimit_nr, 7, old_nofile.as_mut_ptr() as u64), 0);
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(getrlimit_nr, 7, old_nofile.as_mut_ptr() as u64),
+            0
+        );
         let fd = libbreenix::syscall::raw::syscall1(libbreenix::syscall::nr::DUP, 0);
         assert!((fd as i64) >= 3);
         let lowered = [fd, old_nofile[1]];
-        assert_eq!(libbreenix::syscall::raw::syscall2(setrlimit_nr, 7, lowered.as_ptr() as u64), 0);
-        assert_eq!(libbreenix::syscall::raw::syscall2(libbreenix::syscall::nr::DUP2, fd, fd), fd);
-        assert_eq!(libbreenix::syscall::raw::syscall2(setrlimit_nr, 7, old_nofile.as_ptr() as u64), 0);
-        assert_eq!(libbreenix::syscall::raw::syscall1(libbreenix::syscall::nr::CLOSE, fd), 0);
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(setrlimit_nr, 7, lowered.as_ptr() as u64),
+            0
+        );
+        let descriptor = libbreenix::types::Fd::from_raw(fd);
+        assert_eq!(
+            libbreenix::io::dup2(descriptor, descriptor).unwrap(),
+            descriptor
+        );
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(setrlimit_nr, 7, old_nofile.as_ptr() as u64),
+            0
+        );
+        assert_eq!(
+            libbreenix::syscall::raw::syscall1(libbreenix::syscall::nr::CLOSE, fd),
+            0
+        );
     }
     println!("  Native resource limit ABI: PASS");
 
@@ -162,8 +201,21 @@ fn main() {
     // Read first and last pages before writing: fresh anonymous backing is zeroed.
     println!("Test 4: Sparse 128 MiB anonymous mapping...");
     let sparse_size = 128usize << 20;
-    let sparse = mmap(null_mut(), sparse_size, PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0).expect("large anonymous reservation");
+    let free_before = free_kib();
+    let sparse = mmap(
+        null_mut(),
+        sparse_size,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    )
+    .expect("large anonymous reservation");
+    let free_reserved = free_kib();
+    assert!(
+        free_before.saturating_sub(free_reserved) < 1024,
+        "reservation consumed physical frames: before={free_before} KiB after={free_reserved} KiB"
+    );
     unsafe {
         assert_eq!(sparse.read_volatile(), 0);
         assert_eq!(sparse.add(sparse_size - 1).read_volatile(), 0);
@@ -173,8 +225,175 @@ fn main() {
         assert_eq!(sparse.add(sparse_size - 1).read_volatile(), 0x72);
     }
     munmap(sparse, sparse_size).expect("unmap sparse reservation");
-    println!("  Sparse mapping: PASS");
+    println!("  Sparse mapping: PASS (free before={free_before} KiB reserved={free_reserved} KiB touched={} KiB)", free_kib());
+    partial_protection();
+    untouched_signal_stack();
+    shared_limits(setrlimit_nr, getrlimit_nr);
+    descriptor_growth(setrlimit_nr, getrlimit_nr);
 
     println!("USERSPACE MMAP: ALL TESTS PASSED");
     std::process::exit(0);
+}
+
+fn free_kib() -> u64 {
+    let text = std::fs::read_to_string("/proc/meminfo").expect("physical-frame statistics");
+    text.lines()
+        .find_map(|line| {
+            line.strip_prefix("MemFree:")
+                .and_then(|value| value.split_whitespace().next())
+                .and_then(|n| n.parse().ok())
+        })
+        .expect("MemFree in frame allocator statistics")
+}
+
+fn partial_protection() {
+    let mapping = mmap(
+        null_mut(),
+        3 * 4096,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    )
+    .unwrap();
+    mprotect(unsafe { mapping.add(4096) }, 4096, 0).unwrap();
+    unsafe {
+        mapping.write_volatile(7);
+        mapping.add(8192).write_volatile(9);
+    }
+    // Setting one reserved page RW must not permit the adjacent guard.
+    mprotect(mapping, 3 * 4096, 0).unwrap();
+    mprotect(unsafe { mapping.add(4096) }, 4096, PROT_READ | PROT_WRITE).unwrap();
+    unsafe {
+        mapping.add(4096).write_volatile(11);
+    }
+    match libbreenix::process::fork().unwrap() {
+        libbreenix::process::ForkResult::Child => {
+            libbreenix::signal::sigaction(
+                libbreenix::signal::SIGSEGV,
+                Some(&libbreenix::signal::Sigaction::default()),
+                None,
+            )
+            .unwrap();
+            unsafe {
+                mapping.add(8192).write_volatile(13);
+            }
+            libbreenix::process::exit(1);
+        }
+        libbreenix::process::ForkResult::Parent(child) => {
+            let mut status = 0;
+            assert_eq!(
+                libbreenix::process::waitpid(child.raw() as i32, &mut status, 0).unwrap(),
+                child
+            );
+            assert!(libbreenix::process::wifsignaled(status));
+            assert_eq!(
+                libbreenix::process::wtermsig(status),
+                libbreenix::signal::SIGSEGV
+            );
+        }
+    }
+    munmap(mapping, 3 * 4096).unwrap();
+    println!("  Partial anonymous protection: PASS");
+}
+
+static SIGNAL_STACK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+extern "C" fn on_signal(_: i32) {
+    let byte = 1u8;
+    unsafe {
+        core::ptr::read_volatile(&byte);
+    }
+    SIGNAL_STACK.store(
+        core::ptr::addr_of!(byte) as usize,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
+fn untouched_signal_stack() {
+    use libbreenix::signal::{self, Sigaction, StackT};
+    let stack = mmap(
+        null_mut(),
+        16384,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    )
+    .unwrap();
+    let alternate = StackT {
+        ss_sp: stack as u64,
+        ss_flags: 0,
+        _pad: 0,
+        ss_size: 8320,
+    };
+    signal::sigaltstack(Some(&alternate), None).unwrap();
+    let mut action = Sigaction::new(on_signal);
+    action.flags |= signal::SA_ONSTACK;
+    signal::sigaction(signal::SIGUSR1, Some(&action), None).unwrap();
+    signal::kill(libbreenix::process::getpid().unwrap().raw() as i32, signal::SIGUSR1).unwrap();
+    let address = SIGNAL_STACK.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(address >= stack as usize && address < stack as usize + alternate.ss_size);
+    signal::sigaltstack(Some(&StackT::default()), None).unwrap();
+    munmap(stack, 16384).unwrap();
+    println!("  Untouched alternate signal stack: PASS");
+}
+
+fn shared_limits(set: u64, get: u64) {
+    let mut before = [0u64; 2];
+    unsafe {
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(get, 1, before.as_mut_ptr() as u64),
+            0
+        );
+    }
+    let value = [123456u64, before[1]];
+    let worker = std::thread::spawn(move || unsafe {
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(set, 1, value.as_ptr() as u64),
+            0
+        );
+    });
+    worker.join().unwrap();
+    let mut after = [0u64; 2];
+    unsafe {
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(get, 1, after.as_mut_ptr() as u64),
+            0
+        );
+        assert_eq!(after, value);
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(set, 1, before.as_ptr() as u64),
+            0
+        );
+    }
+    println!("  Thread-shared resource limits: PASS");
+}
+
+fn descriptor_growth(set: u64, get: u64) {
+    let mut before = [0u64; 2];
+    unsafe {
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(get, 7, before.as_mut_ptr() as u64),
+            0
+        );
+    }
+    let value = [1024u64, before[1]];
+    unsafe {
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(set, 7, value.as_ptr() as u64),
+            0
+        );
+    }
+    let high = libbreenix::types::Fd::from_raw(1000);
+    assert_eq!(
+        libbreenix::io::dup2(libbreenix::types::Fd::from_raw(0), high).unwrap(),
+        high
+    );
+    libbreenix::io::close(high).unwrap();
+    unsafe {
+        assert_eq!(
+            libbreenix::syscall::raw::syscall2(set, 7, before.as_ptr() as u64),
+            0
+        );
+    }
+    println!("  Growable descriptor limit: PASS");
 }

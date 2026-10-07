@@ -181,7 +181,16 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
 }
 
 fn poll_wait(ptr: u64, nfds: u64, timeout: Option<u64>) -> Result<u64, u64> {
-    if nfds > MAX_FDS as u64 {
+    let limit = crate::syscall::memory_common::get_current_thread_id()
+        .and_then(|tid| {
+            let guard = crate::process::manager();
+            guard
+                .as_ref()?
+                .find_process_by_thread(tid)
+                .map(|(_, p)| p.limits.get(crate::process::limits::NOFILE).soft)
+        })
+        .unwrap_or(MAX_FDS as u64);
+    if nfds > limit {
         return Err(22);
     }
     let mut fds = alloc::vec![PollFd::default(); nfds as usize];

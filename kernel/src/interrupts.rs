@@ -806,6 +806,10 @@ fn file_mapping_fault(
     } else {
         Access::Read
     };
+    match crate::memory::anon_map::handle_fault(cr3, address, access, user_thread) {
+        FaultOutcome::NotFile => {}
+        outcome => return outcome,
+    }
     loop {
         if let Some(mut guard) = crate::process::try_manager() {
             return match guard.as_mut() {
@@ -1084,8 +1088,12 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
     let page_aligned_fault = fault_addr & !0xFFF;
     let new_stack_size = stack_top - page_aligned_fault;
     if new_stack_size > MAX_USER_STACK_SIZE
-        || new_stack_size > process.limits[crate::process::limits::STACK].soft
-        || process.mapped_bytes().saturating_add(stack_bottom - page_aligned_fault) > process.limits[crate::process::limits::AS].soft {
+        || new_stack_size > process.limits.get(crate::process::limits::STACK).soft
+        || process
+            .mapped_bytes()
+            .saturating_add(stack_bottom - page_aligned_fault)
+            > process.limits.get(crate::process::limits::AS).soft
+    {
         return false;
     }
 

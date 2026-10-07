@@ -31,15 +31,6 @@ pub fn current_fsize() -> u64 {
         .as_ref()
         .and_then(|m| m.find_process_by_thread(thread))
         .map_or(u64::MAX, |(_, p)| {
-            p.limits[crate::process::limits::FSIZE].soft
+            p.limits.get(crate::process::limits::FSIZE).soft
         })
-}
-
-pub fn check_file_size(length: u64) -> Result<(), u64> {
-    if length > current_fsize() {
-        signal_fsize();
-        Err(super::errno::EFBIG as u64)
-    } else {
-        Ok(())
-    }
 }

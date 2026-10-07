@@ -388,14 +388,16 @@ pub(crate) fn validate_fd_for_degenerate_transfer(fd: i32, write: bool) -> Resul
 ///
 /// Supports stdout/stderr (serial port) and pipe write ends.
 pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
-    let result = write_with_limit(fd, buf_ptr, count);
-    if matches!(result, SyscallResult::Err(e) if e == super::errno::EFBIG as u64) {
-        super::resource::signal_fsize();
-    }
-    result
+    write_with_limit(fd, buf_ptr, count, true)
 }
 
-fn write_with_limit(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
+/// A vectored call that has already transferred data must not signal for its
+/// next vector merely reaching the limit; it returns the successful prefix.
+pub(super) fn write_vector(fd: u64, buf_ptr: u64, count: u64, first: bool) -> SyscallResult {
+    write_with_limit(fd, buf_ptr, count, first)
+}
+
+fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> SyscallResult {
     use crate::ipc::FdKind;
 
     // Note: Logging removed from hot path to prevent stack overflow.
@@ -522,7 +524,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 file: file.clone(),
                 append: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND) != 0,
                 unprivileged: process.euid != 0,
-                size_limit: process.limits[crate::process::limits::FSIZE].soft,
+                size_limit: process.limits.get(crate::process::limits::FSIZE).soft,
             },
             FdKind::Directory(_) => WriteOperation::Eisdir,
             FdKind::Device(device_type) => WriteOperation::Device {
@@ -620,7 +622,12 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
         }
-        WriteOperation::RegularFile { file, append, unprivileged, size_limit } => {
+        WriteOperation::RegularFile {
+            file,
+            append,
+            unprivileged,
+            size_limit,
+        } => {
             // Write to ext2 regular file
             let (handle, position, file_mount_id) = {
                 let file_guard = file.lock();
@@ -651,9 +658,21 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     position
                 };
                 let length = match super::resource::write_length(wo, buffer.len(), size_limit) {
-                    Ok(n) => n, Err(e) => return SyscallResult::Err(e),
+                    Ok(n) => n,
+                    Err(e) => {
+                        drop(fs_guard);
+                        if signal_limit {
+                            super::resource::signal_fsize();
+                        }
+                        return SyscallResult::Err(e);
+                    }
                 };
-                let bw = match fs.write_file_range_as(inode_num as u32, wo, &buffer[..length], unprivileged) {
+                let bw = match fs.write_file_range_as(
+                    inode_num as u32,
+                    wo,
+                    &buffer[..length],
+                    unprivileged,
+                ) {
                     Ok(n) => n,
                     Err(error) => {
                         return SyscallResult::Err(crate::memory::file_map::mutation_errno(error))
@@ -676,9 +695,21 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     position
                 };
                 let length = match super::resource::write_length(wo, buffer.len(), size_limit) {
-                    Ok(n) => n, Err(e) => return SyscallResult::Err(e),
+                    Ok(n) => n,
+                    Err(e) => {
+                        drop(fs_guard);
+                        if signal_limit {
+                            super::resource::signal_fsize();
+                        }
+                        return SyscallResult::Err(e);
+                    }
                 };
-                let bw = match fs.write_file_range_as(inode_num as u32, wo, &buffer[..length], unprivileged) {
+                let bw = match fs.write_file_range_as(
+                    inode_num as u32,
+                    wo,
+                    &buffer[..length],
+                    unprivileged,
+                ) {
                     Ok(n) => n,
                     Err(error) => {
                         return SyscallResult::Err(crate::memory::file_map::mutation_errno(error))
@@ -2014,7 +2045,7 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
     // allocation must not run with PM held (creation.rs's documented
     // MEMORY_INFO lock-order rationale, same as sys_spawn).
     let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
-        Ok(pt) => Box::new(pt),
+        Ok(pt) => crate::memory::process_memory::UnpublishedPageTable::new(pt, parent_pid.as_u64()),
         Err(e) => {
             log::error!("sys_fork: Failed to create child page table: {}", e);
             return SyscallResult::Err(ENOMEM as u64);
@@ -2036,7 +2067,11 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
             if !crate::process::limits::fork_allowed(manager, parent_pid) {
                 return SyscallResult::Err(super::errno::EAGAIN as u64);
             }
-            manager.fork_process_with_parent_context(parent_pid, parent_context, child_page_table)
+            manager.fork_process_with_parent_context(
+                parent_pid,
+                parent_context,
+                child_page_table.publish(),
+            )
         }
         None => Err("Process manager not available"),
     };
@@ -2933,6 +2968,7 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
 
     let child_pid = match child_pid {
         Ok(pid) => pid,
+        Err("Process limit exceeded") => return SyscallResult::Err(super::errno::EAGAIN as u64),
         Err("Parent process not found") => return SyscallResult::Err(ESRCH as u64),
         Err(_) => return SyscallResult::Err(ENOMEM as u64),
     };
@@ -4481,49 +4517,81 @@ pub fn sys_simulate_oom(enable: u64) -> SyscallResult {
 
 /// getrlimit and setrlimit use the same atomic per-process operation as prlimit64.
 pub fn sys_getrlimit(resource: u64, rlim_ptr: u64) -> SyscallResult {
-    if rlim_ptr == 0 { return SyscallResult::Err(super::errno::EFAULT as u64); }
+    if rlim_ptr == 0 {
+        return SyscallResult::Err(super::errno::EFAULT as u64);
+    }
     sys_prlimit64(0, resource, 0, rlim_ptr)
 }
 
 pub fn sys_setrlimit(resource: u64, rlim_ptr: u64) -> SyscallResult {
-    if rlim_ptr == 0 { return SyscallResult::Err(super::errno::EFAULT as u64); }
+    if rlim_ptr == 0 {
+        return SyscallResult::Err(super::errno::EFAULT as u64);
+    }
     sys_prlimit64(0, resource, rlim_ptr, 0)
 }
 
 pub fn sys_prlimit64(pid: u64, resource: u64, new_ptr: u64, old_ptr: u64) -> SyscallResult {
-    use crate::process::limits::{Rlimit, COUNT, NOFILE, CPU};
     use super::errno::{EFAULT, EINVAL, EPERM, ESRCH};
-    if resource >= COUNT as u64 { return SyscallResult::Err(EINVAL as u64); }
-    let new = if new_ptr == 0 { None } else {
+    use crate::process::limits::{Rlimit, COUNT, NOFILE};
+    if resource >= COUNT as u64 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let new = if new_ptr == 0 {
+        None
+    } else {
         match super::userptr::copy_from_user(new_ptr as *const Rlimit) {
             Ok(value) => Some(value),
             Err(_) => return SyscallResult::Err(EFAULT as u64),
         }
     };
-    if new.is_some_and(|v| v.soft > v.hard) { return SyscallResult::Err(EINVAL as u64); }
+    if new.is_some_and(|v| v.soft > v.hard) {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    if new.is_some_and(|v| resource as usize == NOFILE && v.hard > crate::ipc::MAX_FDS as u64) {
+        return SyscallResult::Err(EPERM as u64);
+    }
     let Some(thread) = super::memory_common::get_current_thread_id() else {
         return SyscallResult::Err(ESRCH as u64);
     };
     // User copies may fault and acquire PM; never copy while holding it.
     let old = {
         let mut guard = crate::process::manager();
-        let Some(manager) = guard.as_mut() else { return SyscallResult::Err(ESRCH as u64) };
+        let Some(manager) = guard.as_mut() else {
+            return SyscallResult::Err(ESRCH as u64);
+        };
         let Some((caller_pid, caller)) = manager.find_process_by_thread(thread) else {
             return SyscallResult::Err(ESRCH as u64);
         };
         let (euid, uid, gid) = (caller.euid, caller.uid, caller.gid);
-        let target = if pid == 0 { caller_pid } else { crate::process::ProcessId::new(pid) };
-        let Some(process) = manager.get_process_mut(target) else { return SyscallResult::Err(ESRCH as u64) };
-        if target != caller_pid && euid != 0 &&
-            (uid != process.uid || uid != process.euid || gid != process.gid || gid != process.egid) {
+        let target = if pid == 0 {
+            caller_pid
+        } else {
+            crate::process::ProcessId::new(pid)
+        };
+        let Some(process) = manager.get_process_mut(target) else {
+            return SyscallResult::Err(ESRCH as u64);
+        };
+        if target != caller_pid
+            && euid != 0
+            && (uid != process.uid
+                || uid != process.euid
+                || uid != process.suid
+                || gid != process.gid
+                || gid != process.egid
+                || gid != process.sgid)
+        {
             return SyscallResult::Err(EPERM as u64);
         }
-        let old = process.limits[resource as usize];
+        let old = process.limits.get(resource as usize);
         if let Some(new) = new {
-            if new.hard > old.hard && euid != 0 { return SyscallResult::Err(EPERM as u64); }
-            process.limits[resource as usize] = new;
-            if resource as usize == NOFILE { process.fd_table.set_limit(new.soft); }
-            if resource as usize == CPU { process.cpu_limit_next = 0; }
+            if new.hard > old.hard && euid != 0 {
+                return SyscallResult::Err(EPERM as u64);
+            }
+            process.limits.set(resource as usize, new);
+            if resource as usize == NOFILE {
+                let limits = process.limits.clone();
+                manager.set_group_fd_limit(&limits, new.soft);
+            }
         }
         old
     };
@@ -4653,8 +4721,9 @@ pub fn sys_setuid(uid: u32) -> SyscallResult {
                 if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     if process.euid == 0 {
                         process.uid = uid;
+                        process.suid = uid;
                         process.euid = uid;
-                    } else if uid == process.uid || uid == process.euid {
+                    } else if uid == process.uid || uid == process.suid {
                         process.euid = uid;
                     } else {
                         return SyscallResult::Err(super::errno::EPERM as u64);
@@ -4679,8 +4748,9 @@ pub fn sys_setgid(gid: u32) -> SyscallResult {
                 if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     if process.euid == 0 {
                         process.gid = gid;
+                        process.sgid = gid;
                         process.egid = gid;
-                    } else if gid == process.gid || gid == process.egid {
+                    } else if gid == process.gid || gid == process.sgid {
                         process.egid = gid;
                     } else {
                         return SyscallResult::Err(super::errno::EPERM as u64);
@@ -4933,7 +5003,11 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     let inode_num = handle.object.key.inode;
     let mount_id = handle.object.mount.mount_id;
     let file_offset = offset as u64;
-    let count = match super::resource::write_length(file_offset, count as usize, super::resource::current_fsize()) {
+    let count = match super::resource::write_length(
+        file_offset,
+        count as usize,
+        super::resource::current_fsize(),
+    ) {
         Ok(length) => length as u64,
         Err(errno) => {
             super::resource::signal_fsize();

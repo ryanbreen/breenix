@@ -178,10 +178,15 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
         }
 
         if ph.p_type == SegmentType::Load as u32 {
-            let bytes = (ph.p_vaddr & 4095).checked_add(ph.p_memsz).and_then(|n| n.checked_add(4095))
-                .ok_or("Segment size overflow")? & !4095;
+            let bytes = (ph.p_vaddr & 4095)
+                .checked_add(ph.p_memsz)
+                .and_then(|n| n.checked_add(4095))
+                .ok_or("Segment size overflow")?
+                & !4095;
             image_size = image_size.checked_add(bytes).ok_or("Image size overflow")?;
-            if ph.p_flags & 2 != 0 { data_size = data_size.checked_add(bytes).ok_or("Data size overflow")?; }
+            if ph.p_flags & 2 != 0 {
+                data_size = data_size.checked_add(bytes).ok_or("Data size overflow")?;
+            }
             load_segment(data, ph)?;
 
             let phdr_end = header
@@ -380,10 +385,15 @@ pub fn load_elf_into_page_table(
         }
 
         if ph.p_type == SegmentType::Load as u32 {
-            let bytes = (ph.p_vaddr & 4095).checked_add(ph.p_memsz).and_then(|n| n.checked_add(4095))
-                .ok_or("Segment size overflow")? & !4095;
+            let bytes = (ph.p_vaddr & 4095)
+                .checked_add(ph.p_memsz)
+                .and_then(|n| n.checked_add(4095))
+                .ok_or("Segment size overflow")?
+                & !4095;
             image_size = image_size.checked_add(bytes).ok_or("Image size overflow")?;
-            if ph.p_flags & 2 != 0 { data_size = data_size.checked_add(bytes).ok_or("Data size overflow")?; }
+            if ph.p_flags & 2 != 0 {
+                data_size = data_size.checked_add(bytes).ok_or("Data size overflow")?;
+            }
             load_segment_into_page_table(data, ph, page_table)?;
 
             let phdr_end = header

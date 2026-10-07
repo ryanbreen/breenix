@@ -93,7 +93,7 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
             continue;
         }
 
-        match handlers::sys_write(fd, iov.iov_base, iov.iov_len) {
+        match handlers::write_vector(fd, iov.iov_base, iov.iov_len, total == 0) {
             SyscallResult::Ok(n) => {
                 total += n;
                 // Short write: stop early (like Linux)

@@ -4031,12 +4031,23 @@ pub fn sys_sync() -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-fn resize_inode(fs: &mut crate::fs::ext2::Ext2Fs, ino: u32, length: u64, unprivileged: bool) -> SyscallResult {
+fn resize_inode(
+    fs: &mut crate::fs::ext2::Ext2Fs,
+    ino: u32,
+    length: u64,
+    unprivileged: bool,
+    limit: u64,
+    exceeded: &mut bool,
+) -> SyscallResult {
     use super::errno::{EFBIG, EINVAL, EIO, EISDIR};
     match fs.read_inode(ino) {
         Ok(inode) if inode.is_dir() => return SyscallResult::Err(EISDIR as u64),
         Ok(inode) if !inode.is_file() => return SyscallResult::Err(EINVAL as u64),
         Err(_) => return SyscallResult::Err(EIO as u64),
+        Ok(inode) if length > inode.size() && length > limit => {
+            *exceeded = true;
+            return SyscallResult::Err(EFBIG as u64);
+        }
         _ => {}
     }
     if length > fs.max_file_size() {
@@ -4059,16 +4070,29 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     let Some(handle) = handle else { return SyscallResult::Err(super::errno::EINVAL as u64); };
-    if let Err(errno) = super::resource::check_file_size(length as u64) { return SyscallResult::Err(errno); }
+    let size_limit = super::resource::current_fsize();
+    let mut exceeded = false;
     let unprivileged = current_file_credentials().euid != 0;
     let mut guard = match ext2::write_mount(handle.object.mount) {
         Ok(guard) => guard,
         Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
     };
-    match guard.as_mut() {
-        Some(fs) if handle.verify(fs).is_ok() => resize_inode(fs, ino, length as u64, unprivileged),
+    let result = match guard.as_mut() {
+        Some(fs) if handle.verify(fs).is_ok() => resize_inode(
+            fs,
+            ino,
+            length as u64,
+            unprivileged,
+            size_limit,
+            &mut exceeded,
+        ),
         _ => SyscallResult::Err(super::errno::EIO as u64),
+    };
+    drop(guard);
+    if exceeded {
+        super::resource::signal_fsize();
     }
+    result
 }
 
 /// truncate resolves the final symlink and resizes the same inode open FDs use.
@@ -4110,7 +4134,8 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
         }
     };
     let cred = current_file_credentials();
-    if let Err(errno) = super::resource::check_file_size(length as u64) { return SyscallResult::Err(errno); }
+    let size_limit = super::resource::current_fsize();
+    let mut exceeded = false;
     let mut guard = mount.write();
     let fs = match guard.as_mut() {
         Some(fs) => fs,
@@ -4125,7 +4150,19 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
             return error;
         }
     }
-    resize_inode(fs, ino, length as u64, cred.euid != 0)
+    let result = resize_inode(
+        fs,
+        ino,
+        length as u64,
+        cred.euid != 0,
+        size_limit,
+        &mut exceeded,
+    );
+    drop(guard);
+    if exceeded {
+        super::resource::signal_fsize();
+    }
+    result
 }
 
 /// Record a successful nonempty read after releasing the read-side FS lock.

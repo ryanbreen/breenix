@@ -1,17 +1,136 @@
 //! First-touch backing for private anonymous VMAs, including kernel user copies.
 #[cfg(target_arch = "aarch64")]
-use super::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
+use super::arch_stub::{Page, PageTableFlags, PhysFrame, Size4KiB, VirtAddr};
 use super::file_map::{Access, FaultOutcome};
 use super::vma::{MmapFlags, Protection};
-use crate::process::Process;
 #[cfg(target_arch = "x86_64")]
 use x86_64::{
-    structures::paging::{Page, PageTableFlags, Size4KiB},
+    structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB},
     VirtAddr,
 };
 
-pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access) -> FaultOutcome {
-    let Some(vma) = process.vmas.iter().find(|v| {
+/// Allocate and zero outside PM, then revalidate the reservation before publishing.
+pub(crate) fn handle_fault(
+    root: u64,
+    address: u64,
+    access: Access,
+    user_thread: Option<u64>,
+) -> FaultOutcome {
+    if crate::process::process_manager_held_on_current_cpu() {
+        return FaultOutcome::NotFile;
+    }
+    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
+    let snapshot = {
+        let guard = crate::process::manager();
+        let Some((pid, owner)) = guard.as_ref().and_then(|m| m.find_process_by_cr3(root)) else {
+            return FaultOutcome::NotFile;
+        };
+        let Some(prot) = anonymous_protection(&owner.vmas, address) else {
+            return FaultOutcome::NotFile;
+        };
+        let Some(table) = owner.page_table.as_deref() else {
+            return FaultOutcome::NotFile;
+        };
+        if table.translate(page.start_address()).is_some() && permitted(prot, access) {
+            return FaultOutcome::NotFile;
+        }
+        (pid, table.address_space(), prot)
+    };
+    let frame = if permitted(snapshot.2, access) {
+        zeroed_frame()
+    } else {
+        None
+    };
+    let outcome = {
+        let mut guard = crate::process::manager();
+        let Some(manager) = guard.as_mut() else {
+            if let Some(frame) = frame {
+                let _ = super::frame_allocator::deallocate_leaf_frame(frame);
+            }
+            return FaultOutcome::NotFile;
+        };
+        let outcome = match manager.get_process_mut(snapshot.0) {
+            Some(owner) => {
+                let prot = anonymous_protection(&owner.vmas, address);
+                match owner.page_table.as_deref_mut() {
+                    Some(table) if table.address_space() == snapshot.1 => match prot {
+                        Some(prot) if !permitted(prot, access) => {
+                            FaultOutcome::Signal(crate::signal::constants::SIGSEGV)
+                        }
+                        Some(prot) => {
+                            if table.translate(page.start_address()).is_some() {
+                                FaultOutcome::Resolved
+                            } else if let Some(frame) = frame {
+                                if table.map_page(page, frame, page_flags(prot)).is_ok() {
+                                    crate::syscall::memory_common::flush_tlb(page.start_address());
+                                    return FaultOutcome::Resolved;
+                                }
+                                FaultOutcome::Signal(crate::signal::constants::SIGKILL)
+                            } else {
+                                FaultOutcome::Signal(crate::signal::constants::SIGKILL)
+                            }
+                        }
+                        None => FaultOutcome::NotFile,
+                    },
+                    _ => FaultOutcome::NotFile,
+                }
+            }
+            None => FaultOutcome::NotFile,
+        };
+        if let (FaultOutcome::Signal(signal), Some(tid)) = (outcome, user_thread) {
+            if let Some((_, process)) = manager.find_process_by_thread_mut(tid) {
+                process.signals.force_signal(signal);
+            }
+        }
+        outcome
+    };
+    if let Some(frame) = frame {
+        let _ = super::frame_allocator::deallocate_leaf_frame(frame);
+    }
+    outcome
+}
+
+fn anonymous_protection(vmas: &[super::vma::Vma], address: u64) -> Option<Protection> {
+    vmas.iter()
+        .find(|v| {
+            v.contains(VirtAddr::new(address))
+                && v.flags.contains(MmapFlags::ANONYMOUS)
+                && v.flags.contains(MmapFlags::PRIVATE)
+        })
+        .map(|v| v.prot)
+}
+
+fn permitted(prot: Protection, access: Access) -> bool {
+    match access {
+        Access::Read => prot.contains(Protection::READ) || prot.contains(Protection::WRITE),
+        Access::Write => prot.contains(Protection::WRITE),
+        Access::Execute => prot.contains(Protection::EXEC),
+    }
+}
+
+fn zeroed_frame() -> Option<PhysFrame<Size4KiB>> {
+    let frame = super::frame_allocator::allocate_frame()?;
+    let offset = super::physical_memory_offset();
+    // SAFETY: the frame is exclusively owned and accessible through the direct map.
+    unsafe {
+        core::ptr::write_bytes(
+            (offset + frame.start_address().as_u64()).as_mut_ptr::<u8>(),
+            0,
+            4096,
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("dsb ishst", options(nostack, preserves_flags));
+    }
+    Some(frame)
+}
+
+fn resolve_page(
+    table: &mut super::process_memory::ProcessPageTable,
+    vmas: &[super::vma::Vma],
+    address: u64,
+    access: Access,
+) -> FaultOutcome {
+    let Some(vma) = vmas.iter().find(|v| {
         v.contains(VirtAddr::new(address))
             && v.flags.contains(MmapFlags::ANONYMOUS)
             && v.flags.contains(MmapFlags::PRIVATE)
@@ -27,28 +146,16 @@ pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access)
         return FaultOutcome::Signal(crate::signal::constants::SIGSEGV);
     }
     let flags = page_flags(vma.prot);
-    let Some(table) = process.page_table.as_mut() else {
-        return FaultOutcome::NotFile;
-    };
     let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
     if table.translate(page.start_address()).is_some() {
         return FaultOutcome::NotFile;
     }
-    let Some(frame) = super::frame_allocator::allocate_frame() else {
-        return FaultOutcome::Signal(crate::signal::constants::SIGSEGV);
+    let Some(frame) = zeroed_frame() else {
+        return FaultOutcome::Signal(crate::signal::constants::SIGKILL);
     };
-    let offset = super::physical_memory_offset();
-    // SAFETY: the new, exclusively owned frame is reachable via the direct map.
-    unsafe {
-        core::ptr::write_bytes(
-            (offset + frame.start_address().as_u64()).as_mut_ptr::<u8>(),
-            0,
-            4096,
-        );
-    }
     if table.map_page(page, frame, flags).is_err() {
         let _ = super::frame_allocator::deallocate_leaf_frame(frame);
-        return FaultOutcome::Signal(crate::signal::constants::SIGSEGV);
+        return FaultOutcome::Signal(crate::signal::constants::SIGKILL);
     }
     crate::syscall::memory_common::flush_tlb(page.start_address());
     FaultOutcome::Resolved
@@ -57,8 +164,40 @@ pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access)
 /// Install the VMA's execute permission as well as its write permission.
 pub(crate) fn page_flags(prot: Protection) -> PageTableFlags {
     let mut flags = crate::syscall::memory_common::prot_to_page_flags(prot);
+    if prot == Protection::NONE {
+        flags.remove(PageTableFlags::USER_ACCESSIBLE);
+    }
     if !prot.contains(Protection::EXEC) {
         flags.insert(PageTableFlags::NO_EXECUTE);
     }
     flags
+}
+
+/// A signal frame is copied through the direct map and cannot take a user fault.
+/// Back missing anonymous pages before performing the permission-checked copy.
+pub(crate) fn prepare_write(
+    table: &mut super::process_memory::ProcessPageTable,
+    vmas: &[super::vma::Vma],
+    start: u64,
+    length: usize,
+) -> bool {
+    if !crate::memory::layout::is_valid_user_range(start, length) {
+        return false;
+    }
+    let Some(end) = start.checked_add(length as u64) else {
+        return false;
+    };
+    let mut address = start & !4095;
+    while address < end {
+        if table.translate(VirtAddr::new(address)).is_none()
+            && !matches!(
+                resolve_page(table, vmas, address, Access::Write),
+                FaultOutcome::Resolved
+            )
+        {
+            return false;
+        }
+        address += 4096;
+    }
+    true
 }

@@ -11,12 +11,10 @@ use crate::syscall::{ErrorCode, SyscallResult};
 
 // Conditional imports based on architecture
 #[cfg(target_arch = "x86_64")]
-use x86_64::structures::paging::{Page, Size4KiB};
-#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
 #[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
+use crate::memory::arch_stub::VirtAddr;
 
 // Import common memory syscall helpers
 use crate::syscall::memory_common::{
@@ -138,7 +136,7 @@ pub fn sys_mmap(
             }
         };
 
-        let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+        let (_pid, process) = match manager.find_address_space_by_thread_mut(current_thread_id) {
             Some(p) => p,
             None => {
                 log::error!(
@@ -149,9 +147,13 @@ pub fn sys_mmap(
             }
         };
 
-        if process.mapped_bytes().saturating_add(length) > process.limits[crate::process::limits::AS].soft
-            || (is_private && prot.contains(Protection::WRITE) &&
-                process.data_bytes().saturating_add(length) > process.limits[crate::process::limits::DATA].soft) {
+        if process.mapped_bytes().saturating_add(length)
+            > process.limits.get(crate::process::limits::AS).soft
+            || (is_private
+                && prot.contains(Protection::WRITE)
+                && process.data_bytes().saturating_add(length)
+                    > process.limits.get(crate::process::limits::DATA).soft)
+        {
             return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
         }
 
@@ -287,14 +289,24 @@ pub fn sys_mmap(
         };
     }
 
-    if is_private {
+    if is_private && !flags.contains(MmapFlags::POPULATE) {
         let mut guard = crate::process::manager();
-        let Some((_, process)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(current_thread_id)) else {
+        let Some((_, process)) = guard
+            .as_mut()
+            .and_then(|m| m.find_address_space_by_thread_mut(current_thread_id))
+        else {
             drop(guard);
             return give_back(ErrorCode::NoSuchProcess as u64);
         };
-        let vma = Vma::new(VirtAddr::new(start_addr), VirtAddr::new(end_addr), prot, flags);
-        if process.vmas.iter().any(|other| vma.overlaps(other)) || process.vmas.try_reserve(1).is_err() {
+        let vma = Vma::new(
+            VirtAddr::new(start_addr),
+            VirtAddr::new(end_addr),
+            prot,
+            flags,
+        );
+        if process.vmas.iter().any(|other| vma.overlaps(other))
+            || process.vmas.try_reserve(1).is_err()
+        {
             drop(guard);
             return give_back(ErrorCode::OutOfMemory as u64);
         }
@@ -333,7 +345,7 @@ fn restore_mmap_hint(thread_id: u64, start: u64, hint: u64) {
     let mut manager_guard = crate::process::manager();
     if let Some((_, process)) = manager_guard
         .as_mut()
-        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+        .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
     {
         if process.mmap_hint == start {
             process.mmap_hint = hint;
@@ -436,7 +448,7 @@ fn map_file(
     let mut manager_guard = crate::process::manager();
     let Some((pid, process)) = manager_guard
         .as_mut()
-        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+        .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
     else {
         return Err(abandon(ErrorCode::NoSuchProcess));
     };
@@ -539,7 +551,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         }
     };
 
-    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+    let (_pid, process) = match manager.find_address_space_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
             log::error!(
@@ -550,81 +562,105 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         }
     };
 
-    // A range within one file VMA is split out and changed on its own.
-    if let Some(page_table) = process.page_table.as_deref_mut() {
+    // Validate complete coverage and the added DATA charge before changing any VMA.
+    let mut cursor = addr;
+    let mut added_data = 0u64;
+    while cursor < end_addr {
+        let Some(vma) = process
+            .vmas
+            .iter()
+            .find(|v| v.start.as_u64() <= cursor && cursor < v.end.as_u64())
+        else {
+            return SyscallResult::Err(super::errno::ENOMEM as u64);
+        };
+        let next = vma.end.as_u64().min(end_addr);
+        if vma.flags.contains(MmapFlags::PRIVATE)
+            && !vma.prot.contains(Protection::WRITE)
+            && new_prot.contains(Protection::WRITE)
+        {
+            added_data = added_data.saturating_add(next - cursor);
+        }
+        cursor = next;
+    }
+    if added_data != 0
+        && process.data_bytes().saturating_add(added_data)
+            > process.limits.get(crate::process::limits::DATA).soft
+    {
+        return SyscallResult::Err(super::errno::ENOMEM as u64);
+    }
+    if process.vmas.try_reserve(2).is_err() {
+        return SyscallResult::Err(super::errno::ENOMEM as u64);
+    }
+    let Some(page_table) = process.page_table.as_deref_mut() else {
+        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+    };
+    let mut cursor = addr;
+    while cursor < end_addr {
+        let index = process
+            .vmas
+            .iter()
+            .position(|v| v.start.as_u64() <= cursor && cursor < v.end.as_u64())
+            .unwrap();
+        let next = process.vmas[index].end.as_u64().min(end_addr);
         match crate::memory::file_map::protect(
             &mut process.vmas,
             page_table,
-            addr,
-            end_addr,
+            cursor,
+            next,
             new_prot,
         ) {
-            Ok(true) => return SyscallResult::Ok(0),
+            Ok(true) => {
+                cursor = next;
+                continue;
+            }
             Ok(false) => {}
             Err(error) => return SyscallResult::Err(file_vma_errno(error)),
         }
-    }
-
-    // Find the VMA that contains this address range
-    // For simplicity, require exact match on start address
-    let vma_index = process
-        .vmas
-        .iter()
-        .position(|vma| vma.start.as_u64() == addr && vma.end.as_u64() >= end_addr);
-
-    let vma_index = match vma_index {
-        Some(idx) => idx,
-        None => {
-            log::warn!(
-                "sys_mprotect: no VMA found containing {:#x}..{:#x}",
-                addr,
-                end_addr
-            );
-            return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
-        }
-    };
-
-    // Get the process page table
-    let page_table = match process.page_table.as_mut() {
-        Some(pt) => pt,
-        None => {
-            log::error!("sys_mprotect: No page table for process!");
-            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-        }
-    };
-
-    // Update page table flags for each page in the range
-    let new_flags = if process.vmas[vma_index].flags.contains(MmapFlags::ANONYMOUS)
-        && process.vmas[vma_index].flags.contains(MmapFlags::PRIVATE) {
-        crate::memory::anon_map::page_flags(new_prot)
-    } else { prot_to_page_flags(new_prot) };
-    let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
-    let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr - 1));
-
-    let mut pages_updated = 0u32;
-    for page in Page::range_inclusive(start_page, end_page) {
-        if page_table.translate(page.start_address()).is_none() { continue; }
-        match page_table.update_page_flags(page, new_flags) {
-            Ok(()) => {
-                // Flush TLB for this page to ensure new flags take effect
-                flush_tlb(page.start_address());
-                pages_updated += 1;
+        let vma = &process.vmas[index];
+        let (start, end, old_prot, flags) =
+            (vma.start.as_u64(), vma.end.as_u64(), vma.prot, vma.flags);
+        let new_flags = crate::memory::anon_map::page_flags(new_prot);
+        let mut from = cursor;
+        while let Some(page) = page_table.next_mapped_page(from, next) {
+            from = page.start_address().as_u64() + PAGE_SIZE;
+            let Some((_, old_flags)) = page_table.get_page_info(page) else {
+                continue;
+            };
+            // Once a shared private page loses WRITE, its CoW flag must not
+            // turn a forbidden write into an allowed copy. Privatize resident
+            // CoW pages before changing permissions; untouched pages stay sparse.
+            if crate::memory::process_memory::is_cow_page(old_flags)
+                && !page_table.resolve_cow_write(page.start_address().as_u64(), process.id.as_u64())
+            {
+                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
             }
-            Err(e) => {
-                log::warn!(
-                    "sys_mprotect: update_page_flags failed for {:#x}: {}",
-                    page.start_address().as_u64(),
-                    e
-                );
-                // Continue trying to update other pages
+            if page_table.update_page_flags(page, new_flags).is_err() {
+                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
             }
+            flush_tlb(page.start_address());
         }
+        // Leave the untouched prefix/suffix with their original fault permissions.
+        process.vmas[index].start = VirtAddr::new(cursor);
+        process.vmas[index].end = VirtAddr::new(next);
+        process.vmas[index].prot = new_prot;
+        if start < cursor {
+            process.vmas.push(Vma::new(
+                VirtAddr::new(start),
+                VirtAddr::new(cursor),
+                old_prot,
+                flags,
+            ));
+        }
+        if next < end {
+            process.vmas.push(Vma::new(
+                VirtAddr::new(next),
+                VirtAddr::new(end),
+                old_prot,
+                flags,
+            ));
+        }
+        cursor = next;
     }
-
-    log::trace!("sys_mprotect: Successfully updated {} pages", pages_updated);
-
-    // Update VMA protection flags
-    process.vmas[vma_index].prot = new_prot;
 
     SyscallResult::Ok(0)
 }
@@ -684,7 +720,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
         }
     };
 
-    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+    let (_pid, process) = match manager.find_address_space_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
             log::error!(
@@ -711,57 +747,53 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
         Err(error) => return SyscallResult::Err(file_vma_errno(error)),
     }
 
-    // Find overlapping VMAs
-    // For simplicity, require exact match (don't support partial unmapping yet)
-    let vma_index = process
+    let Some(page_table) = process.page_table.as_deref_mut() else {
+        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+    };
+    if process
         .vmas
         .iter()
-        .position(|vma| vma.start.as_u64() == addr && vma.end.as_u64() == end_addr);
-
-    let vma_index = match vma_index {
-        Some(idx) => idx,
-        None => {
-            log::warn!("sys_munmap: no VMA found at {:#x}..{:#x}", addr, end_addr);
-            return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
-        }
-    };
-
-    // Get the process page table
-    let page_table = match process.page_table.as_mut() {
-        Some(pt) => pt,
-        None => {
-            log::error!("sys_munmap: No page table for process!");
-            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-        }
-    };
-
-    // Unmap pages
-    let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
-    let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr - 1));
-
-    let mut pages_unmapped = 0u32;
-    for page in Page::range_inclusive(start_page, end_page) {
-        if page_table.translate(page.start_address()).is_none() { continue; }
+        .any(|v| v.start.as_u64() < end_addr && addr < v.end.as_u64() && v.backing.is_some())
+    {
+        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+    }
+    if process.vmas.try_reserve(2).is_err() {
+        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+    }
+    let mut from = addr;
+    while let Some(page) = page_table.next_mapped_page(from, end_addr) {
+        from = page.start_address().as_u64() + PAGE_SIZE;
         match page_table.unmap_page_deferred(page) {
-            Ok(leaf) => {
-                leaf.flush().release();
-                pages_unmapped += 1;
-            }
-            Err(e) => {
-                log::warn!(
-                    "sys_munmap: unmap_page failed for {:#x}: {}",
-                    page.start_address().as_u64(),
-                    e
-                );
-                // Continue trying to unmap other pages
-            }
+            Ok(leaf) => leaf.flush().release(),
+            Err(_) => return SyscallResult::Err(ErrorCode::OutOfMemory as u64),
         }
     }
-
-    log::trace!("sys_munmap: Successfully unmapped {} pages", pages_unmapped);
-
-    // Remove VMA from process
-    process.vmas.remove(vma_index);
+    let mut index = 0;
+    while index < process.vmas.len() {
+        let vma = &process.vmas[index];
+        let (start, end, prot, flags) = (vma.start.as_u64(), vma.end.as_u64(), vma.prot, vma.flags);
+        if start >= end_addr || end <= addr {
+            index += 1;
+            continue;
+        }
+        process.vmas.remove(index);
+        if start < addr {
+            process.vmas.push(Vma::new(
+                VirtAddr::new(start),
+                VirtAddr::new(addr),
+                prot,
+                flags,
+            ));
+        }
+        if end_addr < end {
+            process.vmas.push(Vma::new(
+                VirtAddr::new(end_addr),
+                VirtAddr::new(end),
+                prot,
+                flags,
+            ));
+        }
+    }
 
     SyscallResult::Ok(0)
 }

@@ -844,14 +844,30 @@ impl ProcessManager {
         argv: &[&[u8]],
     ) -> Result<ProcessId, &'static str> {
         // Capture parent attributes before creating the child.
-        let (parent_pgid, parent_sid, parent_cwd, ids, umask, groups) = {
+        if !crate::process::limits::fork_allowed(self, parent_pid) {
+            return Err("Process limit exceeded");
+        }
+        let (parent_pgid, parent_sid, parent_cwd, ids, umask, groups, limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
-            (parent.pgid, parent.sid, parent.cwd.copy(),
-                (parent.uid, parent.gid, parent.euid, parent.egid),
-                parent.umask, parent.supplementary_groups.clone())
+            (
+                parent.pgid,
+                parent.sid,
+                parent.cwd.copy(),
+                (
+                    parent.uid,
+                    parent.gid,
+                    parent.euid,
+                    parent.egid,
+                    parent.suid,
+                    parent.sgid,
+                ),
+                parent.umask,
+                parent.supplementary_groups.clone(),
+                parent.limits.inherit(),
+            )
         };
 
         // Create the child process (allocates PID, page table, loads ELF, argv stack).
@@ -863,9 +879,18 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
-            (child.uid, child.gid, child.euid, child.egid) = ids;
+            (
+                child.uid, child.gid, child.euid, child.egid, child.suid, child.sgid,
+            ) = ids;
             child.umask = umask;
             child.supplementary_groups = groups;
+            child.limits = limits;
+            child
+                .fd_table
+                .set_limit(child.limits.get(crate::process::limits::NOFILE).soft);
+            if let Some(thread) = child.main_thread.as_mut() {
+                thread.resource_limits = Some(child.limits.clone());
+            }
         }
 
         if let Some(parent) = self.processes.live_row_mut(&parent_pid) {
@@ -1370,14 +1395,30 @@ impl ProcessManager {
         argv: &[&[u8]],
     ) -> Result<ProcessId, &'static str> {
         // Capture parent attributes before creating child
-        let (parent_pgid, parent_sid, parent_cwd, ids, umask, groups) = {
+        if !crate::process::limits::fork_allowed(self, parent_pid) {
+            return Err("Process limit exceeded");
+        }
+        let (parent_pgid, parent_sid, parent_cwd, ids, umask, groups, limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
-            (parent.pgid, parent.sid, parent.cwd.copy(),
-                (parent.uid, parent.gid, parent.euid, parent.egid),
-                parent.umask, parent.supplementary_groups.clone())
+            (
+                parent.pgid,
+                parent.sid,
+                parent.cwd.copy(),
+                (
+                    parent.uid,
+                    parent.gid,
+                    parent.euid,
+                    parent.egid,
+                    parent.suid,
+                    parent.sgid,
+                ),
+                parent.umask,
+                parent.supplementary_groups.clone(),
+                parent.limits.inherit(),
+            )
         };
 
         // Create the child process (allocates PID, page table, loads ELF, etc.)
@@ -1389,9 +1430,18 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
-            (child.uid, child.gid, child.euid, child.egid) = ids;
+            (
+                child.uid, child.gid, child.euid, child.egid, child.suid, child.sgid,
+            ) = ids;
             child.umask = umask;
             child.supplementary_groups = groups;
+            child.limits = limits;
+            child
+                .fd_table
+                .set_limit(child.limits.get(crate::process::limits::NOFILE).soft);
+            if let Some(thread) = child.main_thread.as_mut() {
+                thread.resource_limits = Some(child.limits.clone());
+            }
         }
 
         // Add child to parent's children list
@@ -1479,6 +1529,7 @@ impl ProcessManager {
             timer_pop: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
+            resource_limits: None,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1565,6 +1616,7 @@ impl ProcessManager {
             timer_pop: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
+            resource_limits: None,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1920,6 +1972,19 @@ impl ProcessManager {
         }
     }
 
+    /// NOFILE is shared by CLONE_VM siblings even when their FD tables differ.
+    pub fn set_group_fd_limit(
+        &mut self,
+        limits: &alloc::sync::Arc<super::limits::Limits>,
+        soft: u64,
+    ) {
+        for (_, process) in self.processes.iter_mut() {
+            if alloc::sync::Arc::ptr_eq(&process.limits, limits) {
+                process.fd_table.set_limit(soft);
+            }
+        }
+    }
+
     /// Get all process IDs.
     ///
     /// Tombstone-blind, like every other live-process query: once a row is
@@ -2014,6 +2079,21 @@ impl ProcessManager {
             .map(|(pid, process)| (*pid, process))
     }
 
+    /// Resolve CLONE_VM callers to the row owning their address space.
+    pub fn find_address_space_by_thread_mut(
+        &mut self,
+        thread: u64,
+    ) -> Option<(ProcessId, &mut Process)> {
+        let (pid, process) = self.find_process_by_thread(thread)?;
+        match process
+            .inherited_cr3
+            .filter(|_| process.page_table.is_none())
+        {
+            Some(root) => self.find_process_by_cr3_mut(root),
+            None => self.get_process_mut(pid).map(|p| (pid, p)),
+        }
+    }
+
     /// Find a thread's row together with the page table of the address space it
     /// runs in when another row owns that table. A CLONE_VM thread keeps only
     /// `inherited_cr3`, so writes into its memory under this guard go through
@@ -2021,15 +2101,21 @@ impl ProcessManager {
     pub fn find_process_and_shared_table_by_thread_mut(
         &mut self,
         thread_id: u64,
-    ) -> Option<(ProcessId, &mut Process, Option<&mut ProcessPageTable>)> {
-        let (pid, shared_root) = self.find_process_by_thread(thread_id).map(|(pid, process)| {
-            let shared_root = if process.page_table.is_none() {
-                process.inherited_cr3
-            } else {
-                None
-            };
-            (pid, shared_root)
-        })?;
+    ) -> Option<(
+        ProcessId,
+        &mut Process,
+        Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
+    )> {
+        let (pid, shared_root) = self
+            .find_process_by_thread(thread_id)
+            .map(|(pid, process)| {
+                let shared_root = if process.page_table.is_none() {
+                    process.inherited_cr3
+                } else {
+                    None
+                };
+                (pid, shared_root)
+            })?;
         let Some(root) = shared_root else {
             return self.get_process_mut(pid).map(|process| (pid, process, None));
         };
@@ -2041,7 +2127,7 @@ impl ProcessManager {
             } else if table.is_none() && !candidate.is_tombstone() {
                 if let Some(page_table) = candidate.page_table.as_deref_mut() {
                     if page_table.level_4_frame().start_address().as_u64() == root {
-                        table = Some(page_table);
+                        table = Some((page_table, candidate.vmas.as_slice()));
                     }
                 }
             }
@@ -3149,6 +3235,7 @@ impl ProcessManager {
                 timer_pop: None,
                 run_start_ticks: 0,
                 cpu_ticks_total: 0,
+                resource_limits: None,
                 owner_pid: Some(child_pid.as_u64()),
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -3444,6 +3531,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program - heap starts after ELF segments
         let heap_base = loaded_elf.segments_end;
+        process.suid = process.euid;
+        process.sgid = process.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -3867,6 +3956,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
+        process.suid = process.euid;
+        process.sgid = process.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -4226,6 +4317,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
+        process.suid = process.euid;
+        process.sgid = process.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -4559,6 +4652,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
+        process.suid = process.euid;
+        process.sgid = process.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
