@@ -12,7 +12,9 @@
 //! The fix uses std::hint::black_box() to prevent the compiler from
 //! optimizing away the stack buffers.
 
+use libbreenix::io::{close, dup2, pipe, read};
 use libbreenix::process::{fork, waitpid, execv, wifexited, wexitstatus, ForkResult};
+use libbreenix::types::Fd;
 
 /// Build a null-terminated string on the stack from a source string.
 /// Returns a pointer to the buffer that is kept alive by black_box.
@@ -45,13 +47,34 @@ fn main() {
     println!("=== Exec Stack Argv Test ===");
     println!("Testing stack-allocated argument buffers through execv");
 
+    // argv_test writes the arguments it received to fd 3; the parent reads them
+    // back through this pipe and compares them with what it passed.
+    let (report_read, report_write) = match pipe() {
+        Ok(fds) => fds,
+        Err(_) => {
+            println!("pipe failed");
+            std::process::exit(1);
+        }
+    };
+    let report_fd = Fd::from_raw(3);
+
     match fork() {
         Ok(ForkResult::Child) => {
+            if report_read != report_fd {
+                let _ = close(report_read);
+            }
+            if report_write != report_fd {
+                if dup2(report_write, report_fd).is_err() {
+                    println!("dup2 failed");
+                    std::process::exit(1);
+                }
+                let _ = close(report_write);
+            }
             // Child: build argv with STACK-ALLOCATED buffers
             // This mimics how init_shell.rs try_execute_external() builds argv
 
             // Program path - must be null-terminated for the kernel
-            let program = b"argv_test\0";
+            let program = b"/usr/local/test/bin/argv_test\0";
 
             // Build argument strings ON THE STACK (not static)
             let mut arg0_buf = [0u8; 64];
@@ -79,10 +102,29 @@ fn main() {
         }
         Ok(ForkResult::Parent(child_pid)) => {
             // Parent: wait for child
+            let _ = close(report_write);
             let mut status: i32 = 0;
-            let _ = waitpid(child_pid.raw() as i32, &mut status, 0);
+            let waited = waitpid(child_pid.raw() as i32, &mut status, 0);
+            let mut report = Vec::new();
+            let mut buf = [0u8; 64];
+            while let Ok(n) = read(report_read, &mut buf) {
+                if n == 0 {
+                    break;
+                }
+                report.extend_from_slice(&buf[..n]);
+            }
+            let _ = close(report_read);
+            println!("Child reported arguments: {:?}", String::from_utf8_lossy(&report));
 
-            if wifexited(status) && wexitstatus(status) == 0 {
+            let reaped = matches!(waited, Ok(pid) if pid.raw() == child_pid.raw());
+            if !reaped {
+                println!("waitpid failed: {:?}", waited);
+            }
+            if reaped
+                && report == b"stackarg test123\n"
+                && wifexited(status)
+                && wexitstatus(status) == 0
+            {
                 println!("Child process executed successfully with stack-allocated argv");
                 println!("EXEC_STACK_ARGV_TEST_PASSED");
                 std::process::exit(0);

@@ -252,11 +252,30 @@ enum Cmd {
     },
 }
 
-fn stage_marker_present(contents: &str, marker: &str) -> bool {
+fn stage_marker_present(contents: &str, marker: &str, catalog: &[boot_stages::BootStage]) -> bool {
     contents.lines().any(|line| {
         !(line.contains("kernel::test_exec:") && line.contains("marker"))
-            && marker.split('|').any(|alternative| line.contains(alternative))
+            && marker
+                .split('|')
+                .any(|alternative| marker_alternative_present(line, alternative, catalog))
     })
+}
+
+/// A marker found only inside a longer catalog marker that contains it does not
+/// count: EXEC_ARGV_TEST_PASSED must not credit ARGV_TEST_PASSED.
+fn marker_alternative_present(line: &str, alternative: &str, catalog: &[boot_stages::BootStage]) -> bool {
+    if !line.contains(alternative) {
+        return false;
+    }
+    let mut masked = line.to_string();
+    for longer in catalog
+        .iter()
+        .flat_map(|stage| stage.marker.split('|'))
+        .filter(|other| other.len() > alternative.len() && other.contains(alternative))
+    {
+        masked = masked.replace(longer, "\0");
+    }
+    masked.contains(alternative)
 }
 
 fn main() -> Result<()> {
@@ -457,8 +476,8 @@ fn dns_test() -> Result<()> {
                 let user_content = fs::read_to_string(user_output_file).unwrap_or_default();
                 for (i, stage) in stages.iter().enumerate() {
                     if !checked_stages[i] {
-                        if stage_marker_present(&kernel_content, stage.marker)
-                            || stage_marker_present(&user_content, stage.marker)
+                        if stage_marker_present(&kernel_content, stage.marker, &stages)
+                            || stage_marker_present(&user_content, stage.marker, &stages)
                         {
                             checked_stages[i] = true;
                             stages_passed += 1;
@@ -514,8 +533,8 @@ fn dns_test() -> Result<()> {
             // Check all stages against both output sources
             for (i, stage) in stages.iter().enumerate() {
                 if !checked_stages[i] {
-                    if stage_marker_present(&kernel_content, stage.marker)
-                        || stage_marker_present(&user_content, stage.marker)
+                    if stage_marker_present(&kernel_content, stage.marker, &stages)
+                        || stage_marker_present(&user_content, stage.marker, &stages)
                     {
                         checked_stages[i] = true;
                         stages_passed += 1;
@@ -751,7 +770,7 @@ fn validate_boot_stages(
             for (i, stage) in stages.iter().enumerate() {
                 if !checked_stages[i] {
                     // Check if marker is found (support alternative patterns with |)
-                    let found = stage_marker_present(contents, stage.marker);
+                    let found = stage_marker_present(contents, stage.marker, &stages);
 
                     if found {
                         checked_stages[i] = true;
@@ -864,7 +883,7 @@ fn validate_boot_stages(
         let contents = &combined_contents;
         for (i, stage) in stages.iter().enumerate() {
             if !checked_stages[i] {
-                let found = stage_marker_present(contents, stage.marker);
+                let found = stage_marker_present(contents, stage.marker, &stages);
 
                 if found {
                     checked_stages[i] = true;

@@ -486,6 +486,14 @@ fn load_segment_into_page_table(
     let mem_size = ph.p_memsz as usize;
     let vaddr = VirtAddr::new(ph.p_vaddr);
 
+    if file_size > mem_size {
+        return Err("Segment file size exceeds memory size");
+    }
+    // An empty segment maps nothing; its last byte would be vaddr - 1.
+    if mem_size == 0 {
+        return Ok(());
+    }
+
     if file_start + file_size > data.len() {
         return Err("Segment data out of bounds");
     }

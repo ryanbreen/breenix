@@ -4,7 +4,7 @@
 //! handlers are reset to SIG_DFL after exec().
 //!
 //! POSIX requires that signals with custom handlers be reset to SIG_DFL
-//! after exec, while ignored signals (SIG_IGN) may remain ignored.
+//! after exec; only signals that were ignored (SIG_IGN) stay ignored.
 
 use libbreenix::signal::{SIGUSR1, SIG_DFL, SIG_IGN};
 use libbreenix::{sigaction, Sigaction};
@@ -31,9 +31,9 @@ fn main() {
             println!("\nSIGNAL_EXEC_RESET_VERIFIED");
             std::process::exit(0);
         } else if old_action.handler == SIG_IGN {
-            println!("  INFO: Handler is SIG_IGN (may be acceptable per POSIX)");
-            // This is technically acceptable for POSIX but we want SIG_DFL
-            println!("\nSIGNAL_EXEC_RESET_PARTIAL");
+            // The parent installed a caught handler, which exec must reset to SIG_DFL.
+            println!("  FAIL: Handler is SIG_IGN, but a caught handler resets to SIG_DFL");
+            println!("\nSIGNAL_EXEC_RESET_FAILED");
             std::process::exit(1);
         } else {
             println!("  FAIL: Handler is NOT SIG_DFL - it was inherited from pre-exec!");
