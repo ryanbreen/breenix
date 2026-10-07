@@ -286,6 +286,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
                 // Only set return value on error - success case already has RAX set
                 frame.set_return_value((-(errno as i64)) as u64);
             }
+            // A signal that arrived during the call, a deferred SIGKILL
+            // included, is delivered as on every other syscall return.
+            drop(custody);
+            check_and_deliver_signals_on_syscall_return(frame);
             // Perform cleanup that normally happens after result handling
             let kernel_stack_top = crate::per_cpu::kernel_stack_top();
             if kernel_stack_top != 0 {
