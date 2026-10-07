@@ -54,7 +54,7 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
         }
     };
 
-    let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+    let (pid, process) = match manager.find_address_space_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
             log::error!(
@@ -83,7 +83,9 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
     }
 
     // Page-align the requested address up
-    let new_break = (addr + 0xfff) & !0xfff;
+    let Some(new_break) = addr.checked_add(0xfff).map(|v| v & !0xfff) else {
+        return SyscallResult::Ok(current_break);
+    };
 
     // Validate new break is not below heap start
     if new_break < heap_start {
@@ -92,7 +94,17 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
 
     // Validate new break doesn't exceed maximum heap size
     let heap_size = new_break - heap_start;
-    if heap_size > MAX_HEAP_SIZE {
+    if heap_size > MAX_HEAP_SIZE
+        || (new_break > current_break
+            && (process
+                .data_bytes()
+                .saturating_add(new_break - current_break)
+                > process.limits.get(crate::process::limits::DATA).soft
+                || process
+                    .mapped_bytes()
+                    .saturating_add(new_break - current_break)
+                    > process.limits.get(crate::process::limits::AS).soft))
+    {
         return SyscallResult::Ok(current_break);
     }
 

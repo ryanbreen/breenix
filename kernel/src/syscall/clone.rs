@@ -91,7 +91,9 @@ pub fn sys_clone(
         Some((pid, _)) => pid,
         None => return SyscallResult::Err(super::errno::ESRCH as u64),
     };
-    if !manager.admit_clone_into(parent_pid) {
+    if !manager.admit_clone_into(parent_pid)
+        || !crate::process::limits::fork_allowed(manager, parent_pid)
+    {
         return SyscallResult::Err(super::errno::EAGAIN as u64);
     }
     let (parent_cr3, parent_tg_id, parent_cwd, parent_lock_owner, parent_signals) = {
@@ -249,6 +251,7 @@ pub fn sys_clone(
         timer_pop: None,
         run_start_ticks: 0,
         cpu_ticks_total: 0,
+        resource_limits: None,
         owner_pid: Some(child_pid.as_u64()),
         cached_ttbr0: 0,
         wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -274,10 +277,13 @@ pub fn sys_clone(
     );
     let parent = manager.get_process(parent_pid)
         .expect("parent remains present under PM during clone");
+    child_process.limits = parent.limits.clone();
     child_process.uid = parent.uid;
     child_process.gid = parent.gid;
     child_process.euid = parent.euid;
+    child_process.suid = parent.suid;
     child_process.egid = parent.egid;
+    child_process.sgid = parent.sgid;
     child_process.umask = parent.umask;
     child_process.supplementary_groups = parent.supplementary_groups.clone();
     child_process.parent = Some(parent_pid);
@@ -297,6 +303,13 @@ pub fn sys_clone(
             .expect("parent remains present under PM during clone")
             .fd_table.clone();
     }
+
+    child_process.fd_table.set_limit(
+        child_process
+            .limits
+            .get(crate::process::limits::NOFILE)
+            .soft,
+    );
 
     // Set clear_child_tid for thread exit notification
     if flags & CLONE_CHILD_CLEARTID != 0 && child_tidptr != 0 {

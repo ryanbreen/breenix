@@ -90,6 +90,8 @@ pub struct LoadedElf {
     pub stack_top: VirtAddr,
     /// End of loaded segments, page-aligned up (start of heap)
     pub segments_end: u64,
+    pub image_size: u64,
+    pub data_size: u64,
     /// Virtual address of program headers in their mapped PT_LOAD segment
     pub phdr_vaddr: u64,
     /// Number of program headers
@@ -239,6 +241,8 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
     let ph_count = header.phnum as usize;
 
     // Track the maximum end of all loaded segments for heap start calculation
+    let mut image_size = 0u64;
+    let mut data_size = 0u64;
     let mut max_segment_end = 0u64;
     // Track PT_PHDR for auxv
     let mut phdr_vaddr: Option<u64> = None;
@@ -258,6 +262,15 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
         }
 
         if ph.p_type == SegmentType::Load as u32 {
+            let bytes = (ph.p_vaddr & 4095)
+                .checked_add(ph.p_memsz)
+                .and_then(|n| n.checked_add(4095))
+                .ok_or("Segment size overflow")?
+                & !4095;
+            image_size = image_size.checked_add(bytes).ok_or("Image size overflow")?;
+            if ph.p_flags & 2 != 0 {
+                data_size = data_size.checked_add(bytes).ok_or("Data size overflow")?;
+            }
             load_segment(data, ph, base_offset)?;
 
             // Calculate end of this segment (vaddr + memsz) considering base offset
@@ -288,6 +301,8 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
         entry_point: biased_address(header.entry, base_offset)?,
         stack_top: VirtAddr::zero(), // Stack will be allocated by spawn function
         segments_end: heap_start,
+        image_size,
+        data_size,
         phdr_vaddr,
         phnum: header.phnum,
         phentsize: header.phentsize,
@@ -464,6 +479,8 @@ pub fn load_elf_into_page_table(
     );
 
     // Track the maximum end of all loaded segments for heap start calculation
+    let mut image_size = 0u64;
+    let mut data_size = 0u64;
     let mut max_segment_end = 0u64;
     // Track PT_PHDR for auxv
     let mut phdr_vaddr: Option<u64> = None;
@@ -484,6 +501,15 @@ pub fn load_elf_into_page_table(
         }
 
         if ph.p_type == SegmentType::Load as u32 {
+            let bytes = (ph.p_vaddr & 4095)
+                .checked_add(ph.p_memsz)
+                .and_then(|n| n.checked_add(4095))
+                .ok_or("Segment size overflow")?
+                & !4095;
+            image_size = image_size.checked_add(bytes).ok_or("Image size overflow")?;
+            if ph.p_flags & 2 != 0 {
+                data_size = data_size.checked_add(bytes).ok_or("Data size overflow")?;
+            }
             load_segment_into_page_table(data, ph, page_table)?;
             mapped_phdr_vaddr =
                 mapped_phdr_vaddr.or(mapped_program_headers(header, ph, ph.p_vaddr)?);
@@ -518,6 +544,8 @@ pub fn load_elf_into_page_table(
         entry_point: user_address(header.entry)?,
         stack_top: VirtAddr::zero(), // Stack will be allocated by spawn function
         segments_end: heap_start,
+        image_size,
+        data_size,
         phdr_vaddr,
         phnum: header.phnum,
         phentsize: header.phentsize,

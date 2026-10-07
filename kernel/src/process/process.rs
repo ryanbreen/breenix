@@ -181,6 +181,9 @@ impl ExitNotificationObligations {
 
 /// A process represents a running program with its own address space
 pub struct Process {
+    pub limits: alloc::sync::Arc<super::limits::Limits>,
+    pub image_size: u64,
+    pub image_data_size: u64,
     /// Unique process identifier
     #[allow(dead_code)]
     pub id: ProcessId,
@@ -200,8 +203,10 @@ pub struct Process {
     pub gid: u32,
     /// Effective user ID
     pub euid: u32,
+    pub suid: u32,
     /// Effective group ID
     pub egid: u32,
+    pub sgid: u32,
     /// Supplementary group membership, shared until setgroups replaces it.
     pub supplementary_groups: alloc::sync::Arc<Vec<u32>>,
     /// File creation mask (umask)
@@ -357,6 +362,9 @@ impl Process {
     /// Create a new process
     pub fn new(id: ProcessId, name: String, entry_point: VirtAddr) -> Self {
         Process {
+            limits: super::limits::Limits::new(),
+            image_size: 0,
+            image_data_size: 0,
             id,
             // By default, a process's pgid equals its pid (process is its own group leader)
             pgid: id,
@@ -366,7 +374,9 @@ impl Process {
             uid: 0,
             gid: 0,
             euid: 0,
+            suid: 0,
             egid: 0,
+            sgid: 0,
             supplementary_groups: alloc::sync::Arc::new(Vec::new()),
             // Standard default umask: owner rwx, group/other rx
             umask: 0o022,
@@ -410,7 +420,8 @@ impl Process {
     }
 
     /// Set the main thread for this process
-    pub fn set_main_thread(&mut self, thread: Thread) {
+    pub fn set_main_thread(&mut self, mut thread: Thread) {
+        thread.resource_limits = Some(self.limits.clone());
         self.main_thread = Some(thread);
         self.state = ProcessState::Ready;
     }
@@ -418,7 +429,8 @@ impl Process {
     /// Attach the main thread while the row is still `Creating`. The row is only
     /// marked `Ready` once it has been published into the manager, so no runnable
     /// thread can ever refer to a row that does not yet exist.
-    pub fn attach_main_thread_unpublished(&mut self, thread: Thread) {
+    pub fn attach_main_thread_unpublished(&mut self, mut thread: Thread) {
+        thread.resource_limits = Some(self.limits.clone());
         self.main_thread = Some(thread);
     }
 

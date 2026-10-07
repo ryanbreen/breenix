@@ -10,7 +10,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
 /// Maximum number of file descriptors per process
-pub const MAX_FDS: usize = 256;
+pub const MAX_FDS: usize = 4096;
+/// Slab-backed initial capacity; larger descriptor numbers grow on allocation.
+pub const INITIAL_FDS: usize = 256;
 
 /// Standard file descriptor numbers
 pub const STDIN: i32 = 0;
@@ -321,9 +323,57 @@ impl FileDescriptor {
 ///
 /// Note: Uses SlabBox to allocate the fd array from a slab cache (O(1) alloc/free)
 /// with fallback to the global heap. The array is ~6KB which is too large for stack.
+#[derive(Clone)]
+enum FdSlots {
+    Slab(SlabBox<[Option<FileDescriptor>; INITIAL_FDS]>),
+    Heap(alloc::vec::Vec<Option<FileDescriptor>>),
+}
+
+impl core::ops::Deref for FdSlots {
+    type Target = [Option<FileDescriptor>];
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Slab(slots) => &**slots,
+            Self::Heap(slots) => slots,
+        }
+    }
+}
+impl core::ops::DerefMut for FdSlots {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Slab(slots) => &mut **slots,
+            Self::Heap(slots) => slots,
+        }
+    }
+}
+impl FdSlots {
+    fn grow(&mut self, length: usize) -> Result<(), i32> {
+        if length <= self.len() {
+            return Ok(());
+        }
+        match self {
+            Self::Heap(slots) => {
+                slots.try_reserve(length - slots.len()).map_err(|_| 12)?;
+                slots.resize_with(length, || None);
+            }
+            Self::Slab(slots) => {
+                let mut larger = alloc::vec::Vec::new();
+                larger.try_reserve_exact(length).map_err(|_| 12)?;
+                for slot in slots.iter_mut() {
+                    larger.push(slot.take());
+                }
+                larger.resize_with(length, || None);
+                *self = Self::Heap(larger);
+            }
+        }
+        Ok(())
+    }
+}
+
 pub struct FdTable {
     /// The file descriptors (None = unused slot)
-    fds: SlabBox<[Option<FileDescriptor>; MAX_FDS]>,
+    fds: FdSlots,
+    allocation_limit: usize,
 }
 
 impl Default for FdTable {
@@ -381,18 +431,26 @@ impl Clone for FdTable {
             }
         }
 
-        FdTable { fds: cloned_fds }
+        FdTable {
+            fds: cloned_fds,
+            allocation_limit: self.allocation_limit,
+        }
     }
 }
 
 impl FdTable {
+    /// Lowering a limit leaves already open descriptors usable.
+    pub fn set_limit(&mut self, limit: u64) {
+        self.allocation_limit = limit.min(MAX_FDS as u64) as usize;
+    }
+
     /// Create a new file descriptor table with standard I/O pre-allocated
     pub fn new() -> Self {
         // Try slab allocation first (O(1)), fall back to global heap
         let mut fds = if let Some(raw) = FD_TABLE_SLAB.alloc() {
             // Slab returns zeroed memory; write None into each slot
-            let arr = raw as *mut [Option<FileDescriptor>; MAX_FDS];
-            for i in 0..MAX_FDS {
+            let arr = raw as *mut [Option<FileDescriptor>; INITIAL_FDS];
+            for i in 0..INITIAL_FDS {
                 unsafe {
                     core::ptr::write(&mut (*arr)[i], None);
                 }
@@ -407,7 +465,10 @@ impl FdTable {
         fds[STDOUT as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDOUT)));
         fds[STDERR as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDERR)));
 
-        FdTable { fds }
+        FdTable {
+            fds: FdSlots::Slab(fds),
+            allocation_limit: INITIAL_FDS,
+        }
     }
 
     /// Take all file descriptor entries out of the table, leaving it empty.
@@ -417,7 +478,7 @@ impl FdTable {
     /// then close them outside the lock to minimize lock hold time.
     pub fn take_all(&mut self) -> alloc::vec::Vec<(usize, FileDescriptor)> {
         let mut entries = alloc::vec::Vec::new();
-        for fd in 0..MAX_FDS {
+        for fd in 0..self.fds.len() {
             if let Some(entry) = self.fds[fd].take() {
                 entries.push((fd, entry));
             }
@@ -433,37 +494,49 @@ impl FdTable {
 
     /// Allocate a new file descriptor >= min_fd
     pub fn alloc_at_least(&mut self, min_fd: i32, kind: FdKind) -> Result<i32, i32> {
-        let start = min_fd.max(0) as usize;
-        for i in start..MAX_FDS {
-            if self.fds[i].is_none() {
-                self.fds[i] = Some(FileDescriptor::new(kind));
-                return Ok(i as i32);
-            }
-        }
-        Err(24) // EMFILE - too many open files
+        let slot = self.free_slot(min_fd.max(0) as usize)?;
+        self.fds[slot] = Some(FileDescriptor::new(kind));
+        Ok(slot as i32)
     }
 
-    /// Whether a descriptor slot is free, so an open can fail with EMFILE
-    /// before it creates or truncates anything.
+    /// Whether a slot exists below the soft limit, including growable slots.
     pub fn has_free_slot(&self) -> bool {
-        self.fds.iter().any(|slot| slot.is_none())
+        self.fds[..self.allocation_limit.min(self.fds.len())]
+            .iter()
+            .any(|slot| slot.is_none())
+            || self.fds.len() < self.allocation_limit
     }
 
-    /// Allocate a new file descriptor with a pre-configured FileDescriptor entry
-    /// This allows setting flags at allocation time (used by pipe2)
-    pub fn alloc_with_entry(&mut self, entry: FileDescriptor) -> Result<i32, i32> {
-        for i in 0..MAX_FDS {
-            if self.fds[i].is_none() {
-                self.fds[i] = Some(entry);
-                return Ok(i as i32);
-            }
+    fn free_slot(&mut self, start: usize) -> Result<usize, i32> {
+        if let Some(slot) =
+            (start..self.allocation_limit.min(self.fds.len())).find(|&i| self.fds[i].is_none())
+        {
+            return Ok(slot);
         }
-        Err(24) // EMFILE - too many open files
+        let slot = start.max(self.fds.len());
+        if slot >= self.allocation_limit {
+            return Err(24);
+        }
+        let capacity = self
+            .fds
+            .len()
+            .saturating_mul(2)
+            .max(slot + 1)
+            .min(self.allocation_limit);
+        self.fds.grow(capacity)?;
+        Ok(slot)
+    }
+
+    /// Allocate a pre-configured entry, as used by pipe2.
+    pub fn alloc_with_entry(&mut self, entry: FileDescriptor) -> Result<i32, i32> {
+        let slot = self.free_slot(0)?;
+        self.fds[slot] = Some(entry);
+        Ok(slot as i32)
     }
 
     /// Get a reference to a file descriptor
     pub fn get(&self, fd: i32) -> Option<&FileDescriptor> {
-        if fd < 0 || fd as usize >= MAX_FDS {
+        if fd < 0 || fd as usize >= self.fds.len() {
             return None;
         }
         self.fds[fd as usize].as_ref()
@@ -472,7 +545,7 @@ impl FdTable {
     /// Get a mutable reference to a file descriptor (used by fcntl)
     #[allow(dead_code)]
     pub fn get_mut(&mut self, fd: i32) -> Option<&mut FileDescriptor> {
-        if fd < 0 || fd as usize >= MAX_FDS {
+        if fd < 0 || fd as usize >= self.fds.len() {
             return None;
         }
         self.fds[fd as usize].as_mut()
@@ -481,7 +554,7 @@ impl FdTable {
     /// Close a file descriptor
     /// Returns the closed FileDescriptor on success, or an error code
     pub fn close(&mut self, fd: i32) -> Result<FileDescriptor, i32> {
-        if fd < 0 || fd as usize >= MAX_FDS {
+        if fd < 0 || fd as usize >= self.fds.len() {
             return Err(9); // EBADF - bad file descriptor
         }
         self.fds[fd as usize].take().ok_or(9) // EBADF
@@ -497,7 +570,7 @@ impl FdTable {
         new_fd: i32,
         set_cloexec: bool,
     ) -> Result<(i32, Option<FileDescriptor>), i32> {
-        if old_fd < 0 || old_fd as usize >= MAX_FDS {
+        if old_fd < 0 || old_fd as usize >= self.fds.len() {
             return Err(9); // EBADF
         }
         if new_fd < 0 || new_fd as usize >= MAX_FDS {
@@ -515,6 +588,12 @@ impl FdTable {
             return Ok((new_fd, None));
         }
 
+        // Equal descriptors allocate nothing, including when the limit was lowered.
+        if new_fd as usize >= self.allocation_limit {
+            return Err(9);
+        }
+
+        self.fds.grow(new_fd as usize + 1)?;
         let mut fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
         fd_entry.flags = if set_cloexec { flags::FD_CLOEXEC } else { 0 };
 
@@ -582,10 +661,10 @@ impl FdTable {
         min_fd: i32,
         set_cloexec: bool,
     ) -> Result<i32, i32> {
-        if old_fd < 0 || old_fd as usize >= MAX_FDS {
+        if old_fd < 0 || old_fd as usize >= self.fds.len() {
             return Err(9); // EBADF
         }
-        if min_fd < 0 || min_fd as usize >= MAX_FDS {
+        if min_fd < 0 || min_fd as usize >= self.allocation_limit {
             return Err(22); // EINVAL
         }
 
@@ -596,9 +675,7 @@ impl FdTable {
 
         // Reserve a free slot before creating any reference, so EMFILE needs
         // no rollback close or notification while the caller holds PM.
-        let free_slot = ((min_fd as usize)..MAX_FDS)
-            .find(|&i| self.fds[i].is_none())
-            .ok_or(24)?; // EMFILE
+        let free_slot = self.free_slot(min_fd as usize)?;
 
         // Increment reference counts for the duplicated fd. Same protocol as
         // dup2()'s increment block above and clone_for_fork's arms: every
@@ -667,7 +744,7 @@ impl FdTable {
     /// Called during exec() per POSIX semantics.
     /// Properly decrements pipe/fifo reference counts.
     pub fn close_cloexec(&mut self, closes: &mut DeferredFdCloses) {
-        for i in 0..MAX_FDS {
+        for i in 0..self.fds.len() {
             let should_close = self.fds[i]
                 .as_ref()
                 .map(|fd| (fd.flags & flags::FD_CLOEXEC) != 0)
@@ -700,7 +777,7 @@ impl FdTable {
 impl Drop for FdTable {
     fn drop(&mut self) {
         log::debug!("FdTable::drop() - closing all fds and decrementing pipe counts");
-        for i in 0..MAX_FDS {
+        for i in 0..self.fds.len() {
             if let Some(fd_entry) = self.fds[i].take() {
                 match fd_entry.kind {
                     FdKind::PipeRead(buffer) => {

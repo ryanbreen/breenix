@@ -40,6 +40,7 @@ pub mod futex_oracle;
 pub mod futex_timeout_record;
 pub mod graphics;
 pub mod handlers;
+pub mod resource;
 pub mod ioctl;
 pub mod iovec;
 pub mod metadata;
@@ -462,6 +463,7 @@ impl SyscallNumber {
             156 => Some(Self::GetSid),
             157 => Some(Self::SetSid),
             160 => Some(Self::Uname),
+            163 => Some(Self::Getrlimit),
             // Process info
             172 => Some(Self::GetPid),
             173 => Some(Self::Getppid),
@@ -665,3 +667,9 @@ pub fn init() {
 pub const MSYNC_SYSCALL_NUMBER: u64 = 26;
 #[cfg(target_arch = "aarch64")]
 pub const MSYNC_SYSCALL_NUMBER: u64 = 227;
+
+/// Native Linux setrlimit number, dispatched alongside msync without an enum variant.
+#[cfg(target_arch = "x86_64")]
+pub const SETRLIMIT_SYSCALL_NUMBER: u64 = 160;
+#[cfg(target_arch = "aarch64")]
+pub const SETRLIMIT_SYSCALL_NUMBER: u64 = 164;

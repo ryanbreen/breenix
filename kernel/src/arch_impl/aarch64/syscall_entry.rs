@@ -156,6 +156,9 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
             }
         }
         Some(syscall) => dispatch_syscall_enum(syscall, arg1, arg2, arg3, arg4, arg5, arg6, frame),
+        None if syscall_num == crate::syscall::SETRLIMIT_SYSCALL_NUMBER => {
+            result_to_u64(crate::syscall::handlers::sys_setrlimit(arg1, arg2))
+        }
         None if syscall_num == crate::syscall::MSYNC_SYSCALL_NUMBER => {
             result_to_u64(crate::syscall::mmap::sys_msync(arg1, arg2, arg3 as u32))
         }
@@ -1005,7 +1008,7 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     // Create child page table OUTSIDE PM lock (heap allocation safe — interrupts enabled)
     crate::serial_line::Line::new().char(b'3'); // Fork: allocating page table
     let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
-        Ok(pt) => Box::new(pt),
+        Ok(pt) => crate::memory::process_memory::UnpublishedPageTable::new(pt, parent_pid.as_u64()),
         Err(_e) => return (-12_i64) as u64, // -ENOMEM
     };
     crate::serial_line::Line::new().char(b'4'); // Fork: page table allocated
@@ -1015,7 +1018,10 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     let mut manager_guard = crate::process::manager();
     crate::serial_line::Line::new().char(b'6'); // Fork: PM lock acquired
     let fork_result = if let Some(ref mut manager) = *manager_guard {
-        manager.fork_process_aarch64(parent_pid, parent_context, child_page_table)
+        if !crate::process::limits::fork_allowed(manager, parent_pid) {
+            return (-11_i64) as u64;
+        }
+        manager.fork_process_aarch64(parent_pid, parent_context, child_page_table.publish())
     } else {
         Err("Process manager not available")
     };
@@ -1681,6 +1687,7 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
             }
             pid.as_u64()
         }
+        Err("Process limit exceeded") => (-11_i64) as u64, // -EAGAIN
         Err(e) => {
             crate::serial_println!("[spawn] Failed: {}", e);
             (-12_i64) as u64 // -ENOMEM

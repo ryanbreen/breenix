@@ -1,5 +1,6 @@
 #[cfg(not(target_arch = "x86_64"))]
 pub mod arch_stub;
+pub mod anon_map;
 pub mod cow_stats;
 pub mod file_map;
 pub mod frame_allocator;

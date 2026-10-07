@@ -134,6 +134,11 @@ pub fn allocate_zeroed_frames(count: usize) -> Option<alloc::vec::Vec<PhysFrame<
         }
         frames.push(frame);
     }
+    // Publish initialized contents before any caller installs a user PTE.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb ishst", options(nostack, preserves_flags));
+    }
     Some(frames)
 }
 
@@ -172,7 +177,7 @@ pub fn map_prepared_frames(
         let mut manager_guard = crate::process::manager();
         let Some(process) = manager_guard
             .as_mut()
-            .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+            .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
             .map(|(_, process)| process)
         else {
             free_from(mapped);
@@ -227,7 +232,7 @@ fn unmap_prepared_prefix(thread_id: u64, root: u64, start: u64, count: usize) {
         let mut manager_guard = crate::process::manager();
         let Some(page_table) = manager_guard
             .as_mut()
-            .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+            .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
             .and_then(|(_, process)| process.page_table.as_mut())
             .filter(|page_table| page_table.level_4_frame().start_address().as_u64() == root)
         else {

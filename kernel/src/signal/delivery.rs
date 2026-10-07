@@ -61,7 +61,7 @@ pub enum SignalDeliveryResult {
 #[cfg(target_arch = "x86_64")]
 pub fn deliver_pending_signals(
     process: &mut Process,
-    mut shared_table: Option<&mut ProcessPageTable>,
+    mut shared_table: Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
@@ -152,7 +152,7 @@ pub fn deliver_pending_signals(
 #[cfg(target_arch = "aarch64")]
 pub fn deliver_pending_signals(
     process: &mut Process,
-    mut shared_table: Option<&mut ProcessPageTable>,
+    mut shared_table: Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
     exception_frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
@@ -253,17 +253,20 @@ fn defer_frame_fault_exit(process: &Process) -> SignalDeliveryResult {
 /// thread runs in: its own, or for a CLONE_VM thread the owner's.
 fn write_signal_stack(
     process: &mut Process,
-    shared_table: &mut Option<&mut ProcessPageTable>,
+    shared_table: &mut Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
     addr: u64,
     bytes: &[u8],
 ) -> bool {
     let pid = process.id.as_u64();
-    match process.page_table.as_deref_mut() {
-        Some(table) => table.write_user_memory(addr, bytes, pid),
-        None => shared_table
-            .as_deref_mut()
-            .is_some_and(|table| table.write_user_memory(addr, bytes, pid)),
-    }
+    let (table, vmas) = match process.page_table.as_deref_mut() {
+        Some(table) => (table, process.vmas.as_slice()),
+        None => match shared_table.as_mut() {
+            Some((table, vmas)) => (&mut **table, *vmas),
+            None => return false,
+        },
+    };
+    crate::memory::anon_map::prepare_write(table, vmas, addr, bytes.len())
+        && table.write_user_memory(addr, bytes, pid)
 }
 
 /// Deliver a signal's default action
@@ -400,7 +403,7 @@ pub struct X86UserReturn {
 #[cfg(target_arch = "x86_64")]
 fn deliver_to_user_handler_x86_64(
     process: &mut Process,
-    shared_table: &mut Option<&mut ProcessPageTable>,
+    shared_table: &mut Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
     sig: u32,
@@ -440,7 +443,7 @@ fn deliver_to_user_handler_x86_64(
 #[cfg(target_arch = "x86_64")]
 pub fn deliver_caught_signal_on_syscall_return(
     process: &mut Process,
-    mut shared_table: Option<&mut ProcessPageTable>,
+    mut shared_table: Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
     user_return: &mut X86UserReturn,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
@@ -485,7 +488,7 @@ pub fn deliver_caught_signal_on_syscall_return(
 #[cfg(target_arch = "x86_64")]
 fn install_user_handler_x86_64(
     process: &mut Process,
-    shared_table: &mut Option<&mut ProcessPageTable>,
+    shared_table: &mut Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
     user_return: &mut X86UserReturn,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
     sig: u32,
@@ -684,7 +687,7 @@ fn install_user_handler_x86_64(
 #[cfg(target_arch = "aarch64")]
 fn deliver_to_user_handler_aarch64(
     process: &mut Process,
-    shared_table: &mut Option<&mut ProcessPageTable>,
+    shared_table: &mut Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
     exception_frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
     sig: u32,
@@ -1137,6 +1140,7 @@ pub fn check_and_fire_itimer_real(process: &mut Process, elapsed_usec: u64) -> b
 /// Returns true if SIGALRM was queued.
 #[inline]
 pub fn check_and_fire_alarm(process: &mut Process) -> bool {
+    process.check_cpu_limit();
     if let Some(deadline) = process.alarm_deadline {
         let current_ticks = crate::time::get_ticks();
         if current_ticks >= deadline {
