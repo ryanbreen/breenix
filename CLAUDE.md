@@ -346,6 +346,12 @@ Breenix will not port, vendor or link musl, glibc, newlib, bionic or any other e
 - Today's musl-built BusyBox (scripts/build-busybox.sh, the pinned gate BusyBox from #1108) is a temporary
   stand-in so the coreutils stages can run; it is replaced once our libc can build those programs, and no new
   work may take a dependency on musl or glibc.
+- Acceptance includes BusyBox (operator, 2026-10-07): the libc suite's `busybox` category (the libc effort's
+  "BusyBox built on our libc" milestone) compiles BusyBox applets against Breenix's own libc and runs a usage
+  test for each one on every target. The applet list starts small and grows over time, and every applet's
+  result is tracked separately: compiles, links, and passes its usage tests. An applet that does not compile is
+  a recorded failing case, not a silently dropped one. When the full BusyBox applet set compiles and passes,
+  the musl-built BusyBox stand-in is retired.
 
 ### Stage 4: Shell - 📋 Planned
 Requires: Stage 3, filesystem syscalls, pipe/dup
