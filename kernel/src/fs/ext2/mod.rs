@@ -1510,6 +1510,10 @@ impl Ext2Fs {
             return Err("File already exists");
         }
 
+        // Read the parent directory before the first disk mutation, so a
+        // failed read or allocation leaves no inode without an entry.
+        let mut dir_data = self.read_directory(&parent_inode)?;
+
         // Allocate a new inode
         let new_inode_num = allocate_inode(
             self.device.as_ref(),
@@ -1562,7 +1566,6 @@ impl Ext2Fs {
             .map_err(|_| "Failed to write symlink inode")?;
 
         // Add directory entry with EXT2_FT_SYMLINK type
-        let mut dir_data = self.read_directory(&parent_inode)?;
         add_directory_entry(&mut dir_data, new_inode_num, link_name, EXT2_FT_SYMLINK)?;
 
         // Update parent directory timestamps
