@@ -28,6 +28,11 @@ class CacheTests(unittest.TestCase):
         self.logs.mkdir()
         self.repo.mkdir(parents=True)
         self.cache.mkdir(exist_ok=True)
+        # These cache-control tests model the Linux execution host; their
+        # builders and tool probes are mocked so they also run on macOS.
+        platform = patch.object(artifacts.sys, 'platform', 'linux')
+        platform.start()
+        self.addCleanup(platform.stop)
         self.env = patch.dict(os.environ, BREENIX_GATE_CACHE_DIR=str(self.cache),
                              BREENIX_GATE_FREE_GB='0', BREENIX_GATE_CACHE_GB='12',
                              CARGO_HOME=str(self.root / 'cargo'), BREENIX_GATE_FRESH='0')
@@ -146,6 +151,11 @@ class CacheTests(unittest.TestCase):
             stock.parent.mkdir(parents=True)
             stock.write_text('stock core source')
             self.assertNotEqual(previous, artifacts.key(self.repo))
+            previous = artifacts.key(self.repo)
+            alias = self.root / 'library-alias'
+            alias.symlink_to(library, target_is_directory=True)
+            with patch.dict(os.environ, BREENIX_RUST_FORK_LIBRARY=str(alias)):
+                self.assertNotEqual(previous, artifacts.key(self.repo))
 
     def test_eviction_skips_leased_entries_and_removes_old_idle_entry(self):
         old = self.cache / 'artifacts/old'

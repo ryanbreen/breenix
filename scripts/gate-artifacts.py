@@ -54,7 +54,8 @@ def key(repo):
         if path.is_file():
             result.update(str(path.relative_to(sysroot)).encode() + b'\0' + digest(path).encode())
     for variable in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'BREENIX_TRACE_DIAG_EARLY',
-                     'BREENIX_BSSH_AUTORUN', 'BREENIX_WAIT_STRESS', 'RUSTUP_TOOLCHAIN'):
+                     'BREENIX_BSSH_AUTORUN', 'BREENIX_WAIT_STRESS', 'RUSTUP_TOOLCHAIN',
+                     'BREENIX_RUST_FORK_LIBRARY'):
         result.update(variable.encode() + b'=' + os.environ.get(variable, '').encode() + b'\0')
     for lockfile in ('Cargo.lock', 'userspace/programs/Cargo.lock'):
         result.update(lockfile.encode() + b'\0' + (repo / lockfile).read_bytes())
@@ -144,15 +145,17 @@ def build(repo, logs, label):
         # not just the strings ultimately embedded in the ELF. Mounts are
         # private to this foreground build; targets still belong to its lane
         # and Cargo's mutation locks still belong to its private Cargo home.
-        checked(['unshare', '--mount', '--propagation', 'private', '--',
+        command = ['unshare', '--mount', '--propagation', 'private', '--',
                  'bash', '-euc', '''
 mkdir -p /run/breenix-gate/source /run/breenix-gate/cargo
 mount --bind "$1" /run/breenix-gate/source
 mount --bind "$2" /run/breenix-gate/cargo
 export CARGO_HOME=/run/breenix-gate/cargo
 /run/breenix-gate/source/userspace/programs/build.sh
-''', 'gate-userspace', str(repo), os.environ['CARGO_HOME']],
-                repo, logs / f'{label}-userspace.log')
+''', 'gate-userspace', str(repo), os.environ['CARGO_HOME']]
+        if sys.platform != 'linux':
+            command = [str(repo / 'userspace/programs/build.sh')]
+        checked(command, repo, logs / f'{label}-userspace.log')
     with tree_cache.timing('disk-repack', f'build={label}'):
         checked(['python3', str(repo / 'scripts/install-busybox.py'), 'x86_64'], repo, logs / f'{label}-busybox.log')
         checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo, logs / f'{label}-test-disk.log')
@@ -184,6 +187,8 @@ def install(entry, repo, manifest):
 
 def main():
     repo, logs = map(Path, sys.argv[1:])
+    if 'BREENIX_GATE_CACHE_DIR' in os.environ and sys.platform != 'linux':
+        raise RuntimeError('artifact reuse requires Linux private mount namespaces')
     if os.environ.get('BREENIX_GATE_FRESH') == '1' or 'BREENIX_GATE_CACHE_DIR' not in os.environ:
         build(repo, logs, 'uncached')
         if 'BREENIX_GATE_CACHE_DIR' in os.environ:

@@ -130,7 +130,10 @@ Run the helper tests without a VM with `python3 tests/host_slots_test.py`.
 The x86 Run Inspector launcher leases a persistent checkout keyed by the requesting
 worktree, fetches and checks out the exact requested commit, and retains Cargo targets
 between runs. Evidence remains private to each run and is removed remotely after harvest.
-It keeps fresh private Cargo homes for nested builds. The userspace cache hashes sources,
+It keeps fresh private Cargo homes for nested builds. Artifact reuse requires Linux
+private mount namespaces, which give each source tree and Cargo home stable compiler
+paths without sharing their locks. Uncached direct gates retain the host's normal build.
+The userspace cache hashes sources,
 local libraries, build/packing scripts, the pinned BusyBox, fonts, Cargo configuration,
 external Rust library contents and toolchain identity. A key is published only after a
 clean rebuild produces byte-identical ELFs and disk images. Gate ext2 images populate through libext2fs for deterministic block placement, then normalize

@@ -333,7 +333,7 @@ for i in $(seq 1 "$COUNT"); do
         all_done=true
         for suite_id in "${SUITES[@]}"; do
           done_shape="^SUITE $suite_id DONE passed=[0-9]+ failed=[0-9]+ skipped=[0-9]+ total=[0-9]+\$"
-          if ! tr -d '\r' < "$OUTDIR/serial_user.log" 2>/dev/null | grep -qE "$done_shape"; then
+          if [ ! -f "$OUTDIR/serial_user.log" ] || ! tr -d '\r' < "$OUTDIR/serial_user.log" 2>/dev/null | grep -qE "$done_shape"; then
             all_done=false
           fi
         done
