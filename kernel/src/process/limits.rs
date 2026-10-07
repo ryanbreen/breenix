@@ -26,7 +26,7 @@ fn defaults() -> [Rlimit; COUNT] {
         soft: INFINITY,
         hard: INFINITY,
     }; COUNT];
-    limits[STACK].soft = 8 << 20;
+    limits[STACK].soft = crate::memory::layout::MAX_USER_STACK_SIZE;
     limits[NOFILE] = Rlimit {
         soft: crate::ipc::fd::INITIAL_FDS as u64,
         hard: crate::ipc::MAX_FDS as u64,

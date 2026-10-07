@@ -1461,11 +1461,8 @@ impl ProcessManager {
     /// Create the main thread for a process with a specific initial SP (x86_64
     /// version).
     ///
-    /// `create_main_thread` hardcodes `initial_rsp = stack_top - 16`; this variant
-    /// is used once `setup_argv_on_stack` has already written argc/argv/envp/auxv
-    /// to the stack, so the initial RSP must point at argc instead of the bare
-    /// stack top (#713 precheck C3 — x86 had no SP-carrying thread creator before
-    /// this; mirrors aarch64's `create_main_thread_with_sp`).
+    /// The caller prepares argc/argv/envp/auxv and supplies the stack pointer
+    /// at argc; this mirrors aarch64's `create_main_thread_with_sp`.
     #[cfg(target_arch = "x86_64")]
     fn create_main_thread_with_sp(
         &mut self,
@@ -4149,7 +4146,6 @@ impl ProcessManager {
             "exec_process_with_argv [ARM64]: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
-
 
         let stack_bottom = VirtAddr::new(user_stack_top - user_stack_size as u64);
         let stack_top = VirtAddr::new(user_stack_top);
