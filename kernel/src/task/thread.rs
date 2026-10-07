@@ -854,6 +854,13 @@ impl Thread {
         word & KILL_PENDING != 0 && word & CUSTODY_COUNT <= 1
     }
 
+    /// Whether a SIGKILL was left pending for this thread while it was inside
+    /// a section (`mark_kill_pending`).
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn kill_pending(&self) -> bool {
+        self.kill_custody.load(Ordering::Acquire) & KILL_PENDING != 0
+    }
+
     /// Close every section the thread's syscall had open, for a syscall whose
     /// kernel stack is discarded instead of unwound: x86-64 returns a pause or
     /// sigsuspend that a signal ends to user mode straight from the context

@@ -1375,6 +1375,31 @@ pub fn fatal_default_signal(process: &Process) -> Option<u32> {
     Some(sig)
 }
 
+/// The x86-64 syscall return could not take the process-manager lock, so it
+/// leaves pending signals to the next interrupt return. A SIGKILL that a kill
+/// left pending because this thread was inside its syscall
+/// (`Thread::mark_kill_pending`) must not wait for that: an interrupt return
+/// ends the process in place and never retires its row (#1175). Wait for the
+/// lock and leave through the syscall return's exit instead, which does not
+/// return. Does nothing for a thread no such kill is pending for.
+#[cfg(target_arch = "x86_64")]
+pub fn exit_if_killed_on_syscall_return() {
+    if !crate::per_cpu::current_thread().is_some_and(|thread| thread.kill_pending()) {
+        return;
+    }
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return;
+    };
+    let killed = crate::process::with_process_manager(|manager| {
+        let (_, process) = manager.find_process_by_thread_mut(thread_id)?;
+        sigkill_pending(process).then(|| process.signals.clear_pending(SIGKILL))
+    })
+    .flatten();
+    if killed.is_some() {
+        exit_by_signal_on_syscall_return(SIGKILL);
+    }
+}
+
 /// Finish an x86-64 syscall return whose pending signal `sig`, taken by
 /// `take_fatal_default_signal`, ends the calling process. The death runs
 /// through the exit path `sys_exit` uses, which closes descriptors and tells
