@@ -1573,7 +1573,7 @@ impl ProcessManager {
         process: &mut Process,
         stack_top: VirtAddr,
     ) -> Result<Thread, &'static str> {
-        self.create_main_thread(process, stack_top)
+        self.create_main_thread_with_sp(process, stack_top, VirtAddr::new(stack_top.as_u64() - 48))
     }
 
     #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -1583,7 +1583,7 @@ impl ProcessManager {
         stack_top: VirtAddr,
         initial_tpidr_el0: VirtAddr,
     ) -> Result<Thread, &'static str> {
-        self.create_main_thread(process, stack_top, initial_tpidr_el0)
+        self.create_main_thread_with_sp(process, stack_top, VirtAddr::new(stack_top.as_u64() - 48), initial_tpidr_el0)
     }
 
     #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
