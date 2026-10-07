@@ -1353,15 +1353,25 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
 /// returning its number. The syscall return paths call this under the
 /// process-manager lock, so it does no logging, locking or allocation.
 pub fn take_fatal_default_signal(process: &mut Process) -> Option<u32> {
+    let sig = fatal_default_signal(process)?;
+    process.signals.clear_pending(sig);
+    Some(sig)
+}
+
+/// The signal `take_fatal_default_signal` would take, left pending.
+pub fn fatal_default_signal(process: &Process) -> Option<u32> {
+    // A pending SIGKILL ends the process before any other signal is acted on.
+    if sigkill_pending(process) {
+        return Some(SIGKILL);
+    }
     // A stopped process dies of SIGKILL only; anything else waits for SIGCONT.
-    if process.job.stopped.is_some() && !sigkill_pending(process) {
+    if process.job.stopped.is_some() {
         return None;
     }
     let sig = process.signals.next_deliverable_signal()?;
     if !process.signals.get_handler(sig).is_default() || fatal_exit_code(sig).is_none() {
         return None;
     }
-    process.signals.clear_pending(sig);
     Some(sig)
 }
 
