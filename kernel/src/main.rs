@@ -2241,12 +2241,19 @@ fn kernel_main_continue() -> ! {
         log::error!("  IDT entry validation failed (see PRECONDITION 1)");
     }
 
-    let (pit_counting, irq0_unmasked) = if kernel::arch_impl::x86_64::apic::active() {
+    let (timer_counting, timer_unmasked) = if kernel::arch_impl::x86_64::apic::active() {
         let (lvt, initial, current) = kernel::arch_impl::x86_64::apic::timer_state();
-        assert!(lvt & (1 << 16) == 0 && initial != 0 && current != 0,
-            "LAPIC scheduler timer is masked or stopped");
+        for _ in 0..100 {
+            core::hint::spin_loop();
+        }
+        let (_, _, later) = kernel::arch_impl::x86_64::apic::timer_state();
+        // A periodic timer can legitimately read zero at its reload boundary.
+        // Observe movement, including a wrap, rather than requiring nonzero.
+        let counting = initial != 0 && current <= initial && later <= initial && current != later;
+        let unmasked = lvt & (1 << 16) == 0;
+        assert!(counting && unmasked, "LAPIC scheduler timer is masked or stopped");
         log::info!("PRECONDITION 3/4: LAPIC scheduler timer counting and unmasked");
-        (initial != 0 && current != 0, lvt & (1 << 16) == 0)
+        (counting, unmasked)
     } else {
         // PRECONDITION 3: PIT Hardware Configured
         log::info!("PRECONDITION 3: Checking PIT counter is active...");
@@ -2330,8 +2337,8 @@ fn kernel_main_continue() -> ! {
 
     // Summary of precondition validation
     let all_passed = idt_valid
-        && pit_counting
-        && irq0_unmasked
+        && timer_counting
+        && timer_unmasked
         && has_runnable.unwrap_or(false)
         && has_current_thread
         && preemption_disabled;

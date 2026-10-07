@@ -41,8 +41,8 @@ impl Controller {
 
 pub fn init(madt: &MadtCensus, destination: u32) {
     assert!(
-        destination <= 255,
-        "IOAPIC physical destination exceeds 8 bits"
+        destination < 255,
+        "Invalid IOAPIC physical destination"
     );
     assert!(madt.io_apic_count != 0, "MADT has LAPIC but no IOAPIC");
     let mut state = STATE.lock();

@@ -167,6 +167,9 @@ pub fn send_ipi(destination: u32, ipi: Ipi) -> Result<(), &'static str> {
     if !active() {
         return Err("LAPIC is not enabled");
     }
+    if destination == u32::MAX {
+        return Err("Broadcast is not a physical CPU destination");
+    }
     let low = match ipi {
         Ipi::Fixed(vector) if vector >= 32 && vector != SPURIOUS_VECTOR => u32::from(vector),
         Ipi::Fixed(_) => return Err("Invalid fixed IPI vector"),
@@ -177,7 +180,7 @@ pub fn send_ipi(destination: u32, ipi: Ipi) -> Result<(), &'static str> {
     x86_64::instructions::interrupts::without_interrupts(|| {
         // Intel requires preceding stores to be globally visible before x2APIC ICR.
         unsafe {
-            core::arch::asm!("mfence", options(nostack, preserves_flags));
+            core::arch::asm!("mfence", "lfence", options(nostack, preserves_flags));
         }
         if MODE.load(Ordering::Relaxed) == 2 {
             unsafe {
@@ -185,8 +188,8 @@ pub fn send_ipi(destination: u32, ipi: Ipi) -> Result<(), &'static str> {
             }
             Ok(())
         } else {
-            if destination > 255 {
-                return Err("xAPIC destination exceeds 8 bits");
+            if destination >= 255 {
+                return Err("Invalid xAPIC physical destination");
             }
             wait_delivery()?;
             write(0x310, destination << 24);
