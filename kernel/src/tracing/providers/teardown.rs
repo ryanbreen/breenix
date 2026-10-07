@@ -2639,16 +2639,23 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
             .map(|process| process.page_table.is_some())
             .unwrap_or(false);
         let argv: [&[u8]; 1] = [b"corrupt_exec\0"];
-        let with_argv = crate::process::manager::ProcessManager::prepare_exec_image(
-            parent_pid,
-            &corrupt,
-            Some("corrupt_exec"),
-            &argv,
-            &[],
-        )
-        .and_then(|image| {
-            manager.exec_process_with_argv(parent_pid, &mut Some(image), &mut closes)
-        });
+        let with_argv = manager
+            .credentials_after_exec(parent_pid, Default::default())
+            .ok_or("Process not found")
+            .and_then(|cred| {
+                crate::process::manager::ProcessManager::prepare_exec_image(
+                    parent_pid,
+                    &corrupt,
+                    Some("corrupt_exec"),
+                    &argv,
+                    &[],
+                    Default::default(),
+                    cred,
+                )
+            })
+            .and_then(|image| {
+                manager.exec_process_with_argv(parent_pid, &mut Some(image), &mut closes)
+            });
         let argv_kept = manager
             .get_process(parent_pid)
             .map(|process| process.page_table.is_some())
@@ -3229,8 +3236,11 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     ) -> Result<(), &'static str> {
         if with_argv {
             let argv: [&[u8]; 1] = [b"exec_detach_oracle\0"];
+            let cred = manager
+                .credentials_after_exec(pid, Default::default())
+                .ok_or("Process not found")?;
             let mut prepared = Some(crate::process::manager::ProcessManager::prepare_exec_image(
-                pid, elf, Some("exec_detach_oracle"), &argv, &[],
+                pid, elf, Some("exec_detach_oracle"), &argv, &[], Default::default(), cred,
             )?);
             manager
                 .exec_process_with_argv(pid, &mut prepared, closes)

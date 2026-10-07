@@ -179,7 +179,9 @@ pub fn create_user_process_before_run(
         crate::serial_println!("create_user_process: Got process manager lock");
         if let Some(ref mut manager) = *manager_guard {
             crate::serial_println!("create_user_process: Calling manager.create_process_with_argv");
-            let result = manager.create_process_with_argv(name.clone(), elf_data, argv_slices);
+            let root = super::credentials::ProcessCredentials::root();
+            let result =
+                manager.create_process_with_argv(name.clone(), elf_data, argv_slices, &root);
             crate::serial_println!(
                 "create_user_process: manager.create_process_with_argv returned: {:?}",
                 result.is_ok()

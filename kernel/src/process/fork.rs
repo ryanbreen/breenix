@@ -501,15 +501,11 @@ pub fn copy_process_state(
         child_process.sid = parent_process.sid;
     }
 
-    // 4. Copy uid/gid/euid/egid/umask
-    child_process.uid = parent_process.uid;
-    child_process.gid = parent_process.gid;
-    child_process.euid = parent_process.euid;
-    child_process.suid = parent_process.suid;
-    child_process.egid = parent_process.egid;
-    child_process.sgid = parent_process.sgid;
+    // 4. Copy the credentials, nice value and umask. CPU time is not
+    // inherited: the child's account and its children's time start at zero.
+    child_process.cred = parent_process.cred.clone();
+    child_process.nice = parent_process.nice;
     child_process.umask = parent_process.umask;
-    child_process.supplementary_groups = parent_process.supplementary_groups.clone();
 
     Ok(())
 }

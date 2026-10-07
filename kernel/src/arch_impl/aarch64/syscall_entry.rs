@@ -828,6 +828,21 @@ fn dispatch_syscall_enum(
         SyscallNumber::Getegid => result_to_u64(crate::syscall::handlers::sys_getegid()),
         SyscallNumber::Setuid => result_to_u64(crate::syscall::handlers::sys_setuid(arg1 as u32)),
         SyscallNumber::Setgid => result_to_u64(crate::syscall::handlers::sys_setgid(arg1 as u32)),
+        SyscallNumber::Setreuid => {
+            result_to_u64(crate::syscall::handlers::sys_setreuid(arg1 as u32, arg2 as u32))
+        }
+        SyscallNumber::Setregid => {
+            result_to_u64(crate::syscall::handlers::sys_setregid(arg1 as u32, arg2 as u32))
+        }
+        // Priorities and CPU usage
+        SyscallNumber::Getpriority => {
+            result_to_u64(crate::syscall::priority::sys_getpriority(arg1, arg2))
+        }
+        SyscallNumber::Setpriority => {
+            result_to_u64(crate::syscall::priority::sys_setpriority(arg1, arg2, arg3))
+        }
+        SyscallNumber::Getrusage => result_to_u64(crate::syscall::rusage::sys_getrusage(arg1, arg2)),
+        SyscallNumber::Times => result_to_u64(crate::syscall::rusage::sys_times(arg1)),
         // File creation mask
         SyscallNumber::Umask => result_to_u64(crate::syscall::handlers::sys_umask(arg1 as u32)),
         // Timestamps
@@ -1187,7 +1202,7 @@ fn sys_exec_aarch64(
         Err(errno) => return (-(errno as i64)) as u64,
     };
 
-    let elf_vec = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
+    let (elf_vec, image_identity) = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
         if path.contains('/') {
             load_elf_from_ext2(path)
         } else {
@@ -1203,11 +1218,16 @@ fn sys_exec_aarch64(
 
     let elf_data = elf_vec.as_slice();
 
-    let current_pid = {
+    // The new image's credentials are decided before its stack is built, so
+    // the auxiliary vector reports them; the commit refuses if they change.
+    let (current_pid, image_cred) = {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
-                pid
+                match manager.credentials_after_exec(pid, image_identity) {
+                    Some(cred) => (pid, cred),
+                    None => return (-3_i64) as u64, // -ESRCH
+                }
             } else {
                 log::error!(
                     "sys_exec_aarch64: Thread {} not found in any process",
@@ -1237,6 +1257,8 @@ fn sys_exec_aarch64(
         Some(&program_name),
         &argv_slices,
         &envp_slices,
+        image_identity,
+        image_cred,
     ) {
         Ok(image) => Some(image),
         Err(error) => return (-(crate::syscall::exec::manager_errno(error) as i64)) as u64,
@@ -1382,11 +1404,17 @@ fn sys_exec_aarch64(
 /// Returns the file content as Vec<u8> on success, or an errno on failure.
 ///
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
-fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
+/// The program image at `path` and the identity its set-ID bits confer.
+fn load_elf_from_ext2(
+    path: &str,
+) -> Result<(alloc::vec::Vec<u8>, crate::process::credentials::ExecIdentity), i32> {
     use crate::syscall::errno::{EACCES, EIO};
 
     // Trace: entering load_elf_from_ext2
     super::trace::trace_exec(b'1');
+
+    // Taken before the filesystem lock: who may execute the file.
+    let cred = crate::fs::permissions::Credentials::current(false);
 
     // The handle holds the inode until its content is read.
     let (mount, inode_num, _held) = crate::fs::namei::resolve_file(path).map_err(|errno| {
@@ -1410,8 +1438,7 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
         return Err(EACCES);
     }
 
-    let perms = inode.permissions();
-    if (perms & 0o100) == 0 {
+    if !cred.permits(&inode, 1) {
         super::trace::trace_exec(b'$');
         return Err(EACCES);
     }
@@ -1423,7 +1450,7 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
     })?;
     super::trace::trace_exec(b'7');
 
-    Ok(data)
+    Ok((data, crate::process::credentials::ExecIdentity::of(&inode)))
 }
 
 // =============================================================================
@@ -1594,13 +1621,13 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
     // Load ELF from filesystem (with interrupts enabled for I/O)
     let elf_vec = if program_path.contains('/') {
         match load_elf_from_ext2(&program_path) {
-            Ok(data) => data,
+            Ok((data, _)) => data,
             Err(errno) => return (-(errno as i64)) as u64,
         }
     } else {
         let bin_path = alloc::format!("/bin/{}", program_path);
         match load_elf_from_ext2(&bin_path) {
-            Ok(data) => data,
+            Ok((data, _)) => data,
             Err(errno) => {
                 crate::serial_println!("[spawn] Failed to load /bin/{}: {}", program_path, errno);
                 return (-(errno as i64)) as u64;

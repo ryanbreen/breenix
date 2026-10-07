@@ -770,6 +770,11 @@ impl ProcessScheduler {
         // Capture the claimer before taking PM. This is a separate scheduler-only
         // acquisition; no scheduler state is consulted while PM is live.
         let report_claimer = scheduler::current_thread_id().unwrap_or(thread_id);
+        // Charge an exiting thread's last interval before its row turns
+        // Terminated, so a parent that reaps the row reads all of its CPU time.
+        if report_claimer == thread_id {
+            scheduler::charge_current_cpu();
+        }
         // Phase 1: Under PM lock — minimal work only
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {

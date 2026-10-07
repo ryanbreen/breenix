@@ -10,9 +10,8 @@ pub(crate) const ARG_MAX: usize = DEFAULT_STACK_LIMIT as usize / 4;
 
 pub(crate) fn manager_errno(error: &str) -> u64 {
     match error {
-        "exec blocked while CLONE_VM sibling shares old address space" => {
-            super::errno::EAGAIN as u64
-        }
+        "exec blocked while CLONE_VM sibling shares old address space"
+        | "exec credentials changed while its image was prepared" => super::errno::EAGAIN as u64,
         "exec arguments too large" => E2BIG as u64,
         _ => ENOMEM as u64,
     }
@@ -187,14 +186,17 @@ pub(crate) fn try_box<T>(value: T) -> Result<Box<T>, &'static str> {
 }
 
 /// Expand interpreter scripts, keeping the optional argument as one string.
-pub(crate) fn read_image(
+/// `read` returns a file's bytes and what else its loader learned about it;
+/// that of the ELF image finally loaded is returned with it, so a script's
+/// own set-ID bits confer nothing and its interpreter's do.
+pub(crate) fn read_image<I>(
     path: &str,
     args: &mut Arguments,
-    mut read: impl FnMut(&str) -> Result<Vec<u8>, i32>,
-) -> Result<Vec<u8>, u64> {
+    mut read: impl FnMut(&str) -> Result<(Vec<u8>, I), i32>,
+) -> Result<(Vec<u8>, I), u64> {
     let mut path = copy_string(path)?;
     for depth in 0..=5 {
-        let data = read(&path).map_err(|errno| {
+        let (data, identity) = read(&path).map_err(|errno| {
             if errno == EISDIR {
                 EACCES as u64
             } else {
@@ -203,7 +205,7 @@ pub(crate) fn read_image(
         })?;
         if !data.starts_with(b"#!") {
             validate_elf(&data)?;
-            return Ok(data);
+            return Ok((data, identity));
         }
         if depth == 5 {
             return Err(ELOOP as u64);
@@ -306,6 +308,6 @@ pub(crate) fn stack_size(argv: &[&[u8]], envp: &[&[u8]]) -> Result<usize, &'stat
     if size > ARG_MAX {
         return Err("exec arguments too large");
     }
-    // argc, two NULL pointers, seven auxv pairs, AT_RANDOM, and alignment.
-    Ok((size + 8 * 17 + 16 + 23 + 64 * 1024 + 4095) & !4095)
+    // argc, two NULL pointers, twelve auxv pairs, AT_RANDOM, and alignment.
+    Ok((size + 8 * 27 + 16 + 23 + 64 * 1024 + 4095) & !4095)
 }

@@ -46,8 +46,10 @@ pub mod iovec;
 pub mod metadata;
 mod multiplex;
 pub mod pipe;
+pub mod priority;
 pub mod pty;
 pub mod random;
+pub mod rusage;
 pub mod session;
 pub mod signal;
 pub mod socket;
@@ -209,8 +211,15 @@ pub enum SyscallNumber {
     Getegid,
     Setuid,
     Setgid,
+    Setreuid,
+    Setregid,
     Setgroups,
     Getgroups,
+    // Priorities and CPU usage
+    Getpriority,
+    Setpriority,
+    Getrusage,
+    Times,
     // File creation mask
     Umask,
     // Timestamps
@@ -353,6 +362,12 @@ impl SyscallNumber {
             104 => Some(Self::Getgid),
             105 => Some(Self::Setuid),
             106 => Some(Self::Setgid),
+            113 => Some(Self::Setreuid),
+            114 => Some(Self::Setregid),
+            98 => Some(Self::Getrusage),
+            100 => Some(Self::Times),
+            140 => Some(Self::Getpriority),
+            141 => Some(Self::Setpriority),
             107 => Some(Self::Geteuid),
             108 => Some(Self::Getegid),
             17 => Some(Self::Pread64),
@@ -500,8 +515,14 @@ impl SyscallNumber {
             // Timestamps
             88 => Some(Self::Utimensat),
             // Process identity
+            143 => Some(Self::Setregid),
             144 => Some(Self::Setgid),
+            145 => Some(Self::Setreuid),
             146 => Some(Self::Setuid),
+            140 => Some(Self::Setpriority),
+            141 => Some(Self::Getpriority),
+            153 => Some(Self::Times),
+            165 => Some(Self::Getrusage),
             166 => Some(Self::Umask),
             174 => Some(Self::Getuid),
             175 => Some(Self::Geteuid),

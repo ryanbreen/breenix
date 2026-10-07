@@ -244,7 +244,7 @@ pub enum DeliverResult {
 fn defer_frame_fault_exit(process: &Process) -> SignalDeliveryResult {
     if let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id) {
         let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
-        crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.set_terminated());
+        crate::task::scheduler::terminate_thread(thread_id);
     }
     SignalDeliveryResult::FrameFault
 }
@@ -292,9 +292,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // Without this, the scheduler would keep scheduling the terminated thread!
             if let Some(ref thread) = process.main_thread {
                 let thread_id = thread.id();
-                let marked = crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
-                    sched_thread.set_terminated();
-                });
+                let marked = crate::task::scheduler::terminate_thread(thread_id);
                 // Logged after the scheduler lock is released.
                 if marked.is_some() {
                     log::info!(
@@ -327,9 +325,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
             if let Some(ref thread) = process.main_thread {
                 let thread_id = thread.id();
-                let marked = crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
-                    sched_thread.set_terminated();
-                });
+                let marked = crate::task::scheduler::terminate_thread(thread_id);
                 // Logged after the scheduler lock is released.
                 if marked.is_some() {
                     log::info!(

@@ -113,6 +113,10 @@ pub(crate) struct PreparedExecImage {
     initial_rsp: u64,
     #[cfg(target_arch = "aarch64")]
     initial_tpidr_el0: VirtAddr,
+    /// What the image's set-ID bits confer, and the credentials the stack's
+    /// auxiliary vector reports; the commit refuses if they no longer hold.
+    image: super::credentials::ExecIdentity,
+    cred: super::credentials::ProcessCredentials,
 }
 
 /// Process manager handles all processes in the system
@@ -660,9 +664,10 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
         argv: &[&[u8]],
+        cred: &super::credentials::ProcessCredentials,
     ) -> Result<ProcessId, &'static str> {
         let pid = self.allocate_ordinary_pid();
-        self.build_process_with_argv_at(pid, name, elf_data, argv)?;
+        self.build_process_with_argv_at(pid, name, elf_data, argv, cred)?;
         self.ready_queue.push(pid);
         Ok(pid)
     }
@@ -674,6 +679,7 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
         argv: &[&[u8]],
+        cred: &super::credentials::ProcessCredentials,
     ) -> Result<(), &'static str> {
         // --- Page table + ELF load (build_process_at's block) ---
         let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
@@ -733,6 +739,7 @@ impl ProcessManager {
         }
 
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
+        process.cred = cred.clone();
         process.page_table = Some(page_table.publish());
         // Unpublished-construction ownership boundary (issue 588). From here
         // until the row insert below, every error exit drops this guard, which
@@ -801,6 +808,7 @@ impl ProcessManager {
                 loaded_elf.phnum,
                 loaded_elf.phentsize,
                 loaded_elf.entry_point.as_u64(),
+                &process.cred,
             )?
         } else {
             return Err("Process page table not available for argv setup");
@@ -847,7 +855,7 @@ impl ProcessManager {
         if !crate::process::limits::fork_allowed(self, parent_pid) {
             return Err("Process limit exceeded");
         }
-        let (parent_pgid, parent_sid, parent_cwd, ids, umask, groups, limits) = {
+        let (parent_pgid, parent_sid, parent_cwd, (cred, nice), umask, limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
@@ -856,22 +864,14 @@ impl ProcessManager {
                 parent.pgid,
                 parent.sid,
                 parent.cwd.copy(),
-                (
-                    parent.uid,
-                    parent.gid,
-                    parent.euid,
-                    parent.egid,
-                    parent.suid,
-                    parent.sgid,
-                ),
+                (parent.cred.clone(), parent.nice),
                 parent.umask,
-                parent.supplementary_groups.clone(),
                 parent.limits.inherit(),
             )
         };
 
         // Create the child process (allocates PID, page table, loads ELF, argv stack).
-        let child_pid = self.create_process_with_argv(name, elf_data, argv)?;
+        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred)?;
 
         // Set up the parent-child relationship and inherit attributes.
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
@@ -879,11 +879,8 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
-            (
-                child.uid, child.gid, child.euid, child.egid, child.suid, child.sgid,
-            ) = ids;
+            child.nice = nice;
             child.umask = umask;
-            child.supplementary_groups = groups;
             child.limits = limits;
             child
                 .fd_table
@@ -1164,9 +1161,10 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
         argv: &[&[u8]],
+        cred: &super::credentials::ProcessCredentials,
     ) -> Result<ProcessId, &'static str> {
         let pid = self.allocate_ordinary_pid();
-        self.build_process_with_argv_at(pid, name, elf_data, argv)?;
+        self.build_process_with_argv_at(pid, name, elf_data, argv, cred)?;
         self.ready_queue.push(pid);
         Ok(pid)
     }
@@ -1178,6 +1176,7 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
         argv: &[&[u8]],
+        cred: &super::credentials::ProcessCredentials,
     ) -> Result<(), &'static str> {
         // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
         use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
@@ -1227,6 +1226,7 @@ impl ProcessManager {
         // Create the process
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
         let mut process = Process::new(pid, name.clone(), entry_point);
+        process.cred = cred.clone();
         process.page_table = Some(page_table.publish());
         // Unpublished-construction ownership boundary (issue 588). From here
         // until the row insert below, every error exit drops this guard, which
@@ -1317,6 +1317,7 @@ impl ProcessManager {
                 loaded_elf.phnum,
                 loaded_elf.phentsize,
                 loaded_elf.entry_point,
+                &process.cred,
             )?
         } else {
             return Err("Process page table not available for argv setup");
@@ -1360,7 +1361,13 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
     ) -> Result<InitDesignationTicket, &'static str> {
-        self.build_process_with_argv_at(provisional_pid, name, elf_data, argv)?;
+        self.build_process_with_argv_at(
+            provisional_pid,
+            name,
+            elf_data,
+            argv,
+            &super::credentials::ProcessCredentials::root(),
+        )?;
         self.hold_init_publication(provisional_pid)
     }
 
@@ -1398,7 +1405,7 @@ impl ProcessManager {
         if !crate::process::limits::fork_allowed(self, parent_pid) {
             return Err("Process limit exceeded");
         }
-        let (parent_pgid, parent_sid, parent_cwd, ids, umask, groups, limits) = {
+        let (parent_pgid, parent_sid, parent_cwd, (cred, nice), umask, limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
@@ -1407,22 +1414,14 @@ impl ProcessManager {
                 parent.pgid,
                 parent.sid,
                 parent.cwd.copy(),
-                (
-                    parent.uid,
-                    parent.gid,
-                    parent.euid,
-                    parent.egid,
-                    parent.suid,
-                    parent.sgid,
-                ),
+                (parent.cred.clone(), parent.nice),
                 parent.umask,
-                parent.supplementary_groups.clone(),
                 parent.limits.inherit(),
             )
         };
 
         // Create the child process (allocates PID, page table, loads ELF, etc.)
-        let child_pid = self.create_process_with_argv(name, elf_data, argv)?;
+        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred)?;
 
         // Set up parent-child relationship and inherit attributes
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
@@ -1430,11 +1429,8 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
-            (
-                child.uid, child.gid, child.euid, child.egid, child.suid, child.sgid,
-            ) = ids;
+            child.nice = nice;
             child.umask = umask;
-            child.supplementary_groups = groups;
             child.limits = limits;
             child
                 .fd_table
@@ -1527,6 +1523,7 @@ impl ProcessManager {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1614,6 +1611,7 @@ impl ProcessManager {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             resource_limits: None,
+            cpu_account: None,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1724,12 +1722,35 @@ impl ProcessManager {
         if !row.claim_reap(reaper, status) {
             return ReapOutcome::Refused;
         }
+        // The reaped child's CPU time, and that of the children it reaped, is
+        // now the reaper's children's time. A thread's row shares its group's
+        // account, so only a group leader's reap carries the account.
+        let leader = row.thread_group_id.map_or(true, |group| group == pid.as_u64());
+        let child_ticks = if leader { row.cpu.ticks() + row.cpu.children_ticks() } else { 0 };
+        if let Some(reaper_row) = self.processes.live_row(&reaper) {
+            reaper_row.cpu.add_children(child_ticks);
+        }
         crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_RESIDENT);
         let evicted = self.remove_row_joined(pid);
         if evicted.is_some() {
             crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_JOIN_REAP_SECOND);
         }
         ReapOutcome::Claimed(evicted)
+    }
+
+    /// The credentials `pid` runs `image` with if its exec commits
+    /// (`ProcessCredentials::after_exec`). The working directory counts as
+    /// shared when another live row holds it through `CLONE_FS`.
+    pub(crate) fn credentials_after_exec(
+        &self,
+        pid: ProcessId,
+        image: super::credentials::ExecIdentity,
+    ) -> Option<super::credentials::ProcessCredentials> {
+        let process = self.processes.live_row(&pid)?;
+        let shared_fs = self.iter_processes().any(|(other, row)| {
+            other != pid && !row.is_terminated() && row.cwd.same_as(&process.cwd)
+        });
+        Some(process.cred.after_exec(image, shared_fs))
     }
 
     /// Retirement arm of the two-event join: settle one of `pid`'s outstanding
@@ -2008,6 +2029,14 @@ impl ProcessManager {
     pub fn iter_processes(&self) -> impl Iterator<Item = (ProcessId, &Process)> {
         self.processes
             .iter()
+            .filter(|(_, row)| !row.is_tombstone())
+            .map(|(pid, p)| (*pid, p))
+    }
+
+    /// Iterate mutably over all processes. Tombstone-blind.
+    pub fn iter_processes_mut(&mut self) -> impl Iterator<Item = (ProcessId, &mut Process)> {
+        self.processes
+            .iter_mut()
             .filter(|(_, row)| !row.is_tombstone())
             .map(|(pid, p)| (*pid, p))
     }
@@ -3233,6 +3262,7 @@ impl ProcessManager {
                 run_start_ticks: 0,
                 cpu_ticks_total: 0,
                 resource_limits: None,
+                cpu_account: None,
                 owner_pid: Some(child_pid.as_u64()),
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -3528,8 +3558,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program - heap starts after ELF segments
         let heap_base = loaded_elf.segments_end;
-        process.suid = process.euid;
-        process.sgid = process.egid;
+        process.cred.suid = process.cred.euid;
+        process.cred.sgid = process.cred.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -3562,6 +3592,7 @@ impl ProcessManager {
         // before this point, so nothing here observes a sibling that still
         // holds the old root.
         process.detach_lock_owner();
+        process.detach_cpu_account();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
 
@@ -3723,6 +3754,8 @@ impl ProcessManager {
         program_name: Option<&str>,
         argv: &[&[u8]],
         envp: &[&[u8]],
+        image: super::credentials::ExecIdentity,
+        cred: super::credentials::ProcessCredentials,
     ) -> Result<PreparedExecImage, &'static str> {
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
         let program_name = program_name
@@ -3816,6 +3849,7 @@ impl ProcessManager {
             loaded_elf.phnum,
             loaded_elf.phentsize,
             loaded_elf.entry_point.as_u64(),
+            &cred,
         )?;
 
         log::info!(
@@ -3842,6 +3876,8 @@ impl ProcessManager {
             initial_rsp,
             #[cfg(target_arch = "aarch64")]
             initial_tpidr_el0,
+            image,
+            cred,
         })
     }
 
@@ -3876,6 +3912,20 @@ impl ProcessManager {
                 .as_ref()
                 .ok_or("Process has no main thread")?;
             (main_thread.id, old_cr3, thread_group_id)
+        };
+        // The identity the new image runs with. The prepared stack reports the
+        // credentials decided before it was built; if a set*id call or a
+        // CLONE_FS sharer has changed them since, the exec is refused rather
+        // than committing an identity its auxiliary vector does not report.
+        let cred = {
+            let prepared = prepared.as_ref().expect("prepared exec image");
+            let cred = self
+                .credentials_after_exec(pid, prepared.image)
+                .ok_or("Process not found")?;
+            if cred != prepared.cred {
+                return Err("exec credentials changed while its image was prepared");
+            }
+            cred
         };
 
         // #721 B2: refuse to retire this address space while a live CLONE_VM sibling still
@@ -3924,6 +3974,7 @@ impl ProcessManager {
             initial_rsp,
             #[cfg(target_arch = "aarch64")]
             initial_tpidr_el0,
+            ..
         } = prepared.take().expect("prepared exec image");
         #[cfg(target_arch = "x86_64")]
         let new_entry_point = loaded_elf.entry_point.as_u64();
@@ -3953,8 +4004,6 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
-        process.suid = process.euid;
-        process.sgid = process.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -3980,8 +4029,10 @@ impl ProcessManager {
         // that byte-identical claim true for a failed exec: it runs before this
         // point, so nothing here observes a sibling that still holds the old root.
         process.detach_lock_owner();
+        process.detach_cpu_account();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
+        process.cred = cred;
         let new_cr3 = process
             .page_table
             .as_ref()
@@ -4046,8 +4097,10 @@ impl ProcessManager {
         let sb = thread.stack_bottom;
         let kst = thread.kernel_stack_top;
         let tls = thread.tls_block;
-        let sched_commit =
-            crate::task::scheduler::ExecSchedCommit::new(thread_id, ctx, st, sb, kst, tls, new_cr3);
+        let account = thread.cpu_account.clone();
+        let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
+            thread_id, ctx, st, sb, kst, tls, new_cr3, account,
+        );
 
         // Handle page table switching
         if is_current_process {
@@ -4089,6 +4142,8 @@ impl ProcessManager {
         program_name: Option<&str>,
         argv: &[&[u8]],
         envp: &[&[u8]],
+        image: super::credentials::ExecIdentity,
+        cred: super::credentials::ProcessCredentials,
     ) -> Result<PreparedExecImage, &'static str> {
         #[cfg(target_arch = "aarch64")]
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
@@ -4182,6 +4237,7 @@ impl ProcessManager {
             loaded_elf.phnum,
             loaded_elf.phentsize,
             loaded_elf.entry_point,
+            &cred,
         )?;
 
         log::info!(
@@ -4207,6 +4263,8 @@ impl ProcessManager {
             initial_rsp,
             #[cfg(target_arch = "aarch64")]
             initial_tpidr_el0,
+            image,
+            cred,
         })
     }
 
@@ -4241,6 +4299,20 @@ impl ProcessManager {
                 .as_ref()
                 .ok_or("Process has no main thread")?;
             (main_thread.id, old_cr3, thread_group_id)
+        };
+        // The identity the new image runs with. The prepared stack reports the
+        // credentials decided before it was built; if a set*id call or a
+        // CLONE_FS sharer has changed them since, the exec is refused rather
+        // than committing an identity its auxiliary vector does not report.
+        let cred = {
+            let prepared = prepared.as_ref().expect("prepared exec image");
+            let cred = self
+                .credentials_after_exec(pid, prepared.image)
+                .ok_or("Process not found")?;
+            if cred != prepared.cred {
+                return Err("exec credentials changed while its image was prepared");
+            }
+            cred
         };
 
         if let Some(old_cr3) = old_cr3 {
@@ -4285,6 +4357,7 @@ impl ProcessManager {
             initial_rsp,
             #[cfg(target_arch = "aarch64")]
             initial_tpidr_el0,
+            ..
         } = prepared.take().expect("prepared exec image");
         #[cfg(target_arch = "x86_64")]
         let new_entry_point = loaded_elf.entry_point.as_u64();
@@ -4313,8 +4386,6 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
-        process.suid = process.euid;
-        process.sgid = process.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -4340,8 +4411,10 @@ impl ProcessManager {
         // before this point, so nothing here observes a sibling that still holds
         // the old root).
         process.detach_lock_owner();
+        process.detach_cpu_account();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
+        process.cred = cred;
         let new_ttbr0 = process
             .page_table
             .as_ref()
@@ -4398,8 +4471,9 @@ impl ProcessManager {
         let sb = thread.stack_bottom;
         let kst = thread.kernel_stack_top;
         let tls = thread.tls_block;
+        let account = thread.cpu_account.clone();
         let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
-            thread_id, ctx, st, sb, kst, tls, new_ttbr0,
+            thread_id, ctx, st, sb, kst, tls, new_ttbr0, account,
         );
 
         if is_current_process {
@@ -4648,8 +4722,8 @@ impl ProcessManager {
 
         // Reset heap bounds for the new program
         let heap_base = loaded_elf.segments_end;
-        process.suid = process.euid;
-        process.sgid = process.egid;
+        process.cred.suid = process.cred.euid;
+        process.cred.sgid = process.cred.egid;
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -4681,6 +4755,7 @@ impl ProcessManager {
         // before this point, so nothing here observes a sibling that still holds
         // the old root).
         process.detach_lock_owner();
+        process.detach_cpu_account();
         process.inherited_cr3 = None;
         process.thread_group_id = None;
         let new_ttbr0 = process
@@ -4756,8 +4831,9 @@ impl ProcessManager {
         let sb = thread.stack_bottom;
         let kst = thread.kernel_stack_top;
         let tls = thread.tls_block;
+        let account = thread.cpu_account.clone();
         let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
-            thread_id, ctx, st, sb, kst, tls, new_ttbr0,
+            thread_id, ctx, st, sb, kst, tls, new_ttbr0, account,
         );
 
         log::info!(
@@ -4822,6 +4898,11 @@ impl ProcessManager {
     ///   envp string data (null-terminated strings)
     ///   --- 8-byte alignment padding ---
     ///   AT_NULL (0, 0)                    // auxv terminator
+    ///   AT_SECURE (23, secure)            // 1 when the IDs below differ
+    ///   AT_EGID (14, egid)                // effective group ID
+    ///   AT_GID (13, gid)                  // real group ID
+    ///   AT_EUID (12, euid)                // effective user ID
+    ///   AT_UID (11, uid)                  // real user ID
     ///   AT_RANDOM (25, ptr_to_random)     // pointer to 16 random bytes
     ///   AT_PAGESZ (6, 4096)              // page size
     ///   AT_PHENT (4, phentsize)           // size of program header entry
@@ -4846,6 +4927,8 @@ impl ProcessManager {
     /// - phnum: Number of program headers
     /// - phentsize: Size of each program header entry
     /// - entry_point: Program entry point address
+    /// - cred: The identity the program runs with. A C library reads AT_SECURE
+    ///   (or compares the IDs) to decide whether to start in secure mode.
     ///
     /// Returns: The initial RSP value (pointing to argc)
     fn setup_argv_on_stack(
@@ -4857,6 +4940,7 @@ impl ProcessManager {
         phnum: u16,
         phentsize: u16,
         entry_point: u64,
+        cred: &super::credentials::ProcessCredentials,
     ) -> Result<u64, &'static str> {
         let argc = argv.len();
 
@@ -4966,9 +5050,17 @@ impl ProcessManager {
         // --- Phase 2: Build the pointer/value section below the strings ---
 
         // Auxiliary vector entries (each is two u64 values: type, value)
-        // AT_ENTRY, AT_PHDR, AT_PHNUM, AT_PHENT, AT_PAGESZ, AT_RANDOM, AT_NULL = 7 entries = 14 u64s
-        let auxv_count = 7;
-        let auxv_space = auxv_count * 2 * 8; // 7 entries * 2 u64s * 8 bytes
+        // AT_ENTRY, AT_PHDR, AT_PHNUM, AT_PHENT, AT_PAGESZ, AT_RANDOM, AT_UID,
+        // AT_EUID, AT_GID, AT_EGID, AT_SECURE, AT_NULL = 12 entries = 24 u64s
+        let identity = [
+            (11, cred.uid as u64),      // AT_UID
+            (12, cred.euid as u64),     // AT_EUID
+            (13, cred.gid as u64),      // AT_GID
+            (14, cred.egid as u64),     // AT_EGID
+            (23, cred.secure() as u64), // AT_SECURE
+        ];
+        let auxv_count = 7 + identity.len();
+        let auxv_space = auxv_count * 2 * 8; // entries * 2 u64s * 8 bytes
 
         // envp: envp.len() pointers + NULL terminator
         let envp_space = (envp.len() + 1) * 8;
@@ -5051,6 +5143,14 @@ impl ProcessManager {
         write_pos += 8;
         Self::write_u64_to_stack(page_table, write_pos, random_addr)?;
         write_pos += 8;
+
+        // AT_UID, AT_EUID, AT_GID, AT_EGID, AT_SECURE - the program's identity
+        for (key, value) in identity {
+            Self::write_u64_to_stack(page_table, write_pos, key)?;
+            write_pos += 8;
+            Self::write_u64_to_stack(page_table, write_pos, value)?;
+            write_pos += 8;
+        }
 
         // AT_NULL (0) - terminator
         Self::write_u64_to_stack(page_table, write_pos, 0)?; // AT_NULL

@@ -500,6 +500,15 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Getegid) => super::handlers::sys_getegid(),
         Some(SyscallNumber::Setuid) => super::handlers::sys_setuid(args.0 as u32),
         Some(SyscallNumber::Setgid) => super::handlers::sys_setgid(args.0 as u32),
+        Some(SyscallNumber::Setreuid) => super::handlers::sys_setreuid(args.0 as u32, args.1 as u32),
+        Some(SyscallNumber::Setregid) => super::handlers::sys_setregid(args.0 as u32, args.1 as u32),
+        // Priorities and CPU usage
+        Some(SyscallNumber::Getpriority) => super::priority::sys_getpriority(args.0, args.1),
+        Some(SyscallNumber::Setpriority) => {
+            super::priority::sys_setpriority(args.0, args.1, args.2)
+        }
+        Some(SyscallNumber::Getrusage) => super::rusage::sys_getrusage(args.0, args.1),
+        Some(SyscallNumber::Times) => super::rusage::sys_times(args.0),
         // File creation mask
         Some(SyscallNumber::Umask) => super::handlers::sys_umask(args.0 as u32),
         // Timestamps

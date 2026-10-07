@@ -523,7 +523,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             FdKind::RegularFile(file) => WriteOperation::RegularFile {
                 file: file.clone(),
                 append: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND) != 0,
-                unprivileged: process.euid != 0,
+                unprivileged: !process.cred.privileged(),
                 size_limit: process.limits.get(crate::process::limits::FSIZE).soft,
             },
             FdKind::Directory(_) => WriteOperation::Eisdir,
@@ -887,6 +887,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         loop {
                             // Check for pending signals that should interrupt this syscall
                             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+                                // Not preemptible from here: a kill must never find this thread
+                                // switched out while it holds the lock its waiter list is under.
+                                crate::per_cpu::preempt_disable();
                                 // Signal pending - unblock and return EINTR
                                 crate::ipc::stdin::unregister_blocked_reader(thread_id);
                                 crate::task::scheduler::with_scheduler(|sched| {
@@ -895,7 +898,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                         thread.set_ready();
                                     }
                                 });
-                                crate::per_cpu::preempt_disable();
                                 log::debug!(
                                     "sys_read: Thread {} interrupted by signal (EINTR)",
                                     thread_id
@@ -1039,6 +1041,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         loop {
                             // Check for pending signals that should interrupt this syscall
                             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+                                // Not preemptible from here: a kill must never find this thread
+                                // switched out while it holds the lock its waiter list is under.
+                                crate::per_cpu::preempt_disable();
                                 // Signal pending - clean up and return EINTR
                                 {
                                     let mut pipe = pipe_buffer_clone.lock();
@@ -1050,7 +1055,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                         thread.set_ready();
                                     }
                                 });
-                                crate::per_cpu::preempt_disable();
                                 log::debug!(
                                     "sys_read: Pipe thread {} interrupted by signal (EINTR)",
                                     thread_id
@@ -1187,6 +1191,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         loop {
                             // Check for pending signals that should interrupt this syscall
                             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+                                // Not preemptible from here: a kill must never find this thread
+                                // switched out while it holds the lock its waiter list is under.
+                                crate::per_cpu::preempt_disable();
                                 // Signal pending - clean up and return EINTR
                                 {
                                     let mut pipe = pipe_buffer_clone.lock();
@@ -1198,7 +1205,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                         thread.set_ready();
                                     }
                                 });
-                                crate::per_cpu::preempt_disable();
                                 log::debug!(
                                     "sys_read: FIFO thread {} interrupted by signal (EINTR)",
                                     thread_id
@@ -1482,6 +1488,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 loop {
                     // Check for pending signals that should interrupt this syscall
                     if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+                        // Not preemptible from here: a kill must never find this thread
+                        // switched out while it holds the lock its waiter list is under.
+                        crate::per_cpu::preempt_disable();
                         // Signal pending - clean up and return EINTR
                         crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
                         crate::task::scheduler::with_scheduler(|sched| {
@@ -1490,7 +1499,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 thread.set_ready();
                             }
                         });
-                        crate::per_cpu::preempt_disable();
                         log::debug!(
                             "sys_read: TCP thread {} interrupted by signal (EINTR)",
                             thread_id
@@ -1603,6 +1611,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 // HLT loop - wait for data to arrive
                 loop {
                     if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+                        // Not preemptible from here: a kill must never find this thread
+                        // switched out while it holds the lock its waiter list is under.
+                        crate::per_cpu::preempt_disable();
                         pair.unregister_master_waiter(thread_id);
                         crate::task::scheduler::with_scheduler(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
@@ -1610,7 +1621,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 thread.set_ready();
                             }
                         });
-                        crate::per_cpu::preempt_disable();
                         return SyscallResult::Err(e as u64);
                     }
 
@@ -1701,6 +1711,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 // HLT loop - wait for data to arrive
                 loop {
                     if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+                        // Not preemptible from here: a kill must never find this thread
+                        // switched out while it holds the lock its waiter list is under.
+                        crate::per_cpu::preempt_disable();
                         pair.unregister_slave_waiter(thread_id);
                         crate::task::scheduler::with_scheduler(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
@@ -1708,7 +1721,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 thread.set_ready();
                             }
                         });
-                        crate::per_cpu::preempt_disable();
                         return SyscallResult::Err(e as u64);
                     }
 
@@ -1817,6 +1829,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         loop {
                             // Check for pending signals that should interrupt this syscall
                             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+                                // Not preemptible from here: a kill must never find this thread
+                                // switched out while it holds the lock its waiter list is under.
+                                crate::per_cpu::preempt_disable();
                                 // Signal pending - clean up and return EINTR
                                 let socket = socket_clone.lock();
                                 socket.unregister_waiter(thread_id);
@@ -1827,7 +1842,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                         thread.set_ready();
                                     }
                                 });
-                                crate::per_cpu::preempt_disable();
                                 log::debug!(
                                     "sys_read: Unix socket thread {} interrupted by signal (EINTR)",
                                     thread_id
@@ -2416,8 +2430,14 @@ pub fn sys_exec_with_frame(
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
 /// It's called on every exec syscall, and serial I/O causes CI timing issues.
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
-fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
+/// The program image at `path` and the identity its set-ID bits confer.
+fn load_elf_from_ext2(
+    path: &str,
+) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity), i32> {
     use super::errno::{EACCES, EIO};
+
+    // Taken before the filesystem lock: who may execute the file.
+    let cred = crate::fs::permissions::Credentials::current(false);
 
     // The handle holds the inode until its content is read.
     let (mount, inode_num, _held) =
@@ -2431,13 +2451,12 @@ fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
         return Err(EACCES);
     }
 
-    let perms = inode.permissions();
-    if (perms & 0o100) == 0 {
+    if !cred.permits(&inode, 1) {
         return Err(EACCES);
     }
 
     let data = fs.read_file_content_coherent(inode_num, &inode).map_err(|_| EIO)?;
-    Ok(data)
+    Ok((data, crate::process::credentials::ExecIdentity::of(&inode)))
 }
 
 /// sys_execv_with_frame - Replace the current process with a new program (with argv support)
@@ -2510,7 +2529,7 @@ pub fn sys_execv_with_frame(
     {
         // Load ELF binary WITH interrupts enabled - ext2 I/O needs timer interrupts
         // for proper VirtIO operation
-        let elf_vec = match super::exec::read_image(program_name, &mut arguments, |path| {
+        let (elf_vec, image_identity) = match super::exec::read_image(program_name, &mut arguments, |path| {
             if path.contains('/') {
                 load_elf_from_ext2(path)
             } else {
@@ -2518,7 +2537,9 @@ pub fn sys_execv_with_frame(
                 match load_elf_from_ext2(&bin_path) {
                     Ok(data) => Ok(data),
                     Err(errno) if errno == super::errno::ENOENT => {
-                        crate::userspace_test::load_test_binary_from_disk(path).map_err(|_| errno)
+                        crate::userspace_test::load_test_binary_from_disk(path)
+                            .map(|data| (data, Default::default()))
+                            .map_err(|_| errno)
                     }
                     Err(errno) => Err(errno),
                 }
@@ -2530,11 +2551,16 @@ pub fn sys_execv_with_frame(
         let elf_data = elf_vec.as_slice();
 
         // Find current process
-        let current_pid = {
+        // The new image's credentials are decided before its stack is built,
+        // so the auxiliary vector reports them; the commit refuses if they change.
+        let (current_pid, image_cred) = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
                 if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
-                    pid
+                    match manager.credentials_after_exec(pid, image_identity) {
+                        Some(cred) => (pid, cred),
+                        None => return SyscallResult::Err(3), // ESRCH
+                    }
                 } else {
                     log::error!(
                         "sys_execv: Thread {} not found in any process",
@@ -2565,6 +2591,8 @@ pub fn sys_execv_with_frame(
             Some(program_name),
             &argv_slices,
             &envp_slices,
+            image_identity,
+            image_cred,
         ) {
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
@@ -2662,11 +2690,11 @@ pub fn sys_execv_with_frame(
         // section 2.1, #713 anti-vacuity / precheck section 4.6). This read happens with
         // interrupts enabled, before any lock is taken — see this function's own
         // top-of-file comment; do not move it inside the masked section below (X2).
-        let elf_vec = match super::exec::read_image(program_name, &mut arguments, |path| {
+        let (elf_vec, image_identity) = match super::exec::read_image(program_name, &mut arguments, |path| {
             if path.contains('/') {
-                crate::boot::init_image::read_program(path)
+                crate::boot::init_image::read_program_image(path)
             } else {
-                crate::boot::init_image::read_program(&alloc::format!("/bin/{}", path))
+                crate::boot::init_image::read_program_image(&alloc::format!("/bin/{}", path))
             }
         }) {
             Ok(data) => data,
@@ -2690,11 +2718,16 @@ pub fn sys_execv_with_frame(
         crate::task::scheduler::reclaim_terminated_threads();
 
         // Find current process (unmasked PM window, matches the testing arm above)
-        let current_pid = {
+        // The new image's credentials are decided before its stack is built,
+        // so the auxiliary vector reports them; the commit refuses if they change.
+        let (current_pid, image_cred) = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
                 if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
-                    pid
+                    match manager.credentials_after_exec(pid, image_identity) {
+                        Some(cred) => (pid, cred),
+                        None => return SyscallResult::Err(3), // ESRCH
+                    }
                 } else {
                     log::error!(
                         "sys_execv: Thread {} not found in any process",
@@ -2724,6 +2757,8 @@ pub fn sys_execv_with_frame(
             Some(program_name),
             &argv_slices,
             &envp_slices,
+            image_identity,
+            image_cred,
         ) {
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
@@ -4562,7 +4597,7 @@ pub fn sys_prlimit64(pid: u64, resource: u64, new_ptr: u64, old_ptr: u64) -> Sys
         let Some((caller_pid, caller)) = manager.find_process_by_thread(thread) else {
             return SyscallResult::Err(ESRCH as u64);
         };
-        let (euid, uid, gid) = (caller.euid, caller.uid, caller.gid);
+        let (euid, uid, gid) = (caller.cred.euid, caller.cred.uid, caller.cred.gid);
         let target = if pid == 0 {
             caller_pid
         } else {
@@ -4573,12 +4608,12 @@ pub fn sys_prlimit64(pid: u64, resource: u64, new_ptr: u64, old_ptr: u64) -> Sys
         };
         if target != caller_pid
             && euid != 0
-            && (uid != process.uid
-                || uid != process.euid
-                || uid != process.suid
-                || gid != process.gid
-                || gid != process.egid
-                || gid != process.sgid)
+            && (uid != process.cred.uid
+                || uid != process.cred.euid
+                || uid != process.cred.suid
+                || gid != process.cred.gid
+                || gid != process.cred.egid
+                || gid != process.cred.sgid)
         {
             return SyscallResult::Err(EPERM as u64);
         }
@@ -4659,7 +4694,7 @@ pub fn sys_getuid() -> SyscallResult {
         if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
             if let Some(ref manager) = *crate::process::manager() {
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.uid as u64);
+                    return SyscallResult::Ok(process.cred.uid as u64);
                 }
             }
         }
@@ -4673,7 +4708,7 @@ pub fn sys_geteuid() -> SyscallResult {
         if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
             if let Some(ref manager) = *crate::process::manager() {
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.euid as u64);
+                    return SyscallResult::Ok(process.cred.euid as u64);
                 }
             }
         }
@@ -4687,7 +4722,7 @@ pub fn sys_getgid() -> SyscallResult {
         if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
             if let Some(ref manager) = *crate::process::manager() {
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.gid as u64);
+                    return SyscallResult::Ok(process.cred.gid as u64);
                 }
             }
         }
@@ -4701,7 +4736,7 @@ pub fn sys_getegid() -> SyscallResult {
         if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
             if let Some(ref manager) = *crate::process::manager() {
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.egid as u64);
+                    return SyscallResult::Ok(process.cred.egid as u64);
                 }
             }
         }
@@ -4709,58 +4744,44 @@ pub fn sys_getegid() -> SyscallResult {
     })
 }
 
-/// setuid - Set user ID
-///
-/// If euid == 0 (root): set both uid and euid to the new value.
-/// Otherwise: can only set euid to uid or euid (no-op).
-pub fn sys_setuid(uid: u32) -> SyscallResult {
+/// Apply `change` to the calling process's credentials under the process
+/// manager lock; ESRCH when the caller has no process.
+fn change_credentials(
+    change: impl FnOnce(&mut crate::process::credentials::ProcessCredentials) -> Result<(), u64>,
+) -> SyscallResult {
     crate::arch_without_interrupts(|| {
-        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            let mut manager_guard = crate::process::manager();
-            if let Some(ref mut manager) = *manager_guard {
-                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-                    if process.euid == 0 {
-                        process.uid = uid;
-                        process.suid = uid;
-                        process.euid = uid;
-                    } else if uid == process.uid || uid == process.suid {
-                        process.euid = uid;
-                    } else {
-                        return SyscallResult::Err(super::errno::EPERM as u64);
-                    }
-                    return SyscallResult::Ok(0);
-                }
-            }
+        let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+            return SyscallResult::Err(super::errno::ESRCH as u64);
+        };
+        let mut manager_guard = crate::process::manager();
+        match manager_guard.as_mut().and_then(|m| m.find_process_by_thread_mut(thread_id)) {
+            Some((_, process)) => match change(&mut process.cred) {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(errno) => SyscallResult::Err(errno),
+            },
+            None => SyscallResult::Err(super::errno::ESRCH as u64),
         }
-        SyscallResult::Err(super::errno::EPERM as u64)
     })
 }
 
-/// setgid - Set group ID
-///
-/// If euid == 0 (root): set both gid and egid to the new value.
-/// Otherwise: can only set egid to gid or egid (no-op).
+/// setuid - set the user IDs (`ProcessCredentials::setuid`)
+pub fn sys_setuid(uid: u32) -> SyscallResult {
+    change_credentials(|cred| cred.setuid(uid))
+}
+
+/// setgid - set the group IDs (`ProcessCredentials::setgid`)
 pub fn sys_setgid(gid: u32) -> SyscallResult {
-    crate::arch_without_interrupts(|| {
-        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            let mut manager_guard = crate::process::manager();
-            if let Some(ref mut manager) = *manager_guard {
-                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-                    if process.euid == 0 {
-                        process.gid = gid;
-                        process.sgid = gid;
-                        process.egid = gid;
-                    } else if gid == process.gid || gid == process.sgid {
-                        process.egid = gid;
-                    } else {
-                        return SyscallResult::Err(super::errno::EPERM as u64);
-                    }
-                    return SyscallResult::Ok(0);
-                }
-            }
-        }
-        SyscallResult::Err(super::errno::EPERM as u64)
-    })
+    change_credentials(|cred| cred.setgid(gid))
+}
+
+/// setreuid - set the real and effective user IDs; -1 keeps one
+pub fn sys_setreuid(real: u32, effective: u32) -> SyscallResult {
+    change_credentials(|cred| cred.setreuid(real, effective))
+}
+
+/// setregid - set the real and effective group IDs; -1 keeps one
+pub fn sys_setregid(real: u32, effective: u32) -> SyscallResult {
+    change_credentials(|cred| cred.setregid(real, effective))
 }
 
 /// Report supplementary groups without holding PM across a faultable user copy.
@@ -4771,7 +4792,7 @@ pub fn sys_getgroups(size: i32, list: u64) -> SyscallResult {
     let groups = {
         let guard = crate::process::manager();
         match guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) {
-            Some((_, process)) => process.supplementary_groups.clone(),
+            Some((_, process)) => process.cred.groups.clone(),
             None => return SyscallResult::Err(ESRCH as u64),
         }
     };
@@ -4807,10 +4828,10 @@ pub fn sys_setgroups(count: u64, list: u64) -> SyscallResult {
     let Some((_, process)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) else {
         return SyscallResult::Err(ESRCH as u64);
     };
-    if process.euid != 0 {
+    if !process.cred.privileged() {
         return SyscallResult::Err(EPERM as u64);
     }
-    process.supplementary_groups = groups;
+    process.cred.groups = groups;
     SyscallResult::Ok(0)
 }
 
@@ -4979,7 +5000,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
                         }
                         FdKind::RegularFile(file_ref) => {
                             let file = file_ref.lock();
-                            return Ok((file.handle.clone(), process.euid != 0));
+                            return Ok((file.handle.clone(), !process.cred.privileged()));
                         }
                         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
                             return Err(super::errno::ESPIPE as u64);

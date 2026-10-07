@@ -197,18 +197,14 @@ pub struct Process {
     /// a controlling terminal. Initially set to pid on process creation.
     pub sid: ProcessId,
 
-    /// Real user ID
-    pub uid: u32,
-    /// Real group ID
-    pub gid: u32,
-    /// Effective user ID
-    pub euid: u32,
-    pub suid: u32,
-    /// Effective group ID
-    pub egid: u32,
-    pub sgid: u32,
-    /// Supplementary group membership, shared until setgroups replaces it.
-    pub supplementary_groups: alloc::sync::Arc<Vec<u32>>,
+    /// User and group IDs and supplementary groups.
+    pub cred: super::credentials::ProcessCredentials,
+    /// Nice value, -20 (most favoured) to 19. Reported and inherited; the
+    /// scheduler does not yet weigh it.
+    pub nice: i8,
+    /// CPU time charged by this process's threads and by the children it has
+    /// waited for, shared by a thread group.
+    pub cpu: alloc::sync::Arc<crate::task::thread::CpuAccount>,
     /// File creation mask (umask)
     pub umask: u32,
 
@@ -370,14 +366,9 @@ impl Process {
             pgid: id,
             // By default, a process's sid equals its pid (process is its own session leader)
             sid: id,
-            // Single-user OS: everything runs as root (uid=0, gid=0)
-            uid: 0,
-            gid: 0,
-            euid: 0,
-            suid: 0,
-            egid: 0,
-            sgid: 0,
-            supplementary_groups: alloc::sync::Arc::new(Vec::new()),
+            cred: super::credentials::ProcessCredentials::root(),
+            nice: 0,
+            cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::default()),
             // Standard default umask: owner rwx, group/other rx
             umask: 0o022,
             // Default working directory is root
@@ -422,6 +413,7 @@ impl Process {
     /// Set the main thread for this process
     pub fn set_main_thread(&mut self, mut thread: Thread) {
         thread.resource_limits = Some(self.limits.clone());
+        thread.cpu_account = Some(self.cpu.clone());
         self.main_thread = Some(thread);
         self.state = ProcessState::Ready;
     }
@@ -431,6 +423,7 @@ impl Process {
     /// thread can ever refer to a row that does not yet exist.
     pub fn attach_main_thread_unpublished(&mut self, mut thread: Thread) {
         thread.resource_limits = Some(self.limits.clone());
+        thread.cpu_account = Some(self.cpu.clone());
         self.main_thread = Some(thread);
     }
 
@@ -587,6 +580,22 @@ impl Process {
         }
         let own = crate::fs::locks::LockOwner::new(id);
         core::mem::replace(&mut self.lock_owner, own).hand_over(id);
+    }
+
+    /// An exec is detaching this row from its thread group. A row that was
+    /// not the group's leader stops sharing the group's CPU account: the time
+    /// it ran as a thread stays the group's, and from here on its time is its
+    /// own, so the group and the new process are never both charged for it.
+    /// Call before `thread_group_id` is cleared.
+    pub fn detach_cpu_account(&mut self) {
+        let id = self.id.as_u64();
+        if self.thread_group_id.map_or(true, |group| group == id) {
+            return;
+        }
+        self.cpu = alloc::sync::Arc::new(crate::task::thread::CpuAccount::default());
+        if let Some(thread) = self.main_thread.as_mut() {
+            thread.cpu_account = Some(self.cpu.clone());
+        }
     }
 
     /// Extract all file descriptor entries for deferred cleanup outside PM lock.
