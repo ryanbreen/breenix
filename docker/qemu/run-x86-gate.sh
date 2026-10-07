@@ -217,6 +217,7 @@ GATE_BUILD_LOG_DIR=$(mktemp -d "$BREENIX_GATE_TMP/build-logs.XXXXXX") || exit 1
 if ! python3 "$REPO_DIR/scripts/gate-artifacts.py" "$REPO_DIR" "$GATE_BUILD_LOG_DIR"; then
   exit 1
 fi
+export BREENIX_USERSPACE_PREBUILT=1
 if [ -n "$SUITE" ]; then
   for suite_id in "${SUITES[@]}"; do
     if [ ! -f "$REPO_DIR/userspace/programs/suite-$suite_id.elf" ]; then

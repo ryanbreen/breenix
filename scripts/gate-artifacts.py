@@ -47,6 +47,8 @@ def key(repo):
     for variable in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'BREENIX_TRACE_DIAG_EARLY',
                      'BREENIX_BSSH_AUTORUN', 'BREENIX_WAIT_STRESS', 'RUSTUP_TOOLCHAIN'):
         result.update(variable.encode() + b'=' + os.environ.get(variable, '').encode() + b'\0')
+    for lockfile in ('Cargo.lock', 'userspace/programs/Cargo.lock'):
+        result.update(lockfile.encode() + b'\0' + (repo / lockfile).read_bytes())
     config = Path(os.environ['CARGO_HOME']) / 'config.toml'
     if config.exists():
         result.update(config.read_bytes())
@@ -155,6 +157,13 @@ def main():
         build(repo, logs, 'uncached')
         return
     root = Path(os.environ['BREENIX_GATE_CACHE_DIR'])
+    start = time.monotonic()
+    # These workspaces historically ignore their lockfiles. Resolve as a clean
+    # checkout would, then include exact package versions/checksums in the key.
+    for manifest in ('Cargo.toml', 'userspace/programs/Cargo.toml'):
+        checked(['cargo', 'generate-lockfile', '--manifest-path', str(repo / manifest)],
+                repo, logs / (Path(manifest).parent.name + '-resolve.log'))
+    tree_cache.phase('dependency-resolution', start)
     cache_key = key(repo)
     entry = root / 'artifacts' / cache_key
     wait = time.monotonic()

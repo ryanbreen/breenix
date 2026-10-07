@@ -43,7 +43,7 @@ class CacheTests(unittest.TestCase):
         (repo / 'userspace/programs/target/stale').write_text('not a clean build')
 
     def call(self):
-        with patch.object(artifacts, 'key', return_value='a' * 64), patch.object(artifacts.sys, 'argv',
+        with patch.object(artifacts, 'checked'), patch.object(artifacts, 'key', return_value='a' * 64), patch.object(artifacts.sys, 'argv',
                 ['gate-artifacts.py', str(self.repo), str(self.logs)]):
             artifacts.main()
 
@@ -78,7 +78,7 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(build.call_count, 2)
 
     def test_content_key_tracks_source_script_busybox_toolchain_and_external_library(self):
-        names = ['userspace/source.rs', 'scripts/pack.sh', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
+        names = ['Cargo.lock', 'userspace/programs/Cargo.lock', 'userspace/source.rs', 'scripts/pack.sh', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
         for name in names:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
