@@ -1346,6 +1346,10 @@ fn kill_readers() -> CaseResult {
 /// it is asleep inside the exec. When the exec finishes first, the new
 /// program exits 77 and the kill is tried again with a new child.
 ///
+/// The program run is the helper with 2 MiB of zeros after it, which the
+/// loader ignores but an exec reads: on Parallels the helper's own few reads
+/// finished before the parent ever saw the child blocked in one.
+///
 /// Not run on x86-64, which brings up one CPU: there the parent was never
 /// seen to run while a child was inside an exec, so no kill can land in one.
 #[cfg(not(target_arch = "x86_64"))]
@@ -1353,7 +1357,12 @@ fn kill_execs() -> CaseResult {
     const EXECS: usize = 16;
     const TRIES: usize = 4;
     const SLACK_KB: u64 = 256;
-    let path = cpath(HELPER);
+    const PADDING: usize = 2 << 20;
+    let tmp = Tmp::new()?;
+    let mut image = std::fs::read(HELPER).map_err(|e| format!("reading {HELPER}: {e}"))?;
+    image.resize(image.len() + PADDING, 0);
+    let path = cpath(&tmp.file("padded-helper", &image, 0o755)?);
+    drop(image);
     let argv = cargs(&strings(&["processes-exec_test", "ran"]));
     let envp = cargs(&[]);
     let before = kernel_heap_free_kb()?;
@@ -1385,9 +1394,8 @@ fn kill_execs() -> CaseResult {
 }
 
 fn fork_kill_heap() -> CaseResult {
-    // Each half has its own workload and allowance: on main, each half alone
-    // leaves at least twice its allowance behind. Both halves run, so a
-    // failure reports them both.
+    // Each half has its own workload and allowance, and both run, so a
+    // failure reports each.
     #[cfg(not(target_arch = "x86_64"))]
     return match (kill_readers(), kill_execs()) {
         (Err(CaseError::Fail(readers)), Err(CaseError::Fail(execs))) => fail(format!("{readers}; {execs}")),
