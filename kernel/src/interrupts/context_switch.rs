@@ -1243,6 +1243,12 @@ pub(crate) fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
         // already has all kernel mappings (code, stacks, etc.) so we can run
         // kernel code (idle loop) with it.
 
+        // Idle never returns to user mode, so this CPU's user-return CR3 now
+        // names nothing it will load. Left set, it would keep a dead process's
+        // root looking live to the retirement proof until this CPU next ran
+        // user code.
+        crate::per_cpu::set_saved_process_cr3(0);
+
         // CRITICAL FIX: Clear PREEMPT_ACTIVE when switching to idle!
         // PREEMPT_ACTIVE (bit 28) is set during syscall return to protect register
         // restoration. When we switch to the idle thread, we MUST clear it - otherwise
@@ -1317,6 +1323,9 @@ fn setup_kernel_thread_return(
         unsafe {
             crate::memory::process_memory::switch_to_kernel_page_table();
         }
+        // A kernel thread never returns to user mode: retire the user-return
+        // CR3 for the same reason `setup_idle_return` does.
+        crate::per_cpu::set_saved_process_cr3(0);
 
         // Hardware memory fence to ensure all writes to interrupt frame and saved_regs
         // are visible before IRETQ reads them. This is critical for TCG mode

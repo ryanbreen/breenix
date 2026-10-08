@@ -79,12 +79,15 @@ pub fn flush_after_page_table_switch() {
 /// Make every other online CPU stop using the page-table root `root` before
 /// its frames are returned (address-space teardown).
 ///
-/// A CPU whose CR3 names `root` (a kernel thread running lazily on a dead
-/// process's tables) loads the master kernel PML4 instead, which drops every
-/// non-global translation of the old space; a CPU whose saved user-return CR3
-/// still names `root` has that stale shadow cleared. The executing CPU is the
-/// caller's to check, as the retirement proof already does. Returns after
-/// every target has acknowledged.
+/// A CPU whose CR3 names `root` (a kernel thread or idle running lazily on a
+/// dead process's tables) loads the master kernel PML4 instead, which drops
+/// every non-global translation of the old space. A CPU whose saved
+/// user-return CR3 names `root` is left alone: its interrupt-return path may
+/// already hold that value in a register and would reload it after the NMI,
+/// so that shadow is a proof blocker the caller re-checks after this returns,
+/// never something this request clears. The executing CPU is the caller's to
+/// check, as the retirement proof already does. Returns after every target
+/// has acknowledged.
 #[cfg(target_arch = "x86_64")]
 pub fn release_root_on_other_cpus(root: u64) {
     shootdown::request(shootdown::Request::ReleaseRoot(root));
@@ -108,8 +111,8 @@ mod shootdown {
         Page(u64),
         /// Reload CR3: every non-global translation.
         All,
-        /// Leave this page-table root if it is loaded, and clear a saved
-        /// user-return CR3 that names it.
+        /// Leave this page-table root if it is loaded and this CPU is not
+        /// returning to it.
         ReleaseRoot(u64),
     }
 
@@ -228,10 +231,26 @@ mod shootdown {
     }
 
     /// Leave `root` on this CPU, which is `cpu`.
+    ///
+    /// A saved user-return CR3 naming `root` means this CPU is still running,
+    /// or returning to, a thread of that address space: its return stub reads
+    /// that shadow into a register and then loads CR3 from it, so an NMI that
+    /// lands between the two cannot stop the reload. Such a CPU is left
+    /// untouched and the shadow stays visible; the initiator's proof treats it
+    /// as a blocker. Otherwise nothing on this CPU will load `root` again
+    /// (dead threads are never dispatched), and leaving it is final.
     fn release_root(cpu: usize, root: u64) {
         use x86_64::registers::control::Cr3;
 
         let names_root = |value: u64| value != 0 && (value & !0xfff) == (root & !0xfff);
+
+        let data = crate::per_cpu::cpu_data(cpu);
+        // SAFETY: `cpu` is this CPU, found from its APIC id; the field is only
+        // written by this CPU, and NMIs do not nest.
+        let saved = unsafe { (&raw const (*data).saved_process_cr3).read_volatile() };
+        if names_root(saved) {
+            return;
+        }
 
         let (loaded, flags) = Cr3::read();
         if names_root(loaded.start_address().as_u64()) {
@@ -240,18 +259,6 @@ mod shootdown {
                 // interrupted code can be using; a dead process's user half is
                 // what this CPU stops seeing.
                 unsafe { Cr3::write(kernel, flags) };
-            }
-        }
-
-        // A user-return CR3 naming a dead root is stale: only a return to that
-        // process's user mode would load it, and that process has no thread
-        // left to return. Clearing it is what the local retirement path does
-        // for the executing CPU (`clear_shadow_root`).
-        let data = crate::per_cpu::cpu_data(cpu);
-        unsafe {
-            let saved = &raw mut (*data).saved_process_cr3;
-            if names_root(saved.read_volatile()) {
-                saved.write_volatile(0);
             }
         }
     }

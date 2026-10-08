@@ -142,10 +142,11 @@ fn shadow_root_is_live(reclaim: &PendingProcessReclaim, online_mask: u64) -> boo
         })
 }
 
-/// x86_64: this CPU's two CR3 shadows, and every other online CPU's pending
-/// CR3 switch. A peer's `saved_process_cr3` naming a dead root is stale (only
-/// a return to that process's user mode reads it) and is cleared by
-/// `release_root_on_peers`, as `clear_shadow_root` clears this CPU's.
+/// x86_64: both CR3 shadows of this CPU and of every other online CPU. A
+/// peer's `saved_process_cr3` naming the root means that peer is running, or
+/// returning to, a thread of this address space; its return stub can reload
+/// the root after any remote request, so only the peer itself retires that
+/// shadow (on its next dispatch of a kernel thread, idle or another process).
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn shadow_root_is_live(reclaim: &PendingProcessReclaim, online_mask: u64) -> bool {
@@ -165,7 +166,8 @@ fn shadow_root_is_live(reclaim: &PendingProcessReclaim, online_mask: u64) -> boo
         .any(|cpu| {
             let data = crate::per_cpu::cpu_data(cpu);
             let next_cr3 = unsafe { (&raw const (*data).next_cr3).read_volatile() };
-            reclaim.any_root_matches(next_cr3)
+            let saved_cr3 = unsafe { (&raw const (*data).saved_process_cr3).read_volatile() };
+            reclaim.any_root_matches(next_cr3) || reclaim.any_root_matches(saved_cr3)
         })
 }
 
@@ -232,18 +234,21 @@ impl PendingProcessReclaim {
         }
     }
 
-    /// x86_64 switches CR3 lazily: a kernel thread keeps running on the
-    /// tables of whatever thread ran before it, so another CPU can hold this
-    /// receipt's roots in CR3 long after the process died. Ask every other
-    /// online CPU to leave them before their frames go back; with one CPU
-    /// online this sends nothing.
+    /// x86_64 switches CR3 lazily: idle keeps running on the tables of
+    /// whatever thread ran before it, so another CPU can hold this receipt's
+    /// roots in CR3 long after the process died. Ask every other online CPU
+    /// to leave them before their frames go back; with one CPU online this
+    /// sends nothing. A peer whose saved user-return CR3 names a root keeps
+    /// it (see `release_root_on_other_cpus`), so the shadow proof is taken
+    /// again once every peer has answered: returns whether it still holds.
     #[cfg(target_arch = "x86_64")]
-    fn release_root_on_peers(&self) {
+    fn release_root_on_peers(&self) -> bool {
         for page_table in self.page_table.iter().chain(self.old_page_tables.iter()) {
             crate::memory::tlb::release_root_on_other_cpus(
                 page_table.level_4_frame().start_address().as_u64(),
             );
         }
+        !shadow_root_is_live(self, self.after_epoch.online_mask)
     }
 
     fn live_row_names_root(&self) -> bool {
@@ -1354,8 +1359,8 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                 let mut proof = reclaim.lock_free_root_proof(&snapshot, true);
                 boot_after_step_two(&reclaim.after_epoch);
                 #[cfg(target_arch = "x86_64")]
-                if proof.blocker().is_none() {
-                    reclaim.release_root_on_peers();
+                if proof.blocker().is_none() && !reclaim.release_root_on_peers() {
+                    proof = RootProof::blocked(RootBlocker::Shadow);
                 }
                 if proof.blocker().is_none()
                     && (reclaim.cached_root_is_live()
