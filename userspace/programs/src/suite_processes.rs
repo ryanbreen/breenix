@@ -1104,6 +1104,67 @@ fn fork_cow() -> CaseResult {
     cow_round(&fill, &differs, false)
 }
 
+/// A write that breaks copy-on-write is seen by another thread of the writing process
+/// that was reading the page on another processor. The break maps a new frame, and a
+/// processor still holding the old read-only translation would go on reading the old
+/// frame. The reader spins while the writer runs, so with a processor to spare the two
+/// run on different processors; there is no getcpu to confirm where each one ran.
+fn fork_cow_threads() -> CaseResult {
+    const BEFORE: u64 = 0x1111_1111;
+    const AFTER: u64 = 0x2222_2222;
+    const READ_MS: u64 = 2000;
+    let cpus = processors();
+    if cpus < 2 {
+        return skip(format!("{cpus} processor online; the case needs 2, one for each thread"));
+    }
+    let page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
+    // SAFETY: the mapping is a page, page-aligned, and stays mapped until both threads are done.
+    let cell = unsafe { &*(page as *const AtomicU64) };
+    cell.store(BEFORE, Ordering::SeqCst);
+    // The child keeps the page shared until it is released, so the write below copies it.
+    let (rel_r, rel_w) = io::pipe()?;
+    let mut child = Child::start(|| {
+        let _ = io::close(rel_w);
+        drain(rel_r);
+        if cell.load(Ordering::SeqCst) == BEFORE { 0 } else { 1 }
+    })?;
+    io::close(rel_r)?;
+    // Made after the fork, so the reader's handshake copies nothing.
+    let flag_page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
+    // SAFETY: as for `page`.
+    let reading = unsafe { &*(flag_page as *const AtomicU64) };
+    let (page_addr, flag_addr) = (page as usize, flag_page as usize);
+    let reader = std::thread::spawn(move || {
+        // SAFETY: both pages stay mapped until this thread is joined.
+        let (cell, reading) = unsafe { (&*(page_addr as *const AtomicU64), &*(flag_addr as *const AtomicU64)) };
+        let mut seen = cell.load(Ordering::Acquire);
+        reading.store(1, Ordering::Release);
+        let deadline = now_ms() + READ_MS;
+        while seen != AFTER && now_ms() < deadline {
+            seen = cell.load(Ordering::Acquire);
+        }
+        seen
+    });
+    let started = now_ms();
+    while reading.load(Ordering::Acquire) == 0 && now_ms() < started + READ_MS {
+        core::hint::spin_loop();
+    }
+    let began = reading.load(Ordering::Acquire) != 0;
+    // Run beside the reader for a moment, so each holds a processor, then write.
+    burn(5);
+    cell.store(AFTER, Ordering::SeqCst);
+    let seen = reader.join().map_err(|_| "the reading thread panicked".to_string());
+    io::close(rel_w)?;
+    let child_result = child.expect_exit(0, "the child, whose copy of the page must keep the old value");
+    memory::munmap(flag_page, 4096)?;
+    memory::munmap(page, 4096)?;
+    let seen = seen?;
+    check(began, "the reading thread did not start within 2 s")?;
+    check(seen == AFTER, &format!(
+        "with {cpus} processors online, a thread reading a copy-on-write page still read {seen:#x} {READ_MS} ms after another thread of its process wrote {AFTER:#x} to it"))?;
+    child_result
+}
+
 fn fork_private_mapping() -> CaseResult {
     const LEN: usize = 16384;
     let map = memory::mmap(core::ptr::null_mut(), LEN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
@@ -3151,6 +3212,7 @@ static SUITE: Suite = suite(
         category("fork", "fork & copy-on-write", &[
             case("pids", "fork returns the child's PID to the parent, and the child's getppid is the parent", fork_pids),
             case("cow-memory", "Writes after fork to data, stack and heap stay in the process that made them, whichever writes first", fork_cow),
+            case("cow-threads", "A write that copies a copy-on-write page is seen by another thread of the process reading it on another processor", fork_cow_threads),
             case("private-mapping", "A private anonymous mapping is copied on write across fork, whichever side writes first", fork_private_mapping),
             case("shared-mapping", "A shared anonymous mapping stays shared across fork", fork_shared_mapping),
             case("descriptors", "The child inherits descriptors sharing file offsets, and closing its copy leaves the parent's", fork_descriptors),
