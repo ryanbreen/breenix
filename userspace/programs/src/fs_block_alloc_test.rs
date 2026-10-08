@@ -177,10 +177,13 @@ fn main() {
                                 std::process::exit(1);
                             }
                             Ok(ForkResult::Parent(child_pid)) => {
-                                let mut status: i32 = 0;
-                                let _ = waitpid(child_pid.raw() as i32, &mut status, 0);
+                                let mut status: i32 = -1;
+                                let waited = waitpid(child_pid.raw() as i32, &mut status, 0);
 
-                                if wifexited(status) && wexitstatus(status) == 0 {
+                                if !matches!(waited, Ok(pid) if pid.raw() == child_pid.raw()) {
+                                    println!("FAILED: waitpid for /bin/hello_world did not return its child");
+                                    tests_failed += 1;
+                                } else if wifexited(status) && wexitstatus(status) == 0 {
                                     println!("  PASSED: /bin/hello_world executes correctly (exit 0)");
                                 } else {
                                     println!("FAILED: /bin/hello_world did not execute correctly!");
@@ -211,33 +214,81 @@ fn main() {
     }
 
     // ============================================
-    // Test 3: Allocate-truncate-allocate gets same block back
+    // Test 3: A truncate returns the file's blocks for reuse
     // ============================================
+    // The filesystem's free-block count must come back after a truncate.
+    // Other tests write to the same filesystem at the same time, so the file is
+    // large (a leak is every one of its blocks) and the case fails when the
+    // write took fewer than half the blocks it needs, or when more than half
+    // of them are still missing after the truncate.
     println!("\nTest 3: Block reuse after truncate");
     {
-        // Create a file to get a block allocated
+        const FILE_BYTES: usize = 256 * 1024;
         match fs::open_with_mode("/tmp/blockreuse.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
             Ok(fd) => {
-                // Write exactly 1KB to allocate one block
-                let data = [b'A'; 1024];
-                let _ = fs::write(fd, &data);
+                let before = fs::fstatfs(fd);
+                let chunk = [b'A'; 4096];
+                let mut written = 0usize;
+                while written < FILE_BYTES {
+                    match fs::write(fd, &chunk) {
+                        Ok(n) if n > 0 => written += n,
+                        _ => break,
+                    }
+                }
+                let after_write = fs::fstatfs(fd);
                 let _ = close(fd);
 
-                // Truncate it
                 match fs::open("/tmp/blockreuse.txt\0", O_WRONLY | O_TRUNC) {
                     Ok(fd2) => {
+                        let after_truncate = fs::fstatfs(fd2);
                         let _ = close(fd2);
+                        match (before, after_write, after_truncate) {
+                            _ if written != FILE_BYTES => {
+                                println!("FAILED: wrote {} of {} bytes", written, FILE_BYTES);
+                                tests_failed += 1;
+                            }
+                            (Ok(before), Ok(after_write), Ok(after_truncate))
+                                if before.f_bsize > 0 =>
+                            {
+                                let needed = FILE_BYTES as u64 / before.f_bsize as u64;
+                                let taken = before.f_bfree.saturating_sub(after_write.f_bfree);
+                                let missing = before.f_bfree.saturating_sub(after_truncate.f_bfree);
+                                println!(
+                                    "  free blocks: before={} after write={} after truncate={} (file needs {})",
+                                    before.f_bfree, after_write.f_bfree, after_truncate.f_bfree, needed
+                                );
+                                if taken * 2 < needed {
+                                    println!("FAILED: the write took {} blocks from the free count", taken);
+                                    tests_failed += 1;
+                                } else if missing * 2 > needed {
+                                    println!("FAILED: {} blocks still allocated after the truncate", missing);
+                                    tests_failed += 1;
+                                } else {
+                                    println!("  PASSED: truncate returned the file's blocks");
+                                }
+                            }
+                            (before, after_write, after_truncate) => {
+                                println!(
+                                    "FAILED: fstatfs: {:?} {:?} {:?}",
+                                    before.map(|stat| stat.f_bsize),
+                                    after_write.map(|stat| stat.f_bsize),
+                                    after_truncate.map(|stat| stat.f_bsize)
+                                );
+                                tests_failed += 1;
+                            }
+                        }
 
-                        // Now create another file - if blocks were freed, this should work
+                        // A new file allocates from the returned blocks.
                         match fs::open_with_mode("/tmp/blockreuse2.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
                             Ok(fd3) => {
                                 let data = [b'B'; 1024];
                                 match fs::write(fd3, &data) {
-                                    Ok(n) if n == 1024 => {
+                                    Ok(1024) => {
                                         println!("  PASSED: Block allocation works after truncate freed blocks");
                                     }
                                     Ok(n) => {
-                                        println!("  WARNING: Only wrote {} bytes", n);
+                                        println!("FAILED: wrote {} of 1024 bytes to the second file", n);
+                                        tests_failed += 1;
                                     }
                                     Err(_) => {
                                         println!("FAILED: Write to second file failed");
