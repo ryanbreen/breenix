@@ -6441,7 +6441,7 @@ mod idle_release_probe {
                 HELD_SINCE_MS.store(crate::time::get_monotonic_time(), Ordering::Release);
             }
         }
-        crate::tracing::output::raw_serial_str("IDLE_RELEASE_PROBE: holding\n");
+        crate::serial::write_str_bounded("IDLE_RELEASE_PROBE: holding\n");
         let masked = !x86_64::instructions::interrupts::are_enabled();
         // A request can be raised by an interrupt that does not reschedule on
         // its way out, so the pass ends only after a timer tick, which always
@@ -6452,9 +6452,7 @@ mod idle_release_probe {
             match requested_at {
                 Some(at) if tick != at => {
                     STATE.store(FINISHED, Ordering::Release);
-                    crate::tracing::output::raw_serial_str(
-                        "IDLE_RELEASE_PROBE: release kept its CPU\n",
-                    );
+                    crate::serial::write_str_bounded("IDLE_RELEASE_PROBE: release kept its CPU\n");
                     break;
                 }
                 None if super::is_need_resched() => requested_at = Some(tick),
