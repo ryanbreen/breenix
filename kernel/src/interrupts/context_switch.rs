@@ -51,17 +51,14 @@ pub fn raw_serial_char(c: u8) {
     }
 }
 
-/// Raw serial string output - no locks, no allocations.
+/// Serial string output that never blocks on a lock and allocates nothing.
 /// Use for boot markers in context switch path where locking would deadlock.
+/// The line is written under SERIAL1 when that is free within a bounded
+/// number of attempts, so with several CPUs printing it is not interleaved
+/// byte by byte with their output and lost from the boot stages.
 #[inline(always)]
 fn raw_serial_str(s: &str) {
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port: Port<u8> = Port::new(0x3F8);
-        for byte in s.bytes() {
-            port.write(byte);
-        }
-    }
+    crate::serial::write_str_bounded(s);
 }
 
 /// Raw serial decimal output - no locks, no allocations.

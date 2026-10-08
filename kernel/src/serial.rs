@@ -161,6 +161,36 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
     result
 }
 
+/// Write `s` to COM1 as one unit, from a path that must not block on a lock
+/// (an interrupt return, the syscall entry): try SERIAL1 for a bounded number
+/// of attempts, so the line is not interleaved byte by byte with another CPU's
+/// output, and write straight to the port if it stays busy.
+///
+/// SERIAL1 is held with interrupts masked (`_print`), so a holder on another
+/// CPU finishes its line and releases it; a holder on this CPU cannot be
+/// waited for, which the bound covers.
+pub fn write_str_bounded(s: &str) {
+    use core::fmt::Write;
+    const ATTEMPTS: u32 = 1 << 20;
+
+    crate::arch_without_interrupts(|| {
+        for _ in 0..ATTEMPTS {
+            if let Some(mut serial) = SERIAL1.try_lock() {
+                let _ = serial.write_str(s);
+                return;
+            }
+            core::hint::spin_loop();
+        }
+        // SAFETY: COM1's data port; the bytes may interleave with the holder's.
+        unsafe {
+            let mut port = x86_64::instructions::port::Port::<u8>::new(COM1_PORT);
+            for byte in s.bytes() {
+                port.write(byte);
+            }
+        }
+    });
+}
+
 /// Emergency print for panics - uses direct port I/O without locking
 /// WARNING: May corrupt output if racing with normal serial output
 #[allow(dead_code)]
