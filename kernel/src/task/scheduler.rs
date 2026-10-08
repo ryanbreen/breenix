@@ -1896,6 +1896,13 @@ pub struct Scheduler {
 
     /// Per-thread all-CPU grace targets for kernel-stack reclamation.
     retirement_grace: alloc::vec::Vec<RetirementGrace>,
+
+    /// Whether `schedule_deferred_requeue` drains the global per-CPU wake
+    /// inboxes (held pinned wakes and the ISR wakeup buffers). Only the live
+    /// scheduler may: a scheduler built by a boot test would take wakeups that
+    /// belong to the live one.
+    #[cfg(target_arch = "aarch64")]
+    drains_wake_inboxes: bool,
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
@@ -2006,6 +2013,8 @@ impl Scheduler {
             cpu_state,
             timer_heap: BinaryHeap::new(),
             retirement_grace: alloc::vec::Vec::new(),
+            #[cfg(target_arch = "aarch64")]
+            drains_wake_inboxes: true,
         };
 
         scheduler
@@ -2398,6 +2407,68 @@ impl Scheduler {
         self.cpu_state[Self::current_cpu_id()].idle_thread
     }
 
+    /// The CPU other than `cpu` that still owns `thread_id`, and how.
+    ///
+    /// Another CPU names a thread in `pending_next` from its selection to the
+    /// commit of the switch to it, and in `current_thread` from that commit
+    /// until the commit of its switch away. On ARM64 it then names the thread
+    /// in `previous_thread` until its next exception entry drains the deferred
+    /// requeue: until then it is still on the thread's kernel stack, in the
+    /// exception frame it returns through. The wake paths decline to queue a
+    /// thread in that interval. A second CPU that ran the thread in any of the
+    /// three would run it on the same kernel stack, from a context its first
+    /// CPU has not finished with. Idle threads are named only by their own CPU.
+    fn foreign_owner(&self, thread_id: u64, cpu: usize) -> Option<(usize, &'static str)> {
+        let owner = (0..MAX_CPUS).filter(|&other| other != cpu).find_map(|other| {
+            let state = &self.cpu_state[other];
+            if state.current_thread == Some(thread_id) {
+                Some((other, "runs"))
+            } else if state.pending_next == Some(thread_id) {
+                Some((other, "is being switched in"))
+            } else if state.previous_thread == Some(thread_id) {
+                Some((other, "is being switched out"))
+            } else {
+                None
+            }
+        })?;
+        if self.cpu_state.iter().any(|state| state.idle_thread == thread_id) {
+            return None;
+        }
+        Some(owner)
+    }
+
+    /// Stop the kernel before a thread is dispatched while another CPU still
+    /// owns it (`foreign_owner`).
+    ///
+    /// Both scheduling paths call this for the thread they have selected,
+    /// before marking it Running.
+    fn assert_no_foreign_owner(&self, thread_id: u64, cpu: usize) {
+        if let Some((other, how)) = self.foreign_owner(thread_id, cpu) {
+            panic!(
+                "scheduler: thread {} selected on CPU {} while it {} on CPU {}",
+                thread_id, cpu, how, other
+            );
+        }
+    }
+
+    /// Mark the selected thread Running, stopping the kernel if it is
+    /// Terminated.
+    ///
+    /// A Terminated thread is a teardown token or a dead thread. `set_running`
+    /// would overwrite the Terminated state that the dispatch path checks, so a
+    /// selected Terminated thread would be dispatched anyway (#1173).
+    fn set_selected_running(thread: &mut Thread, cpu: usize) {
+        if thread.state == ThreadState::Terminated {
+            panic!(
+                "scheduler: terminated thread {} selected on CPU {}",
+                thread.id(),
+                cpu
+            );
+        }
+        thread.set_running();
+        thread.run_start_ticks = crate::time::get_ticks();
+    }
+
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
@@ -2613,19 +2684,41 @@ impl Scheduler {
         }
 
         // Important: Don't skip if it's the same thread when there are other threads waiting
-        // This was causing the issue where yielding wouldn't switch to other ready threads
+        // This was causing the issue where yielding wouldn't switch to other ready threads.
+        // An idle CPU whose search fell through to idle has already declined every
+        // queued entry and takes no second pick (#1173).
         let any_queued = self.per_cpu_queues.iter().any(|q| !q.is_empty());
-        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread && any_queued {
+        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread
+            && next_thread_id != self.cpu_state[current_cpu].idle_thread
+            && any_queued
+        {
             // Put current thread back in its CPU queue and get the next one
             self.per_cpu_queues[current_cpu].push_back(next_thread_id);
-            // Pop from local queue first; fall back to any CPU
+            // Pop from local queue first; fall back to any CPU. A Terminated
+            // entry is declined here exactly as in the search above.
             next_thread_id = {
                 let mut found = None;
                 #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
                 let mut retained_injector = false;
-                if let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
+                let local_candidates = self.per_cpu_queues[current_cpu].len();
+                for _ in 0..local_candidates {
+                    let Some(n) = self.per_cpu_queues[current_cpu].pop_front() else {
+                        break;
+                    };
+                    let (terminated, owner_pid) = self
+                        .get_thread(n)
+                        .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
+                        .unwrap_or((false, None));
+                    if terminated {
+                        if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                            self.per_cpu_queues[current_cpu].push_back(n);
+                        }
+                        continue;
+                    }
                     found = Some(n);
-                } else {
+                    break;
+                }
+                if found.is_none() {
                     for steal_cpu in 0..MAX_CPUS {
                         if steal_cpu == current_cpu {
                             continue;
@@ -2660,6 +2753,18 @@ impl Scheduler {
                                 continue;
                             }
                             if self.retain_cpu_affine_thread(n, current_cpu) {
+                                continue;
+                            }
+                            let (terminated, owner_pid) = self
+                                .get_thread(n)
+                                .map(|thread| {
+                                    (thread.state == ThreadState::Terminated, thread.owner_pid)
+                                })
+                                .unwrap_or((false, None));
+                            if terminated {
+                                if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                                    self.per_cpu_queues[steal_cpu].push_back(n);
+                                }
                                 continue;
                             }
                             found = Some(n);
@@ -2754,6 +2859,8 @@ impl Scheduler {
             }
         }
 
+        self.assert_no_foreign_owner(next_thread_id, current_cpu);
+
         // If current is idle and we have a real next thread, allow switch even if idle
         let old_thread_id = self.cpu_state[current_cpu]
             .current_thread
@@ -2773,8 +2880,7 @@ impl Scheduler {
 
         // Mark new thread as running
         if let Some(next) = self.get_thread_mut(next_thread_id) {
-            next.set_running();
-            next.run_start_ticks = crate::time::get_ticks();
+            Self::set_selected_running(next, current_cpu);
         }
         self.note_dispatch_for_wake_promotion(current_cpu, next_thread_id);
 
@@ -2934,7 +3040,9 @@ impl Scheduler {
         let cpu = Self::current_cpu_id();
         self.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
-        self.deliver_pinned_wakes_for_this_cpu();
+        if self.drains_wake_inboxes {
+            self.deliver_pinned_wakes_for_this_cpu();
+        }
         self.resolve_pending_next_locked(cpu);
 
         let current_is_idle =
@@ -2956,7 +3064,7 @@ impl Scheduler {
         // here via isr_unblock_for_io() to avoid spinning on SCHEDULER from ISR
         // context.  We drain ALL CPUs' buffers because the ISR that completed the
         // I/O may have run on any CPU.
-        {
+        if self.drains_wake_inboxes {
             let mut wakeups = alloc::vec::Vec::new();
             for buf in ISR_WAKEUP_BUFFERS.iter() {
                 buf.drain(&mut wakeups);
@@ -3165,19 +3273,46 @@ impl Scheduler {
             self.ready_queue_length() as u32,
         );
 
-        // Handle same-thread cases
+        // Handle same-thread cases.
+        //
+        // The second pick below is for a current thread that the search above
+        // popped off a queue while other threads wait. Idle is never queued, so
+        // an idle CPU whose search fell through to idle has already been offered
+        // every queued entry and declined them all -- teardown tokens of threads
+        // that are still running elsewhere among them -- and must not pick again
+        // (#1173).
         let any_other_queued = self.per_cpu_queues.iter().any(|q| !q.is_empty());
-        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread && any_other_queued {
+        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread
+            && next_thread_id != self.cpu_state[current_cpu].idle_thread
+            && any_other_queued
+        {
             // Current thread was popped but other threads are waiting.
             // DON'T push current back to queue yet — defer until after context save.
             // Just pop the next different thread.
             should_requeue_old = true;
-            // Try local queue first, then steal
+            // Try local queue first, then steal. A Terminated entry is declined
+            // here exactly as in the search above.
             next_thread_id = {
                 let mut found = None;
-                if let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
+                let local_candidates = self.per_cpu_queues[current_cpu].len();
+                for _ in 0..local_candidates {
+                    let Some(n) = self.per_cpu_queues[current_cpu].pop_front() else {
+                        break;
+                    };
+                    let (terminated, owner_pid) = self
+                        .get_thread(n)
+                        .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
+                        .unwrap_or((false, None));
+                    if terminated {
+                        if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                            self.per_cpu_queues[current_cpu].push_back(n);
+                        }
+                        continue;
+                    }
                     found = Some(n);
-                } else {
+                    break;
+                }
+                if found.is_none() {
                     for steal_cpu in 0..MAX_CPUS {
                         if steal_cpu == current_cpu {
                             continue;
@@ -3213,6 +3348,18 @@ impl Scheduler {
                             if self.retain_cpu_affine_thread(n, current_cpu) {
                                 continue;
                             }
+                            let (terminated, owner_pid) = self
+                                .get_thread(n)
+                                .map(|thread| {
+                                    (thread.state == ThreadState::Terminated, thread.owner_pid)
+                                })
+                                .unwrap_or((false, None));
+                            if terminated {
+                                if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                                    self.per_cpu_queues[steal_cpu].push_back(n);
+                                }
+                                continue;
+                            }
                             found = Some(n);
                             break;
                         }
@@ -3220,7 +3367,21 @@ impl Scheduler {
                 }
                 match found {
                     Some(id) => id,
-                    None => return None,
+                    None => {
+                        // Everything queued was declined -- teardown tokens
+                        // among them -- so the current thread keeps this CPU.
+                        // It was published Ready above; it is still running.
+                        let current_id = self.cpu_state[current_cpu]
+                            .current_thread
+                            .unwrap_or(self.cpu_state[current_cpu].idle_thread);
+                        if self.cpu_state[current_cpu].previous_thread == Some(current_id) {
+                            self.cpu_state[current_cpu].previous_thread = None;
+                        }
+                        if let Some(t) = self.get_thread_mut(current_id) {
+                            t.set_running();
+                        }
+                        return None;
+                    }
                 }
             };
         } else if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread {
@@ -3289,9 +3450,9 @@ impl Scheduler {
         // shows the old thread as "current", unblock() will see is_current_on_any_cpu()=true
         // and skip the ready_queue addition (the CPU running the thread will handle it).
 
+        self.assert_no_foreign_owner(next_thread_id, current_cpu);
         if let Some(next) = self.get_thread_mut(next_thread_id) {
-            next.set_running();
-            next.run_start_ticks = crate::time::get_ticks();
+            Self::set_selected_running(next, current_cpu);
         }
         self.note_dispatch_for_wake_promotion(current_cpu, next_thread_id);
         self.cpu_state[current_cpu].pending_next = Some(next_thread_id);
@@ -7407,6 +7568,193 @@ pub fn block_current_departure_gate_test() -> crate::test_framework::registry::T
         Some(Err(reason)) => TestResult::Fail(reason),
         None => TestResult::Fail("departure gate could not reach the scheduler"),
     }
+}
+
+/// Boot test for #1173: a scheduling pass must not dispatch the teardown token
+/// of a thread that still runs on another CPU.
+///
+/// The ARM64 EL0 fault kill path marks the faulting thread Terminated and
+/// queues its teardown token in `terminate_process_threads`, and publishes the
+/// exit kick only afterwards, in `send_exit_expedite_sgi`; the thread is still
+/// this CPU's `current_thread` in between. A peer that schedules in that gap
+/// meets the token with its kick unobserved. Rather than wait for a peer to
+/// land in the gap, the test builds that state in a scheduler of its own and
+/// runs the real ARM64 selection on it, on this CPU, twice:
+///
+/// * this CPU is idle, so its search declines the token and falls through to
+///   idle -- the same-thread branch took a second pick from there and
+///   dispatched the token;
+/// * this CPU runs a thread that was queued again while running, ahead of the
+///   token -- the same-thread branch's second pick met the token as its next
+///   entry.
+///
+/// Either way the dying thread must stay Terminated and its token queued.
+#[cfg(feature = "boot_tests")]
+pub fn idle_pick_teardown_token_gate_test() -> crate::test_framework::registry::TestResult {
+    use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "aarch64")]
+    {
+        without_interrupts(|| {
+            let cpu = Scheduler::current_cpu_id();
+            let was_idle = is_cpu_idle(cpu);
+            let result =
+                teardown_token_pick(cpu, false).and_then(|()| teardown_token_pick(cpu, true));
+            set_cpu_idle(cpu, was_idle);
+            match result {
+                Ok(()) => TestResult::Pass,
+                Err(reason) => TestResult::Fail(reason),
+            }
+        })
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        TestResult::Pass
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+fn boot_test_thread(privilege: ThreadPrivilege) -> Result<Box<Thread>, &'static str> {
+    fn never_runs() {}
+    let id = allocate_thread_id().ok_or("no thread id for the test scheduler")?;
+    let thread = Thread::new_with_id(
+        id,
+        alloc::string::String::from("sched-test"),
+        never_runs,
+        VirtAddr::new(0x2000),
+        VirtAddr::new(0x1000),
+        VirtAddr::new(0),
+        privilege,
+    );
+    Ok(Box::new(thread))
+}
+
+/// One pass of `idle_pick_teardown_token_gate_test`, in a scheduler built for
+/// it. `cpu` is the CPU the pass runs on; `running_requeued` selects the case
+/// where `cpu` runs a queued thread instead of idling.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'static str> {
+    // A pid no process has, so its exit kick is never published.
+    const DYING_PID: u64 = u64::MAX - 1173;
+    let other = if cpu == 0 { 1 } else { 0 };
+
+    let mut idle = boot_test_thread(ThreadPrivilege::Kernel)?;
+    idle.set_running();
+    let idle_id = idle.id();
+    let mut sched = Scheduler::new(idle);
+    sched.drains_wake_inboxes = false;
+    sched.cpu_state[0].current_thread = None;
+    sched.cpu_state[0].idle_thread = 0;
+    sched.cpu_state[cpu].idle_thread = idle_id;
+    sched.cpu_state[cpu].current_thread = Some(idle_id);
+
+    let mut dying = boot_test_thread(ThreadPrivilege::User)?;
+    dying.set_terminated();
+    dying.owner_pid = Some(DYING_PID);
+    let dying_id = dying.id();
+    sched.threads.push(dying);
+    sched.cpu_state[other].current_thread = Some(dying_id);
+
+    let mut running_id = None;
+    if running_requeued {
+        let mut running = boot_test_thread(ThreadPrivilege::Kernel)?;
+        running.set_running();
+        let id = running.id();
+        sched.threads.push(running);
+        sched.cpu_state[cpu].current_thread = Some(id);
+        sched.per_cpu_queues[cpu].push_back(id);
+        running_id = Some(id);
+    }
+    sched.per_cpu_queues[cpu].push_back(dying_id);
+
+    if let Some((_, next, _)) = sched.schedule_deferred_requeue() {
+        if next == dying_id {
+            return Err("a scheduling pass dispatched a teardown token whose thread runs on another CPU");
+        }
+        return Err("a scheduling pass switched away with nothing but a teardown token to run");
+    }
+    if sched.get_thread(dying_id).map(|t| t.state) != Some(ThreadState::Terminated) {
+        return Err("a scheduling pass changed a teardown token's Terminated state");
+    }
+    let queued: alloc::vec::Vec<u64> = sched.per_cpu_queues.iter().flatten().copied().collect();
+    if queued != [dying_id] {
+        return Err("a scheduling pass left the queues holding more or less than the teardown token");
+    }
+    if let Some(id) = running_id {
+        if sched.get_thread(id).map(|t| t.state) != Some(ThreadState::Running)
+            || sched.cpu_state[cpu].previous_thread.is_some()
+        {
+            return Err("the running thread kept its CPU but was left published as switching out");
+        }
+    }
+    Ok(())
+}
+
+/// Boot test for the ownership records the dispatch assertion reads
+/// (`Scheduler::foreign_owner`).
+///
+/// The record it must not miss is the ARM64 switch-out one: after
+/// `commit_cpu_state_after_save` the old CPU names the outgoing thread only in
+/// `previous_thread`, while it still returns through the exception frame on
+/// that thread's kernel stack. The selecting CPU's own records are not a
+/// foreign owner, and neither is any CPU's idle thread.
+#[cfg(feature = "boot_tests")]
+pub fn switched_out_owner_gate_test() -> crate::test_framework::registry::TestResult {
+    use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "aarch64")]
+    {
+        match switched_out_owner() {
+            Ok(()) => TestResult::Pass,
+            Err(reason) => TestResult::Fail(reason),
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        TestResult::Pass
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+fn switched_out_owner() -> Result<(), &'static str> {
+    const SELECTING: usize = 1;
+    const OWNER: usize = 2;
+
+    let mut idle = boot_test_thread(ThreadPrivilege::Kernel)?;
+    idle.set_running();
+    let idle_id = idle.id();
+    let mut sched = Scheduler::new(idle);
+    let thread = boot_test_thread(ThreadPrivilege::User)?;
+    let tid = thread.id();
+    sched.threads.push(thread);
+
+    if sched.foreign_owner(tid, SELECTING).is_some() {
+        return Err("a thread no CPU names was reported owned by another CPU");
+    }
+    sched.cpu_state[SELECTING].previous_thread = Some(tid);
+    sched.cpu_state[SELECTING].pending_next = Some(tid);
+    if sched.foreign_owner(tid, SELECTING).is_some() {
+        return Err("the selecting CPU's own records were reported as another CPU's");
+    }
+    sched.cpu_state[SELECTING].previous_thread = None;
+    sched.cpu_state[SELECTING].pending_next = None;
+
+    sched.cpu_state[OWNER].previous_thread = Some(tid);
+    if sched.foreign_owner(tid, SELECTING) != Some((OWNER, "is being switched out")) {
+        return Err("a thread another CPU is still switching out was not reported owned by it");
+    }
+    sched.cpu_state[OWNER].previous_thread = None;
+    sched.cpu_state[OWNER].pending_next = Some(tid);
+    if sched.foreign_owner(tid, SELECTING) != Some((OWNER, "is being switched in")) {
+        return Err("a thread another CPU has selected was not reported owned by it");
+    }
+    sched.cpu_state[OWNER].pending_next = None;
+    sched.cpu_state[OWNER].current_thread = Some(tid);
+    if sched.foreign_owner(tid, SELECTING) != Some((OWNER, "runs")) {
+        return Err("a thread another CPU runs was not reported owned by it");
+    }
+    if sched.foreign_owner(idle_id, SELECTING).is_some() {
+        return Err("an idle thread was reported owned by another CPU");
+    }
+    Ok(())
 }
 
 /// Drive real scheduler boundaries on every online CPU for teardown grace-period
