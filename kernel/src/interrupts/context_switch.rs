@@ -369,6 +369,9 @@ pub extern "C" fn check_need_resched_and_switch(
     if idle_cpu && !scheduler::x86_idle_pass() {
         return;
     }
+    // A return to Ring 3, or an idle CPU with work queued, that finds the
+    // process manager busy retries as soon as interrupts are enabled again.
+    let retry_when_busy = from_userspace || idle_cpu;
     // Note: Debug logging removed from hot path - use GDB if debugging is needed
 
     // Both entry paths must resolve the process-manager dependency BEFORE committing
@@ -391,7 +394,7 @@ pub extern "C" fn check_need_resched_and_switch(
         None => {
             note_dispatch_guard_unavailable();
             scheduler::set_need_resched();
-            if from_userspace || idle_cpu {
+            if retry_when_busy {
                 scheduler::retry_after_interrupts_x86();
             }
             return;
