@@ -248,14 +248,28 @@ impl PendingProcessReclaim {
     /// sends nothing. A peer whose saved user-return CR3 names a root keeps
     /// it (see `release_root_on_other_cpus`), so the shadow proof is taken
     /// again once every peer has answered: returns whether it still holds.
+    ///
+    /// A peer that kept a root in that round can retire its shadow (by
+    /// dispatching idle) before the proof is retaken, and still have the root
+    /// in CR3: it never left it. So once no shadow names a root, a second
+    /// round is sent. Nothing can name a dead root in a shadow again, so that
+    /// round moves every peer still on one, and a frame freed after it is not
+    /// a CPU's page-table root.
     #[cfg(target_arch = "x86_64")]
     fn release_root_on_peers(&self) -> bool {
-        for page_table in self.page_table.iter().chain(self.old_page_tables.iter()) {
-            crate::memory::tlb::release_root_on_other_cpus(
-                page_table.level_4_frame().start_address().as_u64(),
-            );
+        let release = || {
+            for page_table in self.page_table.iter().chain(self.old_page_tables.iter()) {
+                crate::memory::tlb::release_root_on_other_cpus(
+                    page_table.level_4_frame().start_address().as_u64(),
+                );
+            }
+        };
+        release();
+        if shadow_root_is_live(self, self.after_epoch.online_mask) {
+            return false;
         }
-        !shadow_root_is_live(self, self.after_epoch.online_mask)
+        release();
+        true
     }
 
     fn live_row_names_root(&self) -> bool {
