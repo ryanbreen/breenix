@@ -1724,10 +1724,12 @@ fn check_and_deliver_signals_for_current_thread(
         return;
     }
 
-    // Try to acquire process manager lock
-    let mut manager_guard = match crate::process::try_manager() {
+    // This returns to Ring 3, so the interrupted code holds no lock: a busy
+    // process manager is held on another CPU, and is waited for. Skipping
+    // here put a signal off to a later return that could find it busy again.
+    let mut manager_guard = match crate::process::manager_unless_held_here() {
         Some(guard) => guard,
-        None => return, // Lock held, skip signal check this time
+        None => return,
     };
 
     // Track if signal termination happened (for parent notification after borrow ends)

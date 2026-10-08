@@ -397,6 +397,26 @@ pub fn pm_held_on_this_cpu() -> Option<PmHeldOnThisCpu> {
     process_manager_held_on_current_cpu().then_some(PmHeldOnThisCpu(()))
 }
 
+/// x86_64: `try_manager()` that waits out a holder on another CPU. `None` only
+/// when the lock is held on this CPU, by the code the caller interrupted.
+///
+/// For a caller that holds no other lock a holder may need: a return to user
+/// mode, or a fault taken from it. With one CPU a busy lock always meant the
+/// holder was the interrupted code; with several it is usually another CPU,
+/// which finishes and releases it.
+#[cfg(target_arch = "x86_64")]
+pub fn manager_unless_held_here() -> Option<TryProcessManagerGuard> {
+    loop {
+        if let Some(guard) = try_manager() {
+            return Some(guard);
+        }
+        if pm_held_on_this_cpu().is_some() {
+            return None;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// Execute a function with the process manager while interrupts are disabled
 /// This prevents deadlock when the timer interrupt tries to access the process manager
 #[cfg(target_arch = "x86_64")]

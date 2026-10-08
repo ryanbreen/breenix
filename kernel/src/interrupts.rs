@@ -640,16 +640,7 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
         }
         // Ring 3 holds no lock, so a busy process manager is held on another
         // CPU and is waited for.
-        let mut guard = loop {
-            if let Some(guard) = crate::process::try_manager() {
-                break Some(guard);
-            }
-            if crate::process::pm_held_on_this_cpu().is_some() {
-                break None;
-            }
-            core::hint::spin_loop();
-        };
-        if let Some(guard) = guard.as_mut() {
+        if let Some(mut guard) = crate::process::manager_unless_held_here() {
             if let Some(manager) = guard.as_mut() {
                 let tid = crate::per_cpu::current_thread_id_lock_free();
                 let cr3 = x86_64::registers::control::Cr3::read()
@@ -1024,14 +1015,8 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
     // A holder on another CPU is waited for. A holder on this CPU is the
     // section this fault interrupted, which cannot be waited for; no stack is
     // grown on its behalf.
-    let mut guard = loop {
-        if let Some(guard) = crate::process::try_manager() {
-            break guard;
-        }
-        if crate::process::pm_held_on_this_cpu().is_some() {
-            return false;
-        }
-        core::hint::spin_loop();
+    let Some(mut guard) = crate::process::manager_unless_held_here() else {
+        return false;
     };
 
     let pm = match guard.as_mut() {
