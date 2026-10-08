@@ -4,7 +4,7 @@ use crate::task::scheduler::MAX_CPUS;
 use conquer_once::spin::OnceCell;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
-use x86_64::{PrivilegeLevel, VirtAddr};
+use x86_64::VirtAddr;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const PAGE_FAULT_IST_INDEX: u16 = 1;
@@ -34,11 +34,6 @@ struct Selectors {
     user_code_selector: SegmentSelector,
     user_data_selector: SegmentSelector,
 }
-
-// Export user segment selectors for context switching
-// These will be initialized dynamically when GDT is created
-pub static mut USER_CODE_SELECTOR: SegmentSelector = SegmentSelector::new(0, PrivilegeLevel::Ring0);
-pub static mut USER_DATA_SELECTOR: SegmentSelector = SegmentSelector::new(0, PrivilegeLevel::Ring0);
 
 /// Raw pointer to logical CPU `cpu`'s TSS. Panics past `MAX_CPUS`.
 pub fn tss_ptr(cpu: usize) -> *mut TaskStateSegment {
@@ -95,8 +90,6 @@ pub fn load(cpu: usize) {
         DS::set_reg(data_selector);
         SS::set_reg(data_selector);
         load_tss(tss_selector);
-        USER_CODE_SELECTOR = user_code_selector;
-        USER_DATA_SELECTOR = user_data_selector;
     }
 }
 
