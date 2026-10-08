@@ -64,6 +64,29 @@ impl DeferredFaultExitBuffer {
 static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; scheduler::MAX_CPUS] =
     [const { DeferredFaultExitBuffer::new() }; scheduler::MAX_CPUS];
 
+/// Deferred fault exits that found their CPU's ring full. Locked only with
+/// interrupts masked, and the heap masks interrupts while it is held, so a
+/// fault handler can push here whatever it interrupted.
+static DEFERRED_FAULT_EXIT_OVERFLOW: spin::Mutex<alloc::vec::Vec<u64>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
+
+fn spill_fault_exit(thread_id: u64) -> bool {
+    crate::arch_without_interrupts(|| {
+        let mut overflow = DEFERRED_FAULT_EXIT_OVERFLOW.lock();
+        if overflow.try_reserve(1).is_err() {
+            return false;
+        }
+        overflow.push(thread_id);
+        true
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn fault_exits_pending() -> bool {
+    !DEFERRED_FAULT_EXIT_BUFFERS.iter().all(|buf| buf.is_empty())
+        || crate::arch_without_interrupts(|| !DEFERRED_FAULT_EXIT_OVERFLOW.lock().is_empty())
+}
+
 pub(crate) struct PendingProcessReclaim {
     pid: u64,
     page_table: Option<alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>>,
@@ -1074,6 +1097,9 @@ fn next_reclaim_pass_id(mut pass: u32) -> u32 {
 }
 
 /// Defer a SIGSEGV-style process exit for a user thread that faulted in kernel mode.
+///
+/// Returns false only when this CPU's ring is full and the heap could not
+/// grow the overflow list; the exit is then lost and the caller says so.
 pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     #[cfg(target_arch = "aarch64")]
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
@@ -1084,7 +1110,7 @@ pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     };
 
     let idx = cpu.min(DEFERRED_FAULT_EXIT_BUFFERS.len().saturating_sub(1));
-    let queued = DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id);
+    let queued = DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id) || spill_fault_exit(thread_id);
     #[cfg(target_arch = "x86_64")]
     if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
         crate::task::kthread::kthread_unpark(daemon);
@@ -1098,6 +1124,7 @@ pub fn drain_deferred_fault_sigsegv_exits() {
     for buf in &DEFERRED_FAULT_EXIT_BUFFERS {
         buf.drain(&mut tids);
     }
+    crate::arch_without_interrupts(|| tids.append(&mut DEFERRED_FAULT_EXIT_OVERFLOW.lock()));
     for tid in tids {
         ProcessScheduler::handle_thread_exit(tid, -11);
     }
@@ -1127,9 +1154,7 @@ pub fn start_fault_exit_daemon() {
 fn fault_exit_daemon() {
     loop {
         drain_deferred_fault_sigsegv_exits();
-        crate::task::kthread::kthread_park_if(|| {
-            DEFERRED_FAULT_EXIT_BUFFERS.iter().all(|buf| buf.is_empty())
-        });
+        crate::task::kthread::kthread_park_if(|| !fault_exits_pending());
     }
 }
 

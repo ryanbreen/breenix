@@ -394,7 +394,10 @@ counter!(
     EXIT_ATTRIBUTION_UNCERTAIN,
     "Neither CR3 nor dispatched TID resolved a fault victim"
 );
-counter!(DEFERRED_FAULT_RING_DROPPED, "Dropped deferred fault exits");
+counter!(
+    DEFERRED_FAULT_RING_DROPPED,
+    "Deferred fault exits that found their CPU's ring full"
+);
 counter!(
     RECLAIM_ENQUEUE_UNDER_PM,
     "Reclaim enqueues under process manager"
