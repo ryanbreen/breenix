@@ -245,6 +245,41 @@ static EXTERNAL_LEAF_SPANS: Mutex<[ExternalLeafSpan; MAX_EXTERNAL_LEAF_SPANS]> =
 /// refuse at the exact boundary rather than reallocating.
 static FREE_FRAMES: Mutex<Vec<PhysFrame>> = Mutex::new(Vec::new());
 
+/// x86_64: the logical CPU holding `FREE_FRAMES` through `with_free_frames`,
+/// or `usize::MAX`.
+#[cfg(target_arch = "x86_64")]
+static FREE_FRAMES_OWNER: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// x86_64: run `f` on the free list. A holder on another CPU is waited for;
+/// `f` gets `None` only when this CPU already holds it, which happens when the
+/// capacity reservation below grows the heap and the heap allocates a frame.
+///
+/// The list used to be try-locked everywhere. With one CPU a busy lock could
+/// only mean such nesting, and the fallbacks fit it: an allocation took the
+/// next frame past the frontier, a return was dropped. With several CPUs it
+/// is usually held by another CPU for a push or a pop, and every frame
+/// returned while it was held was lost: free in the ledger, on no list.
+/// Interrupts are masked for the hold, so no holder is ever interrupted or
+/// switched out with it held.
+#[cfg(target_arch = "x86_64")]
+fn with_free_frames<R>(f: impl FnOnce(Option<&mut Vec<PhysFrame>>) -> R) -> R {
+    crate::arch_without_interrupts(|| {
+        let me = crate::per_cpu::cpu_id();
+        loop {
+            if let Some(mut free_list) = FREE_FRAMES.try_lock() {
+                FREE_FRAMES_OWNER.store(me, Ordering::Relaxed);
+                let result = f(Some(&mut free_list));
+                FREE_FRAMES_OWNER.store(usize::MAX, Ordering::Relaxed);
+                return result;
+            }
+            if FREE_FRAMES_OWNER.load(Ordering::Relaxed) == me {
+                return f(None);
+            }
+            core::hint::spin_loop();
+        }
+    })
+}
+
 /// Test-only flag to simulate OOM conditions
 ///
 /// When set to true, allocate_frame() will return None to simulate out-of-memory.
@@ -638,17 +673,27 @@ fn ensure_free_frame_capacity(required: usize) -> PrepareFrame {
     if FREE_FRAME_CAPACITY.load(Ordering::Acquire) >= required {
         return PrepareFrame::Ready;
     }
-    let Some(mut free_list) = FREE_FRAMES.try_lock() else {
-        return PrepareFrame::Contended;
-    };
-    if free_list.capacity() < required {
-        let additional = required.saturating_sub(free_list.len());
-        if free_list.try_reserve(additional).is_err() {
-            return PrepareFrame::Exhausted;
+    let reserve = |free_list: &mut Vec<PhysFrame>| {
+        if free_list.capacity() < required {
+            let additional = required.saturating_sub(free_list.len());
+            if free_list.try_reserve(additional).is_err() {
+                return PrepareFrame::Exhausted;
+            }
         }
+        FREE_FRAME_CAPACITY.store(free_list.capacity(), Ordering::Release);
+        PrepareFrame::Ready
+    };
+    #[cfg(target_arch = "x86_64")]
+    {
+        with_free_frames(|free_list| free_list.map_or(PrepareFrame::Contended, reserve))
     }
-    FREE_FRAME_CAPACITY.store(free_list.capacity(), Ordering::Release);
-    PrepareFrame::Ready
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let Some(mut free_list) = FREE_FRAMES.try_lock() else {
+            return PrepareFrame::Contended;
+        };
+        reserve(&mut free_list)
+    }
 }
 
 fn prepare_frame_for_allocation(index: usize) -> PrepareFrame {
@@ -860,7 +905,12 @@ fn allocate_candidate() -> Option<PhysFrame> {
     }
 
     // Try to reuse a frame from the free list (all architectures).
+    #[cfg(target_arch = "x86_64")]
+    if let Some(frame) = with_free_frames(|free_list| free_list.and_then(|list| list.pop())) {
+        return Some(frame);
+    }
     // Uses try_lock() to avoid deadlock if called from interrupt context.
+    #[cfg(not(target_arch = "x86_64"))]
     if let Some(mut free_list) = FREE_FRAMES.try_lock() {
         if let Some(frame) = free_list.pop() {
             log::trace!(
@@ -1140,7 +1190,7 @@ pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {
         }
     }
 
-    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
+    let push = |free_list: &mut Vec<PhysFrame>| {
         // This explicit boundary check is the release-build proof that push
         // cannot grow the Vec on any ledger-backed return path.
         if free_list.len() == free_list.capacity() {
@@ -1148,6 +1198,16 @@ pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {
         }
         free_list.push(lease.frame);
         ReturnOutcome::Returned
+    };
+    #[cfg(target_arch = "x86_64")]
+    {
+        with_free_frames(|free_list| {
+            free_list.map_or_else(|| counted(ReturnOutcome::LostContended), push)
+        })
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
+        push(&mut free_list)
     } else {
         counted(ReturnOutcome::LostContended)
     }
