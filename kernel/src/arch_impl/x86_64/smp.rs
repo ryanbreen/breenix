@@ -114,6 +114,28 @@ static SOURCE: AtomicU32 = AtomicU32::new(SOURCE_NOT_RUN);
 /// Set by the first `init()`, so a second call cannot emit a second marker.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// User-thread dispatches each logical CPU has made: switches that installed a
+/// user thread as the CPU's current thread.
+static USER_DISPATCHES: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Count a dispatch of a user thread on logical CPU `cpu`. One relaxed add.
+#[inline]
+pub fn note_user_dispatch(cpu: usize) {
+    if cpu < MAX_CPUS {
+        USER_DISPATCHES[cpu].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Print how many user-thread dispatches each online CPU made.
+pub fn report_user_dispatches() {
+    let mut line = alloc::string::String::new();
+    for cpu in (0..MAX_CPUS).filter(|&cpu| is_cpu_online(cpu)) {
+        let count = USER_DISPATCHES[cpu].load(Ordering::Relaxed);
+        line.push_str(&alloc::format!(" cpu{}={}", cpu, count));
+    }
+    log::info!("[smp] user-thread dispatches per CPU:{}", line);
+}
+
 /// Number of processors online. Mirrors
 /// `crate::arch_impl::aarch64::smp::cpus_online()`.
 #[inline(always)]

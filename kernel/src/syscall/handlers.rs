@@ -280,6 +280,8 @@ pub(crate) fn report_userspace_completion() {
             crate::task::exit_tally::FailureList::new(failures, nonzero),
             crate::task::exit_tally::started()
         );
+        #[cfg(target_arch = "x86_64")]
+        crate::arch_impl::x86_64::smp::report_user_dispatches();
 
         if nonzero == 0 {
             report_line!(info, "=====================================");

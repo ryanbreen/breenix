@@ -845,6 +845,7 @@ fn switch_to_thread(
             scheduler::set_need_resched();
             return;
         }
+        crate::arch_impl::x86_64::smp::note_user_dispatch(crate::per_cpu::cpu_id());
     }
 
     // Check if this is the idle thread
