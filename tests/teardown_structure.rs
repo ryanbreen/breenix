@@ -3793,7 +3793,8 @@ let _same_line = "needle"; let _real = needle();
 
 #[rustfmt::skip]
 const TERMINATE_CALLS: &[(&str, &str, usize)] = &[
-    ("kernel/src/interrupts/context_switch.rs", "fn restore_userspace_thread_context", 1),
+    // A user context that cannot be restored takes the deferred SIGSEGV exit;
+    // restore_userspace_thread_context no longer terminates the row itself.
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn exit_process_locked", 1),
     ("kernel/src/signal/delivery.rs", "fn deliver_default_action", 2),
 ];
