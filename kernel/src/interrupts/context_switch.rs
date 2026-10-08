@@ -357,8 +357,17 @@ pub extern "C" fn check_need_resched_and_switch(
     // first ring-3 entry then aborted for want of this very lock, requeue the
     // thread and re-arm need_resched, forever. Refusing here leaves the
     // lock-holding context - the only one that can release it - running.
-    // try_lock only: blocking here would deadlock the interrupt path.
-    let mut process_manager_guard = match crate::process::try_manager() {
+    // try_lock only: blocking here would deadlock the interrupt path. An
+    // interrupt from Ring 3 interrupted no holder, so a busy lock there is held
+    // on another CPU and is waited for; refusing would leave the reschedule,
+    // and the signal delivery behind it, to a later return that could find it
+    // busy again.
+    let process_manager_guard = if from_userspace {
+        crate::process::manager_unless_held_here()
+    } else {
+        crate::process::try_manager()
+    };
+    let mut process_manager_guard = match process_manager_guard {
         Some(guard) => {
             note_dispatch_guard_available();
             guard
