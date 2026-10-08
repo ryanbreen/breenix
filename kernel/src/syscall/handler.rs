@@ -630,8 +630,8 @@ pub extern "C" fn trace_iretq_to_ring3(_frame_ptr: *const u64) {
 /// a timer interrupt fires.
 ///
 /// PERFORMANCE NOTE: This function uses try_manager() to avoid blocking if the
-/// process manager lock is held. If the lock is unavailable, signals will be
-/// delivered on the next timer interrupt instead.
+/// process manager lock is held. If the lock is unavailable, it requests the
+/// reschedule check on this return, whose signal delivery runs before Ring 3.
 fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
     // A stop holds the thread, outside PM, until SIGCONT; what is pending then
     // is checked again, in this loop rather than by recursion.
@@ -658,9 +658,12 @@ fn deliver_signals_on_syscall_return(frame: &mut SyscallFrame) -> bool {
     let mut manager_guard = match crate::process::try_manager() {
         Some(guard) => guard,
         None => {
-            // Lock held, skip signal check - will happen on next timer
-            // interrupt. A deferred SIGKILL cannot wait for that.
+            // Lock held: the signal check moves to this return's reschedule
+            // check (syscall/entry.asm), which delivers before Ring 3 and
+            // waits out a holder on another CPU. A deferred SIGKILL cannot
+            // wait for that.
             crate::signal::delivery::exit_if_killed_on_syscall_return();
+            crate::per_cpu::set_need_resched(true);
             return false;
         }
     };
