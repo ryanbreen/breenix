@@ -1698,6 +1698,22 @@ fn x86_stack_owner_elsewhere(thread_id: u64, cpu: usize) -> Option<usize> {
         .find(|&other| other != cpu && LEAVING_STACK[other].load(Ordering::Acquire) == thread_id)
 }
 
+/// x86_64: bring this CPU back through `check_need_resched_and_switch` as
+/// soon as it next has interrupts enabled, by a reschedule IPI to itself.
+///
+/// For a return to Ring 3 that found the process manager held on another CPU:
+/// waiting for it with interrupts masked can deadlock, since the holder may be
+/// waiting for an interrupt routed to this CPU. Retrying after the `iretq`
+/// lets pending interrupts in first.
+#[cfg(target_arch = "x86_64")]
+pub fn retry_after_interrupts_x86() {
+    let cpu = current_cpu_id_raw();
+    if cpu < MAX_CPUS {
+        RESCHED_REQUESTED[cpu].store(true, Ordering::Release);
+        send_reschedule_vector_x86(cpu);
+    }
+}
+
 /// x86_64: arrange for this CPU to pick again once every CPU in `owners`
 /// has left the stack of a thread this CPU passed over. The owner sends the
 /// reschedule IPI when it clears its `LEAVING_STACK` entry; an owner that

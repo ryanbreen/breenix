@@ -638,9 +638,7 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
         unsafe {
             core::arch::asm!("swapgs", options(nostack, preserves_flags));
         }
-        // Ring 3 holds no lock, so a busy process manager is held on another
-        // CPU and is waited for.
-        if let Some(mut guard) = crate::process::manager_unless_held_here() {
+        if let Some(mut guard) = crate::process::try_manager() {
             if let Some(manager) = guard.as_mut() {
                 let tid = crate::per_cpu::current_thread_id_lock_free();
                 let cr3 = x86_64::registers::control::Cr3::read()
@@ -703,11 +701,17 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
 /// holding section itself (a kernel write to user memory under PM, such as
 /// signal-frame setup during a dispatch), and the edit runs on that section's
 /// behalf through `handle_cow_direct`. Otherwise the holder is running on
-/// another CPU, and the fault waits for it.
+/// another CPU: a fault taken with interrupts enabled is retried, and one
+/// taken with them masked waits for it.
 /// Copy-on-Write statistics - re-export from architecture-independent module
 pub use crate::memory::cow_stats;
 
-fn handle_cow_fault(faulting_addr: VirtAddr, error_code: PageFaultErrorCode, cr3: u64) -> bool {
+fn handle_cow_fault(
+    faulting_addr: VirtAddr,
+    error_code: PageFaultErrorCode,
+    cr3: u64,
+    may_retry: bool,
+) -> bool {
     // CoW faults are:
     // - Protection violation (page is present but not writable)
     // - Caused by write
@@ -731,6 +735,13 @@ fn handle_cow_fault(faulting_addr: VirtAddr, error_code: PageFaultErrorCode, cr3
             cow_stats::DIRECT_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             return handle_cow_direct(&held, faulting_addr, cr3);
         }
+        // Held on another CPU, whose holder may be waiting for an interrupt
+        // routed here. Code that faulted with interrupts enabled runs the
+        // write again once they have been taken, and faults again until the
+        // lock is free; only code that faulted with them masked waits here.
+        if may_retry {
+            return true;
+        }
         core::hint::spin_loop();
     }
 }
@@ -744,6 +755,7 @@ fn file_mapping_fault(
     error_code: PageFaultErrorCode,
     cr3: u64,
     user_thread: Option<u64>,
+    may_retry: bool,
 ) -> crate::memory::file_map::FaultOutcome {
     use crate::memory::file_map::{handle_fault, Access, FaultOutcome};
     if error_code.contains(PageFaultErrorCode::MALFORMED_TABLE) {
@@ -769,6 +781,10 @@ fn file_mapping_fault(
         }
         if crate::process::pm_held_on_this_cpu().is_some() {
             return FaultOutcome::NotFile;
+        }
+        // Held on another CPU: retried as for a copy-on-write fault.
+        if may_retry {
+            return FaultOutcome::Resolved;
         }
         core::hint::spin_loop();
     }
@@ -1002,7 +1018,14 @@ fn in_user_stack_growth_range(fault_addr: u64) -> bool {
 /// stacks to grow on demand up to MAX_USER_STACK_SIZE without pre-allocating memory.
 ///
 /// Returns true if the fault was handled (stack was grown), false otherwise.
-fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
+///
+/// With `may_retry` (the faulting code had interrupts enabled), a process
+/// manager busy on another CPU returns true without growing anything: the
+/// faulting instruction runs again once pending interrupts have been taken,
+/// and faults again until the lock is free. Waiting for it here, with
+/// interrupts masked, could deadlock against a holder waiting for an interrupt
+/// routed to this CPU.
+fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bool {
     use crate::memory::layout::MAX_USER_STACK_SIZE;
     use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
 
@@ -1012,11 +1035,11 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
         return false;
     }
 
-    // A holder on another CPU is waited for. A holder on this CPU is the
-    // section this fault interrupted, which cannot be waited for; no stack is
-    // grown on its behalf.
-    let Some(mut guard) = crate::process::manager_unless_held_here() else {
-        return false;
+    // A holder on this CPU is the section this fault interrupted, which
+    // cannot be waited for; no stack is grown on its behalf.
+    let mut guard = match crate::process::try_manager() {
+        Some(guard) => guard,
+        None => return may_retry && crate::process::pm_held_on_this_cpu().is_none(),
     };
 
     let pm = match guard.as_mut() {
@@ -1111,6 +1134,11 @@ extern "x86-interrupt" fn page_fault_handler(
 
     // Read CR2 and CR3 first
     let cr2 = Cr2::read().unwrap_or(x86_64::VirtAddr::zero()).as_u64();
+    // Whether the faulting code had interrupts enabled, so that a fault that
+    // finds the process manager busy on another CPU can return and run again.
+    let may_retry = stack_frame
+        .cpu_flags
+        .contains(x86_64::registers::rflags::RFlags::INTERRUPT_FLAG);
     let cr3 = {
         use x86_64::registers::control::Cr3;
         let (frame, _) = Cr3::read();
@@ -1141,11 +1169,11 @@ extern "x86-interrupt" fn page_fault_handler(
             crate::per_cpu::preempt_disable();
             let addr = x86_64::VirtAddr::new(cr2);
             let resolved = if is_potential_cow {
-                handle_cow_fault(addr, error_code, cr3)
+                handle_cow_fault(addr, error_code, cr3, may_retry)
             } else {
                 (!error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
-                    && handle_stack_growth(addr, cr3))
-                    || file_mapping_fault(cr2, error_code, cr3, None)
+                    && handle_stack_growth(addr, cr3, may_retry))
+                    || file_mapping_fault(cr2, error_code, cr3, None, may_retry)
                         == crate::memory::file_map::FaultOutcome::Resolved
             };
             crate::per_cpu::preempt_enable();
@@ -1180,6 +1208,7 @@ extern "x86-interrupt" fn page_fault_handler(
             } else {
                 None
             },
+            may_retry,
         );
         crate::per_cpu::preempt_enable();
         match outcome {
@@ -1363,7 +1392,7 @@ extern "x86-interrupt" fn page_fault_handler(
     // just checking if the fault came from userspace. This allows the kernel
     // to trigger CoW when writing to user memory (e.g., signal frame setup).
     let is_user_address = accessed_addr.as_u64() < crate::memory::layout::USER_STACK_REGION_END;
-    if is_user_address && handle_cow_fault(accessed_addr, error_code, cr3) {
+    if is_user_address && handle_cow_fault(accessed_addr, error_code, cr3, may_retry) {
         // CoW fault handled successfully - resume execution
         crate::per_cpu::preempt_enable();
         return;
@@ -1375,8 +1404,17 @@ extern "x86-interrupt" fn page_fault_handler(
     if from_userspace
         && !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
         && !error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH)
-        && handle_stack_growth(accessed_addr, cr3)
+        && handle_stack_growth(accessed_addr, cr3, may_retry)
     {
+        crate::per_cpu::preempt_enable();
+        return;
+    }
+
+    // A fatal user fault needs the process manager to name its process. Held
+    // on another CPU, the fault is taken again once pending interrupts have
+    // run (see the kill path below); probing here keeps a retry from printing
+    // the diagnostics below each time.
+    if from_userspace && crate::process::try_manager().is_none() {
         crate::per_cpu::preempt_enable();
         return;
     }
@@ -1533,7 +1571,14 @@ extern "x86-interrupt" fn page_fault_handler(
             // because during context switch the "current" thread may not match the faulting process
             let mut faulting_thread_id: Option<u64> = None;
 
-            crate::process::with_process_manager(|pm| {
+            // Ring 3 interrupted no holder, so a busy process manager is held
+            // on another CPU. The fault is taken again once pending interrupts
+            // have run, instead of waiting for it with them masked.
+            let Some(mut guard) = crate::process::try_manager() else {
+                crate::per_cpu::preempt_enable();
+                return;
+            };
+            if let Some(pm) = guard.as_mut() {
                 if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
                     let name = process.name.clone();
                     // Get the thread ID before we exit the process
@@ -1550,7 +1595,8 @@ extern "x86-interrupt" fn page_fault_handler(
                         cr3
                     );
                 }
-            });
+            }
+            drop(guard);
 
             // The process exit runs in the fault-exit kernel thread, not here
             // in exception context (#511): it closes descriptors and wakes
@@ -1835,8 +1881,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
 
         // Find the process by CR3
         let mut faulting_thread_id: Option<u64> = None;
-
-        crate::process::with_process_manager(|pm| {
+        let mut find_faulting_thread = |pm: &mut crate::process::ProcessManager| {
             if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
                 let name = process.name.clone();
                 // Get the thread ID before we exit the process
@@ -1853,7 +1898,23 @@ extern "x86-interrupt" fn general_protection_fault_handler(
                     cr3
                 );
             }
-        });
+        };
+
+        // As in the page-fault vector: a Ring 3 fault that finds the process
+        // manager busy on another CPU is taken again once pending interrupts
+        // have run. The IRETQ fault on a return to Ring 3 runs with them
+        // masked and has no such window, so it waits for the lock.
+        if fault_on_user_return {
+            crate::process::with_process_manager(find_faulting_thread);
+        } else {
+            let Some(mut guard) = crate::process::try_manager() else {
+                crate::per_cpu::preempt_enable();
+                return;
+            };
+            if let Some(pm) = guard.as_mut() {
+                find_faulting_thread(pm);
+            }
+        }
 
         // Deferred to the fault-exit kernel thread, as in the page-fault
         // vector (#511).
