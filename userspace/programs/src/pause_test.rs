@@ -73,7 +73,10 @@ fn main() {
 
             // Send SIGUSR1 to the parent every 10 ms until it closes the pipe,
             // for at most 5 s.
-            println!("[CHILD] Sending SIGUSR1 to parent (PID {}) until pause() returns...", parent_pid);
+            println!(
+                "[CHILD] Sending SIGUSR1 to parent (PID {}) until pause() returns...",
+                parent_pid
+            );
             let mut byte = [0u8; 1];
             for _ in 0..500 {
                 if kill(parent_pid, SIGUSR1).is_err() {
@@ -138,7 +141,10 @@ fn main() {
                     println!("  Child reaped successfully");
                 }
                 _ => {
-                    println!("  FAIL: child did not exit with code 0 (status {:#x})", status);
+                    println!(
+                        "  FAIL: child did not exit with code 0 (status {:#x})",
+                        status
+                    );
                     println!("PAUSE_TEST_FAILED");
                     std::process::exit(1);
                 }

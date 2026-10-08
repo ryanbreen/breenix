@@ -6363,7 +6363,14 @@ fn validate_frame_return_choke_point(
         "ensure_free_frame_capacity alias methods changed",
         validate_alias_methods(
             function_body(allocator, "ensure_free_frame_capacity"),
-            &["try_lock", "capacity", "len", "try_reserve", "is_err", "map_or"],
+            &[
+                "try_lock",
+                "capacity",
+                "len",
+                "try_reserve",
+                "is_err",
+                "map_or",
+            ],
             &["reserve", "map_or"],
         ),
     );
@@ -6388,7 +6395,11 @@ fn validate_frame_return_choke_point(
     record_unit(
         &mut failures,
         "with_free_frames alias methods changed",
-        validate_alias_methods(function_body(allocator, "with_free_frames"), &["try_lock"], &["Some"]),
+        validate_alias_methods(
+            function_body(allocator, "with_free_frames"),
+            &["try_lock"],
+            &["Some"],
+        ),
     );
     record_unit(
         &mut failures,
@@ -9469,8 +9480,12 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     assert!(!park.contains("reclaim.after_epoch"));
     let unpark = function_body(process, "unpark_sweep_with_snapshot");
     assert!(
-        unpark.find("reclaim_queue(&PARKED_PROCESS_RECLAIMS)").unwrap()
-            < unpark.find("reclaim_queue(&PENDING_PROCESS_RECLAIMS)").unwrap()
+        unpark
+            .find("reclaim_queue(&PARKED_PROCESS_RECLAIMS)")
+            .unwrap()
+            < unpark
+                .find("reclaim_queue(&PENDING_PROCESS_RECLAIMS)")
+                .unwrap()
     );
 
     assert!(scheduler.contains("pub(crate) struct RetirementFence"));
@@ -13235,13 +13250,18 @@ fn validate_nonowning_reclaim_queue_acquisitions(process_task: &str) -> Result<(
     ] {
         let body = function_body(process_task, name);
         let code = normalized_code(body);
-        if code.contains(".lock()") || code.contains(".try_lock()") || !code.contains("reclaim_queue(&") {
+        if code.contains(".lock()")
+            || code.contains(".try_lock()")
+            || !code.contains("reclaim_queue(&")
+        {
             return Err(());
         }
     }
     let helper = function_body(process_task, "reclaim_queue");
     let x86 = helper.find("#[cfg(target_arch = \"x86_64\")]").ok_or(())?;
-    let other = helper.find("#[cfg(not(target_arch = \"x86_64\"))]").ok_or(())?;
+    let other = helper
+        .find("#[cfg(not(target_arch = \"x86_64\"))]")
+        .ok_or(())?;
     if !(x86 < other
         && helper[x86..other].contains("queue.lock()")
         && helper[other..].contains("queue.try_lock()")

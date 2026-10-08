@@ -798,7 +798,8 @@ fn file_mapping_fault(
 fn resolve_stale_write_translation(cr3: u64, addr: VirtAddr) -> bool {
     use x86_64::structures::paging::{PageTable, PageTableFlags};
 
-    let needed = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    let needed =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
     let phys_offset = crate::memory::physical_memory_offset();
     let mut table_phys = cr3 & !0xfff;
     for level in (0..4).rev() {
