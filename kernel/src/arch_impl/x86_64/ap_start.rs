@@ -10,9 +10,15 @@
 //! with the scheduler and marks the processor online. From then on the
 //! processor takes its own LAPIC timer tick and dispatches like the boot CPU.
 //!
-//! A processor that has not come online within `ONLINE_TIMEOUT_MS` is sent
-//! INIT again, which parks it in wait-for-SIPI, so it cannot later run the
-//! trampoline with the next processor's stack. It is named in the boot log by
+//! A processor that has not arrived in `ap_entry` within `ARRIVAL_TIMEOUT_MS`
+//! is given up on: the boot processor withdraws its claim on the start
+//! (`START_CLAIM`) and sends it INIT, which parks it in wait-for-SIPI. A
+//! processor that arrives after that finds the claim gone and halts before it
+//! touches anything shared, so it is never reset while holding a lock and
+//! never takes the logical number the next processor is given. If that INIT
+//! cannot be sent, or a processor that did claim its start never comes
+//! online, no further processor is started: the trampoline or the logical
+//! slot may still be in use. Each one given up on is named in the boot log by
 //! `super::smp::report_bring_up`.
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -40,8 +46,12 @@ extern "C" {
     static ap_trampoline_entry: u8;
 }
 
-/// How long a started processor has to come online.
-const ONLINE_TIMEOUT_MS: u64 = 500;
+/// How long a started processor has to arrive in `ap_entry`.
+const ARRIVAL_TIMEOUT_MS: u64 = 500;
+
+/// How long a processor that arrived has to finish its per-CPU init and come
+/// online.
+const ONLINE_TIMEOUT_MS: u64 = 5000;
 
 /// The boot processor's control registers, which every application processor
 /// loads once it is on the master kernel page table.
@@ -49,8 +59,24 @@ static BSP_CR0: AtomicU64 = AtomicU64::new(0);
 static BSP_CR4: AtomicU64 = AtomicU64::new(0);
 static MASTER_CR3: AtomicU64 = AtomicU64::new(0);
 
-/// Logical number + 1 of the processor that most recently reached `ap_entry`.
-static ARRIVED: AtomicU64 = AtomicU64::new(0);
+/// The start the boot processor is waiting on: logical number + 1 while the
+/// processor may still claim it, with `CLAIMED` set once it has, and 0 when no
+/// processor may. The processor and the boot processor's timeout race to
+/// change it, and exactly one wins.
+static START_CLAIM: AtomicU64 = AtomicU64::new(0);
+const CLAIMED: u64 = 1 << 63;
+
+/// How one processor's start ended.
+enum Start {
+    /// It came online.
+    Online,
+    /// It did not, and it can no longer run the trampoline or take a logical
+    /// number: the next processor may be started.
+    Absent,
+    /// It did not, and it may still run the trampoline or come online later:
+    /// no further processor may be started.
+    Stuck,
+}
 
 /// Top of the stack each application processor was started on, which becomes
 /// its idle thread's kernel stack.
@@ -168,8 +194,17 @@ pub fn start_application_processors() {
             );
             continue;
         }
-        if !start_one(cpu, apic_id, startup_page, base, phys) {
-            smp::note_unanswered(index);
+        match start_one(cpu, apic_id, startup_page, base, phys) {
+            Start::Online => {}
+            Start::Absent => smp::note_unanswered(index),
+            Start::Stuck => {
+                smp::note_unanswered(index);
+                log::warn!(
+                    "[smp] no further application processors started after APIC id {}",
+                    apic_id
+                );
+                break;
+            }
         }
     }
 
@@ -193,13 +228,12 @@ pub fn start_application_processors() {
 }
 
 /// Start the processor with local APIC id `apic_id` as logical CPU `cpu`.
-/// Returns whether it came online.
-fn start_one(cpu: usize, apic_id: u32, startup_page: u8, base: u64, phys: u64) -> bool {
+fn start_one(cpu: usize, apic_id: u32, startup_page: u8, base: u64, phys: u64) -> Start {
     let stack = match crate::memory::kernel_stack::allocate_kernel_stack() {
         Ok(stack) => stack,
         Err(reason) => {
             log::warn!("[smp] no stack for CPU {}: {}", cpu, reason);
-            return false;
+            return Start::Absent;
         }
     };
     let stack_top = stack.top().as_u64();
@@ -207,49 +241,85 @@ fn start_one(cpu: usize, apic_id: u32, startup_page: u8, base: u64, phys: u64) -
     STACK_TOP[cpu].store(stack_top, Ordering::Release);
 
     // SAFETY: the trampoline page was written by the caller and no processor
-    // is running it: the previous one has arrived in `ap_entry`, or was sent
-    // INIT after it did not.
+    // is running it: the previous one claimed its start in `ap_entry`, or was
+    // sent INIT after it did not.
     unsafe {
         let page0 = (phys + base) as *mut u8;
         (page0.add(offset(&ap_trampoline_stack)) as *mut u64).write_unaligned(stack_top);
         (page0.add(offset(&ap_trampoline_cpu)) as *mut u64).write_unaligned(cpu as u64);
     }
+    let token = cpu as u64 + 1;
+    START_CLAIM.store(token, Ordering::Release);
     core::sync::atomic::fence(Ordering::SeqCst);
 
-    let send = |ipi| {
-        if let Err(reason) = apic::send_ipi(apic_id, ipi) {
+    let send = |ipi| match apic::send_ipi(apic_id, ipi) {
+        Ok(()) => true,
+        Err(reason) => {
             log::warn!("[smp] IPI to APIC id {} failed: {}", apic_id, reason);
+            false
         }
     };
-    send(apic::Ipi::Init);
-    spin_for_us(10_000);
-    send(apic::Ipi::Startup(startup_page));
-    spin_for_us(200);
-    if ARRIVED.load(Ordering::Acquire) != cpu as u64 + 1 {
+    let claimed = || START_CLAIM.load(Ordering::Acquire) == token | CLAIMED;
+    let deadline = |ms: u64| super::timer::rdtsc() + super::timer::frequency_hz() * ms / 1000;
+
+    // A startup IPI whose send reported an error may still be delivered, so
+    // the arrival wait below decides the outcome either way.
+    if send(apic::Ipi::Init) {
+        spin_for_us(10_000);
         send(apic::Ipi::Startup(startup_page));
+        spin_for_us(200);
+        if !claimed() {
+            send(apic::Ipi::Startup(startup_page));
+        }
     }
 
-    let deadline = super::timer::rdtsc() + super::timer::frequency_hz() * ONLINE_TIMEOUT_MS / 1000;
-    while !smp::is_cpu_online(cpu) {
-        if super::timer::rdtsc() >= deadline {
-            send(apic::Ipi::Init);
+    let arrival = deadline(ARRIVAL_TIMEOUT_MS);
+    while !claimed() {
+        if super::timer::rdtsc() >= arrival
+            && START_CLAIM
+                .compare_exchange(token, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
             log::warn!(
-                "[smp] APIC id {} did not come online as CPU {} within {} ms",
+                "[smp] APIC id {} did not arrive as CPU {} within {} ms",
                 apic_id,
                 cpu,
-                ONLINE_TIMEOUT_MS
+                ARRIVAL_TIMEOUT_MS
             );
             // The stack is not reused: a processor that arrived late may
             // still have run on it before the INIT.
             core::mem::forget(stack);
-            return false;
+            // The processor can no longer claim the start, so it holds
+            // nothing; INIT parks it in wait-for-SIPI, off the trampoline.
+            return if send(apic::Ipi::Init) {
+                Start::Absent
+            } else {
+                Start::Stuck
+            };
         }
         core::hint::spin_loop();
     }
+
     // The stack is the processor's idle-thread stack for the life of the
     // kernel, recorded in its idle thread.
     core::mem::forget(stack);
-    true
+
+    // `mark_online` counts the processor after it sets its online flag, so
+    // the next processor's logical number is free only once the count moves.
+    let online = deadline(ONLINE_TIMEOUT_MS);
+    while smp::cpus_online() <= cpu as u64 {
+        if super::timer::rdtsc() >= online {
+            log::warn!(
+                "[smp] APIC id {} arrived as CPU {} and did not come online within {} ms",
+                apic_id,
+                cpu,
+                ONLINE_TIMEOUT_MS
+            );
+            return Start::Stuck;
+        }
+        core::hint::spin_loop();
+    }
+    Start::Online
 }
 
 /// Where an application processor arrives from the trampoline, in long mode
@@ -269,7 +339,17 @@ extern "C" fn ap_entry(cpu: u64) -> ! {
             options(nostack, preserves_flags)
         );
     }
-    ARRIVED.store(cpu + 1, Ordering::Release);
+    // Claim the start before touching anything shared. A boot processor that
+    // already gave up on this start has sent or is sending INIT; wait for it.
+    if START_CLAIM
+        .compare_exchange(cpu + 1, (cpu + 1) | CLAIMED, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        loop {
+            x86_64::instructions::interrupts::disable();
+            x86_64::instructions::hlt();
+        }
+    }
     let cpu = cpu as usize;
 
     super::cpu_init::init_cpu(cpu);
