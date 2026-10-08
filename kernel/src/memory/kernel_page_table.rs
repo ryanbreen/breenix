@@ -284,9 +284,14 @@ pub unsafe fn map_kernel_page(
 /// Intermediate page-table frames remain installed so a later occupant can
 /// reuse the hierarchy without allocating it again.
 ///
+/// The translation is not flushed here: the caller flushes once on every CPU
+/// (`tlb::flush_all`) after its last unmap and before it releases any frame
+/// this returned, so a range costs one shootdown rather than one per page.
+///
 /// # Safety
 /// Caller must ensure the virtual address is in kernel space and that removing
-/// the mapping cannot race an architectural user of the page.
+/// the mapping cannot race an architectural user of the page, and must flush
+/// as above before releasing the returned frame.
 pub unsafe fn unmap_kernel_page(virt: VirtAddr) -> Result<Option<PhysFrame>, &'static str> {
     if virt.as_u64() < 0xFFFF_8000_0000_0000 {
         return Err("unmap_kernel_page called with non-kernel address");
@@ -349,10 +354,6 @@ pub unsafe fn unmap_kernel_page(virt: VirtAddr) -> Result<Option<PhysFrame>, &'s
 
     let frame = PhysFrame::containing_address(entry.addr());
     entry.set_unused();
-
-    // Kernel mappings are shared by every CPU; none may keep translating to a
-    // frame the caller is about to release.
-    crate::memory::tlb::flush_page(virt);
 
     Ok(Some(frame))
 }

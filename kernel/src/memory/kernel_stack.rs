@@ -15,7 +15,10 @@ use core::sync::atomic::AtomicU8;
 #[cfg(target_arch = "x86_64")]
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
-use x86_64::{structures::paging::PageTableFlags, VirtAddr};
+use x86_64::{
+    structures::paging::{PageTableFlags, PhysFrame},
+    VirtAddr,
+};
 
 static KSTACK_SLOTS_ALLOCATED: AtomicU64 = AtomicU64::new(0);
 static KSTACK_SLOTS_FREED: AtomicU64 = AtomicU64::new(0);
@@ -505,20 +508,29 @@ impl Drop for KernelStack {
                 return;
             }
 
-            let num_pages = (KERNEL_STACK_SIZE / 4096) as usize;
+            // Every page is unmapped first and the kernel's translations are
+            // flushed once on every CPU before any frame is released, as
+            // Linux flushes a kernel range above a few dozen pages. A flush
+            // per page cost one NMI round to every other CPU per page, 128
+            // rounds for each stack freed.
+            const NUM_PAGES: usize = (KERNEL_STACK_SIZE / 4096) as usize;
+            let mut frames: [Option<PhysFrame>; NUM_PAGES] = [None; NUM_PAGES];
             let mut unmap_failed = false;
-            for i in 0..num_pages {
+            for (i, slot) in frames.iter_mut().enumerate() {
                 let virt_addr = self.bottom + (i as u64 * 4096);
                 match unsafe {
                     crate::memory::kernel_page_table::unmap_kernel_page(virt_addr)
                 } {
-                    Ok(Some(frame)) => {
-                        deallocate_frame(frame);
-                        KSTACK_FRAMES_RELEASED.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Ok(None) => {}
+                    Ok(frame) => *slot = frame,
                     Err(_) => unmap_failed = true,
                 }
+            }
+            if frames.iter().any(Option::is_some) {
+                crate::memory::tlb::flush_all();
+            }
+            for frame in frames.into_iter().flatten() {
+                deallocate_frame(frame);
+                KSTACK_FRAMES_RELEASED.fetch_add(1, Ordering::Relaxed);
             }
 
             if unmap_failed {
