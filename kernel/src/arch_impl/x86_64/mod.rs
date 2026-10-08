@@ -20,6 +20,7 @@ pub mod constants;
 pub mod cpu;
 pub mod cpu_init;
 pub mod cpuinfo;
+pub mod fpu;
 pub mod interrupt_frame;
 pub mod ioapic;
 mod ioapic_route;

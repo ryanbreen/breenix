@@ -68,12 +68,18 @@ pub fn init_cpu(cpu: usize) {
 }
 
 /// Enable x87, SSE and, where the CPU has it, XSAVE for user code on the
-/// executing CPU. Returns whether XSAVE was enabled.
+/// executing CPU, and load the starting register state. Returns whether XSAVE
+/// was enabled.
 ///
 /// An application processor leaves its startup sequence with CR0.EM set and
 /// CR4.OSFXSR clear, where every SSE instruction raises #UD; the firmware
 /// configures the boot processor the same way this does. The kernel itself is
 /// built soft-float and executes none of these instructions.
+///
+/// XCR0 enables x87 and SSE only. Threads carry their registers across
+/// switches as an FXSAVE image (`fpu`), which holds exactly that state; AVX
+/// would add YMM upper halves no switch saves, so it stays off and user code
+/// that checks XCR0 before using AVX does not use it.
 fn init_fpu() -> bool {
     use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
     use x86_64::registers::xcontrol::{XCr0, XCr0Flags};
@@ -81,7 +87,6 @@ fn init_fpu() -> bool {
     // SAFETY: CPUID leaf 1 is architecturally present on x86_64.
     let leaf1 = unsafe { __cpuid(1) };
     let xsave = leaf1.ecx & (1 << 26) != 0;
-    let avx = leaf1.ecx & (1 << 28) != 0;
 
     unsafe {
         Cr0::update(|cr0| {
@@ -95,13 +100,9 @@ fn init_fpu() -> bool {
             }
         });
         if xsave {
-            let mut features = XCr0Flags::X87 | XCr0Flags::SSE;
-            if avx {
-                features |= XCr0Flags::AVX;
-            }
-            XCr0::write(features);
+            XCr0::write(XCr0Flags::X87 | XCr0Flags::SSE);
         }
-        core::arch::asm!("fninit", options(nomem, nostack));
     }
+    super::fpu::reset_current();
     xsave
 }

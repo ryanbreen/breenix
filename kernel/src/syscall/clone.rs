@@ -234,6 +234,8 @@ pub fn sys_clone(
         stack_bottom: stack_bottom_addr,
         kernel_stack_top: Some(kernel_stack_top),
         kernel_stack_allocation: Some(kernel_stack),
+        #[cfg(target_arch = "x86_64")]
+        fpu: crate::arch_impl::x86_64::fpu::FpuState::capture(),
         tls_block,
         priority: 128,
         time_slice: 10,
