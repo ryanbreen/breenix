@@ -158,10 +158,11 @@ class CacheTests(unittest.TestCase):
                 self.assertNotEqual(previous, artifacts.key(self.repo))
 
     def test_eviction_skips_leased_entries_and_removes_old_idle_entry(self):
+        os.utime(self.repo, (1, 1))
         old = self.cache / 'artifacts/old'
         old.mkdir(parents=True)
         (old / 'data').write_bytes(b'a')
-        os.utime(old, (1, 1))
+        os.utime(old, (2, 2))
         active = self.repo
         with trees.lease(self.cache, 'trees-lane'), patch.dict(os.environ, BREENIX_GATE_CACHE_GB='1'), \
              patch.object(trees, 'size', return_value=700 * 1024**2):
@@ -169,11 +170,24 @@ class CacheTests(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertTrue(active.exists())
 
-    def test_budget_that_requires_active_entry_fails(self):
+    def test_soft_budget_retains_active_entry(self):
         with trees.lease(self.cache, 'trees-lane'), patch.dict(os.environ, BREENIX_GATE_CACHE_GB='0'), \
              patch.object(trees, 'size', return_value=1):
-            with self.assertRaisesRegex(RuntimeError, 'active entry'):
-                trees.prune(self.cache)
+            trees.prune(self.cache)
+            self.assertTrue(self.repo.exists())
+
+    def test_hard_floor_checks_whole_filesystem_even_on_hit(self):
+        usage = __import__('collections').namedtuple('Usage', 'total used free')(100, 99, 1)
+        with patch.dict(os.environ, BREENIX_GATE_FREE_GB='15'), patch.object(trees.shutil, 'disk_usage', return_value=usage):
+            with self.assertRaisesRegex(RuntimeError, 'below safe floor'):
+                trees.prune(self.cache, protected=(self.repo,))
+            trees.prune(self.cache, protected=(self.repo,), required=False)
+
+    def test_fresh_without_verified_entry_fails_explicitly(self):
+        with patch.object(artifacts, 'build', side_effect=self.build), patch.dict(os.environ, BREENIX_GATE_FRESH='1'):
+            with self.assertRaisesRegex(RuntimeError, 'requires a verified cache entry'):
+                self.call()
+
 
 
 if __name__ == '__main__':

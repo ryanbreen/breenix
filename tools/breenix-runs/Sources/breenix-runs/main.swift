@@ -472,7 +472,8 @@ func main() -> Int32 {
                     timeoutSecs: runArgs.gateTimeout,
                     pathsTemplate: BeastPaths(host: runArgs.host, clonePath: ""),
                     slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString(),
-                    treeHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/gate-tree.py")).base64EncodedString()
+                    treeHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/gate-tree.py")).base64EncodedString(),
+                    vigilScript: root.appendingPathComponent("scripts/vigil-record.sh")
                 )
                 var options = BeastLaunchOptions(
                     boots: runArgs.boots,
@@ -491,8 +492,7 @@ func main() -> Int32 {
                     return 0
                 }
 
-                // Vigil reads completed beast records from the Run Inspector store.
-                // Queued preparation and builds are not registered as running boots.
+                // File harvested finished boots with Vigil; preparation is never a running boot.
                 let runID = RunManifest.makeID(startedAt: Date(), arch: .x86_64, profile: "gate")
                 options.runID = runID
                 let result = try launcher.runX86(options: options)

@@ -44,19 +44,29 @@ def key(repo):
             result.update(name.encode() + b'\0' + path.read_bytes())
     for command in (['rustc', '-Vv'], ['cargo', '-V'], ['mke2fs', '-V'], ['debugfs', '-V']):
         result.update(subprocess.check_output(command, cwd=repo, stderr=subprocess.STDOUT))
-    # Version strings alone cannot distinguish a locally patched compiler.
-    rustc = Path(subprocess.check_output(['rustup', 'which', 'rustc'], cwd=repo, text=True).strip())
-    sysroot = Path(subprocess.check_output(['rustc', '--print', 'sysroot'], cwd=repo, text=True).strip())
-    result.update(digest(rustc).encode())
-    # This includes stock build-std sources used by libc and precompiled host
-    # libraries used by xtask, as well as the compiler backend and linker.
-    for path in sorted((sysroot / 'bin').rglob('*')) + sorted((sysroot / 'lib').rglob('*')):
-        if path.is_file():
-            result.update(str(path.relative_to(sysroot)).encode() + b'\0' + digest(path).encode())
-    for variable in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'BREENIX_TRACE_DIAG_EARLY',
-                     'BREENIX_BSSH_AUTORUN', 'BREENIX_WAIT_STRESS', 'RUSTUP_TOOLCHAIN',
-                     'BREENIX_RUST_FORK_LIBRARY'):
+    # Resolve every workspace's override, not only the root toolchain.
+    sysroots = set()
+    for workspace in (repo, repo / 'userspace/programs', repo / 'libs/libbreenix-libc'):
+        if not workspace.exists():
+            continue
+        rustc = Path(subprocess.check_output(['rustup', 'which', 'rustc'], cwd=workspace, text=True).strip())
+        sysroot = Path(subprocess.check_output(['rustc', '--print', 'sysroot'], cwd=workspace, text=True).strip())
+        result.update(digest(rustc).encode())
+        if sysroot in sysroots:
+            continue
+        sysroots.add(sysroot)
+        for path in sorted((sysroot / 'bin').rglob('*')) + sorted((sysroot / 'lib').rglob('*')):
+            if path.is_file():
+                result.update(str(path.relative_to(sysroot)).encode() + b'\0' + digest(path).encode())
+    variables = {'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'BREENIX_TRACE_DIAG_EARLY',
+                 'BREENIX_BSSH_AUTORUN', 'BREENIX_WAIT_STRESS', 'RUSTUP_TOOLCHAIN',
+                 'BREENIX_RUST_FORK_LIBRARY', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'MKE2FS_CONFIG', 'BREENIX_EXT2_BLOCK_SIZE'}
+    variables.update(name for name in os.environ if name.startswith(('CARGO_PROFILE_', 'CARGO_TARGET_')))
+    for variable in sorted(variables):
         result.update(variable.encode() + b'=' + os.environ.get(variable, '').encode() + b'\0')
+    for config in {Path('/etc/mke2fs.conf'), Path(os.environ.get('MKE2FS_CONFIG', '/etc/mke2fs.conf'))}:
+        if config.exists():
+            result.update(str(config).encode() + b'\0' + config.read_bytes())
     for lockfile in ('Cargo.lock', 'userspace/programs/Cargo.lock'):
         result.update(lockfile.encode() + b'\0' + (repo / lockfile).read_bytes())
     for name in ('config', 'config.toml'):
@@ -126,7 +136,9 @@ def canonical_ext2(path):
 
 
 def checked(command, repo, log):
-    environment = dict(os.environ, CARGO_BUILD_JOBS='6', BREENIX_USERSPACE_REMAP='1', BREENIX_REPRODUCIBLE_EXT2='1')
+    environment = dict(os.environ, CARGO_BUILD_JOBS='6')
+    if 'BREENIX_GATE_CACHE_DIR' in os.environ:
+        environment.update(BREENIX_USERSPACE_REMAP='1', BREENIX_REPRODUCIBLE_EXT2='1')
     with log.open('w') as output:
         status = subprocess.call(command, cwd=repo, env=environment, stdout=output, stderr=subprocess.STDOUT)
     if status:
@@ -153,14 +165,15 @@ mount --bind "$2" /run/breenix-gate/cargo
 export CARGO_HOME=/run/breenix-gate/cargo
 /run/breenix-gate/source/userspace/programs/build.sh
 ''', 'gate-userspace', str(repo), os.environ['CARGO_HOME']]
-        if sys.platform != 'linux':
+        if sys.platform != 'linux' or 'BREENIX_GATE_CACHE_DIR' not in os.environ:
             command = [str(repo / 'userspace/programs/build.sh')]
         checked(command, repo, logs / f'{label}-userspace.log')
     with tree_cache.timing('disk-repack', f'build={label}'):
         checked(['python3', str(repo / 'scripts/install-busybox.py'), 'x86_64'], repo, logs / f'{label}-busybox.log')
         checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo, logs / f'{label}-test-disk.log')
         checked([str(repo / 'scripts/create_ext2_disk.sh')], repo, logs / f'{label}-ext2.log')
-        canonical_ext2(repo / 'testdata/ext2.img')
+        if 'BREENIX_GATE_CACHE_DIR' in os.environ:
+            canonical_ext2(repo / 'testdata/ext2.img')
         shutil.copyfile(repo / 'testdata/ext2.img', repo / 'target/ext2.img')
 
 
@@ -185,12 +198,20 @@ def install(entry, repo, manifest):
     shutil.copyfile(repo / 'testdata/ext2.img', repo / 'target/ext2.img')
 
 
+def build_slot(acquire):
+    helper = os.environ.get('HOST_SLOTS_HELPER')
+    if helper and os.environ.get('BREENIX_SLOT_SESSION'):
+        subprocess.run(['python3', helper, 'acquire' if acquire else 'release', 'x86-build'], check=True)
+
+
 def main():
     repo, logs = map(Path, sys.argv[1:])
     if 'BREENIX_GATE_CACHE_DIR' in os.environ and sys.platform != 'linux':
         raise RuntimeError('artifact reuse requires Linux private mount namespaces')
     if os.environ.get('BREENIX_GATE_FRESH') == '1' or 'BREENIX_GATE_CACHE_DIR' not in os.environ:
+        build_slot(True)
         build(repo, logs, 'uncached')
+        build_slot(False)
         if 'BREENIX_GATE_CACHE_DIR' in os.environ:
             # The requested cold comparisons also check relocation to a fresh
             # clone, rather than assuming path remapping made ELFs portable.
@@ -199,6 +220,8 @@ def main():
                 cache_key = key(repo)
                 entry = root / 'artifacts' / cache_key
                 with tree_cache.lease(root, 'artifacts-' + cache_key):
+                    if not (entry / 'verified.json').exists():
+                        raise RuntimeError('fresh comparison requires a verified cache entry; run cached preparation first')
                     if (entry / 'verified.json').exists():
                         manifest = json.loads((entry / 'verified.json').read_text())
                         actual = inventory(repo)
@@ -236,7 +259,7 @@ def main():
             tree_cache.phase('userspace-cache', start)
             return
         print(f'[gate-cache] MISS key={cache_key}', flush=True)
-        tree_cache.prune(root, protected=(repo, entry), reserve=1024**3)
+        tree_cache.prune(root, protected=(repo, entry), reserve=0)
         # Never leave a partly published key after a cancelled build.
         if entry.exists():
             shutil.rmtree(entry)
@@ -245,6 +268,7 @@ def main():
         staging = entry
         for elf in (repo / 'userspace/programs').glob('*.elf'):
             elf.unlink()
+        build_slot(True)
         build(repo, logs, 'candidate')
         manifest = inventory(repo)
         for name in manifest:
@@ -258,10 +282,13 @@ def main():
         for elf in (repo / 'userspace/programs').glob('*.elf'):
             elf.unlink()
         build(repo, logs, 'clean-verification')
+        build_slot(False)
         actual = inventory(repo)
         if actual != manifest:
             differences = sorted(name for name in manifest.keys() | actual.keys() if manifest.get(name) != actual.get(name))
             raise RuntimeError(f'cached candidate differs from clean build: {differences}')
+        if key(repo) != cache_key:
+            raise RuntimeError('userspace inputs changed during build; refusing cache publication')
         (staging / 'verified.json').write_text(json.dumps(manifest, sort_keys=True) + '\n')
         print(f'[gate-cache] VERIFIED key={cache_key} files={len(manifest)} byte-identical=true', flush=True)
         tree_cache.phase('cache-verification', start)

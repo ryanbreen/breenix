@@ -142,7 +142,7 @@ public enum RemoteCommand {
         var slotIdentity = ""
         if let lane = paths.laneKey, let sha = paths.requestedSHA {
             let parent = URL(fileURLWithPath: paths.canonicalRepoDir).deletingLastPathComponent().path
-            let worktree = paths.fresh ? paths.clonePath + "/clean-tree" : "${BREENIX_GATE_CACHE_DIR:-\(parent)/breenix-gate-cache}/trees/\(lane)"
+            let worktree = paths.fresh ? "${BREENIX_GATE_CACHE_DIR:-\(parent)/breenix-gate-cache}/fresh/" + URL(fileURLWithPath: paths.clonePath).lastPathComponent : "${BREENIX_GATE_CACHE_DIR:-\(parent)/breenix-gate-cache}/trees/\(lane)"
             slotIdentity = " BREENIX_SLOT_WORKTREE=\"\(worktree)\" BREENIX_SLOT_COMMIT=\(sha)"
         }
         let helper = paths.gateTmpPath + "/host-slots.py"
@@ -184,7 +184,12 @@ public enum RemoteCommand {
     }
 
     public static func removeCloneRequest(paths: BeastPaths) -> ProcessRequest {
-        let remote = "sudo -n incus exec \(paths.container) -- rm -rf \(paths.clonePath)"
+        let remote: String
+        if paths.laneKey != nil {
+            remote = "sudo -n incus exec \(paths.container) -- python3 \(paths.gateTmpPath)/gate-tree.py remove-evidence \(paths.clonePath)"
+        } else {
+            remote = "sudo -n incus exec \(paths.container) -- rm -rf \(paths.clonePath)"
+        }
         return sshRequest(paths: paths, remote: remote)
     }
 

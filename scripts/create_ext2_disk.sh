@@ -457,7 +457,7 @@ else
     if [[ $EUID -ne 0 ]]; then
         echo "Warning: Need root to mount and populate image"
         echo "Run with sudo or populate manually"
-        exit 0
+        exit 1
     fi
 
     MOUNT_DIR=$(mktemp -d)
@@ -604,7 +604,7 @@ BSHRC
     echo "Nested file content" > "$MOUNT_DIR/test/nested.txt"
     # Match the dense fixtures installed by the Docker path above.
     if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
-        fixture_block_size=4096
+        fixture_block_size="${BREENIX_EXT2_BLOCK_SIZE:-4096}"
     else
         fixture_block_size=$(stat -f -c %S "$MOUNT_DIR")
     fi
@@ -729,7 +729,7 @@ INITJS
 
     # Unmount and cleanup
     if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
-        mke2fs -t ext2 -b 4096 -F -d "$MOUNT_DIR" "$OUTPUT_FILE" >/dev/null 2>&1
+        E2FSPROGS_FAKE_TIME=946684800 mke2fs -t ext2 -b "${BREENIX_EXT2_BLOCK_SIZE:-4096}" -U 7fabead6-ba12-4c3b-835b-e076230994d9 -E hash_seed=00000000-0000-0000-0000-000000000000 -F -d "$MOUNT_DIR" "$OUTPUT_FILE" >/dev/null 2>&1
         rm -rf "$MOUNT_DIR"
         trap - EXIT
     else

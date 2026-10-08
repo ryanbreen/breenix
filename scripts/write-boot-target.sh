@@ -50,6 +50,7 @@ printf '%s\n' "$BOOT_TARGET" > "$WORK/boot-target"
 cat > "$WORK/commands" <<'EOF'
 mkdir /etc/breenix
 rm /etc/breenix/boot-target
+rm /etc/breenix/suite-sequence
 write /work/boot-target /etc/breenix/boot-target
 EOF
 

@@ -198,14 +198,12 @@ fi
 SUITE_HOLD_SECS="${BREENIX_SUITE_HOLD:-5}"
 
 # Build userspace, disks and the launcher under the build lease.
-phase_start build-slot-wait
-host_slot_acquire x86-build || { phase_end 1; exit 1; }
-phase_end
 # Pinned Cargo can leak its mutation lock when cache GC races a downloader,
 # deadlocking nested Cargo builds. Seed a private cache, with independent locks.
 # Keep it outside gate-tmp: credentials/cache files must not enter run records.
 GATE_CARGO_HOME=$(python3 "$HOST_SLOTS_HELPER" cargo-home "${CARGO_HOME:-$HOME/.cargo}" "$REPO_DIR/target") || { echo "GATE: FAIL (private Cargo home creation failed)"; exit 1; }
 export CARGO_HOME="$GATE_CARGO_HOME"
+export HOST_SLOTS_HELPER
 gate_cleanup() {
   status=$?
   [ -z "${PHASE_NAME:-}" ] || phase_end "$status"
@@ -238,6 +236,24 @@ if [ -n "$SUITE" ]; then
   fi
   phase_end
   export BREENIX_EXT2_SOURCE="$REPO_DIR/target/ext2-boot-target.img"
+fi
+
+phase_start build-slot-wait
+host_slot_acquire x86-build || { phase_end 1; exit 1; }
+phase_end
+if [ -n "${BREENIX_GATE_CACHE_DIR:-}" ]; then
+  if ! python3 - "$REPO_DIR/scripts/gate-tree.py" "$BREENIX_GATE_CACHE_DIR" "$REPO_DIR" <<'PYSPACE'
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location('tree', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.prune(pathlib.Path(sys.argv[2]), protected=(pathlib.Path(sys.argv[3]),))
+except (OSError, RuntimeError) as error:
+    print(f'GATE: FAIL ({error})')
+    sys.exit(1)
+PYSPACE
+  then exit 1; fi
 fi
 
 echo "[gate] === Building (release, features=${FEATURES:-none}) ==="
@@ -318,40 +334,17 @@ for i in $(seq 1 "$COUNT"); do
       boot_completed=false
     fi
     cat "$OUTDIR/stdout.log"
+  elif [ -n "$SUITE" ]; then
+    BREENIX_NET_MODE=none python3 "$REPO_DIR/scripts/x86-suite-boot.py" "$REPO_DIR" "$OUTDIR" "$SUITE" "$TIMEOUT_SECS" \
+      "$REPO_DIR/target/release/qemu-uefi" \
+      -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" \
+      > "$OUTDIR/stdout.log" 2>&1
+    suite_boot_status=$?
+    cat "$OUTDIR/stdout.log"
   else
-    BREENIX_NET_MODE=none timeout --foreground "$TIMEOUT_SECS" ./target/release/qemu-uefi \
-      -serial file:"$OUTDIR/serial_user.log" \
-      -serial file:"$OUTDIR/serial_kernel.log" \
-      > "$OUTDIR/stdout.log" 2>&1 &
-    QEMU_TIMEOUT_PID=$!
-    if [ -n "$SUITE" ]; then
-      # A suite never exits (it is PID 1 and idles with its final panel up): stop the VM
-      # once its DONE line is out, after saving the screen and holding it briefly. Only a
-      # whole DONE line on the suite's own serial (COM1) counts.
-
-      while kill -0 "$QEMU_TIMEOUT_PID" 2>/dev/null; do
-        all_done=true
-        for suite_id in "${SUITES[@]}"; do
-          done_shape="^SUITE $suite_id DONE passed=[0-9]+ failed=[0-9]+ skipped=[0-9]+ total=[0-9]+\$"
-          if [ ! -f "$OUTDIR/serial_user.log" ] || ! tr -d '\r' < "$OUTDIR/serial_user.log" 2>/dev/null | grep -qE "$done_shape"; then
-            all_done=false
-          fi
-        done
-        if [ "$all_done" = true ]; then
-          sleep 2
-          if [ -n "${BREENIX_QMP_SOCKET:-}" ] && \
-              python3 "$REPO_DIR/scripts/qmp-screendump.py" "$BREENIX_QMP_SOCKET" "$OUTDIR/screen.png" >/dev/null 2>&1; then
-            echo "  Final screen: $OUTDIR/screen.png"
-          fi
-          sleep "$SUITE_HOLD_SECS"
-          # timeout forwards TERM to its process group: qemu-uefi and QEMU itself.
-          kill -TERM "$QEMU_TIMEOUT_PID" 2>/dev/null
-          break
-        fi
-        sleep 1
-      done
-    fi
-    wait "$QEMU_TIMEOUT_PID"
+    BREENIX_NET_MODE=none timeout --foreground "$TIMEOUT_SECS" "$REPO_DIR/target/release/qemu-uefi" \
+      -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" \
+      > "$OUTDIR/stdout.log" 2>&1
   fi
 
   python3 "$HOST_SLOTS_HELPER" quiesce || exit 1
@@ -418,16 +411,10 @@ for i in $(seq 1 "$COUNT"); do
   if [ -n "$SUITE" ]; then
     verdict_ok=true
     verdict_reason=""
-    for suite_id in "${SUITES[@]}"; do
-      suite_verdict=$(python3 "$REPO_DIR/scripts/suite-verdict.py" "$REPO_DIR/docs/suites/$suite_id.json" \
-          "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log" --disk "$REPO_DIR/target/ext2.img" 2>&1)
-      suite_status=$?
-      echo "  Suite $suite_id: $suite_verdict"
-      if [ "$suite_status" -ne 0 ]; then
-        verdict_ok=false
-        verdict_reason="${verdict_reason:+$verdict_reason; }$suite_id: ${suite_verdict#FAIL: }"
-      fi
-    done
+    if [ "$suite_boot_status" -ne 0 ]; then
+      verdict_ok=false
+      verdict_reason="suite sequence failed; see per-suite results in $OUTDIR"
+    fi
   elif [ "$MODE" = "full" ]; then
     # #1119 measured 181 exits before rebasing; also require publication/exit
     # equality, which detects unfinished processes without relying on a floor.
@@ -476,6 +463,11 @@ for i in $(seq 1 "$COUNT"); do
     INSPECTOR_VERDICT=FAIL
     INSPECTOR_STATUS=1
   fi
+  python3 - "$OUTDIR/boot-times.json" "$INSPECTOR_START_MS" <<'PYTIMES'
+import json, sys, time
+with open(sys.argv[1], 'w') as output:
+    json.dump(dict(started=int(sys.argv[2])/1000, ended=time.time()), output)
+PYTIMES
   breenix_runs_import_nonfatal "$OUTDIR" x86_64 gate "$INSPECTOR_VERDICT" "$INSPECTOR_STATUS" "$INSPECTOR_START_MS" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
   host_slot_release x86-boot || exit 1
 done
