@@ -409,15 +409,16 @@ fn sys_open_write_path(
     Ok((ino, ft, is_dir, is_reg, mid, handle))
 }
 
-/// Whether the calling thread's descriptor table has a free slot.
-fn current_fd_table_has_free_slot() -> bool {
+/// Make sure the calling thread's descriptor table has a free slot, growing
+/// it now if needed. False when it is full or cannot grow.
+fn reserve_descriptor_slot() -> bool {
     let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
         return false;
     };
     crate::process::with_process_manager(|manager| {
         manager
-            .find_process_by_thread(thread_id)
-            .is_some_and(|(_, process)| process.fd_table.has_free_slot())
+            .find_process_by_thread_mut(thread_id)
+            .is_some_and(|(_, process)| process.fd_table.reserve_free_slot())
     })
     .unwrap_or(false)
 }
@@ -536,10 +537,11 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     let cred = current_file_credentials();
 
     // An open that creates or truncates must not change the disk and then
-    // fail with EMFILE. A row's descriptor table is filled only by its own
-    // thread, so a slot free now is still free when the descriptor is
-    // installed below.
-    if needs_write && !current_fd_table_has_free_slot() {
+    // fail with EMFILE. The slot is made free now, growing the table if need
+    // be, so installing the descriptor below cannot fail on a full table or a
+    // failed grow; a row's descriptor table is filled only by its own thread,
+    // so the slot is still free then.
+    if needs_write && !reserve_descriptor_slot() {
         return SyscallResult::Err(EMFILE as u64);
     }
 
