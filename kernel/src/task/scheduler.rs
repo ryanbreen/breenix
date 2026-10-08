@@ -2853,6 +2853,15 @@ impl Scheduler {
                         if steal_cpu == current_cpu {
                             continue;
                         }
+                        // x86_64: the current thread can still run, so a thread
+                        // queued on an idle CPU is left for that CPU, which was
+                        // sent a reschedule IPI for it. Taking it here would
+                        // preempt the running thread while that CPU stays idle
+                        // (#1172).
+                        #[cfg(target_arch = "x86_64")]
+                        if self.cpu_is_idle(steal_cpu) {
+                            continue;
+                        }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
                             #[cfg(target_arch = "x86_64")]
                             if let Some(owner) = x86_stack_owner_elsewhere(n, current_cpu) {
@@ -2910,6 +2919,24 @@ impl Scheduler {
                 }
                 #[cfg(target_arch = "x86_64")]
                 wait_for_stacks_x86(core::mem::take(&mut stack_waits), current_cpu);
+                // x86_64: everything queued was declined, so the current thread
+                // keeps this CPU. It was queued again above and published Ready
+                // at the top; left queued while it runs, another CPU could
+                // dispatch it a second time.
+                #[cfg(target_arch = "x86_64")]
+                if found.is_none() {
+                    let current_id = next_thread_id;
+                    if let Some(position) = self.per_cpu_queues[current_cpu]
+                        .iter()
+                        .position(|&id| id == current_id)
+                    {
+                        self.per_cpu_queues[current_cpu].remove(position);
+                    }
+                    if let Some(thread) = self.get_thread_mut(current_id) {
+                        thread.set_running();
+                    }
+                    return None;
+                }
                 #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
                 if found.is_none() && retained_injector {
                     // The injector remains on its CPU 0 queue. If no later peer is
@@ -2933,6 +2960,22 @@ impl Scheduler {
             // This is important for kthreads that yield while waiting for the idle
             // thread (which runs tests/main logic) to set a flag.
             if next_thread_id != self.cpu_state[current_cpu].idle_thread {
+                // x86_64 with another CPU online: a user thread with nothing
+                // else to run keeps its CPU (#1172). Idle's housekeeping runs
+                // on the other CPUs' idle threads. With one CPU online the
+                // switch to idle below is kept: it is the only place that
+                // housekeeping runs.
+                #[cfg(target_arch = "x86_64")]
+                if self.online_cpu_count() > 1
+                    && self
+                        .get_thread(next_thread_id)
+                        .is_some_and(|t| t.privilege == super::thread::ThreadPrivilege::User)
+                {
+                    if let Some(t) = self.get_thread_mut(next_thread_id) {
+                        t.set_running();
+                    }
+                    return None;
+                }
                 // On ARM64, don't switch userspace threads to idle. Idle runs in kernel
                 // mode (EL1), and ARM64 only preempts when returning to userspace (from_el0=true).
                 // If we switched a userspace thread to idle, idle would never be preempted
