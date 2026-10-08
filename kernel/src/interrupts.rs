@@ -790,6 +790,33 @@ fn file_mapping_fault(
     }
 }
 
+/// A write protection fault on a user page that every level of `cr3`'s
+/// tables already makes present, writable and user-accessible came through a
+/// stale read-only translation on this CPU: a copy-on-write sole-owner upgrade
+/// flushes only the CPU that made it. Drop the stale entry and report the
+/// fault resolved, as x86 Linux treats a spurious write fault.
+fn resolve_stale_write_translation(cr3: u64, addr: VirtAddr) -> bool {
+    use x86_64::structures::paging::{PageTable, PageTableFlags};
+
+    let needed = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    let phys_offset = crate::memory::physical_memory_offset();
+    let mut table_phys = cr3 & !0xfff;
+    for level in (0..4).rev() {
+        let index = ((addr.as_u64() >> (12 + 9 * level)) & 0x1FF) as usize;
+        // SAFETY: `table_phys` is a page-table frame of the faulting address
+        // space, reached from its root through present entries, and the
+        // physical-memory window maps it.
+        let entry = unsafe { &(*((phys_offset + table_phys).as_ptr::<PageTable>()))[index] };
+        let flags = entry.flags();
+        if !flags.contains(needed) || (level > 0 && flags.contains(PageTableFlags::HUGE_PAGE)) {
+            return false;
+        }
+        table_phys = entry.addr().as_u64();
+    }
+    x86_64::instructions::tlb::flush(addr);
+    true
+}
+
 /// Handle CoW fault through the process manager (normal path)
 fn handle_cow_with_manager(
     guard: &mut crate::process::TryProcessManagerGuard,
@@ -824,6 +851,10 @@ fn handle_cow_with_manager(
         None => return false,
     };
 
+    if resolve_stale_write_translation(cr3, faulting_addr) {
+        return true;
+    }
+
     // Check if this is actually a CoW page
     if !is_cow_page(old_flags) {
         return false;
@@ -835,7 +866,12 @@ fn handle_cow_with_manager(
         if page_table.update_page_flags(page, new_flags).is_err() {
             return false;
         }
-        X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
+        // A permission upgrade: another CPU still holding the read-only
+        // translation takes a spurious write fault, which
+        // `resolve_stale_write_translation` resolves, so only this CPU's
+        // entry is dropped. A flush of every CPU here cost an NMI
+        // round per page a parent wrote after its forked child exited.
+        x86_64::instructions::tlb::flush(faulting_addr);
         cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         return true;
     }
@@ -951,6 +987,10 @@ fn handle_cow_direct(
         let old_flags = l1_entry.flags();
         let old_frame = PhysFrame::<Size4KiB>::containing_address(l1_entry.addr());
 
+        if resolve_stale_write_translation(cr3, faulting_addr) {
+            return true;
+        }
+
         // Check if this is a CoW page
         if !is_cow_page(old_flags) {
             return false;
@@ -958,10 +998,11 @@ fn handle_cow_direct(
 
         // Check if we're the only reference
         if !frame_is_shared(old_frame) {
-            // Sole owner - just update flags to make writable
+            // Sole owner - just update flags to make writable. A permission
+            // upgrade, flushed on this CPU only, as in `handle_cow_with_manager`.
             let new_flags = make_private_flags(old_flags);
             l1_entry.set_addr(l1_entry.addr(), new_flags);
-            X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
+            x86_64::instructions::tlb::flush(faulting_addr);
             cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             return true;
         }
@@ -1027,7 +1068,7 @@ fn in_user_stack_growth_range(fault_addr: u64) -> bool {
 /// routed to this CPU.
 fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bool {
     use crate::memory::layout::MAX_USER_STACK_SIZE;
-    use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
+    use x86_64::structures::paging::{Page, Size4KiB};
 
     let fault_addr = faulting_addr.as_u64();
 
@@ -1119,7 +1160,9 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bo
             let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
             return false;
         }
-        X86PageTableOps::flush_tlb_page(addr);
+        // The page was not present, and x86 caches no translation for a
+        // non-present page, so no other CPU has one to drop.
+        x86_64::instructions::tlb::flush(VirtAddr::new(addr));
         process.user_stack_bottom = addr;
     }
 
