@@ -1612,8 +1612,10 @@ extern "x86-interrupt" fn page_fault_handler(
         if from_userspace {
             log::error!("Terminating faulting userspace process and scheduling next...");
 
-            // Find the process by CR3 - this is more reliable than using current_thread_id
-            // because during context switch the "current" thread may not match the faulting process
+            // The thread this CPU was running in Ring 3 took the fault. CR3
+            // names only the address space, which a CLONE_VM child shares with
+            // its parent, so it does not say whose thread faulted.
+            let interrupted = crate::per_cpu::current_thread_id_lock_free();
             let mut faulting_thread_id: Option<u64> = None;
 
             // Ring 3 interrupted no holder, so a busy process manager is held
@@ -1624,19 +1626,21 @@ extern "x86-interrupt" fn page_fault_handler(
                 return;
             };
             if let Some(pm) = guard.as_mut() {
-                if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
-                    let name = process.name.clone();
-                    // Get the thread ID before we exit the process
-                    faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
+                if let Some((pid, process)) =
+                    interrupted.and_then(|tid| pm.find_process_by_thread_mut(tid))
+                {
+                    faulting_thread_id = interrupted;
                     log::error!(
-                        "Killing process {} (PID {}) due to page fault (CR3={:#x})",
-                        name,
+                        "Killing process {} (PID {}) due to page fault (thread {:?}, CR3={:#x})",
+                        process.name,
                         pid.as_u64(),
+                        interrupted,
                         cr3
                     );
                 } else {
                     log::error!(
-                        "Could not find process with CR3={:#x} - cannot terminate",
+                        "Could not find the process of thread {:?} (CR3={:#x}) - cannot terminate",
+                        interrupted,
                         cr3
                     );
                 }
@@ -1648,7 +1652,9 @@ extern "x86-interrupt" fn page_fault_handler(
             // threads that may be running on other CPUs, and it can block. The
             // thread is made non-runnable now so nothing dispatches it again.
             if let Some(thread_id) = faulting_thread_id {
-                let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
+                if !crate::task::process_task::defer_fault_sigsegv_exit(thread_id) {
+                    log::error!("Fault exit of thread {} lost: no memory to queue it", thread_id);
+                }
                 crate::task::scheduler::terminate_thread(thread_id);
             }
 
@@ -1924,22 +1930,26 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     if from_userspace {
         log::error!("Terminating faulting userspace process due to GPF...");
 
-        // Find the process by CR3
+        // The thread this CPU was running, or returning to, took the fault;
+        // CR3 names only the address space, as in the page-fault vector.
+        let interrupted = crate::per_cpu::current_thread_id_lock_free();
         let mut faulting_thread_id: Option<u64> = None;
         let mut find_faulting_thread = |pm: &mut crate::process::ProcessManager| {
-            if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
-                let name = process.name.clone();
-                // Get the thread ID before we exit the process
-                faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
+            if let Some((pid, process)) =
+                interrupted.and_then(|tid| pm.find_process_by_thread_mut(tid))
+            {
+                faulting_thread_id = interrupted;
                 log::error!(
-                    "Killing process {} (PID {}) due to GPF (CR3={:#x})",
-                    name,
+                    "Killing process {} (PID {}) due to GPF (thread {:?}, CR3={:#x})",
+                    process.name,
                     pid.as_u64(),
+                    interrupted,
                     cr3
                 );
             } else {
                 log::error!(
-                    "Could not find process with CR3={:#x} - cannot terminate",
+                    "Could not find the process of thread {:?} (CR3={:#x}) - cannot terminate",
+                    interrupted,
                     cr3
                 );
             }
@@ -1964,7 +1974,9 @@ extern "x86-interrupt" fn general_protection_fault_handler(
         // Deferred to the fault-exit kernel thread, as in the page-fault
         // vector (#511).
         if let Some(thread_id) = faulting_thread_id {
-            let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
+            if !crate::task::process_task::defer_fault_sigsegv_exit(thread_id) {
+                log::error!("Fault exit of thread {} lost: no memory to queue it", thread_id);
+            }
             crate::task::scheduler::terminate_thread(thread_id);
         }
 
