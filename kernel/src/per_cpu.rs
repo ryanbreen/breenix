@@ -943,6 +943,13 @@ pub fn update_tss_rsp0(kernel_stack_top: u64) {
     }
 }
 
+/// The executing CPU's logical number, from its per-CPU data. One GS-relative
+/// load: no lock, usable from interrupt context.
+#[inline(always)]
+pub fn cpu_id() -> usize {
+    hal_percpu::X86PerCpu::cpu_id() as usize
+}
+
 /// This CPU's remaining scheduler quantum, in ticks.
 #[inline(always)]
 pub fn quantum() -> u32 {

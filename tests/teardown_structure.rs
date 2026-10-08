@@ -7874,7 +7874,7 @@ fn validate_x86_epoch_stamp_is_minimal(sources: &[(String, String)]) -> Result<(
     }
     let statements = block_statements(body).ok_or(())?;
     if !normalized_code(statements)
-        .starts_with("crate::task::scheduler::note_scheduling_epoch(0);")
+        .starts_with("crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());")
     {
         return Err(());
     }
@@ -11443,8 +11443,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
             1,
         )
         .replacen(
-            "    crate::task::scheduler::note_scheduling_epoch(0);",
-            "    crate::task::scheduler::note_scheduling_epoch(0);\n    process_task::reclaim_deferred_process_resources();",
+            "    crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());",
+            "    crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());\n    process_task::reclaim_deferred_process_resources();",
             1,
         );
     let moved_drain = with_replaced_source(
@@ -11464,8 +11464,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     assert!(validate_cached_ttbr0_single_writer(&second_cached_writer).is_err());
 
     let logged_before_stamp = x86_context.replacen(
-        "    crate::task::scheduler::note_scheduling_epoch(0);",
-        "    log::trace!(\"epoch probe\");\n    crate::task::scheduler::note_scheduling_epoch(0);",
+        "    crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());",
+        "    log::trace!(\"epoch probe\");\n    crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());",
         1,
     );
     let logged_before_stamp = with_replaced_source(
@@ -11476,8 +11476,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     assert!(validate_x86_epoch_stamp_is_minimal(&logged_before_stamp).is_err());
 
     let locked_before_stamp = x86_context.replacen(
-        "    crate::task::scheduler::note_scheduling_epoch(0);",
-        "    let _unexpected = SCHEDULER.lock();\n    crate::task::scheduler::note_scheduling_epoch(0);",
+        "    crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());",
+        "    let _unexpected = SCHEDULER.lock();\n    crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());",
         1,
     );
     let locked_before_stamp = with_replaced_source(
@@ -11488,8 +11488,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     assert!(validate_x86_epoch_stamp_is_minimal(&locked_before_stamp).is_err());
 
     let statement_before_stamp = x86_context.replacen(
-        "    crate::task::scheduler::note_scheduling_epoch(0);",
-        "    core::hint::spin_loop();\n    crate::task::scheduler::note_scheduling_epoch(0);",
+        "    crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());",
+        "    core::hint::spin_loop();\n    crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());",
         1,
     );
     let statement_before_stamp = with_replaced_source(

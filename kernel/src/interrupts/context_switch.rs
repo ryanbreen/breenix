@@ -157,7 +157,7 @@ pub extern "C" fn check_need_resched_and_switch(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    crate::task::scheduler::note_scheduling_epoch(0);
+    crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
     if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
         return;
