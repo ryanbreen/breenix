@@ -56,6 +56,7 @@
 use super::thread::ThreadPrivilege;
 use super::thread::{CpuContext, VirtAddr};
 use super::thread::{Thread, ThreadState, TimerPop, TimerPopRecord};
+#[cfg(target_arch = "x86_64")]
 use crate::log_serial_println;
 use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
 use core::cmp::Reverse;
@@ -1717,7 +1718,10 @@ pub fn x86_idle_pass() -> bool {
     scheduler.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
     scheduler.wake_expired_timers();
     PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) != 0
-        || scheduler.per_cpu_queues.iter().any(|queue| !queue.is_empty())
+        || scheduler
+            .per_cpu_queues
+            .iter()
+            .any(|queue| !queue.is_empty())
 }
 
 /// x86_64: the other CPU that may still be on `thread_id`'s kernel stack.
@@ -2643,21 +2647,9 @@ impl Scheduler {
         self.reclaim_unschedulable_cpu_queues();
         self.deliver_pinned_wakes_for_this_cpu();
 
-        // Count schedule calls - only log very sparingly to avoid timing issues
-        // Serial output is ~960 bytes/sec, so each log line can take 50-100ms!
-        static SCHEDULE_COUNT: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0);
-        let _count = SCHEDULE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-
-        // CRITICAL: Logging disabled on ARM64 - schedule() is called from context switch
-        // path which may be holding the serial lock. On ARM64, log_serial_println! uses
-        // the same SERIAL1 lock as serial_println!, causing deadlock if timer fires
-        // while boot code is printing.
-        // On x86_64, log_serial goes to a separate UART (COM2), so it's safe.
-        #[cfg(target_arch = "x86_64")]
-        let debug_log = _count < 5 || (_count % 500 == 0);
-        #[cfg(not(target_arch = "x86_64"))]
-        let debug_log = false;
+        // No serial output here on either architecture: this runs under the
+        // scheduler lock with interrupts masked, and a line takes the port
+        // milliseconds to write while every other CPU waits for the lock.
 
         // Drain lock-free ISR wakeup buffers (see schedule_deferred_requeue for rationale).
         {
@@ -2858,14 +2850,6 @@ impl Scheduler {
         #[cfg(target_arch = "x86_64")]
         wait_for_stacks_x86(core::mem::take(&mut stack_waits), current_cpu);
 
-        if debug_log {
-            log_serial_println!(
-                "Next thread from queue: {}, cpu: {}",
-                next_thread_id,
-                current_cpu,
-            );
-        }
-
         // Important: Don't skip if it's the same thread when there are other threads waiting
         // This was causing the issue where yielding wouldn't switch to other ready threads.
         // An idle CPU whose search fell through to idle has already declined every
@@ -3058,12 +3042,6 @@ impl Scheduler {
                                 break;
                             }
                         }
-                        if debug_log {
-                            log_serial_println!(
-                                "Thread {} is userspace and alone, continuing (no idle switch)",
-                                next_thread_id
-                            );
-                        }
                         return None;
                     }
                 }
@@ -3076,25 +3054,12 @@ impl Scheduler {
                 crate::per_cpu::set_need_resched(true);
                 #[cfg(target_arch = "aarch64")]
                 crate::per_cpu_aarch64::set_need_resched(true);
-                if debug_log {
-                    log_serial_println!(
-                        "Thread {} is alone (non-idle), switching to idle {}",
-                        self.cpu_state[current_cpu].current_thread.unwrap_or(0),
-                        self.cpu_state[current_cpu].idle_thread
-                    );
-                }
             } else {
                 // Idle is the only runnable thread - keep running it.
                 // No context switch needed.
                 // NOTE: Do NOT push idle to per_cpu_queues here! Idle came from
                 // the fallback path, not from pop_front. The queues should remain
                 // empty. Pushing idle here would accumulate idle entries.
-                if debug_log {
-                    log_serial_println!(
-                        "Idle thread {} is alone, continuing (no switch needed)",
-                        next_thread_id
-                    );
-                }
                 return None;
             }
         }
@@ -3113,14 +3078,6 @@ impl Scheduler {
 
         // Track context switches for soft lockup detection
         CONTEXT_SWITCH_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-
-        if debug_log {
-            log_serial_println!(
-                "Switching from thread {} to thread {}",
-                old_thread_id,
-                next_thread_id
-            );
-        }
 
         // Mark new thread as running
         if let Some(next) = self.get_thread_mut(next_thread_id) {
