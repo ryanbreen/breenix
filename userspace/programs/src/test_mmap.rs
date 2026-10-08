@@ -201,7 +201,7 @@ fn main() {
     // Read first and last pages before writing: fresh anonymous backing is zeroed.
     println!("Test 4: Sparse 128 MiB anonymous mapping...");
     let sparse_size = 128usize << 20;
-    let free_before = free_kib();
+    let rss_before = rss_kib();
     let sparse = mmap(
         null_mut(),
         sparse_size,
@@ -211,10 +211,10 @@ fn main() {
         0,
     )
     .expect("large anonymous reservation");
-    let free_reserved = free_kib();
+    let rss_reserved = rss_kib();
     assert!(
-        free_before.saturating_sub(free_reserved) < 1024,
-        "reservation consumed physical frames: before={free_before} KiB after={free_reserved} KiB"
+        rss_reserved.saturating_sub(rss_before) < 1024,
+        "reservation consumed physical frames: resident before={rss_before} KiB after={rss_reserved} KiB"
     );
     unsafe {
         assert_eq!(sparse.read_volatile(), 0);
@@ -224,8 +224,14 @@ fn main() {
         assert_eq!(sparse.read_volatile(), 0x31);
         assert_eq!(sparse.add(sparse_size - 1).read_volatile(), 0x72);
     }
+    // The two touched pages must show up, so the measure is not blind.
+    let rss_touched = rss_kib();
+    assert!(
+        rss_touched >= rss_reserved + 8,
+        "touched pages not resident: reserved={rss_reserved} KiB touched={rss_touched} KiB"
+    );
     munmap(sparse, sparse_size).expect("unmap sparse reservation");
-    println!("  Sparse mapping: PASS (free before={free_before} KiB reserved={free_reserved} KiB touched={} KiB)", free_kib());
+    println!("  Sparse mapping: PASS (resident before={rss_before} KiB reserved={rss_reserved} KiB touched={rss_touched} KiB)");
     partial_protection();
     untouched_signal_stack();
     shared_limits(setrlimit_nr, getrlimit_nr);
@@ -235,15 +241,17 @@ fn main() {
     std::process::exit(0);
 }
 
-fn free_kib() -> u64 {
-    let text = std::fs::read_to_string("/proc/meminfo").expect("physical-frame statistics");
+/// This process's resident memory, so other programs' allocations stay out of the sample.
+fn rss_kib() -> u64 {
+    let pid = libbreenix::process::getpid().expect("getpid").raw();
+    let text = std::fs::read_to_string(format!("/proc/{pid}/status")).expect("process status");
     text.lines()
         .find_map(|line| {
-            line.strip_prefix("MemFree:")
+            line.strip_prefix("VmRSS:")
                 .and_then(|value| value.split_whitespace().next())
                 .and_then(|n| n.parse().ok())
         })
-        .expect("MemFree in frame allocator statistics")
+        .expect("VmRSS in process status")
 }
 
 fn partial_protection() {
