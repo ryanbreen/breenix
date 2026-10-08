@@ -619,6 +619,58 @@ impl X86PerCpu {
         );
     }
 
+    /// This CPU's remaining scheduler quantum, in ticks.
+    #[inline(always)]
+    pub fn quantum() -> u32 {
+        let quantum: u32;
+        unsafe {
+            asm!(
+                "mov {:e}, gs:[{offset}]",
+                out(reg) quantum,
+                offset = const PERCPU_QUANTUM_OFFSET,
+                options(nostack, preserves_flags, readonly)
+            );
+        }
+        quantum
+    }
+
+    /// Set this CPU's remaining scheduler quantum.
+    #[inline(always)]
+    pub unsafe fn set_quantum(quantum: u32) {
+        asm!(
+            "mov gs:[{offset}], {:e}",
+            in(reg) quantum,
+            offset = const PERCPU_QUANTUM_OFFSET,
+            options(nostack, preserves_flags)
+        );
+    }
+
+    /// The global tick count at which this CPU last charged its quantum.
+    #[inline(always)]
+    pub fn quantum_tick() -> u64 {
+        let tick: u64;
+        unsafe {
+            asm!(
+                "mov {}, gs:[{offset}]",
+                out(reg) tick,
+                offset = const PERCPU_QUANTUM_TICK_OFFSET,
+                options(nostack, preserves_flags, readonly)
+            );
+        }
+        tick
+    }
+
+    /// Set the global tick count at which this CPU last charged its quantum.
+    #[inline(always)]
+    pub unsafe fn set_quantum_tick(tick: u64) {
+        asm!(
+            "mov gs:[{offset}], {}",
+            in(reg) tick,
+            offset = const PERCPU_QUANTUM_TICK_OFFSET,
+            options(nostack, preserves_flags)
+        );
+    }
+
     /// Set the kernel CR3 in per-CPU data.
     #[inline(always)]
     pub unsafe fn set_kernel_cr3(cr3: u64) {

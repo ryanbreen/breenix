@@ -1,11 +1,13 @@
 //! Per-CPU emergency and IST stacks
 //!
-//! Range: 0xffffc980_xxxx_xxxx (one per CPU)
-//! These stacks are used for NMI and double-fault handling
+//! Range: 0xffffc980_xxxx_xxxx, one 64 KiB slot per logical CPU holding three
+//! 8 KiB stacks: double fault, page fault and NMI. Each CPU's TSS points its
+//! IST entries at its own slot (`gdt::install_ist_stacks`).
 
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::{PageTableFlags, VirtAddr};
 use crate::memory::frame_allocator::allocate_frame;
+use crate::task::scheduler::MAX_CPUS;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::PageTableFlags;
 #[cfg(target_arch = "x86_64")]
@@ -17,11 +19,13 @@ const PER_CPU_STACK_BASE: u64 = 0xffffc980_0000_0000;
 /// Size of each emergency stack (8 KiB)
 const EMERGENCY_STACK_SIZE: u64 = 8 * 1024;
 
-/// Total size per CPU: emergency stack + page fault stack (16 KiB)
-const TOTAL_STACK_SIZE_PER_CPU: u64 = 2 * EMERGENCY_STACK_SIZE;
+/// Total size per CPU: emergency, page fault and NMI stacks (24 KiB)
+const TOTAL_STACK_SIZE_PER_CPU: u64 = 3 * EMERGENCY_STACK_SIZE;
 
-/// Maximum number of CPUs supported
-const MAX_CPUS: usize = 256;
+/// Spacing between consecutive CPUs' slots.
+const PER_CPU_SLOT_SPACING: u64 = 0x10000;
+
+const _: () = assert!(TOTAL_STACK_SIZE_PER_CPU <= PER_CPU_SLOT_SPACING);
 
 /// Per-CPU emergency stack info
 #[allow(dead_code)]
@@ -52,11 +56,11 @@ pub fn init_per_cpu_stacks(num_cpus: usize) -> Result<usize, &'static str> {
 
     for cpu_id in 0..num_cpus {
         // Calculate stack address for this CPU
-        let stack_base = PER_CPU_STACK_BASE + (cpu_id as u64 * 0x10000); // 64KB spacing
+        let stack_base = PER_CPU_STACK_BASE + (cpu_id as u64 * PER_CPU_SLOT_SPACING);
         let stack_bottom = VirtAddr::new(stack_base);
         let stack_top = VirtAddr::new(stack_base + TOTAL_STACK_SIZE_PER_CPU);
 
-        // Map both emergency stack and page fault stack (16KB total = 4 pages)
+        // Map the slot's three stacks (24 KiB = 6 pages)
         let num_pages = (TOTAL_STACK_SIZE_PER_CPU / 4096) as usize;
         for i in 0..num_pages {
             let virt_addr = stack_bottom + (i as u64 * 4096);
@@ -86,24 +90,24 @@ pub fn init_per_cpu_stacks(num_cpus: usize) -> Result<usize, &'static str> {
     Ok(num_cpus)
 }
 
-/// Get the emergency stack for the current CPU (used for double fault)
-///
-/// Note: This assumes CPU ID can be obtained from APIC or similar
-pub fn current_cpu_emergency_stack() -> VirtAddr {
-    // TODO: Get actual CPU ID from APIC
-    let cpu_id = 0; // For now, assume CPU 0
-
-    let stack_base = PER_CPU_STACK_BASE + (cpu_id as u64 * 0x10000);
-    VirtAddr::new(stack_base + EMERGENCY_STACK_SIZE)
+/// Top of logical CPU `cpu`'s double-fault stack.
+pub fn emergency_stack(cpu: usize) -> VirtAddr {
+    stack_top(cpu, 0)
 }
 
-/// Get the page fault IST stack for the current CPU
-///
-/// This is a separate stack from the emergency stack to avoid conflicts
-pub fn current_cpu_page_fault_stack() -> VirtAddr {
-    // TODO: Get actual CPU ID from APIC
-    let cpu_id = 0; // For now, assume CPU 0
+/// Top of logical CPU `cpu`'s page fault IST stack, separate from the
+/// emergency stack so the two cannot overrun each other's frames.
+pub fn page_fault_stack(cpu: usize) -> VirtAddr {
+    stack_top(cpu, 1)
+}
 
-    let stack_base = PER_CPU_STACK_BASE + (cpu_id as u64 * 0x10000) + EMERGENCY_STACK_SIZE;
-    VirtAddr::new(stack_base + EMERGENCY_STACK_SIZE)
+/// Top of logical CPU `cpu`'s NMI stack.
+pub fn nmi_stack(cpu: usize) -> VirtAddr {
+    stack_top(cpu, 2)
+}
+
+fn stack_top(cpu: usize, index: u64) -> VirtAddr {
+    assert!(cpu < MAX_CPUS, "no IST stacks for CPU {}", cpu);
+    let slot = PER_CPU_STACK_BASE + cpu as u64 * PER_CPU_SLOT_SPACING;
+    VirtAddr::new(slot + (index + 1) * EMERGENCY_STACK_SIZE)
 }

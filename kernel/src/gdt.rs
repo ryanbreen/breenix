@@ -1,17 +1,31 @@
 #![cfg(target_arch = "x86_64")]
 
+use crate::task::scheduler::MAX_CPUS;
 use conquer_once::spin::OnceCell;
-use core::sync::atomic::{AtomicPtr, Ordering};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::{PrivilegeLevel, VirtAddr};
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const PAGE_FAULT_IST_INDEX: u16 = 1;
+/// NMI runs on its own IST stack: a TLB-shootdown NMI can arrive between a
+/// `syscall` instruction and the entry stub's switch off the user stack.
+pub const NMI_IST_INDEX: u16 = 2;
 
-static TSS: OnceCell<TaskStateSegment> = OnceCell::uninit();
-static GDT: OnceCell<(GlobalDescriptorTable, Selectors)> = OnceCell::uninit();
-static TSS_PTR: AtomicPtr<TaskStateSegment> = AtomicPtr::new(core::ptr::null_mut());
+/// One TSS per logical CPU: its own RSP0 and its own IST stacks.
+///
+/// `TaskStateSegment::new()` leaves `iomap_base` past the segment limit, which
+/// disables the I/O permission bitmap. That keeps port I/O from faulting after
+/// a CR3 switch to a page table where a bitmap would not be mapped.
+static mut TSS: [TaskStateSegment; MAX_CPUS] = [const { TaskStateSegment::new() }; MAX_CPUS];
+
+/// One GDT per logical CPU, each holding that CPU's TSS descriptor.
+static mut GDT: [GlobalDescriptorTable; MAX_CPUS] =
+    [const { GlobalDescriptorTable::new() }; MAX_CPUS];
+
+/// The selectors every CPU's GDT produces. Each GDT is built by the same
+/// sequence of appends, so these are identical across CPUs.
+static SELECTORS: OnceCell<Selectors> = OnceCell::uninit();
 
 struct Selectors {
     code_selector: SegmentSelector,
@@ -26,79 +40,82 @@ struct Selectors {
 pub static mut USER_CODE_SELECTOR: SegmentSelector = SegmentSelector::new(0, PrivilegeLevel::Ring0);
 pub static mut USER_DATA_SELECTOR: SegmentSelector = SegmentSelector::new(0, PrivilegeLevel::Ring0);
 
-pub fn init() {
-    use x86_64::instructions::segmentation::{Segment, CS, DS};
+/// Raw pointer to logical CPU `cpu`'s TSS. Panics past `MAX_CPUS`.
+pub fn tss_ptr(cpu: usize) -> *mut TaskStateSegment {
+    assert!(cpu < MAX_CPUS, "no TSS for CPU {}", cpu);
+    unsafe { &raw mut TSS[cpu] }
+}
+
+/// Build logical CPU `cpu`'s GDT around its own TSS, load it, reload the
+/// kernel segment registers and load the task register.
+///
+/// Part of the per-CPU init every CPU runs. The GDT is rebuilt on every call,
+/// which also writes the TSS descriptor back as available, so a second call on
+/// the same CPU (the boot processor loads early, then again from its per-CPU
+/// init) does not fault on `ltr` of a busy TSS. The kernel descriptors are
+/// rewritten with the bytes they already held.
+pub fn load(cpu: usize) {
+    use x86_64::instructions::segmentation::{Segment, CS, DS, SS};
     use x86_64::instructions::tables::load_tss;
 
-    TSS.init_once(|| {
-        let mut tss = TaskStateSegment::new();
+    let tss: &'static TaskStateSegment = unsafe { &*tss_ptr(cpu) };
+    let mut gdt = GlobalDescriptorTable::new();
+    let code_selector = gdt.append(Descriptor::kernel_code_segment());
+    let data_selector = gdt.append(Descriptor::kernel_data_segment());
+    let tss_selector = gdt.append(Descriptor::tss_segment(tss));
+    let user_data_selector = gdt.append(Descriptor::user_data_segment());
+    let user_code_selector = gdt.append(Descriptor::user_code_segment());
 
-        // Set up IST stacks using per-CPU emergency stacks
-        // These will be properly initialized after memory system is up
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = VirtAddr::new(0);
-        tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = VirtAddr::new(0);
-        // Note: We'll update these later with update_ist_stacks()
+    let gdt: &'static GlobalDescriptorTable = unsafe {
+        let slot = &raw mut GDT[cpu];
+        *slot = gdt;
+        &*slot
+    };
+    gdt.load();
 
-        // CRITICAL FIX: Don't set RSP0 to a bootstrap stack here
-        // It will be set to a proper kernel stack from the upper half
-        // when the memory system is initialized
-        tss.privilege_stack_table[0] = VirtAddr::new(0);
-
-        // Note: RSP0 will be updated by update_tss_rsp0() after kernel stack allocation
-
-        // CRITICAL FIX: Disable I/O permission bitmap to prevent GP faults during CR3 switches
-        // Setting iomap_base beyond the TSS limit effectively disables per-port I/O checks
-        // This prevents GP faults when executing OUT instructions after CR3 switch to user page table
-        // where the TSS I/O bitmap might not be mapped
-        tss.iomap_base = core::mem::size_of::<TaskStateSegment>() as u16;
-
-        log::info!(
-            "TSS I/O permission bitmap disabled (iomap_base={})",
-            tss.iomap_base
-        );
-
-        tss
+    let selectors = SELECTORS.get_or_init(|| Selectors {
+        code_selector,
+        tss_selector,
+        data_selector,
+        user_code_selector,
+        user_data_selector,
     });
+    assert!(
+        selectors.code_selector == code_selector
+            && selectors.data_selector == data_selector
+            && selectors.tss_selector == tss_selector
+            && selectors.user_code_selector == user_code_selector
+            && selectors.user_data_selector == user_data_selector,
+        "CPU {} GDT selectors differ from the boot processor's",
+        cpu
+    );
 
-    // Store a pointer to the TSS for later updates
-    let tss_ref = TSS.get().unwrap();
-    TSS_PTR.store(tss_ref as *const _ as *mut _, Ordering::Release);
+    unsafe {
+        CS::set_reg(code_selector);
+        DS::set_reg(data_selector);
+        SS::set_reg(data_selector);
+        load_tss(tss_selector);
+        USER_CODE_SELECTOR = user_code_selector;
+        USER_DATA_SELECTOR = user_data_selector;
+    }
+}
 
-    // Log TSS address for debugging CR3 switch issues
-    let tss_addr = tss_ref as *const _ as u64;
+/// Load the boot processor's GDT and TSS, before memory is up.
+pub fn init() {
+    load(0);
+
+    let tss_addr = tss_ptr(0) as u64;
+    log::info!(
+        "TSS I/O permission bitmap disabled (iomap_base={})",
+        unsafe { (*tss_ptr(0)).iomap_base }
+    );
     log::info!(
         "TSS located at {:#x} (PML4 index {})",
         tss_addr,
         (tss_addr >> 39) & 0x1FF
     );
 
-    GDT.init_once(|| {
-        let mut gdt = GlobalDescriptorTable::new();
-
-        // Kernel segments
-        let code_selector = gdt.append(Descriptor::kernel_code_segment());
-        let data_selector = gdt.append(Descriptor::kernel_data_segment());
-        let tss_selector = gdt.append(Descriptor::tss_segment(&TSS.get().unwrap()));
-
-        // User segments (Ring 3)
-        let user_data_selector = gdt.append(Descriptor::user_data_segment());
-        let user_code_selector = gdt.append(Descriptor::user_code_segment());
-
-        (
-            gdt,
-            Selectors {
-                code_selector,
-                tss_selector,
-                data_selector,
-                user_code_selector,
-                user_data_selector,
-            },
-        )
-    });
-
-    let (gdt, selectors) = GDT.get().unwrap();
-
-    gdt.load();
+    let selectors = SELECTORS.get().expect("GDT selectors recorded by load()");
 
     // Log GDT address for debugging CR3 switch issues
     use x86_64::instructions::tables::sgdt;
@@ -108,17 +125,6 @@ pub fn init() {
         gdtr.base.as_u64(),
         (gdtr.base.as_u64() >> 39) & 0x1FF
     );
-    unsafe {
-        CS::set_reg(selectors.code_selector);
-        DS::set_reg(selectors.data_selector);
-        load_tss(selectors.tss_selector);
-    }
-
-    // Store user segment selectors for context switching
-    unsafe {
-        USER_CODE_SELECTOR = selectors.user_code_selector;
-        USER_DATA_SELECTOR = selectors.user_data_selector;
-    }
 
     log::info!("GDT initialized with kernel and user segments");
     log::debug!("  Kernel code: {:#x}", selectors.code_selector.0);
@@ -176,7 +182,7 @@ pub fn init() {
     }
 
     // Log TSS setup
-    let tss = TSS.get().unwrap();
+    let tss = unsafe { &*tss_ptr(0) };
     let rsp0 = tss.privilege_stack_table[0];
     let ist0 = tss.interrupt_stack_table[0];
     log::debug!("  TSS RSP0 (kernel stack): {:#x}", rsp0);
@@ -184,88 +190,79 @@ pub fn init() {
 }
 
 pub fn user_code_selector() -> SegmentSelector {
-    GDT.get().expect("GDT not initialized").1.user_code_selector
+    SELECTORS
+        .get()
+        .expect("GDT not initialized")
+        .user_code_selector
 }
 
 pub fn user_data_selector() -> SegmentSelector {
-    GDT.get().expect("GDT not initialized").1.user_data_selector
+    SELECTORS
+        .get()
+        .expect("GDT not initialized")
+        .user_data_selector
 }
 
 pub fn kernel_code_selector() -> SegmentSelector {
-    GDT.get().expect("GDT not initialized").1.code_selector
+    SELECTORS.get().expect("GDT not initialized").code_selector
 }
 
 pub fn kernel_data_selector() -> SegmentSelector {
-    GDT.get().expect("GDT not initialized").1.data_selector
+    SELECTORS.get().expect("GDT not initialized").data_selector
 }
 
-/// Get the TSS pointer for per-CPU data
+/// The executing CPU's TSS.
+///
+/// Read from the TSS pointer in this CPU's per-CPU data, which its per-CPU
+/// init stores. Before per-CPU data exists only the boot processor runs, so
+/// its slot answers.
 pub fn get_tss_ptr() -> *mut TaskStateSegment {
-    TSS_PTR.load(Ordering::Acquire)
+    if crate::per_cpu::is_initialized() {
+        let tss = crate::per_cpu::tss_ptr();
+        if !tss.is_null() {
+            return tss;
+        }
+    }
+    tss_ptr(0)
 }
 
 #[cfg(feature = "testing")]
 #[allow(dead_code)]
 pub fn double_fault_stack_top() -> VirtAddr {
-    TSS.get()
-        .expect("TSS not initialized")
-        .interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize]
+    unsafe { (*get_tss_ptr()).interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] }
 }
 
-/// Update the IST stacks with per-CPU emergency stacks
-/// This should be called after the memory system is initialized
-pub fn update_ist_stacks() {
-    let tss_ptr = TSS_PTR.load(Ordering::Acquire);
-    if !tss_ptr.is_null() {
-        // Get both IST stack addresses
-        let emergency_stack = crate::memory::per_cpu_stack::current_cpu_emergency_stack();
-        let page_fault_stack = crate::memory::per_cpu_stack::current_cpu_page_fault_stack();
+/// Point logical CPU `cpu`'s IST entries at its own emergency stacks.
+///
+/// Part of the per-CPU init every CPU runs, after `memory::init` has mapped the
+/// per-CPU stack region.
+pub fn install_ist_stacks(cpu: usize) {
+    use crate::memory::per_cpu_stack;
 
-        unsafe {
-            // Set up double fault IST
-            (*tss_ptr).interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = emergency_stack;
-            log::info!(
-                "Updated IST[{}] (double fault stack) to {:#x}",
-                DOUBLE_FAULT_IST_INDEX,
-                emergency_stack.as_u64()
-            );
-
-            // Set up page fault IST
-            (*tss_ptr).interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = page_fault_stack;
-            log::info!(
-                "Updated IST[{}] (page fault stack) to {:#x}",
-                PAGE_FAULT_IST_INDEX,
-                page_fault_stack.as_u64()
-            );
-        }
-    } else {
-        panic!("TSS not initialized");
+    let tss = tss_ptr(cpu);
+    unsafe {
+        (*tss).interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
+            per_cpu_stack::emergency_stack(cpu);
+        (*tss).interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] =
+            per_cpu_stack::page_fault_stack(cpu);
+        (*tss).interrupt_stack_table[NMI_IST_INDEX as usize] = per_cpu_stack::nmi_stack(cpu);
     }
 }
 
-/// Legacy function - now calls update_ist_stacks()
-#[allow(dead_code)]
-pub fn update_ist_stack(stack_top: VirtAddr) {
-    let _ = stack_top; // Ignore parameter, use proper per-CPU stacks
-    update_ist_stacks();
-}
-
-/// Get the current TSS RSP0 value for debugging
+/// Get the executing CPU's TSS RSP0 value for debugging
 pub fn get_tss_rsp0() -> u64 {
-    let tss_ptr = TSS_PTR.load(Ordering::Acquire);
-    if !tss_ptr.is_null() {
-        unsafe { (*tss_ptr).privilege_stack_table[0].as_u64() }
-    } else {
-        0
-    }
+    unsafe { (*get_tss_ptr()).privilege_stack_table[0].as_u64() }
 }
 
-/// Set TSS.RSP0 directly (for testing/debugging)
+/// Set the executing CPU's TSS.RSP0.
+///
+/// Called on the syscall path, so it reads the TSS pointer straight from this
+/// CPU's per-CPU data: one GS-relative load, no lock.
 pub fn set_tss_rsp0(kernel_stack_top: VirtAddr) {
-    let tss_ptr = TSS_PTR.load(Ordering::Acquire);
-    if !tss_ptr.is_null() {
+    let tss = crate::per_cpu::tss_ptr();
+    if !tss.is_null() {
         unsafe {
-            (*tss_ptr).privilege_stack_table[0] = kernel_stack_top;
+            (*tss).privilege_stack_table[0] = kernel_stack_top;
         }
     }
 }
@@ -276,14 +273,9 @@ pub fn get_gdt_info() -> (u64, u16) {
     (gdtr.base.as_u64(), gdtr.limit)
 }
 
-/// Get TSS base address and RSP0 for logging
+/// Get the executing CPU's TSS base address and RSP0 for logging
 pub fn get_tss_info() -> (u64, u64) {
-    let tss_ptr = TSS_PTR.load(Ordering::Acquire);
-    if !tss_ptr.is_null() {
-        let base = tss_ptr as u64;
-        let rsp0 = unsafe { (*tss_ptr).privilege_stack_table[0].as_u64() };
-        (base, rsp0)
-    } else {
-        (0, 0)
-    }
+    let tss_ptr = get_tss_ptr();
+    let rsp0 = unsafe { (*tss_ptr).privilege_stack_table[0].as_u64() };
+    (tss_ptr as u64, rsp0)
 }

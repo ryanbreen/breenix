@@ -671,15 +671,15 @@ struct PinGuardOracleReport {
 
 /// Emit slice 3e's pin-guard oracle line.
 ///
-/// aarch64 drives the probe. x86_64 has `MAX_CPUS` = 1, so no site in this file
-/// can move a thread between CPUs and no pin can name a CPU other than the one
-/// asking: the arm prints a SKIP that says so rather than a verdict it did not
-/// measure.
+/// aarch64 drives the probe. x86_64 brings only the boot CPU online, so no
+/// site in this file can move a thread between CPUs and no pin can name a CPU
+/// other than the one asking: the arm prints a SKIP that says so rather than a
+/// verdict it did not measure.
 #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
 pub fn emit_pin_guard_oracle() {
     crate::serial_println!(
-        "[PIN_GUARD_ORACLE:x86_64:SKIP:reason=max_cpus_{}_one_scheduling_cpu]",
-        MAX_CPUS
+        "[PIN_GUARD_ORACLE:x86_64:SKIP:reason=online_cpus_{}_one_scheduling_cpu]",
+        crate::arch_impl::x86_64::smp::cpus_online()
     );
 }
 
@@ -1508,8 +1508,12 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
 /// Maximum CPUs for scheduler state arrays.
 #[cfg(target_arch = "aarch64")]
 pub(crate) const MAX_CPUS: usize = 8;
+/// x86_64: a fixed bound above every profile in `docs/x86-profiles.json`, the
+/// largest of which configures four CPUs. Slots past the online count are
+/// never placement targets: `online_cpu_count()` and `smp::is_cpu_online()`
+/// answer from the CPUs that actually came up.
 #[cfg(not(target_arch = "aarch64"))]
-pub(crate) const MAX_CPUS: usize = 1;
+pub(crate) const MAX_CPUS: usize = 8;
 
 /// A CPU that has not entered the scheduler in 20 ms will not dispatch a wake
 /// within any latency budget the kernel cares about.
@@ -1553,9 +1557,7 @@ impl RetirementSnapshot {
                 online_mask |= 1 << cpu_id;
             }
             #[cfg(target_arch = "x86_64")]
-            {
-                // x86 is single-CPU today. Keep CPU 0 unconditionally live so
-                // retirement can never silently degenerate to an empty mask.
+            if crate::arch_impl::x86_64::smp::is_cpu_online(cpu_id) {
                 online_mask |= 1 << cpu_id;
             }
         }
@@ -2031,9 +2033,10 @@ impl Scheduler {
         {
             crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
         }
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(target_arch = "x86_64")]
         {
-            0
+            use crate::arch_impl::PerCpuOps;
+            crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize
         }
     }
 
@@ -2046,13 +2049,11 @@ impl Scheduler {
         {
             (crate::arch_impl::aarch64::smp::cpus_online() as usize).clamp(1, MAX_CPUS)
         }
-        // #814 PR-1 / #629: x86 used to answer this question with the bare
-        // constant. It now reads the same atomic shape aarch64 reads. The
-        // VALUE does not move in this PR -- `cpus_online()` is seeded at 1 and
-        // no x86 AP is started -- and the clamp keeps it inside MAX_CPUS,
-        // which is still 1 here; what changes is where the answer comes from.
-        // The load is one acquire read of a static: no lock, no allocation, so
-        // it is admissible on this dispatch path.
+        // #629: x86 answers from the same atomic shape aarch64 reads, not
+        // from MAX_CPUS. Only the boot CPU is online until secondary bring-up
+        // (#1179) marks APs online, so slots past it are never placement
+        // targets. The load is one acquire read of a static: no lock, no
+        // allocation, so it is admissible on this dispatch path.
         #[cfg(target_arch = "x86_64")]
         {
             (crate::arch_impl::x86_64::smp::cpus_online() as usize).clamp(1, MAX_CPUS)
@@ -4822,7 +4823,7 @@ impl Scheduler {
                         // whose deadline has ALREADY passed -- the question
                         // left is how long it waits on top of that. A tail
                         // enqueue answers "one full round robin": on x86
-                        // `MAX_CPUS` is 1, so this is the single ready queue
+                        // only the boot CPU is online, so this is the single ready queue
                         // the runnable threads share, and the woken thread
                         // waits for the threads ahead of it to exhaust their
                         // own quanta before it is selected. #766 measured that
@@ -7139,8 +7140,10 @@ pub fn isr_unblock_for_io(tid: u64) {
     // path queues wake work to a selected target CPU rather than scanning idle CPUs.
 }
 
-/// Read the current CPU ID directly from hardware (MPIDR_EL1 on ARM64).
-/// Safe to call from ISR context — no per-CPU data, no locks.
+/// Read the current CPU ID without taking a lock. ARM64 reads MPIDR_EL1;
+/// x86_64 reads the logical CPU number from this CPU's GS-relative per-CPU
+/// data, which both GS bases name in kernel and user mode alike.
+/// Safe to call from ISR context.
 #[inline]
 fn current_cpu_id_raw() -> usize {
     #[cfg(target_arch = "aarch64")]
@@ -7151,9 +7154,10 @@ fn current_cpu_id_raw() -> usize {
         }
         (mpidr & 0xFF) as usize
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     {
-        0
+        use crate::arch_impl::PerCpuOps;
+        crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize
     }
 }
 
@@ -7243,9 +7247,9 @@ pub fn requeue_refused_dispatch(thread_id: u64) {
         // Slice 3e: this CPU refused the dispatch, so the thread goes back onto
         // this CPU's queue -- unless its pin names another, in which case the
         // dispatch that was refused was already on the wrong CPU and the guard
-        // returns it to the right one. On x86_64 `MAX_CPUS` is 1, so the guard
-        // has one queue to choose from and cannot answer anything but "no
-        // constraint" here.
+        // returns it to the right one. On x86_64 only the boot CPU is online,
+        // so the guard has one queue to choose from and cannot answer anything
+        // but "no constraint" here.
         if !sched.retain_cpu_affine_thread(thread_id, cpu) {
             sched.per_cpu_queues[cpu].push_back(thread_id);
         }

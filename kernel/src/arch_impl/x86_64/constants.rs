@@ -217,6 +217,15 @@ pub const PERCPU_DISPATCH_MARK_STATE_OFFSET: usize = 152;
 /// moves.
 pub const PERCPU_DISPATCH_MARK_WAIT_ITERS_OFFSET: usize = 160;
 
+/// Offset of quantum in PerCpuData: this CPU's remaining scheduler quantum,
+/// in ticks. Taken from the tail padding, so `PerCpuData` keeps its 192-byte
+/// size and no offset above moves.
+pub const PERCPU_QUANTUM_OFFSET: usize = 168;
+
+/// Offset of quantum_tick in PerCpuData: the global tick count at which this
+/// CPU last charged its quantum.
+pub const PERCPU_QUANTUM_TICK_OFFSET: usize = 176;
+
 /// `dispatch_mark_state`: no dispatch frame is recorded.
 pub const DISPATCH_MARK_INVALID: u64 = 0;
 

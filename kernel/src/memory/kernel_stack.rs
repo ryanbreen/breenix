@@ -387,15 +387,24 @@ const BITMAP_SIZE: usize = (MAX_KERNEL_STACKS + 63) / 64;
 #[cfg(target_arch = "x86_64")]
 static STACK_BITMAP: Mutex<[u64; BITMAP_SIZE]> = Mutex::new([0; BITMAP_SIZE]);
 
-/// True when the single online x86 CPU still names or executes on this slot.
+/// True when an online x86 CPU still names this slot as its kernel stack, or
+/// the executing CPU is running on it.
 ///
-/// x86 is single-CPU today. This covers both the per-CPU/TSS RSP0 mirror and
-/// the currently executing stack pointer. The predicate must be extended to
-/// inspect every online CPU when x86 SMP lands.
+/// Every online CPU's per-CPU/TSS RSP0 mirror is consulted; the executing
+/// stack pointer can only be read on this CPU. A peer still running on a
+/// retired stack is what the two-epoch retirement grace rules out before a
+/// slot reaches this check.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn is_kernel_stack_slot_live(stack_top: u64) -> bool {
     let bottom = stack_top.saturating_sub(KERNEL_STACK_SIZE);
-    (crate::per_cpu::is_initialized() && crate::per_cpu::kernel_stack_top() == stack_top)
+    let named_by_online_cpu = crate::per_cpu::is_initialized()
+        && (0..crate::task::scheduler::MAX_CPUS)
+            .filter(|&cpu| crate::arch_impl::x86_64::smp::is_cpu_online(cpu))
+            .any(|cpu| {
+                let data = crate::per_cpu::cpu_data(cpu);
+                unsafe { (&raw const (*data).kernel_stack_top).read_volatile() == stack_top }
+            });
+    named_by_online_cpu
         || {
             let rsp: u64;
             unsafe {

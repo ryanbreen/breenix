@@ -54,12 +54,8 @@ impl DeferredFaultExitBuffer {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 8] =
-    [const { DeferredFaultExitBuffer::new() }; 8];
-#[cfg(not(target_arch = "aarch64"))]
-static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 1] =
-    [const { DeferredFaultExitBuffer::new() }];
+static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; scheduler::MAX_CPUS] =
+    [const { DeferredFaultExitBuffer::new() }; scheduler::MAX_CPUS];
 
 pub(crate) struct PendingProcessReclaim {
     pid: u64,
@@ -1003,8 +999,11 @@ fn next_reclaim_pass_id(mut pass: u32) -> u32 {
 pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     #[cfg(target_arch = "aarch64")]
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-    #[cfg(not(target_arch = "aarch64"))]
-    let cpu = 0usize;
+    #[cfg(target_arch = "x86_64")]
+    let cpu = {
+        use crate::arch_impl::PerCpuOps;
+        crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize
+    };
 
     let idx = cpu.min(DEFERRED_FAULT_EXIT_BUFFERS.len().saturating_sub(1));
     DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id)

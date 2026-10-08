@@ -151,9 +151,10 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
 
     // Initialize per-CPU emergency stacks
     log::info!("Initializing per-CPU emergency stacks...");
-    // For now, assume single CPU. In SMP systems, this would be the actual CPU count
-    let _emergency_stacks =
-        per_cpu_stack::init_per_cpu_stacks(1).expect("Failed to initialize per-CPU stacks");
+    // One slot for every CPU the per-CPU state can address, mapped now so a
+    // secondary CPU's per-CPU init finds its IST stacks already present.
+    let _emergency_stacks = per_cpu_stack::init_per_cpu_stacks(crate::task::scheduler::MAX_CPUS)
+        .expect("Failed to initialize per-CPU stacks");
 
     log::info!("Memory management initialized");
 

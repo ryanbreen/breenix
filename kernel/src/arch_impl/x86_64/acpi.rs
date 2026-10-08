@@ -61,11 +61,10 @@ use core::ptr::read_volatile;
 /// How many processor APIC ids one census records.
 ///
 /// This is an ENUMERATION capacity, deliberately not
-/// `crate::task::scheduler::MAX_CPUS` (1 on x86 today): what the firmware
-/// reports and what the scheduler can dispatch on are different numbers in
-/// this PR, and collapsing them would hide the very gap the marker exists to
-/// report. Entries beyond this capacity are still COUNTED; only their ids go
-/// unrecorded.
+/// `crate::task::scheduler::MAX_CPUS`: what the firmware reports and what the
+/// scheduler can dispatch on are different numbers, and collapsing them would
+/// hide the very gap the marker exists to report. Entries beyond this capacity
+/// are still COUNTED; only their ids go unrecorded.
 pub const MAX_ENUMERATED_CPUS: usize = 64;
 pub const MAX_IO_APICS: usize = 16;
 

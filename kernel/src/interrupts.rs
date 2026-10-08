@@ -233,6 +233,12 @@ pub fn init_idt() {
     log::info!("IDT loaded successfully at {:#x}", idt_ptr);
 }
 
+/// Load the IDT `init_idt` built into the executing CPU's IDTR. Part of the
+/// per-CPU init every CPU runs; all CPUs share one IDT.
+pub fn load_idt() {
+    IDT.get().expect("IDT not built").load();
+}
+
 /// Enable shared PCI IRQs only after their devices have initialized.
 pub fn enable_irq10() {
     crate::arch_impl::x86_64::irq::set_enabled(10, true);

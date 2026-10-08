@@ -1,11 +1,19 @@
-//! Local APIC access on the executing CPU. Only the BSP is started here.
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+//! Local APIC access on the executing CPU.
+//!
+//! `init` chooses the mode (x2APIC or xAPIC) and maps the xAPIC window once
+//! for the machine; `init_local` and `start_local_timer` are the per-CPU half
+//! every CPU runs from its per-CPU init. Only the BSP is started here.
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use x86_64::registers::model_specific::Msr;
 
 pub const SPURIOUS_VECTOR: u8 = 0xff;
 const MASKED: u32 = 1 << 16;
 static MODE: AtomicU8 = AtomicU8::new(0);
 static MMIO: AtomicUsize = AtomicUsize::new(0);
+/// xAPIC physical base every CPU's APIC base MSR is pointed at.
+static PHYS: AtomicU64 = AtomicU64::new(0);
+/// Initial count for the periodic scheduler tick, calibrated once on the BSP.
+static TIMER_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub fn active() -> bool {
     MODE.load(Ordering::Acquire) != 0
@@ -38,7 +46,8 @@ fn write(register: u32, value: u32) {
     }
 }
 
-/// Enable the BSP, masking firmware LVT sources before accepting interrupts.
+/// Choose the APIC mode for the machine, map the xAPIC window if that is the
+/// mode, and enable the BSP's local APIC.
 /// CPUID's x2APIC bit includes the hypervisor's advertised capability.
 pub fn init(address: u64) -> &'static str {
     let features = unsafe { core::arch::x86_64::__cpuid(1) };
@@ -46,26 +55,43 @@ pub fn init(address: u64) -> &'static str {
         features.edx & (1 << 9) != 0,
         "MADT APIC without CPU APIC support"
     );
+    if features.ecx & (1 << 21) != 0 {
+        MODE.store(2, Ordering::Release);
+    } else {
+        assert!(
+            address != 0 && address & 0xfff == 0,
+            "Invalid LAPIC address"
+        );
+        let mapped = crate::memory::map_mmio(address, 4096).expect("Map LAPIC");
+        MMIO.store(mapped, Ordering::Relaxed);
+        PHYS.store(address, Ordering::Relaxed);
+        MODE.store(1, Ordering::Release);
+    }
+    init_local();
+    if MODE.load(Ordering::Relaxed) == 2 {
+        "x2APIC"
+    } else {
+        "xAPIC"
+    }
+}
+
+/// Enable the executing CPU's local APIC in the machine's mode, masking
+/// firmware LVT sources before it accepts interrupts. Every CPU runs this from
+/// its per-CPU init; `init` runs it once for the BSP before routing devices.
+/// Repeating it on a CPU rewrites the same enable bits and masks.
+pub fn init_local() {
     unsafe {
         let mut base = Msr::new(0x1b);
         let old = base.read();
-        if features.ecx & (1 << 21) != 0 {
+        if MODE.load(Ordering::Relaxed) == 2 {
             // x2APIC transitions from disabled through xAPIC enabled.
             if old & (1 << 11) == 0 {
                 base.write(old | (1 << 11));
             }
             base.write(old | (1 << 11) | (1 << 10));
-            MODE.store(2, Ordering::Release);
         } else {
             assert!(old & (1 << 10) == 0, "x2APIC active but not advertised");
-            assert!(
-                address != 0 && address & 0xfff == 0,
-                "Invalid LAPIC address"
-            );
-            let mapped = crate::memory::map_mmio(address, 4096).expect("Map LAPIC");
-            MMIO.store(mapped, Ordering::Relaxed);
-            base.write((old & !0x000f_ffff_ffff_f000) | address | (1 << 11));
-            MODE.store(1, Ordering::Release);
+            base.write((old & !0x000f_ffff_ffff_f000) | PHYS.load(Ordering::Relaxed) | (1 << 11));
         }
     }
     let max_lvt = (read(0x30) >> 16) & 0xff;
@@ -83,11 +109,6 @@ pub fn init(address: u64) -> &'static str {
     }
     write(0x80, 0); // TPR: accept all interrupt priorities.
     write(0xf0, (1 << 8) | u32::from(SPURIOUS_VECTOR));
-    if MODE.load(Ordering::Relaxed) == 2 {
-        "x2APIC"
-    } else {
-        "xAPIC"
-    }
 }
 
 pub fn id() -> u32 {
@@ -110,9 +131,11 @@ pub fn timer_state() -> (u32, u32, u32) {
     (read(0x320), read(0x380), read(0x390))
 }
 
-/// Calibrate the divided LAPIC clock against a PIT channel-2 one-shot.
-/// Interrupts remain disabled throughout boot calibration.
-pub fn start_timer(hz: u32) -> u32 {
+/// Calibrate the divided LAPIC clock against a PIT channel-2 one-shot, on the
+/// BSP, and record the initial count a `hz` periodic tick needs. The timer is
+/// left masked; each CPU's per-CPU init starts its own with
+/// `start_local_timer`. Interrupts remain disabled throughout calibration.
+pub fn calibrate_timer(hz: u32) -> u32 {
     use x86_64::instructions::port::Port;
     const PIT_TICKS: u16 = 59659; // approximately 50ms at 1,193,182 Hz
     unsafe {
@@ -145,13 +168,23 @@ pub fn start_timer(hz: u32) -> u32 {
         write(0x380, 0);
         let count = (u64::from(elapsed) * 1_193_182 / u64::from(PIT_TICKS) / u64::from(hz)) as u32;
         assert!(count != 0, "LAPIC timer did not count");
-        write(
-            0x320,
-            (1 << 17) | u32::from(crate::interrupts::InterruptIndex::Timer.as_u8()),
-        );
-        write(0x380, count);
+        TIMER_COUNT.store(count, Ordering::Release);
         count
     }
+}
+
+/// Start the executing CPU's periodic scheduler tick with the count the BSP
+/// calibrated. Every CPU's LAPIC timer runs from the same bus clock, so one
+/// calibration serves them all.
+pub fn start_local_timer() {
+    let count = TIMER_COUNT.load(Ordering::Acquire);
+    assert!(count != 0, "LAPIC timer started before calibration");
+    write(0x3e0, 3); // divide by 16, as calibrated
+    write(
+        0x320,
+        (1 << 17) | u32::from(crate::interrupts::InterruptIndex::Timer.as_u8()),
+    );
+    write(0x380, count);
 }
 
 /// Physical-destination IPI kinds for AP startup and subsequent SMP consumers.

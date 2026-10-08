@@ -18,6 +18,7 @@ pub mod apic;
 #[allow(unused_imports)]
 pub mod constants;
 pub mod cpu;
+pub mod cpu_init;
 pub mod cpuinfo;
 pub mod interrupt_frame;
 pub mod ioapic;
