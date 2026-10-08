@@ -3800,7 +3800,7 @@ fn test_breakpoint() -> TestResult {
 ///
 /// - x86_64: Verifies the selected scheduler timer is counting and unmasked
 /// - ARM64: Verifies the GICv2 is initialized
-fn test_interrupt_controller_init() -> TestResult {
+pub fn test_interrupt_controller_init() -> TestResult {
     #[cfg(target_arch = "x86_64")]
     {
         let (counting, unmasked) = crate::time::timer::validate_scheduler_timer();

@@ -664,6 +664,19 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // frame or page-table custody counts.
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     {
+        // The x86 staged registry is opt-in; this controller check must run
+        // in every boot_tests boot, on both APIC and PIC fallback paths.
+        kernel::serial_println!("[TEST:interrupts:interrupt_controller_init:START]");
+        let controller_result = kernel::test_framework::registry::test_interrupt_controller_init();
+        assert!(
+            matches!(
+                controller_result,
+                kernel::test_framework::registry::TestResult::Pass
+            ),
+            "Interrupt controller test failed: {:?}",
+            controller_result
+        );
+        kernel::serial_println!("[TEST:interrupts:interrupt_controller_init:PASS]");
         // #767 first: it makes 3 relaxed loads of the tick counter, 1
         // AtomicBool swap and 1 serial line, so it cannot move the frame,
         // page-table or kernel-stack counts the gates below pin, while the
