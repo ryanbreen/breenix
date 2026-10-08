@@ -11,7 +11,7 @@
 //!
 //! This handler is MINIMAL - it does the absolute minimum work required in interrupt context:
 //! 1. Updates the global timer tick count (via crate::time::timer_interrupt)
-//! 2. Decrements current thread's time quantum
+//! 2. Decrements this CPU's time quantum
 //! 3. Sets need_resched flag if quantum expired
 //! 4. Returns (EOI is sent in assembly just before IRETQ)
 //!
@@ -32,9 +32,6 @@ use crate::tracing::providers::irq::trace_timer_tick;
 /// Time quantum in timer ticks (5ms per tick @ 200 Hz, 50ms quantum = 10 ticks)
 const TIME_QUANTUM: u32 = 10;
 
-/// Current thread's remaining time quantum
-static mut CURRENT_QUANTUM: u32 = TIME_QUANTUM;
-
 /// Timer interrupt handler - absolutely minimal work
 ///
 /// @param from_userspace: 1 if interrupted userspace, 0 if interrupted kernel (unused)
@@ -43,29 +40,27 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
     // Enter hardware IRQ context (increments HARDIRQ count)
     crate::per_cpu::irq_enter();
 
-    let previous_ticks = crate::time::get_ticks();
     crate::time::timer_interrupt();
-    let elapsed_ticks = crate::time::get_ticks().saturating_sub(previous_ticks);
+    let now = crate::time::get_ticks();
+    // The quantum is this CPU's, charged with the ticks since this CPU's own
+    // previous charge: every CPU's timer advances the one global tick count,
+    // so a before/after read of it would miss ticks a peer counted first.
+    let elapsed_ticks = crate::per_cpu::take_quantum_ticks(now);
 
     // Trace timer tick - compiles to ~5 instructions when disabled
     // Uses the TICKS counter value as payload for timing analysis
-    trace_timer_tick(crate::time::get_ticks());
+    trace_timer_tick(now);
 
-    // Decrement current thread's quantum and check for reschedule
-    unsafe {
-        // Use raw pointer to avoid creating references to mutable static (Rust 2024 compatibility)
-        let quantum_ptr = core::ptr::addr_of_mut!(CURRENT_QUANTUM);
-
-        *quantum_ptr = quantum_ptr
-            .read()
-            .saturating_sub(elapsed_ticks.min(u32::MAX as u64) as u32);
-
-        // Only reschedule when quantum expires - NOT every tick
-        // Rescheduling on every tick prevents userspace from executing.
-        if *quantum_ptr == 0 {
-            scheduler::set_need_resched();
-            *quantum_ptr = TIME_QUANTUM; // Reset for next thread
-        }
+    // Decrement this CPU's quantum and check for reschedule.
+    // Only reschedule when quantum expires - NOT every tick
+    // Rescheduling on every tick prevents userspace from executing.
+    let remaining =
+        crate::per_cpu::quantum().saturating_sub(elapsed_ticks.min(u32::MAX as u64) as u32);
+    if remaining == 0 {
+        scheduler::set_need_resched();
+        crate::per_cpu::set_quantum(TIME_QUANTUM); // Reset for next thread
+    } else {
+        crate::per_cpu::set_quantum(remaining);
     }
 
     // CRITICAL: EOI is sent by send_timer_eoi() called from timer_entry.asm
@@ -77,13 +72,9 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
     crate::per_cpu::irq_exit();
 }
 
-/// Reset the quantum counter (called when switching threads)
+/// Reset this CPU's quantum counter (its per-CPU init starts it full)
 pub fn reset_quantum() {
-    unsafe {
-        // Use raw pointer to avoid creating reference to mutable static (Rust 2024 compatibility)
-        let quantum_ptr = core::ptr::addr_of_mut!(CURRENT_QUANTUM);
-        *quantum_ptr = TIME_QUANTUM;
-    }
+    crate::per_cpu::set_quantum(TIME_QUANTUM);
 }
 
 /// Debug function to log timer interrupt frame from userspace
