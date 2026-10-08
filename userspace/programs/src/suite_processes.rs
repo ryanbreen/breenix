@@ -2837,7 +2837,8 @@ fn sched_yield() -> CaseResult {
 }
 
 /// One reading of the kernel's tick: the global tick and the idle ticks of all processors
-/// together, from /proc/stat, and the CPU time charged to the calling thread in ms. The
+/// together, from /proc/stat and converted to ms at its ms_per_tick (1 on aarch64, 5 on
+/// x86_64), and the CPU time charged to the calling thread in ms. The
 /// kernel charges CPU time from that same global tick, so between two readings elapsed
 /// ticks less charged time is the time the thread spent off its processor, and a pause of
 /// the whole machine shortens both alike.
@@ -2846,20 +2847,22 @@ struct TickSample { tick: i64, idle: i64, charged: i64 }
 
 fn tick_sample() -> Result<TickSample, String> {
     let stat = std::fs::read_to_string("/proc/stat").map_err(|e| format!("reading /proc/stat failed: {e}"))?;
-    let (mut tick, mut idle) = (None, 0);
+    let (mut tick, mut idle, mut ms_per_tick) = (None, 0, None);
     for line in stat.lines() {
         match line.split_whitespace().collect::<Vec<_>>()[..] {
             ["global_ticks", n] => tick = n.parse::<i64>().ok(),
+            ["ms_per_tick", n] => ms_per_tick = n.parse::<i64>().ok(),
             [cpu, _, n] if cpu.starts_with("cpu") =>
                 idle += n.parse::<i64>().map_err(|_| format!("/proc/stat line {line:?} has no idle tick count"))?,
             _ => {}
         }
     }
     let tick = tick.ok_or("/proc/stat has no global_ticks line")?;
-    Ok(TickSample { tick, idle, charged: cpu_us(&getrusage(RUSAGE_THREAD)?) / 1000 })
+    let ms_per_tick = ms_per_tick.ok_or("/proc/stat has no ms_per_tick line")?;
+    Ok(TickSample { tick: tick * ms_per_tick, idle: idle * ms_per_tick, charged: cpu_us(&getrusage(RUSAGE_THREAD)?) / 1000 })
 }
 
-/// Whether the processors' idle ticks over `elapsed` ticks, less the `away` ticks this
+/// Whether the processors' idle time over `elapsed` ms, less the `away` ms this
 /// thread spent off its own processor (which may have been idle meanwhile), add up to a
 /// whole processor idle for at least nine tenths of that time.
 fn spare_processor(idle: i64, away: i64, elapsed: i64) -> bool {
@@ -2895,10 +2898,10 @@ fn burn_off_cpu(ms: u64) -> Result<OffCpu, String> {
         last = now;
     }
     let (end, _) = times()?;
-    // The comparisons above take the global tick to be 1 ms, as it is on aarch64.
+    // The comparisons above take the global tick, converted to ms, to keep time.
     let ticks = last.tick - first.tick;
     if ((end - start) * 10 - ticks).abs() > 20 {
-        return Err(format!("times() measured {} ms while the kernel's global tick advanced {ticks}: the case assumes a 1 ms tick", (end - start) * 10));
+        return Err(format!("times() measured {} ms while the kernel's global tick advanced {ticks} ms", (end - start) * 10));
     }
     Ok(off)
 }
@@ -2925,7 +2928,7 @@ const WOKEN_SHORT_SLEEP: i32 = 6;
 const WOKEN_SLEEP_MS: i64 = 100;
 
 /// The process woken while its parent computes. Once the parent says it is computing, it
-/// sleeps WOKEN_SLEEP_MS and records how many ticks passed before it ran again, then
+/// sleeps WOKEN_SLEEP_MS and records how many ms of global tick passed before it ran again, then
 /// computes for 100 ms. The sleep must last the time asked for by the monotonic clock,
 /// and it must wake, and finish computing, while the parent is still computing.
 fn woken_process(shared: &[AtomicI64]) -> i32 {
@@ -2989,7 +2992,7 @@ fn sched_idle_cpu() -> CaseResult {
         0 => None,
         WOKEN_LATE if !wait_measured => None,
         WOKEN_LATE => Some(format!(
-            "ran again {wait} ms after beginning a {WOKEN_SLEEP_MS} ms sleep, after the computing process had finished, though the processors were idle for {wait_idle} ticks of that time")),
+            "ran again {wait} ms after beginning a {WOKEN_SLEEP_MS} ms sleep, after the computing process had finished, though the processors were idle for {wait_idle} ms of that time")),
         WOKEN_NO_START => Some("never saw the computing process start".to_string()),
         WOKEN_SLEEP_FAILED => Some(format!("failed its {WOKEN_SLEEP_MS} ms sleep")),
         WOKEN_SHORT_SLEEP => Some(format!("returned from a {WOKEN_SLEEP_MS} ms sleep after {slept} ms")),
@@ -3000,14 +3003,14 @@ fn sched_idle_cpu() -> CaseResult {
     if let Some(why) = why { return fail(format!("the process woken while another computed {why}")); }
     if wait_measured {
         check(wait - WOKEN_SLEEP_MS <= OFF_CPU_LIMIT_MS, &format!(
-            "with {cpus} processors online, a process woken from a {WOKEN_SLEEP_MS} ms sleep ran again {wait} ms after it began, though the processors were idle for {wait_idle} ticks of that time"))?;
+            "with {cpus} processors online, a process woken from a {WOKEN_SLEEP_MS} ms sleep ran again {wait} ms after it began, though the processors were idle for {wait_idle} ms of that time"))?;
     }
     let mut unmeasured = Vec::new();
     if ran.idle_ms < ran.busy_ms {
         unmeasured.push(format!("the computing process had one for {} of {} ms", ran.idle_ms, ran.idle_ms + ran.busy_ms));
     }
     if !wait_measured {
-        unmeasured.push(format!("the woken process's {wait} ms wait had {wait_idle} idle ticks"));
+        unmeasured.push(format!("the woken process's {wait} ms wait had {wait_idle} ms of idle processor time"));
     }
     if !unmeasured.is_empty() {
         return skip(format!("no processor was left idle to measure against: {}", unmeasured.join("; ")));

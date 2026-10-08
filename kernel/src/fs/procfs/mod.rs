@@ -874,6 +874,7 @@ fn generate_stat() -> String {
          context_switches {}\n\
          timer_ticks {}\n\
          global_ticks {}\n\
+         ms_per_tick {}\n\
          cpu_online {}\n\
          cpu_sample_ticks {}\n\
          cpu_capacity_ticks {}\n\
@@ -888,6 +889,7 @@ fn generate_stat() -> String {
         CTX_SWITCH_TOTAL.aggregate(),
         TIMER_TICK_TOTAL.aggregate(),
         crate::time::get_ticks(),
+        crate::time::timer::MS_PER_TICK,
         cpu_online,
         cpu_sample_ticks,
         cpu_capacity_ticks,
