@@ -2906,14 +2906,29 @@ fn sched_yield() -> CaseResult {
 #[derive(Clone, Copy)]
 struct TickSample { tick: i64, idle: i64, charged: i64 }
 
+/// The reading allocates nothing: an allocation is an mmap and its release a munmap,
+/// and the dozens a line-by-line parse made fell between the tick this reading takes,
+/// when /proc/stat is opened, and the caller's next clock reading.
 fn tick_sample() -> Result<TickSample, String> {
-    let stat = std::fs::read_to_string("/proc/stat").map_err(|e| format!("reading /proc/stat failed: {e}"))?;
+    use std::io::Read;
+    let mut buf = [0u8; 4096];
+    let mut len = 0;
+    let mut file = std::fs::File::open("/proc/stat").map_err(|e| format!("reading /proc/stat failed: {e}"))?;
+    loop {
+        let n = file.read(&mut buf[len..]).map_err(|e| format!("reading /proc/stat failed: {e}"))?;
+        if n == 0 { break; }
+        len += n;
+        if len == buf.len() { return Err(format!("/proc/stat is longer than {len} bytes")); }
+    }
+    drop(file);
+    let stat = core::str::from_utf8(&buf[..len]).map_err(|_| "/proc/stat is not UTF-8".to_string())?;
     let (mut tick, mut idle, mut ms_per_tick) = (None, 0, None);
     for line in stat.lines() {
-        match line.split_whitespace().collect::<Vec<_>>()[..] {
-            ["global_ticks", n] => tick = n.parse::<i64>().ok(),
-            ["ms_per_tick", n] => ms_per_tick = n.parse::<i64>().ok(),
-            [cpu, _, n] if cpu.starts_with("cpu") =>
+        let mut words = line.split_whitespace();
+        match (words.next(), words.next(), words.next(), words.next()) {
+            (Some("global_ticks"), Some(n), None, None) => tick = n.parse::<i64>().ok(),
+            (Some("ms_per_tick"), Some(n), None, None) => ms_per_tick = n.parse::<i64>().ok(),
+            (Some(cpu), Some(_), Some(n), None) if cpu.starts_with("cpu") =>
                 idle += n.parse::<i64>().map_err(|_| format!("/proc/stat line {line:?} has no idle tick count"))?,
             _ => {}
         }
