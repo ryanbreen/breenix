@@ -3266,8 +3266,10 @@ pub fn sys_getpid() -> SyscallResult {
             // Find the process that owns this thread
             if let Some(ref manager) = *crate::process::manager() {
                 if let Some((pid, _process)) = manager.find_process_by_thread(thread_id) {
-                    // Return the process ID
-                    log::info!(
+                    // Return the process ID. Debug level: this runs under the
+                    // process manager, which every other CPU waits for while a
+                    // serial line is written.
+                    log::debug!(
                         "sys_getpid: Found process {} for thread {}",
                         pid.as_u64(),
                         thread_id

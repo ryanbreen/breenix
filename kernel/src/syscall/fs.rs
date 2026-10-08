@@ -688,7 +688,9 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
             FileDescriptor::opened(FdKind::RegularFile(Arc::new(Mutex::new(regular_file))), flags);
         match process.fd_table.alloc_with_entry(fd_entry) {
             Ok(fd) => {
-                log::info!(
+                // Debug level: this runs under the process manager, which
+                // every other CPU waits for while a serial line is written.
+                log::debug!(
                     "sys_open: opened {} as fd {} (inode {})",
                     path,
                     fd,
@@ -2480,7 +2482,8 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
     let fd_kind = FileDescriptor::opened(FdKind::Device(device.device_type), flags);
     match process.fd_table.alloc_with_entry(fd_kind) {
         Ok(fd) => {
-            log::info!(
+            // Debug level: written under the process manager (see sys_open).
+            log::debug!(
                 "handle_devfs_open: opened /dev/{} as fd {}",
                 device_name,
                 fd
