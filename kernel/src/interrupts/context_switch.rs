@@ -1427,12 +1427,14 @@ fn restore_userspace_thread_context(
                                 }
                                 RestoreError::KernelFrame => raw_serial_str("<KFRAME>"),
                             }
-                            // Corrupted process state. Terminate the process and switch to idle.
-                            thread.set_terminated();
-                            process.terminate(-11); // SIGSEGV equivalent
-                            crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
-                                sched_thread.set_terminated();
-                            });
+                            // The thread cannot return to this context: it dies of
+                            // SIGSEGV, through the deferred exit the user #PF and #GP
+                            // take, which tells its parent and retires the row. A
+                            // syscall that returned to a non-canonical RIP lands
+                            // here when its return switched threads, instead of at
+                            // the IRETQ #GP.
+                            let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
+                            crate::task::scheduler::terminate_thread(thread_id);
                             crate::task::scheduler::set_need_resched();
                             setup_idle_return(interrupt_frame);
                             crate::task::scheduler::switch_to_idle();
