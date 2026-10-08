@@ -3001,13 +3001,27 @@ impl Scheduler {
     /// the ready queue after its context is saved.
     #[cfg(target_arch = "aarch64")]
     pub fn schedule_deferred_requeue(&mut self) -> Option<(u64, u64, bool)> {
+        self.schedule_deferred_requeue_inner(true)
+    }
+
+    /// `schedule_deferred_requeue`, with the draining of the global per-CPU
+    /// wake inboxes (held pinned wakes and the ISR wakeup buffers) optional.
+    /// Only the live scheduler may drain them: a scheduler built by a boot
+    /// test would take wakeups that belong to the live one.
+    #[cfg(target_arch = "aarch64")]
+    fn schedule_deferred_requeue_inner(
+        &mut self,
+        drain_wake_inboxes: bool,
+    ) -> Option<(u64, u64, bool)> {
         // Update per-CPU idle flag based on CURRENT state (before scheduling decision).
         // This ensures the flag is always accurate, even when this function returns None.
         // If we return Some(...), the flag is overwritten with the post-switch state later.
         let cpu = Self::current_cpu_id();
         self.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
-        self.deliver_pinned_wakes_for_this_cpu();
+        if drain_wake_inboxes {
+            self.deliver_pinned_wakes_for_this_cpu();
+        }
         self.resolve_pending_next_locked(cpu);
 
         let current_is_idle =
@@ -3029,7 +3043,7 @@ impl Scheduler {
         // here via isr_unblock_for_io() to avoid spinning on SCHEDULER from ISR
         // context.  We drain ALL CPUs' buffers because the ISR that completed the
         // I/O may have run on any CPU.
-        {
+        if drain_wake_inboxes {
             let mut wakeups = alloc::vec::Vec::new();
             for buf in ISR_WAKEUP_BUFFERS.iter() {
                 buf.drain(&mut wakeups);
@@ -7534,6 +7548,122 @@ pub fn block_current_departure_gate_test() -> crate::test_framework::registry::T
         Some(Err(reason)) => TestResult::Fail(reason),
         None => TestResult::Fail("departure gate could not reach the scheduler"),
     }
+}
+
+/// Boot test for #1173: a scheduling pass must not dispatch the teardown token
+/// of a thread that still runs on another CPU.
+///
+/// The ARM64 EL0 fault kill path marks the faulting thread Terminated and
+/// queues its teardown token in `terminate_process_threads`, and publishes the
+/// exit kick only afterwards, in `send_exit_expedite_sgi`; the thread is still
+/// this CPU's `current_thread` in between. A peer that schedules in that gap
+/// meets the token with its kick unobserved. Rather than wait for a peer to
+/// land in the gap, the test builds that state in a scheduler of its own and
+/// runs the real ARM64 selection on it, on this CPU, twice:
+///
+/// * this CPU is idle, so its search declines the token and falls through to
+///   idle -- the same-thread branch took a second pick from there and
+///   dispatched the token;
+/// * this CPU runs a thread that was queued again while running, ahead of the
+///   token -- the same-thread branch's second pick met the token as its next
+///   entry.
+///
+/// Either way the dying thread must stay Terminated and its token queued.
+#[cfg(feature = "boot_tests")]
+pub fn idle_pick_teardown_token_gate_test() -> crate::test_framework::registry::TestResult {
+    use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "aarch64")]
+    {
+        without_interrupts(|| {
+            let cpu = Scheduler::current_cpu_id();
+            let was_idle = is_cpu_idle(cpu);
+            let result =
+                teardown_token_pick(cpu, false).and_then(|()| teardown_token_pick(cpu, true));
+            set_cpu_idle(cpu, was_idle);
+            match result {
+                Ok(()) => TestResult::Pass,
+                Err(reason) => TestResult::Fail(reason),
+            }
+        })
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        TestResult::Pass
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+fn boot_test_thread(privilege: ThreadPrivilege, state: ThreadState) -> Result<Box<Thread>, &'static str> {
+    fn never_runs() {}
+    let id = allocate_thread_id().ok_or("no thread id for the test scheduler")?;
+    let mut thread = Thread::new_with_id(
+        id,
+        alloc::string::String::from("sched-test"),
+        never_runs,
+        VirtAddr::new(0x2000),
+        VirtAddr::new(0x1000),
+        VirtAddr::new(0),
+        privilege,
+    );
+    thread.state = state;
+    Ok(Box::new(thread))
+}
+
+/// One pass of `idle_pick_teardown_token_gate_test`, in a scheduler built for
+/// it. `cpu` is the CPU the pass runs on; `running_requeued` selects the case
+/// where `cpu` runs a queued thread instead of idling.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'static str> {
+    // A pid no process has, so its exit kick is never published.
+    const DYING_PID: u64 = u64::MAX - 1173;
+    let other = if cpu == 0 { 1 } else { 0 };
+
+    let idle = boot_test_thread(ThreadPrivilege::Kernel, ThreadState::Running)?;
+    let idle_id = idle.id();
+    let mut sched = Scheduler::new(idle);
+    sched.cpu_state[0].current_thread = None;
+    sched.cpu_state[0].idle_thread = 0;
+    sched.cpu_state[cpu].idle_thread = idle_id;
+    sched.cpu_state[cpu].current_thread = Some(idle_id);
+
+    let mut dying = boot_test_thread(ThreadPrivilege::User, ThreadState::Terminated)?;
+    dying.owner_pid = Some(DYING_PID);
+    let dying_id = dying.id();
+    sched.threads.push(dying);
+    sched.cpu_state[other].current_thread = Some(dying_id);
+
+    let mut running_id = None;
+    if running_requeued {
+        let running = boot_test_thread(ThreadPrivilege::Kernel, ThreadState::Running)?;
+        let id = running.id();
+        sched.threads.push(running);
+        sched.cpu_state[cpu].current_thread = Some(id);
+        sched.per_cpu_queues[cpu].push_back(id);
+        running_id = Some(id);
+    }
+    sched.per_cpu_queues[cpu].push_back(dying_id);
+
+    if let Some((_, next, _)) = sched.schedule_deferred_requeue_inner(false) {
+        if next == dying_id {
+            return Err("a scheduling pass dispatched a teardown token whose thread runs on another CPU");
+        }
+        return Err("a scheduling pass switched away with nothing but a teardown token to run");
+    }
+    if sched.get_thread(dying_id).map(|t| t.state) != Some(ThreadState::Terminated) {
+        return Err("a scheduling pass changed a teardown token's Terminated state");
+    }
+    let queued: alloc::vec::Vec<u64> = sched.per_cpu_queues.iter().flatten().copied().collect();
+    if queued != [dying_id] {
+        return Err("a scheduling pass left the queues holding more or less than the teardown token");
+    }
+    if let Some(id) = running_id {
+        if sched.get_thread(id).map(|t| t.state) != Some(ThreadState::Running)
+            || sched.cpu_state[cpu].previous_thread.is_some()
+        {
+            return Err("the running thread kept its CPU but was left published as switching out");
+        }
+    }
+    Ok(())
 }
 
 /// Drive real scheduler boundaries on every online CPU for teardown grace-period

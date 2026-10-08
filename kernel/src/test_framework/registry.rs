@@ -10491,6 +10491,13 @@ static PROCESS_TESTS: &[TestDef] = &[
         stage: TestStage::SerialBoot,
     },
     TestDef {
+        name: "idle_pick_teardown_token_gate",
+        func: crate::task::scheduler::idle_pick_teardown_token_gate_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 5000,
+        stage: TestStage::SerialBoot,
+    },
+    TestDef {
         name: "deferred_fault_ring_overflow_injection",
         func: crate::tracing::providers::teardown::deferred_fault_ring_overflow_test,
         arch: Arch::Aarch64,
