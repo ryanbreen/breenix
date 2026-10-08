@@ -478,17 +478,6 @@ impl ProcessPageTable {
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();
 
-        // Verify the frame is within expected range
-        let frame_addr = level_4_frame.start_address().as_u64();
-        if frame_addr > 0x10000000 {
-            // 256MB limit
-            log::error!(
-                "Allocated frame {:#x} is beyond expected physical memory range",
-                frame_addr
-            );
-            return Err("Frame allocator returned invalid frame");
-        }
-
         // Map the new page table frame
         let level_4_table = unsafe {
             log::debug!("Physical memory offset: {:#x}", phys_offset.as_u64());
