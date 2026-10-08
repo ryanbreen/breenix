@@ -2,15 +2,18 @@
 use super::{acpi, apic, ioapic};
 use x86_64::instructions::port::Port;
 
-/// A missing MADT/APIC uses the legacy controller. Refused firmware fails closed.
+/// Unknown PCI routing or unusable firmware retains legacy PIC delivery.
 pub fn init(rsdp: Option<u64>, physical_offset: u64) {
     let madt = match acpi::read_madt(rsdp, physical_offset) {
         Ok(madt) => Some(madt),
         Err(acpi::MadtRefusal::NoRsdpFromBootloader | acpi::MadtRefusal::NoMadtInRootTable) => None,
-        Err(reason) => panic!(
-            "Cannot configure interrupts: {}",
-            acpi::refusal_token(reason)
-        ),
+        Err(reason) => {
+            log::warn!(
+                "Interrupt topology unavailable: {}; retaining PIC",
+                acpi::refusal_token(reason)
+            );
+            None
+        }
     };
     // Remap first and then fully mask both 8259s before switching controllers.
     unsafe {
@@ -18,9 +21,13 @@ pub fn init(rsdp: Option<u64>, physical_offset: u64) {
         pics.initialize();
         pics.write_masks(0xff, 0xff);
     }
-    if let Some(madt) =
-        madt.filter(|m| m.local_apic_address != 0 || m.local_apic_override.is_some())
-    {
+    if let Some(madt) = madt.filter(|m| {
+        m.interrupt_topology_supported
+            && m.qemu_firmware
+            && m.io_apic_count != 0
+            && known_isa_intx_mapping()
+            && (m.local_apic_address != 0 || m.local_apic_override.is_some())
+    }) {
         let mode = apic::init(
             madt.local_apic_override
                 .unwrap_or(u64::from(madt.local_apic_address)),
@@ -28,15 +35,12 @@ pub fn init(rsdp: Option<u64>, physical_offset: u64) {
         ioapic::init(&madt, apic::id());
         ioapic::set_enabled(1, true);
         ioapic::set_enabled(4, true);
-        log::info!(
-            "Interrupt delivery: {} + IOAPIC; LAPIC timer at 200 Hz; 8259 masked",
-            mode
-        );
+        log::info!("Interrupt delivery: {} + IOAPIC; 8259 masked", mode);
     } else {
         set_enabled(0, true);
         set_enabled(1, true);
         set_enabled(4, true);
-        log::info!("Interrupt delivery: PIC + PIT at 200 Hz (MADT reports no APIC)");
+        log::info!("Interrupt delivery: PIC + PIT (APIC/PCI routing unavailable or unsupported)");
     }
     unsafe {
         let mut status = Port::<u8>::new(0x64);
@@ -99,4 +103,12 @@ pub fn eoi(vector: u8) {
             }
         }
     }
+}
+
+/// Stage 1 knows QEMU PC/PIIX's PCI-to-ISA wiring, not arbitrary ACPI _PRT.
+/// The caller requires QEMU firmware as well as the i440FX/PIIX3 pair; a MADT alone says
+/// nothing about a PCI function's config Interrupt Line versus its GSI.
+fn known_isa_intx_mapping() -> bool {
+    crate::drivers::pci::pci_read_config_dword(0, 0, 0, 0) == 0x1237_8086
+        && crate::drivers::pci::pci_read_config_dword(0, 1, 0, 0) == 0x7000_8086
 }

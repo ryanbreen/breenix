@@ -2,7 +2,7 @@
 use super::acpi::{MadtCensus, MAX_IO_APICS};
 use spin::Mutex;
 
-const MASKED: u32 = 1 << 16;
+use super::ioapic_route::{redirection, MASKED};
 #[derive(Clone, Copy)]
 struct Controller {
     base: usize,
@@ -40,10 +40,7 @@ impl Controller {
 }
 
 pub fn init(madt: &MadtCensus, destination: u32) {
-    assert!(
-        destination < 255,
-        "Invalid IOAPIC physical destination"
-    );
+    assert!(destination < 255, "Invalid IOAPIC physical destination");
     assert!(madt.io_apic_count != 0, "MADT has LAPIC but no IOAPIC");
     let mut state = STATE.lock();
     for (index, entry) in madt.io_apics[..madt.io_apic_count].iter().enumerate() {
@@ -68,29 +65,18 @@ pub fn init(madt: &MadtCensus, destination: u32) {
         }
         state.controllers[index] = controller;
     }
-    for irq in [0u8, 1, 4, 10, 11] {
-        let mut gsi = u32::from(irq);
-        // These are ISA IRQ numbers. ELCR preserves the firmware's PCI INTx
-        // level setting when no MADT override specifies it; polarity is high.
-        let mut low = u32::from(crate::interrupts::PIC_1_OFFSET + irq) | MASKED;
-        unsafe {
+    for irq in (0u8..16).filter(|irq| *irq != 2) {
+        // ISA IRQ2 is the PIC cascade, not a device line. IRQ0's override
+        // commonly routes to GSI2; keep that masked for the LAPIC timer.
+        let elcr_level = unsafe {
             use x86_64::instructions::port::Port;
-            if Port::<u8>::new(0x4d0 + u16::from(irq / 8)).read() & (1 << (irq % 8)) != 0 {
-                low |= 1 << 15;
-            }
-        }
-        for entry in &madt.overrides[..madt.override_count] {
-            if entry.source == irq {
-                gsi = entry.gsi;
-                low &= !((1 << 13) | (1 << 15));
-                if entry.flags & 3 == 3 {
-                    low |= 1 << 13;
-                }
-                if (entry.flags >> 2) & 3 == 3 {
-                    low |= 1 << 15;
-                }
-            }
-        }
+            Port::<u8>::new(0x4d0 + u16::from(irq / 8)).read() & (1 << (irq % 8)) != 0
+        };
+        let source_override = madt.overrides[..madt.override_count]
+            .iter()
+            .find(|entry| entry.source == irq)
+            .map(|entry| (entry.gsi, entry.flags));
+        let (gsi, low, high) = redirection(irq, destination as u8, elcr_level, source_override);
         let index = state.controllers[..madt.io_apic_count]
             .iter()
             .position(|c| gsi >= c.gsi && gsi - c.gsi < c.pins)
@@ -106,9 +92,18 @@ pub fn init(madt: &MadtCensus, destination: u32) {
             "Used IRQs alias one GSI"
         );
         unsafe {
-            controller.write(0x11 + 2 * pin, destination << 24);
+            controller.write(0x11 + 2 * pin, high);
             controller.write(0x10 + 2 * pin, low);
         }
+        let (actual_low, actual_high) = unsafe {
+            (
+                controller.read(0x10 + 2 * pin),
+                controller.read(0x11 + 2 * pin),
+            )
+        };
+        log::info!("IOAPIC route IRQ {} GSI {} override {:?} ELCR level={} low={:#010x} high={:#010x} remote_irr={} delivery_pending={} masked={}",
+            irq, gsi, source_override, elcr_level, actual_low, actual_high,
+            actual_low & (1 << 14) != 0, actual_low & (1 << 12) != 0, actual_low & MASKED != 0);
         state.routes[irq as usize] = Some(Route {
             controller: index,
             pin,
@@ -120,12 +115,9 @@ pub fn init(madt: &MadtCensus, destination: u32) {
 pub fn set_enabled(irq: u8, enabled: bool) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let state = STATE.lock();
-        let route = state
-            .routes
-            .get(irq as usize)
-            .copied()
-            .flatten()
-            .expect("Unrouted IRQ");
+        let Some(route) = state.routes.get(irq as usize).copied().flatten() else {
+            return;
+        };
         // IRQ0 is described and masked: scheduler ticks come from the LAPIC.
         let low = if enabled && irq != 0 {
             route.low & !MASKED
@@ -136,6 +128,10 @@ pub fn set_enabled(irq: u8, enabled: bool) {
             state.controllers[route.controller].write(0x10 + 2 * route.pin, low);
         }
     });
+    if let Some((low, high)) = route_state(irq) {
+        log::info!("IOAPIC IRQ {} enabled={} low={:#010x} high={:#010x} remote_irr={} delivery_pending={} masked={}",
+            irq, enabled, low, high, low & (1 << 14) != 0, low & (1 << 12) != 0, low & MASKED != 0);
+    }
 }
 
 pub fn enabled(irq: u8) -> bool {
@@ -145,5 +141,20 @@ pub fn enabled(irq: u8) -> bool {
             return false;
         };
         unsafe { state.controllers[route.controller].read(0x10 + 2 * route.pin) & MASKED == 0 }
+    })
+}
+
+/// Non-destructive redirection read, only for thread-side slow-I/O reporting.
+pub fn route_state(irq: u8) -> Option<(u32, u32)> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let state = STATE.lock();
+        let route = state.routes.get(irq as usize).copied().flatten()?;
+        let controller = state.controllers[route.controller];
+        Some(unsafe {
+            (
+                controller.read(0x10 + 2 * route.pin),
+                controller.read(0x11 + 2 * route.pin),
+            )
+        })
     })
 }

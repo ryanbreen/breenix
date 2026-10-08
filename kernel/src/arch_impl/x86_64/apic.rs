@@ -112,7 +112,7 @@ pub fn timer_state() -> (u32, u32, u32) {
 
 /// Calibrate the divided LAPIC clock against a PIT channel-2 one-shot.
 /// Interrupts remain disabled throughout boot calibration.
-pub fn start_timer(hz: u32) {
+pub fn start_timer(hz: u32) -> u32 {
     use x86_64::instructions::port::Port;
     const PIT_TICKS: u16 = 59659; // approximately 50ms at 1,193,182 Hz
     unsafe {
@@ -150,6 +150,7 @@ pub fn start_timer(hz: u32) {
             (1 << 17) | u32::from(crate::interrupts::InterruptIndex::Timer.as_u8()),
         );
         write(0x380, count);
+        count
     }
 }
 
@@ -175,7 +176,8 @@ pub fn send_ipi(destination: u32, ipi: Ipi) -> Result<(), &'static str> {
         Ipi::Fixed(_) => return Err("Invalid fixed IPI vector"),
         // Integrated APIC INIT is edge triggered; no level deassert is needed.
         Ipi::Init => (5 << 8) | (1 << 14),
-        Ipi::Startup(page) => (6 << 8) | u32::from(page),
+        Ipi::Startup(page) if page < 0xa0 => (6 << 8) | u32::from(page),
+        Ipi::Startup(_) => return Err("Startup page is outside conventional memory"),
     };
     x86_64::instructions::interrupts::without_interrupts(|| {
         // Intel requires preceding stores to be globally visible before x2APIC ICR.
@@ -208,4 +210,11 @@ fn wait_delivery() -> Result<(), &'static str> {
         core::hint::spin_loop();
     }
     Ok(())
+}
+
+/// Read-only snapshot for a slow device request; never acknowledges an IRQ.
+pub fn vector_pending_state(vector: u8) -> (bool, bool) {
+    let bank = u32::from(vector / 32) * 16;
+    let bit = 1u32 << (vector % 32);
+    (read(0x200 + bank) & bit != 0, read(0x100 + bank) & bit != 0)
 }

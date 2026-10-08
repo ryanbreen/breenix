@@ -273,7 +273,7 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
         BootStage {
             name: "Timer initialized",
             marker: "Timer initialized",
-            failure_meaning: "PIT timer not configured",
+            failure_meaning: "Scheduler timer not configured",
             check_hint: "time::init() - timer frequency setup",
         },
         BootStage {
@@ -370,16 +370,16 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "Check IDT entry for IRQ0 points to timer_interrupt_entry (same as Precondition 1)",
         },
         BootStage {
-            name: "Precondition 3: PIT counter active",
-            marker: "PRECONDITION 3: PIT counter \u{2713} PASS",
-            failure_meaning: "PIT (Programmable Interval Timer) hardware not counting",
-            check_hint: "time::timer::validate_pit_counting() - verify PIT counter changing between reads",
+            name: "Precondition 3: Scheduler timer counting",
+            marker: "PRECONDITION 3: Scheduler timer counting \u{2713} PASS",
+            failure_meaning: "Selected scheduler timer hardware not counting",
+            check_hint: "time::timer::validate_scheduler_timer() - verify LAPIC/PIT counter movement",
         },
         BootStage {
-            name: "Precondition 4: PIC IRQ0 unmasked",
-            marker: "PRECONDITION 4: PIC IRQ0 unmasked \u{2713} PASS",
-            failure_meaning: "IRQ0 is masked in PIC - timer interrupts will not fire",
-            check_hint: "interrupts::validate_pic_irq0_unmasked() - verify bit 0 of PIC1 mask register is clear",
+            name: "Precondition 4: Scheduler timer unmasked",
+            marker: "PRECONDITION 4: Scheduler timer unmasked \u{2713} PASS",
+            failure_meaning: "Selected scheduler timer is masked",
+            check_hint: "time::timer::validate_scheduler_timer() - check selected timer mask",
         },
         BootStage {
             name: "Precondition 5: Runnable threads exist",

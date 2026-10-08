@@ -2241,47 +2241,17 @@ fn kernel_main_continue() -> ! {
         log::error!("  IDT entry validation failed (see PRECONDITION 1)");
     }
 
-    let (timer_counting, timer_unmasked) = if kernel::arch_impl::x86_64::apic::active() {
-        let (lvt, initial, current) = kernel::arch_impl::x86_64::apic::timer_state();
-        for _ in 0..100 {
-            core::hint::spin_loop();
-        }
-        let (_, _, later) = kernel::arch_impl::x86_64::apic::timer_state();
-        // A periodic timer can legitimately read zero at its reload boundary.
-        // Observe movement, including a wrap, rather than requiring nonzero.
-        let counting = initial != 0 && current <= initial && later <= initial && current != later;
-        let unmasked = lvt & (1 << 16) == 0;
-        assert!(counting && unmasked, "LAPIC scheduler timer is masked or stopped");
-        log::info!("PRECONDITION 3/4: LAPIC scheduler timer counting and unmasked");
-        (counting, unmasked)
+    let (timer_counting, timer_unmasked) = time::timer::validate_scheduler_timer();
+    if timer_counting {
+        log::info!("PRECONDITION 3: Scheduler timer counting ✓ PASS");
     } else {
-        // PRECONDITION 3: PIT Hardware Configured
-        log::info!("PRECONDITION 3: Checking PIT counter is active...");
-        let (pit_counting, count1, count2, pit_desc) = time::timer::validate_pit_counting();
-        if pit_counting {
-            log::info!("PRECONDITION 3: PIT counter ✓ PASS");
-            log::info!("  Counter values: {:#x} -> {:#x}", count1, count2);
-            log::info!("  Status: {}", pit_desc);
-        } else {
-            log::error!("PRECONDITION 3: PIT counter ✗ FAIL");
-            log::error!("  Counter values: {:#x} -> {:#x}", count1, count2);
-            log::error!("  Reason: {}", pit_desc);
-        }
-
-        // PRECONDITION 4: PIC IRQ0 Unmasked
-        log::info!("PRECONDITION 4: Checking PIC IRQ0 mask bit...");
-        let (irq0_unmasked, mask, pic_desc) = interrupts::validate_pic_irq0_unmasked();
-        if irq0_unmasked {
-            log::info!("PRECONDITION 4: PIC IRQ0 unmasked ✓ PASS");
-            log::info!("  PIC1 mask register: {:#04x}", mask);
-            log::info!("  Status: {}", pic_desc);
-        } else {
-            log::error!("PRECONDITION 4: PIC IRQ0 unmasked ✗ FAIL");
-            log::error!("  PIC1 mask register: {:#04x}", mask);
-            log::error!("  Reason: {}", pic_desc);
-        }
-        (pit_counting, irq0_unmasked)
-    };
+        log::error!("PRECONDITION 3: Scheduler timer counting ✗ FAIL");
+    }
+    if timer_unmasked {
+        log::info!("PRECONDITION 4: Scheduler timer unmasked ✓ PASS");
+    } else {
+        log::error!("PRECONDITION 4: Scheduler timer unmasked ✗ FAIL");
+    }
 
     // PRECONDITION 5: Scheduler Has Runnable Threads
     log::info!("PRECONDITION 5: Checking scheduler has runnable threads...");
@@ -2734,7 +2704,6 @@ fn test_exception_handlers() {
 
     log::info!("🧪 EXCEPTION_HANDLER_TESTS_COMPLETE 🧪");
 }
-
 
 // test_kthread_lifecycle and test_kthread_join moved to task/kthread_tests.rs
 // for cross-architecture sharing (x86_64 + ARM64).

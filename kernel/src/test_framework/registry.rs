@@ -3798,16 +3798,22 @@ fn test_breakpoint() -> TestResult {
 
 /// Test that the interrupt controller has been initialized.
 ///
-/// - x86_64: Verifies the PIC is configured and timer IRQ is unmasked
+/// - x86_64: Verifies the selected scheduler timer is counting and unmasked
 /// - ARM64: Verifies the GICv2 is initialized
 fn test_interrupt_controller_init() -> TestResult {
     #[cfg(target_arch = "x86_64")]
     {
-        // On x86_64, check that the PIC has been initialized by verifying
-        // that IRQ0 (timer) is unmasked. The PIC is initialized in init_pic().
-        let (irq0_unmasked, _mask, _desc) = crate::interrupts::validate_pic_irq0_unmasked();
-        if !irq0_unmasked {
-            return TestResult::Fail("PIC IRQ0 (timer) is masked - PIC not properly initialized");
+        let (counting, unmasked) = crate::time::timer::validate_scheduler_timer();
+        if !counting || !unmasked {
+            return TestResult::Fail("Selected scheduler timer is stopped or masked");
+        }
+        if crate::arch_impl::x86_64::apic::active() {
+            let masks = x86_64::instructions::interrupts::without_interrupts(|| unsafe {
+                crate::interrupts::PICS.lock().read_masks()
+            });
+            if masks != [0xff, 0xff] {
+                return TestResult::Fail("Legacy PIC is not fully masked in APIC mode");
+            }
         }
         TestResult::Pass
     }

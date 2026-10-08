@@ -153,6 +153,8 @@ pub struct MadtCensus {
     pub local_apic_override: Option<u64>,
     pub io_apics: [IoApic; MAX_IO_APICS],
     pub io_apic_count: usize,
+    pub interrupt_topology_supported: bool,
+    pub qemu_firmware: bool,
     pub overrides: [SourceOverride; 16],
     pub override_count: usize,
     /// How many of `apic_ids` are populated.
@@ -174,6 +176,8 @@ impl MadtCensus {
                 gsi_base: 0,
             }; MAX_IO_APICS],
             io_apic_count: 0,
+            interrupt_topology_supported: true,
+            qemu_firmware: false,
             overrides: [SourceOverride {
                 source: 0,
                 gsi: 0,
@@ -407,6 +411,9 @@ fn census_of_madt(
         return Err(MadtRefusal::MadtHeader);
     }
 
+    census.qemu_firmware = reader
+        .signature_is(madt_phys + 10, b"BOCHS ")
+        .unwrap_or(false);
     census.local_apic_address = reader
         .u32_at(madt_phys + u64::from(SDT_HEADER_LENGTH))
         .ok_or(MadtRefusal::MadtHeader)?;
@@ -451,7 +458,10 @@ fn census_of_madt(
             }
             1 if entry_length >= 12 => {
                 if census.io_apic_count == MAX_IO_APICS {
-                    return Err(MadtRefusal::MadtHeader);
+                    census.interrupt_topology_supported = false;
+                    cursor += u64::from(entry_length);
+                    decoded += 1;
+                    continue;
                 }
                 census.io_apics[census.io_apic_count] = IoApic {
                     address: reader
@@ -471,7 +481,10 @@ fn census_of_madt(
                     .u8_at(madt_phys + cursor + 3)
                     .ok_or(MadtRefusal::MadtHeader)?;
                 if bus != 0 || source >= 16 || census.override_count == 16 {
-                    return Err(MadtRefusal::MadtHeader);
+                    census.interrupt_topology_supported = false;
+                    cursor += u64::from(entry_length);
+                    decoded += 1;
+                    continue;
                 }
                 let flags = u16::from(
                     reader
@@ -483,7 +496,10 @@ fn census_of_madt(
                         .ok_or(MadtRefusal::MadtHeader)?,
                 ) << 8);
                 if flags & !15 != 0 || flags & 3 == 2 || (flags >> 2) & 3 == 2 {
-                    return Err(MadtRefusal::MadtHeader);
+                    census.interrupt_topology_supported = false;
+                    cursor += u64::from(entry_length);
+                    decoded += 1;
+                    continue;
                 }
                 census.overrides[census.override_count] = SourceOverride {
                     source,

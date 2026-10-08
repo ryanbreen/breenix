@@ -522,7 +522,7 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
     if crate::drivers::ahci::ahci_irq() == 10 {
         crate::drivers::ahci::handle_interrupt();
     }
-    dispatch_virtio_block_interrupts();
+    dispatch_virtio_block_interrupts(10);
     dispatch_nvme_interrupts();
     dispatch_virtio_sound_interrupts();
 
@@ -547,7 +547,7 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
     if crate::drivers::ahci::ahci_irq() == 11 {
         crate::drivers::ahci::handle_interrupt();
     }
-    dispatch_virtio_block_interrupts();
+    dispatch_virtio_block_interrupts(11);
     dispatch_nvme_interrupts();
     dispatch_virtio_sound_interrupts();
 
@@ -562,15 +562,14 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
 }
 
 #[inline]
-fn dispatch_virtio_block_interrupts() {
-    // QEMU exposes boot, test, and ext2 disks as separate legacy PCI functions,
-    // and routes them across IRQ10/IRQ11. Poll each initialized device's ISR
-    // once; devices not asserting the shared line return immediately.
+fn dispatch_virtio_block_interrupts(irq: u8) {
+    // Only acknowledge devices on the delivered line. A read of another
+    // line's read-to-clear ISR can deassert it before its own vector runs.
     for index in 0..4 {
         let Some(device) = crate::drivers::virtio::block::get_device_by_index(index) else {
             break;
         };
-        device.handle_interrupt();
+        device.handle_interrupt_on_line(irq);
     }
 }
 
