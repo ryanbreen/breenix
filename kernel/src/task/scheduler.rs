@@ -7616,7 +7616,7 @@ pub fn idle_pick_teardown_token_gate_test() -> crate::test_framework::registry::
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
-fn boot_test_thread(privilege: ThreadPrivilege, state: ThreadState) -> Result<Box<Thread>, &'static str> {
+fn boot_test_thread(privilege: ThreadPrivilege) -> Result<Box<Thread>, &'static str> {
     fn never_runs() {}
     let id = allocate_thread_id().ok_or("no thread id for the test scheduler")?;
     let mut thread = Thread::new_with_id(
@@ -7628,7 +7628,6 @@ fn boot_test_thread(privilege: ThreadPrivilege, state: ThreadState) -> Result<Bo
         VirtAddr::new(0),
         privilege,
     );
-    thread.state = state;
     Ok(Box::new(thread))
 }
 
@@ -7641,7 +7640,8 @@ fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'stati
     const DYING_PID: u64 = u64::MAX - 1173;
     let other = if cpu == 0 { 1 } else { 0 };
 
-    let idle = boot_test_thread(ThreadPrivilege::Kernel, ThreadState::Running)?;
+    let mut idle = boot_test_thread(ThreadPrivilege::Kernel)?;
+    idle.set_running();
     let idle_id = idle.id();
     let mut sched = Scheduler::new(idle);
     sched.cpu_state[0].current_thread = None;
@@ -7649,7 +7649,8 @@ fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'stati
     sched.cpu_state[cpu].idle_thread = idle_id;
     sched.cpu_state[cpu].current_thread = Some(idle_id);
 
-    let mut dying = boot_test_thread(ThreadPrivilege::User, ThreadState::Terminated)?;
+    let mut dying = boot_test_thread(ThreadPrivilege::User)?;
+    dying.set_terminated();
     dying.owner_pid = Some(DYING_PID);
     let dying_id = dying.id();
     sched.threads.push(dying);
@@ -7657,7 +7658,8 @@ fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'stati
 
     let mut running_id = None;
     if running_requeued {
-        let running = boot_test_thread(ThreadPrivilege::Kernel, ThreadState::Running)?;
+        let mut running = boot_test_thread(ThreadPrivilege::Kernel)?;
+        running.set_running();
         let id = running.id();
         sched.threads.push(running);
         sched.cpu_state[cpu].current_thread = Some(id);
@@ -7718,10 +7720,11 @@ fn switched_out_owner() -> Result<(), &'static str> {
     const SELECTING: usize = 1;
     const OWNER: usize = 2;
 
-    let idle = boot_test_thread(ThreadPrivilege::Kernel, ThreadState::Running)?;
+    let mut idle = boot_test_thread(ThreadPrivilege::Kernel)?;
+    idle.set_running();
     let idle_id = idle.id();
     let mut sched = Scheduler::new(idle);
-    let thread = boot_test_thread(ThreadPrivilege::User, ThreadState::Ready)?;
+    let thread = boot_test_thread(ThreadPrivilege::User)?;
     let tid = thread.id();
     sched.threads.push(thread);
 
