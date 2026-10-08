@@ -51,11 +51,11 @@ pub fn raw_serial_char(c: u8) {
     }
 }
 
-/// Serial string output that never blocks on a lock and allocates nothing.
-/// Use for boot markers in context switch path where locking would deadlock.
-/// The line is written under SERIAL1 when that is free within a bounded
-/// number of attempts, so with several CPUs printing it is not interleaved
-/// byte by byte with their output and lost from the boot stages.
+/// Serial string output that allocates nothing and waits on SERIAL1 for a
+/// bounded time only (`serial::write_str_bounded`), then writes straight to
+/// the port. Every caller prints once per boot. Under SERIAL1, with several
+/// CPUs printing, a line is not interleaved byte by byte with their output and
+/// lost from the boot stages.
 #[inline(always)]
 fn raw_serial_str(s: &str) {
     crate::serial::write_str_bounded(s);

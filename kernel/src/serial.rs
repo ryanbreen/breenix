@@ -161,14 +161,16 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
     result
 }
 
-/// Write `s` to COM1 as one unit, from a path that must not block on a lock
-/// (an interrupt return, the syscall entry): try SERIAL1 for a bounded number
-/// of attempts, so the line is not interleaved byte by byte with another CPU's
-/// output, and write straight to the port if it stays busy.
+/// Write `s` to COM1 as one unit, from a path that must not wait indefinitely
+/// on a lock (an interrupt return, the syscall entry). It spins, with
+/// interrupts masked, for up to 2^20 `try_lock` attempts on SERIAL1, so the
+/// line is not interleaved byte by byte with another CPU's output, and writes
+/// straight to the port if SERIAL1 stays busy.
 ///
-/// SERIAL1 is held with interrupts masked (`_print`), so a holder on another
-/// CPU finishes its line and releases it; a holder on this CPU cannot be
-/// waited for, which the bound covers.
+/// This is a bounded wait for a lock, and its callers are once-per-boot
+/// markers. SERIAL1 is held with interrupts masked (`_print`), so a holder on
+/// another CPU finishes its line and releases it; a holder on this CPU cannot
+/// be waited for, which the bound covers.
 pub fn write_str_bounded(s: &str) {
     use core::fmt::Write;
     const ATTEMPTS: u32 = 1 << 20;
