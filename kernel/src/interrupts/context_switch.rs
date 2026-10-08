@@ -412,18 +412,15 @@ pub extern "C" fn check_need_resched_and_switch(
         // cause deadlocks when the logger tries to acquire locks during a switch
         // to a newly created kthread. Use raw_serial_char() for debugging only.
 
-        // Emit canonical ring3 marker on the FIRST entry to userspace (for CI)
+        // Note, once per boot, the first switch away from a Ring 3 frame. This
+        // proves only that a CPU was running user code when it was preempted;
+        // the syscall path's own marker is the syscall handler's.
         // CRITICAL: Use raw serial output without locks to prevent deadlock in IRQ context
         if from_userspace {
-            static mut EMITTED_RING3_MARKER: bool = false;
-            unsafe {
-                if !EMITTED_RING3_MARKER {
-                    EMITTED_RING3_MARKER = true;
-                    raw_serial_str("RING3_ENTER: CS=0x33\n");
-                    raw_serial_str(
-                        "[ OK ] RING3_SMOKE: userspace executed + syscall path verified\n",
-                    );
-                }
+            static EMITTED_RING3_MARKER: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+            if !EMITTED_RING3_MARKER.swap(true, core::sync::atomic::Ordering::Relaxed) {
+                raw_serial_str("RING3_ENTER: CS=0x33\n");
             }
         }
 

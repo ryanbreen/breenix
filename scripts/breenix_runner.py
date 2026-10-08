@@ -40,7 +40,7 @@ class BreenixRunner:
 
         # Default patterns for success/failure detection
         default_success_any = [
-            r"\[ OK \] RING3_SMOKE: userspace executed \+ syscall path verified",
+            r"\[ OK \] syscall path verified",
             r"🎯 KERNEL_POST_TESTS_COMPLETE 🎯",
         ]
         default_success_all = [
