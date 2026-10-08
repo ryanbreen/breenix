@@ -145,11 +145,10 @@ pub fn is_ring3_confirmed() -> bool {
     RING3_CONFIRMED.load(Ordering::Relaxed)
 }
 
-/// Serial string output that never blocks on a lock and allocates nothing.
-/// Used for boot markers where locking would deadlock. The line goes out
-/// under SERIAL1 if it comes free within a bounded number of try_lock
-/// attempts, and straight to the port otherwise, so another CPU's output
-/// cannot interleave with it byte by byte.
+/// Serial string output for the once-per-boot marker below. It allocates
+/// nothing and waits on SERIAL1 for a bounded time only: up to 2^20 try_lock
+/// attempts with interrupts masked, then straight to the port, so another
+/// CPU's output cannot interleave with it byte by byte.
 #[inline(always)]
 fn raw_serial_str_local(s: &str) {
     #[cfg(target_arch = "x86_64")]
