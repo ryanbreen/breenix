@@ -116,25 +116,36 @@ syscall_save_registers:
     ; Linux keeps interrupts disabled throughout the entire syscall return path.
     cli
 
-    ; CRITICAL FIX Part 2: Keep PREEMPT_ACTIVE set while we're in syscall return.
-    ; It must be set BEFORE the reschedule check so we don't preempt with kernel
-    ; registers still live on the stack.
-    or dword [gs:32], 0x10000000    ; Set bit 28 (PREEMPT_ACTIVE)
-
-    ; Check if we need to reschedule before returning to userspace.
+    ; Reschedule before returning to userspace when this CPU's need_resched
+    ; (gs:36) is set: a quantum that expired during the syscall, sched_yield,
+    ; exit. A tick taken inside the syscall cannot switch (preemption is
+    ; disabled there), so without this a thread that spends its time in
+    ; syscalls is preempted only by a tick that happens to land in user mode.
     ; This is safe because:
-    ; 1. cli was executed above, so no timer interrupts can fire
-    ; 2. PREEMPT_ACTIVE is already set to protect this syscall return path
-    ; 3. This is critical for sys_exit to work - it sets need_resched expecting us to schedule
-    ;
-    ; NOTE: The previous comment about "RDI corruption" is now fixed by the cli above
-    ; and the PREEMPT_ACTIVE flag in the timer interrupt path.
+    ; 1. cli was executed above, so no timer interrupt can fire
+    ; 2. the stack holds this thread's complete user context: the registers
+    ;    pushed at entry, with the return value the handler stored in RAX,
+    ;    and the user IRET frame
+    ; 3. PREEMPT_ACTIVE is still clear (entry cleared it), so the check sees
+    ;    the preempt count the handler left, zero, and may switch
+    cmp byte [gs:36], 0
+    je .syscall_return_to_user
     push rax                  ; Save syscall return value
     mov rdi, rsp              ; Pass pointer to saved registers (after push)
     add rdi, 8                ; Adjust for the pushed rax
     lea rsi, [rsp + 16*8]     ; Pass pointer to interrupt frame
     call check_need_resched_and_switch
     pop rax                   ; Restore syscall return value
+
+    ; A switch installs the next thread's frame. A kernel thread, idle or a
+    ; thread blocked inside the kernel resumes in Ring 0: return there as the
+    ; timer path does, with kernel GS kept and no user CR3 or SYSRET.
+    test qword [rsp + 16*8], 3    ; CS of the (possibly new) frame
+    jz .syscall_return_to_kernel
+
+.syscall_return_to_user:
+    ; Keep PREEMPT_ACTIVE set while the user registers are restored.
+    or dword [gs:32], 0x10000000    ; Set bit 28 (PREEMPT_ACTIVE)
 
     ; CRITICAL FIX Part 2: Decrement preempt_count in assembly BEFORE restoring registers
     ; The Rust code called preempt_disable() at syscall entry and will call preempt_enable()
@@ -152,7 +163,7 @@ syscall_save_registers:
     ; bit 28 (PREEMPT_ACTIVE) to indicate "in syscall return path".
     ; Linux uses PREEMPT_ACTIVE=0x10000000 (bit 28).
     ;
-    ; PREEMPT_ACTIVE was set above before the reschedule check and remains set until
+    ; PREEMPT_ACTIVE was set above, after the reschedule check, and remains set until
     ; after registers are restored.
 
     ; Restore all general purpose registers in reverse push order
@@ -312,6 +323,26 @@ syscall_save_registers:
     mov al, 0xDD   ; Dead marker
     out dx, al
     hlt
+
+.syscall_return_to_kernel:
+    ; The reschedule above switched to a thread that resumes in Ring 0. GS is
+    ; already the kernel's and the switch set up that thread's page table.
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
 
 ; This function switches from kernel to userspace
 ; Used when starting a new userspace thread
