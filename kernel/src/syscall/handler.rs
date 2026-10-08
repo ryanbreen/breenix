@@ -145,18 +145,15 @@ pub fn is_ring3_confirmed() -> bool {
     RING3_CONFIRMED.load(Ordering::Relaxed)
 }
 
-/// Raw serial string output - no locks, no allocations.
-/// Used for boot markers where locking would deadlock.
+/// Serial string output that never blocks on a lock and allocates nothing.
+/// Used for boot markers where locking would deadlock. The line goes out
+/// under SERIAL1 if it comes free within a bounded number of try_lock
+/// attempts, and straight to the port otherwise, so another CPU's output
+/// cannot interleave with it byte by byte.
 #[inline(always)]
 fn raw_serial_str_local(s: &str) {
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port: Port<u8> = Port::new(0x3F8);
-        for &byte in s.as_bytes() {
-            port.write(byte);
-        }
-    }
+    crate::serial::write_str_bounded(s);
 }
 
 /// Emit one-time marker when first syscall from Ring 3 (userspace) is received.
