@@ -5186,12 +5186,15 @@ impl Scheduler {
                 })
     }
 
-    /// Whether the scheduler has work: a queued thread, or a thread other than
-    /// a CPU's idle thread running on any CPU. With several CPUs online a
-    /// newly queued thread may already be running on another one by the time
-    /// this is asked, so the queues alone can be empty while work exists.
+    /// Whether the scheduler has work, now or once a wake arrives: a queued
+    /// thread, a thread other than a CPU's idle thread running on any CPU, or
+    /// a live user thread blocked until a wake. With several CPUs online the
+    /// threads queued before this is asked have usually run on the other CPUs
+    /// already and are waiting, so neither the queues nor the CPUs need show
+    /// the work that exists.
     pub fn has_schedulable_work(&self) -> bool {
         self.has_runnable_threads()
+            || self.has_userspace_threads()
             || self.cpu_state.iter().any(|state| {
                 state.current_thread.is_some_and(|id| {
                     id != state.idle_thread
