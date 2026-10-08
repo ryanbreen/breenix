@@ -563,8 +563,8 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
 
 #[inline]
 fn dispatch_virtio_block_interrupts(irq: u8) {
-    // Only acknowledge devices on the delivered line. A read of another
-    // line's read-to-clear ISR can deassert it before its own vector runs.
+    // Poll only the delivered line's devices. Each ISR read is a port access,
+    // and a device on the other line is serviced by that line's own vector.
     for index in 0..4 {
         let Some(device) = crate::drivers::virtio::block::get_device_by_index(index) else {
             break;

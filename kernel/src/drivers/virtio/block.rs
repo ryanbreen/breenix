@@ -825,7 +825,7 @@ impl VirtioBlockDevice {
         Ok(())
     }
 
-    /// A shared PCI handler must not acknowledge a different line's device.
+    /// A shared PCI handler polls only the devices routed to its own line.
     #[cfg(target_arch = "x86_64")]
     pub fn handle_interrupt_on_line(&self, irq: u8) -> bool {
         self.interrupt_line == irq && self.handle_interrupt()
