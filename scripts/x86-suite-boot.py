@@ -41,7 +41,7 @@ class QMP:
         self.socket.close()
 
 
-def record(repo, out, suite, user, kernel, disk, started, ended):
+def record(repo, out, suite, user, kernel, disk, started, ended, forced_failure=None):
     directory = out / ('suite-' + suite)
     directory.mkdir(exist_ok=True)
     (directory / 'serial_user.log').write_bytes(user)
@@ -56,6 +56,8 @@ def record(repo, out, suite, user, kernel, disk, started, ended):
             ok, disk_reason = scorer.disk_verdict(manifest.get('diskChecks', []), disk)
             if disk_reason:
                 reason += '; ' + disk_reason
+        if forced_failure:
+            ok, reason = False, forced_failure + '; ' + reason
         verdict = 'PASS' if ok else 'FAIL'
     result = dict(suite=suite, verdict=verdict, reason=reason, started=started, ended=ended)
     (directory / 'result.json').write_text(json.dumps(result) + '\n')
@@ -70,6 +72,11 @@ def main():
     started = time.time()
     deadline = time.monotonic() + timeout
     current = 0
+    ready_at = None
+    forced_failure = None
+    hold = float(os.environ.get('BREENIX_SUITE_HOLD', '5'))
+    if hold < 0:
+        raise ValueError('suite hold must be nonnegative')
     results = []
     qmp = None
     child = subprocess.Popen(command)
@@ -88,7 +95,19 @@ def main():
             ready = f'SUITE_SEQUENCE READY {suite}' in user.splitlines()
             # Every suite draws its final panel before READY and then waits for
             # keyboard acknowledgement. No subsequent disk writes can race us.
+            if ready_at is None and time.monotonic() >= deadline:
+                forced_failure = f'suite exceeded its {timeout:g}s DONE deadline'
+                print(f'[gate] {suite}: {forced_failure}', flush=True)
+                break
             if done and ready:
+                if ready_at is None:
+                    ready_at = time.monotonic()
+                # READY is emitted after drawing, replacing the guessed render
+                # delay. Preserve the configured hold while the guest still runs
+                # and no next suite can begin; its fatal output stays in this window.
+                if time.monotonic() - ready_at < hold:
+                    time.sleep(.05)
+                    continue
                 qmp = qmp or QMP(os.environ['BREENIX_QMP_SOCKET'])
                 qmp.command('stop')
                 data = read()
@@ -106,14 +125,16 @@ def main():
                     disk.unlink()  # raw checks already recorded; avoid multi-GB evidence
                 offsets = list(map(len, data))
                 current += 1
+                ready_at = None
                 if current == len(suites):
                     break
                 qmp.command('cont')
                 qmp.command('send-key', {'keys': [{'type': 'qcode', 'data': 'ret'}]})
                 started = time.time()
                 deadline = time.monotonic() + timeout
-            elif 'SUITE_SEQUENCE FAIL' in user or time.monotonic() >= deadline:
-                print(f'[gate] suite {suite} stopped: sequence failure or {timeout:g}s deadline', flush=True)
+            elif 'SUITE_SEQUENCE FAIL' in user:
+                forced_failure = 'suite sequence failed'
+                print(f'[gate] suite {suite} stopped: sequence failure', flush=True)
                 break
             time.sleep(.05)
     finally:
@@ -130,7 +151,8 @@ def main():
         for index in range(current, len(suites)):
             # Only the interrupted current suite owns the remaining output.
             user, kernel = (data[0][offsets[0]:], data[1][offsets[1]:]) if index == current else (b'', b'')
-            results.append(record(repo, out, suites[index], user, kernel, None, started, time.time()))
+            results.append(record(repo, out, suites[index], user, kernel, None, started, time.time(),
+                                  forced_failure if index == current else None))
         (out / 'suite-results.json').write_text(json.dumps(results) + '\n')
     return 0 if all(row['verdict'] == 'PASS' for row in results) else 1
 

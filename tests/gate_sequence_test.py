@@ -50,13 +50,23 @@ class SequenceTests(unittest.TestCase):
                 def close(self): pass
             child = Child([])
             with patch.object(sequence.subprocess, 'Popen', return_value=child), patch.object(sequence, 'QMP', QMP), \
-                 patch.object(sequence.time, 'sleep'), patch.dict(os.environ, BREENIX_QMP_SOCKET='/fake'), \
+                 patch.object(sequence.time, 'sleep'), patch.dict(os.environ, BREENIX_QMP_SOCKET='/fake', BREENIX_SUITE_HOLD='0'), \
                  patch.object(sys, 'argv', ['boot', str(repo), str(out), 'first,second,third,fourth', '300', 'qemu']):
                 self.assertEqual(sequence.main(), 1)
             rows = json.loads((out / 'suite-results.json').read_text())
             self.assertEqual([row['verdict'] for row in rows], ['PASS', 'PASS', 'FAIL', 'NOT-RUN'])
             self.assertIn('third suite', rows[2]['reason'])
             self.assertNotIn('PANIC', (out / 'suite-first/serial_kernel.log').read_text())
+
+    def test_completed_records_cannot_erase_a_missed_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / 'docs/suites').mkdir(parents=True)
+            (repo / 'docs/suites/late.json').write_text(json.dumps(dict(id='late', categories=[dict(id='case', cases=[dict(id='one')])])))
+            result = sequence.record(repo, repo, 'late', b'SUITE late START cases=1\nSUITE late CASE case/one PASS ms=1\nSUITE late DONE passed=1 failed=0 skipped=0 total=1\n', b'', None, 0, 301,
+                                     forced_failure='suite exceeded its 300s DONE deadline')
+            self.assertEqual(result['verdict'], 'FAIL')
+            self.assertIn('deadline', result['reason'])
 
     def test_write_target_validates_every_binary_and_removes_old_sequence(self):
         bindir = Path('/opt/homebrew/opt/e2fsprogs/sbin')
