@@ -572,12 +572,22 @@ pub extern "C" fn check_need_resched_and_switch(
             // The tid and the park count come out of one deref of the per-CPU
             // current-thread pointer, so the mark cannot pair one thread's id
             // with another thread's count.
-            Some((dispatched_tid, wait_iters)) => crate::per_cpu::set_dispatch_mark(
-                dispatched_tid,
-                interrupt_frame.instruction_pointer.as_u64(),
-                interrupt_frame.stack_pointer.as_u64(),
-                wait_iters,
-            ),
+            Some((dispatched_tid, wait_iters)) => {
+                crate::per_cpu::set_dispatch_mark(
+                    dispatched_tid,
+                    interrupt_frame.instruction_pointer.as_u64(),
+                    interrupt_frame.stack_pointer.as_u64(),
+                    wait_iters,
+                );
+                // Counted only once the switch completed: an aborted or
+                // redirected dispatch leaves another thread current.
+                if dispatched_tid == new_thread_id
+                    && crate::per_cpu::current_thread()
+                        .is_some_and(|thread| thread.privilege != ThreadPrivilege::Kernel)
+                {
+                    crate::arch_impl::x86_64::smp::note_user_dispatch(crate::per_cpu::cpu_id());
+                }
+            }
             // No nameable current thread: invalidate rather than record a
             // mark no later check could honestly match.
             None => crate::per_cpu::clear_dispatch_mark(),
@@ -882,7 +892,6 @@ fn switch_to_thread(
             scheduler::set_need_resched();
             return;
         }
-        crate::arch_impl::x86_64::smp::note_user_dispatch(crate::per_cpu::cpu_id());
     }
 
     // Check if this is the idle thread
