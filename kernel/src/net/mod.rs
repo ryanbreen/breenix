@@ -1020,26 +1020,64 @@ pub fn process_rx() {
     let _ = process_rx_budgeted(u32::MAX);
 }
 
+/// x86_64: set while one CPU drains the receive ring.
+///
+/// NetRx runs on whichever CPU raised it: the e1000 interrupt raises it on the
+/// CPU that takes the IRQ, and a loopback enqueue on the CPU that queued the
+/// packet. Two CPUs draining the ring at once would hand one connection's
+/// segments to TCP out of order and concurrently, so one drains at a time, as
+/// a NAPI context does on Linux.
+#[cfg(target_arch = "x86_64")]
+static X86_RX_DRAINING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// x86_64: a drain was asked for while another CPU held `X86_RX_DRAINING`.
+/// The holder checks it after releasing and drains again, so the frame that
+/// prompted the request is not left in the ring.
+#[cfg(target_arch = "x86_64")]
+static X86_RX_REQUESTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Process incoming packets up to `budget` frames.
+///
+/// Returns `InProgress` when another CPU is draining; that CPU drains again
+/// for this request before it stops.
 #[cfg(target_arch = "x86_64")]
 pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
+    use core::sync::atomic::Ordering::SeqCst;
+
+    // Request, then claim. The holder releases, then reads the request, so
+    // with sequentially consistent ordering one of the two always sees the
+    // other: either this claim succeeds or the holder drains again.
+    X86_RX_REQUESTED.store(true, SeqCst);
     let mut buffer = [0u8; 2048];
     let mut remaining = budget;
+    loop {
+        if X86_RX_DRAINING
+            .compare_exchange(false, true, SeqCst, SeqCst)
+            .is_err()
+        {
+            return PollOutcome::InProgress;
+        }
+        X86_RX_REQUESTED.store(false, SeqCst);
 
-    while remaining > 0 {
-        if !e1000::can_receive() {
+        while remaining > 0 && e1000::can_receive() {
+            match e1000::receive(&mut buffer) {
+                Ok(len) => {
+                    process_packet(&buffer[..len]);
+                    remaining -= 1;
+                }
+                Err(_) => break,
+            }
+        }
+
+        X86_RX_DRAINING.store(false, SeqCst);
+        if remaining == 0 {
+            return PollOutcome::BudgetExhausted;
+        }
+        if !X86_RX_REQUESTED.load(SeqCst) {
             return PollOutcome::Drained;
         }
-        match e1000::receive(&mut buffer) {
-            Ok(len) => {
-                process_packet(&buffer[..len]);
-                remaining -= 1;
-            }
-            Err(_) => return PollOutcome::Drained,
-        }
     }
-
-    PollOutcome::BudgetExhausted
 }
 
 /// Process incoming packets (ARM64 - polling or interrupt driven)
