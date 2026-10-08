@@ -18,8 +18,8 @@ fn test_interrupt_initialization() {
         "IDT initialization not found"
     );
     assert!(
-        output.contains("PIC initialized"),
-        "PIC initialization not found"
+        output.contains("Interrupt delivery:"),
+        "Interrupt controller initialization not found"
     );
     assert!(
         output.contains("Interrupts enabled"),

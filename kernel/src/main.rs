@@ -283,6 +283,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Calibrate the TSC before device init: storage drivers measure their
     // command deadlines on it. time::init() keeps this calibration.
     time::tsc::calibrate();
+    kernel::arch_impl::x86_64::irq::init(rsdp_addr, physical_memory_offset.as_u64());
 
     // Initialize PCI and enumerate devices (needed for disk I/O)
     let pci_device_count = drivers::init();
@@ -384,14 +385,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize TTY subsystem
     tty::init();
 
-    // Initialize PIC BEFORE timer so interrupts can be delivered
-    log::info!("Initializing PIC...");
-    interrupts::init_pic();
-    log::info!("PIC initialized");
-
-    // CRITICAL: Initialize timer AFTER PIC but BEFORE interrupts are enabled
-    // The PIT must be programmed before interrupts::enable() is called, otherwise
-    // no timer interrupts can fire and the scheduler will not run.
+    // Configure the scheduler tick before interrupts are enabled.
     time::init();
     log::info!("Timer initialized");
     #[cfg(feature = "btrt")]
@@ -407,18 +401,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("Tracing subsystem initialized and enabled");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::TRACING_INIT);
-
-    // CHECKPOINT A: Verify PIT Configuration
-    log::info!("CHECKPOINT A: PIT initialized at {} Hz", 100);
-
-    // CRITICAL: Unmask timer interrupt (IRQ 0)
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut pic1_data = Port::<u8>::new(0x21);
-        let mask = pic1_data.read();
-        pic1_data.write(mask & !0x01); // Clear bit 0 to unmask IRQ 0 (timer)
-    }
-    log::info!("Timer interrupt unmasked");
 
     // Now it's safe to enable serial input interrupts
     serial::enable_serial_input();
@@ -2259,31 +2241,40 @@ fn kernel_main_continue() -> ! {
         log::error!("  IDT entry validation failed (see PRECONDITION 1)");
     }
 
-    // PRECONDITION 3: PIT Hardware Configured
-    log::info!("PRECONDITION 3: Checking PIT counter is active...");
-    let (pit_counting, count1, count2, pit_desc) = time::timer::validate_pit_counting();
-    if pit_counting {
-        log::info!("PRECONDITION 3: PIT counter ✓ PASS");
-        log::info!("  Counter values: {:#x} -> {:#x}", count1, count2);
-        log::info!("  Status: {}", pit_desc);
+    let (pit_counting, irq0_unmasked) = if kernel::arch_impl::x86_64::apic::active() {
+        let (lvt, initial, current) = kernel::arch_impl::x86_64::apic::timer_state();
+        assert!(lvt & (1 << 16) == 0 && initial != 0 && current != 0,
+            "LAPIC scheduler timer is masked or stopped");
+        log::info!("PRECONDITION 3/4: LAPIC scheduler timer counting and unmasked");
+        (initial != 0 && current != 0, lvt & (1 << 16) == 0)
     } else {
-        log::error!("PRECONDITION 3: PIT counter ✗ FAIL");
-        log::error!("  Counter values: {:#x} -> {:#x}", count1, count2);
-        log::error!("  Reason: {}", pit_desc);
-    }
+        // PRECONDITION 3: PIT Hardware Configured
+        log::info!("PRECONDITION 3: Checking PIT counter is active...");
+        let (pit_counting, count1, count2, pit_desc) = time::timer::validate_pit_counting();
+        if pit_counting {
+            log::info!("PRECONDITION 3: PIT counter ✓ PASS");
+            log::info!("  Counter values: {:#x} -> {:#x}", count1, count2);
+            log::info!("  Status: {}", pit_desc);
+        } else {
+            log::error!("PRECONDITION 3: PIT counter ✗ FAIL");
+            log::error!("  Counter values: {:#x} -> {:#x}", count1, count2);
+            log::error!("  Reason: {}", pit_desc);
+        }
 
-    // PRECONDITION 4: PIC IRQ0 Unmasked
-    log::info!("PRECONDITION 4: Checking PIC IRQ0 mask bit...");
-    let (irq0_unmasked, mask, pic_desc) = interrupts::validate_pic_irq0_unmasked();
-    if irq0_unmasked {
-        log::info!("PRECONDITION 4: PIC IRQ0 unmasked ✓ PASS");
-        log::info!("  PIC1 mask register: {:#04x}", mask);
-        log::info!("  Status: {}", pic_desc);
-    } else {
-        log::error!("PRECONDITION 4: PIC IRQ0 unmasked ✗ FAIL");
-        log::error!("  PIC1 mask register: {:#04x}", mask);
-        log::error!("  Reason: {}", pic_desc);
-    }
+        // PRECONDITION 4: PIC IRQ0 Unmasked
+        log::info!("PRECONDITION 4: Checking PIC IRQ0 mask bit...");
+        let (irq0_unmasked, mask, pic_desc) = interrupts::validate_pic_irq0_unmasked();
+        if irq0_unmasked {
+            log::info!("PRECONDITION 4: PIC IRQ0 unmasked ✓ PASS");
+            log::info!("  PIC1 mask register: {:#04x}", mask);
+            log::info!("  Status: {}", pic_desc);
+        } else {
+            log::error!("PRECONDITION 4: PIC IRQ0 unmasked ✗ FAIL");
+            log::error!("  PIC1 mask register: {:#04x}", mask);
+            log::error!("  Reason: {}", pic_desc);
+        }
+        (pit_counting, irq0_unmasked)
+    };
 
     // PRECONDITION 5: Scheduler Has Runnable Threads
     log::info!("PRECONDITION 5: Checking scheduler has runnable threads...");

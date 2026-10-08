@@ -14,6 +14,8 @@
 
 // HAL modules define complete APIs - not all items are used yet
 pub mod acpi;
+pub mod apic;
+pub mod ioapic;
 pub mod irq;
 #[allow(unused_imports)]
 pub mod constants;

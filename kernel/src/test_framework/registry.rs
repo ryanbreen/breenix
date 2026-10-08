@@ -4501,20 +4501,8 @@ fn test_timer_interrupt_running() -> TestResult {
 fn test_keyboard_irq_setup() -> TestResult {
     #[cfg(target_arch = "x86_64")]
     {
-        // On x86_64, verify keyboard IRQ1 is properly configured.
-        // The keyboard handler is set in init_idt() at InterruptIndex::Keyboard.
-        // We can verify by checking that the keyboard IRQ
-        // (IRQ1) is unmasked on the PIC.
-        unsafe {
-            use x86_64::instructions::port::Port;
-            let mut pic1_data: Port<u8> = Port::new(0x21);
-            let mask = pic1_data.read();
-
-            // Bit 1 should be clear for keyboard IRQ to be unmasked
-            let keyboard_masked = (mask & 0x02) != 0;
-            if keyboard_masked {
-                return TestResult::Fail("keyboard IRQ1 is masked on PIC");
-            }
+        if !crate::arch_impl::x86_64::irq::enabled(1) {
+            return TestResult::Fail("keyboard IRQ1 is masked on the active controller");
         }
         TestResult::Pass
     }

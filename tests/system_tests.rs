@@ -22,7 +22,7 @@ fn test_boot_sequence() {
         "Heap initialized",
         "Timer initialized",
         "Keyboard queue initialized",
-        "PIC initialized",
+        "Interrupt delivery:",
         "Interrupts enabled",
     ];
 

@@ -1,7 +1,7 @@
 //! Core tick-backed timer facilities.
 //!
-//! One tick is `MS_PER_TICK` milliseconds: on x86_64 the PIT below is
-//! programmed at `PIT_HZ` = 200, so 5 ms; on aarch64 the interrupt that writes
+//! One tick is `MS_PER_TICK` milliseconds: on x86_64 the LAPIC timer (or
+//! PIT fallback) is programmed at `PIT_HZ` = 200, so 5 ms; on aarch64 the interrupt that writes
 //! `TICKS` is programmed at 1000 Hz, so 1 ms. Millisecond resolution is
 //! therefore the tick period, not 1 ms on both.
 //!
@@ -68,9 +68,14 @@ static CURSOR_BLINK_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "interactive")]
 const CURSOR_BLINK_INTERVAL: u64 = 100;
 
-/// Program the PIT to generate periodic interrupts at `PIT_HZ`.
+/// Start the LAPIC timer, or the PIT fallback, at `PIT_HZ`.
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
+    if crate::arch_impl::x86_64::apic::active() {
+        crate::arch_impl::x86_64::apic::start_timer(PIT_HZ);
+        super::rtc::init();
+        return;
+    }
     let divisor: u16 = (PIT_INPUT_FREQ_HZ / PIT_HZ) as u16;
     unsafe {
         let mut cmd: Port<u8> = Port::new(PIT_COMMAND_PORT);

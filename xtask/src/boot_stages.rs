@@ -265,10 +265,10 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "tls::setup_swapgs_support() - MSR configuration",
         },
         BootStage {
-            name: "PIC initialized",
-            marker: "PIC initialized",
-            failure_meaning: "Programmable Interrupt Controller failed",
-            check_hint: "interrupts::init_pic() - 8259 PIC setup",
+            name: "Interrupt controller initialized",
+            marker: "Interrupt delivery:",
+            failure_meaning: "Interrupt controller selection or routing failed",
+            check_hint: "arch_impl::x86_64::irq::init() - MADT/APIC routing or PIC fallback",
         },
         BootStage {
             name: "Timer initialized",

@@ -67,7 +67,7 @@ fn test_kernel_post_with_file_output() {
         ),
         (
             "PIC",
-            "PIC initialized",
+            "Interrupt delivery:",
             "Programmable Interrupt Controller",
         ),
         (

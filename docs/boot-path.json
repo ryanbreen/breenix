@@ -92,7 +92,7 @@
           "Interrupts enabled"
         ],
         "x86_64": [
-          "PIC initialized",
+          "Interrupt controller initialized",
           "Timer initialized",
           "HAL timer calibrated",
           "Kernel timer arithmetic check",
