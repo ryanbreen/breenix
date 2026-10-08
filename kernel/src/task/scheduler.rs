@@ -2402,15 +2402,20 @@ impl Scheduler {
         }
         // CRITICAL: Only log on x86_64. On ARM64, log_serial_println! uses the same
         // SERIAL1 lock as serial_println!, causing deadlock if timer fires while
-        // boot code is printing.
+        // boot code is printing. Kernel threads only: a user thread is added on
+        // every fork, and a serial line printed here holds the scheduler lock,
+        // with interrupts masked, for as long as the port takes to write it
+        // while every other CPU waits for the lock.
         #[cfg(target_arch = "x86_64")]
-        log_serial_println!(
-            "Added thread {} '{}' to scheduler (user: {}, target_cpu: {})",
-            thread_id,
-            thread_name,
-            is_user,
-            target
-        );
+        if !is_user {
+            log_serial_println!(
+                "Added thread {} '{}' to scheduler (user: {}, target_cpu: {})",
+                thread_id,
+                thread_name,
+                is_user,
+                target
+            );
+        }
         #[cfg(not(target_arch = "x86_64"))]
         let _ = (thread_id, thread_name, is_user);
         target
@@ -4041,11 +4046,6 @@ impl Scheduler {
     /// scheduler entry queues it. Reporting `NotFound` there would tell the
     /// caller no wake happened while the thread sat woken.
     pub fn unblock(&mut self, thread_id: u64) -> UnblockOutcome {
-        self.unblock_inner(thread_id, true)
-    }
-
-    /// `unblock`, writing its x86-64 #772 census line only when `census`.
-    fn unblock_inner(&mut self, thread_id: u64, census: bool) -> UnblockOutcome {
         #[cfg(feature = "coreproof_component_a")]
         crate::proof_point!(UnblockEntry);
         // Increment the call counter for testing (tracks that unblock was called)
@@ -4105,14 +4105,6 @@ impl Scheduler {
                         #[cfg(feature = "coreproof_component_a")]
                         crate::proof_point!(UnblockAfterEnqueue);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
-                        // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-                        if cfg!(target_arch = "x86_64") && census {
-                            log_serial_println!(
-                                "unblock({}): Added to per_cpu_queues[{}]",
-                                thread_id,
-                                target
-                            );
-                        }
 
                         // Send IPI to wake an idle CPU so it can pick up the unblocked thread
                         self.send_resched_ipi();
@@ -4362,6 +4354,16 @@ impl Scheduler {
         }
     }
 
+    /// Wake a parent told of a child's stop or continue: from waitpid or
+    /// waitid, and from an interruptible wait when `signal_eligible` (its
+    /// SIGCHLD is deliverable).
+    pub fn unblock_for_job_change(&mut self, thread_id: u64, signal_eligible: bool) {
+        self.unblock_for_child_exit(thread_id);
+        if signal_eligible {
+            self.unblock_for_signal(thread_id);
+        }
+    }
+
     /// Unblock a thread that was waiting for a signal
     /// Called when a signal is delivered to a blocked thread
     ///
@@ -4369,22 +4371,6 @@ impl Scheduler {
     /// unblocked to ensure it gets scheduled promptly. This is critical for pause()
     /// to wake up in a timely manner when a signal arrives.
     pub fn unblock_for_signal(&mut self, thread_id: u64) {
-        self.unblock_for_signal_inner(thread_id, true);
-    }
-
-    /// Wake a parent told of a child's stop or continue: from waitpid or
-    /// waitid, and from an interruptible wait when `signal_eligible` (its
-    /// SIGCHLD is deliverable). Writes no serial output, since a stop is also
-    /// reported from an interrupt return path.
-    pub fn unblock_for_job_change(&mut self, thread_id: u64, signal_eligible: bool) {
-        self.unblock_for_child_exit(thread_id);
-        if signal_eligible {
-            self.unblock_for_signal_inner(thread_id, false);
-        }
-    }
-
-    /// `unblock_for_signal`; `census` as for `unblock_inner`.
-    fn unblock_for_signal_inner(&mut self, thread_id: u64, census: bool) {
         if let Some(thread) = self.get_thread_mut(thread_id) {
             // Also wake threads blocked on I/O — they check signals in their
             // wait loop and will return EINTR when they resume.
@@ -4398,7 +4384,7 @@ impl Scheduler {
             // brings it back to that check, as Linux's signal_wake_up wakes
             // TASK_INTERRUPTIBLE sleepers.
             if thread.state == ThreadState::Blocked && thread.blocked_in_syscall {
-                self.unblock_inner(thread_id, census);
+                self.unblock(thread_id);
                 set_need_resched();
                 return;
             }
@@ -4474,12 +4460,6 @@ impl Scheduler {
                 // because that would return to the pre-syscall location instead of
                 // letting the syscall complete and return properly.
                 thread.blocked_in_syscall = true;
-                // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-                #[cfg(target_arch = "x86_64")]
-                log_serial_println!(
-                    "Thread {} blocked waiting for child exit (blocked_in_syscall=true)",
-                    current_id
-                );
             }
             // Remove from ready queue (shouldn't be there but make sure)
             for q in self.per_cpu_queues.iter_mut() {
