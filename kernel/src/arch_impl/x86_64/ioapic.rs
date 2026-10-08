@@ -112,6 +112,27 @@ pub fn init(madt: &MadtCensus, destination: u32) {
     }
 }
 
+/// Point every routed IRQ at the processor with local APIC id `destination`.
+///
+/// Each entry is masked while its destination changes and then restored, so
+/// no delivery sees a half-written entry; an interrupt raised meanwhile is
+/// held by the device and delivered once the entry is unmasked.
+pub fn set_destination(destination: u32) {
+    assert!(destination < 255, "Invalid IOAPIC physical destination");
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let state = STATE.lock();
+        for route in state.routes.iter().flatten() {
+            let controller = state.controllers[route.controller];
+            unsafe {
+                let low = controller.read(0x10 + 2 * route.pin);
+                controller.write(0x10 + 2 * route.pin, low | MASKED);
+                controller.write(0x11 + 2 * route.pin, destination << 24);
+                controller.write(0x10 + 2 * route.pin, low);
+            }
+        }
+    });
+}
+
 pub fn set_enabled(irq: u8, enabled: bool) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let state = STATE.lock();

@@ -172,6 +172,20 @@ pub fn start_application_processors() {
             smp::note_unanswered(index);
         }
     }
+
+    // Device interrupts go to the last application processor online. A
+    // softirq a device interrupt raises runs on the CPU that took it, at an
+    // interrupt exit with nothing non-preemptible underneath, and the boot
+    // processor runs the boot thread with preemption disabled until the boot
+    // tests are under way: while user processes ran there would be none, so
+    // network receive processing waited on the boot thread.
+    let last = smp::cpus_online() as usize - 1;
+    if last != 0 {
+        if let Some(apic_id) = smp::cpu_apic_id(last) {
+            super::ioapic::set_destination(apic_id);
+            log::info!("[smp] device interrupts routed to CPU {} (APIC id {})", last, apic_id);
+        }
+    }
 }
 
 /// Start the processor with local APIC id `apic_id` as logical CPU `cpu`.
