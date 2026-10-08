@@ -52,6 +52,18 @@ pub enum SignalDeliveryResult {
 // x86_64 Signal Delivery
 // =============================================================================
 
+/// x86_64: bring the current thread back through the interrupt-return
+/// scheduling point before it runs a user instruction. A reschedule request
+/// alone waited for the next interrupt, and a thread that sent itself SIGSTOP
+/// on a return that could not take the stop ran on and exited first. A
+/// self-IPI is taken at the first instruction boundary after the return to
+/// Ring 3, where the stop is taken.
+#[cfg(target_arch = "x86_64")]
+fn hold_at_next_scheduling_point_x86() {
+    crate::task::scheduler::set_need_resched();
+    crate::task::scheduler::retry_after_interrupts_x86();
+}
+
 /// Deliver pending signals to a process (x86_64)
 ///
 /// Called from check_need_resched_and_switch() before returning to userspace.
@@ -76,9 +88,10 @@ pub fn deliver_pending_signals(
 ) -> SignalDeliveryResult {
     // A stopped process runs no handler, and a stop is taken where its thread
     // can be held off user mode (`take_stop_locked`), not here: the next
-    // scheduling point does that.
+    // scheduling point does that, and it must come before the thread runs a
+    // user instruction.
     if stop_pending_or_in_force(process) {
-        crate::task::scheduler::set_need_resched();
+        hold_at_next_scheduling_point_x86();
         return SignalDeliveryResult::NoAction;
     }
     // Process all deliverable signals in a loop (avoids unbounded recursion)
@@ -91,7 +104,7 @@ pub fn deliver_pending_signals(
 
         // A stop found behind ignored signals is left the same way.
         if is_default_stop(process, sig) {
-            crate::task::scheduler::set_need_resched();
+            hold_at_next_scheduling_point_x86();
             return SignalDeliveryResult::NoAction;
         }
 
