@@ -43,8 +43,9 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
     // Enter hardware IRQ context (increments HARDIRQ count)
     crate::per_cpu::irq_enter();
 
-    // Core time bookkeeping: increment TICKS counter (single atomic operation)
+    let previous_ticks = crate::time::get_ticks();
     crate::time::timer_interrupt();
+    let elapsed_ticks = crate::time::get_ticks().saturating_sub(previous_ticks);
 
     // Trace timer tick - compiles to ~5 instructions when disabled
     // Uses the TICKS counter value as payload for timing analysis
@@ -55,9 +56,9 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
         // Use raw pointer to avoid creating references to mutable static (Rust 2024 compatibility)
         let quantum_ptr = core::ptr::addr_of_mut!(CURRENT_QUANTUM);
 
-        if *quantum_ptr > 0 {
-            *quantum_ptr -= 1;
-        }
+        *quantum_ptr = quantum_ptr
+            .read()
+            .saturating_sub(elapsed_ticks.min(u32::MAX as u64) as u32);
 
         // Only reschedule when quantum expires - NOT every tick
         // Rescheduling on every tick prevents userspace from executing.
@@ -124,36 +125,8 @@ pub extern "C" fn dump_iret_frame_to_serial(_frame: *const u64) {
 /// timer interrupt during processing, which fires immediately when IRETQ
 /// re-enables interrupts.
 ///
-/// Uses try_lock() to avoid deadlock if a nested timer interrupt fires while
-/// the lock is held. If try_lock fails, sends EOI directly to the PIC hardware.
+/// The selected controller acknowledges this CPU without a blocking lock.
 #[no_mangle]
 pub extern "C" fn send_timer_eoi() {
-    unsafe {
-        // Try to acquire the PICS lock without blocking
-        if let Some(mut pics) = super::PICS.try_lock() {
-            // Lock acquired successfully, send EOI through the PICS abstraction
-            pics.notify_end_of_interrupt(super::InterruptIndex::Timer.as_u8());
-        } else {
-            // Lock contention detected - use direct hardware access to avoid deadlock
-            use x86_64::instructions::port::Port;
-
-            let interrupt_id = super::InterruptIndex::Timer.as_u8();
-
-            // Timer (IRQ0) is interrupt 32, which is on PIC1 (master)
-            // PIC1 handles 32-39, PIC2 handles 40-47
-            const PIC_1_OFFSET: u8 = 32;
-            const PIC_2_OFFSET: u8 = 40;
-
-            if interrupt_id >= PIC_1_OFFSET && interrupt_id < PIC_2_OFFSET + 8 {
-                // If on PIC2 (slave), send EOI to slave first
-                if interrupt_id >= PIC_2_OFFSET {
-                    let mut pic2_cmd: Port<u8> = Port::new(0xA0);
-                    pic2_cmd.write(0x20);
-                }
-                // Always send EOI to PIC1 (master) for all PIC interrupts
-                let mut pic1_cmd: Port<u8> = Port::new(0x20);
-                pic1_cmd.write(0x20);
-            }
-        }
-    }
+    crate::arch_impl::x86_64::irq::eoi(super::InterruptIndex::Timer.as_u8());
 }

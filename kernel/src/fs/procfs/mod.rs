@@ -1089,6 +1089,7 @@ fn generate_pid_dir(pid: u64) -> String {
 /// VmCode: 8 kB
 /// VmHeap: 64 kB
 /// VmStack:    16 kB
+/// VmRSS:      120 kB
 /// ```
 fn generate_pid_status(pid: u64) -> String {
     use crate::process::ProcessId;
@@ -1154,6 +1155,21 @@ fn generate_pid_status(pid: u64) -> String {
     let vm_code_kb = process.memory_usage.code_size / 1024;
     let vm_heap_kb = process.memory_usage.heap_size / 1024;
     let vm_stack_kb = process.memory_usage.stack_size / 1024;
+    // Resident user pages, counted from the page table the process runs on.
+    // User mappings are 4 KiB leaves; kernel entries carry no user access.
+    let vm_rss_kb = process.page_table.as_ref().map_or(0, |table| {
+        #[cfg(not(target_arch = "x86_64"))]
+        use crate::memory::arch_stub::PageTableFlags;
+        #[cfg(target_arch = "x86_64")]
+        use x86_64::structures::paging::PageTableFlags;
+        let mut resident = 0u64;
+        let _ = table.walk_mapped_pages(|_, _, flags| {
+            if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                resident += 1;
+            }
+        });
+        resident * 4
+    });
 
     format!(
         "Name:\t{}\n\
@@ -1165,6 +1181,7 @@ fn generate_pid_status(pid: u64) -> String {
          VmCode:\t{} kB\n\
          VmHeap:\t{} kB\n\
          VmStack:\t{} kB\n\
+         VmRSS:\t{} kB\n\
          CpuTicks:\t{}\n\
          CpuSampleTicks:\t{}\n\
          CpuCapacityTicks:\t{}\n\
@@ -1178,6 +1195,7 @@ fn generate_pid_status(pid: u64) -> String {
         vm_code_kb,
         vm_heap_kb,
         vm_stack_kb,
+        vm_rss_kb,
         cpu_ticks,
         cpu_sample_ticks,
         cpu_capacity_ticks,

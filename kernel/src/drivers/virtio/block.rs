@@ -235,7 +235,7 @@ fn monotonic_now_ns() -> u64 {
 
 /// Report a request the device has not completed yet. One line at most per
 /// interval across all devices; it changes nothing about the request.
-fn report_slow_request(request: u32, waited_ns: u64) {
+fn report_slow_request(device: &VirtioBlockDevice, request: u32, waited_ns: u64) {
     if waited_ns < BLOCK_SLOW_REPORT_INTERVAL_NS {
         return;
     }
@@ -248,11 +248,42 @@ fn report_slow_request(request: u32, waited_ns: u64) {
         .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
-        log::warn!(
-            "VirtIO block: request type {} still waiting for the device after {} ms",
-            request,
-            waited_ns / 1_000_000
-        );
+        // Read used memory and controller state only. Reading the VirtIO ISR
+        // here would clear the device's interrupt and steal its completion.
+        let (used, seen, pending, completed, apic_state) =
+            x86_64::instructions::interrupts::without_interrupts(|| {
+                let (used, seen) = device
+                    .with_queue(|queue| (queue.debug_used_idx(), queue.debug_last_used_idx()));
+                #[cfg(target_arch = "x86_64")]
+                let apic_state = if crate::arch_impl::x86_64::apic::active() {
+                    crate::arch_impl::x86_64::ioapic::route_state(device.interrupt_line).map(
+                        |(low, high)| {
+                            let vector = low as u8;
+                            let (irr, isr) =
+                                crate::arch_impl::x86_64::apic::vector_pending_state(vector);
+                            (low, high, vector, irr, isr)
+                        },
+                    )
+                } else {
+                    None
+                };
+                #[cfg(not(target_arch = "x86_64"))]
+                let apic_state: Option<(u32, u32, u8, bool, bool)> = None;
+                (
+                    used,
+                    seen,
+                    device.pending_token.load(Ordering::Acquire),
+                    device.completed_desc.load(Ordering::Acquire),
+                    apic_state,
+                )
+            });
+        log::warn!("VirtIO block: request type {} still waiting after {} ms; IRQ {} used={} last_seen={} pending_token={} completed_desc={}",
+            request, waited_ns / 1_000_000, device.interrupt_line, used, seen, pending, completed);
+        if let Some((low, high, vector, irr, isr)) = apic_state {
+            log::warn!("VirtIO block: IRQ {} vector {} low={:#010x} high={:#010x} remote_irr={} delivery_pending={} masked={} LAPIC_IRR={} LAPIC_ISR={}",
+                device.interrupt_line, vector, low, high, low & (1 << 14) != 0,
+                low & (1 << 12) != 0, low & (1 << 16) != 0, irr, isr);
+        }
     }
 }
 
@@ -260,6 +291,7 @@ fn report_slow_request(request: u32, waited_ns: u64) {
 pub struct VirtioBlockDevice {
     /// VirtIO device abstraction
     device: BlockTransport,
+    interrupt_line: u8,
     /// Request virtqueue
     queue: Mutex<Virtqueue>,
     /// Serializes the shared DMA buffers without involving the IRQ handler.
@@ -391,6 +423,7 @@ impl VirtioBlockDevice {
 
         Ok(VirtioBlockDevice {
             device,
+            interrupt_line: pci_dev.interrupt_line,
             queue: Mutex::new(queue),
             request_gate: BlockRequestGate::new(),
             completion: Completion::new(),
@@ -492,7 +525,7 @@ impl VirtioBlockDevice {
             if !sleeps && waited_ns >= BLOCK_BOOTSTRAP_WAIT_LIMIT_NS {
                 return Err("Block request not completed before the kernel could sleep");
             }
-            report_slow_request(request, waited_ns);
+            report_slow_request(self, request, waited_ns);
         }
     }
 
@@ -790,6 +823,12 @@ impl VirtioBlockDevice {
         }
         self.ops_completed.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// A shared PCI handler polls only the devices routed to its own line.
+    #[cfg(target_arch = "x86_64")]
+    pub fn handle_interrupt_on_line(&self, irq: u8) -> bool {
+        self.interrupt_line == irq && self.handle_interrupt()
     }
 
     /// Handle interrupt from device

@@ -1,7 +1,7 @@
 //! Core tick-backed timer facilities.
 //!
-//! One tick is `MS_PER_TICK` milliseconds: on x86_64 the PIT below is
-//! programmed at `PIT_HZ` = 200, so 5 ms; on aarch64 the interrupt that writes
+//! One tick is `MS_PER_TICK` milliseconds: on x86_64 the LAPIC timer (or
+//! PIT fallback) is programmed at `PIT_HZ` = 200, so 5 ms; on aarch64 the interrupt that writes
 //! `TICKS` is programmed at 1000 Hz, so 1 ms. Millisecond resolution is
 //! therefore the tick period, not 1 ms on both.
 //!
@@ -54,10 +54,13 @@ const _: () = assert!(
     "PIT_HZ must divide 1000 exactly for MS_PER_TICK to be an exact factor"
 );
 
-/// Global monotonic tick counter, worth `MS_PER_TICK` milliseconds of elapsed
-/// time per tick: one increment per timer interrupt on x86_64, and the counter's
-/// elapsed milliseconds on aarch64.
+/// Global monotonic tick counter: elapsed timer periods, each worth
+/// `MS_PER_TICK` milliseconds of elapsed time.
 static TICKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+static TICK_TSC_BASE: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+static TSC_CYCLES_PER_TICK: AtomicU64 = AtomicU64::new(0);
 
 /// Counter for cursor blink timing (toggles every ~100 ticks = 500ms at 200Hz)
 /// Only used when interactive feature is enabled.
@@ -68,9 +71,24 @@ static CURSOR_BLINK_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "interactive")]
 const CURSOR_BLINK_INTERVAL: u64 = 100;
 
-/// Program the PIT to generate periodic interrupts at `PIT_HZ`.
+/// Start the LAPIC timer, or the PIT fallback, at `PIT_HZ`.
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
+    let cycles = super::tsc::frequency_hz() / u64::from(PIT_HZ);
+    assert!(cycles != 0, "Scheduler timer needs a calibrated TSC");
+    TICK_TSC_BASE.store(super::tsc::read_tsc(), Ordering::Relaxed);
+    TSC_CYCLES_PER_TICK.store(cycles, Ordering::Relaxed);
+    if crate::arch_impl::x86_64::apic::active() {
+        let count = crate::arch_impl::x86_64::apic::start_timer(PIT_HZ);
+        log::info!(
+            "Timer initialized: LAPIC at {} Hz, calibrated count {} ({}ms per tick)",
+            PIT_HZ,
+            count,
+            MS_PER_TICK
+        );
+        super::rtc::init();
+        return;
+    }
     let divisor: u16 = (PIT_INPUT_FREQ_HZ / PIT_HZ) as u16;
     unsafe {
         let mut cmd: Port<u8> = Port::new(PIT_COMMAND_PORT);
@@ -102,6 +120,16 @@ pub fn init() {
 /// Invoked from the CPU-side interrupt stub every 5 ms (at 200 Hz).
 #[inline]
 pub fn timer_interrupt() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // LAPIC periodic interrupts coalesce while IF is clear or the vCPU is
+        // descheduled. Count elapsed periods, retaining fractional cycles in
+        // the fixed epoch, rather than letting time run slow after a late IRQ.
+        let elapsed = super::tsc::read_tsc().saturating_sub(TICK_TSC_BASE.load(Ordering::Relaxed));
+        let ticks = elapsed / TSC_CYCLES_PER_TICK.load(Ordering::Relaxed);
+        TICKS.fetch_max(ticks, Ordering::Relaxed);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     TICKS.fetch_add(1, Ordering::Relaxed);
 
     // Cursor blink handling for interactive mode
@@ -225,4 +253,27 @@ pub fn validate_pit_counting() -> (bool, u16, u16, &'static str) {
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn validate_pit_counting() -> (bool, u16, u16, &'static str) {
     (false, 0, 0, "PIT not supported on this architecture")
+}
+
+/// Validate the selected scheduler source outside interrupt context.
+#[cfg(target_arch = "x86_64")]
+pub fn validate_scheduler_timer() -> (bool, bool) {
+    if crate::arch_impl::x86_64::apic::active() {
+        let (lvt, initial, first) = crate::arch_impl::x86_64::apic::timer_state();
+        let deadline = super::tsc::read_tsc() + super::tsc::frequency_hz() / 100;
+        let mut current = first;
+        while current == first && super::tsc::read_tsc() < deadline {
+            core::hint::spin_loop();
+            current = crate::arch_impl::x86_64::apic::timer_state().2;
+        }
+        (
+            initial != 0 && first <= initial && current <= initial && current != first,
+            lvt & (1 << 16) == 0,
+        )
+    } else {
+        (
+            validate_pit_counting().0,
+            crate::interrupts::validate_pic_irq0_unmasked().0,
+        )
+    }
 }

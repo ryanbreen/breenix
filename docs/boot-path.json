@@ -92,7 +92,7 @@
           "Interrupts enabled"
         ],
         "x86_64": [
-          "PIC initialized",
+          "Interrupt controller initialized",
           "Timer initialized",
           "HAL timer calibrated",
           "Kernel timer arithmetic check",
@@ -167,8 +167,8 @@
           "Breakpoint test passed",
           "Precondition 1: IDT timer entry",
           "Precondition 2: Timer handler registered",
-          "Precondition 3: PIT counter active",
-          "Precondition 4: PIC IRQ0 unmasked",
+          "Precondition 3: Scheduler timer counting",
+          "Precondition 4: Scheduler timer unmasked",
           "Precondition 5: Runnable threads exist",
           "Precondition 6: Current thread set",
           "Precondition 7: Preemption disabled",

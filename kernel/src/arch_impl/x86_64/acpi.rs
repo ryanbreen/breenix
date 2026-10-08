@@ -3,7 +3,7 @@
 //! Scope, stated so the boundary is not inferred from the name: this module
 //! READS four fixed tables and reports what they say. It programs no APIC
 //! register, starts no processor, installs no mapping, and interprets no AML.
-//! Its single caller is `super::smp::init`.
+//! It supplies processor enumeration and interrupt topology to `smp` and `irq`.
 //!
 //! ## Why it needs no mapping of its own
 //!
@@ -67,6 +67,20 @@ use core::ptr::read_volatile;
 /// report. Entries beyond this capacity are still COUNTED; only their ids go
 /// unrecorded.
 pub const MAX_ENUMERATED_CPUS: usize = 64;
+pub const MAX_IO_APICS: usize = 16;
+
+#[derive(Clone, Copy)]
+pub struct IoApic {
+    pub address: u32,
+    pub gsi_base: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct SourceOverride {
+    pub source: u8,
+    pub gsi: u32,
+    pub flags: u16,
+}
 
 /// Physical addresses at or above this are refused rather than read. See the
 /// module comment: below 4 GiB is the part of the bootloader's
@@ -136,6 +150,13 @@ pub struct MadtCensus {
     pub x2apic_entries: u32,
     /// Local APIC address the MADT header reports.
     pub local_apic_address: u32,
+    pub local_apic_override: Option<u64>,
+    pub io_apics: [IoApic; MAX_IO_APICS],
+    pub io_apic_count: usize,
+    pub interrupt_topology_supported: bool,
+    pub qemu_firmware: bool,
+    pub overrides: [SourceOverride; 16],
+    pub override_count: usize,
     /// How many of `apic_ids` are populated.
     pub recorded: usize,
     /// APIC ids in MADT order, for the first `recorded` processor entries.
@@ -149,6 +170,20 @@ impl MadtCensus {
             enabled_entries: 0,
             x2apic_entries: 0,
             local_apic_address: 0,
+            local_apic_override: None,
+            io_apics: [IoApic {
+                address: 0,
+                gsi_base: 0,
+            }; MAX_IO_APICS],
+            io_apic_count: 0,
+            interrupt_topology_supported: true,
+            qemu_firmware: false,
+            overrides: [SourceOverride {
+                source: 0,
+                gsi: 0,
+                flags: 0,
+            }; 16],
+            override_count: 0,
             recorded: 0,
             apic_ids: [0; MAX_ENUMERATED_CPUS],
         }
@@ -376,6 +411,9 @@ fn census_of_madt(
         return Err(MadtRefusal::MadtHeader);
     }
 
+    census.qemu_firmware = reader
+        .signature_is(madt_phys + 10, b"BOCHS ")
+        .unwrap_or(false);
     census.local_apic_address = reader
         .u32_at(madt_phys + u64::from(SDT_HEADER_LENGTH))
         .ok_or(MadtRefusal::MadtHeader)?;
@@ -418,6 +456,67 @@ fn census_of_madt(
                     .ok_or(MadtRefusal::MadtHeader)?;
                 census.record(x2apic_id, flags, true);
             }
+            1 if entry_length >= 12 => {
+                if census.io_apic_count == MAX_IO_APICS {
+                    census.interrupt_topology_supported = false;
+                    cursor += u64::from(entry_length);
+                    decoded += 1;
+                    continue;
+                }
+                census.io_apics[census.io_apic_count] = IoApic {
+                    address: reader
+                        .u32_at(madt_phys + cursor + 4)
+                        .ok_or(MadtRefusal::MadtHeader)?,
+                    gsi_base: reader
+                        .u32_at(madt_phys + cursor + 8)
+                        .ok_or(MadtRefusal::MadtHeader)?,
+                };
+                census.io_apic_count += 1;
+            }
+            2 if entry_length >= 10 => {
+                let bus = reader
+                    .u8_at(madt_phys + cursor + 2)
+                    .ok_or(MadtRefusal::MadtHeader)?;
+                let source = reader
+                    .u8_at(madt_phys + cursor + 3)
+                    .ok_or(MadtRefusal::MadtHeader)?;
+                if bus != 0 || source >= 16 || census.override_count == 16 {
+                    census.interrupt_topology_supported = false;
+                    cursor += u64::from(entry_length);
+                    decoded += 1;
+                    continue;
+                }
+                let flags = u16::from(
+                    reader
+                        .u8_at(madt_phys + cursor + 8)
+                        .ok_or(MadtRefusal::MadtHeader)?,
+                ) | (u16::from(
+                    reader
+                        .u8_at(madt_phys + cursor + 9)
+                        .ok_or(MadtRefusal::MadtHeader)?,
+                ) << 8);
+                if flags & !15 != 0 || flags & 3 == 2 || (flags >> 2) & 3 == 2 {
+                    census.interrupt_topology_supported = false;
+                    cursor += u64::from(entry_length);
+                    decoded += 1;
+                    continue;
+                }
+                census.overrides[census.override_count] = SourceOverride {
+                    source,
+                    gsi: reader
+                        .u32_at(madt_phys + cursor + 4)
+                        .ok_or(MadtRefusal::MadtHeader)?,
+                    flags,
+                };
+                census.override_count += 1;
+            }
+            5 if entry_length >= 12 => {
+                census.local_apic_override = Some(
+                    reader
+                        .u64_at(madt_phys + cursor + 4)
+                        .ok_or(MadtRefusal::MadtHeader)?,
+                );
+            }
             _ => {}
         }
         cursor += u64::from(entry_length);
@@ -455,9 +554,15 @@ pub fn read_madt(
     for index in 0..entry_count {
         let entry_at = root_phys + u64::from(SDT_HEADER_LENGTH) + (index as u64) * entry_width;
         let table_phys = if entry_width == 8 {
-            reader.u64_at(entry_at).ok_or(MadtRefusal::RootTableHeader)?
+            reader
+                .u64_at(entry_at)
+                .ok_or(MadtRefusal::RootTableHeader)?
         } else {
-            u64::from(reader.u32_at(entry_at).ok_or(MadtRefusal::RootTableHeader)?)
+            u64::from(
+                reader
+                    .u32_at(entry_at)
+                    .ok_or(MadtRefusal::RootTableHeader)?,
+            )
         };
         if !reader.readable(table_phys, u64::from(SDT_HEADER_LENGTH)) {
             continue;

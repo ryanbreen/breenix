@@ -215,6 +215,7 @@ pub fn init_idt() {
             }
         }
 
+        idt[crate::arch_impl::x86_64::apic::SPURIOUS_VECTOR].set_handler_fn(apic_spurious_handler);
         idt
     });
 
@@ -232,78 +233,13 @@ pub fn init_idt() {
     log::info!("IDT loaded successfully at {:#x}", idt_ptr);
 }
 
-pub fn init_pic() {
-    unsafe {
-        // Initialize the PIC
-        PICS.lock().initialize();
-
-        // Unmask timer (IRQ0), keyboard (IRQ1), and serial (IRQ4) interrupts on PIC1
-        // NOTE: Do NOT unmask IRQ 11 (VirtIO) here - it must be unmasked AFTER
-        // the VirtIO driver is initialized, otherwise spurious interrupts during
-        // early boot will call get_device() on uninitialized state.
-        use x86_64::instructions::port::Port;
-        let mut port1: Port<u8> = Port::new(0x21); // PIC1 data port
-        let mask1 = port1.read() & !0b00010011; // Clear bit 0 (timer), bit 1 (keyboard), and bit 4 (serial)
-        port1.write(mask1);
-
-        // Drain any pending keyboard data to reset the controller state
-        // This ensures the keyboard interrupt line is ready for new interrupts
-        let mut kb_status: Port<u8> = Port::new(0x64);
-        let mut kb_data: Port<u8> = Port::new(0x60);
-        for _ in 0..10 {
-            if (kb_status.read() & 0x01) != 0 {
-                let _ = kb_data.read(); // Drain pending data
-            } else {
-                break;
-            }
-        }
-    }
-}
-
-/// Enable IRQ 10 (used by E1000 network and some VirtIO devices)
-///
-/// IMPORTANT: Only call this AFTER devices using IRQ 10 have been initialized.
-/// Calling earlier will cause hangs due to interrupt handler accessing
-/// uninitialized driver state.
+/// Enable shared PCI IRQs only after their devices have initialized.
 pub fn enable_irq10() {
-    unsafe {
-        use x86_64::instructions::port::Port;
-
-        // Unmask IRQ 10 (bit 2 on PIC2)
-        let mut port2: Port<u8> = Port::new(0xA1); // PIC2 data port
-        let mask2 = port2.read() & !0b00000100; // Clear bit 2 (IRQ 10 = 8 + 2)
-        port2.write(mask2);
-
-        // Ensure cascade (IRQ2) is unmasked on PIC1
-        let mut port1: Port<u8> = Port::new(0x21); // PIC1 data port
-        let mask1_cascade = port1.read() & !0b00000100; // Clear bit 2 (cascade)
-        port1.write(mask1_cascade);
-
-        log::debug!("IRQ 10 enabled (E1000)");
-    }
+    crate::arch_impl::x86_64::irq::set_enabled(10, true);
 }
 
-/// Enable IRQ 11 (used by some VirtIO block devices)
-///
-/// IMPORTANT: Only call this AFTER devices using IRQ 11 have been initialized.
-/// Calling earlier will cause hangs due to interrupt handler accessing
-/// uninitialized driver state.
 pub fn enable_irq11() {
-    unsafe {
-        use x86_64::instructions::port::Port;
-
-        // Unmask IRQ 11 (bit 3 on PIC2)
-        let mut port2: Port<u8> = Port::new(0xA1); // PIC2 data port
-        let mask2 = port2.read() & !0b00001000; // Clear bit 3 (IRQ 11 = 8 + 3)
-        port2.write(mask2);
-
-        // Ensure cascade (IRQ2) is unmasked on PIC1
-        let mut port1: Port<u8> = Port::new(0x21); // PIC1 data port
-        let mask1_cascade = port1.read() & !0b00000100; // Clear bit 2 (cascade)
-        port1.write(mask1_cascade);
-
-        log::debug!("IRQ 11 enabled (VirtIO + E1000)");
-    }
+    crate::arch_impl::x86_64::irq::set_enabled(11, true);
 }
 
 /// Legacy alias for enable_irq11
@@ -527,10 +463,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         }
     }
 
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
-    }
+    crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Keyboard.as_u8());
 
     crate::per_cpu::irq_exit();
 }
@@ -572,10 +505,7 @@ extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackF
         crate::serial::add_serial_byte(byte);
     }
 
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Serial.as_u8());
-    }
+    crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Serial.as_u8());
 
     // Exit hardware IRQ context
     crate::per_cpu::irq_exit();
@@ -592,7 +522,7 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
     if crate::drivers::ahci::ahci_irq() == 10 {
         crate::drivers::ahci::handle_interrupt();
     }
-    dispatch_virtio_block_interrupts();
+    dispatch_virtio_block_interrupts(10);
     dispatch_nvme_interrupts();
     dispatch_virtio_sound_interrupts();
 
@@ -600,10 +530,7 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
     crate::drivers::e1000::handle_interrupt();
 
     // Send EOI to both PICs (IRQ 10 is on PIC2)
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Irq10.as_u8());
-    }
+    crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Irq10.as_u8());
 
     // Exit hardware IRQ context
     crate::per_cpu::irq_exit();
@@ -620,7 +547,7 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
     if crate::drivers::ahci::ahci_irq() == 11 {
         crate::drivers::ahci::handle_interrupt();
     }
-    dispatch_virtio_block_interrupts();
+    dispatch_virtio_block_interrupts(11);
     dispatch_nvme_interrupts();
     dispatch_virtio_sound_interrupts();
 
@@ -628,25 +555,21 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
     crate::drivers::e1000::handle_interrupt();
 
     // Send EOI to both PICs (IRQ 11 is on PIC2)
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Irq11.as_u8());
-    }
+    crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Irq11.as_u8());
 
     // Exit hardware IRQ context
     crate::per_cpu::irq_exit();
 }
 
 #[inline]
-fn dispatch_virtio_block_interrupts() {
-    // QEMU exposes boot, test, and ext2 disks as separate legacy PCI functions,
-    // and routes them across IRQ10/IRQ11. Poll each initialized device's ISR
-    // once; devices not asserting the shared line return immediately.
+fn dispatch_virtio_block_interrupts(irq: u8) {
+    // Poll only the delivered line's devices. Each ISR read is a port access,
+    // and a device on the other line is serviced by that line's own vector.
     for index in 0..4 {
         let Some(device) = crate::drivers::virtio::block::get_device_by_index(index) else {
             break;
         };
-        device.handle_interrupt();
+        device.handle_interrupt_on_line(irq);
     }
 }
 
@@ -1674,12 +1597,7 @@ extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
     // Without this, the PIC will hang and not deliver more interrupts.
     // We send EOI to both PICs (PIC2 cascades through PIC1) to be safe.
     // This handles any interrupt vector in the range 32-47 (PIC hardware IRQs).
-    unsafe {
-        // Send EOI to PIC2 first (if it was a PIC2 interrupt), then PIC1
-        // notify_end_of_interrupt handles this automatically based on vector
-        // Use a high vector to ensure both PICs get EOI
-        PICS.lock().notify_end_of_interrupt(PIC_2_OFFSET + 7);
-    }
+    crate::arch_impl::x86_64::irq::eoi(PIC_2_OFFSET + 7);
 
     // Exit hardware IRQ context
     crate::per_cpu::irq_exit();
@@ -2049,3 +1967,6 @@ pub fn validate_pic_irq0_unmasked() -> (bool, u8, &'static str) {
         }
     }
 }
+
+// LAPIC spurious interrupts have no in-service bit and must not receive EOI.
+extern "x86-interrupt" fn apic_spurious_handler(_frame: InterruptStackFrame) {}

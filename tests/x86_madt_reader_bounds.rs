@@ -430,3 +430,91 @@ fn a_revision_2_rsdp_shorter_than_its_own_structure_falls_back_to_the_rsdt() {
         );
     }
 }
+
+#[test]
+fn interrupt_topology_keeps_multiple_controllers_overrides_and_64_bit_lapic() {
+    let mut image = Image::new();
+    let mut entries = Vec::new();
+    for (address, gsi) in [(0xfec0_0000u32, 0u32), (0xfec0_1000, 24)] {
+        entries.extend_from_slice(&[1, 12, 0, 0]);
+        entries.extend_from_slice(&address.to_le_bytes());
+        entries.extend_from_slice(&gsi.to_le_bytes());
+    }
+    for (source, gsi, flags) in [(0u8, 2u32, 0u16), (11, 27, 15)] {
+        entries.extend_from_slice(&[2, 10, 0, source]);
+        entries.extend_from_slice(&gsi.to_le_bytes());
+        entries.extend_from_slice(&flags.to_le_bytes());
+    }
+    entries.extend_from_slice(&[5, 12, 0, 0]);
+    entries.extend_from_slice(&0x1_fee0_0000u64.to_le_bytes());
+    put_madt(
+        &mut image,
+        MADT,
+        0xfee0_0000,
+        &entries,
+        44 + entries.len() as u32,
+    );
+    put_rsdt(&mut image, RSDT, &[MADT]);
+    put_rsdp_v1(&mut image, RSDT);
+    let topology = census_of(&image);
+    assert_eq!(topology.io_apic_count, 2);
+    assert_eq!(topology.io_apics[1].address, 0xfec0_1000);
+    assert_eq!(topology.io_apics[1].gsi_base, 24);
+    assert_eq!(topology.override_count, 2);
+    assert_eq!(topology.overrides[0].source, 0);
+    assert_eq!(topology.overrides[0].gsi, 2);
+    assert_eq!(topology.overrides[1].flags, 15);
+    assert_eq!(topology.local_apic_override, Some(0x1_fee0_0000));
+}
+
+#[test]
+fn reserved_interrupt_override_flags_are_skipped_without_losing_processors() {
+    for flags in [2u16, 8, 16] {
+        let mut image = Image::new();
+        let mut entries = vec![2, 10, 0, 0, 2, 0, 0, 0];
+        entries.extend_from_slice(&flags.to_le_bytes());
+        entries.extend_from_slice(&local_apic_entry(0, 0, ENABLED));
+        put_madt(
+            &mut image,
+            MADT,
+            0xfee0_0000,
+            &entries,
+            44 + entries.len() as u32,
+        );
+        put_rsdt(&mut image, RSDT, &[MADT]);
+        put_rsdp_v1(&mut image, RSDT);
+        let census = census_of(&image);
+        assert_eq!(census.override_count, 0);
+        assert_eq!(census.enabled_entries, 1);
+        assert!(!census.interrupt_topology_supported);
+    }
+}
+
+#[test]
+fn unsupported_interrupt_entries_do_not_refuse_processor_enumeration() {
+    let mut image = Image::new();
+    let mut entries = Vec::new();
+    for (bus, source) in [(1u8, 0u8), (0, 16)] {
+        entries.extend_from_slice(&[2, 10, bus, source, 2, 0, 0, 0, 13, 0]);
+    }
+    for _ in 0..17 {
+        entries.extend_from_slice(&[1, 12, 0, 0, 0, 0, 192, 254, 0, 0, 0, 0]);
+        entries.extend_from_slice(&[2, 10, 0, 11, 11, 0, 0, 0, 13, 0]);
+    }
+    entries.extend_from_slice(&local_apic_entry(7, 7, ENABLED));
+    put_madt(
+        &mut image,
+        MADT,
+        0xfee0_0000,
+        &entries,
+        44 + entries.len() as u32,
+    );
+    put_rsdt(&mut image, RSDT, &[MADT]);
+    put_rsdp_v1(&mut image, RSDT);
+    let census = census_of(&image);
+    assert_eq!(census.enabled_entries, 1);
+    assert_eq!(census.apic_ids[0], 7);
+    assert_eq!(census.io_apic_count, 16);
+    assert_eq!(census.override_count, 16);
+    assert!(!census.interrupt_topology_supported);
+}

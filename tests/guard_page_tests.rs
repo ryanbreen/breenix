@@ -41,7 +41,7 @@ fn test_page_fault_handler_enhanced() {
         "IDT not loaded successfully"
     );
 
-    assert!(output.contains("PIC initialized"), "PIC not initialized");
+    assert!(output.contains("Interrupt delivery:"), "Interrupt controller not initialized");
 
     assert!(
         output.contains("Interrupts enabled"),
