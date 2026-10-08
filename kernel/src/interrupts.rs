@@ -806,7 +806,8 @@ fn resolve_stale_write_translation(cr3: u64, addr: VirtAddr) -> bool {
         // SAFETY: `table_phys` is a page-table frame of the faulting address
         // space, reached from its root through present entries, and the
         // physical-memory window maps it.
-        let entry = unsafe { &(*((phys_offset + table_phys).as_ptr::<PageTable>()))[index] };
+        let table: &PageTable = unsafe { &*(phys_offset + table_phys).as_ptr::<PageTable>() };
+        let entry = &table[index];
         let flags = entry.flags();
         if !flags.contains(needed) || (level > 0 && flags.contains(PageTableFlags::HUGE_PAGE)) {
             return false;
@@ -1068,7 +1069,7 @@ fn in_user_stack_growth_range(fault_addr: u64) -> bool {
 /// routed to this CPU.
 fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bool {
     use crate::memory::layout::MAX_USER_STACK_SIZE;
-    use x86_64::structures::paging::{Page, Size4KiB};
+    use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
 
     let fault_addr = faulting_addr.as_u64();
 
