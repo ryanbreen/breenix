@@ -216,6 +216,35 @@ impl Suite {
             counts.passed, counts.failed, counts.skipped, total);
         let verdict = if counts.failed == 0 { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         screen.draw(self, &title, &subtitle, &states, verdict);
+        emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
+        // A sequence replaces PID 1 with the next suite after this suite has
+        // emitted its own DONE. Exec replaces the address space and closes only
+        // FD_CLOEXEC descriptors; /tmp, PID allocation and page cache persist.
+        // Single-suite disks have no sequence file and retain their final panel.
+        if let Ok(sequence) = std::fs::read_to_string("/etc/breenix/suite-sequence") {
+            let ids: Vec<&str> = sequence.trim_end().split(',').collect();
+            // The x86 sequence gate freezes and captures this boundary before
+            // acknowledging through the keyboard. Single-suite and ARM boots
+            // have no sequence file and never wait for host input.
+            let mut byte = [0u8; 1];
+            loop {
+                match io::read(Fd::STDIN, &mut byte) {
+                    Ok(1) if byte[0] == b'\n' => break,
+                    Ok(_) => { let _ = process::yield_now(); }
+                    Err(error) => {
+                        emit(&std::format!("SUITE_SEQUENCE FAIL acknowledgement: {:?}", error));
+                        idle();
+                    }
+                }
+            }
+            if let Some(index) = ids.iter().position(|id| *id == self.id) {
+                if let Some(next) = ids.get(index + 1) {
+                    let path = std::format!("/sbin/suite-{}\0", next);
+                    let error = process::exec(path.as_bytes()).unwrap_err();
+                    emit(&std::format!("SUITE_SEQUENCE FAIL exec {}: {:?}", next, error));
+                }
+            }
+        }
         idle()
     }
 }

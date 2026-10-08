@@ -12,6 +12,33 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertEqual(X86HardwareProfile.allCases.map(\.rawValue), rows.map { $0["name"]! })
     }
 
+    func testSuiteListsPreserveOrderAndRejectDuplicatesOrShellSyntax() {
+        XCTAssertTrue(RemoteCommand.isSuiteList("files-io,directories,processes"))
+        XCTAssertTrue(RemoteCommand.isSuiteList("files-io"))
+        for value in ["", ",files-io", "files-io,", "files-io,files-io", "files-io, directories", "files-io;exit", "files-io\n"] {
+            XCTAssertFalse(RemoteCommand.isSuiteList(value), value)
+        }
+        let request = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 900,
+            paths: BeastPaths(clonePath: "/root/run"), suite: "files-io,directories,processes")
+        XCTAssertTrue(request.arguments.last!.contains("BREENIX_BOOT_SUITE=files-io,directories,processes"))
+    }
+
+    func testPersistentTreePreparationAndCleanupKeepRunEvidencePrivate() {
+        var paths = BeastPaths(clonePath: "/root/run")
+        paths.laneKey = String(repeating: "a", count: 64)
+        paths.requestedSHA = String(repeating: "b", count: 40)
+        let prepare = RemoteCommand.prepareCloneRequest(sha: paths.requestedSHA!, paths: paths, treeHelperBase64: "aGVscGVy")
+        XCTAssertTrue(prepare.arguments.last!.contains("/root/run/gate-tmp/gate-tree.py"))
+        XCTAssertFalse(prepare.arguments.last!.contains("git clone"))
+        let gate = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: paths, slotHelperBase64: "c2xvdHM=")
+        XCTAssertTrue(gate.arguments.last!.contains("gate-tree.py /root/breenix " + paths.laneKey!))
+        XCTAssertTrue(gate.arguments.last!.contains("BREENIX_SLOT_WORKTREE=\"${BREENIX_GATE_CACHE_DIR:-/root/breenix-gate-cache}/trees/" + paths.laneKey!))
+        XCTAssertTrue(gate.arguments.last!.contains("BREENIX_SLOT_COMMIT=" + paths.requestedSHA!))
+        XCTAssertFalse(gate.arguments.last!.contains("acquire x86-boot"), "current gates acquire and release their own distinct build/boot leases")
+        XCTAssertEqual(RemoteCommand.removeCloneRequest(paths: paths).arguments.last,
+            "sudo -n incus exec breenix-x86 -- python3 /root/run/gate-tmp/gate-tree.py remove-evidence /root/run")
+    }
+
     func testPrepareCloneRequestArgv() {
         let request = RemoteCommand.prepareCloneRequest(
             sha: "abc123def",
@@ -269,6 +296,31 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertLessThan(boot9, boot10)
     }
 
+    func testFinishedRunInvokesVigilFilingAfterHarvest() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try makeEvidenceTarball(root: root, entries: [1: ("finished user\n", "finished kernel\n")])
+        let suiteDirectory = fixture.gateTmpSource.appendingPathComponent("breenix_gate_1/suite-files-io")
+        try FileManager.default.createDirectory(at: suiteDirectory, withIntermediateDirectories: true)
+        try Data("per-suite screen".utf8).write(to: suiteDirectory.appendingPathComponent("screen.png"))
+        try Data("{\"started\":10,\"ended\":20}".utf8).write(to: fixture.gateTmpSource.appendingPathComponent("breenix_gate_1/boot-times.json"))
+        let runner = BeastScriptedProcessRunner()
+        runner.pullResult = ProcessResult(stdout: fixture.tarball, exitCode: 0)
+        runner.extractTarball = { request in
+            try Self.copyGateTmpFixture(fixture.gateTmpSource, tarRequest: request)
+            return ProcessResult(exitCode: 0)
+        }
+        let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")), runner: runner,
+                                     vigilScript: URL(fileURLWithPath: "/record.sh"))
+        let result = try launcher.runX86(options: options(runID: "file-finished"))
+        XCTAssertTrue(result.manifest.captures.contains { $0.path == "screen-1-files-io.png" })
+        let filings = runner.calls.filter { $0.executable == "/record.sh" }
+        XCTAssertEqual(filings.count, 1, "a completed x86 run must reach Vigil")
+        XCTAssertEqual(filings.first?.arguments.first, "record")
+        XCTAssertEqual(filings.first?.arguments[9], "10.0")
+        XCTAssertEqual(filings.first?.arguments[10], "20.0")
+    }
+
     func testFailedEvidencePullStillProducesTwoEmptySerialRefs() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -427,6 +479,12 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
     func run(_ request: ProcessRequest, outputHandler: ((Data) -> Void)?) throws -> ProcessResult {
         calls.append(request)
 
+        if request.executable == "/record.sh" {
+            let serial = URL(fileURLWithPath: request.arguments[4])
+            let directory = serial.deletingLastPathComponent().deletingLastPathComponent()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path), "file before publishing the manifest so importers cannot duplicate it")
+            return ProcessResult(exitCode: 0)
+        }
         if request.executable == "/usr/bin/tar" {
             return try extractTarball(request)
         }

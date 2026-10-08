@@ -23,6 +23,9 @@ public struct BeastPaths: Equatable, Sendable {
     public var clonePath: String
     public var rustForkPath: String
     public var cargoEnvPath: String
+    public var laneKey: String?
+    public var requestedSHA: String?
+    public var fresh = false
 
     public init(
         host: String = "beast",
@@ -78,14 +81,19 @@ public enum RemoteCommand {
         }
     }
 
-    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil) -> Plan {
+    public static func isSuiteList(_ list: String) -> Bool {
+        let ids = list.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        return ids.allSatisfy(isSuiteID) && Set(ids).count == ids.count
+    }
+
+    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, treeHelperBase64: String? = nil) -> Plan {
         Plan(
             sha: sha,
             boots: boots,
             mode: mode,
             timeoutSecs: timeoutSecs,
             paths: paths,
-            prepareClone: prepareCloneRequest(sha: sha, paths: paths),
+            prepareClone: prepareCloneRequest(sha: sha, paths: paths, treeHelperBase64: treeHelperBase64),
             runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs, slotHelperBase64: slotHelperBase64),
             pullEvidence: pullEvidenceRequest(paths: paths),
             removeClone: removeCloneRequest(paths: paths)
@@ -99,7 +107,11 @@ public enum RemoteCommand {
     // ([[workflow-worktree-isolation]] R83; #797 is concurrent lanes
     // clobbering a shared /tmp path). `rm -rf` before clone is defensive
     // against a stale directory reusing the same id, not expected to fire.
-    public static func prepareCloneRequest(sha: String, paths: BeastPaths) -> ProcessRequest {
+    public static func prepareCloneRequest(sha: String, paths: BeastPaths, treeHelperBase64: String? = nil) -> ProcessRequest {
+        if let treeHelperBase64, paths.laneKey != nil {
+            let script = "mkdir -p \(paths.gateTmpPath) && printf %s \(treeHelperBase64) | base64 -d > \(paths.gateTmpPath)/gate-tree.py"
+            return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
+        }
         // Concurrent launchers share this cache: do not update its remote refs,
         // tags or FETCH_HEAD, or spawn background maintenance during preparation.
         let script = "git -C \(paths.canonicalRepoDir) fetch --no-tags --no-write-fetch-head --no-auto-gc origin \(sha)"
@@ -122,20 +134,32 @@ public enum RemoteCommand {
         let profileEnv: String = qemuProfile.map { " BREENIX_QEMU_PROFILE=\($0.rawValue)" } ?? ""
         var suiteEnv = ""
         if let suite {
-            guard isSuiteID(suite) else {
+            guard isSuiteList(suite) else {
                 return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: "mkdir -p \(paths.gateTmpPath) && echo \"GATE: FAIL (the requested suite is not a suite id)\" && exit 1"))
             }
             suiteEnv = " BREENIX_BOOT_SUITE=\(suite) BREENIX_QMP_SOCKET=\(paths.gateTmpPath)/qmp.sock"
+        }
+        var slotIdentity = ""
+        if let lane = paths.laneKey, let sha = paths.requestedSHA {
+            let parent = URL(fileURLWithPath: paths.canonicalRepoDir).deletingLastPathComponent().path
+            let worktree = paths.fresh ? "${BREENIX_GATE_CACHE_DIR:-\(parent)/breenix-gate-cache}/fresh/" + URL(fileURLWithPath: paths.clonePath).lastPathComponent : "${BREENIX_GATE_CACHE_DIR:-\(parent)/breenix-gate-cache}/trees/\(lane)"
+            slotIdentity = " BREENIX_SLOT_WORKTREE=\"\(worktree)\" BREENIX_SLOT_COMMIT=\(sha)"
         }
         let helper = paths.gateTmpPath + "/host-slots.py"
         let installHelper = slotHelperBase64.map {
             " && printf %s \($0) | base64 -d > \(helper)"
         } ?? ""
-        let gate = "\(paths.clonePath)/docker/qemu/run-x86-gate.sh \(boots) \(mode.rawValue)"
+        let gate: String
+        if let laneKey = paths.laneKey, let sha = paths.requestedSHA {
+            gate = "python3 \(paths.gateTmpPath)/gate-tree.py \(paths.canonicalRepoDir) \(laneKey) \(sha) \(paths.gateTmpPath) \(boots) \(mode.rawValue)"
+        } else {
+            gate = "\(paths.clonePath)/docker/qemu/run-x86-gate.sh \(boots) \(mode.rawValue)"
+        }
         // Historical gates lack an internal supervisor: hold both resources
         // around that gate, using the current launcher's helper outside checkout.
+        let historicalAdmission = paths.laneKey == nil ? "if [ ! -f \(paths.clonePath)/scripts/host-slots.py ]; then python3 \(helper) acquire x86-build && python3 \(helper) acquire x86-boot || exit 1; fi; " : ""
         let launch = slotHelperBase64 == nil ? gate :
-            "python3 \(helper) supervise -- bash -c \"if [ ! -f \(paths.clonePath)/scripts/host-slots.py ]; then python3 \(helper) acquire x86-build && python3 \(helper) acquire x86-boot || exit 1; fi; exec \(gate)\""
+            "python3 \(helper) supervise -- bash -c \"\(historicalAdmission)exec \(gate)\""
         let script = "mkdir -p \(paths.gateTmpPath)" + installHelper
             + " && source \(paths.cargoEnvPath)"
             + " && env BREENIX_GATE_TMP=\(paths.gateTmpPath)"
@@ -144,7 +168,8 @@ public enum RemoteCommand {
             + " BREENIX_GATE_TIMEOUT=\(timeoutSecs)"
             + " BREENIX_FULL_BACKSTOP=\(fullBackstopSecs ?? max(1800, timeoutSecs))"
             + " CARGO_BUILD_JOBS=6"
-            + profileEnv + suiteEnv
+            + (paths.fresh ? " BREENIX_GATE_FRESH=1" : "")
+            + profileEnv + suiteEnv + slotIdentity
             + " " + launch
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }
@@ -159,7 +184,12 @@ public enum RemoteCommand {
     }
 
     public static func removeCloneRequest(paths: BeastPaths) -> ProcessRequest {
-        let remote = "sudo -n incus exec \(paths.container) -- rm -rf \(paths.clonePath)"
+        let remote: String
+        if paths.laneKey != nil {
+            remote = "sudo -n incus exec \(paths.container) -- python3 \(paths.gateTmpPath)/gate-tree.py remove-evidence \(paths.clonePath)"
+        } else {
+            remote = "sudo -n incus exec \(paths.container) -- rm -rf \(paths.clonePath)"
+        }
         return sshRequest(paths: paths, remote: remote)
     }
 

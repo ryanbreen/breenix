@@ -1,5 +1,6 @@
 import BreenixRuns
 import Foundation
+import CryptoKit
 
 struct CLIError: Error, CustomStringConvertible {
     var description: String
@@ -21,6 +22,7 @@ struct RunX86Arguments {
     var boots = 1
     var sha: String?
     var mode: RemoteGateMode = .full
+    var fresh = false
     var suite: String?
     var host = "beast"
     var dryRun = false
@@ -46,7 +48,7 @@ func usage() -> String {
     """
     Usage:
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
-      breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full|suite] [--suite ID] [--host HOST] [--dry-run] [--tag T] [--no-store]
+      breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full|suite] [--suite ID[,ID...]] [--fresh] [--host HOST] [--dry-run] [--tag T] [--no-store]
       breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
       breenix-runs list [--arch aarch64|x86_64] [--profile NAME] [--verdict pass|fail|attributed|running|unknown]
       breenix-runs facts <run-id|latest> [--json]
@@ -146,8 +148,10 @@ func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
             }
             parsed.mode = mode
             suiteModeRequested = value == "suite"
+        case "--fresh":
+            parsed.fresh = true
         case "--suite":
-            guard let value = iterator.next(), RemoteCommand.isSuiteID(value) else {
+            guard let value = iterator.next(), RemoteCommand.isSuiteList(value) else {
                 throw CLIError(description: "--suite requires a suite id (lowercase words joined by '-')")
             }
             parsed.suite = value
@@ -467,7 +471,9 @@ func main() -> Int32 {
                     runner: runner,
                     timeoutSecs: runArgs.gateTimeout,
                     pathsTemplate: BeastPaths(host: runArgs.host, clonePath: ""),
-                    slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString()
+                    slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString(),
+                    treeHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/gate-tree.py")).base64EncodedString(),
+                    vigilScript: root.appendingPathComponent("scripts/vigil-record.sh")
                 )
                 var options = BeastLaunchOptions(
                     boots: runArgs.boots,
@@ -477,15 +483,16 @@ func main() -> Int32 {
                     tags: runArgs.tags,
                     persist: runArgs.persist,
                     qemuProfile: runArgs.qemuProfile,
-                    suite: runArgs.suite
+                    suite: runArgs.suite,
+                    laneKey: SHA256.hash(data: Data(root.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined(),
+                    fresh: runArgs.fresh
                 )
                 if runArgs.dryRun {
                     printDryRun(plan: try launcher.plan(options: options))
                     return 0
                 }
 
-                // Vigil reads completed beast records from the Run Inspector store.
-                // Queued preparation and builds are not registered as running boots.
+                // File harvested finished boots with Vigil; preparation is never a running boot.
                 let runID = RunManifest.makeID(startedAt: Date(), arch: .x86_64, profile: "gate")
                 options.runID = runID
                 let result = try launcher.runX86(options: options)

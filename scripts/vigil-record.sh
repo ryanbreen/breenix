@@ -39,6 +39,15 @@ case "${1:-}" in
         [ -z "$id" ] || args+=(--id "$id")
         "$CLI" "${args[@]}" 2>/dev/null || true
         ;;
+    record)
+        platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
+        started=${10:-}; ended=${11:-}; status=${12:-1}
+        args=(breenix record --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --serial-user "$user" --id "$id" --started "$started" --ended "$ended" --exit-status "$status")
+        if [ -n "$suite" ]; then args+=(--suite "$suite"); else args+=(--mode "$mode"); fi
+        [ -z "$profile" ] || args+=(--profile "$profile")
+        "$CLI" "${args[@]}"
+        exit $?
+        ;;
     finish)
         [ -n "${2:-}" ] || exit 0
         "$CLI" breenix finish --id "$2" --exit-status "${3:-0}" >/dev/null 2>&1 || true

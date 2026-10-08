@@ -240,8 +240,8 @@ def supervise(argv):
 
 def supervise_worker(argv, parent):
     slots = Slots()
-    worktree = str(Path(__file__).resolve().parents[1])
-    identity = {'worktree': worktree, 'commit': command_output(['git', '-C', worktree, 'rev-parse', 'HEAD']) or 'unknown'}
+    worktree = os.environ.get('BREENIX_SLOT_WORKTREE', str(Path(__file__).resolve().parents[1]))
+    identity = {'worktree': worktree, 'commit': os.environ.get('BREENIX_SLOT_COMMIT') or command_output(['git', '-C', worktree, 'rev-parse', 'HEAD']) or 'unknown'}
     stop_commands = []
     serials = {}
     pending = None

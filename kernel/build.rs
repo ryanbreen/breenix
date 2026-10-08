@@ -176,30 +176,33 @@ fn main() {
     if userspace_test_dir.exists() && !target.contains("aarch64") {
         let build_script = userspace_test_dir.join("build.sh");
         if build_script.exists() {
-            let output = Command::new("bash")
-                .arg(&build_script)
-                .current_dir(&userspace_test_dir)
-                .output()
-                .expect("Failed to run userspace build script");
+            println!("cargo:rerun-if-env-changed=BREENIX_USERSPACE_PREBUILT");
+            if std::env::var("BREENIX_USERSPACE_PREBUILT").as_deref() != Ok("1") {
+                let output = Command::new("bash")
+                    .arg(&build_script)
+                    .current_dir(&userspace_test_dir)
+                    .output()
+                    .expect("Failed to run userspace build script");
 
-            if !output.status.success() {
-                // `output()` captured the child's streams, so the failure's real
-                // cause - a missing toolchain, a userspace compile error, an
-                // unresolvable forked-Rust library path - lives in `output` and
-                // nowhere else. Dropping them here left the panic naming nothing
-                // and forced a manual re-run of build.sh to learn anything (#679).
-                // build.sh reports its own errors on stdout, so both streams are
-                // reproduced.
-                panic!(
-                    "Failed to build userspace test programs with libbreenix: {}\n\
-                     --- {} stdout ---\n{}\n\
-                     --- {} stderr ---\n{}",
-                    output.status,
-                    build_script.display(),
-                    tail_of(&output.stdout),
-                    build_script.display(),
-                    tail_of(&output.stderr),
-                );
+                if !output.status.success() {
+                    // `output()` captured the child's streams, so the failure's real
+                    // cause - a missing toolchain, a userspace compile error, an
+                    // unresolvable forked-Rust library path - lives in `output` and
+                    // nowhere else. Dropping them here left the panic naming nothing
+                    // and forced a manual re-run of build.sh to learn anything (#679).
+                    // build.sh reports its own errors on stdout, so both streams are
+                    // reproduced.
+                    panic!(
+                        "Failed to build userspace test programs with libbreenix: {}\n\
+                         --- {} stdout ---\n{}\n\
+                         --- {} stderr ---\n{}",
+                        output.status,
+                        build_script.display(),
+                        tail_of(&output.stdout),
+                        build_script.display(),
+                        tail_of(&output.stderr),
+                    );
+                }
             }
 
             // Tell cargo to rerun if userspace sources change

@@ -127,6 +127,53 @@ own registered VM. x86 and VMware gates must ignore this variable.
 
 Run the helper tests without a VM with `python3 tests/host_slots_test.py`.
 
+The x86 Run Inspector launcher leases a persistent checkout keyed by the requesting
+worktree, fetches and checks out the exact requested commit, and retains Cargo targets
+between runs. Evidence remains private to each run and is removed remotely after harvest.
+It keeps fresh private Cargo homes for nested builds. Artifact reuse requires Linux
+private mount namespaces, which give each source tree and Cargo home stable compiler
+paths without sharing their locks. Uncached direct gates retain the host's normal build.
+The userspace cache hashes sources,
+local libraries, build/packing scripts, the pinned BusyBox, fonts, Cargo and mke2fs configuration,
+profile/compiler-wrapper environment, a private external Rust library snapshot and each workspace toolchain identity. A key is published only after a
+clean rebuild produces byte-identical ELFs and disk images. Gate ext2 images populate through libext2fs for deterministic block placement, with explicit geometry, UUID, hash seed and creation time, then normalize
+inode timestamps/generations and backup superblock bookkeeping before that comparison.
+Every hit checks artifact checksums and copies images rather than sharing writable disks.
+
+`breenix-runs run x86 --fresh` uses a disposable clean checkout and bypasses artifact
+reuse for timing comparisons on the same commit, and requires a previously verified
+entry for the explicit byte comparison. `[gate-phase]` output records checkout,
+userspace build, repacking, clean verification, kernel build, lease waits and boot times;
+cache hits report their key and restore time. The shared cache targets 12 GiB total
+for lane trees, disposable fresh trees and artifacts; this is a soft budget while entries
+are leased. A hard 15 GiB filesystem free-space floor is checked before checkout,
+cache misses and kernel builds, including cache hits. This filesystem measurement also
+covers canonical sources, legacy clones and run evidence outside the cache. `BREENIX_GATE_CACHE_DIR`, `BREENIX_GATE_CACHE_GB` and `BREENIX_GATE_FREE_GB` on
+the execution host override these settings. LRU eviction skips leased entries; an unmet
+free-space floor prints GATE: FAIL before building. Post-run eviction is best effort
+and cannot change a completed gate verdict. Owner records under owners/ contain the
+run id, PID/process birth, host boot id, start time, heartbeat and state; permanent
+flocks under locks/ remain the authoritative eviction protection. Normal runs create
+no per-run source clone. Fresh trees are removed when their gate ends, including
+catchable signals; idle eviction reclaims abandoned fresh trees. Abandoned legacy
+clones are reclaimed only after their timestamped run identity is at least an hour
+old and a /proc scan of command lines, current directories and open files finds no
+owning process, including gates killed before DONE.
+Evidence is harvested after the lane lease ends and retained remotely after a disconnect.
+
+`--mode suite --suite files-io,directories,processes` boots once. A sequence file on the
+private boot-target disk instructs each suite to exec the next after emitting its own
+DONE, keeping PID 1 and giving the next suite a fresh address space. After drawing its panel each sequence suite waits for host acknowledgement. The gate
+pauses QEMU at that boundary, saves both serial windows and its screen, and checks
+its private raw disk snapshot before allowing the next exec. Each suite gets its own
+DONE deadline and unchanged manifest; unstarted suites are NOT-RUN. Exec closes only
+FD_CLOEXEC descriptors, while /tmp, PID allocation and the page cache persist, so
+case equivalence must be verified against separate boots on the same commit.
+Run Inspector files each finished boot with Vigil after harvest, one record per
+started suite with its own serial window and start/end times. Duplicate suite IDs are rejected. Single-suite boots keep their
+final panel as before. Run cache helper tests with `python3 tests/gate_cache_test.py`.
+
+
 ## Watching a boot
 
 The VM screen shows the boot, not the log. As soon as the framebuffer exists the kernel

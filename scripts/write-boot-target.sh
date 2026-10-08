@@ -14,13 +14,14 @@
 
 set -euo pipefail
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+if [ "$#" -lt 2 ] || [ "$#" -gt 4 ]; then
     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 fi
 IMAGE="$1"
 SUITE="$2"
 SUITE_ELF="${3:-}"
+SEQUENCE="${4:-}"
 BOOT_TARGET="suite $SUITE"
 BINARY="/sbin/suite-$SUITE"
 if [ "$SUITE" = --probe ]; then
@@ -49,15 +50,39 @@ printf '%s\n' "$BOOT_TARGET" > "$WORK/boot-target"
 cat > "$WORK/commands" <<'EOF'
 mkdir /etc/breenix
 rm /etc/breenix/boot-target
+rm /etc/breenix/suite-sequence
 write /work/boot-target /etc/breenix/boot-target
 EOF
+
+if [ -n "$SEQUENCE" ] && [ "$SEQUENCE" != "$SUITE" ]; then
+    python3 - "$SEQUENCE" "$SUITE" <<'PYIDS'
+import re, sys
+ids = sys.argv[1].split(',')
+if ids[0] != sys.argv[2] or len(set(ids)) != len(ids) or not all(re.fullmatch(r'[a-z0-9]+(-[a-z0-9]+)*', x) for x in ids):
+    sys.exit('write-boot-target: invalid sequence')
+PYIDS
+    printf '%s\n' "$SEQUENCE" > "$WORK/suite-sequence"
+    printf 'rm /etc/breenix/suite-sequence\nwrite /work/suite-sequence /etc/breenix/suite-sequence\n' >> "$WORK/commands"
+fi
 
 if [ -n "$DEBUGFS" ]; then
     sed "s|/work/|$WORK/|" "$WORK/commands" > "$WORK/commands.host"
     "$DEBUGFS" -w -f "$WORK/commands.host" "$IMAGE" >/dev/null 2>&1 || true
+    if [ -f "$WORK/suite-sequence" ]; then
+        sequence_written="$("$DEBUGFS" -R 'cat /etc/breenix/suite-sequence' "$IMAGE" 2>/dev/null || true)"
+        [ "$sequence_written" = "$SEQUENCE" ] || { echo "write-boot-target: sequence readback differs" >&2; exit 1; }
+        IFS=',' read -r -a sequence_ids <<< "$SEQUENCE"
+        for id in "${sequence_ids[@]}"; do
+            "$DEBUGFS" -R "dump /sbin/suite-$id $WORK/$id.elf" "$IMAGE" >/dev/null 2>&1 || true
+            cmp -s "$WORK/$id.elf" "$(dirname "$SUITE_ELF")/suite-$id.elf" || { echo "write-boot-target: stale sequence binary $id" >&2; exit 1; }
+        done
+    fi
     written="$("$DEBUGFS" -R 'cat /etc/breenix/boot-target' "$IMAGE" 2>/dev/null || true)"
     "$DEBUGFS" -R "dump $BINARY $WORK/installed.elf" "$IMAGE" >/dev/null 2>&1 || true
 else
+    if [ -f "$WORK/suite-sequence" ]; then
+        echo "write-boot-target: suite sequences require host debugfs" >&2; exit 1
+    fi
     command -v docker >/dev/null 2>&1 || { echo "write-boot-target: needs debugfs (e2fsprogs) or docker" >&2; exit 1; }
     image_dir="$(cd "$(dirname "$IMAGE")" && pwd)"
     image_name="$(basename "$IMAGE")"

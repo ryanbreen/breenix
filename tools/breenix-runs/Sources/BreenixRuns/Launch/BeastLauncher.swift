@@ -6,6 +6,7 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
     case missingLocalSHA
     case invalidBootCount(Int)
     case invalidSuiteID(String)
+    case invalidLaneKey(String)
 
     public var description: String {
         switch self {
@@ -17,6 +18,8 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
             return "could not resolve local git SHA; pass --sha explicitly"
         case .invalidBootCount(let boots):
             return "--boots requires a positive integer, got \(boots)"
+        case .invalidLaneKey(let key):
+            return "invalid lane key \(key.debugDescription)"
         case .invalidSuiteID(let id):
             return "--suite requires a suite id (lowercase words of a-z and 0-9 joined by '-'), got \(id.debugDescription)"
         }
@@ -46,6 +49,8 @@ public struct BeastLaunchOptions: Sendable {
     public var tags: [String]
     public var persist: Bool
     public var runID: String?
+    public var laneKey: String?
+    public var fresh: Bool
 
     public init(
         boots: Int = 1,
@@ -56,10 +61,14 @@ public struct BeastLaunchOptions: Sendable {
         persist: Bool = true,
         runID: String? = nil,
         qemuProfile: X86HardwareProfile? = nil,
-        suite: String? = nil
+        suite: String? = nil,
+        laneKey: String? = nil,
+        fresh: Bool = false
     ) {
         self.qemuProfile = qemuProfile
         self.suite = suite
+        self.laneKey = laneKey
+        self.fresh = fresh
         self.boots = boots
         self.mode = mode
         self.sha = sha
@@ -91,13 +100,17 @@ public struct BeastLauncher {
     public var fullBackstopSecs: Int
     public var pathsTemplate: BeastPaths
     public var slotHelperBase64: String?
+    public var vigilScript: URL?
+    public var treeHelperBase64: String?
 
     public init(
         store: RunStore,
         runner: ProcessRunner = RealProcessRunner(),
         timeoutSecs: Int = 900,
         pathsTemplate: BeastPaths = BeastPaths(clonePath: ""),
-        slotHelperBase64: String? = nil
+        slotHelperBase64: String? = nil,
+        treeHelperBase64: String? = nil,
+        vigilScript: URL? = nil
     ) {
         self.store = store
         self.runner = runner
@@ -106,6 +119,8 @@ public struct BeastLauncher {
             .flatMap { $0 > 0 ? $0 : nil } ?? max(1800, timeoutSecs)
         self.pathsTemplate = pathsTemplate
         self.slotHelperBase64 = slotHelperBase64
+        self.treeHelperBase64 = treeHelperBase64
+        self.vigilScript = vigilScript
     }
 
     public static func localGitIdentity(repoRoot: URL, runner: ProcessRunner) throws -> (sha: String?, dirty: Bool?) {
@@ -118,16 +133,21 @@ public struct BeastLauncher {
     public func plan(options: BeastLaunchOptions) throws -> RemoteCommand.Plan {
         try validate(options: options)
         let id = options.runID ?? RunManifest.makeID(startedAt: Date(), arch: .x86_64, profile: "gate")
+        var paths = paths(forRunID: id)
+        paths.laneKey = options.laneKey
+        paths.requestedSHA = options.sha
+        paths.fresh = options.fresh
         return RemoteCommand.plan(
             sha: options.sha,
             boots: options.boots,
             mode: options.mode,
             timeoutSecs: timeoutSecs,
-            paths: paths(forRunID: id),
+            paths: paths,
             qemuProfile: options.qemuProfile,
             suite: options.suite,
             fullBackstopSecs: fullBackstopSecs,
-            slotHelperBase64: slotHelperBase64
+            slotHelperBase64: slotHelperBase64,
+            treeHelperBase64: treeHelperBase64
         )
     }
 
@@ -139,9 +159,6 @@ public struct BeastLauncher {
         let planResult = try plan(options: plannedOptions)
 
         let startFacts = parseHostFactsSample(runner: runner, paths: planResult.paths, wallTime: startedAt)
-        defer {
-            _ = try? runner.run(planResult.removeClone)
-        }
 
         let prepareResult: ProcessResult
         do {
@@ -150,6 +167,7 @@ public struct BeastLauncher {
             throw BeastLauncherError.prepareCloneFailed(exitCode: -1, output: "\(error)")
         }
         if prepareResult.exitCode != 0 {
+            _ = try? runner.run(planResult.removeClone)
             throw BeastLauncherError.prepareCloneFailed(
                 exitCode: Int(prepareResult.exitCode),
                 output: prepareResult.stdoutString + prepareResult.stderrString
@@ -187,7 +205,7 @@ public struct BeastLauncher {
         let serialRefs = try harvestSerials(pullResult: pullResult, runDirectory: runDirectory)
         let gateStdoutBytes = fileSize(gateStdoutURL)
         let command = readableGateCommand(paths: planResult.paths, boots: options.boots, mode: options.mode)
-        let env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile, suite: options.suite)
+        var env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile, suite: options.suite)
         var captures = [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutBytes)]
         for screen in screenNames(in: runDirectory) {
             let url = runDirectory.appendingPathComponent(screen)
@@ -195,6 +213,15 @@ public struct BeastLauncher {
         }
 
         let gateStdoutText = String(decoding: try Data(contentsOf: gateStdoutURL), as: UTF8.self)
+        env["BREENIX_GATE_FRESH"] = options.fresh ? "1" : "0"
+        for line in gateStdoutText.split(separator: "\n") {
+            if line.hasPrefix("[gate-tree] tree="), let field = line.split(separator: " ").first(where: { $0.hasPrefix("tree=") }) {
+                env["BREENIX_REPO_DIR"] = String(field.dropFirst(5))
+            }
+            if line.hasPrefix("[gate-cache] HIT") || line.hasPrefix("[gate-cache] MISS") || line.hasPrefix("[gate-cache] FRESH") {
+                env["BREENIX_GATE_CACHE_RESULT"] = String(line)
+            }
+        }
         let gateVerdictString: String
         if gateStdoutText.contains("PASS-WITH-ATTRIBUTED-LOCKUP:") {
             gateVerdictString = "PASS-WITH-ATTRIBUTED-LOCKUP"
@@ -228,10 +255,22 @@ public struct BeastLauncher {
             notes: nil
         )
 
+        if let vigilScript {
+            do {
+                try FinishedX86Registration.file(script: vigilScript, manifest: manifest, runDirectory: runDirectory, runner: runner)
+            } catch {
+                if options.persist { try store.writeManifest(manifest) }
+                throw error
+            }
+        }
         if options.persist {
             try store.writeManifest(manifest)
         }
-
+        // Only remove evidence after a completed gate and successful harvest.
+        // A disconnected SSH session leaves its remote supervisor and evidence alone.
+        if pullResult.exitCode == 0 {
+            _ = try? runner.run(planResult.removeClone)
+        }
         return BeastLaunchResult(
             manifest: manifest,
             runDirectory: runDirectory,
@@ -250,7 +289,11 @@ public struct BeastLauncher {
         guard !options.sha.isEmpty else {
             throw BeastLauncherError.missingLocalSHA
         }
-        if let suite = options.suite, !RemoteCommand.isSuiteID(suite) {
+        if let lane = options.laneKey,
+           lane.count != 64 || !lane.unicodeScalars.allSatisfy({ ("a"..."f").contains($0) || ("0"..."9").contains($0) }) {
+            throw BeastLauncherError.invalidLaneKey(lane)
+        }
+        if let suite = options.suite, !RemoteCommand.isSuiteList(suite) {
             throw BeastLauncherError.invalidSuiteID(suite)
         }
     }
@@ -306,6 +349,11 @@ public struct BeastLauncher {
             ))
             try mergeSerials(from: gateTmpURL, userURL: userURL, kernelURL: kernelURL)
             keepScreens(from: gateTmpURL, runDirectory: runDirectory)
+            let boots = try FileManager.default.contentsOfDirectory(at: gateTmpURL, includingPropertiesForKeys: nil)
+            for boot in boots where boot.lastPathComponent.hasPrefix("breenix_gate_") {
+                let destination = runDirectory.appendingPathComponent(boot.lastPathComponent)
+                try FileManager.default.copyItem(at: boot, to: destination)
+            }
         }
 
         return [
@@ -322,6 +370,15 @@ public struct BeastLauncher {
         for iteration in iterations where iteration.hasPrefix("breenix_gate_") {
             let boot = iteration.dropFirst("breenix_gate_".count)
             guard !boot.isEmpty, boot.allSatisfy(\.isNumber) else { continue }
+            let bootDirectory = gateTmp.appendingPathComponent(iteration)
+            let suites = (try? FileManager.default.contentsOfDirectory(atPath: bootDirectory.path)) ?? []
+            for suite in suites where suite.hasPrefix("suite-") {
+                let source = bootDirectory.appendingPathComponent(suite).appendingPathComponent("screen.png")
+                if FileManager.default.fileExists(atPath: source.path) {
+                    let destination = runDirectory.appendingPathComponent("screen-\(boot)-\(suite.dropFirst(6)).png")
+                    try? FileManager.default.copyItem(at: source, to: destination)
+                }
+            }
             let screen = gateTmp.appendingPathComponent(iteration).appendingPathComponent("screen.png")
             guard FileManager.default.fileExists(atPath: screen.path) else { continue }
             let destination = runDirectory.appendingPathComponent("screen-\(boot).png")
@@ -423,7 +480,11 @@ public struct BeastLauncher {
     }
 
     private func readableGateCommand(paths: BeastPaths, boots: Int, mode: RemoteGateMode) -> [String] {
-        ["\(paths.clonePath)/docker/qemu/run-x86-gate.sh", "\(boots)", mode.rawValue]
+        if let lane = paths.laneKey, let sha = paths.requestedSHA {
+            return ["python3", paths.gateTmpPath + "/gate-tree.py", paths.canonicalRepoDir,
+                    lane, sha, paths.gateTmpPath, "\(boots)", mode.rawValue]
+        }
+        return ["\(paths.clonePath)/docker/qemu/run-x86-gate.sh", "\(boots)", mode.rawValue]
     }
 
     private func gateEnvironment(paths: BeastPaths, timeoutSecs: Int, qemuProfile: X86HardwareProfile?, suite: String?) -> [String: String] {
@@ -434,6 +495,10 @@ public struct BeastLauncher {
             "BREENIX_GATE_TIMEOUT": "\(timeoutSecs)",
             "BREENIX_FULL_BACKSTOP": "\(fullBackstopSecs)"
         ]
+        if let lane = paths.laneKey {
+            let parent = URL(fileURLWithPath: paths.canonicalRepoDir).deletingLastPathComponent().path
+            environment["BREENIX_REPO_DIR"] = parent + "/breenix-gate-cache/" + (paths.fresh ? "fresh/" + URL(fileURLWithPath: paths.clonePath).lastPathComponent : "trees/" + lane)
+        }
         environment["BREENIX_QEMU_PROFILE"] = (qemuProfile ?? .default).rawValue
         if let suite {
             environment["BREENIX_BOOT_SUITE"] = suite
