@@ -300,6 +300,9 @@ final class BeastLauncherTests: XCTestCase {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try makeEvidenceTarball(root: root, entries: [1: ("finished user\n", "finished kernel\n")])
+        let suiteDirectory = fixture.gateTmpSource.appendingPathComponent("breenix_gate_1/suite-files-io")
+        try FileManager.default.createDirectory(at: suiteDirectory, withIntermediateDirectories: true)
+        try Data("per-suite screen".utf8).write(to: suiteDirectory.appendingPathComponent("screen.png"))
         try Data("{\"started\":10,\"ended\":20}".utf8).write(to: fixture.gateTmpSource.appendingPathComponent("breenix_gate_1/boot-times.json"))
         let runner = BeastScriptedProcessRunner()
         runner.pullResult = ProcessResult(stdout: fixture.tarball, exitCode: 0)
@@ -309,7 +312,8 @@ final class BeastLauncherTests: XCTestCase {
         }
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")), runner: runner,
                                      vigilScript: URL(fileURLWithPath: "/record.sh"))
-        _ = try launcher.runX86(options: options(runID: "file-finished"))
+        let result = try launcher.runX86(options: options(runID: "file-finished"))
+        XCTAssertTrue(result.manifest.captures.contains { $0.path == "screen-1-files-io.png" })
         let filings = runner.calls.filter { $0.executable == "/record.sh" }
         XCTAssertEqual(filings.count, 1, "a completed x86 run must reach Vigil")
         XCTAssertEqual(filings.first?.arguments.first, "record")

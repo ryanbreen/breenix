@@ -366,6 +366,15 @@ public struct BeastLauncher {
         for iteration in iterations where iteration.hasPrefix("breenix_gate_") {
             let boot = iteration.dropFirst("breenix_gate_".count)
             guard !boot.isEmpty, boot.allSatisfy(\.isNumber) else { continue }
+            let bootDirectory = gateTmp.appendingPathComponent(iteration)
+            let suites = (try? FileManager.default.contentsOfDirectory(atPath: bootDirectory.path)) ?? []
+            for suite in suites where suite.hasPrefix("suite-") {
+                let source = bootDirectory.appendingPathComponent(suite).appendingPathComponent("screen.png")
+                if FileManager.default.fileExists(atPath: source.path) {
+                    let destination = runDirectory.appendingPathComponent("screen-\(boot)-\(suite.dropFirst(6)).png")
+                    try? FileManager.default.copyItem(at: source, to: destination)
+                }
+            }
             let screen = gateTmp.appendingPathComponent(iteration).appendingPathComponent("screen.png")
             guard FileManager.default.fileExists(atPath: screen.path) else { continue }
             let destination = runDirectory.appendingPathComponent("screen-\(boot).png")
