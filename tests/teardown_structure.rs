@@ -1915,8 +1915,187 @@ fn aliases_derived_from_free_frames(body: &str) -> BTreeSet<String> {
                 }
             }
         }
+        // A closure handed the free list binds it to its parameters: a closure
+        // passed to `with_free_frames`, or to a method called on an alias
+        // (`free_list.and_then(|list| ...)`), or a `let`-bound closure that is
+        // used there or called with an alias argument (`reserve(&mut list)`).
+        for (params, start, name) in closure_literals(body, &mask) {
+            let mut sites = vec![start];
+            if let Some(name) = &name {
+                sites.extend(identifier_offsets(body, &mask, name).into_iter().filter(|offset| {
+                    *offset > start && !preceded_by_byte(body, &mask, *offset, b'.')
+                }));
+            }
+            let receives = sites.iter().any(|&site| {
+                call_hands_over_free_list(body, &mask, site, &aliases)
+                    || name.as_ref().is_some_and(|name| {
+                        site != start && called_with_alias(body, &mask, site + name.len(), &aliases)
+                    })
+            });
+            if receives {
+                for binding in params {
+                    changed |= aliases.insert(binding);
+                }
+            }
+        }
     }
     aliases
+}
+
+/// Whether the code byte before `offset`, ignoring trivia, is `byte`.
+fn preceded_by_byte(source: &str, mask: &[bool], offset: usize, byte: u8) -> bool {
+    let bytes = source.as_bytes();
+    (0..offset)
+        .rev()
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+        .is_some_and(|index| bytes[index] == byte)
+}
+
+/// Every closure literal in `body`: its parameter bindings, the offset of its
+/// opening `|`, and the name it is bound to by `let NAME = |...|`, if any. A
+/// `|` opens a closure when the code before it is `(`, `,`, an assignment `=`
+/// or `move`; after an operand it is a bitwise or.
+fn closure_literals(body: &str, mask: &[bool]) -> Vec<(BTreeSet<String>, usize, Option<String>)> {
+    let bytes = body.as_bytes();
+    let mut closures = Vec::new();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if !mask[index] || bytes[index] != b'|' {
+            index += 1;
+            continue;
+        }
+        let previous = (0..index)
+            .rev()
+            .find(|before| mask[*before] && !bytes[*before].is_ascii_whitespace());
+        let assignment = previous.is_some_and(|before| {
+            bytes[before] == b'='
+                && !before.checked_sub(1).is_some_and(|operator| {
+                    mask[operator] && b"=!<>|&^+-*/%".contains(&bytes[operator])
+                })
+        });
+        let opens = previous.is_some_and(|before| matches!(bytes[before], b'(' | b','))
+            || assignment
+            || preceding_identifier(body, mask, index).is_some_and(|word| word == "move");
+        if !opens {
+            index += 1;
+            continue;
+        }
+        let close = if bytes.get(index + 1) == Some(&b'|') {
+            index + 1
+        } else {
+            match ((index + 1)..bytes.len()).find(|after| mask[*after] && bytes[*after] == b'|') {
+                Some(close) => close,
+                None => break,
+            }
+        };
+        let mut params = BTreeSet::new();
+        let mut depth = 0usize;
+        let mut param_start = index + 1;
+        for cursor in (index + 1)..=close {
+            let separator = cursor == close || mask[cursor] && bytes[cursor] == b',' && depth == 0;
+            if separator {
+                params.extend(pattern_binding_identifiers(&body[param_start..cursor]));
+                param_start = cursor + 1;
+            } else if mask[cursor] {
+                match bytes[cursor] {
+                    b'(' | b'[' | b'<' => depth += 1,
+                    b')' | b']' | b'>' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+        }
+        let name = if assignment {
+            previous.and_then(|equals| preceding_identifier(body, mask, equals))
+        } else {
+            None
+        };
+        closures.push((params, index, name));
+        index = close + 1;
+    }
+    closures
+}
+
+/// Whether the call whose argument list encloses `site` hands the free list
+/// over: a call of `with_free_frames`, or a method called on an alias.
+fn call_hands_over_free_list(
+    body: &str,
+    mask: &[bool],
+    site: usize,
+    aliases: &BTreeSet<String>,
+) -> bool {
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut open = None;
+    for index in (0..site).rev() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b')' | b']' | b'}' => depth += 1,
+            b'(' | b'[' | b'{' if depth > 0 => depth -= 1,
+            b'(' => {
+                open = Some(index);
+                break;
+            }
+            b'[' | b'{' => break,
+            b';' if depth == 0 => break,
+            _ => {}
+        }
+    }
+    let Some(open) = open else {
+        return false;
+    };
+    let Some(callee) = preceding_identifier(body, mask, open) else {
+        return false;
+    };
+    if callee == "with_free_frames" {
+        return true;
+    }
+    let Some(callee_start) = (0..open)
+        .rev()
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+        .map(|end| end + 1 - callee.len())
+    else {
+        return false;
+    };
+    let Some(dot) = (0..callee_start)
+        .rev()
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+        .filter(|dot| bytes[*dot] == b'.')
+    else {
+        return false;
+    };
+    preceding_identifier(body, mask, dot).is_some_and(|receiver| aliases.contains(&receiver))
+}
+
+/// Whether the code at `after` opens a call argument list naming an alias.
+fn called_with_alias(body: &str, mask: &[bool], after: usize, aliases: &BTreeSet<String>) -> bool {
+    let bytes = body.as_bytes();
+    let Some(open) = (after..bytes.len())
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+        .filter(|open| bytes[*open] == b'(')
+    else {
+        return false;
+    };
+    let mut depth = 0usize;
+    let Some(close) = (open..bytes.len()).find(|index| {
+        if !mask[*index] {
+            return false;
+        }
+        match bytes[*index] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            _ => {}
+        }
+        depth == 0
+    }) else {
+        return false;
+    };
+    let arguments = &body[open + 1..close];
+    let arguments_mask = code_mask(arguments);
+    aliases
+        .iter()
+        .any(|alias| !identifier_offsets(arguments, &arguments_mask, alias).is_empty())
 }
 
 fn alias_method_calls(body: &str) -> Vec<String> {
@@ -11904,6 +12083,31 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         );
         let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
         assert!(validate_frame_return_choke_point(&broken).is_err());
+    }
+    // The same bypasses inside the closures the free list is handed to: the
+    // x86_64 `with_free_frames` callers and the `reserve` and `push` closures.
+    for (anchor, mutation) in [
+        (
+            "free_list.and_then(|list| list.pop())",
+            "free_list.and_then(|list| { list.push(frame); list.pop() })",
+        ),
+        (
+            "free_list.and_then(|list| list.pop())",
+            "free_list.and_then(|list| { let spare = &mut *list; spare.insert(0, frame); list.pop() })",
+        ),
+        ("free_list.push(lease.frame);", "free_list.insert(0, lease.frame);"),
+        (
+            "free_list.try_reserve(additional)",
+            "free_list.extend_from_slice(&[frame]); free_list.try_reserve(additional)",
+        ),
+    ] {
+        assert!(allocator.contains(anchor), "mutation anchor moved: {anchor}");
+        let broken = allocator.replacen(anchor, mutation, 1);
+        let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
+        assert!(
+            validate_frame_return_choke_point(&broken).is_err(),
+            "closure bypass not caught: {mutation}"
+        );
     }
     let reborrowed = allocator.replacen(
         "if let Some(frame) = free_list.pop() {",
