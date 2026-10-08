@@ -708,51 +708,63 @@ fn generate_cpuinfo() -> String {
             let bogomips_frac = ((freq_hz * 2) % 1_000_000) / 10_000; // 2 decimal places
 
             let cache_kb = info.cache_size_kb();
+            let online = crate::arch_impl::x86_64::smp::cpus_online().max(1) as usize;
 
-            format!(
-                "processor\t: 0\n\
-                 vendor_id\t: {}\n\
-                 cpu family\t: {}\n\
-                 model\t\t: {}\n\
-                 model name\t: {}\n\
-                 stepping\t: {}\n\
-                 cpu MHz\t\t: {}.{:03}\n\
-                 cache size\t: {} KB\n\
-                 physical id\t: 0\n\
-                 siblings\t: {}\n\
-                 core id\t\t: 0\n\
-                 cpu cores\t: 1\n\
-                 fpu\t\t: {}\n\
-                 fpu_exception\t: {}\n\
-                 cpuid level\t: {}\n\
-                 clflush size\t: {}\n\
-                 flags\t\t: {}\n\
-                 bogomips\t: {}.{:02}\n\n",
-                info.vendor_str(),
-                info.family,
-                info.model,
-                info.brand_str(),
-                info.stepping,
-                mhz,
-                mhz_frac,
-                cache_kb,
-                info.logical_processors,
-                if info.features_edx & 1 != 0 {
-                    "yes"
-                } else {
-                    "no"
-                },
-                if info.features_edx & 1 != 0 {
-                    "yes"
-                } else {
-                    "no"
-                },
-                info.max_leaf,
-                info.clflush_size,
-                info.flags_string(),
-                bogomips_int,
-                bogomips_frac,
-            )
+            let mut output = String::new();
+            for cpu in 0..online {
+                use core::fmt::Write;
+                let _ = write!(
+                    output,
+                    "processor\t: {}\n\
+                     vendor_id\t: {}\n\
+                     cpu family\t: {}\n\
+                     model\t\t: {}\n\
+                     model name\t: {}\n\
+                     stepping\t: {}\n\
+                     cpu MHz\t\t: {}.{:03}\n\
+                     cache size\t: {} KB\n\
+                     physical id\t: 0\n\
+                     siblings\t: {}\n\
+                     core id\t\t: {}\n\
+                     apicid\t\t: {}\n\
+                     cpu cores\t: {}\n\
+                     fpu\t\t: {}\n\
+                     fpu_exception\t: {}\n\
+                     cpuid level\t: {}\n\
+                     clflush size\t: {}\n\
+                     flags\t\t: {}\n\
+                     bogomips\t: {}.{:02}\n\n",
+                    cpu,
+                    info.vendor_str(),
+                    info.family,
+                    info.model,
+                    info.brand_str(),
+                    info.stepping,
+                    mhz,
+                    mhz_frac,
+                    cache_kb,
+                    online,
+                    cpu,
+                    crate::arch_impl::x86_64::smp::cpu_apic_id(cpu).unwrap_or(0),
+                    online,
+                    if info.features_edx & 1 != 0 {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    if info.features_edx & 1 != 0 {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    info.max_leaf,
+                    info.clflush_size,
+                    info.flags_string(),
+                    bogomips_int,
+                    bogomips_frac,
+                );
+            }
+            output
         } else {
             format!("processor\t: 0\nmodel name\t: Unknown (CPUID not initialized)\n\n")
         }
@@ -910,10 +922,10 @@ fn procfs_online_cpus() -> usize {
     }
 }
 
-/// Ticks `cpu` has run for, the total its idle ticks are part of. On aarch64
-/// each timer interrupt credits the ticks since that CPU's previous one, so
-/// the count keeps up with the global tick when interrupts are late; x86_64
-/// counts its timer interrupts.
+/// Ticks `cpu` has run for, the total its idle ticks are part of. Each CPU is
+/// credited with the ticks since its previous credit -- on aarch64 by its timer
+/// interrupt, on x86_64 on each interrupt return through the scheduler -- so
+/// the count keeps up with the global tick when interrupts are late.
 fn procfs_cpu_ticks(cpu: usize) -> u64 {
     #[cfg(target_arch = "aarch64")]
     {
@@ -921,7 +933,7 @@ fn procfs_cpu_ticks(cpu: usize) -> u64 {
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        crate::tracing::providers::counters::TIMER_TICK_TOTAL.get_cpu(cpu)
+        crate::arch_impl::x86_64::smp::cpu_elapsed_ticks(cpu)
     }
 }
 

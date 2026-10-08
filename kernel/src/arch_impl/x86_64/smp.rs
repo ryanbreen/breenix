@@ -114,6 +114,39 @@ static SOURCE: AtomicU32 = AtomicU32::new(SOURCE_NOT_RUN);
 /// Set by the first `init()`, so a second call cannot emit a second marker.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// Ticks each CPU has been credited with, and the tick each CPU's last credit
+/// ran to. Read by /proc/stat beside the idle ticks credited to
+/// `IDLE_TICK_TOTAL`.
+static ELAPSED_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static CREDITED_TO_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Credit logical CPU `cpu`, the executing CPU, with the ticks since its
+/// previous credit: to its elapsed time, and to its idle time when `idle`, the
+/// interrupted thread being its idle thread. Called on every interrupt return
+/// through the scheduler, which every tick makes, as aarch64's timer interrupt
+/// credits its CPU. No lock.
+pub fn credit_ticks(cpu: usize, idle: bool) {
+    if cpu >= MAX_CPUS {
+        return;
+    }
+    let now = crate::time::get_ticks();
+    let last = CREDITED_TO_TICK[cpu].swap(now, Ordering::Relaxed);
+    if last == 0 || now <= last {
+        return;
+    }
+    ELAPSED_TICKS[cpu].fetch_add(now - last, Ordering::Relaxed);
+    if idle {
+        crate::tracing::providers::counters::IDLE_TICK_TOTAL.add_cpu(cpu, now - last);
+    }
+}
+
+/// Ticks logical CPU `cpu` has been credited with.
+pub fn cpu_elapsed_ticks(cpu: usize) -> u64 {
+    ELAPSED_TICKS
+        .get(cpu)
+        .map_or(0, |ticks| ticks.load(Ordering::Relaxed))
+}
+
 /// User-thread dispatches each logical CPU has made: switches that installed a
 /// user thread as the CPU's current thread.
 static USER_DISPATCHES: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];

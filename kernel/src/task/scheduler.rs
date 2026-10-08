@@ -1672,13 +1672,15 @@ static LEAVING_STACK_WAITERS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0)
 static RESCHED_REQUESTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
 /// x86_64: called first on every entry to `check_need_resched_and_switch`,
-/// after the scheduling epoch. This CPU is no longer on the stack of the
-/// thread it last switched away from, and takes any reschedule requested of it.
+/// after the scheduling epoch. Credits this CPU's elapsed and idle ticks; this
+/// CPU is no longer on the stack of the thread it last switched away from; and
+/// it takes any reschedule requested of it.
 #[cfg(target_arch = "x86_64")]
 pub fn note_x86_interrupt_return(cpu: usize) {
     if cpu >= MAX_CPUS {
         return;
     }
+    crate::arch_impl::x86_64::smp::credit_ticks(cpu, crate::per_cpu::running_idle_thread());
     if LEAVING_STACK[cpu].load(Ordering::Relaxed) != 0 {
         LEAVING_STACK[cpu].store(0, Ordering::Release);
         let waiters = LEAVING_STACK_WAITERS[cpu].swap(0, Ordering::AcqRel);
