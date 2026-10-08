@@ -208,13 +208,11 @@ pub extern "C" fn check_need_resched_and_switch(
         //
         // NOTE: No logging here - we're in IRQ context and logging can deadlock.
         //
-        // #772 diagnostics: this is also the gate the 1 syscall-return call
-        // site leaves by. `kernel/src/syscall/entry.asm` sets PREEMPT_ACTIVE at
-        // `:110`, two instructions before its call at `:124`, and clears it at
-        // `:223`, after that call has returned -- so a save attributed to that
-        // entry point would contradict those 3 line numbers. Counting the exits
-        // is what makes the claim measurable rather than only readable off the
-        // assembly.
+        // #772 diagnostics: `kernel/src/syscall/entry.asm` makes its
+        // reschedule call before it sets PREEMPT_ACTIVE and masks interrupts
+        // until the bit is clear again, so no call should return here.
+        // Counting the exits makes that measurable rather than only readable
+        // off the assembly.
         crate::trace_count!(DISPATCH_GATE_PREEMPT_ACTIVE);
         return;
     }

@@ -512,13 +512,11 @@ pub static DISPATCH_EXC_IDLE_REDIRECT: TraceCounter = TraceCounter::new(
 
 /// Interrupt-return calls that returned at the `PREEMPT_ACTIVE` gate.
 ///
-/// `kernel/src/syscall/entry.asm` sets `PREEMPT_ACTIVE` (bit 28 of `gs:[32]`)
-/// at `:110`, two instructions before its
-/// `call check_need_resched_and_switch` at `:124`, and clears it again at
-/// `:223`, after that call has returned. The 1 syscall-return call site
-/// therefore finds the bit set and returns at this gate without reaching
-/// `schedule()`. This counter is what makes the claim measurable rather than
-/// merely read off the assembly.
+/// `kernel/src/syscall/entry.asm` makes its syscall-return
+/// `call check_need_resched_and_switch` before it sets `PREEMPT_ACTIVE`
+/// (bit 28 of `gs:[32]`), and keeps interrupts masked until it clears the bit
+/// again, so no call is expected to return at this gate. This counter is what
+/// makes the claim measurable rather than merely read off the assembly.
 ///
 /// GDB: `print DISPATCH_GATE_PREEMPT_ACTIVE`
 #[no_mangle]
