@@ -219,16 +219,22 @@ impl<'a> fmt::Write for BufferWriter<'a> {
     }
 }
 
-/// Per-CPU log ring storage
-static mut CPU0_LOG_RING: LogRing = LogRing::new();
+/// One log ring per CPU: a ring is only ever touched by its own CPU, with
+/// that CPU's interrupts disabled, which is what makes it lock-free.
+static mut LOG_RINGS: [LogRing; crate::task::scheduler::MAX_CPUS] =
+    [const { LogRing::new() }; crate::task::scheduler::MAX_CPUS];
 
-/// Get the current CPU's log ring
+/// Get the executing CPU's log ring. Before per-CPU data is loaded only the
+/// boot processor runs, and it uses ring 0.
 /// SAFETY: Must be called with interrupts disabled or from interrupt context
 pub unsafe fn get_log_ring() -> &'static mut LogRing {
-    // For now, we only support CPU 0
-    // TODO: Use proper per-CPU infrastructure
+    let cpu = if crate::per_cpu::is_initialized() {
+        crate::per_cpu::cpu_id()
+    } else {
+        0
+    };
     // Use raw pointer to avoid creating reference to mutable static (Rust 2024 compatibility)
-    &mut *core::ptr::addr_of_mut!(CPU0_LOG_RING)
+    &mut (*core::ptr::addr_of_mut!(LOG_RINGS))[cpu]
 }
 
 /// Main IRQ-safe logging function
