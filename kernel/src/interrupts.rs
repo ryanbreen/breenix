@@ -796,10 +796,24 @@ fn file_mapping_fault(
 /// flushes only the CPU that made it. Drop the stale entry and report the
 /// fault resolved, as x86 Linux treats a spurious write fault.
 fn resolve_stale_write_translation(cr3: u64, addr: VirtAddr) -> bool {
+    use x86_64::structures::paging::PageTableFlags;
+
+    resolve_stale_translation(
+        cr3,
+        addr,
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+    )
+}
+
+/// Whether every level of `cr3`'s tables maps the user page at `addr` with
+/// `needed`; if so, drop this CPU's entry for it and report the fault resolved.
+fn resolve_stale_translation(
+    cr3: u64,
+    addr: VirtAddr,
+    needed: x86_64::structures::paging::PageTableFlags,
+) -> bool {
     use x86_64::structures::paging::{PageTable, PageTableFlags};
 
-    let needed =
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
     let phys_offset = crate::memory::physical_memory_offset();
     let mut table_phys = cr3 & !0xfff;
     for level in (0..4).rev() {
@@ -1459,9 +1473,32 @@ extern "x86-interrupt" fn page_fault_handler(
     // on another CPU, the fault is taken again once pending interrupts have
     // run (see the kill path below); probing here keeps a retry from printing
     // the diagnostics below each time.
-    if from_userspace && crate::process::try_manager().is_none() {
-        crate::per_cpu::preempt_enable();
-        return;
+    //
+    // Holding it, the page may turn out to be mapped after all: a
+    // copy-on-write break on another CPU clears the entry, flushes every CPU
+    // and maps the new frame under the process manager, so another thread of
+    // the process touching the page in between faults on a not-present entry.
+    // When the tables now allow the access the fault was spurious, and the
+    // access is retried, as Linux does when the entry is valid by the time it
+    // looks.
+    if from_userspace {
+        let Some(guard) = crate::process::try_manager() else {
+            crate::per_cpu::preempt_enable();
+            return;
+        };
+        let mut needed = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+        if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+            needed |= x86_64::structures::paging::PageTableFlags::WRITABLE;
+        }
+        let raced = !error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH)
+            && accessed_addr.as_u64() < crate::memory::layout::USER_STACK_REGION_END
+            && resolve_stale_translation(cr3, accessed_addr, needed);
+        drop(guard);
+        if raced {
+            crate::per_cpu::preempt_enable();
+            return;
+        }
     }
 
     crate::serial_println!("EXCEPTION: PAGE FAULT");
