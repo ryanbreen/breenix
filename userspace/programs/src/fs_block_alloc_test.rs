@@ -55,7 +55,7 @@ fn main() {
     println!("\nTest 1: O_TRUNC frees blocks (not just size)");
     {
         // Create a file with content
-        match fs::open_with_mode("/trunctest.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
+        match fs::open_with_mode("/tmp/trunctest.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
             Ok(fd) => {
                 // Write enough data to allocate at least one block (1KB)
                 let data = [b'X'; 512];
@@ -64,7 +64,7 @@ fn main() {
                 let _ = close(fd);
 
                 // Check st_blocks before truncate
-                match fs::open("/trunctest.txt\0", O_RDONLY) {
+                match fs::open("/tmp/trunctest.txt\0", O_RDONLY) {
                     Ok(fd2) => {
                         let (size1, blocks1) = match fs::fstat(fd2) {
                             Ok(stat) => (stat.st_size, stat.st_blocks),
@@ -79,7 +79,7 @@ fn main() {
                         }
 
                         // Now truncate the file
-                        match fs::open("/trunctest.txt\0", O_WRONLY | O_TRUNC) {
+                        match fs::open("/tmp/trunctest.txt\0", O_WRONLY | O_TRUNC) {
                             Ok(fd3) => {
                                 let (size2, blocks2) = match fs::fstat(fd3) {
                                     Ok(stat) => (stat.st_size, stat.st_blocks),
@@ -112,10 +112,10 @@ fn main() {
                 }
 
                 // Clean up
-                let _ = fs::unlink("/trunctest.txt\0");
+                let _ = fs::unlink("/tmp/trunctest.txt\0");
             }
             Err(_) => {
-                println!("FAILED: Could not create /trunctest.txt");
+                println!("FAILED: Could not create /tmp/trunctest.txt");
                 tests_failed += 1;
             }
         }
@@ -132,22 +132,22 @@ fn main() {
         if let Some(inode_before) = hello_world_inode_before {
             println!("  Before: hello_world inode={}", inode_before);
 
-            // Step 2: Create /trunctest.txt and write content
-            match fs::open_with_mode("/trunctest.txt\0", O_WRONLY | O_CREAT, 0o644) {
+            // Step 2: Create /tmp/trunctest.txt and write content
+            match fs::open_with_mode("/tmp/trunctest.txt\0", O_WRONLY | O_CREAT, 0o644) {
                 Ok(fd) => {
                     let data = b"First write to hello.txt\n";
                     let _ = fs::write(fd, data);
                     let _ = close(fd);
 
-                    // Step 3: Truncate /trunctest.txt and write new content
-                    match fs::open("/trunctest.txt\0", O_WRONLY | O_TRUNC) {
+                    // Step 3: Truncate /tmp/trunctest.txt and write new content
+                    match fs::open("/tmp/trunctest.txt\0", O_WRONLY | O_TRUNC) {
                         Ok(fd2) => {
                             let data2 = b"Second write after truncate\n";
                             let _ = fs::write(fd2, data2);
                             let _ = close(fd2);
                         }
                         Err(_) => {
-                            println!("FAILED: Could not open /trunctest.txt with O_TRUNC");
+                            println!("FAILED: Could not open /tmp/trunctest.txt with O_TRUNC");
                             tests_failed += 1;
                         }
                     }
@@ -200,7 +200,7 @@ fn main() {
                     }
                 }
                 Err(_) => {
-                    println!("FAILED: Could not create /trunctest.txt");
+                    println!("FAILED: Could not create /tmp/trunctest.txt");
                     tests_failed += 1;
                 }
             }
@@ -216,7 +216,7 @@ fn main() {
     println!("\nTest 3: Block reuse after truncate");
     {
         // Create a file to get a block allocated
-        match fs::open_with_mode("/blockreuse.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
+        match fs::open_with_mode("/tmp/blockreuse.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
             Ok(fd) => {
                 // Write exactly 1KB to allocate one block
                 let data = [b'A'; 1024];
@@ -224,12 +224,12 @@ fn main() {
                 let _ = close(fd);
 
                 // Truncate it
-                match fs::open("/blockreuse.txt\0", O_WRONLY | O_TRUNC) {
+                match fs::open("/tmp/blockreuse.txt\0", O_WRONLY | O_TRUNC) {
                     Ok(fd2) => {
                         let _ = close(fd2);
 
                         // Now create another file - if blocks were freed, this should work
-                        match fs::open_with_mode("/blockreuse2.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
+                        match fs::open_with_mode("/tmp/blockreuse2.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
                             Ok(fd3) => {
                                 let data = [b'B'; 1024];
                                 match fs::write(fd3, &data) {
@@ -253,8 +253,8 @@ fn main() {
                         }
 
                         // Clean up
-                        let _ = fs::unlink("/blockreuse.txt\0");
-                        let _ = fs::unlink("/blockreuse2.txt\0");
+                        let _ = fs::unlink("/tmp/blockreuse.txt\0");
+                        let _ = fs::unlink("/tmp/blockreuse2.txt\0");
                     }
                     Err(_) => {
                         println!("FAILED: truncate open failed");
@@ -263,7 +263,7 @@ fn main() {
                 }
             }
             Err(_) => {
-                println!("FAILED: Could not create /blockreuse.txt");
+                println!("FAILED: Could not create /tmp/blockreuse.txt");
                 tests_failed += 1;
             }
         }
