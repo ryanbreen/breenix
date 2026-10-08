@@ -7328,9 +7328,9 @@ pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) 
         }
 
         sched.cpu_state[cpu_id].current_thread = Some(resume_thread_id);
-        // SAFETY: interrupts are masked under the scheduler lock, and both the
-        // aborted dispatch's thread and `thread_ptr` are live scheduler threads.
-        unsafe { crate::arch_impl::x86_64::fpu::hand_over_to(&mut *thread_ptr) };
+        // The x87/SSE registers go back with the CPU, if the aborted dispatch
+        // had already handed them over.
+        crate::arch_impl::x86_64::fpu::hand_over(sched, None, resume_thread_id);
         crate::per_cpu::set_current_thread(thread_ptr);
         if let Some(kernel_stack_top) = kernel_stack_top {
             crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());

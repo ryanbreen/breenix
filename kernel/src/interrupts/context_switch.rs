@@ -808,13 +808,12 @@ fn switch_to_thread(
     process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) {
     // Update per-CPU current thread and TSS.RSP0
-    scheduler::with_thread_mut(thread_id, |thread| {
-        // The x87/SSE registers follow the per-CPU current thread, so they
-        // change hands before the pointer does.
-        // SAFETY: interrupts are masked on this path and the outgoing current
-        // thread is still a live scheduler thread.
-        unsafe { crate::arch_impl::x86_64::fpu::hand_over_to(thread) };
+    // The x87/SSE registers follow the thread being dispatched.
+    scheduler::with_scheduler(|sched| {
+        crate::arch_impl::x86_64::fpu::hand_over(sched, Some(resume_thread_id), thread_id)
+    });
 
+    scheduler::with_thread_mut(thread_id, |thread| {
         // Update per-CPU current thread pointer
         let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
         crate::per_cpu::set_current_thread(thread_ptr);
