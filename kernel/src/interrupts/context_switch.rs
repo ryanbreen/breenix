@@ -272,10 +272,23 @@ pub extern "C" fn check_need_resched_and_switch(
     // decision, so the mandatory switch below saves its user context for
     // SIGCONT to resume. Signal delivery arms need_resched for it, so the
     // ordinary tick, with no reschedule pending, does not pay for the check.
+    // A process manager busy on another CPU is retried by self-IPI, taken at
+    // the first instruction boundary in Ring 3, rather than left to the
+    // dispatch below: when that found the lock free a moment later it declined
+    // the stop and returned the thread to user mode until the next tick, and a
+    // child that sent itself SIGSTOP ran on and exited first.
     if from_userspace && need_resched && !current_thread_blocked_or_terminated {
         if let Some(current_tid) = scheduler::current_thread_id() {
-            current_thread_blocked_or_terminated =
-                crate::signal::delivery::hold_stopped_thread_on_interrupt_return(current_tid);
+            match crate::signal::delivery::hold_stopped_thread_on_interrupt_return_or_busy(
+                current_tid,
+            ) {
+                Some(held) => current_thread_blocked_or_terminated = held,
+                None => {
+                    scheduler::set_need_resched();
+                    scheduler::retry_after_interrupts_x86();
+                    return;
+                }
+            }
         }
     }
     if !need_resched && !current_thread_blocked_or_terminated {

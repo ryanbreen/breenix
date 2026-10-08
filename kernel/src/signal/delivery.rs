@@ -52,18 +52,6 @@ pub enum SignalDeliveryResult {
 // x86_64 Signal Delivery
 // =============================================================================
 
-/// x86_64: bring the current thread back through the interrupt-return
-/// scheduling point before it runs a user instruction. A reschedule request
-/// alone waited for the next interrupt, and a thread that sent itself SIGSTOP
-/// on a return that could not take the stop ran on and exited first. A
-/// self-IPI is taken at the first instruction boundary after the return to
-/// Ring 3, where the stop is taken.
-#[cfg(target_arch = "x86_64")]
-fn hold_at_next_scheduling_point_x86() {
-    crate::task::scheduler::set_need_resched();
-    crate::task::scheduler::retry_after_interrupts_x86();
-}
-
 /// Deliver pending signals to a process (x86_64)
 ///
 /// Called from check_need_resched_and_switch() before returning to userspace.
@@ -88,10 +76,9 @@ pub fn deliver_pending_signals(
 ) -> SignalDeliveryResult {
     // A stopped process runs no handler, and a stop is taken where its thread
     // can be held off user mode (`take_stop_locked`), not here: the next
-    // scheduling point does that, and it must come before the thread runs a
-    // user instruction.
+    // scheduling point does that.
     if stop_pending_or_in_force(process) {
-        hold_at_next_scheduling_point_x86();
+        crate::task::scheduler::set_need_resched();
         return SignalDeliveryResult::NoAction;
     }
     // Process all deliverable signals in a loop (avoids unbounded recursion)
@@ -104,7 +91,7 @@ pub fn deliver_pending_signals(
 
         // A stop found behind ignored signals is left the same way.
         if is_default_stop(process, sig) {
-            hold_at_next_scheduling_point_x86();
+            crate::task::scheduler::set_need_resched();
             return SignalDeliveryResult::NoAction;
         }
 
@@ -1213,14 +1200,20 @@ pub fn take_stop_locked(manager: &mut ProcessManager, thread_id: u64) -> bool {
 /// the scheduler lock is the interrupt-safe one the switch takes anyway, and
 /// nothing here writes serial output.
 pub fn hold_stopped_thread_on_interrupt_return(thread_id: u64) -> bool {
-    let Some(mut guard) = crate::process::try_manager() else {
-        return false;
-    };
+    hold_stopped_thread_on_interrupt_return_or_busy(thread_id).unwrap_or(false)
+}
+
+/// `hold_stopped_thread_on_interrupt_return`, telling a busy process manager
+/// apart: None when it was held elsewhere and nothing was decided, so the
+/// caller can retry before the thread runs a user instruction rather than at
+/// the next tick.
+pub fn hold_stopped_thread_on_interrupt_return_or_busy(thread_id: u64) -> Option<bool> {
+    let mut guard = crate::process::try_manager()?;
     let Some(manager) = guard.as_mut() else {
-        return false;
+        return Some(false);
     };
     if !take_stop_locked(manager, thread_id) {
-        return false;
+        return Some(false);
     }
     let blocked = crate::task::scheduler::with_scheduler(|scheduler| {
         let current = scheduler.current_thread_mut().map(|thread| thread.id);
@@ -1231,7 +1224,7 @@ pub fn hold_stopped_thread_on_interrupt_return(thread_id: u64) -> bool {
     })
     .unwrap_or(false);
     if !blocked {
-        return false;
+        return Some(false);
     }
     let Some(group) = manager
         .find_process_by_thread_mut(thread_id)
@@ -1241,10 +1234,10 @@ pub fn hold_stopped_thread_on_interrupt_return(thread_id: u64) -> bool {
         })
         .and_then(|pid| manager.thread_group_of(pid))
     else {
-        return true;
+        return Some(true);
     };
     complete_stop_report(manager, group, None);
-    true
+    Some(true)
 }
 
 /// Hold the calling thread at a syscall's return to user mode while its
