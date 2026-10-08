@@ -158,6 +158,10 @@ pub extern "C" fn check_need_resched_and_switch(
     interrupt_frame: &mut InterruptStackFrame,
 ) {
     crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());
+    // This entry is a later interrupt than the one that last switched this
+    // CPU, so the CPU is off that switch's outgoing stack; it also takes any
+    // reschedule another CPU asked of it.
+    crate::task::scheduler::note_x86_interrupt_return(crate::per_cpu::cpu_id());
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
     if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
         return;

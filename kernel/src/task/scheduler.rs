@@ -806,6 +806,7 @@ struct IoWakeResult {
 }
 
 impl IoWakeResult {
+    #[cfg(target_arch = "aarch64")]
     fn resched_target(self) -> Option<usize> {
         self.enqueued_target.or(self.current_cpu)
     }
@@ -1643,6 +1644,109 @@ pub fn note_scheduling_epoch(cpu_id: usize) {
     }
 }
 
+/// x86_64: the thread each CPU most recently switched away from, while that
+/// CPU may still be on the thread's kernel stack; 0 for none.
+///
+/// An x86 dispatch rewrites the interrupt frame it returns through, and that
+/// frame sits on the outgoing thread's kernel stack (TSS.RSP0 for a Ring 3
+/// interrupt, the interrupted stack otherwise). The CPU keeps using that stack
+/// until its `iretq`. A second CPU that dispatched the thread in that window
+/// would run it on the same stack. `Scheduler::schedule` records the outgoing
+/// thread here when it switches; the CPU clears it at its next entry to
+/// `check_need_resched_and_switch` (`note_x86_interrupt_return`), which can
+/// only be a later interrupt, and until then other CPUs leave the thread on
+/// its queue. Linux's `task_struct::on_cpu` is the same guard.
+#[cfg(target_arch = "x86_64")]
+static LEAVING_STACK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// x86_64: CPUs to send a reschedule IPI when this CPU clears its
+/// `LEAVING_STACK` entry: they passed over the thread it names. Bit `n` is CPU `n`.
+#[cfg(target_arch = "x86_64")]
+static LEAVING_STACK_WAITERS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// x86_64: a reschedule requested of this CPU by another, consumed when the
+/// reschedule IPI (or any later interrupt) returns through
+/// `check_need_resched_and_switch`. `need_resched` itself is written by its
+/// own CPU only.
+#[cfg(target_arch = "x86_64")]
+static RESCHED_REQUESTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+
+/// x86_64: called first on every entry to `check_need_resched_and_switch`,
+/// after the scheduling epoch. This CPU is no longer on the stack of the
+/// thread it last switched away from, and takes any reschedule requested of it.
+#[cfg(target_arch = "x86_64")]
+pub fn note_x86_interrupt_return(cpu: usize) {
+    if cpu >= MAX_CPUS {
+        return;
+    }
+    if LEAVING_STACK[cpu].load(Ordering::Relaxed) != 0 {
+        LEAVING_STACK[cpu].store(0, Ordering::Release);
+        let waiters = LEAVING_STACK_WAITERS[cpu].swap(0, Ordering::AcqRel);
+        for waiter in (0..MAX_CPUS).filter(|&waiter| waiters & (1 << waiter) != 0) {
+            request_resched_x86(waiter);
+        }
+    }
+    if RESCHED_REQUESTED[cpu].swap(false, Ordering::AcqRel) {
+        crate::per_cpu::set_need_resched(true);
+    }
+}
+
+/// x86_64: the other CPU that may still be on `thread_id`'s kernel stack.
+#[cfg(target_arch = "x86_64")]
+fn x86_stack_owner_elsewhere(thread_id: u64, cpu: usize) -> Option<usize> {
+    (0..MAX_CPUS)
+        .find(|&other| other != cpu && LEAVING_STACK[other].load(Ordering::Acquire) == thread_id)
+}
+
+/// x86_64: arrange for this CPU to pick again once every CPU in `owners`
+/// has left the stack of a thread this CPU passed over. The owner sends the
+/// reschedule IPI when it clears its `LEAVING_STACK` entry; an owner that
+/// cleared it before the registration is seen here, and this CPU asks itself.
+#[cfg(target_arch = "x86_64")]
+fn wait_for_stacks_x86(owners: u64, cpu: usize) {
+    for owner in (0..MAX_CPUS).filter(|&owner| owners & (1 << owner) != 0) {
+        LEAVING_STACK_WAITERS[owner].fetch_or(1 << cpu, Ordering::AcqRel);
+        if LEAVING_STACK[owner].load(Ordering::Acquire) == 0 {
+            RESCHED_REQUESTED[cpu].store(true, Ordering::Release);
+            send_reschedule_vector_x86(cpu);
+        } else {
+            send_reschedule_vector_x86(owner);
+        }
+    }
+}
+
+/// x86_64: ask `cpu` to reschedule. Takes no lock.
+#[cfg(target_arch = "x86_64")]
+fn request_resched_x86(cpu: usize) {
+    if cpu >= MAX_CPUS || cpu == current_cpu_id_raw() {
+        return;
+    }
+    RESCHED_REQUESTED[cpu].store(true, Ordering::Release);
+    send_reschedule_vector_x86(cpu);
+}
+
+/// x86_64: interrupt `cpu` through the reschedule vector, which wakes it from a
+/// halt and returns through the scheduling point. Takes no lock.
+#[cfg(target_arch = "x86_64")]
+fn send_reschedule_vector_x86(cpu: usize) {
+    use crate::arch_impl::x86_64::{apic, smp};
+    if !smp::is_cpu_online(cpu) {
+        return;
+    }
+    let Some(apic_id) = smp::cpu_apic_id(cpu) else {
+        return;
+    };
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::SCHED_RESCHED_IPI_SEND,
+        0,
+        (((cpu as u32) & 0xFFFF) << 16) | ((current_cpu_id_raw() as u32) & 0xFFFF),
+    );
+    let _ = apic::send_ipi(
+        apic_id,
+        apic::Ipi::Fixed(crate::interrupts::RESCHEDULE_VECTOR),
+    );
+}
+
 /// DIAGNOSTIC: Circular buffer tracking last N cpu_state changes per CPU.
 /// Each entry: (setter_id, old_thread, new_thread)
 /// Setter IDs:
@@ -2143,7 +2247,6 @@ impl Scheduler {
 
     /// Register an idle thread for a specific CPU.
     /// Called during secondary CPU bringup to set up per-CPU idle tasks.
-    #[cfg(target_arch = "aarch64")]
     pub fn register_idle_thread(&mut self, cpu_id: usize, idle_thread: Box<Thread>) {
         if cpu_id >= MAX_CPUS {
             return;
@@ -2151,8 +2254,11 @@ impl Scheduler {
         let idle_id = idle_thread.id();
         self.threads.push(idle_thread);
         self.cpu_state[cpu_id].idle_thread = idle_id;
-        let old_val = self.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-        record_cpu_state_change(cpu_id, 4, old_val, idle_id);
+        #[cfg(target_arch = "aarch64")]
+        {
+            let old_val = self.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(cpu_id, 4, old_val, idle_id);
+        }
         self.cpu_state[cpu_id].current_thread = Some(idle_id);
         self.cpu_state[cpu_id].last_schedule_ticks = crate::time::get_ticks();
     }
@@ -2595,6 +2701,9 @@ impl Scheduler {
 
         // Get next thread from ready queue (local first, then steal), skipping terminated.
         let current_cpu = Self::current_cpu_id();
+        // x86_64: CPUs still on the stack of a thread this pass passed over.
+        #[cfg(target_arch = "x86_64")]
+        let mut stack_waits = 0u64;
         let mut next_thread_id = 'outer: loop {
             // Try local queue first
             let local_candidates = self.per_cpu_queues[current_cpu].len();
@@ -2602,6 +2711,12 @@ impl Scheduler {
                 let Some(n) = self.per_cpu_queues[current_cpu].pop_front() else {
                     break;
                 };
+                #[cfg(target_arch = "x86_64")]
+                if let Some(owner) = x86_stack_owner_elsewhere(n, current_cpu) {
+                    self.per_cpu_queues[current_cpu].push_back(n);
+                    stack_waits |= 1 << owner;
+                    continue;
+                }
                 let (terminated, owner_pid) = self
                     .get_thread(n)
                     .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
@@ -2624,6 +2739,12 @@ impl Scheduler {
                     let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
                         break;
                     };
+                    #[cfg(target_arch = "x86_64")]
+                    if let Some(owner) = x86_stack_owner_elsewhere(n, current_cpu) {
+                        self.per_cpu_queues[steal_cpu].push_back(n);
+                        stack_waits |= 1 << owner;
+                        continue;
+                    }
                     #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                     if retain_cpu_affine_test_thread(
                         &mut self.per_cpu_queues[steal_cpu],
@@ -2675,6 +2796,8 @@ impl Scheduler {
             }
             break self.cpu_state[current_cpu].idle_thread;
         };
+        #[cfg(target_arch = "x86_64")]
+        wait_for_stacks_x86(core::mem::take(&mut stack_waits), current_cpu);
 
         if debug_log {
             log_serial_println!(
@@ -2706,6 +2829,12 @@ impl Scheduler {
                     let Some(n) = self.per_cpu_queues[current_cpu].pop_front() else {
                         break;
                     };
+                    #[cfg(target_arch = "x86_64")]
+                    if let Some(owner) = x86_stack_owner_elsewhere(n, current_cpu) {
+                        self.per_cpu_queues[current_cpu].push_back(n);
+                        stack_waits |= 1 << owner;
+                        continue;
+                    }
                     let (terminated, owner_pid) = self
                         .get_thread(n)
                         .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
@@ -2725,6 +2854,12 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            #[cfg(target_arch = "x86_64")]
+                            if let Some(owner) = x86_stack_owner_elsewhere(n, current_cpu) {
+                                self.per_cpu_queues[steal_cpu].push_back(n);
+                                stack_waits |= 1 << owner;
+                                continue;
+                            }
                             #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                             if retain_cpu_affine_test_thread(
                                 &mut self.per_cpu_queues[steal_cpu],
@@ -2773,6 +2908,8 @@ impl Scheduler {
                         }
                     }
                 }
+                #[cfg(target_arch = "x86_64")]
+                wait_for_stacks_x86(core::mem::take(&mut stack_waits), current_cpu);
                 #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
                 if found.is_none() && retained_injector {
                     // The injector remains on its CPU 0 queue. If no later peer is
@@ -2867,6 +3004,10 @@ impl Scheduler {
             .current_thread
             .unwrap_or(self.cpu_state[current_cpu].idle_thread);
         self.cpu_state[current_cpu].current_thread = Some(next_thread_id);
+        // x86_64: this CPU stays on the outgoing thread's kernel stack until its
+        // `iretq`; no other CPU dispatches the thread before then.
+        #[cfg(target_arch = "x86_64")]
+        LEAVING_STACK[current_cpu].store(old_thread_id, Ordering::Release);
 
         // Track context switches for soft lockup detection
         CONTEXT_SWITCH_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -3850,14 +3991,9 @@ impl Scheduler {
                 // same stack, leading to context corruption and crashes (ELR=0x0).
                 // The CPU running the thread will detect the state change (Blocked
                 // → Ready) when its WFI loop checks the thread state after waking.
-                #[cfg(target_arch = "aarch64")]
                 let current_cpu = (0..MAX_CPUS)
                     .find(|&cpu| self.cpu_state[cpu].current_thread == Some(thread_id));
-                #[cfg(target_arch = "aarch64")]
                 let is_current_on_any_cpu = current_cpu.is_some();
-                #[cfg(not(target_arch = "aarch64"))]
-                let is_current_on_any_cpu =
-                    (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id));
 
                 // SMP safety: Don't add to ready_queue if thread was just
                 // context-switched out and the old CPU's ERET hasn't completed.
@@ -3891,7 +4027,6 @@ impl Scheduler {
                         }
 
                         // Send IPI to wake an idle CPU so it can pick up the unblocked thread
-                        #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
                         self.hold_pinned_wake_for_home(thread_id);
@@ -3902,6 +4037,10 @@ impl Scheduler {
                     if let Some(target) = current_cpu {
                         self.trace_wake_current(thread_id, target);
                         self.send_resched_ipi_to_cpu(target);
+                    }
+                    #[cfg(target_arch = "x86_64")]
+                    if let Some(target) = current_cpu {
+                        self.wake_cpu_for_current_thread(target);
                     }
                 } else if already_queued {
                     ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
@@ -3982,6 +4121,38 @@ impl Scheduler {
             crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
             target_cpu as u8,
         );
+    }
+
+    /// x86_64 counterpart of the AArch64 broadcast above: a reschedule IPI to
+    /// every other online CPU that is idle or committed to idle.
+    #[cfg(target_arch = "x86_64")]
+    fn send_resched_ipi(&self) {
+        let current_cpu = Self::current_cpu_id();
+        for cpu in 0..self.online_cpu_count() {
+            if cpu != current_cpu && self.cpu_is_idle(cpu) {
+                request_resched_x86(cpu);
+            }
+        }
+    }
+
+    /// x86_64: send a reschedule IPI to the CPU that received a newly runnable
+    /// task.
+    #[cfg(target_arch = "x86_64")]
+    fn send_resched_ipi_to_cpu(&self, target_cpu: usize) {
+        if target_cpu == Self::current_cpu_id() || target_cpu >= self.online_cpu_count() {
+            return;
+        }
+        request_resched_x86(target_cpu);
+    }
+
+    /// x86_64: a thread woken while it is still current on `cpu` resumes from
+    /// that CPU's halt loop once the CPU takes an interrupt; give it one. The
+    /// CPU's running thread is not asked to give way.
+    #[cfg(target_arch = "x86_64")]
+    fn wake_cpu_for_current_thread(&self, cpu: usize) {
+        if cpu != Self::current_cpu_id() && cpu < self.online_cpu_count() {
+            send_reschedule_vector_x86(cpu);
+        }
     }
 
     /// Publish teardown-attributed evidence, then broadcast a reschedule SGI
@@ -4172,7 +4343,6 @@ impl Scheduler {
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
 
                         // Send IPI to wake an idle CPU
-                        #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
                         self.hold_pinned_wake_for_home(thread_id);
@@ -4269,7 +4439,6 @@ impl Scheduler {
                         // through here from an interrupt return path.
 
                         // Send IPI to wake an idle CPU
-                        #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
                         self.hold_pinned_wake_for_home(thread_id);
@@ -4337,7 +4506,6 @@ impl Scheduler {
             if cpu == Self::current_cpu_id() {
                 set_need_resched();
             } else {
-                #[cfg(target_arch = "aarch64")]
                 self.send_resched_ipi_to_cpu(cpu);
             }
         }
@@ -4522,8 +4690,8 @@ impl Scheduler {
         if let Some(target) = wake.resched_target() {
             self.send_resched_ipi_to_cpu(target);
         }
-        #[cfg(not(target_arch = "aarch64"))]
-        let _ = wake.resched_target();
+        #[cfg(target_arch = "x86_64")]
+        self.kick_for_io_wake(wake);
     }
 
     /// Immediate task-context waitqueue wake.
@@ -4541,8 +4709,20 @@ impl Scheduler {
         if let Some(target) = wake.resched_target() {
             self.send_resched_ipi_to_cpu(target);
         }
-        #[cfg(not(target_arch = "aarch64"))]
-        let _ = wake.resched_target();
+        #[cfg(target_arch = "x86_64")]
+        self.kick_for_io_wake(wake);
+    }
+
+    /// x86_64: reach the CPU an I/O wake left work for. A thread queued on
+    /// another CPU asks that CPU to reschedule; a thread still current on one
+    /// only needs that CPU out of its halt.
+    #[cfg(target_arch = "x86_64")]
+    fn kick_for_io_wake(&self, wake: IoWakeResult) {
+        if let Some(target) = wake.enqueued_target {
+            self.send_resched_ipi_to_cpu(target);
+        } else if let Some(target) = wake.current_cpu {
+            self.wake_cpu_for_current_thread(target);
+        }
     }
 
     fn wake_io_thread_locked(&mut self, tid: u64, from_isr_buffer: bool) -> IoWakeResult {
@@ -4871,7 +5051,6 @@ impl Scheduler {
                         }
                         // Placement prefers an idle CPU, which may not be this
                         // one: wake it, or the thread waits for its next tick.
-                        #[cfg(target_arch = "aarch64")]
                         if self.cpu_is_idle(target) {
                             self.send_resched_ipi_to_cpu(target);
                         }
@@ -5393,7 +5572,6 @@ impl Scheduler {
             // caller proposed: a placement needs no delivery, so a hold here
             // would only add a step.
             self.per_cpu_queues[pin.cpu].push_back(thread_id);
-            #[cfg(target_arch = "aarch64")]
             self.send_resched_ipi_to_cpu(pin.cpu);
             return true;
         }
@@ -5414,11 +5592,9 @@ impl Scheduler {
         // tested by `pinned_wake_is_waiting_here`, which slice 3d recorded
         if self.pinned_wake_is_waiting_here(thread_id, pin.cpu) {
             self.hold_pinned_wake_for_home(thread_id);
-            #[cfg(target_arch = "aarch64")]
             self.send_resched_ipi_to_cpu(pin.cpu);
         } else {
             self.per_cpu_queues[pin.cpu].push_back(thread_id);
-            #[cfg(target_arch = "aarch64")]
             self.send_resched_ipi_to_cpu(pin.cpu);
         }
         true
@@ -5945,8 +6121,7 @@ pub fn init_with_current(current_thread: Box<Thread>) {
 }
 
 /// Register an idle thread for a secondary CPU.
-/// Called during SMP bringup from secondary_cpu_entry_rust.
-#[cfg(target_arch = "aarch64")]
+/// Called during SMP bringup from each architecture's secondary entry.
 pub fn register_cpu_idle_thread(cpu_id: usize, idle_thread: Box<Thread>) {
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
@@ -5972,7 +6147,6 @@ pub fn spawn(thread: Box<Thread>) {
             }
             // Wake idle CPUs so they can pick up the new thread immediately
             // rather than waiting up to 1ms for their next timer tick.
-            #[cfg(target_arch = "aarch64")]
             scheduler.send_resched_ipi();
         } else {
             panic!("Scheduler not initialized");
@@ -6003,7 +6177,6 @@ pub fn spawn_on_cpu(mut thread: Box<Thread>, cpu: usize) {
         if cpu == Scheduler::current_cpu_id() {
             set_need_resched();
         }
-        #[cfg(target_arch = "aarch64")]
         scheduler.send_resched_ipi_to_cpu(cpu);
     });
 }
@@ -6101,7 +6274,6 @@ pub fn spawn_front(thread: Box<Thread>) {
             // rather than waiting up to 1ms for their next timer tick.
             // Without this, all 7 idle CPUs sleep through the spawn and only
             // the spawning CPU's next timer tick dispatches the child.
-            #[cfg(target_arch = "aarch64")]
             scheduler.send_resched_ipi();
         } else {
             panic!("Scheduler not initialized");

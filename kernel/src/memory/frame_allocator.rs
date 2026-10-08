@@ -33,6 +33,27 @@ pub(crate) fn is_usable_address(address: u64) -> bool {
 /// - Legacy device memory (VGA, etc)
 const LOW_MEMORY_FLOOR: u64 = 0x100000; // 1 MiB
 
+/// Pages the x86 application-processor startup trampoline needs below 1 MiB:
+/// its code page and the three page-table pages of its identity map.
+#[cfg(target_arch = "x86_64")]
+pub const AP_TRAMPOLINE_PAGES: u64 = 4;
+
+/// Base of a run of `AP_TRAMPOLINE_PAGES` usable pages below 1 MiB, or 0 when
+/// the firmware reported none. A startup IPI can only start a processor at a
+/// page below 1 MiB, and the allocator never hands out pages below its floor,
+/// so nothing else in the kernel uses this run.
+#[cfg(target_arch = "x86_64")]
+static AP_TRAMPOLINE_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The low run recorded for the x86 application-processor trampoline.
+#[cfg(target_arch = "x86_64")]
+pub fn ap_trampoline_base() -> Option<u64> {
+    match AP_TRAMPOLINE_BASE.load(Ordering::Acquire) {
+        0 => None,
+        base => Some(base),
+    }
+}
+
 /// A memory region descriptor
 #[derive(Debug, Clone, Copy)]
 struct UsableRegion {
@@ -703,6 +724,16 @@ pub fn init(memory_regions: &'static MemoryRegions) {
 
     // Extract usable regions, excluding low memory below the floor
     for region in memory_regions.iter() {
+        // A usable run below the VGA hole that holds the AP startup
+        // trampoline; page 0 (real-mode interrupt vectors) is never used.
+        #[cfg(target_arch = "x86_64")]
+        if region.kind == MemoryRegionKind::Usable {
+            let start = region.start.max(0x1000).next_multiple_of(4096);
+            let end = region.end.min(0xA0000) & !0xfff;
+            if end >= start + AP_TRAMPOLINE_PAGES * 4096 {
+                AP_TRAMPOLINE_BASE.store(end - AP_TRAMPOLINE_PAGES * 4096, Ordering::Release);
+            }
+        }
         if region.kind == MemoryRegionKind::Usable {
             // Skip regions entirely below the low memory floor
             if region.end <= LOW_MEMORY_FLOOR {

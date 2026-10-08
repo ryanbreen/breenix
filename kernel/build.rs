@@ -105,8 +105,28 @@ fn main() {
             panic!("Failed to assemble breakpoint entry");
         }
 
+        // Assemble the application-processor startup trampoline
+        let status = Command::new("nasm")
+            .args(&[
+                "-f",
+                "elf64",
+                "-o",
+                &format!("{}/ap_trampoline.o", out_dir),
+                kernel_dir
+                    .join("src/arch_impl/x86_64/ap_trampoline.asm")
+                    .to_str()
+                    .unwrap(),
+            ])
+            .status()
+            .expect("Failed to run nasm");
+
+        if !status.success() {
+            panic!("Failed to assemble AP trampoline");
+        }
+
         // Tell cargo to link the assembled object files
         println!("cargo:rustc-link-arg={}/syscall_entry.o", out_dir);
+        println!("cargo:rustc-link-arg={}/ap_trampoline.o", out_dir);
         println!("cargo:rustc-link-arg={}/timer_entry.o", out_dir);
         println!("cargo:rustc-link-arg={}/breakpoint_entry.o", out_dir);
     }
@@ -162,6 +182,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/syscall/entry.asm");
     println!("cargo:rerun-if-changed=src/interrupts/timer_entry.asm");
     println!("cargo:rerun-if-changed=src/interrupts/breakpoint_entry.asm");
+    println!("cargo:rerun-if-changed=src/arch_impl/x86_64/ap_trampoline.asm");
     println!("cargo:rerun-if-changed=linker.ld");
     println!("cargo:rerun-if-changed=src/arch_impl/aarch64/linker.ld");
 

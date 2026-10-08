@@ -160,6 +160,8 @@ pub struct MadtCensus {
     pub recorded: usize,
     /// APIC ids in MADT order, for the first `recorded` processor entries.
     pub apic_ids: [u32; MAX_ENUMERATED_CPUS],
+    /// Whether each of those entries carries the Enabled flag.
+    pub apic_enabled: [bool; MAX_ENUMERATED_CPUS],
 }
 
 impl MadtCensus {
@@ -185,6 +187,7 @@ impl MadtCensus {
             override_count: 0,
             recorded: 0,
             apic_ids: [0; MAX_ENUMERATED_CPUS],
+            apic_enabled: [false; MAX_ENUMERATED_CPUS],
         }
     }
 
@@ -198,6 +201,7 @@ impl MadtCensus {
         }
         if self.recorded < MAX_ENUMERATED_CPUS {
             self.apic_ids[self.recorded] = apic_id;
+            self.apic_enabled[self.recorded] = flags & MADT_FLAG_ENABLED != 0;
             self.recorded += 1;
         }
     }

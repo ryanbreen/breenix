@@ -590,8 +590,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     process::init();
     log::info!("Process management initialized");
 
-    // Secondary CPU bring-up belongs here, after the scheduler and process
-    // manager exist; none is started yet (#1179). Report what came online.
+    // Start the application processors now that the scheduler and process
+    // manager exist, then report what came online.
+    kernel::arch_impl::x86_64::ap_start::start_application_processors();
     kernel::arch_impl::x86_64::smp::report_bring_up();
 
     // Initialize workqueue subsystem (depends on kthread infrastructure)
