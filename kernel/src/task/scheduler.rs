@@ -6335,6 +6335,9 @@ mod idle_release_probe {
 
     static STATE: AtomicU8 = AtomicU8::new(ARMED);
     static HELD_SINCE_MS: AtomicU64 = AtomicU64::new(0);
+    /// The CPU whose idle thread holds; only that CPU's idle can be
+    /// dispatched inside the hold.
+    static HOLDER_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
 
     pub(super) fn hold() {
         if !crate::syscall::handler::is_ring3_confirmed() {
@@ -6359,12 +6362,22 @@ mod idle_release_probe {
         if crate::per_cpu::preempt_count() & 0xFF > 1 {
             panic!("x86 idle reclamation left preemption disabled");
         }
+        let cpu = crate::per_cpu::cpu_id() as u64;
         match STATE.load(Ordering::Acquire) {
             FINISHED => return,
-            HOLDING => panic!("x86 idle was dispatched inside reclaim_terminated_threads"),
+            HOLDING if HOLDER_CPU.load(Ordering::Acquire) == cpu => {
+                panic!("x86 idle was dispatched inside reclaim_terminated_threads")
+            }
+            HOLDING => return,
             _ => {
+                if STATE
+                    .compare_exchange(ARMED, HOLDING, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    return;
+                }
+                HOLDER_CPU.store(cpu, Ordering::Release);
                 HELD_SINCE_MS.store(crate::time::get_monotonic_time(), Ordering::Release);
-                STATE.store(HOLDING, Ordering::Release);
             }
         }
         crate::tracing::output::raw_serial_str("IDLE_RELEASE_PROBE: holding\n");
