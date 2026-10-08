@@ -1196,7 +1196,8 @@ pub fn take_stop_locked(manager: &mut ProcessManager, thread_id: u64) -> bool {
 /// before the switch decision with no lock held. Returns true when the thread
 /// has been blocked: the caller then switches away, saving its user context
 /// for SIGCONT to resume. Interrupt-path rules: the process manager is only
-/// try-locked (false when it is busy, and the next scheduling point retries),
+/// try-locked, on x86_64 polled for a bounded time (false when it stays busy,
+/// and the next scheduling point retries),
 /// the scheduler lock is the interrupt-safe one the switch takes anyway, and
 /// nothing here writes serial output.
 pub fn hold_stopped_thread_on_interrupt_return(thread_id: u64) -> bool {
@@ -1208,6 +1209,9 @@ pub fn hold_stopped_thread_on_interrupt_return(thread_id: u64) -> bool {
 /// caller can retry before the thread runs a user instruction rather than at
 /// the next tick.
 pub fn hold_stopped_thread_on_interrupt_return_or_busy(thread_id: u64) -> Option<bool> {
+    #[cfg(target_arch = "x86_64")]
+    let mut guard = crate::process::poll_manager()?;
+    #[cfg(not(target_arch = "x86_64"))]
     let mut guard = crate::process::try_manager()?;
     let Some(manager) = guard.as_mut() else {
         return Some(false);

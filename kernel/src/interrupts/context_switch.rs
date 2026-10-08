@@ -381,12 +381,13 @@ pub extern "C" fn check_need_resched_and_switch(
     // first ring-3 entry then aborted for want of this very lock, requeue the
     // thread and re-arm need_resched, forever. Refusing here leaves the
     // lock-holding context - the only one that can release it - running.
-    // try_lock only: blocking here would deadlock the interrupt path. With
-    // several CPUs the holder may be waiting for an interrupt routed to this
-    // one, so a return to Ring 3 that finds the lock busy retries as soon as
-    // interrupts are enabled again, rather than leaving the reschedule, and
-    // the signal delivery behind it, to the next tick.
-    let mut process_manager_guard = match crate::process::try_manager() {
+    // Polled for a bounded time only: blocking here would deadlock the
+    // interrupt path. With several CPUs the holder may be waiting for an
+    // interrupt routed to this one, so a return to Ring 3 that still finds the
+    // lock busy retries as soon as interrupts are enabled again, rather than
+    // leaving the reschedule, and the signal delivery behind it, to the next
+    // tick.
+    let mut process_manager_guard = match crate::process::poll_manager() {
         Some(guard) => {
             note_dispatch_guard_available();
             guard
@@ -1775,9 +1776,10 @@ fn check_and_deliver_signals_for_current_thread(
 
     // This returns to Ring 3, so a busy process manager is held on another
     // CPU. Waiting for it with interrupts masked could deadlock against a
-    // holder waiting for an interrupt routed here; the delivery is retried as
-    // soon as interrupts are enabled again, instead of at the next tick.
-    let mut manager_guard = match crate::process::try_manager() {
+    // holder waiting for an interrupt routed here, so it is polled for a
+    // bounded time and the delivery is otherwise retried as soon as interrupts
+    // are enabled again, instead of at the next tick.
+    let mut manager_guard = match crate::process::poll_manager() {
         Some(guard) => guard,
         None => {
             scheduler::retry_after_interrupts_x86();
