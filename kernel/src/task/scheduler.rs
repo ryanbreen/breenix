@@ -1770,6 +1770,15 @@ fn request_resched_x86(cpu: usize) {
     send_reschedule_vector_x86(cpu);
 }
 
+/// x86_64: bring another CPU out of a halt with an interrupt, without asking
+/// it to reschedule. Takes no lock, so an interrupt handler may call it.
+#[cfg(target_arch = "x86_64")]
+pub fn kick_cpu_x86(cpu: usize) {
+    if cpu != current_cpu_id_raw() {
+        send_reschedule_vector_x86(cpu);
+    }
+}
+
 /// x86_64: interrupt `cpu` through the reschedule vector, which wakes it from a
 /// halt and returns through the scheduling point. Takes no lock.
 #[cfg(target_arch = "x86_64")]

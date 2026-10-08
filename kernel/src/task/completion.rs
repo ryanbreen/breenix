@@ -171,6 +171,12 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
         // Idle polls done and never sleeps in the scheduler. Do not leave a
         // previous waiter eligible for an ISR wakeup while IRQs are enabled.
         completion.waiter.store(0, Ordering::Release);
+        // Published before the first check, so a completion either is seen
+        // by it or finds this CPU to interrupt.
+        completion
+            .idle_poller
+            .store(crate::per_cpu::cpu_id() + 1, Ordering::Release);
+        fence(Ordering::SeqCst);
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         let deadline = (secs * 1_000_000_000 + nanos).saturating_add(timeout_ns);
         let completed = loop {
@@ -184,6 +190,7 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
             interrupts::enable_and_hlt();
             interrupts::disable();
         };
+        completion.idle_poller.store(0, Ordering::Release);
         crate::per_cpu::preempt_enable();
         completed
     })
@@ -234,6 +241,12 @@ pub struct Completion {
     pub(crate) done: AtomicU32,
     /// TID of the sleeping waiter thread. 0 means no waiter.
     waiter: AtomicU64,
+    /// x86_64: one more than the CPU whose idle task is halted polling this
+    /// completion (`wait_idle_completion`), or 0. The device interrupt may be
+    /// routed to another CPU, so `complete()` interrupts that one; otherwise
+    /// it slept on to its next tick.
+    #[cfg(target_arch = "x86_64")]
+    idle_poller: core::sync::atomic::AtomicUsize,
 }
 
 impl Completion {
@@ -242,6 +255,8 @@ impl Completion {
         Self {
             done: AtomicU32::new(0),
             waiter: AtomicU64::new(0),
+            #[cfg(target_arch = "x86_64")]
+            idle_poller: core::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -618,6 +633,11 @@ impl Completion {
         let tid = self.waiter.load(Ordering::Acquire);
         if tid != 0 {
             crate::task::scheduler::isr_unblock_for_io(tid);
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if let Some(cpu) = self.idle_poller.load(Ordering::Acquire).checked_sub(1) {
+            crate::task::scheduler::kick_cpu_x86(cpu);
         }
     }
 }
