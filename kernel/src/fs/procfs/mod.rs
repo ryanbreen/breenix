@@ -900,8 +900,8 @@ fn generate_stat() -> String {
 fn procfs_online_cpus() -> usize {
     #[cfg(target_arch = "aarch64")]
     let num_cpus = crate::arch_impl::aarch64::smp::cpus_online() as usize;
-    #[cfg(not(target_arch = "aarch64"))]
-    let num_cpus = 1usize;
+    #[cfg(target_arch = "x86_64")]
+    let num_cpus = crate::arch_impl::x86_64::smp::cpus_online() as usize;
 
     if num_cpus == 0 {
         1

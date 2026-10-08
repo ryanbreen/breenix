@@ -23,7 +23,8 @@ use crate::arch_impl::current::constants::{
     PERCPU_DISPATCH_MARK_WAIT_ITERS_OFFSET,
     PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET, PERCPU_IDLE_THREAD_OFFSET, PERCPU_KERNEL_CR3_OFFSET,
     PERCPU_KERNEL_STACK_TOP_OFFSET, PERCPU_NEED_RESCHED_OFFSET, PERCPU_NEXT_CR3_OFFSET,
-    PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_SAVED_PROCESS_CR3_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,
+    PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_QUANTUM_OFFSET, PERCPU_QUANTUM_TICK_OFFSET,
+    PERCPU_SAVED_PROCESS_CR3_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,
     PERCPU_TSS_OFFSET, PERCPU_USER_RSP_SCRATCH_OFFSET,
 };
 
@@ -161,9 +162,22 @@ pub struct PerCpuData {
     /// loop's own post-halt resume point.
     pub dispatch_mark_wait_iters: u64,
 
+    /// This CPU's remaining scheduler quantum, in ticks (offset 168). Charged
+    /// by this CPU's own timer interrupt.
+    pub quantum: u32,
+
+    /// Padding to align quantum_tick (offset 172-175)
+    _pad4: u32,
+
+    /// Global tick count at which this CPU last charged its quantum
+    /// (offset 176). Each CPU charges the ticks elapsed since its own previous
+    /// charge, so another CPU's timer advancing the global count first does
+    /// not hide this CPU's elapsed time.
+    pub quantum_tick: u64,
+
     /// Padding to reach 192 bytes (align(64) boundary)
-    /// (offset 168-191): 24 bytes of padding
-    _pad_final: [u8; 24],
+    /// (offset 184-191): 8 bytes of padding
+    _pad_final: [u8; 8],
 }
 
 // Linux-style preempt_count bit layout constants
@@ -285,6 +299,14 @@ const _: () = assert!(
     offset_of!(PerCpuData, dispatch_mark_wait_iters) == PERCPU_DISPATCH_MARK_WAIT_ITERS_OFFSET,
     "PERCPU_DISPATCH_MARK_WAIT_ITERS_OFFSET mismatch with struct layout"
 );
+const _: () = assert!(
+    offset_of!(PerCpuData, quantum) == PERCPU_QUANTUM_OFFSET,
+    "PERCPU_QUANTUM_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, quantum_tick) == PERCPU_QUANTUM_TICK_OFFSET,
+    "PERCPU_QUANTUM_TICK_OFFSET mismatch with struct layout"
+);
 
 // Alignment assertions
 const _: () = assert!(
@@ -301,10 +323,8 @@ const _: () = assert!(
 );
 
 // Verify struct size is 192 bytes due to align(64) attribute
-// The live data now reaches offset 168 (dispatch_mark_wait_iters at 160, 8
-// bytes wide), leaving 24 bytes of tail padding; align(64) rounds the whole
-// struct up to 192. The number was 128 before the dispatch mark's five words
-// were taken out of that padding, which is what this comment used to say.
+// The live data now reaches offset 184 (quantum_tick at 176, 8 bytes wide),
+// leaving 8 bytes of tail padding; align(64) rounds the whole struct up to 192.
 const _: () = assert!(
     core::mem::size_of::<PerCpuData>() == 192,
     "PerCpuData must be 192 bytes (aligned to 64)"
@@ -346,14 +366,41 @@ impl PerCpuData {
             dispatch_mark_tid: 0,
             dispatch_mark_state: DISPATCH_MARK_INVALID,
             dispatch_mark_wait_iters: 0,
-            _pad_final: [0; 24],
+            quantum: 0,
+            _pad4: 0,
+            quantum_tick: 0,
+            _pad_final: [0; 8],
         }
     }
 }
 
-/// Static per-CPU data for CPU 0 (BSP)
-/// In a real SMP kernel, we'd have an array of these
-static mut CPU0_DATA: PerCpuData = PerCpuData::new(0);
+/// Per-CPU data for every logical CPU, indexed by logical CPU number.
+///
+/// Each CPU's GS base and kernel GS base point at its own slot, so every
+/// GS-relative access (`hal_percpu::X86PerCpu`, the entry assembly's
+/// `gs:[offset]` operands) reaches the executing CPU's copy. Other CPUs'
+/// slots are read through `cpu_data()` only, for fields that are published
+/// for cross-CPU readers.
+static mut ALL_CPU_DATA: [PerCpuData; crate::task::scheduler::MAX_CPUS] = {
+    let mut all = [const { PerCpuData::new(0) }; crate::task::scheduler::MAX_CPUS];
+    let mut cpu = 0;
+    while cpu < crate::task::scheduler::MAX_CPUS {
+        all[cpu] = PerCpuData::new(cpu);
+        cpu += 1;
+    }
+    all
+};
+
+/// Raw pointer to logical CPU `cpu`'s per-CPU data, or null past `MAX_CPUS`.
+///
+/// Fields other CPUs write through this pointer must be ones the owner only
+/// reads; GS-relative accesses on the owner are plain loads and stores.
+pub fn cpu_data(cpu: usize) -> *mut PerCpuData {
+    if cpu >= crate::task::scheduler::MAX_CPUS {
+        return ptr::null_mut();
+    }
+    unsafe { &raw mut ALL_CPU_DATA[cpu] }
+}
 
 /// Flag to indicate whether per-CPU data is initialized and safe to use
 /// CRITICAL: Interrupts MUST be disabled until this is true
@@ -367,41 +414,60 @@ pub fn is_initialized() -> bool {
     PER_CPU_INITIALIZED.load(Ordering::Acquire)
 }
 
-/// Initialize per-CPU data for the current CPU
+/// Point this CPU's GS base and kernel GS base at logical CPU `cpu`'s slot of
+/// `ALL_CPU_DATA`, and check the slot reads back as that CPU.
+///
+/// Part of the per-CPU init every CPU runs
+/// (`crate::arch_impl::x86_64::cpu_init::init_cpu`); the boot processor also
+/// calls it through `init()` before memory is up. Both GS bases name the same
+/// slot, so `swapgs` leaves GS on per-CPU data and user TLS stays on FS.
+pub fn load_cpu(cpu: usize) {
+    assert!(
+        cpu < crate::task::scheduler::MAX_CPUS,
+        "per-CPU data has no slot for CPU {}",
+        cpu
+    );
+    let cpu_data_addr = cpu_data(cpu) as u64;
+    unsafe {
+        hal_percpu::msr::write_gs_base_msr(cpu_data_addr);
+        hal_percpu::write_kernel_gs_base(cpu_data_addr);
+    }
+
+    // Read-back verification: catches a misconfigured GS base before any
+    // interrupt handler on this CPU runs.
+    let read_cpu_id = hal_percpu::X86PerCpu::cpu_id();
+    if read_cpu_id != cpu as u64 {
+        panic!(
+            "HAL verification failed: cpu_id read-back mismatch (expected {}, got {})",
+            cpu, read_cpu_id
+        );
+    }
+
+    // The entry paths read kernel_cr3 from this CPU's own slot. Once the
+    // master kernel PML4 exists every CPU stores it; before that (the boot
+    // processor's early call) `init()` stores the bootloader's table.
+    if let Some(master) = crate::memory::kernel_page_table::master_kernel_pml4() {
+        unsafe {
+            hal_percpu::X86PerCpu::set_kernel_cr3(master.start_address().as_u64());
+        }
+    }
+}
+
+/// Initialize per-CPU data for the boot processor, before memory is up.
 pub fn init() {
     use crate::arch_impl::current::paging::X86PageTableOps;
     use crate::arch_impl::PageTableOps;
 
     log::info!("Initializing per-CPU data via GS segment");
 
-    // Get pointer to CPU0's per-CPU data
-    let cpu_data_ptr = &raw mut CPU0_DATA as *mut PerCpuData;
-    let cpu_data_addr = cpu_data_ptr as u64;
+    load_cpu(0);
 
-    // Set up GS base to point to per-CPU data via HAL
-    // This allows us to access per-CPU data via GS segment
-    unsafe {
-        hal_percpu::msr::write_gs_base_msr(cpu_data_addr);
-        hal_percpu::write_kernel_gs_base(cpu_data_addr);
-    }
-
-    log::info!("Per-CPU data initialized at {:#x}", cpu_data_addr);
+    log::info!("Per-CPU data initialized at {:#x}", cpu_data(0) as u64);
     log::debug!("  GS_BASE = {:#x}", hal_percpu::msr::read_gs_base_msr());
     log::debug!(
         "  KERNEL_GS_BASE = {:#x}",
         hal_percpu::read_kernel_gs_base()
     );
-
-    // HAL Read-back verification: Verify GS-relative operations actually work
-    // This catches misconfigured GS base before any interrupt handlers run
-
-    let read_cpu_id = hal_percpu::X86PerCpu::cpu_id();
-    if read_cpu_id != 0 {
-        panic!(
-            "HAL verification failed: cpu_id read-back mismatch (expected 0, got {})",
-            read_cpu_id
-        );
-    }
 
     // Verify preempt_count read/write cycle
     let initial_preempt = hal_percpu::X86PerCpu::preempt_count();
@@ -875,6 +941,42 @@ pub fn update_tss_rsp0(kernel_stack_top: u64) {
             (*tss_ptr).privilege_stack_table[0] = VirtAddr::new(kernel_stack_top);
         }
     }
+}
+
+/// The executing CPU's logical number, from its per-CPU data. One GS-relative
+/// load: no lock, usable from interrupt context.
+#[inline(always)]
+pub fn cpu_id() -> usize {
+    hal_percpu::X86PerCpu::cpu_id() as usize
+}
+
+/// This CPU's remaining scheduler quantum, in ticks.
+#[inline(always)]
+pub fn quantum() -> u32 {
+    hal_percpu::X86PerCpu::quantum()
+}
+
+/// Set this CPU's remaining scheduler quantum.
+#[inline(always)]
+pub fn set_quantum(quantum: u32) {
+    unsafe { hal_percpu::X86PerCpu::set_quantum(quantum) }
+}
+
+/// Ticks elapsed since this CPU last charged its quantum, moving its mark to
+/// `now`. Only this CPU touches its mark, from its timer interrupt or its
+/// per-CPU init, both with interrupts masked, so a plain GS-relative load and
+/// store suffice: no lock, no locked instruction.
+#[inline(always)]
+pub fn take_quantum_ticks(now: u64) -> u64 {
+    let last = hal_percpu::X86PerCpu::quantum_tick();
+    unsafe { hal_percpu::X86PerCpu::set_quantum_tick(now) };
+    now.saturating_sub(last)
+}
+
+/// The executing CPU's TSS, as its per-CPU init recorded it (null before).
+#[inline(always)]
+pub fn tss_ptr() -> *mut x86_64::structures::tss::TaskStateSegment {
+    hal_percpu::X86PerCpu::tss_ptr() as *mut x86_64::structures::tss::TaskStateSegment
 }
 
 /// Set the TSS pointer for this CPU
@@ -1480,11 +1582,10 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     result
 }
 
-/// Get per-CPU base address and size for logging
+/// Get the executing CPU's per-CPU base address and size for logging
 #[allow(dead_code)]
 pub fn get_percpu_info() -> (u64, usize) {
-    let cpu_data_ptr = &raw mut CPU0_DATA as *mut PerCpuData;
-    let base = cpu_data_ptr as u64;
+    let base = hal_percpu::msr::read_gs_base_msr();
     let size = core::mem::size_of::<PerCpuData>();
     (base, size)
 }

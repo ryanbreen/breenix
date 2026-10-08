@@ -157,7 +157,7 @@ pub extern "C" fn check_need_resched_and_switch(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    crate::task::scheduler::note_scheduling_epoch(0);
+    crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
     if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
         return;
@@ -208,13 +208,11 @@ pub extern "C" fn check_need_resched_and_switch(
         //
         // NOTE: No logging here - we're in IRQ context and logging can deadlock.
         //
-        // #772 diagnostics: this is also the gate the 1 syscall-return call
-        // site leaves by. `kernel/src/syscall/entry.asm` sets PREEMPT_ACTIVE at
-        // `:110`, two instructions before its call at `:124`, and clears it at
-        // `:223`, after that call has returned -- so a save attributed to that
-        // entry point would contradict those 3 line numbers. Counting the exits
-        // is what makes the claim measurable rather than only readable off the
-        // assembly.
+        // #772 diagnostics: `kernel/src/syscall/entry.asm` makes its
+        // reschedule call before it sets PREEMPT_ACTIVE and masks interrupts
+        // until the bit is clear again, so no call should return here.
+        // Counting the exits makes that measurable rather than only readable
+        // off the assembly.
         crate::trace_count!(DISPATCH_GATE_PREEMPT_ACTIVE);
         return;
     }
@@ -412,18 +410,15 @@ pub extern "C" fn check_need_resched_and_switch(
         // cause deadlocks when the logger tries to acquire locks during a switch
         // to a newly created kthread. Use raw_serial_char() for debugging only.
 
-        // Emit canonical ring3 marker on the FIRST entry to userspace (for CI)
+        // Note, once per boot, the first switch away from a Ring 3 frame. This
+        // proves only that a CPU was running user code when it was preempted;
+        // the syscall path's own marker is the syscall handler's.
         // CRITICAL: Use raw serial output without locks to prevent deadlock in IRQ context
         if from_userspace {
-            static mut EMITTED_RING3_MARKER: bool = false;
-            unsafe {
-                if !EMITTED_RING3_MARKER {
-                    EMITTED_RING3_MARKER = true;
-                    raw_serial_str("RING3_ENTER: CS=0x33\n");
-                    raw_serial_str(
-                        "[ OK ] RING3_SMOKE: userspace executed + syscall path verified\n",
-                    );
-                }
+            static EMITTED_RING3_MARKER: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+            if !EMITTED_RING3_MARKER.swap(true, core::sync::atomic::Ordering::Relaxed) {
+                raw_serial_str("RING3_ENTER: CS=0x33\n");
             }
         }
 
@@ -811,6 +806,11 @@ fn switch_to_thread(
     process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) {
     // Update per-CPU current thread and TSS.RSP0
+    // The x87/SSE registers follow the thread being dispatched.
+    scheduler::with_scheduler(|sched| {
+        crate::arch_impl::x86_64::fpu::hand_over(sched, Some(resume_thread_id), thread_id)
+    });
+
     scheduler::with_thread_mut(thread_id, |thread| {
         // Update per-CPU current thread pointer
         let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
@@ -1243,6 +1243,12 @@ pub(crate) fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
         // already has all kernel mappings (code, stacks, etc.) so we can run
         // kernel code (idle loop) with it.
 
+        // Idle never returns to user mode, so this CPU's user-return CR3 now
+        // names nothing it will load. Left set, it would keep a dead process's
+        // root looking live to the retirement proof until this CPU next ran
+        // user code.
+        crate::per_cpu::set_saved_process_cr3(0);
+
         // CRITICAL FIX: Clear PREEMPT_ACTIVE when switching to idle!
         // PREEMPT_ACTIVE (bit 28) is set during syscall return to protect register
         // restoration. When we switch to the idle thread, we MUST clear it - otherwise
@@ -1317,6 +1323,9 @@ fn setup_kernel_thread_return(
         unsafe {
             crate::memory::process_memory::switch_to_kernel_page_table();
         }
+        // A kernel thread never returns to user mode: retire the user-return
+        // CR3 for the same reason `setup_idle_return` does.
+        crate::per_cpu::set_saved_process_cr3(0);
 
         // Hardware memory fence to ensure all writes to interrupt frame and saved_regs
         // are visible before IRETQ reads them. This is critical for TCG mode

@@ -336,7 +336,7 @@ pub fn init_online_daemons() {
     #[cfg(target_arch = "aarch64")]
     let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
     #[cfg(target_arch = "x86_64")]
-    let online = 1;
+    let online = crate::arch_impl::x86_64::smp::cpus_online() as usize;
     for cpu in 0..online.min(KSOFTIRQD.len()) {
         // CPU0's boot stack cannot dispatch pinned workers until init handoff.
         // Publishing it earlier strands a Ready thread through the boot tests.

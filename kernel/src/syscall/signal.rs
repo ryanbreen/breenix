@@ -873,6 +873,38 @@ pub fn sys_pause() -> SyscallResult {
     SyscallResult::Err(4) // EINTR
 }
 
+/// x86_64: publish the BlockedOnSignal wait, then test whether a signal is
+/// already deliverable, and if one is, take the wait back so the wait loop
+/// ends. `kill()` marks a signal pending before it looks for a sleeper to
+/// wake, so a signal sent before this wait was published is found by the
+/// test, and one sent after it finds the sleeper; without the test, a signal
+/// that arrived between the caller's last return to user mode and this wait
+/// left pause()/sigsuspend() asleep for good. The aarch64 waits follow the
+/// same order (`wait_for_deliverable_signal_aarch64`).
+///
+/// `manager()` holds off preemption while it is held, so no holder of the lock
+/// can be switched out on this CPU while this one waits for it.
+#[cfg(target_arch = "x86_64")]
+fn publish_signal_wait_x86(thread_id: u64, userspace_context: crate::task::thread::CpuContext) {
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_signal_with_context(Some(userspace_context));
+    });
+
+    let eligible = manager()
+        .as_ref()
+        .and_then(|m| m.find_process_by_thread(thread_id))
+        .is_some_and(|(_, process)| process.signals.has_deliverable_signals());
+    if eligible {
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                if thread.state == crate::task::thread::ThreadState::BlockedOnSignal {
+                    thread.set_ready();
+                }
+            }
+        });
+    }
+}
+
 /// pause() - Wait until a signal is delivered (with frame access) - x86_64 version
 ///
 /// pause() causes the calling process (or thread) to sleep until a signal
@@ -928,9 +960,7 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
 
     // Block the current thread until a signal arrives
     // CRITICAL: This MUST happen ATOMICALLY with saving the context to the scheduler's Thread
-    crate::task::scheduler::with_scheduler(|sched| {
-        sched.block_current_for_signal_with_context(Some(userspace_context));
-    });
+    publish_signal_wait_x86(thread_id, userspace_context);
 
     log::info!(
         "sys_pause_with_frame: Thread {} marked BlockedOnSignal, entering HLT loop",
@@ -1486,9 +1516,7 @@ pub fn sys_sigsuspend_with_frame(
     // Block the current thread until a signal arrives
     // CRITICAL: This MUST happen ATOMICALLY with saving the context to the scheduler's Thread
     // (same pattern as pause())
-    crate::task::scheduler::with_scheduler(|sched| {
-        sched.block_current_for_signal_with_context(Some(userspace_context));
-    });
+    publish_signal_wait_x86(thread_id, userspace_context);
 
     log::info!(
         "sys_sigsuspend: Thread {} marked BlockedOnSignal, entering HLT loop",

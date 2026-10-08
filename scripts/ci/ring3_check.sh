@@ -84,7 +84,7 @@ fi
 echo "=== Checking for success markers ==="
 # Prefer a canonical OK marker if kernel emits it; otherwise fallback logic depends on runner outcome
 set +e
-search '-F "[ OK ] RING3_SMOKE: userspace executed + syscall path verified"'
+search '-F "[ OK ] syscall path verified"'
 canonical_ok_rc=$?
 have_hello=$(search '-F "Hello from userspace! Current time:"' >/dev/null && echo yes || echo no)
 have_cs=$(search '-F "Context switch: from_userspace=true, CS=0x33"' >/dev/null && echo yes || echo no)

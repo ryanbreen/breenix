@@ -539,6 +539,10 @@ pub struct Thread {
     /// CPU context (registers)
     pub context: CpuContext,
 
+    /// x87/SSE registers while the thread is not current on a CPU
+    #[cfg(target_arch = "x86_64")]
+    pub fpu: crate::arch_impl::x86_64::fpu::FpuState,
+
     /// Stack information
     pub stack_top: VirtAddr,
     pub stack_bottom: VirtAddr,
@@ -946,6 +950,8 @@ impl Clone for Thread {
             // Kernel stacks cannot be cloned. Use `publish_to_scheduler` when
             // publishing a process-table row so ownership moves to the copy.
             kernel_stack_allocation: None,
+            #[cfg(target_arch = "x86_64")]
+            fpu: self.fpu,
             tls_block: self.tls_block,
             priority: self.priority,
             time_slice: self.time_slice,
@@ -1066,6 +1072,8 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: Some(stack_top), // Kernel threads use their stack for everything
             kernel_stack_allocation: Some(stack), // Keep allocation alive
+            #[cfg(target_arch = "x86_64")]
+            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
             priority: 64,      // Higher priority for kernel threads
             time_slice: 20,    // Longer time slice
@@ -1135,6 +1143,8 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: Some(stack_top),
             kernel_stack_allocation: Some(stack),
+            #[cfg(target_arch = "x86_64")]
+            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
             priority: 64,
             time_slice: 20,
@@ -1191,6 +1201,8 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: None, // Will be set separately for userspace threads
             kernel_stack_allocation: None, // No kernel stack allocation for regular threads
+            #[cfg(target_arch = "x86_64")]
+            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
             priority: 128,  // Default medium priority
             time_slice: 10, // Default time slice
@@ -1246,6 +1258,8 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: None,
             kernel_stack_allocation: None,
+            #[cfg(target_arch = "x86_64")]
+            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
             priority: 128,
             time_slice: 10,
@@ -1314,6 +1328,8 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: None,        // Will be set separately
             kernel_stack_allocation: None, // Will be set separately for userspace threads
+            #[cfg(target_arch = "x86_64")]
+            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block: actual_tls_block,
             priority: 128,     // Default medium priority
             time_slice: 10,    // Default time slice
@@ -1377,6 +1393,8 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: None,
             kernel_stack_allocation: None,
+            #[cfg(target_arch = "x86_64")]
+            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block: actual_tls_block,
             priority: 128,
             time_slice: 10,
@@ -1459,6 +1477,8 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: None, // Will be set separately for userspace threads
             kernel_stack_allocation: None, // No kernel stack allocation for regular threads
+            #[cfg(target_arch = "x86_64")]
+            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
             priority: 128,  // Default medium priority
             time_slice: 10, // Default time slice
@@ -1510,6 +1530,8 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: None,
             kernel_stack_allocation: None,
+            #[cfg(target_arch = "x86_64")]
+            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
             priority: 128,
             time_slice: 10,

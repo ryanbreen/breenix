@@ -4,30 +4,39 @@
 //!
 //! It records what the firmware's MADT reports about the processors on this
 //! machine (via `super::acpi`), cross-checks that against CPUID, and answers
-//! `cpus_online()` / `cpus_present()` from atomics instead of from a
-//! compile-time constant. That is the whole of it.
+//! `cpus_online()` / `cpus_present()` / `is_cpu_online()` from atomics instead
+//! of from a compile-time constant.
 //!
-//! It starts no processor. No INIT/SIPI sequence is sent, no APIC register is
-//! written, no trampoline exists, and `CPUS_ONLINE` is seeded at 1 and has no
-//! store site in this module. On a `-smp N` boot the other N-1 processors stay
-//! where the firmware left them: OVMF starts them during its own init and
-//! parks them, and this kernel does not address them again. `online=1` in the
-//! marker below is that fact, reported rather than assumed.
+//! It starts no processor. No INIT/SIPI sequence is sent and no trampoline
+//! exists, so the boot processor is the only CPU marked online: `CPU_ONLINE`
+//! has CPU 0 set statically and no store site yet, and `CPUS_ONLINE` is 1. On
+//! a `-smp N` boot the other N-1 processors stay where the firmware left them:
+//! OVMF starts them during its own init and parks them, and this kernel does
+//! not address them again. `online=1` in the marker below is that fact,
+//! reported rather than assumed. Secondary bring-up (#1179) marks each AP
+//! online only after it has run `super::cpu_init::init_cpu`.
+//!
+//! ## Logical CPU numbers
+//!
+//! A logical CPU number indexes every per-CPU array (`PerCpuData`, the GDT and
+//! TSS, the IST stacks, the scheduler's run queues). The boot processor is 0;
+//! secondaries are numbered in the order they come online, so the online CPUs
+//! are always `0..cpus_online()`. `cpu_apic_id()` maps a logical number to the
+//! local APIC id an IPI is addressed to, as recorded by that CPU's own per-CPU
+//! init.
 //!
 //! ## Two different numbers
 //!
 //! `madt_cpu_count()` is what the firmware reports — it tracks `-smp N`.
 //! `cpus_present()` is that count clamped into what this kernel's per-CPU
-//! state can address, which is `crate::task::scheduler::MAX_CPUS` (1 on x86
-//! until the scheduler gains per-CPU descriptor tables, stacks and dispatch).
-//! Keeping them separate is what lets the enumeration be honest while
-//! placement behaviour stays exactly where it was: `online_cpu_count()` reads
-//! `cpus_online()`, which is 1, clamped by the same `MAX_CPUS`.
+//! state can address, `crate::task::scheduler::MAX_CPUS`. Neither is the
+//! online count: placement and every per-CPU loop that must see only running
+//! CPUs read `cpus_online()` or `is_cpu_online()`.
 //!
 //! The aarch64 counterpart is `crate::arch_impl::aarch64::smp`, whose
-//! `CPUS_ONLINE`/`CPU_ONLINE`/`cpus_online()` shape this mirrors. See
-//! #814 for the staged plan and #629 for the count-from-a-constant defect
-//! this addresses the reporting half of.
+//! `CPUS_ONLINE`/`CPU_ONLINE`/`cpus_online()`/`is_cpu_online()` shape this
+//! mirrors. See #814 for the staged plan and #629 for the count-from-a-constant
+//! defect.
 
 use core::arch::x86_64::{__cpuid, __cpuid_count};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -51,9 +60,24 @@ const SOURCE_MADT: u32 = 1;
 const SOURCE_CPUID_FALLBACK: u32 = 2;
 
 /// Processors currently online, in the sense the scheduler means: entered and
-/// able to dispatch. Seeded at 1 for the boot processor, with no store site in
-/// this PR: no AP is started.
+/// able to dispatch. Seeded at 1 for the boot processor. No AP is started yet,
+/// so nothing raises it.
 static CPUS_ONLINE: AtomicU64 = AtomicU64::new(1);
+
+/// Per-CPU online flags, indexed by logical CPU number. The boot processor,
+/// CPU 0, is online from the first instruction the kernel runs.
+static CPU_ONLINE: [AtomicBool; MAX_CPUS] = {
+    let mut flags = [const { AtomicBool::new(false) }; MAX_CPUS];
+    flags[0] = AtomicBool::new(true);
+    flags
+};
+
+/// Local APIC id of each logical CPU, recorded by that CPU's own per-CPU init.
+/// `NO_APIC_ID` until then.
+static CPU_APIC_ID: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(NO_APIC_ID) }; MAX_CPUS];
+
+/// `CPU_APIC_ID` value for a CPU whose per-CPU init has not recorded one.
+const NO_APIC_ID: u32 = u32::MAX;
 
 /// Processors this kernel's per-CPU state can address: the MADT count clamped
 /// into `[1, MAX_CPUS]`.
@@ -91,6 +115,44 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 #[inline(always)]
 pub fn cpus_online() -> u64 {
     CPUS_ONLINE.load(Ordering::Acquire)
+}
+
+/// Whether logical CPU `cpu` is online.
+#[inline(always)]
+pub fn is_cpu_online(cpu: usize) -> bool {
+    cpu < MAX_CPUS && CPU_ONLINE[cpu].load(Ordering::Acquire)
+}
+
+/// Bit `n` set for every online logical CPU `n`.
+#[inline]
+pub fn online_mask() -> u64 {
+    (0..MAX_CPUS)
+        .filter(|&cpu| is_cpu_online(cpu))
+        .fold(0, |mask, cpu| mask | (1 << cpu))
+}
+
+/// Record the local APIC id of logical CPU `cpu`. Called by that CPU's own
+/// per-CPU init, before it is marked online.
+pub fn set_cpu_apic_id(cpu: usize, apic_id: u32) {
+    if cpu < MAX_CPUS {
+        CPU_APIC_ID[cpu].store(apic_id, Ordering::Release);
+    }
+}
+
+/// The local APIC id logical CPU `cpu` recorded, if it has run its per-CPU init.
+#[inline]
+pub fn cpu_apic_id(cpu: usize) -> Option<u32> {
+    let id = CPU_APIC_ID.get(cpu)?.load(Ordering::Acquire);
+    (id != NO_APIC_ID).then_some(id)
+}
+
+/// The logical CPU whose per-CPU init recorded `apic_id`.
+///
+/// Reads only the fixed array, so it is usable where the GS base cannot be
+/// trusted, such as an NMI that interrupted an entry stub.
+#[inline]
+pub fn cpu_of_apic_id(apic_id: u32) -> Option<usize> {
+    (0..MAX_CPUS).find(|&cpu| CPU_APIC_ID[cpu].load(Ordering::Acquire) == apic_id)
 }
 
 /// Number of processors this kernel can address, MADT count clamped to

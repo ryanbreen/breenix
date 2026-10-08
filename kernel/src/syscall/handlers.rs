@@ -2394,6 +2394,9 @@ pub fn sys_exec_with_frame(
                             }
                         }
 
+                        // The new image starts from the initial x87/SSE state, not the old one's.
+                        crate::arch_impl::x86_64::fpu::reset_current();
+
                         log::info!(
                             "sys_exec: Frame updated - RIP={:#x}, RSP={:#x}",
                             frame.rip,
@@ -2674,6 +2677,9 @@ pub fn sys_execv_with_frame(
                 );
             }
 
+            // The new image starts from the initial x87/SSE state, not the old one's.
+            crate::arch_impl::x86_64::fpu::reset_current();
+
             log::info!(
                 "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
                 frame.rip,
@@ -2842,6 +2848,9 @@ pub fn sys_execv_with_frame(
                     options(nostack, preserves_flags)
                 );
             }
+
+            // The new image starts from the initial x87/SSE state, not the old one's.
+            crate::arch_impl::x86_64::fpu::reset_current();
 
             log::info!(
                 "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",

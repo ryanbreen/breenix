@@ -101,6 +101,12 @@ for leg in "${SMP_LEGS[@]}"; do
         0) echo "x86 SMP enumeration gate preflight: -smp leg must be nonzero" >&2
            false ;;
     esac
+    # The kernel clamps present CPUs to MAX_CPUS (8), and the marker asserts
+    # present=<leg>, so a larger leg could never match.
+    if (( 10#$leg > 8 )); then
+        echo "x86 SMP enumeration gate preflight: -smp leg must be at most 8 (the kernel's MAX_CPUS), got: $leg" >&2
+        false
+    fi
 done
 
 # The marker, by shape. madt_cpus/enabled are substituted per leg; the three
@@ -109,11 +115,11 @@ done
 # business, and x2apic counts type-9 MADT entries, which QEMU's `pc` machine
 # does not emit at these APIC ids.
 #
-# online=1:max_cpus=1:present=1 is the honest half of this PR: the enumeration
-# moved, the dispatch surface did not.
+# present tracks the leg (max_cpus=8 covers every leg); online=1 is the
+# boot CPU alone until secondary bring-up (#1179) marks APs online.
 marker_pattern_for_leg() {
     local leg="$1"
-    printf '%s' "\[X86_SMP_ENUM:madt_cpus=${leg}:enabled=${leg}:x2apic=[0-9]+:bsp_apic_id=[0-9]+:cpuid_logical=[0-9]+:present=1:online=1:max_cpus=1:src=madt:reason=none\]"
+    printf '%s' "\[X86_SMP_ENUM:madt_cpus=${leg}:enabled=${leg}:x2apic=[0-9]+:bsp_apic_id=[0-9]+:cpuid_logical=[0-9]+:present=${leg}:online=1:max_cpus=8:src=madt:reason=none\]"
 }
 
 # The existing boot_tests pass markers this gate re-checks on each leg. They

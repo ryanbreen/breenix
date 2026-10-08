@@ -89,7 +89,7 @@ use kernel::{contract_runner, gdt_tests, userspace_fault_tests};
 #[cfg(target_arch = "x86_64")]
 use kernel::{
     drivers, gdt, interrupts, keyboard, logger, memory, net, per_cpu, preempt_count_test, process,
-    serial, stack_switch, syscall, task, test_exec, time, tls, tracing, tty, userspace_test,
+    serial, stack_switch, task, test_exec, time, tls, tracing, tty, userspace_test,
 };
 
 // Fault test thread function
@@ -161,7 +161,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize per-CPU data (must be after GDT/TSS setup)
     per_cpu::init();
     // Set the TSS pointer in per-CPU data
-    per_cpu::set_tss(gdt::get_tss_ptr());
+    per_cpu::set_tss(gdt::tss_ptr(0));
     log::info!("Per-CPU data initialized");
 
     // Run comprehensive preempt_count tests (before interrupts are enabled)
@@ -325,8 +325,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PROCFS_INIT);
 
-    // Update IST stacks with per-CPU emergency stacks
-    gdt::update_ist_stacks();
+    // Point the boot CPU's IST entries at its emergency stacks now, so the
+    // contract tests below see them; its per-CPU init repeats this.
+    gdt::install_ist_stacks(0);
     log::info!("Updated IST stacks with per-CPU emergency and page fault stacks");
 
     // Allocate initial kernel stack and set TSS.RSP0 before contract tests
@@ -448,9 +449,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         },
     );
 
-    // Initialize syscall infrastructure
+    // The boot CPU's per-CPU init: its GDT/TSS, IDT, GS bases, syscall MSRs,
+    // FPU/SSE state and local APIC timer. Each secondary CPU runs the same
+    // routine from its entry path.
     log::info!("Initializing system call infrastructure...");
-    syscall::init();
+    kernel::arch_impl::x86_64::cpu_init::init_cpu(0);
     log::info!("System call infrastructure initialized");
 
     // Initialize threading subsystem (Linux-style init/idle separation)
@@ -757,8 +760,8 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();
-    // Slice 3e's oracle, x86_64 arm: MAX_CPUS is 1 here, so the arm reports a
-    // SKIP with that reason rather than a verdict it did not measure.
+    // Slice 3e's oracle, x86_64 arm: only the boot CPU is online, so the arm
+    // reports a SKIP with that reason rather than a verdict it did not measure.
     #[cfg(feature = "boot_tests")]
     kernel::task::scheduler::emit_pin_guard_oracle();
 

@@ -16,9 +16,10 @@
 //!    malformed table wedging it, and without reading past the extent a
 //!    table's own checksum covers.
 //! 3. `Scheduler::online_cpu_count()`'s x86 arm reads the enumeration's
-//!    atomic rather than the bare `MAX_CPUS` constant -- and `MAX_CPUS` on
-//!    x86 is still 1, which is this PR's own boundary: the enumeration became
-//!    honest, the dispatch surface did not move.
+//!    atomic rather than the bare `MAX_CPUS` constant, `MAX_CPUS` on x86 is a
+//!    fixed bound that covers every profile in `docs/x86-profiles.json`, and
+//!    the retirement fence's online mask names only CPUs `smp::is_cpu_online`
+//!    reports, so slots past the online count are never waited on (#629).
 //!
 //! What this file does NOT reach, stated rather than implied: it reads source
 //! text. It cannot tell whether the reader is correct about a real MADT, and
@@ -263,7 +264,7 @@ fn every_walk_in_the_madt_reader_is_bounded_by_a_constant() {
 }
 
 #[test]
-fn the_x86_online_count_reads_the_enumeration_and_max_cpus_is_still_one() {
+fn the_x86_online_count_reads_the_enumeration_and_max_cpus_covers_every_profile() {
     let scheduler = read("kernel/src/task/scheduler.rs");
     let online = function_body(&scheduler, "online_cpu_count");
 
@@ -276,25 +277,47 @@ fn the_x86_online_count_reads_the_enumeration_and_max_cpus_is_still_one() {
         "the aarch64 arm must be unchanged:\n{online}"
     );
 
-    // The boundary this PR does not cross. If MAX_CPUS moves off 1 on x86,
-    // placement can index a CPU with no thread running on it, which is the
-    // #629's body describes -- and this ratchet's message is where a future
-    // PR-6 should look first.
-    let max_cpus: Vec<&str> = scheduler
+    // x86's bound is the declaration under the non-aarch64 cfg.
+    let lines: Vec<&str> = scheduler.lines().collect();
+    let x86_bound: usize = lines
+        .windows(2)
+        .find(|pair| {
+            pair[0].trim() == "#[cfg(not(target_arch = \"aarch64\"))]"
+                && pair[1].contains("const MAX_CPUS: usize")
+        })
+        .and_then(|pair| pair[1].split('=').nth(1))
+        .and_then(|value| value.trim().trim_end_matches(';').parse().ok())
+        .expect("x86 MAX_CPUS declaration");
+
+    // Every profile's configured CPU count must fit in it.
+    let profiles = read("docs/x86-profiles.json");
+    let largest = profiles
         .lines()
-        .filter(|line| line.contains("const MAX_CPUS: usize"))
-        .collect();
-    assert_eq!(
-        max_cpus.len(),
-        2,
-        "expected one MAX_CPUS per architecture:\n{}",
-        max_cpus.join("\n")
-    );
+        .filter(|line| line.contains("\"devices\""))
+        .map(|line| {
+            line.split(|c| c == ';' || c == '"')
+                .filter_map(|part| {
+                    let part = part.trim();
+                    part.strip_suffix(" configured CPUs")
+                        .or_else(|| part.strip_suffix(" CPUs"))
+                        .or_else(|| part.strip_suffix(" CPU"))
+                        .and_then(|count| count.trim().parse::<usize>().ok())
+                })
+                .max()
+                .unwrap_or_else(|| panic!("profile names no CPU count: {line}"))
+        })
+        .max()
+        .expect("docs/x86-profiles.json lists profiles");
     assert!(
-        max_cpus.iter().any(|line| line.contains("= 1;")),
-        "x86's MAX_CPUS is still 1 in this PR; raising it needs per-CPU descriptor \
-         tables, stacks and dispatch first (#814 PR-4/PR-6):\n{}",
-        max_cpus.join("\n")
+        largest >= 4 && x86_bound >= largest,
+        "x86 MAX_CPUS ({x86_bound}) must cover the largest profile ({largest} CPUs)"
+    );
+
+    // The retirement fence may wait only on CPUs that are online.
+    let capture = function_body(&scheduler, "capture");
+    assert!(
+        capture.contains("crate::arch_impl::x86_64::smp::is_cpu_online(cpu_id)"),
+        "the x86 retirement mask must come from the online set (#629):\n{capture}"
     );
 }
 

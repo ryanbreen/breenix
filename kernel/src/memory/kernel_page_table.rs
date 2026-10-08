@@ -350,11 +350,9 @@ pub unsafe fn unmap_kernel_page(virt: VirtAddr) -> Result<Option<PhysFrame>, &'s
     let frame = PhysFrame::containing_address(entry.addr());
     entry.set_unused();
 
-    #[cfg(not(target_arch = "x86_64"))]
-    use crate::memory::arch_stub::tlb;
-    #[cfg(target_arch = "x86_64")]
-    use x86_64::instructions::tlb;
-    tlb::flush(virt);
+    // Kernel mappings are shared by every CPU; none may keep translating to a
+    // frame the caller is about to release.
+    crate::memory::tlb::flush_page(virt);
 
     Ok(Some(frame))
 }

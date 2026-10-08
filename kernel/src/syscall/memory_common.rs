@@ -65,11 +65,11 @@ pub fn get_current_thread_id() -> Option<u64> {
     crate::per_cpu_aarch64::current_thread().map(|thread| thread.id)
 }
 
-/// Flush TLB for a single page (architecture-specific implementation)
+/// Flush TLB for a single page on every CPU that may cache it
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn flush_tlb(addr: VirtAddr) {
-    x86_64::instructions::tlb::flush(addr);
+    crate::memory::tlb::flush_page(addr);
 }
 
 #[cfg(target_arch = "aarch64")]

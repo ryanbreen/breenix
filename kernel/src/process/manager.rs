@@ -1505,6 +1505,8 @@ impl ProcessManager {
             stack_bottom,
             kernel_stack_top: Some(kernel_stack_top),
             kernel_stack_allocation: Some(kernel_stack),
+            #[cfg(target_arch = "x86_64")]
+            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block: actual_tls_block,
             priority: 128,
             time_slice: 10,
@@ -1593,6 +1595,8 @@ impl ProcessManager {
             stack_bottom,
             kernel_stack_top: Some(kernel_stack_top),
             kernel_stack_allocation: Some(kernel_stack),
+            #[cfg(target_arch = "x86_64")]
+            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block: initial_tpidr_el0,
             priority: 128,
             time_slice: 10,
@@ -3374,6 +3378,8 @@ impl ProcessManager {
                 stack_bottom: parent_thread.stack_bottom,
                 kernel_stack_top: child_kernel_stack_top,
                 kernel_stack_allocation: child_kernel_stack_allocation,
+                #[cfg(target_arch = "x86_64")]
+                fpu: crate::arch_impl::x86_64::fpu::FpuState::capture(),
                 tls_block: child_tls_block,
                 priority: parent_thread.priority,
                 time_slice: parent_thread.time_slice,

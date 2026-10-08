@@ -109,15 +109,16 @@ impl PageTableOps for X86PageTableOps {
         Cr3::write(frame, Cr3Flags::empty());
     }
 
+    /// Local `invlpg`, then a shootdown to every other online CPU.
     #[inline(always)]
     fn flush_tlb_page(addr: u64) {
-        use x86_64::VirtAddr;
-        x86_64::instructions::tlb::flush(VirtAddr::new(addr));
+        crate::memory::tlb::flush_page(x86_64::VirtAddr::new(addr));
     }
 
+    /// Local CR3 reload, then a shootdown to every other online CPU.
     #[inline(always)]
     fn flush_tlb_all() {
-        x86_64::instructions::tlb::flush_all();
+        crate::memory::tlb::flush_all();
     }
 }
 

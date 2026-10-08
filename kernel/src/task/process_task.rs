@@ -54,12 +54,8 @@ impl DeferredFaultExitBuffer {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 8] =
-    [const { DeferredFaultExitBuffer::new() }; 8];
-#[cfg(not(target_arch = "aarch64"))]
-static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 1] =
-    [const { DeferredFaultExitBuffer::new() }];
+static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; scheduler::MAX_CPUS] =
+    [const { DeferredFaultExitBuffer::new() }; scheduler::MAX_CPUS];
 
 pub(crate) struct PendingProcessReclaim {
     pid: u64,
@@ -146,12 +142,33 @@ fn shadow_root_is_live(reclaim: &PendingProcessReclaim, online_mask: u64) -> boo
         })
 }
 
+/// x86_64: both CR3 shadows of this CPU and of every other online CPU. A
+/// peer's `saved_process_cr3` naming the root means that peer is running, or
+/// returning to, a thread of this address space; its return stub can reload
+/// the root after any remote request, so only the peer itself retires that
+/// shadow (on its next dispatch of a kernel thread, idle or another process).
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn shadow_root_is_live(reclaim: &PendingProcessReclaim, online_mask: u64) -> bool {
-    online_mask & 1 != 0
-        && (reclaim.any_root_matches(crate::per_cpu::get_next_cr3())
-            || reclaim.any_root_matches(crate::per_cpu::get_saved_process_cr3()))
+    use crate::arch_impl::PerCpuOps;
+
+    if online_mask == 0 {
+        return false;
+    }
+    if reclaim.any_root_matches(crate::per_cpu::get_next_cr3())
+        || reclaim.any_root_matches(crate::per_cpu::get_saved_process_cr3())
+    {
+        return true;
+    }
+    let me = crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize;
+    (0..scheduler::MAX_CPUS)
+        .filter(|&cpu| cpu != me && online_mask & (1 << cpu) != 0)
+        .any(|cpu| {
+            let data = crate::per_cpu::cpu_data(cpu);
+            let next_cr3 = unsafe { (&raw const (*data).next_cr3).read_volatile() };
+            let saved_cr3 = unsafe { (&raw const (*data).saved_process_cr3).read_volatile() };
+            reclaim.any_root_matches(next_cr3) || reclaim.any_root_matches(saved_cr3)
+        })
 }
 
 /// Retire the per-CPU CR3 shadow that would otherwise name a deferred root
@@ -215,6 +232,23 @@ impl PendingProcessReclaim {
         {
             false
         }
+    }
+
+    /// x86_64 switches CR3 lazily: idle keeps running on the tables of
+    /// whatever thread ran before it, so another CPU can hold this receipt's
+    /// roots in CR3 long after the process died. Ask every other online CPU
+    /// to leave them before their frames go back; with one CPU online this
+    /// sends nothing. A peer whose saved user-return CR3 names a root keeps
+    /// it (see `release_root_on_other_cpus`), so the shadow proof is taken
+    /// again once every peer has answered: returns whether it still holds.
+    #[cfg(target_arch = "x86_64")]
+    fn release_root_on_peers(&self) -> bool {
+        for page_table in self.page_table.iter().chain(self.old_page_tables.iter()) {
+            crate::memory::tlb::release_root_on_other_cpus(
+                page_table.level_4_frame().start_address().as_u64(),
+            );
+        }
+        !shadow_root_is_live(self, self.after_epoch.online_mask)
     }
 
     fn live_row_names_root(&self) -> bool {
@@ -1003,8 +1037,11 @@ fn next_reclaim_pass_id(mut pass: u32) -> u32 {
 pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     #[cfg(target_arch = "aarch64")]
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-    #[cfg(not(target_arch = "aarch64"))]
-    let cpu = 0usize;
+    #[cfg(target_arch = "x86_64")]
+    let cpu = {
+        use crate::arch_impl::PerCpuOps;
+        crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize
+    };
 
     let idx = cpu.min(DEFERRED_FAULT_EXIT_BUFFERS.len().saturating_sub(1));
     DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id)
@@ -1321,6 +1358,10 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                 let snapshot = scheduler::RetirementSnapshot::capture();
                 let mut proof = reclaim.lock_free_root_proof(&snapshot, true);
                 boot_after_step_two(&reclaim.after_epoch);
+                #[cfg(target_arch = "x86_64")]
+                if proof.blocker().is_none() && !reclaim.release_root_on_peers() {
+                    proof = RootProof::blocked(RootBlocker::Shadow);
+                }
                 if proof.blocker().is_none()
                     && (reclaim.cached_root_is_live()
                         || boot_forces_blocker(reclaim.pid, RootBlocker::Cached, true))

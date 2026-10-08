@@ -79,7 +79,8 @@ pub fn init() {
     TICK_TSC_BASE.store(super::tsc::read_tsc(), Ordering::Relaxed);
     TSC_CYCLES_PER_TICK.store(cycles, Ordering::Relaxed);
     if crate::arch_impl::x86_64::apic::active() {
-        let count = crate::arch_impl::x86_64::apic::start_timer(PIT_HZ);
+        // Each CPU's per-CPU init starts its own timer with this count.
+        let count = crate::arch_impl::x86_64::apic::calibrate_timer(PIT_HZ);
         log::info!(
             "Timer initialized: LAPIC at {} Hz, calibrated count {} ({}ms per tick)",
             PIT_HZ,
