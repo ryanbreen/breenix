@@ -1519,14 +1519,12 @@ extern "x86-interrupt" fn page_fault_handler(
             // Find the process by CR3 - this is more reliable than using current_thread_id
             // because during context switch the "current" thread may not match the faulting process
             let mut faulting_thread_id: Option<u64> = None;
-            let mut faulting_process_id: Option<crate::process::ProcessId> = None;
 
             crate::process::with_process_manager(|pm| {
                 if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
                     let name = process.name.clone();
                     // Get the thread ID before we exit the process
                     faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
-                    faulting_process_id = Some(pid);
                     log::error!(
                         "Killing process {} (PID {}) due to page fault (CR3={:#x})",
                         name,
@@ -1541,15 +1539,14 @@ extern "x86-interrupt" fn page_fault_handler(
                 }
             });
 
-            if let Some(pid) = faulting_process_id {
-                let _ = crate::process::exit_process_and_retire(pid, -11);
-            }
-
-            // Mark thread as terminated by setting it not runnable
+            // The process exit runs from the idle loop's drain, the same
+            // deferred SIGSEGV exit a kernel-mode user fault takes, not here in
+            // exception context (#511): its teardown closes descriptors and
+            // wakes other threads, which may be running on other CPUs. The
+            // thread is made non-runnable now so nothing dispatches it again.
             if let Some(thread_id) = faulting_thread_id {
-                crate::task::scheduler::with_thread_mut(thread_id, |thread| {
-                    thread.state = crate::task::thread::ThreadState::Terminated;
-                });
+                let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
+                crate::task::scheduler::terminate_thread(thread_id);
             }
 
             // Re-enable preemption before scheduling
@@ -1826,14 +1823,12 @@ extern "x86-interrupt" fn general_protection_fault_handler(
 
         // Find the process by CR3
         let mut faulting_thread_id: Option<u64> = None;
-        let mut faulting_process_id: Option<crate::process::ProcessId> = None;
 
         crate::process::with_process_manager(|pm| {
             if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
                 let name = process.name.clone();
                 // Get the thread ID before we exit the process
                 faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
-                faulting_process_id = Some(pid);
                 log::error!(
                     "Killing process {} (PID {}) due to GPF (CR3={:#x})",
                     name,
@@ -1848,15 +1843,10 @@ extern "x86-interrupt" fn general_protection_fault_handler(
             }
         });
 
-        if let Some(pid) = faulting_process_id {
-            let _ = crate::process::exit_process_and_retire(pid, -11);
-        }
-
-        // Mark thread as terminated by setting it not runnable
+        // Deferred off the exception path, as in the page-fault vector (#511).
         if let Some(thread_id) = faulting_thread_id {
-            crate::task::scheduler::with_thread_mut(thread_id, |thread| {
-                thread.state = crate::task::thread::ThreadState::Terminated;
-            });
+            let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
+            crate::task::scheduler::terminate_thread(thread_id);
         }
 
         // Re-enable preemption before scheduling
