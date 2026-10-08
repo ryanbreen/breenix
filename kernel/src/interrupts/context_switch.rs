@@ -1866,28 +1866,13 @@ fn check_and_deliver_signals_for_current_thread(
 /// Simple idle loop - made pub for exception handlers that need to jump to idle
 pub fn idle_loop() -> ! {
     loop {
-        // #775 round 3 (N1): this is the idle loop x86 actually runs, and the
-        // TOP of its body is the position that runs on every idle dispatch.
-        // Once any thread reaches Ring 3, is_ring3_confirmed() latches and
-        // setup_idle_return rewrites the frame to restart this function, so the
-        // code after enable_and_hlt() below runs only when the halt returns
-        // WITHOUT the timer handler switching away. main.rs's idle_thread_fn is
-        // the idle task's stored ENTRY POINT and is never dispatched at all,
-        // which is why the heartbeat used to be certified-but-dead there.
-        // claim-lint:ok: #775 round 3 finding N1; the cadence this position
-        // produces is measured in
-        // docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md
-        //
-        // The call is one rate-limited comparison of a monotonic timestamp,
-        // made outside any interrupt with IF=1 (this loop's other housekeeping
-        // already prints from here), and the callee refuses unless interrupts
-        // are enabled, so the COM2 lock it may take is never acquired from a
-        // masked context. Cadence is only as good as how often the CPU idles:
-        // a wedge that spins instead of idling stops it, which the census
-        // consumer and 775-CENSUS-EQUIVALENCE-2026-09-04.md both state.
-        // claim-lint:ok: the interrupts-enabled refusal is in
-        // kernel/src/task/dispatch_strand_census.rs report_heartbeat_if_due().
-        crate::task::report_dispatch_strand_census_heartbeat();
+        // This loop writes nothing to a serial port. Placement treats a CPU
+        // running its idle thread as free and queues a woken thread there,
+        // while a serial line is written with interrupts masked for as long as
+        // the port takes to accept it: about 60 ms for the ~300-byte strand
+        // census line under the x86 gate's emulation. A thread queued on an
+        // idle CPU writing that line waited for it, and `kstrandd`, a kernel
+        // thread a busy CPU is seen running, emits the census instead.
         crate::task::process_task::reclaim_deferred_process_resources();
         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
         // from a context that exists AFTER every userspace thread is gone and
