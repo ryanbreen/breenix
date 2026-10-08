@@ -1896,6 +1896,13 @@ pub struct Scheduler {
 
     /// Per-thread all-CPU grace targets for kernel-stack reclamation.
     retirement_grace: alloc::vec::Vec<RetirementGrace>,
+
+    /// Whether `schedule_deferred_requeue` drains the global per-CPU wake
+    /// inboxes (held pinned wakes and the ISR wakeup buffers). Only the live
+    /// scheduler may: a scheduler built by a boot test would take wakeups that
+    /// belong to the live one.
+    #[cfg(target_arch = "aarch64")]
+    drains_wake_inboxes: bool,
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
@@ -2006,6 +2013,8 @@ impl Scheduler {
             cpu_state,
             timer_heap: BinaryHeap::new(),
             retirement_grace: alloc::vec::Vec::new(),
+            #[cfg(target_arch = "aarch64")]
+            drains_wake_inboxes: true,
         };
 
         scheduler
@@ -3025,25 +3034,13 @@ impl Scheduler {
     /// the ready queue after its context is saved.
     #[cfg(target_arch = "aarch64")]
     pub fn schedule_deferred_requeue(&mut self) -> Option<(u64, u64, bool)> {
-        self.schedule_deferred_requeue_inner(true)
-    }
-
-    /// `schedule_deferred_requeue`, with the draining of the global per-CPU
-    /// wake inboxes (held pinned wakes and the ISR wakeup buffers) optional.
-    /// Only the live scheduler may drain them: a scheduler built by a boot
-    /// test would take wakeups that belong to the live one.
-    #[cfg(target_arch = "aarch64")]
-    fn schedule_deferred_requeue_inner(
-        &mut self,
-        drain_wake_inboxes: bool,
-    ) -> Option<(u64, u64, bool)> {
         // Update per-CPU idle flag based on CURRENT state (before scheduling decision).
         // This ensures the flag is always accurate, even when this function returns None.
         // If we return Some(...), the flag is overwritten with the post-switch state later.
         let cpu = Self::current_cpu_id();
         self.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
-        if drain_wake_inboxes {
+        if self.drains_wake_inboxes {
             self.deliver_pinned_wakes_for_this_cpu();
         }
         self.resolve_pending_next_locked(cpu);
@@ -3067,7 +3064,7 @@ impl Scheduler {
         // here via isr_unblock_for_io() to avoid spinning on SCHEDULER from ISR
         // context.  We drain ALL CPUs' buffers because the ISR that completed the
         // I/O may have run on any CPU.
-        if drain_wake_inboxes {
+        if self.drains_wake_inboxes {
             let mut wakeups = alloc::vec::Vec::new();
             for buf in ISR_WAKEUP_BUFFERS.iter() {
                 buf.drain(&mut wakeups);
@@ -7619,7 +7616,7 @@ pub fn idle_pick_teardown_token_gate_test() -> crate::test_framework::registry::
 fn boot_test_thread(privilege: ThreadPrivilege) -> Result<Box<Thread>, &'static str> {
     fn never_runs() {}
     let id = allocate_thread_id().ok_or("no thread id for the test scheduler")?;
-    let mut thread = Thread::new_with_id(
+    let thread = Thread::new_with_id(
         id,
         alloc::string::String::from("sched-test"),
         never_runs,
@@ -7644,6 +7641,7 @@ fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'stati
     idle.set_running();
     let idle_id = idle.id();
     let mut sched = Scheduler::new(idle);
+    sched.drains_wake_inboxes = false;
     sched.cpu_state[0].current_thread = None;
     sched.cpu_state[0].idle_thread = 0;
     sched.cpu_state[cpu].idle_thread = idle_id;
@@ -7668,7 +7666,7 @@ fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'stati
     }
     sched.per_cpu_queues[cpu].push_back(dying_id);
 
-    if let Some((_, next, _)) = sched.schedule_deferred_requeue_inner(false) {
+    if let Some((_, next, _)) = sched.schedule_deferred_requeue() {
         if next == dying_id {
             return Err("a scheduling pass dispatched a teardown token whose thread runs on another CPU");
         }
