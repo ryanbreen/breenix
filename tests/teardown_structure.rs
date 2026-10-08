@@ -6423,6 +6423,7 @@ fn validate_frame_return_choke_point(
                 "remove_duplicate_candidates",
                 "republish_lost_frame",
                 "retire_with_free_list_contended",
+                "with_free_list_held",
                 "free_frame_count",
                 "free_list_len_for_gate",
                 "take_free_frame",
@@ -6610,6 +6611,15 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let stale = function_body(tests, "stale_lease_fixture");
     let gate = function_body(tests, "frame_custody_refusal_gate_test");
     let healthy_guard = function_body(tests, "frame_custody_healthy_counters_test");
+    // The contended return holds the list as this CPU's own nested holder:
+    // through `with_free_frames` on x86_64, where only that makes a return
+    // give up rather than wait, and by locking it elsewhere.
+    let held = function_body(tests, "with_free_list_held");
+    let held_split = held.find("#[cfg(not(target_arch = \"x86_64\"))]").ok_or(())?;
+    let (held_x86, held_other) = held.split_at(held_split);
+    if !held_x86.contains("#[cfg(target_arch = \"x86_64\")]") {
+        return Err(());
+    }
     let above_top = function_body(tests, "above_top_of_ram_frame");
     let never_allocated = function_body(tests, "reserve_never_allocated_frame");
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
@@ -6790,7 +6800,10 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         )
         && gate.contains(DUPLICATE_CLEANUP)
         && gate.contains(DUPLICATE_OWNER_ASSERTION)
-        && gate.contains("let free_guard = FREE_FRAMES.lock();")
+        && gate.contains("let outcome = with_free_list_held(|| return_lease(contended));")
+        && held_x86.contains("with_free_frames(|_| f())")
+        && held_other.contains("let _free_list = FREE_FRAMES.lock();")
+        && held_other.contains("f()")
         && gate.matches("healthy_round_trip()").count() == 5
         && gate.contains(AGGREGATE_ASSERTION)
         && refusal_def.contains("name: \"frame_custody_refusal_gate\"")

@@ -35,8 +35,23 @@ pub(crate) fn retire_with_free_list_contended(
     pid: u64,
     budget: &mut u32,
 ) -> crate::memory::process_memory::RetireProgress {
-    let _free_list = FREE_FRAMES.lock();
-    page_table.retire_bounded(pid, budget)
+    with_free_list_held(|| page_table.retire_bounded(pid, budget))
+}
+
+/// Run `f` with the free list held by this CPU, so a frame returned inside `f`
+/// finds it busy. On x86 a return waits for a holder on another CPU and only
+/// gives up when this CPU is the holder, so the hold goes through
+/// `with_free_frames` and records this CPU as the owner.
+fn with_free_list_held<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(target_arch = "x86_64")]
+    {
+        with_free_frames(|_| f())
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _free_list = FREE_FRAMES.lock();
+        f()
+    }
 }
 
 fn restore_lease(lease: FrameLease) -> bool {
@@ -259,9 +274,7 @@ pub fn frame_custody_refusal_gate_test() -> TestResult {
         Some(lease) => lease,
         None => return TestResult::Fail("E: contended lease allocation failed"),
     };
-    let free_guard = FREE_FRAMES.lock();
-    let outcome = return_lease(contended);
-    drop(free_guard);
+    let outcome = with_free_list_held(|| return_lease(contended));
     if outcome != ReturnOutcome::LostContended {
         return TestResult::Fail("E: real free-list contention was not reported");
     }
