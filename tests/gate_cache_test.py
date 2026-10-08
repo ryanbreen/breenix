@@ -176,6 +176,22 @@ class CacheTests(unittest.TestCase):
             trees.prune(self.cache)
             self.assertTrue(self.repo.exists())
 
+    def test_abandoned_clone_cleanup_uses_process_ownership_not_directory_mtime(self):
+        canonical = self.root / 'breenix'
+        live = self.root / 'breenix-20200101T000000Z-x86_64-gate-abcd'
+        abandoned = self.root / 'breenix-20200101T000000Z-x86_64-gate-beef'
+        for clone in (live, abandoned):
+            (clone / '.git').mkdir(parents=True)
+        os.utime(live, (1, 1))
+        proc = self.root / 'proc'
+        process = proc / '123'
+        (process / 'fd').mkdir(parents=True)
+        (process / 'cmdline').write_bytes(b'kernel builder')
+        (process / 'cwd').symlink_to(live, target_is_directory=True)
+        trees.reclaim_legacy(str(canonical), processes=proc)
+        self.assertTrue(live.exists())
+        self.assertFalse(abandoned.exists())
+
     def test_hard_floor_checks_whole_filesystem_even_on_hit(self):
         usage = __import__('collections').namedtuple('Usage', 'total used free')(100, 99, 1)
         with patch.dict(os.environ, BREENIX_GATE_FREE_GB='15'), patch.object(trees.shutil, 'disk_usage', return_value=usage):

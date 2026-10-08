@@ -134,9 +134,9 @@ def checkout(canonical, tree, sha, lane):
     run(['git', '-C', str(tree), 'clean', '-fd', '-e', 'rust-fork-real'])
 
 
-def reclaim_legacy(canonical):
-    """Reclaim finished legacy clones using run identity and open-process ownership."""
-    if not Path('/proc').exists():
+def reclaim_legacy(canonical, processes=Path('/proc')):
+    """Reclaim abandoned legacy clones using run identity and open-process ownership."""
+    if not processes.exists():
         return
     candidates = []
     for path in Path(canonical).parent.glob('breenix-*-gate-*'):
@@ -146,14 +146,12 @@ def reclaim_legacy(canonical):
         started = __import__('calendar').timegm(time.strptime(match[1], '%Y%m%dT%H%M%SZ'))
         if time.time() - started < 3600:
             continue
-        logs = list((path / 'gate-tmp').glob('**/stdout.log'))
-        # A completed suite/full boot alone is not a completed launch. A legacy
-        # clone must have a finished DONE/report and no process referencing it.
-        if not any(re.search(r'^SUITE [a-z0-9-]+ DONE |USERSPACE TEST COMPLETE', log.read_text(errors='replace'), re.M) for log in logs):
-            continue
+        # The timestamp is the run id, not a copied directory mtime. A launch
+        # older than the grace period with no process references is abandoned,
+        # whether it passed, failed or was killed before it could print DONE.
         candidates.append(path)
     referenced = set()
-    for process in Path('/proc').glob('[0-9]*'):
+    for process in processes.glob('[0-9]*'):
         try:
             command = (process / 'cmdline').read_bytes().decode(errors='replace')
             links = [process / 'cwd'] + list((process / 'fd').iterdir())

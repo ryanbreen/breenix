@@ -155,9 +155,10 @@ and cannot change a completed gate verdict. Owner records under owners/ contain 
 run id, PID/process birth, host boot id, start time, heartbeat and state; permanent
 flocks under locks/ remain the authoritative eviction protection. Normal runs create
 no per-run source clone. Fresh trees are removed when their gate ends, including
-catchable signals; idle eviction reclaims abandoned fresh trees. Finished legacy
+catchable signals; idle eviction reclaims abandoned fresh trees. Abandoned legacy
 clones are reclaimed only after their timestamped run identity is at least an hour
-old, their serial has completion evidence and a /proc scan finds no owning process.
+old and a /proc scan of command lines, current directories and open files finds no
+owning process, including gates killed before DONE.
 Evidence is harvested after the lane lease ends and retained remotely after a disconnect.
 
 `--mode suite --suite files-io,directories,processes` boots once. A sequence file on the
