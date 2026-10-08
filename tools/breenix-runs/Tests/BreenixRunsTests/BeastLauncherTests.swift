@@ -479,7 +479,12 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
     func run(_ request: ProcessRequest, outputHandler: ((Data) -> Void)?) throws -> ProcessResult {
         calls.append(request)
 
-        if request.executable == "/record.sh" { return ProcessResult(exitCode: 0) }
+        if request.executable == "/record.sh" {
+            let serial = URL(fileURLWithPath: request.arguments[4])
+            let directory = serial.deletingLastPathComponent().deletingLastPathComponent()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path), "file before publishing the manifest so importers cannot duplicate it")
+            return ProcessResult(exitCode: 0)
+        }
         if request.executable == "/usr/bin/tar" {
             return try extractTarball(request)
         }

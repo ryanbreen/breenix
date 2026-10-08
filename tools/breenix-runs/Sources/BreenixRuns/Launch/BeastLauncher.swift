@@ -255,12 +255,16 @@ public struct BeastLauncher {
             notes: nil
         )
 
+        if let vigilScript {
+            do {
+                try FinishedX86Registration.file(script: vigilScript, manifest: manifest, runDirectory: runDirectory, runner: runner)
+            } catch {
+                if options.persist { try store.writeManifest(manifest) }
+                throw error
+            }
+        }
         if options.persist {
             try store.writeManifest(manifest)
-        }
-
-        if let vigilScript {
-            try FinishedX86Registration.file(script: vigilScript, manifest: manifest, runDirectory: runDirectory, runner: runner)
         }
         // Only remove evidence after a completed gate and successful harvest.
         // A disconnected SSH session leaves its remote supervisor and evidence alone.

@@ -27,6 +27,7 @@ final class FinishedX86RegistrationTests: XCTestCase {
             XCTAssertTrue(call.arguments[4].hasSuffix("suite-\(suite)/serial_kernel.log"))
             XCTAssertTrue(call.arguments[5].hasSuffix("suite-\(suite)/serial_user.log"))
             XCTAssertEqual(call.arguments[6], "q35")
+            XCTAssertEqual(call.arguments[7], index == 0 ? "finished" : "finished-breenix_gate_1-directories")
             XCTAssertEqual(call.arguments[9], index == 0 ? "10.0" : "20.0")
             XCTAssertEqual(call.arguments[10], index == 0 ? "20.0" : "30.0")
             XCTAssertEqual(call.arguments[11], index == 0 ? "0" : "1")

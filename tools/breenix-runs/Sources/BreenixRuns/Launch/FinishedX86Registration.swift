@@ -1,10 +1,12 @@
 import Foundation
 
-/// Files only harvested, finished boots. Stable ids make replay idempotent in Vigil.
+/// Files harvested finished boots before their manifest becomes visible to importers.
 public enum FinishedX86Registration {
     public static func file(script: URL, manifest: RunManifest, runDirectory: URL, runner: ProcessRunner) throws {
         let boots = try FileManager.default.contentsOfDirectory(at: runDirectory, includingPropertiesForKeys: nil)
             .filter { $0.lastPathComponent.hasPrefix("breenix_gate_") }.sorted { $0.path < $1.path }
+        var filed = 0
+        func recordID(_ suffix: String) -> String { filed == 0 ? manifest.id : manifest.id + "-" + suffix }
         for boot in boots {
             let resultFile = boot.appendingPathComponent("suite-results.json")
             if FileManager.default.fileExists(atPath: resultFile.path) {
@@ -12,9 +14,16 @@ public enum FinishedX86Registration {
                 for row in rows where row.verdict != "NOT-RUN" {
                     let directory = boot.appendingPathComponent("suite-" + row.suite)
                     try record(script: script, manifest: manifest, directory: directory,
-                               id: manifest.id + "-" + boot.lastPathComponent + "-" + row.suite,
+                               id: recordID(boot.lastPathComponent + "-" + row.suite),
                                suite: row.suite, started: row.started, ended: row.ended,
                                status: row.verdict == "PASS" ? 0 : 1, runner: runner)
+                    filed += 1
+                }
+                if rows.allSatisfy({ $0.verdict == "NOT-RUN" }) {
+                    let times = try JSONDecoder().decode(BootTimes.self, from: Data(contentsOf: boot.appendingPathComponent("boot-times.json")))
+                    try record(script: script, manifest: manifest, directory: boot, id: recordID(boot.lastPathComponent),
+                               suite: rows.first?.suite, started: times.started, ended: times.ended, status: 1, runner: runner)
+                    filed += 1
                 }
             } else {
                 let user = boot.appendingPathComponent("serial_user.log")
@@ -23,9 +32,10 @@ public enum FinishedX86Registration {
                 let timing = boot.appendingPathComponent("boot-times.json")
                 let times = try JSONDecoder().decode(BootTimes.self, from: Data(contentsOf: timing))
                 try record(script: script, manifest: manifest, directory: boot,
-                           id: manifest.id + "-" + boot.lastPathComponent, suite: nil,
+                           id: recordID(boot.lastPathComponent), suite: nil,
                            started: times.started, ended: times.ended,
                            status: manifest.verdict.isFailure ? 1 : 0, runner: runner)
+                filed += 1
             }
         }
     }
