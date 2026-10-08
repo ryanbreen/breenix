@@ -101,6 +101,12 @@ for leg in "${SMP_LEGS[@]}"; do
         0) echo "x86 SMP enumeration gate preflight: -smp leg must be nonzero" >&2
            false ;;
     esac
+    # The kernel clamps present CPUs to MAX_CPUS (8), and the marker asserts
+    # present=<leg>, so a larger leg could never match.
+    if (( 10#$leg > 8 )); then
+        echo "x86 SMP enumeration gate preflight: -smp leg must be at most 8 (the kernel's MAX_CPUS), got: $leg" >&2
+        false
+    fi
 done
 
 # The marker, by shape. madt_cpus/enabled are substituted per leg; the three
