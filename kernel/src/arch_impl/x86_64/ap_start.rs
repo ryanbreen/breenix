@@ -69,8 +69,7 @@ fn offset(symbol: &u8) -> usize {
 }
 
 fn spin_for_us(microseconds: u64) {
-    let deadline =
-        super::timer::rdtsc() + super::timer::frequency_hz() * microseconds / 1_000_000;
+    let deadline = super::timer::rdtsc() + super::timer::frequency_hz() * microseconds / 1_000_000;
     while super::timer::rdtsc() < deadline {
         core::hint::spin_loop();
     }
@@ -129,7 +128,8 @@ pub fn start_application_processors() {
         let pdpt = page(2) as *mut u64;
         let pd = page(3) as *mut u64;
         for index in 0..512 {
-            pml4.add(index).write_volatile(master_entries.add(index).read_volatile());
+            pml4.add(index)
+                .write_volatile(master_entries.add(index).read_volatile());
             pdpt.add(index).write_volatile(0);
             pd.add(index).write_volatile(0);
         }
@@ -183,7 +183,11 @@ pub fn start_application_processors() {
     if last != 0 {
         if let Some(apic_id) = smp::cpu_apic_id(last) {
             super::ioapic::set_destination(apic_id);
-            log::info!("[smp] device interrupts routed to CPU {} (APIC id {})", last, apic_id);
+            log::info!(
+                "[smp] device interrupts routed to CPU {} (APIC id {})",
+                last,
+                apic_id
+            );
         }
     }
 }
@@ -225,8 +229,7 @@ fn start_one(cpu: usize, apic_id: u32, startup_page: u8, base: u64, phys: u64) -
         send(apic::Ipi::Startup(startup_page));
     }
 
-    let deadline =
-        super::timer::rdtsc() + super::timer::frequency_hz() * ONLINE_TIMEOUT_MS / 1000;
+    let deadline = super::timer::rdtsc() + super::timer::frequency_hz() * ONLINE_TIMEOUT_MS / 1000;
     while !smp::is_cpu_online(cpu) {
         if super::timer::rdtsc() >= deadline {
             send(apic::Ipi::Init);
