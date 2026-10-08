@@ -4281,21 +4281,20 @@ fn rescue_retention_placement_rejects_intervening_function() {
 }
 
 #[test]
-fn rescue_retention_rejects_wrong_kick_architecture() {
+fn rescue_retention_rejects_kick_gated_to_one_architecture() {
     let source = repo_text("kernel/src/task/scheduler.rs");
     let body = function_body(&source, "retain_cpu_affine_thread").unwrap();
-    let kick =
-        "#[cfg(target_arch = \"aarch64\")]\n            self.send_resched_ipi_to_cpu(pin.cpu);";
+    let kick = "self.send_resched_ipi_to_cpu(pin.cpu);";
     let sites: Vec<_> = body.match_indices(kick).collect();
     assert_eq!(sites.len(), 3, "exercise every kick disposition");
     for (offset, _) in sites {
-        for arch in ["x86_64", "riscv64"] {
+        for arch in ["aarch64", "x86_64"] {
             let mut changed = body.to_string();
-            changed.replace_range(offset..offset + kick.len(), &kick.replace("aarch64", arch));
+            changed.insert_str(offset, &format!("#[cfg(target_arch = \"{arch}\")]\n            "));
             let mutated = source.replacen(body, &changed, 1);
             assert!(
                 validate_rescue_retention(&mutated).is_err(),
-                "kick at {offset} accepted {arch}"
+                "kick at {offset} gated to {arch} accepted"
             );
         }
     }
@@ -4346,12 +4345,14 @@ fn validate_rescue_retention(source: &str) -> Result<(), String> {
     let guard = compact_code_with_aarch64_literal(
         function_body(source, "retain_cpu_affine_thread").ok_or("missing guard")?,
     );
+    // Both architectures send the home CPU a reschedule IPI, so each
+    // disposition kicks unconditionally.
     for disposition in [
-        "self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);returntrue;",
-        "self.hold_pinned_wake_for_home(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);",
-        "else{self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);}",
+        "self.per_cpu_queues[pin.cpu].push_back(thread_id);self.send_resched_ipi_to_cpu(pin.cpu);returntrue;",
+        "self.hold_pinned_wake_for_home(thread_id);self.send_resched_ipi_to_cpu(pin.cpu);",
+        "else{self.per_cpu_queues[pin.cpu].push_back(thread_id);self.send_resched_ipi_to_cpu(pin.cpu);}",
     ] {
-        if !guard.contains(disposition) { return Err(format!("guard disposition missing aarch64 targeted kick: {disposition}")); }
+        if !guard.contains(disposition) { return Err(format!("guard disposition missing targeted kick: {disposition}")); }
     }
     validate_percpu_stack_reroute_counts_a_pin_conflict(source)
 }
