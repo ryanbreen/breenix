@@ -399,7 +399,11 @@ pub extern "C" fn check_need_resched_and_switch(
         // This case occurs when the current thread is the only ready thread (e.g., after
         // yield_now() when no other threads are runnable). Without this check, signals
         // queued for the current process (like SIGTERM from kill()) would never be delivered.
+        // The dispatch's guard is released first: delivery takes the lock
+        // itself, and with it still held here it always found the lock busy
+        // on this CPU and delivered nothing.
         if from_userspace {
+            drop(process_manager_guard);
             check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
         }
         return;
@@ -412,8 +416,10 @@ pub extern "C" fn check_need_resched_and_switch(
         trace_ctx_switch(old_thread_id, new_thread_id);
 
         if old_thread_id == new_thread_id {
-            // Same thread continues running, but check for pending signals
+            // Same thread continues running, but check for pending signals,
+            // with the dispatch's guard released as above.
             if from_userspace {
+                drop(process_manager_guard);
                 check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
             }
             return;
