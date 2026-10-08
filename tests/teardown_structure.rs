@@ -6322,6 +6322,7 @@ fn validate_frame_return_choke_point(
             allocator,
             &[
                 "init_frame_ledger",
+                "with_free_frames",
                 "ensure_free_frame_capacity",
                 "allocate_candidate",
                 "return_lease",
@@ -6362,8 +6363,8 @@ fn validate_frame_return_choke_point(
         "ensure_free_frame_capacity alias methods changed",
         validate_alias_methods(
             function_body(allocator, "ensure_free_frame_capacity"),
-            &["try_lock", "capacity", "len", "try_reserve", "is_err"],
-            &[],
+            &["try_lock", "capacity", "len", "try_reserve", "is_err", "map_or"],
+            &["reserve", "map_or"],
         ),
     );
     record_unit(
@@ -6371,7 +6372,7 @@ fn validate_frame_return_choke_point(
         "allocate_candidate alias methods changed",
         validate_alias_methods(
             function_body(allocator, "allocate_candidate"),
-            &["try_lock", "pop", "len"],
+            &["try_lock", "pop", "len", "and_then"],
             &[],
         ),
     );
@@ -6380,9 +6381,14 @@ fn validate_frame_return_choke_point(
         "return_lease alias methods changed",
         validate_alias_methods(
             function_body(allocator, "return_lease"),
-            &["try_lock", "len", "capacity", "push"],
-            &[],
+            &["try_lock", "len", "capacity", "push", "map_or_else"],
+            &["push", "map_or_else"],
         ),
+    );
+    record_unit(
+        &mut failures,
+        "with_free_frames alias methods changed",
+        validate_alias_methods(function_body(allocator, "with_free_frames"), &["try_lock"], &["Some"]),
     );
     record_unit(
         &mut failures,
@@ -9463,8 +9469,8 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     assert!(!park.contains("reclaim.after_epoch"));
     let unpark = function_body(process, "unpark_sweep_with_snapshot");
     assert!(
-        unpark.find("PARKED_PROCESS_RECLAIMS.try_lock()").unwrap()
-            < unpark.find("PENDING_PROCESS_RECLAIMS.try_lock()").unwrap()
+        unpark.find("reclaim_queue(&PARKED_PROCESS_RECLAIMS)").unwrap()
+            < unpark.find("reclaim_queue(&PENDING_PROCESS_RECLAIMS)").unwrap()
     );
 
     assert!(scheduler.contains("pub(crate) struct RetirementFence"));
@@ -13215,6 +13221,12 @@ fn gate_producer_validator_rejects_arch_any_double_registration() {
     assert!(validate_single_gate_producer_per_arch(main, registry).is_err());
 }
 
+/// Each non-owning reclaim-queue path acquires its queue through
+/// `reclaim_queue` and handles its `None` by abandoning or returning. That
+/// helper is the one place the acquisition policy lives: aarch64 try-locks,
+/// x86_64 waits for a holder on another CPU (every hold masks interrupts and
+/// is short, and abandoning a reclaim for contention leaked its address space
+/// with four CPUs online).
 fn validate_nonowning_reclaim_queue_acquisitions(process_task: &str) -> Result<(), ()> {
     for name in [
         "push_pending_or_abandon",
@@ -13223,9 +13235,19 @@ fn validate_nonowning_reclaim_queue_acquisitions(process_task: &str) -> Result<(
     ] {
         let body = function_body(process_task, name);
         let code = normalized_code(body);
-        if code.contains(".lock()") || !code.contains(".try_lock()") {
+        if code.contains(".lock()") || code.contains(".try_lock()") || !code.contains("reclaim_queue(&") {
             return Err(());
         }
+    }
+    let helper = function_body(process_task, "reclaim_queue");
+    let x86 = helper.find("#[cfg(target_arch = \"x86_64\")]").ok_or(())?;
+    let other = helper.find("#[cfg(not(target_arch = \"x86_64\"))]").ok_or(())?;
+    if !(x86 < other
+        && helper[x86..other].contains("queue.lock()")
+        && helper[other..].contains("queue.try_lock()")
+        && !helper[other..].contains("queue.lock()"))
+    {
+        return Err(());
     }
     let push = function_body(process_task, "push_pending_or_abandon");
     let park = function_body(process_task, "park_reclaim");
