@@ -345,6 +345,17 @@ pub extern "C" fn check_need_resched_and_switch(
     static RESCHED_LOG_COUNTER: core::sync::atomic::AtomicU64 =
         core::sync::atomic::AtomicU64::new(0);
     let _count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    // An idle CPU runs a full pass, which needs the process manager below, only
+    // when something is queued; otherwise its scheduling entry (expired timers
+    // included) is made without that lock, so a holder on another CPU cannot
+    // keep this CPU out of the scheduler.
+    let idle_cpu = !from_userspace
+        && !current_thread_blocked_or_terminated
+        && crate::per_cpu::running_idle_thread();
+    if idle_cpu && !scheduler::x86_idle_pass() {
+        return;
+    }
     // Note: Debug logging removed from hot path - use GDB if debugging is needed
 
     // Both entry paths must resolve the process-manager dependency BEFORE committing
@@ -367,7 +378,7 @@ pub extern "C" fn check_need_resched_and_switch(
         None => {
             note_dispatch_guard_unavailable();
             scheduler::set_need_resched();
-            if from_userspace {
+            if from_userspace || idle_cpu {
                 scheduler::retry_after_interrupts_x86();
             }
             return;
@@ -1869,10 +1880,14 @@ pub fn idle_loop() -> ! {
         crate::irq_log::flush_local_try();
         // Reclamation can wake a waiter. Check with interrupts masked so a
         // wakeup cannot slip between the check and the atomic enable/halt.
+        // A reschedule raised while the housekeeping above could not switch
+        // (it holds preemption off) is taken through the interrupt-return path
+        // by a self-IPI, which arrives as the halt enables interrupts. Going
+        // round the housekeeping again instead kept the CPU from halting, and
+        // a tick landing in the housekeeping again left the reschedule pending.
         x86_64::instructions::interrupts::disable();
         if crate::task::scheduler::is_need_resched() {
-            x86_64::instructions::interrupts::enable();
-            continue;
+            crate::task::scheduler::retry_after_interrupts_x86();
         }
         // CRITICAL: Use enable_and_hlt() instead of just hlt()
         // This atomically enables interrupts and halts, preventing race conditions

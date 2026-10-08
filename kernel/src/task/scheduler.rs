@@ -1693,6 +1693,33 @@ pub fn note_x86_interrupt_return(cpu: usize) {
     }
 }
 
+/// x86_64: the scheduling entry of an idle CPU, made without the process
+/// manager: records that this CPU is scheduling, wakes expired timers, and
+/// returns whether a full scheduling pass has anything to place, that is,
+/// whether any thread is queued on any CPU or a pinned wake is held for this
+/// one.
+///
+/// A full pass needs the process manager for the switch it may make, and an
+/// idle CPU that found it held on another CPU used to return with nothing
+/// done. Its scheduler entry then went stale, placement took it for a CPU
+/// that had stopped dispatching, and new and woken threads were queued on the
+/// busy CPUs instead.
+#[cfg(target_arch = "x86_64")]
+pub fn x86_idle_pass() -> bool {
+    let cpu = current_cpu_id_raw();
+    let mut scheduler_lock = lock_scheduler();
+    let Some(scheduler) = scheduler_lock.as_mut() else {
+        return false;
+    };
+    if cpu >= MAX_CPUS {
+        return true;
+    }
+    scheduler.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
+    scheduler.wake_expired_timers();
+    PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) != 0
+        || scheduler.per_cpu_queues.iter().any(|queue| !queue.is_empty())
+}
+
 /// x86_64: the other CPU that may still be on `thread_id`'s kernel stack.
 #[cfg(target_arch = "x86_64")]
 fn x86_stack_owner_elsewhere(thread_id: u64, cpu: usize) -> Option<usize> {
