@@ -25,9 +25,9 @@ const PIT_CHANNEL0_PORT: u16 = 0x40;
 /// Milliseconds of elapsed time represented by one `TICKS` increment.
 ///
 /// x86_64 programs the PIT at `PIT_HZ` above, so one tick is `1000 / PIT_HZ`
-/// milliseconds there. On aarch64 the only writer of `TICKS` is CPU 0's arm of
-/// `arch_impl::aarch64::timer_interrupt::timer_interrupt_handler`, whose timer
-/// is programmed at `TARGET_TIMER_HZ` = 1000 Hz, so one tick is 1 ms there.
+/// milliseconds there. On aarch64 `TICKS` is the number of whole milliseconds
+/// the counter has run since calibration (`advance_ticks_to`), so one tick is
+/// 1 ms there.
 ///
 /// Public because the tick-to-millisecond relationship is what
 /// `time_test::test_timer_resolution()` scores, and that check has to read the
@@ -54,8 +54,9 @@ const _: () = assert!(
     "PIT_HZ must divide 1000 exactly for MS_PER_TICK to be an exact factor"
 );
 
-/// Global monotonic tick counter: one increment per timer interrupt, worth
-/// `MS_PER_TICK` milliseconds of elapsed time.
+/// Global monotonic tick counter, worth `MS_PER_TICK` milliseconds of elapsed
+/// time per tick: one increment per timer interrupt on x86_64, and the counter's
+/// elapsed milliseconds on aarch64.
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// Counter for cursor blink timing (toggles every ~100 ticks = 500ms at 200Hz)
@@ -114,6 +115,18 @@ pub fn timer_interrupt() {
             crate::logger::toggle_cursor_blink();
         }
     }
+}
+
+/// Raise the tick to `tick` if it is behind, and return the tick afterwards.
+///
+/// aarch64 sets the tick from the counter rather than counting interrupts:
+/// an interrupt delivered late, as an idle CPU's often is under emulation,
+/// would otherwise lose the time it was late by. Every CPU's timer interrupt
+/// calls this, and the tick never moves backwards.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn advance_ticks_to(tick: u64) -> u64 {
+    TICKS.fetch_max(tick, Ordering::Relaxed).max(tick)
 }
 
 /// Raw tick counter.

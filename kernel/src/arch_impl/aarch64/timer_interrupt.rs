@@ -49,6 +49,70 @@ const TARGET_TIMER_HZ: u64 = 1000;
 /// Set during init() and used by the interrupt handler for consistent timing
 pub static TICKS_PER_INTERRUPT: AtomicU64 = AtomicU64::new(DEFAULT_TICKS_PER_INTERRUPT);
 
+/// `CPU_LAST_TICK` before a CPU's first timer interrupt.
+const NO_TICK_YET: u64 = u64::MAX;
+
+/// Each CPU's global tick at its previous timer interrupt.
+static CPU_LAST_TICK: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(NO_TICK_YET) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+/// Ticks each CPU has been credited with, one share per timer interrupt: the
+/// ticks since its previous one. The per-CPU tick count in /proc/stat, which
+/// its idle ticks are a part of.
+static CPU_ELAPSED_TICKS: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+/// The global tick at which each CPU became idle and from which its idle time
+/// has not yet been credited, or `NO_TICK_YET` while it is not idle.
+static CPU_IDLE_SINCE: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(NO_TICK_YET) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+/// The global tick, first brought up to the counter.
+fn tick_now() -> u64 {
+    match super::timer::milliseconds_since_base() {
+        Some(ms) => crate::time::timer::advance_ticks_to(ms),
+        None => crate::time::get_ticks(),
+    }
+}
+
+/// Credit `cpu` with the idle time from the start of its uncredited idle
+/// stretch to `tick`, keeping the stretch open from `tick` when `still_idle`.
+fn credit_idle(cpu: usize, tick: u64, still_idle: bool) {
+    let next = if still_idle { tick } else { NO_TICK_YET };
+    let since = CPU_IDLE_SINCE[cpu].swap(next, Ordering::Relaxed);
+    if since != NO_TICK_YET && tick > since {
+        crate::tracing::providers::counters::IDLE_TICK_TOTAL.add_cpu(cpu, tick - since);
+    }
+}
+
+/// Record that `cpu` has become idle or stopped being idle, so that its idle
+/// time is the time between those changes rather than whatever state each of
+/// its timer interrupts happens to find it in. Called by the scheduler on the
+/// CPU itself, only when the CPU's idle flag changes.
+pub fn note_cpu_idle_change(cpu: usize, idle: bool) {
+    if cpu >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    let tick = tick_now();
+    if idle {
+        let _ = CPU_IDLE_SINCE[cpu].compare_exchange(
+            NO_TICK_YET,
+            tick,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    } else {
+        credit_idle(cpu, tick, false);
+    }
+}
+
+/// Ticks `cpu` has been credited with by its timer interrupts.
+pub fn cpu_elapsed_ticks(cpu: usize) -> u64 {
+    CPU_ELAPSED_TICKS
+        .get(cpu)
+        .map_or(0, |ticks| ticks.load(Ordering::Relaxed))
+}
+
 /// Per-CPU time quantum counters.
 /// Each CPU decrements its own quantum independently.
 static CURRENT_QUANTUM: [AtomicU32; crate::arch_impl::aarch64::constants::MAX_CPUS] = [
@@ -685,17 +749,38 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
         CPU0_LAST_TIMER_ELR.store(elr, Ordering::Relaxed);
     }
 
-    // CPU 0 only: update global wall clock time (single atomic operation)
-    if cpu_id == 0 {
-        crate::time::timer_interrupt();
-    }
+    // Every CPU: bring the global tick up to the counter. Counting interrupts
+    // instead lost the time each one was late by, and an idle CPU's are often
+    // late under emulation: CPU 0 idle while a process computed on CPU 2 saw
+    // 1,006 ticks in 3,347 ms, so CPU time charged from the tick ran at 30% of
+    // the clock and RLIMIT_CPU fired more than three times late. Before the
+    // counter is calibrated, CPU 0 counts interrupts as it always has.
+    let tick = match super::timer::milliseconds_since_base() {
+        Some(ms) => crate::time::timer::advance_ticks_to(ms),
+        None => {
+            if cpu_id == 0 {
+                crate::time::timer_interrupt();
+            }
+            crate::time::get_ticks()
+        }
+    };
 
     // Trace timer tick (lock-free counter + optional event recording)
-    trace_timer_tick(crate::time::get_ticks());
+    trace_timer_tick(tick);
 
-    // Track idle ticks per CPU (for per-CPU utilization in /proc/stat)
-    if scheduler::is_cpu_idle(cpu_id) {
-        crate::tracing::providers::counters::IDLE_TICK_TOTAL.increment();
+    // Credit this CPU with the ticks since its previous interrupt, for the
+    // per-CPU lines of /proc/stat. Crediting one per interrupt undercounted a
+    // CPU whose interrupts were late, against a global tick that no longer
+    // does. Idle time is timed from the scheduler's idle transitions
+    // (`note_cpu_idle_change`); this only credits an idle stretch still open,
+    // so /proc/stat keeps up with a CPU that stays idle.
+    if cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let last = CPU_LAST_TICK[cpu_id].swap(tick, Ordering::Relaxed);
+        let ticks = if last == NO_TICK_YET { 1 } else { tick.saturating_sub(last) };
+        CPU_ELAPSED_TICKS[cpu_id].fetch_add(ticks, Ordering::Relaxed);
+        if scheduler::is_cpu_idle(cpu_id) {
+            credit_idle(cpu_id, tick, true);
+        }
     }
 
     // Increment timer interrupt counter (used for debugging when needed)

@@ -29,7 +29,7 @@ use libbreenix::types::Fd;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 static SIGNALS: AtomicUsize = AtomicUsize::new(0);
 static HANDLER_STACK: AtomicUsize = AtomicUsize::new(0);
@@ -809,6 +809,8 @@ fn limit_is(resource: u32, expected: [u64; 2], what: &str) -> Checked {
     if got == expected { Ok(()) } else { Err(format!("{what}: limit is {got:?}, expected {expected:?}")) }
 }
 
+/// getrusage's who for the calling thread alone.
+const RUSAGE_THREAD: i64 = 1;
 fn getrusage(who: i64) -> Result<[i64; 18], String> {
     let mut usage = [0i64; 18];
     let r = sc(nr::GETRUSAGE, &[who as u64, usage.as_mut_ptr() as u64]);
@@ -2834,6 +2836,185 @@ fn sched_yield() -> CaseResult {
         &format!("a ring of {n} processes passed its token {yielding} times in 300 ms with sched_yield and {spinning} times spinning without it"))
 }
 
+/// One reading of the kernel's tick: the global tick and the idle ticks of all processors
+/// together, from /proc/stat, and the CPU time charged to the calling thread in ms. The
+/// kernel charges CPU time from that same global tick, so between two readings elapsed
+/// ticks less charged time is the time the thread spent off its processor, and a pause of
+/// the whole machine shortens both alike.
+#[derive(Clone, Copy)]
+struct TickSample { tick: i64, idle: i64, charged: i64 }
+
+fn tick_sample() -> Result<TickSample, String> {
+    let stat = std::fs::read_to_string("/proc/stat").map_err(|e| format!("reading /proc/stat failed: {e}"))?;
+    let (mut tick, mut idle) = (None, 0);
+    for line in stat.lines() {
+        match line.split_whitespace().collect::<Vec<_>>()[..] {
+            ["global_ticks", n] => tick = n.parse::<i64>().ok(),
+            [cpu, _, n] if cpu.starts_with("cpu") =>
+                idle += n.parse::<i64>().map_err(|_| format!("/proc/stat line {line:?} has no idle tick count"))?,
+            _ => {}
+        }
+    }
+    let tick = tick.ok_or("/proc/stat has no global_ticks line")?;
+    Ok(TickSample { tick, idle, charged: cpu_us(&getrusage(RUSAGE_THREAD)?) / 1000 })
+}
+
+/// Whether the processors' idle ticks over `elapsed` ticks, less the `away` ticks this
+/// thread spent off its own processor (which may have been idle meanwhile), add up to a
+/// whole processor idle for at least nine tenths of that time.
+fn spare_processor(idle: i64, away: i64, elapsed: i64) -> bool {
+    10 * (idle - away.max(0)) >= 9 * elapsed
+}
+
+/// Length of the slices a computation is measured in.
+const SLICE_MS: u64 = 50;
+
+/// Time a computation spent off its processor, split between the slices in which the
+/// other processors had a spare processor's worth of idle time and the rest, in which
+/// every processor may have been busy.
+#[derive(Default)]
+struct OffCpu { idle_ms: i64, idle_off: i64, busy_ms: i64 }
+
+/// Compute for `ms` ms in slices of SLICE_MS, measuring each against the kernel tick.
+fn burn_off_cpu(ms: u64) -> Result<OffCpu, String> {
+    let (start, _) = times()?;
+    let first = tick_sample()?;
+    let mut last = first;
+    let mut off = OffCpu::default();
+    for _ in 0..ms / SLICE_MS {
+        burn(SLICE_MS);
+        let now = tick_sample()?;
+        let elapsed = now.tick - last.tick;
+        let away = elapsed - (now.charged - last.charged);
+        if spare_processor(now.idle - last.idle, away, elapsed) {
+            off.idle_ms += elapsed;
+            off.idle_off += away;
+        } else {
+            off.busy_ms += elapsed;
+        }
+        last = now;
+    }
+    let (end, _) = times()?;
+    // The comparisons above take the global tick to be 1 ms, as it is on aarch64.
+    let ticks = last.tick - first.tick;
+    if ((end - start) * 10 - ticks).abs() > 20 {
+        return Err(format!("times() measured {} ms while the kernel's global tick advanced {ticks}: the case assumes a 1 ms tick", (end - start) * 10));
+    }
+    Ok(off)
+}
+
+/// Off-processor time a computation may show beside an idle processor without having
+/// been switched out: tick rounding at the slice edges, and a little more.
+const OFF_CPU_LIMIT_MS: i64 = 30;
+
+/// Shared between the computing process and the one woken meanwhile.
+const STATE: usize = 0;
+const WAIT_TICKS: usize = 1;
+const WAIT_IDLE: usize = 2;
+const SLEPT_MS: usize = 3;
+const STARTING: i64 = 0;
+const COMPUTING: i64 = 1;
+const DONE: i64 = 2;
+/// Exit codes of the woken process.
+const WOKEN_NO_START: i32 = 1;
+const WOKEN_SLEEP_FAILED: i32 = 2;
+const WOKEN_NO_SAMPLE: i32 = 3;
+const WOKEN_LATE: i32 = 4;
+const WOKEN_OUTLASTED: i32 = 5;
+const WOKEN_SHORT_SLEEP: i32 = 6;
+const WOKEN_SLEEP_MS: i64 = 100;
+
+/// The process woken while its parent computes. Once the parent says it is computing, it
+/// sleeps WOKEN_SLEEP_MS and records how many ticks passed before it ran again, then
+/// computes for 100 ms. The sleep must last the time asked for by the monotonic clock,
+/// and it must wake, and finish computing, while the parent is still computing.
+fn woken_process(shared: &[AtomicI64]) -> i32 {
+    let deadline = now_ms() + 5000;
+    while shared[STATE].load(Ordering::Acquire) == STARTING {
+        if now_ms() > deadline { return WOKEN_NO_START; }
+        sc(nr::SCHED_YIELD, &[]);
+    }
+    let Ok(before) = tick_sample() else { return WOKEN_NO_SAMPLE };
+    let asleep = now_ms();
+    if time::sleep_ms(WOKEN_SLEEP_MS as u64).is_err() { return WOKEN_SLEEP_FAILED; }
+    let slept = now_ms().saturating_sub(asleep) as i64;
+    let Ok(after) = tick_sample() else { return WOKEN_NO_SAMPLE };
+    shared[WAIT_TICKS].store(after.tick - before.tick, Ordering::Release);
+    shared[WAIT_IDLE].store(after.idle - before.idle, Ordering::Release);
+    shared[SLEPT_MS].store(slept, Ordering::Release);
+    if slept < WOKEN_SLEEP_MS { return WOKEN_SHORT_SLEEP; }
+    if shared[STATE].load(Ordering::Acquire) != COMPUTING { return WOKEN_LATE; }
+    burn(100);
+    if shared[STATE].load(Ordering::Acquire) != COMPUTING { return WOKEN_OUTLASTED; }
+    0
+}
+
+/// A process that is computing is not switched out while another processor is idle,
+/// and a process woken in the meantime runs on the idle processor rather than on
+/// this one. Before #1172 a computing process lost its processor about once a
+/// millisecond on a machine with an idle processor, and spent about half of it off.
+///
+/// Off-processor time counts only in slices where the other processors were measured
+/// idle for a spare processor's worth of the slice. A woken process placed beside this
+/// one leaves the processor it should have taken idle, so the time it takes from this
+/// one is counted. When less than half of the computation, or the woken process's wait,
+/// had a spare processor, the case cannot tell scheduling from contention, and skips.
+fn sched_idle_cpu() -> CaseResult {
+    let cpus = processors();
+    // The suite runner, which polls while a case runs, this process and the woken one
+    // each hold one, and a further processor has to be left idle while it sleeps. The
+    // kernel's render thread, which runs briefly on every tick, needs room too.
+    if cpus < 4 {
+        return skip(format!("{cpus} processor(s) online; the case needs 4, so that one is idle"));
+    }
+    let map = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)?;
+    // SAFETY: the shared mapping is page-aligned, zero-filled and outlives both processes' use of it.
+    let shared = unsafe { core::slice::from_raw_parts(map as *const AtomicI64, SLEPT_MS + 1) };
+    let mut woken = Child::start(|| woken_process(shared))?;
+    shared[STATE].store(COMPUTING, Ordering::Release);
+    let ran = burn_off_cpu(600);
+    shared[STATE].store(DONE, Ordering::Release);
+    let ran = ran?;
+    check(ran.idle_off <= OFF_CPU_LIMIT_MS, &format!(
+        "with {cpus} processors online, a process computing for 600 ms spent {} ms off its processor during {} ms in which another processor was idle",
+        ran.idle_off, ran.idle_ms))?;
+    let status = woken.wait()?;
+    let wait = shared[WAIT_TICKS].load(Ordering::Acquire);
+    let wait_idle = shared[WAIT_IDLE].load(Ordering::Acquire);
+    let slept = shared[SLEPT_MS].load(Ordering::Acquire);
+    memory::munmap(map, 4096)?;
+    let code = if exited(status) { exit_code(status) } else { -1 };
+    let wait_measured = spare_processor(wait_idle, 0, wait);
+    let why = match code {
+        0 => None,
+        WOKEN_LATE if !wait_measured => None,
+        WOKEN_LATE => Some(format!(
+            "ran again {wait} ms after beginning a {WOKEN_SLEEP_MS} ms sleep, after the computing process had finished, though the processors were idle for {wait_idle} ticks of that time")),
+        WOKEN_NO_START => Some("never saw the computing process start".to_string()),
+        WOKEN_SLEEP_FAILED => Some(format!("failed its {WOKEN_SLEEP_MS} ms sleep")),
+        WOKEN_SHORT_SLEEP => Some(format!("returned from a {WOKEN_SLEEP_MS} ms sleep after {slept} ms")),
+        WOKEN_NO_SAMPLE => Some("could not read /proc/stat or getrusage".to_string()),
+        WOKEN_OUTLASTED => Some("was still computing when the computing process finished".to_string()),
+        _ => Some(format!("ended with {}", status_text(status))),
+    };
+    if let Some(why) = why { return fail(format!("the process woken while another computed {why}")); }
+    if wait_measured {
+        check(wait - WOKEN_SLEEP_MS <= OFF_CPU_LIMIT_MS, &format!(
+            "with {cpus} processors online, a process woken from a {WOKEN_SLEEP_MS} ms sleep ran again {wait} ms after it began, though the processors were idle for {wait_idle} ticks of that time"))?;
+    }
+    let mut unmeasured = Vec::new();
+    if ran.idle_ms < ran.busy_ms {
+        unmeasured.push(format!("the computing process had one for {} of {} ms", ran.idle_ms, ran.idle_ms + ran.busy_ms));
+    }
+    if !wait_measured {
+        unmeasured.push(format!("the woken process's {wait} ms wait had {wait_idle} idle ticks"));
+    }
+    if !unmeasured.is_empty() {
+        return skip(format!("no processor was left idle to measure against: {}", unmeasured.join("; ")));
+    }
+    Ok(())
+}
+
 fn sched_getpriority() -> CaseResult {
     let own = getpriority(PRIO_PROCESS, 0).map_err(|e| format!("getpriority failed with {}", errname(e)))?;
     check((-20..=19).contains(&own), &format!("getpriority returned nice value {own}"))?;
@@ -3126,6 +3307,7 @@ static SUITE: Suite = suite(
             case("nice-user", "nice with a negative increment as non-root fails with EPERM and keeps the nice value", sched_nice_user),
             case("fork", "The nice value is inherited across fork", sched_fork),
             case("exec", "The nice value is kept across exec", sched_exec),
+            case("idle-cpu", "A computing process keeps its processor while another processor is idle", sched_idle_cpu),
         ]),
     ],
 );

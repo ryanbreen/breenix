@@ -847,7 +847,7 @@ fn generate_stat() -> String {
     let num_cpus = procfs_online_cpus();
 
     for cpu in 0..num_cpus {
-        let ticks = TIMER_TICK_TOTAL.get_cpu(cpu);
+        let ticks = procfs_cpu_ticks(cpu);
         let idle = IDLE_TICK_TOTAL.get_cpu(cpu);
         let _ = write!(out, "cpu{} {} {}\n", cpu, ticks, idle);
     }
@@ -910,11 +910,24 @@ fn procfs_online_cpus() -> usize {
     }
 }
 
-fn procfs_cpu_accounting_ticks() -> (usize, u64, u64) {
-    use crate::tracing::providers::counters::TIMER_TICK_TOTAL;
+/// Ticks `cpu` has run for, the total its idle ticks are part of. On aarch64
+/// each timer interrupt credits the ticks since that CPU's previous one, so
+/// the count keeps up with the global tick when interrupts are late; x86_64
+/// counts its timer interrupts.
+fn procfs_cpu_ticks(cpu: usize) -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch_impl::aarch64::timer_interrupt::cpu_elapsed_ticks(cpu)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::tracing::providers::counters::TIMER_TICK_TOTAL.get_cpu(cpu)
+    }
+}
 
+fn procfs_cpu_accounting_ticks() -> (usize, u64, u64) {
     let cpu_online = procfs_online_cpus();
-    let capacity_ticks = TIMER_TICK_TOTAL.aggregate();
+    let capacity_ticks = (0..cpu_online).map(procfs_cpu_ticks).sum::<u64>();
     let sample_ticks = capacity_ticks / cpu_online as u64;
 
     (cpu_online, sample_ticks, capacity_ticks)

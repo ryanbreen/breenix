@@ -640,6 +640,10 @@
         {
           "id": "exec",
           "title": "The nice value is kept across exec"
+        },
+        {
+          "id": "idle-cpu",
+          "title": "A computing process keeps its processor while another processor is idle"
         }
       ]
     }

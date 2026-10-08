@@ -28,7 +28,6 @@ const RENDEZVOUS_TID_OFFSET: usize = 48;
 
 const CHILD_STACK_SIZE: usize = 64 * 1024;
 const SPIN_LIMIT: u64 = 2_000_000;
-const LIVE_CHILD_WATCHDOG_LIMIT: u64 = 10_000;
 const CLONE_FLAGS: u64 = 0x00000100 | 0x00000400 | 0x00200000 | 0x01000000;
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
@@ -380,7 +379,11 @@ extern "C" fn phase_one_child(arg: *mut u8) -> *mut u8 {
         core::ptr::write_volatile(alive, 1);
 
         let mut iteration = 0;
-        while iteration < LIVE_CHILD_WATCHDOG_LIMIT {
+        // Bounded like every other wait here, by yields. sched_yield with no
+        // other runnable thread returns at once, so a bound of 10,000 yields
+        // ran out in well under a second, before the parent's exec probe was
+        // done; it only held while each such yield idled the CPU for a tick.
+        while iteration < SPIN_LIMIT {
             if core::ptr::read_volatile(command) == 2 {
                 thread_exit(0);
             }

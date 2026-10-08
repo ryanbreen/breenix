@@ -157,6 +157,14 @@ impl TraceCounter {
         }
     }
 
+    /// Add `amount` to the counter for a specific CPU.
+    #[inline(always)]
+    pub fn add_cpu(&self, cpu_id: usize, amount: u64) {
+        if cpu_id < MAX_CPUS {
+            self.per_cpu[cpu_id].value.fetch_add(amount, Ordering::Relaxed);
+        }
+    }
+
     /// Get the aggregated value across all CPUs.
     ///
     /// This sums all per-CPU values. Note that this is a point-in-time
