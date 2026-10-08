@@ -2,11 +2,11 @@
 //! direction flag before it can reach a `rep`-prefixed string operation or a
 //! call into Rust (#737).
 //! claim-lint:ok: "every" here ranges over the census this file derives, not
-//! over the tree at large -- 3 of 3 `.asm` files under the two entry
+//! over the tree at large -- 4 of 4 `.asm` files under the three entry
 //! directories today -- and the count is recomputed and printed by
 //! `the_asm_entry_census_is_not_vacuous` on every run rather than frozen here.
 //! `the_asm_entry_census_covers_every_asm_file_in_the_kernel` additionally
-//! fails if any `.asm` file under `kernel/src` falls outside those two
+//! fails if any `.asm` file under `kernel/src` falls outside those three
 //! directories, so "the census" and "the tree's hand-written assembly" cannot
 //! silently diverge. Entries written inline in `global_asm!`/`naked_asm!`
 //! blocks remain outside both, and are disclosed under "Disclosed limits"
@@ -41,19 +41,20 @@
 //!
 //! Entry points are derived by SHAPE, in three steps:
 //!
-//! 1. **Which files.** Every `*.asm` under `kernel/src/interrupts/` and
-//!    `kernel/src/syscall/`, recursively. A file counts as reaching the
+//! 1. **Which files.** Every `*.asm` under `kernel/src/interrupts/`,
+//!    `kernel/src/syscall/` and `kernel/src/arch_impl/x86_64/` (the
+//!    application-processor trampoline), recursively. A file counts as reaching the
 //!    kernel image if `kernel/build.rs` names it in a `nasm` invocation, or
 //!    if any `kernel/src/**/*.rs` pulls it in with `global_asm!` /
 //!    `include_str!` / `include!`. A `.asm` file that neither route reaches
 //!    is not in the image and is reported, not asserted on.
-//!    That two-directory scope is itself asserted, not assumed:
+//!    That three-directory scope is itself asserted, not assumed:
 //!    `the_asm_entry_census_covers_every_asm_file_in_the_kernel` globs
 //!    `kernel/src` whole and fails if any `.asm` file sits outside them, so an
-//!    entry added under a third directory reddens the suite instead of
+//!    entry added under a fourth directory reddens the suite instead of
 //!    silently leaving the census.
-//!    claim-lint:ok: 3 of 3 `.asm` files anywhere under `kernel/src` sit in
-//!    those two directories, and 3 of 3 are named by `kernel/build.rs`; both
+//!    claim-lint:ok: 4 of 4 `.asm` files anywhere under `kernel/src` sit in
+//!    those three directories, and 4 of 4 are named by `kernel/build.rs`; both
 //!    counts are recomputed per run by the scope test and the reachability
 //!    filter respectively, not frozen here. #737.
 //!
@@ -103,12 +104,15 @@
 //!   `kernel/src/interrupts/breakpoint_entry.asm:60`) both sit on the merge
 //!   point after their entry's swapgs test, and the third policed entry
 //!   contains no `cld` at all, which is this ratchet's finding. #737.
+//!   The application-processor trampoline's entry, `ap_trampoline_start`, is
+//!   straight-line with `cld` as its first instruction; its other globals
+//!   label data and reach no instruction.
 //!
 //! * Comment stripping cuts each line at its first `;`. NASM string literals
 //!   containing a `;` would be mis-cut, and there are none in these files.
-//!   claim-lint:ok: 2 of 2 double-quote characters across the 3 `.asm` files
+//!   claim-lint:ok: 2 of 2 double-quote characters across the 4 `.asm` files
 //!   sit inside NASM comments (`kernel/src/syscall/entry.asm:118` and `:140`),
-//!   so 0 of 3 files carry a string literal at all; and a mis-cut would make
+//!   so 0 of 4 files carry a string literal at all; and a mis-cut would make
 //!   this check more lenient, never more strict. #737.
 //!
 //! * **It reads `.asm` files only.** An entry written inline in a
@@ -463,18 +467,22 @@ fn every_hand_written_entry_clears_df_before_its_first_call_or_string_op() {
     );
 }
 
-/// The two directories `entry_asm_files` globs. The scope claim in this file's
+/// The directories `entry_asm_files` globs. The scope claim in this file's
 /// header -- that the tree's hand-written `.asm` files sit in one of them -- is
 /// asserted by `the_asm_entry_census_covers_every_asm_file_in_the_kernel`
 /// rather than left as prose.
-/// claim-lint:ok: 3 of 3 `.asm` files under `kernel/src` sit in these two
+/// claim-lint:ok: 4 of 4 `.asm` files under `kernel/src` sit in these three
 /// directories today, and that count is re-derived per run by the scope test
 /// below rather than frozen here. #737.
-const ENTRY_ASM_DIRECTORIES: [&str; 2] = ["kernel/src/interrupts", "kernel/src/syscall"];
+const ENTRY_ASM_DIRECTORIES: [&str; 3] = [
+    "kernel/src/interrupts",
+    "kernel/src/syscall",
+    "kernel/src/arch_impl/x86_64",
+];
 
-/// The census globs two directories. That is only sound while those two hold
+/// The census globs three directories. That is only sound while they hold
 /// each hand-written `.asm` file in the kernel tree -- otherwise an entry added
-/// under some third directory is silently unpoliced, and
+/// under some other directory is silently unpoliced, and
 /// `the_asm_entry_census_is_not_vacuous` stays green while the ratchet's
 /// coverage quietly shrinks. Assert the scope instead of asserting it in prose.
 /// claim-lint:ok: what this test asserts is a set difference it computes on
@@ -497,7 +505,7 @@ fn the_asm_entry_census_covers_every_asm_file_in_the_kernel() {
         .collect();
     assert!(
         outside.is_empty(),
-        "{} of {} .asm file(s) under kernel/src sit outside the two directories this ratchet          globs ({}), so their entry points are not censused and not policed for `cld`. Either          move the file under one of those directories or widen ENTRY_ASM_DIRECTORIES and          `entry_asm_files` to reach it:\n  {}",
+        "{} of {} .asm file(s) under kernel/src sit outside the directories this ratchet          globs ({}), so their entry points are not censused and not policed for `cld`. Either          move the file under one of those directories or widen ENTRY_ASM_DIRECTORIES and          `entry_asm_files` to reach it:\n  {}",
         outside.len(),
         all.len(),
         ENTRY_ASM_DIRECTORIES.join(", "),
@@ -517,7 +525,7 @@ fn the_asm_entry_census_is_not_vacuous() {
     let files = entry_asm_files();
     assert!(
         !files.is_empty(),
-        "found 0 .asm files under kernel/src/interrupts/ or kernel/src/syscall/; the directory \
+        "found 0 .asm files under the censused directories; the directory \
          census this ratchet is built on is reading nothing"
     );
 
