@@ -142,12 +142,31 @@ fn shadow_root_is_live(reclaim: &PendingProcessReclaim, online_mask: u64) -> boo
         })
 }
 
+/// x86_64: this CPU's two CR3 shadows, and every other online CPU's pending
+/// CR3 switch. A peer's `saved_process_cr3` naming a dead root is stale (only
+/// a return to that process's user mode reads it) and is cleared by
+/// `release_root_on_peers`, as `clear_shadow_root` clears this CPU's.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn shadow_root_is_live(reclaim: &PendingProcessReclaim, online_mask: u64) -> bool {
-    online_mask & 1 != 0
-        && (reclaim.any_root_matches(crate::per_cpu::get_next_cr3())
-            || reclaim.any_root_matches(crate::per_cpu::get_saved_process_cr3()))
+    use crate::arch_impl::PerCpuOps;
+
+    if online_mask == 0 {
+        return false;
+    }
+    if reclaim.any_root_matches(crate::per_cpu::get_next_cr3())
+        || reclaim.any_root_matches(crate::per_cpu::get_saved_process_cr3())
+    {
+        return true;
+    }
+    let me = crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize;
+    (0..scheduler::MAX_CPUS)
+        .filter(|&cpu| cpu != me && online_mask & (1 << cpu) != 0)
+        .any(|cpu| {
+            let data = crate::per_cpu::cpu_data(cpu);
+            let next_cr3 = unsafe { (&raw const (*data).next_cr3).read_volatile() };
+            reclaim.any_root_matches(next_cr3)
+        })
 }
 
 /// Retire the per-CPU CR3 shadow that would otherwise name a deferred root
@@ -210,6 +229,20 @@ impl PendingProcessReclaim {
         #[cfg(not(target_arch = "aarch64"))]
         {
             false
+        }
+    }
+
+    /// x86_64 switches CR3 lazily: a kernel thread keeps running on the
+    /// tables of whatever thread ran before it, so another CPU can hold this
+    /// receipt's roots in CR3 long after the process died. Ask every other
+    /// online CPU to leave them before their frames go back; with one CPU
+    /// online this sends nothing.
+    #[cfg(target_arch = "x86_64")]
+    fn release_root_on_peers(&self) {
+        for page_table in self.page_table.iter().chain(self.old_page_tables.iter()) {
+            crate::memory::tlb::release_root_on_other_cpus(
+                page_table.level_4_frame().start_address().as_u64(),
+            );
         }
     }
 
@@ -1320,6 +1353,10 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                 let snapshot = scheduler::RetirementSnapshot::capture();
                 let mut proof = reclaim.lock_free_root_proof(&snapshot, true);
                 boot_after_step_two(&reclaim.after_epoch);
+                #[cfg(target_arch = "x86_64")]
+                if proof.blocker().is_none() {
+                    reclaim.release_root_on_peers();
+                }
                 if proof.blocker().is_none()
                     && (reclaim.cached_root_is_live()
                         || boot_forces_blocker(reclaim.pid, RootBlocker::Cached, true))

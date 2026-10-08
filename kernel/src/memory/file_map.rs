@@ -1102,28 +1102,11 @@ fn live_table<'a>(
         .filter(|pt| pt.address_space() == rec.space)
 }
 
-/// x86 removes a file page's translation with a local `invlpg`, which is
-/// enough only while one CPU is online. x86 brings up no secondary CPUs yet
-/// (#814; #629 tracks the online count), and mmap refuses file mappings once a
-/// second CPU is online. ARM64 invalidation is broadcast.
-pub(crate) fn local_invalidation_suffices() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        crate::arch_impl::x86_64::smp::cpus_online() == 1
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        true
-    }
-}
-
 /// Remove one entry. Returns false when its descriptor and custody record
-/// disagreed; the descriptor is cleared and flushed either way.
+/// disagreed; the descriptor is cleared and flushed either way. The flush
+/// reaches every online CPU (`memory::tlb::flush_page`): ARM64 broadcasts in
+/// hardware, x86 shoots down by NMI.
 fn revoke_entry(pt: &mut ProcessPageTable, page: Page<Size4KiB>) -> bool {
-    assert!(
-        local_invalidation_suffices(),
-        "file mapping revocation needs remote TLB invalidation (#814)"
-    );
     match pt.revoke_page(page) {
         Ok(Revoked::Absent) => true,
         Ok(Revoked::Leaf(leaf)) => {

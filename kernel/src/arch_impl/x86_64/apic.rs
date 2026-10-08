@@ -191,6 +191,9 @@ pub fn start_local_timer() {
 #[allow(dead_code)] // Stage 2/3 public startup and reschedule API.
 pub enum Ipi {
     Fixed(u8),
+    /// Non-maskable: delivered whatever the target's RFLAGS.IF, so a CPU
+    /// spinning with interrupts masked still answers a TLB shootdown.
+    Nmi,
     Init,
     Startup(u8),
 }
@@ -207,6 +210,7 @@ pub fn send_ipi(destination: u32, ipi: Ipi) -> Result<(), &'static str> {
     let low = match ipi {
         Ipi::Fixed(vector) if vector >= 32 && vector != SPURIOUS_VECTOR => u32::from(vector),
         Ipi::Fixed(_) => return Err("Invalid fixed IPI vector"),
+        Ipi::Nmi => (4 << 8) | (1 << 14),
         // Integrated APIC INIT is edge triggered; no level deassert is needed.
         Ipi::Init => (5 << 8) | (1 << 14),
         Ipi::Startup(page) if page < 0xa0 => (6 << 8) | u32::from(page),

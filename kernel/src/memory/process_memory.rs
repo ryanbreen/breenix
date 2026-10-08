@@ -1859,7 +1859,7 @@ impl ProcessPageTable {
                 );
             }
             #[cfg(target_arch = "x86_64")]
-            x86_64::instructions::tlb::flush(faulting_addr);
+            crate::memory::tlb::flush_page(faulting_addr);
             cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             crate::tracing::providers::process::trace_cow_copy(pid as u16, (far >> 12) as u16);
             return true;

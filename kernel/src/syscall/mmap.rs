@@ -381,9 +381,6 @@ fn file_mapping(
     if length.checked_add(PAGE_SIZE - 1).is_none() {
         return Err(ENOMEM as u64);
     }
-    if !crate::memory::file_map::local_invalidation_suffices() {
-        return Err(ENODEV as u64);
-    }
     let thread_id = get_current_thread_id().ok_or(ErrorCode::NoSuchProcess as u64)?;
     let manager_guard = crate::process::manager();
     let (_pid, process) = manager_guard

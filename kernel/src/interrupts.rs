@@ -216,6 +216,15 @@ pub fn init_idt() {
         }
 
         idt[crate::arch_impl::x86_64::apic::SPURIOUS_VECTOR].set_handler_fn(apic_spurious_handler);
+
+        // TLB shootdown requests arrive as NMIs (see memory/tlb.rs). The NMI
+        // has its own IST stack: it can land between a `syscall` instruction
+        // and the entry stub's switch off the user stack.
+        unsafe {
+            idt.non_maskable_interrupt
+                .set_handler_fn(crate::memory::tlb::shootdown_nmi_handler)
+                .set_stack_index(gdt::NMI_IST_INDEX);
+        }
         idt
     });
 
@@ -817,20 +826,26 @@ fn handle_cow_with_manager(
         core::ptr::copy_nonoverlapping(src, dst, 4096);
     }
 
-    // Update page table: unmap old, map new with writable flags
+    // Update page table: unmap old, map new with writable flags. The old
+    // frame's reference is released only after every CPU has dropped its
+    // translation (`ReleasedLeaf::flush`), so no CPU can read it through a
+    // stale entry once its other owner is free to write it.
     let new_flags = make_private_flags(old_flags);
-    if page_table.unmap_page(page).is_err() {
-        let _ = deallocate_leaf_frame(new_frame);
-        return false;
-    }
+    let old_leaf = match page_table.unmap_page_deferred(page) {
+        Ok(leaf) => leaf,
+        Err(_) => {
+            let _ = deallocate_leaf_frame(new_frame);
+            return false;
+        }
+    };
     if page_table.map_page(page, new_frame, new_flags).is_err() {
         let _ = page_table.map_page(page, old_frame, old_flags);
+        old_leaf.flush().release();
         let _ = deallocate_leaf_frame(new_frame);
         return false;
     }
+    old_leaf.flush().release();
 
-    // Flush TLB for this page
-    X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
     cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     true
 }
@@ -944,12 +959,14 @@ fn handle_cow_direct(
         let new_flags = make_private_flags(old_flags);
         l1_entry.set_addr(new_frame.start_address(), new_flags);
 
+        // Every CPU drops the old translation before the old frame can be
+        // returned: a stale entry would keep writes landing in a freed frame.
+        X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
+
         if frame_decref(old_frame) && deallocate_leaf_frame(old_frame) == ReturnOutcome::Returned {
             crate::trace_count!(crate::tracing::providers::teardown::LEAF_FRAMES_RETURNED);
         }
 
-        // Flush TLB
-        X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
         cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         true
     }

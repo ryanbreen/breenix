@@ -7765,7 +7765,7 @@ fn validate_root_proof_architecture_legs(sources: &[(String, String)]) -> Result
     if !x86_hardware.contains(".start_address()")
         || !x86_hardware.contains(".as_u64()")
         || !arm_shadow.contains("page_table.level_4_frame().start_address().as_u64()")
-        || !x86_shadow.contains("online_mask & 1 != 0")
+        || !x86_shadow.contains("online_mask & (1 << cpu) != 0")
         || !x86_shadow.contains("get_saved_process_cr3()")
     {
         return Err(());

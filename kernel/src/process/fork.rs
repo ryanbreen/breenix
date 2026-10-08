@@ -231,10 +231,9 @@ pub fn setup_cow_pages_with_vmas(
             // Without this, the parent's TLB may still have the old WRITABLE entry,
             // allowing writes without triggering page faults. This causes memory
             // corruption since parent and child would write to the same physical frame.
-            #[cfg(target_arch = "x86_64")]
-            x86_64::instructions::tlb::flush(virt_addr);
-            #[cfg(not(target_arch = "x86_64"))]
-            crate::memory::arch_stub::tlb::flush(virt_addr);
+            // Every CPU running a thread of the parent must lose it, not only
+            // this one.
+            crate::memory::tlb::flush_page(virt_addr);
 
             // Map same frame in child with CoW flags
             if let Err(_e) = child_page_table.map_page(page, frame, cow_flags) {
