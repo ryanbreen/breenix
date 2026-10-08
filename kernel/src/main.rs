@@ -2274,7 +2274,7 @@ fn kernel_main_continue() -> ! {
 
     // PRECONDITION 5: Scheduler Has Runnable Threads
     log::info!("PRECONDITION 5: Checking scheduler has runnable threads...");
-    let has_runnable = task::scheduler::with_scheduler(|s| s.has_runnable_threads());
+    let has_runnable = task::scheduler::with_scheduler(|s| s.has_schedulable_work());
     if let Some(true) = has_runnable {
         log::info!("PRECONDITION 5: Scheduler has runnable threads ✓ PASS");
     } else {

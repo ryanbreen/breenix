@@ -5170,6 +5170,22 @@ impl Scheduler {
                 })
     }
 
+    /// Whether the scheduler has work: a queued thread, or a thread other than
+    /// a CPU's idle thread running on any CPU. With several CPUs online a
+    /// newly queued thread may already be running on another one by the time
+    /// this is asked, so the queues alone can be empty while work exists.
+    pub fn has_schedulable_work(&self) -> bool {
+        self.has_runnable_threads()
+            || self.cpu_state.iter().any(|state| {
+                state.current_thread.is_some_and(|id| {
+                    id != state.idle_thread
+                        && self.get_thread(id).is_some_and(|thread| {
+                            matches!(thread.state, ThreadState::Ready | ThreadState::Running)
+                        })
+                })
+            })
+    }
+
     /// Check if scheduler has any userspace threads (ready, running, or blocked)
     pub fn has_userspace_threads(&self) -> bool {
         self.threads.iter().any(|t| {
