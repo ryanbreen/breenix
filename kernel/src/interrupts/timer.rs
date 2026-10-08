@@ -43,8 +43,9 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
     // Enter hardware IRQ context (increments HARDIRQ count)
     crate::per_cpu::irq_enter();
 
-    // Core time bookkeeping: increment TICKS counter (single atomic operation)
+    let previous_ticks = crate::time::get_ticks();
     crate::time::timer_interrupt();
+    let elapsed_ticks = crate::time::get_ticks().saturating_sub(previous_ticks);
 
     // Trace timer tick - compiles to ~5 instructions when disabled
     // Uses the TICKS counter value as payload for timing analysis
@@ -55,9 +56,9 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
         // Use raw pointer to avoid creating references to mutable static (Rust 2024 compatibility)
         let quantum_ptr = core::ptr::addr_of_mut!(CURRENT_QUANTUM);
 
-        if *quantum_ptr > 0 {
-            *quantum_ptr -= 1;
-        }
+        *quantum_ptr = quantum_ptr
+            .read()
+            .saturating_sub(elapsed_ticks.min(u32::MAX as u64) as u32);
 
         // Only reschedule when quantum expires - NOT every tick
         // Rescheduling on every tick prevents userspace from executing.
