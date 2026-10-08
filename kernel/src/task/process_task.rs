@@ -44,6 +44,13 @@ impl DeferredFaultExitBuffer {
         false
     }
 
+    #[cfg(target_arch = "x86_64")]
+    fn is_empty(&self) -> bool {
+        self.slots
+            .iter()
+            .all(|slot| slot.load(Ordering::Acquire) == DEFERRED_FAULT_EXIT_EMPTY)
+    }
+
     fn drain(&self, out: &mut alloc::vec::Vec<u64>) {
         for slot in &self.slots {
             let tid = slot.swap(DEFERRED_FAULT_EXIT_EMPTY, Ordering::AcqRel);
@@ -1044,7 +1051,12 @@ pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     };
 
     let idx = cpu.min(DEFERRED_FAULT_EXIT_BUFFERS.len().saturating_sub(1));
-    DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id)
+    let queued = DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
+        crate::task::kthread::kthread_unpark(daemon);
+    }
+    queued
 }
 
 /// Drain deferred kernel-fault exits from a normal scheduling context.
@@ -1055,6 +1067,36 @@ pub fn drain_deferred_fault_sigsegv_exits() {
     }
     for tid in tids {
         ProcessScheduler::handle_thread_exit(tid, -11);
+    }
+}
+
+/// x86_64: the kernel thread that runs deferred fault exits (#511).
+///
+/// An exit can block and takes locks other CPUs hold, so it runs in a thread
+/// of its own, which a dispatch saves and resumes. x86 restarts its idle
+/// thread at the top of `idle_loop` on every dispatch, abandoning whatever it
+/// was doing, so an exit drained from the idle loop could be cut off half
+/// done by the next tick.
+#[cfg(target_arch = "x86_64")]
+static FAULT_EXIT_DAEMON: spin::Once<crate::task::kthread::KthreadHandle> = spin::Once::new();
+
+/// x86_64: start the fault-exit kernel thread. Called once during boot,
+/// before any user process exists.
+#[cfg(target_arch = "x86_64")]
+pub fn start_fault_exit_daemon() {
+    FAULT_EXIT_DAEMON.call_once(|| {
+        crate::task::kthread::kthread_run(fault_exit_daemon, "kfaultexit")
+            .expect("could not spawn the fault-exit kernel thread")
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+fn fault_exit_daemon() {
+    loop {
+        drain_deferred_fault_sigsegv_exits();
+        crate::task::kthread::kthread_park_if(|| {
+            DEFERRED_FAULT_EXIT_BUFFERS.iter().all(|buf| buf.is_empty())
+        });
     }
 }
 

@@ -1833,7 +1833,6 @@ pub fn idle_loop() -> ! {
         // claim-lint:ok: the interrupts-enabled refusal is in
         // kernel/src/task/dispatch_strand_census.rs report_heartbeat_if_due().
         crate::task::report_dispatch_strand_census_heartbeat();
-        crate::task::process_task::drain_deferred_fault_sigsegv_exits();
         crate::task::process_task::reclaim_deferred_process_resources();
         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
         // from a context that exists AFTER every userspace thread is gone and
