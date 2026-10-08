@@ -1738,12 +1738,23 @@ fn x86_stack_owner_elsewhere(thread_id: u64, cpu: usize) -> Option<usize> {
 /// waiting for it with interrupts masked can deadlock, since the holder may be
 /// waiting for an interrupt routed to this CPU. Retrying after the `iretq`
 /// lets pending interrupts in first.
+///
+/// The reschedule vector outranks the timer and device vectors, so a retry
+/// that failed again and re-sent it at once would be taken ahead of them on
+/// every `iretq` for as long as the lock stayed held, and the holder may be
+/// waiting for one of them. While one is pending here no self-IPI is sent:
+/// they are taken first, and `RESCHED_REQUESTED` carries the retry to the next
+/// interrupt return through the scheduler, the tick's at the latest.
 #[cfg(target_arch = "x86_64")]
 pub fn retry_after_interrupts_x86() {
     let cpu = current_cpu_id_raw();
     if cpu < MAX_CPUS {
         RESCHED_REQUESTED[cpu].store(true, Ordering::Release);
-        send_reschedule_vector_x86(cpu);
+        if !crate::arch_impl::x86_64::apic::lower_vector_pending(
+            crate::interrupts::RESCHEDULE_VECTOR,
+        ) {
+            send_reschedule_vector_x86(cpu);
+        }
     }
 }
 
