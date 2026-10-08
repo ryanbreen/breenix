@@ -4011,8 +4011,8 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn handle_sync_exception", 4),
-    // #511: x86's user #PF and #GP no longer exit the process in exception
-    // context; they queue the deferred SIGSEGV exit the idle loop drains.
+    ("kernel/src/interrupts.rs", "fn general_protection_fault_handler", 1),
+    ("kernel/src/interrupts.rs", "fn page_fault_handler", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_by_pid", 1),
     ("kernel/src/syscall/signal.rs", "fn send_signal_to_process", 1),
 ];
