@@ -6390,6 +6390,9 @@ mod idle_release_probe {
     const ARMED: u8 = 0;
     const HOLDING: u8 = 1;
     const FINISHED: u8 = 2;
+    /// Claimed by one CPU, which records itself and the start time before it
+    /// publishes `HOLDING`, so a peer that sees `HOLDING` reads both.
+    const CLAIMING: u8 = 3;
     /// Halts to wait for a request and a tick before trying a later pass.
     const HOLD_HALTS: u32 = 500;
 
@@ -6435,23 +6438,26 @@ mod idle_release_probe {
             HOLDING => return,
             _ => {
                 if STATE
-                    .compare_exchange(ARMED, HOLDING, Ordering::AcqRel, Ordering::Acquire)
+                    .compare_exchange(ARMED, CLAIMING, Ordering::AcqRel, Ordering::Acquire)
                     .is_err()
                 {
                     return;
                 }
-                HOLDER_CPU.store(cpu, Ordering::Release);
-                HELD_SINCE_MS.store(crate::time::get_monotonic_time(), Ordering::Release);
+                HOLDER_CPU.store(cpu, Ordering::Relaxed);
+                HELD_SINCE_MS.store(crate::time::get_monotonic_time(), Ordering::Relaxed);
+                STATE.store(HOLDING, Ordering::Release);
             }
         }
         crate::serial::write_str_bounded("IDLE_RELEASE_PROBE: holding\n");
         let masked = !x86_64::instructions::interrupts::are_enabled();
         // A request can be raised by an interrupt that does not reschedule on
-        // its way out, so the pass ends only after a timer tick, which always
-        // does, has been taken with the request still pending.
+        // its way out, so the pass ends only after this CPU has taken its timer
+        // entry, which always does, with the request still pending. The witness
+        // is the tick this CPU's own timer entry last charged its quantum at:
+        // the global tick count also moves with every peer CPU's timer.
         let mut requested_at = None;
         for _ in 0..HOLD_HALTS {
-            let tick = crate::time::get_ticks();
+            let tick = crate::arch_impl::x86_64::percpu::X86PerCpu::quantum_tick();
             match requested_at {
                 Some(at) if tick != at => {
                     STATE.store(FINISHED, Ordering::Release);
