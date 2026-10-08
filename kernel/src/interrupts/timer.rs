@@ -12,7 +12,7 @@
 //! This handler is MINIMAL - it does the absolute minimum work required in interrupt context:
 //! 1. Updates the global timer tick count (via crate::time::timer_interrupt)
 //! 2. Decrements this CPU's time quantum
-//! 3. Sets need_resched flag if quantum expired
+//! 3. Sets need_resched flag if quantum expired, or on every tick while idle
 //! 4. Returns (EOI is sent in assembly just before IRETQ)
 //!
 //! DESIGN RATIONALE:
@@ -61,6 +61,14 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
         crate::per_cpu::set_quantum(TIME_QUANTUM); // Reset for next thread
     } else {
         crate::per_cpu::set_quantum(remaining);
+    }
+
+    // A CPU running its idle thread reschedules on every tick, as aarch64's
+    // tick does. Expired sleeps are woken by a scheduling pass, so without
+    // this an idle CPU noticed one only when its quantum ran out, up to 50 ms
+    // late. Two per-CPU reads; the pass finds nothing to run when nothing is due.
+    if crate::per_cpu::running_idle_thread() {
+        scheduler::set_need_resched();
     }
 
     // CRITICAL: EOI is sent by send_timer_eoi() called from timer_entry.asm
