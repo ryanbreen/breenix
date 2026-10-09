@@ -20,7 +20,7 @@
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 = never)
 #   --gate-timeout SECONDS  suite DONE deadline (default 1800), even with --idle-exit 0
 #   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
-#   --display            open QEMU's display window as well (default: serial only; on for desktop)
+#   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop
 #   --no-build           boot the kernel and disk already in target/
 #
@@ -91,7 +91,15 @@ case "$FBCONSOLE" in
     *) echo "unknown --fbconsole value: $FBCONSOLE (expected log)" >&2; exit 2 ;;
 esac
 if [ -z "$DISPLAY_MODE" ]; then
-    if [ "$MODE" = desktop ]; then DISPLAY_MODE=cocoa; else DISPLAY_MODE=none; fi
+    # On the operator's Mac every boot opens QEMU's window, as Parallels and VMware boots do, so a boot can be watched.
+    # BREENIX_QEMU_NOGUI=1 (unattended automation), an ssh session or a host without a window server stays serial-only.
+    if [ "$MODE" = desktop ]; then
+        DISPLAY_MODE=cocoa
+    elif [ "$(uname -s)" = Darwin ] && [ -z "${BREENIX_QEMU_NOGUI:-}" ] && [ -z "${SSH_CONNECTION:-}" ]; then
+        DISPLAY_MODE=cocoa
+    else
+        DISPLAY_MODE=none
+    fi
 fi
 DISPLAY_ARGS=(-display "$DISPLAY_MODE")
 MODE_ARGS=()
