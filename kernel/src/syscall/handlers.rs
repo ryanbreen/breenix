@@ -3263,16 +3263,14 @@ pub fn sys_getpid() -> SyscallResult {
         if let Some(thread_id) = scheduler_thread_id {
             // Find the process that owns this thread
             if let Some(ref manager) = *crate::process::manager() {
-                if let Some((pid, _process)) = manager.find_process_by_thread(thread_id) {
-                    // Return the process ID. Debug level: this runs under the
-                    // process manager, which every other CPU waits for while a
-                    // serial line is written.
-                    log::debug!(
-                        "sys_getpid: Found process {} for thread {}",
-                        pid.as_u64(),
-                        thread_id
-                    );
-                    return SyscallResult::Ok(pid.as_u64());
+                if let Some((pid, process)) = manager.find_process_by_thread(thread_id) {
+                    // Every thread of a process has its ID: the thread
+                    // group's. Debug level: this runs under the process
+                    // manager, which every other CPU waits for while a serial
+                    // line is written.
+                    let tgid = process.thread_group_id.unwrap_or(pid.as_u64());
+                    log::debug!("sys_getpid: Found process {} for thread {}", tgid, thread_id);
+                    return SyscallResult::Ok(tgid);
                 }
             }
 
@@ -3312,9 +3310,16 @@ pub fn sys_getppid() -> SyscallResult {
         if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
             // Find the process that owns this thread
             if let Some(ref manager) = *crate::process::manager() {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                if let Some((pid, process)) = manager.find_process_by_thread(thread_id) {
+                    // A thread's row records the thread that created it as
+                    // its parent; the process's parent is its leader's.
+                    let leader = process
+                        .thread_group_id
+                        .and_then(|tgid| manager.get_process(crate::process::ProcessId::new(tgid)))
+                        .filter(|leader| leader.id != pid)
+                        .unwrap_or(process);
                     // Return parent PID if set, otherwise 1 (init)
-                    if let Some(parent) = process.parent {
+                    if let Some(parent) = leader.parent {
                         return SyscallResult::Ok(parent.as_u64());
                     }
                     return SyscallResult::Ok(1); // init
