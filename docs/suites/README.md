@@ -233,8 +233,15 @@ the kernel's 32 to 64, before a C library reserves any for itself.
 Each case uses the runner's default 10-second deadline. Waits on other processes are
 bounded at 3 seconds (6 for an exec) and stop 1.5 seconds before the deadline; a wait for a
 signal that may never come (sigsuspend, pause, sigwaitinfo) is ended by a watchdog child
-sending SIGHUP after 3 to 4 seconds, so a lost signal is reported as such. Children that
-must be blocked before they are signalled are observed through `/proc/<pid>/status`.
+sending SIGHUP after 3 to 6 seconds, and the case fails when that signal is what ended the
+wait, so a lost signal is reported as such. Children that must be blocked before they are
+signalled are observed through `/proc/<pid>/status`.
+
+The two register cases need handlers to land in the middle of a computation: each run is
+sized to outlast a timer tick and has no system call in it, and a case needs ten handlers
+to have interrupted a run. The floating-point case holds known values in v0-v31 or
+xmm0-xmm15 with inline asm, and its handler overwrites them; the x86-64 userspace target is
+built without SSE, so compiled code there never uses those registers.
 Permission cases switch to user IDs 4242 and 4343 in children; the suite itself runs as
 root. Two cases need two processors (`handlers/spinning-target` and
 `job-control/stop-threads`) and skip below that; none assumes more.
@@ -248,5 +255,5 @@ scripts/boot-interactive.sh --mode suite --suite signals
 ./run.sh --parallels --suite signals
 ./run.sh --vmware --suite signals
 # From tools/breenix-runs:
-swift run breenix-runs run x86 --mode suite --boots 1 --suite signals --gate-timeout 1800 --sha <pushed-sha>
+swift run breenix-runs run x86 --mode full --boots 1 --suite signals --gate-timeout 420 --sha <pushed-sha>
 ```
