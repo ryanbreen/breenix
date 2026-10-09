@@ -172,6 +172,10 @@ pub fn setup_cow_pages_with_vmas(
 ) -> Result<usize, &'static str> {
     let mut pages_shared = 0;
     let mut cow_error: Option<&'static str> = None;
+    // x86_64: whether a parent page lost its write permission, so the parent's
+    // translations are flushed once below rather than page by page.
+    #[cfg(target_arch = "x86_64")]
+    let mut parent_write_protected = false;
 
     // NOTE: No logging in this function — called from fork under PM lock which
     // disables interrupts on ARM64. Logger lock contention = permanent deadlock.
@@ -232,7 +236,14 @@ pub fn setup_cow_pages_with_vmas(
             // allowing writes without triggering page faults. This causes memory
             // corruption since parent and child would write to the same physical frame.
             // Every CPU running a thread of the parent must lose it, not only
-            // this one.
+            // this one. On x86_64 every other online CPU answers each flush by
+            // NMI, so the flush is made once for the whole address space after
+            // this loop, as Linux flushes once at the end of a fork's copy.
+            #[cfg(target_arch = "x86_64")]
+            {
+                parent_write_protected = true;
+            }
+            #[cfg(not(target_arch = "x86_64"))]
             crate::memory::tlb::flush_page(virt_addr);
 
             // Map same frame in child with CoW flags
@@ -250,6 +261,14 @@ pub fn setup_cow_pages_with_vmas(
         }
 
         pages_shared += 1;
+    }
+
+    // Before any return, error included: no page this call write-protected may
+    // keep a writable translation on any CPU. The forking thread is in the
+    // kernel and writes no user memory until then.
+    #[cfg(target_arch = "x86_64")]
+    if parent_write_protected {
+        crate::memory::tlb::flush_all();
     }
 
     if let Some(err) = cow_error {

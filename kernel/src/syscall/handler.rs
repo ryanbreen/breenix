@@ -145,18 +145,14 @@ pub fn is_ring3_confirmed() -> bool {
     RING3_CONFIRMED.load(Ordering::Relaxed)
 }
 
-/// Raw serial string output - no locks, no allocations.
-/// Used for boot markers where locking would deadlock.
+/// Serial string output for the once-per-boot marker below. It allocates
+/// nothing and waits on SERIAL1 for a bounded time only: up to 2^20 try_lock
+/// attempts with interrupts masked, then straight to the port, so another
+/// CPU's output cannot interleave with it byte by byte.
 #[inline(always)]
 fn raw_serial_str_local(s: &str) {
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port: Port<u8> = Port::new(0x3F8);
-        for &byte in s.as_bytes() {
-            port.write(byte);
-        }
-    }
+    crate::serial::write_str_bounded(s);
 }
 
 /// Emit one-time marker when first syscall from Ring 3 (userspace) is received.
@@ -630,8 +626,8 @@ pub extern "C" fn trace_iretq_to_ring3(_frame_ptr: *const u64) {
 /// a timer interrupt fires.
 ///
 /// PERFORMANCE NOTE: This function uses try_manager() to avoid blocking if the
-/// process manager lock is held. If the lock is unavailable, signals will be
-/// delivered on the next timer interrupt instead.
+/// process manager lock is held. If the lock is unavailable, it requests the
+/// reschedule check on this return, whose signal delivery runs before Ring 3.
 fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
     // A stop holds the thread, outside PM, until SIGCONT; what is pending then
     // is checked again, in this loop rather than by recursion.
@@ -658,9 +654,12 @@ fn deliver_signals_on_syscall_return(frame: &mut SyscallFrame) -> bool {
     let mut manager_guard = match crate::process::try_manager() {
         Some(guard) => guard,
         None => {
-            // Lock held, skip signal check - will happen on next timer
-            // interrupt. A deferred SIGKILL cannot wait for that.
+            // Lock held: the signal check moves to this return's reschedule
+            // check (syscall/entry.asm), which delivers before Ring 3 and
+            // waits out a holder on another CPU. A deferred SIGKILL cannot
+            // wait for that.
             crate::signal::delivery::exit_if_killed_on_syscall_return();
+            crate::per_cpu::set_need_resched(true);
             return false;
         }
     };

@@ -33,6 +33,27 @@ pub(crate) fn is_usable_address(address: u64) -> bool {
 /// - Legacy device memory (VGA, etc)
 const LOW_MEMORY_FLOOR: u64 = 0x100000; // 1 MiB
 
+/// Pages the x86 application-processor startup trampoline needs below 1 MiB:
+/// its code page and the three page-table pages of its identity map.
+#[cfg(target_arch = "x86_64")]
+pub const AP_TRAMPOLINE_PAGES: u64 = 4;
+
+/// Base of a run of `AP_TRAMPOLINE_PAGES` usable pages below 1 MiB, or 0 when
+/// the firmware reported none. A startup IPI can only start a processor at a
+/// page below 1 MiB, and the allocator never hands out pages below its floor,
+/// so nothing else in the kernel uses this run.
+#[cfg(target_arch = "x86_64")]
+static AP_TRAMPOLINE_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The low run recorded for the x86 application-processor trampoline.
+#[cfg(target_arch = "x86_64")]
+pub fn ap_trampoline_base() -> Option<u64> {
+    match AP_TRAMPOLINE_BASE.load(Ordering::Acquire) {
+        0 => None,
+        base => Some(base),
+    }
+}
+
 /// A memory region descriptor
 #[derive(Debug, Clone, Copy)]
 struct UsableRegion {
@@ -223,6 +244,41 @@ static EXTERNAL_LEAF_SPANS: Mutex<[ExternalLeafSpan; MAX_EXTERNAL_LEAF_SPANS]> =
 /// capacity is prepared before sequential frames become visible and returns
 /// refuse at the exact boundary rather than reallocating.
 static FREE_FRAMES: Mutex<Vec<PhysFrame>> = Mutex::new(Vec::new());
+
+/// x86_64: the logical CPU holding `FREE_FRAMES` through `with_free_frames`,
+/// or `usize::MAX`.
+#[cfg(target_arch = "x86_64")]
+static FREE_FRAMES_OWNER: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// x86_64: run `f` on the free list. A holder on another CPU is waited for;
+/// `f` gets `None` only when this CPU already holds it, which happens when the
+/// capacity reservation below grows the heap and the heap allocates a frame.
+///
+/// The list used to be try-locked everywhere. With one CPU a busy lock could
+/// only mean such nesting, and the fallbacks fit it: an allocation took the
+/// next frame past the frontier, a return was dropped. With several CPUs it
+/// is usually held by another CPU for a push or a pop, and every frame
+/// returned while it was held was lost: free in the ledger, on no list.
+/// Interrupts are masked for the hold, so no holder is ever interrupted or
+/// switched out with it held.
+#[cfg(target_arch = "x86_64")]
+fn with_free_frames<R>(f: impl FnOnce(Option<&mut Vec<PhysFrame>>) -> R) -> R {
+    crate::arch_without_interrupts(|| {
+        let me = crate::per_cpu::cpu_id();
+        loop {
+            if let Some(mut free_list) = FREE_FRAMES.try_lock() {
+                FREE_FRAMES_OWNER.store(me, Ordering::Relaxed);
+                let result = f(Some(&mut free_list));
+                FREE_FRAMES_OWNER.store(usize::MAX, Ordering::Relaxed);
+                return result;
+            }
+            if FREE_FRAMES_OWNER.load(Ordering::Relaxed) == me {
+                return f(None);
+            }
+            core::hint::spin_loop();
+        }
+    })
+}
 
 /// Test-only flag to simulate OOM conditions
 ///
@@ -617,17 +673,27 @@ fn ensure_free_frame_capacity(required: usize) -> PrepareFrame {
     if FREE_FRAME_CAPACITY.load(Ordering::Acquire) >= required {
         return PrepareFrame::Ready;
     }
-    let Some(mut free_list) = FREE_FRAMES.try_lock() else {
-        return PrepareFrame::Contended;
-    };
-    if free_list.capacity() < required {
-        let additional = required.saturating_sub(free_list.len());
-        if free_list.try_reserve(additional).is_err() {
-            return PrepareFrame::Exhausted;
+    let reserve = |free_list: &mut Vec<PhysFrame>| {
+        if free_list.capacity() < required {
+            let additional = required.saturating_sub(free_list.len());
+            if free_list.try_reserve(additional).is_err() {
+                return PrepareFrame::Exhausted;
+            }
         }
+        FREE_FRAME_CAPACITY.store(free_list.capacity(), Ordering::Release);
+        PrepareFrame::Ready
+    };
+    #[cfg(target_arch = "x86_64")]
+    {
+        with_free_frames(|free_list| free_list.map_or(PrepareFrame::Contended, reserve))
     }
-    FREE_FRAME_CAPACITY.store(free_list.capacity(), Ordering::Release);
-    PrepareFrame::Ready
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let Some(mut free_list) = FREE_FRAMES.try_lock() else {
+            return PrepareFrame::Contended;
+        };
+        reserve(&mut free_list)
+    }
 }
 
 fn prepare_frame_for_allocation(index: usize) -> PrepareFrame {
@@ -703,6 +769,16 @@ pub fn init(memory_regions: &'static MemoryRegions) {
 
     // Extract usable regions, excluding low memory below the floor
     for region in memory_regions.iter() {
+        // A usable run below the VGA hole that holds the AP startup
+        // trampoline; page 0 (real-mode interrupt vectors) is never used.
+        #[cfg(target_arch = "x86_64")]
+        if region.kind == MemoryRegionKind::Usable {
+            let start = region.start.max(0x1000).next_multiple_of(4096);
+            let end = region.end.min(0xA0000) & !0xfff;
+            if end >= start + AP_TRAMPOLINE_PAGES * 4096 {
+                AP_TRAMPOLINE_BASE.store(end - AP_TRAMPOLINE_PAGES * 4096, Ordering::Release);
+            }
+        }
         if region.kind == MemoryRegionKind::Usable {
             // Skip regions entirely below the low memory floor
             if region.end <= LOW_MEMORY_FLOOR {
@@ -829,7 +905,12 @@ fn allocate_candidate() -> Option<PhysFrame> {
     }
 
     // Try to reuse a frame from the free list (all architectures).
+    #[cfg(target_arch = "x86_64")]
+    if let Some(frame) = with_free_frames(|free_list| free_list.and_then(|list| list.pop())) {
+        return Some(frame);
+    }
     // Uses try_lock() to avoid deadlock if called from interrupt context.
+    #[cfg(not(target_arch = "x86_64"))]
     if let Some(mut free_list) = FREE_FRAMES.try_lock() {
         if let Some(frame) = free_list.pop() {
             log::trace!(
@@ -1109,7 +1190,7 @@ pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {
         }
     }
 
-    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
+    let push = |free_list: &mut Vec<PhysFrame>| {
         // This explicit boundary check is the release-build proof that push
         // cannot grow the Vec on any ledger-backed return path.
         if free_list.len() == free_list.capacity() {
@@ -1117,6 +1198,16 @@ pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {
         }
         free_list.push(lease.frame);
         ReturnOutcome::Returned
+    };
+    #[cfg(target_arch = "x86_64")]
+    {
+        with_free_frames(|free_list| {
+            free_list.map_or_else(|| counted(ReturnOutcome::LostContended), push)
+        })
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
+        push(&mut free_list)
     } else {
         counted(ReturnOutcome::LostContended)
     }

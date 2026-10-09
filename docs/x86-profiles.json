@@ -50,7 +50,7 @@
   {
     "name": "smp4",
     "title": "Four CPUs",
-    "summary": "Configures four CPUs, as the default profile now does; Breenix currently brings only the boot CPU online (issue #1179).",
+    "summary": "Configures four CPUs, as the default profile does; Breenix brings all four online.",
     "devices": "pc; OVMF; 3 legacy virtio-blk; e1000; virtio-vga; 4 configured CPUs"
   }
 ]

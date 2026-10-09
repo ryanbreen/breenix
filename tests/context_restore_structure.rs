@@ -1113,13 +1113,19 @@ fn validate_dispatch_guard_precheck(source: &str) -> Result<(), String> {
         .ok_or_else(|| "missing fn check_need_resched_and_switch".to_string())?;
     let (binding_offset, initializer) = binding_initializer(body, "process_manager_guard")?;
     let compact_initializer = normalized_code(initializer).replace(' ', "");
+    // Either non-blocking acquisition: the single attempt, or x86_64's
+    // bounded poll of it.
     if compact_initializer
         .matches("crate::process::try_manager()")
         .count()
+        + compact_initializer
+            .matches("crate::process::poll_manager()")
+            .count()
         != 1
     {
         return Err(
-            "process_manager_guard is not bound exactly once from crate::process::try_manager()"
+            "process_manager_guard is not bound exactly once from crate::process::try_manager() \
+             or crate::process::poll_manager()"
                 .to_string(),
         );
     }

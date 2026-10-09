@@ -571,6 +571,42 @@ pub fn try_manager() -> Option<TryProcessManagerGuard> {
     }
 }
 
+/// How long an interrupt return polls a busy process manager before it gives
+/// up and retries after a self-IPI.
+#[cfg(target_arch = "x86_64")]
+const INTERRUPT_RETURN_PM_POLL_US: u64 = 200;
+
+/// x86_64: `try_manager` for an interrupt return to Ring 3 or an idle CPU's
+/// dispatch, polling the lock for up to `INTERRUPT_RETURN_PM_POLL_US` while
+/// another CPU holds it.
+///
+/// Those paths cannot wait indefinitely: the holder may be waiting for an
+/// interrupt routed to this CPU, which is why a failure is retried after a
+/// self-IPI, once pending interrupts have been taken. A single attempt per
+/// retry lost to a CPU taking the lock back to back -- a process polling
+/// `waitpid`, or one whose small allocations are each an mmap or munmap -- and
+/// with four CPUs online a thread went 4 to 13 ms without reaching Ring 3,
+/// every attempt landing inside a hold. Polling takes the lock at the holder's
+/// next release, and the bound keeps the interrupt the holder may need from
+/// waiting longer than that.
+#[cfg(target_arch = "x86_64")]
+pub fn poll_manager() -> Option<TryProcessManagerGuard> {
+    if process_manager_held_on_current_cpu() {
+        return None;
+    }
+    let budget = crate::time::tsc::frequency_hz() / 1_000_000 * INTERRUPT_RETURN_PM_POLL_US;
+    let start = crate::time::tsc::read_tsc();
+    loop {
+        if let Some(guard) = try_manager() {
+            return Some(guard);
+        }
+        if crate::time::tsc::read_tsc().wrapping_sub(start) >= budget {
+            return None;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// Create a new user process using the new architecture
 /// Note: Uses architecture-specific ELF loader and process creation
 #[allow(dead_code)]

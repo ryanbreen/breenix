@@ -829,6 +829,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
 
+            // A page another CPU was remapping under the process manager when
+            // this EL0 access found it: retried once the change is complete.
+            if from_el0 && el0_fault_raced_mapping(far, iss) {
+                return;
+            }
+
             // A kernel fault on a user address at one of the user-copy
             // routine's unprivileged accesses is the syscall's bad pointer,
             // not a kernel bug: resume at the routine's fault exit, which
@@ -2532,6 +2538,67 @@ fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
 ///
 /// Returns true if the fault was handled (page was copied or made writable)
 /// Returns false if this wasn't a CoW fault or couldn't be handled
+/// Whether an EL0 data abort at `far` raced a mapping change another CPU made
+/// under the process manager. A copy-on-write break clears the entry, flushes
+/// every CPU and maps the new frame (break-before-make), so another thread of
+/// the process touching the page in between takes a translation fault. The
+/// walk runs once the process manager is free, which the change holds
+/// throughout; when the page now allows the access, the fault was spurious:
+/// this CPU's entry for the page is dropped and the access is retried, as
+/// Linux does when the entry is valid by the time it looks.
+fn el0_fault_raced_mapping(far: u64, iss: u32) -> bool {
+    const HHDM: u64 = 0xFFFF_0000_0000_0000;
+    const ADDRESS: u64 = 0x0000_FFFF_FFFF_F000;
+    let dfsc = iss & 0x3F;
+    if !(0x04..=0x07).contains(&dfsc) && !(0x0D..=0x0F).contains(&dfsc) {
+        return false;
+    }
+    let write = (iss >> 6) & 1 == 1;
+    // An EL0 fault interrupted no holder on this CPU, so this waits only for
+    // one on another CPU.
+    let _guard = crate::process::manager();
+    let ttbr0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+    let mut table = ttbr0 & ADDRESS;
+    for level in 0..4u64 {
+        let index = ((far >> (39 - 9 * level)) & 0x1FF) as usize;
+        // SAFETY: `table` is a page-table page of the current address space,
+        // reached from TTBR0 through valid table descriptors, and the direct
+        // map covers it.
+        let entry = unsafe { core::ptr::read_volatile(((HHDM + table) as *const u64).add(index)) };
+        // User memory is mapped with pages only: anything but a valid table
+        // descriptor above level 3, or a valid page descriptor at it, is a
+        // real fault.
+        if entry & 0b11 != 0b11 {
+            return false;
+        }
+        if level == 3 {
+            let el0_access = entry & (1 << 6) != 0;
+            let read_only = entry & (1 << 7) != 0;
+            let accessed = entry & (1 << 10) != 0;
+            if !el0_access || !accessed || (write && read_only) {
+                return false;
+            }
+            // SAFETY: invalidates this CPU's translations of one page.
+            unsafe {
+                core::arch::asm!(
+                    "dsb nshst",
+                    "tlbi vaae1, {page}",
+                    "dsb nsh",
+                    "isb",
+                    page = in(reg) (far >> 12) & ((1 << 44) - 1),
+                    options(nostack)
+                );
+            }
+            return true;
+        }
+        table = entry & ADDRESS;
+    }
+    false
+}
+
 fn handle_cow_fault_arm64(far: u64, iss: u32, from_el0: bool) -> bool {
     // An EL1 write under PM cannot wait for its own interrupted holder.
     if !from_el0 && crate::process::process_manager_held_on_current_cpu() {

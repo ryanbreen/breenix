@@ -280,6 +280,8 @@ pub(crate) fn report_userspace_completion() {
             crate::task::exit_tally::FailureList::new(failures, nonzero),
             crate::task::exit_tally::started()
         );
+        #[cfg(target_arch = "x86_64")]
+        crate::arch_impl::x86_64::smp::report_user_dispatches();
 
         if nonzero == 0 {
             report_line!(info, "=====================================");
@@ -3264,8 +3266,10 @@ pub fn sys_getpid() -> SyscallResult {
             // Find the process that owns this thread
             if let Some(ref manager) = *crate::process::manager() {
                 if let Some((pid, _process)) = manager.find_process_by_thread(thread_id) {
-                    // Return the process ID
-                    log::info!(
+                    // Return the process ID. Debug level: this runs under the
+                    // process manager, which every other CPU waits for while a
+                    // serial line is written.
+                    log::debug!(
                         "sys_getpid: Found process {} for thread {}",
                         pid.as_u64(),
                         thread_id

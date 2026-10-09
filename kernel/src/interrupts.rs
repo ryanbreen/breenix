@@ -41,6 +41,13 @@ pub enum InterruptIndex {
 /// System call interrupt vector (INT 0x80)
 pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
 
+/// Reschedule IPI vector. Its gate is the timer entry, so a reschedule IPI
+/// returns through `check_need_resched_and_switch`, the interrupt-return path
+/// that performs context switches, exactly as a tick does. The tick handler it
+/// also runs charges this CPU's quantum by elapsed ticks and reads the tick
+/// count from the TSC, so an extra entry changes neither.
+pub const RESCHEDULE_VECTOR: u8 = 0xf0;
+
 // Assembly entry points
 extern "C" {
     #[allow(dead_code)]
@@ -134,6 +141,7 @@ pub fn init_idt() {
                 // For now, use the low address directly - it should work since we preserve PML4[0]
                 log::warn!("Using low-half address for timer entry (temporary workaround)");
                 idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(timer_entry_low));
+                idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_low));
             } else {
                 let timer_entry_high = crate::memory::layout::high_alias_from_low(timer_entry_low);
                 log::info!(
@@ -143,6 +151,7 @@ pub fn init_idt() {
                 );
                 idt[InterruptIndex::Timer.as_u8()]
                     .set_handler_addr(VirtAddr::new(timer_entry_high));
+                idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_high));
             }
         }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
@@ -210,6 +219,7 @@ pub fn init_idt() {
                 && i != InterruptIndex::Irq10.as_u8()
                 && i != InterruptIndex::Irq11.as_u8()
                 && i != SYSCALL_INTERRUPT_ID
+                && i != RESCHEDULE_VECTOR
             {
                 idt[i].set_handler_fn(generic_handler);
             }
@@ -301,19 +311,8 @@ pub extern "C" fn rust_breakpoint_handler(frame_ptr: *mut u64) {
     // Note: CLI and swapgs already handled by assembly entry
     // No need to disable interrupts here
 
-    // Raw serial output FIRST to confirm we're in BP handler
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x42", // 'B' for Breakpoint
-            "out dx, al",
-            "mov al, 0x50", // 'P' for bP
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-    }
-
-    // Use serial_println first - it might work even if log doesn't
+    // Whole lines under SERIAL1 only: with several CPUs online, bytes written
+    // straight to the port land inside another CPU's line.
     crate::serial_println!("BP_HANDLER_ENTRY!");
 
     // Enter exception context - use preempt_disable for exceptions (not IRQs)
@@ -344,18 +343,6 @@ pub extern "C" fn rust_breakpoint_handler(frame_ptr: *mut u64) {
         crate::serial_println!("BP from_userspace={}, CS={:#x}", from_userspace, cs);
 
         if from_userspace {
-            // Raw serial output for userspace breakpoint - SUCCESS!
-            core::arch::asm!(
-                "mov dx, 0x3F8",
-                "mov al, 0x55", // 'U' for Userspace
-                "out dx, al",
-                "mov al, 0x33", // '3' for Ring 3
-                "out dx, al",
-                "mov al, 0x21", // '!' for success
-                "out dx, al",
-                options(nostack, nomem, preserves_flags)
-            );
-
             // Use only serial output to avoid framebuffer issues
             crate::serial_println!("🎉 BREAKPOINT from USERSPACE - Ring 3 SUCCESS!");
             crate::serial_println!("  RIP: {:#x}, CS: {:#x} (RPL={})", rip, cs, cs & 3);
@@ -691,11 +678,17 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
 /// holding section itself (a kernel write to user memory under PM, such as
 /// signal-frame setup during a dispatch), and the edit runs on that section's
 /// behalf through `handle_cow_direct`. Otherwise the holder is running on
-/// another CPU, and the fault waits for it.
+/// another CPU: a fault taken with interrupts enabled is retried, and one
+/// taken with them masked waits for it.
 /// Copy-on-Write statistics - re-export from architecture-independent module
 pub use crate::memory::cow_stats;
 
-fn handle_cow_fault(faulting_addr: VirtAddr, error_code: PageFaultErrorCode, cr3: u64) -> bool {
+fn handle_cow_fault(
+    faulting_addr: VirtAddr,
+    error_code: PageFaultErrorCode,
+    cr3: u64,
+    may_retry: bool,
+) -> bool {
     // CoW faults are:
     // - Protection violation (page is present but not writable)
     // - Caused by write
@@ -719,6 +712,13 @@ fn handle_cow_fault(faulting_addr: VirtAddr, error_code: PageFaultErrorCode, cr3
             cow_stats::DIRECT_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             return handle_cow_direct(&held, faulting_addr, cr3);
         }
+        // Held on another CPU, whose holder may be waiting for an interrupt
+        // routed here. Code that faulted with interrupts enabled runs the
+        // write again once they have been taken, and faults again until the
+        // lock is free; only code that faulted with them masked waits here.
+        if may_retry {
+            return true;
+        }
         core::hint::spin_loop();
     }
 }
@@ -732,6 +732,7 @@ fn file_mapping_fault(
     error_code: PageFaultErrorCode,
     cr3: u64,
     user_thread: Option<u64>,
+    may_retry: bool,
 ) -> crate::memory::file_map::FaultOutcome {
     use crate::memory::file_map::{handle_fault, Access, FaultOutcome};
     if error_code.contains(PageFaultErrorCode::MALFORMED_TABLE) {
@@ -758,8 +759,55 @@ fn file_mapping_fault(
         if crate::process::pm_held_on_this_cpu().is_some() {
             return FaultOutcome::NotFile;
         }
+        // Held on another CPU: retried as for a copy-on-write fault.
+        if may_retry {
+            return FaultOutcome::Resolved;
+        }
         core::hint::spin_loop();
     }
+}
+
+/// A write protection fault on a user page that every level of `cr3`'s
+/// tables already makes present, writable and user-accessible came through a
+/// stale read-only translation on this CPU: a copy-on-write sole-owner upgrade
+/// flushes only the CPU that made it. Drop the stale entry and report the
+/// fault resolved, as x86 Linux treats a spurious write fault.
+fn resolve_stale_write_translation(cr3: u64, addr: VirtAddr) -> bool {
+    use x86_64::structures::paging::PageTableFlags;
+
+    resolve_stale_translation(
+        cr3,
+        addr,
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+    )
+}
+
+/// Whether every level of `cr3`'s tables maps the user page at `addr` with
+/// `needed`; if so, drop this CPU's entry for it and report the fault resolved.
+fn resolve_stale_translation(
+    cr3: u64,
+    addr: VirtAddr,
+    needed: x86_64::structures::paging::PageTableFlags,
+) -> bool {
+    use x86_64::structures::paging::{PageTable, PageTableFlags};
+
+    let phys_offset = crate::memory::physical_memory_offset();
+    let mut table_phys = cr3 & !0xfff;
+    for level in (0..4).rev() {
+        let index = ((addr.as_u64() >> (12 + 9 * level)) & 0x1FF) as usize;
+        // SAFETY: `table_phys` is a page-table frame of the faulting address
+        // space, reached from its root through present entries, and the
+        // physical-memory window maps it.
+        let table: &PageTable = unsafe { &*(phys_offset + table_phys).as_ptr::<PageTable>() };
+        let entry = &table[index];
+        let flags = entry.flags();
+        if !flags.contains(needed) || (level > 0 && flags.contains(PageTableFlags::HUGE_PAGE)) {
+            return false;
+        }
+        table_phys = entry.addr().as_u64();
+    }
+    x86_64::instructions::tlb::flush(addr);
+    true
 }
 
 /// Handle CoW fault through the process manager (normal path)
@@ -796,6 +844,10 @@ fn handle_cow_with_manager(
         None => return false,
     };
 
+    if resolve_stale_write_translation(cr3, faulting_addr) {
+        return true;
+    }
+
     // Check if this is actually a CoW page
     if !is_cow_page(old_flags) {
         return false;
@@ -807,7 +859,12 @@ fn handle_cow_with_manager(
         if page_table.update_page_flags(page, new_flags).is_err() {
             return false;
         }
-        X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
+        // A permission upgrade: another CPU still holding the read-only
+        // translation takes a spurious write fault, which
+        // `resolve_stale_write_translation` resolves, so only this CPU's
+        // entry is dropped. A flush of every CPU here cost an NMI
+        // round per page a parent wrote after its forked child exited.
+        x86_64::instructions::tlb::flush(faulting_addr);
         cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         return true;
     }
@@ -923,6 +980,10 @@ fn handle_cow_direct(
         let old_flags = l1_entry.flags();
         let old_frame = PhysFrame::<Size4KiB>::containing_address(l1_entry.addr());
 
+        if resolve_stale_write_translation(cr3, faulting_addr) {
+            return true;
+        }
+
         // Check if this is a CoW page
         if !is_cow_page(old_flags) {
             return false;
@@ -930,10 +991,11 @@ fn handle_cow_direct(
 
         // Check if we're the only reference
         if !frame_is_shared(old_frame) {
-            // Sole owner - just update flags to make writable
+            // Sole owner - just update flags to make writable. A permission
+            // upgrade, flushed on this CPU only, as in `handle_cow_with_manager`.
             let new_flags = make_private_flags(old_flags);
             l1_entry.set_addr(l1_entry.addr(), new_flags);
-            X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
+            x86_64::instructions::tlb::flush(faulting_addr);
             cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             return true;
         }
@@ -990,7 +1052,14 @@ fn in_user_stack_growth_range(fault_addr: u64) -> bool {
 /// stacks to grow on demand up to MAX_USER_STACK_SIZE without pre-allocating memory.
 ///
 /// Returns true if the fault was handled (stack was grown), false otherwise.
-fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
+///
+/// With `may_retry` (the faulting code had interrupts enabled), a process
+/// manager busy on another CPU returns true without growing anything: the
+/// faulting instruction runs again once pending interrupts have been taken,
+/// and faults again until the lock is free. Waiting for it here, with
+/// interrupts masked, could deadlock against a holder waiting for an interrupt
+/// routed to this CPU.
+fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bool {
     use crate::memory::layout::MAX_USER_STACK_SIZE;
     use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
 
@@ -1000,10 +1069,11 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
         return false;
     }
 
-    // Try to acquire the process manager lock
+    // A holder on this CPU is the section this fault interrupted, which
+    // cannot be waited for; no stack is grown on its behalf.
     let mut guard = match crate::process::try_manager() {
-        Some(g) => g,
-        None => return false,
+        Some(guard) => guard,
+        None => return may_retry && crate::process::pm_held_on_this_cpu().is_none(),
     };
 
     let pm = match guard.as_mut() {
@@ -1083,7 +1153,9 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
             let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
             return false;
         }
-        X86PageTableOps::flush_tlb_page(addr);
+        // The page was not present, and x86 caches no translation for a
+        // non-present page, so no other CPU has one to drop.
+        x86_64::instructions::tlb::flush(VirtAddr::new(addr));
         process.user_stack_bottom = addr;
     }
 
@@ -1098,6 +1170,11 @@ extern "x86-interrupt" fn page_fault_handler(
 
     // Read CR2 and CR3 first
     let cr2 = Cr2::read().unwrap_or(x86_64::VirtAddr::zero()).as_u64();
+    // Whether the faulting code had interrupts enabled, so that a fault that
+    // finds the process manager busy on another CPU can return and run again.
+    let may_retry = stack_frame
+        .cpu_flags
+        .contains(x86_64::registers::rflags::RFlags::INTERRUPT_FLAG);
     let cr3 = {
         use x86_64::registers::control::Cr3;
         let (frame, _) = Cr3::read();
@@ -1128,11 +1205,11 @@ extern "x86-interrupt" fn page_fault_handler(
             crate::per_cpu::preempt_disable();
             let addr = x86_64::VirtAddr::new(cr2);
             let resolved = if is_potential_cow {
-                handle_cow_fault(addr, error_code, cr3)
+                handle_cow_fault(addr, error_code, cr3, may_retry)
             } else {
                 (!error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
-                    && handle_stack_growth(addr, cr3))
-                    || file_mapping_fault(cr2, error_code, cr3, None)
+                    && handle_stack_growth(addr, cr3, may_retry))
+                    || file_mapping_fault(cr2, error_code, cr3, None, may_retry)
                         == crate::memory::file_map::FaultOutcome::Resolved
             };
             crate::per_cpu::preempt_enable();
@@ -1167,6 +1244,7 @@ extern "x86-interrupt" fn page_fault_handler(
             } else {
                 None
             },
+            may_retry,
         );
         crate::per_cpu::preempt_enable();
         match outcome {
@@ -1205,73 +1283,9 @@ extern "x86-interrupt" fn page_fault_handler(
     // Use the cr2 value we already read safely above (line 894)
     let accessed_addr = x86_64::VirtAddr::new(cr2);
 
-    // Skip raw serial output for faults resolved quietly
-    if !quiet {
-        // Use raw serial output for critical info to avoid recursion
-        unsafe {
-            // Output 'P' for page fault
-            core::arch::asm!(
-                "mov dx, 0x3F8",
-                "mov al, 0x50", // 'P'
-                "out dx, al",
-                options(nostack, nomem, preserves_flags)
-            );
-
-            // Output 'F' for fault
-            core::arch::asm!(
-                "mov dx, 0x3F8",
-                "mov al, 0x46", // 'F'
-                "out dx, al",
-                options(nostack, nomem, preserves_flags)
-            );
-
-            // Check error code bits
-            let error_bits = error_code.bits();
-            if error_bits & 1 == 0 {
-                // Not present
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x30", // '0' for not present
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            } else {
-                // Protection violation
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x31", // '1' for protection
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            }
-
-            // Check if fault is at 0x400000 (our int3 page)
-            if accessed_addr.as_u64() == 0x400000 {
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x34", // '4' for 0x400000
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            } else if accessed_addr.as_u64() >= 0x800000 && accessed_addr.as_u64() < 0x900000 {
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x38", // '8' for stack area
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            } else {
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x3F", // '?' for other
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            }
-        }
-    }
-
-    // Only print verbose diagnostics for faults not resolved quietly
+    // Only print verbose diagnostics for faults not resolved quietly, and
+    // only as whole lines under SERIAL1: with several CPUs online, bytes
+    // written straight to the port land inside another CPU's line.
     if !quiet {
         // Emergency output to confirm we're in page fault handler
         crate::serial_println!("PF_ENTRY!");
@@ -1305,30 +1319,6 @@ extern "x86-interrupt" fn page_fault_handler(
         );
     }
 
-    // Quick debug output for int3 test - only for faults not resolved quietly
-    if !quiet {
-        unsafe {
-            // Output 'F' for Fault
-            core::arch::asm!(
-                "mov dx, 0x3F8",
-                "mov al, 0x46", // 'F'
-                "out dx, al",
-                options(nostack, nomem, preserves_flags)
-            );
-
-            // Check if it's 0x400000 (our int3 page)
-            if accessed_addr.as_u64() == 0x400000 {
-                // Output '4' to indicate fault at 0x400000
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x34", // '4'
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            }
-        }
-    }
-
     // Check if this came from userspace
     let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
 
@@ -1350,7 +1340,7 @@ extern "x86-interrupt" fn page_fault_handler(
     // just checking if the fault came from userspace. This allows the kernel
     // to trigger CoW when writing to user memory (e.g., signal frame setup).
     let is_user_address = accessed_addr.as_u64() < crate::memory::layout::USER_STACK_REGION_END;
-    if is_user_address && handle_cow_fault(accessed_addr, error_code, cr3) {
+    if is_user_address && handle_cow_fault(accessed_addr, error_code, cr3, may_retry) {
         // CoW fault handled successfully - resume execution
         crate::per_cpu::preempt_enable();
         return;
@@ -1362,10 +1352,42 @@ extern "x86-interrupt" fn page_fault_handler(
     if from_userspace
         && !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
         && !error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH)
-        && handle_stack_growth(accessed_addr, cr3)
+        && handle_stack_growth(accessed_addr, cr3, may_retry)
     {
         crate::per_cpu::preempt_enable();
         return;
+    }
+
+    // A fatal user fault needs the process manager to name its process. Held
+    // on another CPU, the fault is taken again once pending interrupts have
+    // run (see the kill path below); probing here keeps a retry from printing
+    // the diagnostics below each time.
+    //
+    // Holding it, the page may turn out to be mapped after all: a
+    // copy-on-write break on another CPU clears the entry, flushes every CPU
+    // and maps the new frame under the process manager, so another thread of
+    // the process touching the page in between faults on a not-present entry.
+    // When the tables now allow the access the fault was spurious, and the
+    // access is retried, as Linux does when the entry is valid by the time it
+    // looks.
+    if from_userspace {
+        let Some(guard) = crate::process::try_manager() else {
+            crate::per_cpu::preempt_enable();
+            return;
+        };
+        let mut needed = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+        if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+            needed |= x86_64::structures::paging::PageTableFlags::WRITABLE;
+        }
+        let raced = !error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH)
+            && accessed_addr.as_u64() < crate::memory::layout::USER_STACK_REGION_END
+            && resolve_stale_translation(cr3, accessed_addr, needed);
+        drop(guard);
+        if raced {
+            crate::per_cpu::preempt_enable();
+            return;
+        }
     }
 
     crate::serial_println!("EXCEPTION: PAGE FAULT");
@@ -1516,40 +1538,50 @@ extern "x86-interrupt" fn page_fault_handler(
         if from_userspace {
             log::error!("Terminating faulting userspace process and scheduling next...");
 
-            // Find the process by CR3 - this is more reliable than using current_thread_id
-            // because during context switch the "current" thread may not match the faulting process
+            // The thread this CPU was running in Ring 3 took the fault. CR3
+            // names only the address space, which a CLONE_VM child shares with
+            // its parent, so it does not say whose thread faulted.
+            let interrupted = crate::per_cpu::current_thread_id_lock_free();
             let mut faulting_thread_id: Option<u64> = None;
-            let mut faulting_process_id: Option<crate::process::ProcessId> = None;
 
-            crate::process::with_process_manager(|pm| {
-                if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
-                    let name = process.name.clone();
-                    // Get the thread ID before we exit the process
-                    faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
-                    faulting_process_id = Some(pid);
+            // Ring 3 interrupted no holder, so a busy process manager is held
+            // on another CPU. The fault is taken again once pending interrupts
+            // have run, instead of waiting for it with them masked.
+            let Some(mut guard) = crate::process::try_manager() else {
+                crate::per_cpu::preempt_enable();
+                return;
+            };
+            if let Some(pm) = guard.as_mut() {
+                if let Some((pid, process)) =
+                    interrupted.and_then(|tid| pm.find_process_by_thread_mut(tid))
+                {
+                    faulting_thread_id = interrupted;
                     log::error!(
-                        "Killing process {} (PID {}) due to page fault (CR3={:#x})",
-                        name,
+                        "Killing process {} (PID {}) due to page fault (thread {:?}, CR3={:#x})",
+                        process.name,
                         pid.as_u64(),
+                        interrupted,
                         cr3
                     );
                 } else {
                     log::error!(
-                        "Could not find process with CR3={:#x} - cannot terminate",
+                        "Could not find the process of thread {:?} (CR3={:#x}) - cannot terminate",
+                        interrupted,
                         cr3
                     );
                 }
-            });
-
-            if let Some(pid) = faulting_process_id {
-                let _ = crate::process::exit_process_and_retire(pid, -11);
             }
+            drop(guard);
 
-            // Mark thread as terminated by setting it not runnable
+            // The process exit runs in the fault-exit kernel thread, not here
+            // in exception context (#511): it closes descriptors and wakes
+            // threads that may be running on other CPUs, and it can block. The
+            // thread is made non-runnable now so nothing dispatches it again.
             if let Some(thread_id) = faulting_thread_id {
-                crate::task::scheduler::with_thread_mut(thread_id, |thread| {
-                    thread.state = crate::task::thread::ThreadState::Terminated;
-                });
+                if !crate::task::process_task::defer_fault_sigsegv_exit(thread_id) {
+                    log::error!("Fault exit of thread {} lost: no memory to queue it", thread_id);
+                }
+                crate::task::scheduler::terminate_thread(thread_id);
             }
 
             // Re-enable preemption before scheduling
@@ -1702,18 +1734,6 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     crate::serial_println!("[DIAG:GPF] CR3: {:#x}", cr3);
     crate::serial_println!("[DIAG:GPF] ==============================");
 
-    // Raw serial output FIRST to confirm we're in GP handler
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x47", // 'G' for GP fault
-            "out dx, al",
-            "mov al, 0x50", // 'P'
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-    }
-
     // Increment preempt count on exception entry
     crate::per_cpu::preempt_disable();
 
@@ -1824,39 +1844,54 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     if from_userspace {
         log::error!("Terminating faulting userspace process due to GPF...");
 
-        // Find the process by CR3
+        // The thread this CPU was running, or returning to, took the fault;
+        // CR3 names only the address space, as in the page-fault vector.
+        let interrupted = crate::per_cpu::current_thread_id_lock_free();
         let mut faulting_thread_id: Option<u64> = None;
-        let mut faulting_process_id: Option<crate::process::ProcessId> = None;
-
-        crate::process::with_process_manager(|pm| {
-            if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
-                let name = process.name.clone();
-                // Get the thread ID before we exit the process
-                faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
-                faulting_process_id = Some(pid);
+        let mut find_faulting_thread = |pm: &mut crate::process::ProcessManager| {
+            if let Some((pid, process)) =
+                interrupted.and_then(|tid| pm.find_process_by_thread_mut(tid))
+            {
+                faulting_thread_id = interrupted;
                 log::error!(
-                    "Killing process {} (PID {}) due to GPF (CR3={:#x})",
-                    name,
+                    "Killing process {} (PID {}) due to GPF (thread {:?}, CR3={:#x})",
+                    process.name,
                     pid.as_u64(),
+                    interrupted,
                     cr3
                 );
             } else {
                 log::error!(
-                    "Could not find process with CR3={:#x} - cannot terminate",
+                    "Could not find the process of thread {:?} (CR3={:#x}) - cannot terminate",
+                    interrupted,
                     cr3
                 );
             }
-        });
+        };
 
-        if let Some(pid) = faulting_process_id {
-            let _ = crate::process::exit_process_and_retire(pid, -11);
+        // As in the page-fault vector: a Ring 3 fault that finds the process
+        // manager busy on another CPU is taken again once pending interrupts
+        // have run. The IRETQ fault on a return to Ring 3 runs with them
+        // masked and has no such window, so it waits for the lock.
+        if fault_on_user_return {
+            crate::process::with_process_manager(find_faulting_thread);
+        } else {
+            let Some(mut guard) = crate::process::try_manager() else {
+                crate::per_cpu::preempt_enable();
+                return;
+            };
+            if let Some(pm) = guard.as_mut() {
+                find_faulting_thread(pm);
+            }
         }
 
-        // Mark thread as terminated by setting it not runnable
+        // Deferred to the fault-exit kernel thread, as in the page-fault
+        // vector (#511).
         if let Some(thread_id) = faulting_thread_id {
-            crate::task::scheduler::with_thread_mut(thread_id, |thread| {
-                thread.state = crate::task::thread::ThreadState::Terminated;
-            });
+            if !crate::task::process_task::defer_fault_sigsegv_exit(thread_id) {
+                log::error!("Fault exit of thread {} lost: no memory to queue it", thread_id);
+            }
+            crate::task::scheduler::terminate_thread(thread_id);
         }
 
         // Re-enable preemption before scheduling

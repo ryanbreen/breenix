@@ -1196,18 +1196,28 @@ pub fn take_stop_locked(manager: &mut ProcessManager, thread_id: u64) -> bool {
 /// before the switch decision with no lock held. Returns true when the thread
 /// has been blocked: the caller then switches away, saving its user context
 /// for SIGCONT to resume. Interrupt-path rules: the process manager is only
-/// try-locked (false when it is busy, and the next scheduling point retries),
+/// try-locked, on x86_64 polled for a bounded time (false when it stays busy,
+/// and the next scheduling point retries),
 /// the scheduler lock is the interrupt-safe one the switch takes anyway, and
 /// nothing here writes serial output.
 pub fn hold_stopped_thread_on_interrupt_return(thread_id: u64) -> bool {
-    let Some(mut guard) = crate::process::try_manager() else {
-        return false;
-    };
+    hold_stopped_thread_on_interrupt_return_or_busy(thread_id).unwrap_or(false)
+}
+
+/// `hold_stopped_thread_on_interrupt_return`, telling a busy process manager
+/// apart: None when it was held elsewhere and nothing was decided, so the
+/// caller can retry before the thread runs a user instruction rather than at
+/// the next tick.
+pub fn hold_stopped_thread_on_interrupt_return_or_busy(thread_id: u64) -> Option<bool> {
+    #[cfg(target_arch = "x86_64")]
+    let mut guard = crate::process::poll_manager()?;
+    #[cfg(not(target_arch = "x86_64"))]
+    let mut guard = crate::process::try_manager()?;
     let Some(manager) = guard.as_mut() else {
-        return false;
+        return Some(false);
     };
     if !take_stop_locked(manager, thread_id) {
-        return false;
+        return Some(false);
     }
     let blocked = crate::task::scheduler::with_scheduler(|scheduler| {
         let current = scheduler.current_thread_mut().map(|thread| thread.id);
@@ -1218,7 +1228,7 @@ pub fn hold_stopped_thread_on_interrupt_return(thread_id: u64) -> bool {
     })
     .unwrap_or(false);
     if !blocked {
-        return false;
+        return Some(false);
     }
     let Some(group) = manager
         .find_process_by_thread_mut(thread_id)
@@ -1228,10 +1238,10 @@ pub fn hold_stopped_thread_on_interrupt_return(thread_id: u64) -> bool {
         })
         .and_then(|pid| manager.thread_group_of(pid))
     else {
-        return true;
+        return Some(true);
     };
     complete_stop_report(manager, group, None);
-    true
+    Some(true)
 }
 
 /// Hold the calling thread at a syscall's return to user mode while its

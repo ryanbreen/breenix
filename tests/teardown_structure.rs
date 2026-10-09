@@ -1915,8 +1915,187 @@ fn aliases_derived_from_free_frames(body: &str) -> BTreeSet<String> {
                 }
             }
         }
+        // A closure handed the free list binds it to its parameters: a closure
+        // passed to `with_free_frames`, or to a method called on an alias
+        // (`free_list.and_then(|list| ...)`), or a `let`-bound closure that is
+        // used there or called with an alias argument (`reserve(&mut list)`).
+        for (params, start, name) in closure_literals(body, &mask) {
+            let mut sites = vec![start];
+            if let Some(name) = &name {
+                sites.extend(identifier_offsets(body, &mask, name).into_iter().filter(|offset| {
+                    *offset > start && !preceded_by_byte(body, &mask, *offset, b'.')
+                }));
+            }
+            let receives = sites.iter().any(|&site| {
+                call_hands_over_free_list(body, &mask, site, &aliases)
+                    || name.as_ref().is_some_and(|name| {
+                        site != start && called_with_alias(body, &mask, site + name.len(), &aliases)
+                    })
+            });
+            if receives {
+                for binding in params {
+                    changed |= aliases.insert(binding);
+                }
+            }
+        }
     }
     aliases
+}
+
+/// Whether the code byte before `offset`, ignoring trivia, is `byte`.
+fn preceded_by_byte(source: &str, mask: &[bool], offset: usize, byte: u8) -> bool {
+    let bytes = source.as_bytes();
+    (0..offset)
+        .rev()
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+        .is_some_and(|index| bytes[index] == byte)
+}
+
+/// Every closure literal in `body`: its parameter bindings, the offset of its
+/// opening `|`, and the name it is bound to by `let NAME = |...|`, if any. A
+/// `|` opens a closure when the code before it is `(`, `,`, an assignment `=`
+/// or `move`; after an operand it is a bitwise or.
+fn closure_literals(body: &str, mask: &[bool]) -> Vec<(BTreeSet<String>, usize, Option<String>)> {
+    let bytes = body.as_bytes();
+    let mut closures = Vec::new();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if !mask[index] || bytes[index] != b'|' {
+            index += 1;
+            continue;
+        }
+        let previous = (0..index)
+            .rev()
+            .find(|before| mask[*before] && !bytes[*before].is_ascii_whitespace());
+        let assignment = previous.is_some_and(|before| {
+            bytes[before] == b'='
+                && !before.checked_sub(1).is_some_and(|operator| {
+                    mask[operator] && b"=!<>|&^+-*/%".contains(&bytes[operator])
+                })
+        });
+        let opens = previous.is_some_and(|before| matches!(bytes[before], b'(' | b','))
+            || assignment
+            || preceding_identifier(body, mask, index).is_some_and(|word| word == "move");
+        if !opens {
+            index += 1;
+            continue;
+        }
+        let close = if bytes.get(index + 1) == Some(&b'|') {
+            index + 1
+        } else {
+            match ((index + 1)..bytes.len()).find(|after| mask[*after] && bytes[*after] == b'|') {
+                Some(close) => close,
+                None => break,
+            }
+        };
+        let mut params = BTreeSet::new();
+        let mut depth = 0usize;
+        let mut param_start = index + 1;
+        for cursor in (index + 1)..=close {
+            let separator = cursor == close || mask[cursor] && bytes[cursor] == b',' && depth == 0;
+            if separator {
+                params.extend(pattern_binding_identifiers(&body[param_start..cursor]));
+                param_start = cursor + 1;
+            } else if mask[cursor] {
+                match bytes[cursor] {
+                    b'(' | b'[' | b'<' => depth += 1,
+                    b')' | b']' | b'>' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+        }
+        let name = if assignment {
+            previous.and_then(|equals| preceding_identifier(body, mask, equals))
+        } else {
+            None
+        };
+        closures.push((params, index, name));
+        index = close + 1;
+    }
+    closures
+}
+
+/// Whether the call whose argument list encloses `site` hands the free list
+/// over: a call of `with_free_frames`, or a method called on an alias.
+fn call_hands_over_free_list(
+    body: &str,
+    mask: &[bool],
+    site: usize,
+    aliases: &BTreeSet<String>,
+) -> bool {
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut open = None;
+    for index in (0..site).rev() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b')' | b']' | b'}' => depth += 1,
+            b'(' | b'[' | b'{' if depth > 0 => depth -= 1,
+            b'(' => {
+                open = Some(index);
+                break;
+            }
+            b'[' | b'{' => break,
+            b';' if depth == 0 => break,
+            _ => {}
+        }
+    }
+    let Some(open) = open else {
+        return false;
+    };
+    let Some(callee) = preceding_identifier(body, mask, open) else {
+        return false;
+    };
+    if callee == "with_free_frames" {
+        return true;
+    }
+    let Some(callee_start) = (0..open)
+        .rev()
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+        .map(|end| end + 1 - callee.len())
+    else {
+        return false;
+    };
+    let Some(dot) = (0..callee_start)
+        .rev()
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+        .filter(|dot| bytes[*dot] == b'.')
+    else {
+        return false;
+    };
+    preceding_identifier(body, mask, dot).is_some_and(|receiver| aliases.contains(&receiver))
+}
+
+/// Whether the code at `after` opens a call argument list naming an alias.
+fn called_with_alias(body: &str, mask: &[bool], after: usize, aliases: &BTreeSet<String>) -> bool {
+    let bytes = body.as_bytes();
+    let Some(open) = (after..bytes.len())
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+        .filter(|open| bytes[*open] == b'(')
+    else {
+        return false;
+    };
+    let mut depth = 0usize;
+    let Some(close) = (open..bytes.len()).find(|index| {
+        if !mask[*index] {
+            return false;
+        }
+        match bytes[*index] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            _ => {}
+        }
+        depth == 0
+    }) else {
+        return false;
+    };
+    let arguments = &body[open + 1..close];
+    let arguments_mask = code_mask(arguments);
+    aliases
+        .iter()
+        .any(|alias| !identifier_offsets(arguments, &arguments_mask, alias).is_empty())
 }
 
 fn alias_method_calls(body: &str) -> Vec<String> {
@@ -3793,7 +3972,8 @@ let _same_line = "needle"; let _real = needle();
 
 #[rustfmt::skip]
 const TERMINATE_CALLS: &[(&str, &str, usize)] = &[
-    ("kernel/src/interrupts/context_switch.rs", "fn restore_userspace_thread_context", 1),
+    // A user context that cannot be restored takes the deferred SIGSEGV exit;
+    // restore_userspace_thread_context no longer terminates the row itself.
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn exit_process_locked", 1),
     ("kernel/src/signal/delivery.rs", "fn deliver_default_action", 2),
 ];
@@ -4011,8 +4191,9 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn handle_sync_exception", 4),
-    ("kernel/src/interrupts.rs", "fn general_protection_fault_handler", 1),
-    ("kernel/src/interrupts.rs", "fn page_fault_handler", 1),
+    // #511: x86's user #PF and #GP no longer exit the process in exception
+    // context; they queue the deferred SIGSEGV exit the fault-exit kernel
+    // thread runs.
     ("kernel/src/process/mod.rs", "fn exit_process_by_pid", 1),
     ("kernel/src/syscall/signal.rs", "fn send_signal_to_process", 1),
 ];
@@ -6320,6 +6501,7 @@ fn validate_frame_return_choke_point(
             allocator,
             &[
                 "init_frame_ledger",
+                "with_free_frames",
                 "ensure_free_frame_capacity",
                 "allocate_candidate",
                 "return_lease",
@@ -6360,8 +6542,15 @@ fn validate_frame_return_choke_point(
         "ensure_free_frame_capacity alias methods changed",
         validate_alias_methods(
             function_body(allocator, "ensure_free_frame_capacity"),
-            &["try_lock", "capacity", "len", "try_reserve", "is_err"],
-            &[],
+            &[
+                "try_lock",
+                "capacity",
+                "len",
+                "try_reserve",
+                "is_err",
+                "map_or",
+            ],
+            &["reserve", "map_or"],
         ),
     );
     record_unit(
@@ -6369,7 +6558,7 @@ fn validate_frame_return_choke_point(
         "allocate_candidate alias methods changed",
         validate_alias_methods(
             function_body(allocator, "allocate_candidate"),
-            &["try_lock", "pop", "len"],
+            &["try_lock", "pop", "len", "and_then"],
             &[],
         ),
     );
@@ -6378,8 +6567,17 @@ fn validate_frame_return_choke_point(
         "return_lease alias methods changed",
         validate_alias_methods(
             function_body(allocator, "return_lease"),
-            &["try_lock", "len", "capacity", "push"],
-            &[],
+            &["try_lock", "len", "capacity", "push", "map_or_else"],
+            &["push", "map_or_else"],
+        ),
+    );
+    record_unit(
+        &mut failures,
+        "with_free_frames alias methods changed",
+        validate_alias_methods(
+            function_body(allocator, "with_free_frames"),
+            &["try_lock"],
+            &["Some"],
         ),
     );
     record_unit(
@@ -6404,6 +6602,7 @@ fn validate_frame_return_choke_point(
                 "remove_duplicate_candidates",
                 "republish_lost_frame",
                 "retire_with_free_list_contended",
+                "with_free_list_held",
                 "free_frame_count",
                 "free_list_len_for_gate",
                 "take_free_frame",
@@ -6591,6 +6790,15 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let stale = function_body(tests, "stale_lease_fixture");
     let gate = function_body(tests, "frame_custody_refusal_gate_test");
     let healthy_guard = function_body(tests, "frame_custody_healthy_counters_test");
+    // The contended return holds the list as this CPU's own nested holder:
+    // through `with_free_frames` on x86_64, where only that makes a return
+    // give up rather than wait, and by locking it elsewhere.
+    let held = function_body(tests, "with_free_list_held");
+    let held_split = held.find("#[cfg(not(target_arch = \"x86_64\"))]").ok_or(())?;
+    let (held_x86, held_other) = held.split_at(held_split);
+    if !held_x86.contains("#[cfg(target_arch = \"x86_64\")]") {
+        return Err(());
+    }
     let above_top = function_body(tests, "above_top_of_ram_frame");
     let never_allocated = function_body(tests, "reserve_never_allocated_frame");
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
@@ -6771,7 +6979,10 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         )
         && gate.contains(DUPLICATE_CLEANUP)
         && gate.contains(DUPLICATE_OWNER_ASSERTION)
-        && gate.contains("let free_guard = FREE_FRAMES.lock();")
+        && gate.contains("let outcome = with_free_list_held(|| return_lease(contended));")
+        && held_x86.contains("with_free_frames(|_| f())")
+        && held_other.contains("let _free_list = FREE_FRAMES.lock();")
+        && held_other.contains("f()")
         && gate.matches("healthy_round_trip()").count() == 5
         && gate.contains(AGGREGATE_ASSERTION)
         && refusal_def.contains("name: \"frame_custody_refusal_gate\"")
@@ -9461,8 +9672,12 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     assert!(!park.contains("reclaim.after_epoch"));
     let unpark = function_body(process, "unpark_sweep_with_snapshot");
     assert!(
-        unpark.find("PARKED_PROCESS_RECLAIMS.try_lock()").unwrap()
-            < unpark.find("PENDING_PROCESS_RECLAIMS.try_lock()").unwrap()
+        unpark
+            .find("reclaim_queue(&PARKED_PROCESS_RECLAIMS)")
+            .unwrap()
+            < unpark
+                .find("reclaim_queue(&PENDING_PROCESS_RECLAIMS)")
+                .unwrap()
     );
 
     assert!(scheduler.contains("pub(crate) struct RetirementFence"));
@@ -11869,6 +12084,31 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
         assert!(validate_frame_return_choke_point(&broken).is_err());
     }
+    // The same bypasses inside the closures the free list is handed to: the
+    // x86_64 `with_free_frames` callers and the `reserve` and `push` closures.
+    for (anchor, mutation) in [
+        (
+            "free_list.and_then(|list| list.pop())",
+            "free_list.and_then(|list| { list.push(frame); list.pop() })",
+        ),
+        (
+            "free_list.and_then(|list| list.pop())",
+            "free_list.and_then(|list| { let spare = &mut *list; spare.insert(0, frame); list.pop() })",
+        ),
+        ("free_list.push(lease.frame);", "free_list.insert(0, lease.frame);"),
+        (
+            "free_list.try_reserve(additional)",
+            "free_list.extend_from_slice(&[frame]); free_list.try_reserve(additional)",
+        ),
+    ] {
+        assert!(allocator.contains(anchor), "mutation anchor moved: {anchor}");
+        let broken = allocator.replacen(anchor, mutation, 1);
+        let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
+        assert!(
+            validate_frame_return_choke_point(&broken).is_err(),
+            "closure bypass not caught: {mutation}"
+        );
+    }
     let reborrowed = allocator.replacen(
         "if let Some(frame) = free_list.pop() {",
         "if let Some(frame) = free_list.pop() { let list = &mut *free_list; list.insert(0, frame);",
@@ -13213,6 +13453,12 @@ fn gate_producer_validator_rejects_arch_any_double_registration() {
     assert!(validate_single_gate_producer_per_arch(main, registry).is_err());
 }
 
+/// Each non-owning reclaim-queue path acquires its queue through
+/// `reclaim_queue` and handles its `None` by abandoning or returning. That
+/// helper is the one place the acquisition policy lives: aarch64 try-locks,
+/// x86_64 waits for a holder on another CPU (every hold masks interrupts and
+/// is short, and abandoning a reclaim for contention leaked its address space
+/// with four CPUs online).
 fn validate_nonowning_reclaim_queue_acquisitions(process_task: &str) -> Result<(), ()> {
     for name in [
         "push_pending_or_abandon",
@@ -13221,9 +13467,24 @@ fn validate_nonowning_reclaim_queue_acquisitions(process_task: &str) -> Result<(
     ] {
         let body = function_body(process_task, name);
         let code = normalized_code(body);
-        if code.contains(".lock()") || !code.contains(".try_lock()") {
+        if code.contains(".lock()")
+            || code.contains(".try_lock()")
+            || !code.contains("reclaim_queue(&")
+        {
             return Err(());
         }
+    }
+    let helper = function_body(process_task, "reclaim_queue");
+    let x86 = helper.find("#[cfg(target_arch = \"x86_64\")]").ok_or(())?;
+    let other = helper
+        .find("#[cfg(not(target_arch = \"x86_64\"))]")
+        .ok_or(())?;
+    if !(x86 < other
+        && helper[x86..other].contains("queue.lock()")
+        && helper[other..].contains("queue.try_lock()")
+        && !helper[other..].contains("queue.lock()"))
+    {
+        return Err(());
     }
     let push = function_body(process_task, "push_pending_or_abandon");
     let park = function_body(process_task, "park_reclaim");

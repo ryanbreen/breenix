@@ -51,17 +51,14 @@ pub fn raw_serial_char(c: u8) {
     }
 }
 
-/// Raw serial string output - no locks, no allocations.
-/// Use for boot markers in context switch path where locking would deadlock.
+/// Serial string output that allocates nothing and waits on SERIAL1 for a
+/// bounded time only (`serial::write_str_bounded`), then writes straight to
+/// the port. Every caller prints once per boot. Under SERIAL1, with several
+/// CPUs printing, a line is not interleaved byte by byte with their output and
+/// lost from the boot stages.
 #[inline(always)]
 fn raw_serial_str(s: &str) {
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port: Port<u8> = Port::new(0x3F8);
-        for byte in s.bytes() {
-            port.write(byte);
-        }
-    }
+    crate::serial::write_str_bounded(s);
 }
 
 /// Raw serial decimal output - no locks, no allocations.
@@ -158,6 +155,10 @@ pub extern "C" fn check_need_resched_and_switch(
     interrupt_frame: &mut InterruptStackFrame,
 ) {
     crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());
+    // This entry is a later interrupt than the one that last switched this
+    // CPU, so the CPU is off that switch's outgoing stack; it also takes any
+    // reschedule another CPU asked of it.
+    crate::task::scheduler::note_x86_interrupt_return(crate::per_cpu::cpu_id());
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
     if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
         return;
@@ -271,10 +272,23 @@ pub extern "C" fn check_need_resched_and_switch(
     // decision, so the mandatory switch below saves its user context for
     // SIGCONT to resume. Signal delivery arms need_resched for it, so the
     // ordinary tick, with no reschedule pending, does not pay for the check.
+    // A process manager busy on another CPU is retried by self-IPI, taken at
+    // the first instruction boundary in Ring 3, rather than left to the
+    // dispatch below: when that found the lock free a moment later it declined
+    // the stop and returned the thread to user mode until the next tick, and a
+    // child that sent itself SIGSTOP ran on and exited first.
     if from_userspace && need_resched && !current_thread_blocked_or_terminated {
         if let Some(current_tid) = scheduler::current_thread_id() {
-            current_thread_blocked_or_terminated =
-                crate::signal::delivery::hold_stopped_thread_on_interrupt_return(current_tid);
+            match crate::signal::delivery::hold_stopped_thread_on_interrupt_return_or_busy(
+                current_tid,
+            ) {
+                Some(held) => current_thread_blocked_or_terminated = held,
+                None => {
+                    scheduler::set_need_resched();
+                    scheduler::retry_after_interrupts_x86();
+                    return;
+                }
+            }
         }
     }
     if !need_resched && !current_thread_blocked_or_terminated {
@@ -344,6 +358,20 @@ pub extern "C" fn check_need_resched_and_switch(
     static RESCHED_LOG_COUNTER: core::sync::atomic::AtomicU64 =
         core::sync::atomic::AtomicU64::new(0);
     let _count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    // An idle CPU runs a full pass, which needs the process manager below, only
+    // when something is queued; otherwise its scheduling entry (expired timers
+    // included) is made without that lock, so a holder on another CPU cannot
+    // keep this CPU out of the scheduler.
+    let idle_cpu = !from_userspace
+        && !current_thread_blocked_or_terminated
+        && crate::per_cpu::running_idle_thread();
+    if idle_cpu && !scheduler::x86_idle_pass() {
+        return;
+    }
+    // A return to Ring 3, or an idle CPU with work queued, that finds the
+    // process manager busy retries as soon as interrupts are enabled again.
+    let retry_when_busy = from_userspace || idle_cpu;
     // Note: Debug logging removed from hot path - use GDB if debugging is needed
 
     // Both entry paths must resolve the process-manager dependency BEFORE committing
@@ -353,8 +381,13 @@ pub extern "C" fn check_need_resched_and_switch(
     // first ring-3 entry then aborted for want of this very lock, requeue the
     // thread and re-arm need_resched, forever. Refusing here leaves the
     // lock-holding context - the only one that can release it - running.
-    // try_lock only: blocking here would deadlock the interrupt path.
-    let mut process_manager_guard = match crate::process::try_manager() {
+    // Polled for a bounded time only: blocking here would deadlock the
+    // interrupt path. With several CPUs the holder may be waiting for an
+    // interrupt routed to this one, so a return to Ring 3 that still finds the
+    // lock busy retries as soon as interrupts are enabled again, rather than
+    // leaving the reschedule, and the signal delivery behind it, to the next
+    // tick.
+    let mut process_manager_guard = match crate::process::poll_manager() {
         Some(guard) => {
             note_dispatch_guard_available();
             guard
@@ -362,6 +395,9 @@ pub extern "C" fn check_need_resched_and_switch(
         None => {
             note_dispatch_guard_unavailable();
             scheduler::set_need_resched();
+            if retry_when_busy {
+                scheduler::retry_after_interrupts_x86();
+            }
             return;
         }
     };
@@ -386,7 +422,11 @@ pub extern "C" fn check_need_resched_and_switch(
         // This case occurs when the current thread is the only ready thread (e.g., after
         // yield_now() when no other threads are runnable). Without this check, signals
         // queued for the current process (like SIGTERM from kill()) would never be delivered.
+        // The dispatch's guard is released first: delivery takes the lock
+        // itself, and with it still held here it always found the lock busy
+        // on this CPU and delivered nothing.
         if from_userspace {
+            drop(process_manager_guard);
             check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
         }
         return;
@@ -399,8 +439,10 @@ pub extern "C" fn check_need_resched_and_switch(
         trace_ctx_switch(old_thread_id, new_thread_id);
 
         if old_thread_id == new_thread_id {
-            // Same thread continues running, but check for pending signals
+            // Same thread continues running, but check for pending signals,
+            // with the dispatch's guard released as above.
             if from_userspace {
+                drop(process_manager_guard);
                 check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
             }
             return;
@@ -531,12 +573,22 @@ pub extern "C" fn check_need_resched_and_switch(
             // The tid and the park count come out of one deref of the per-CPU
             // current-thread pointer, so the mark cannot pair one thread's id
             // with another thread's count.
-            Some((dispatched_tid, wait_iters)) => crate::per_cpu::set_dispatch_mark(
-                dispatched_tid,
-                interrupt_frame.instruction_pointer.as_u64(),
-                interrupt_frame.stack_pointer.as_u64(),
-                wait_iters,
-            ),
+            Some((dispatched_tid, wait_iters)) => {
+                crate::per_cpu::set_dispatch_mark(
+                    dispatched_tid,
+                    interrupt_frame.instruction_pointer.as_u64(),
+                    interrupt_frame.stack_pointer.as_u64(),
+                    wait_iters,
+                );
+                // Counted only once the switch completed: an aborted or
+                // redirected dispatch leaves another thread current.
+                if dispatched_tid == new_thread_id
+                    && crate::per_cpu::current_thread()
+                        .is_some_and(|thread| thread.privilege != ThreadPrivilege::Kernel)
+                {
+                    crate::arch_impl::x86_64::smp::note_user_dispatch(crate::per_cpu::cpu_id());
+                }
+            }
             // No nameable current thread: invalidate rather than record a
             // mark no later check could honestly match.
             None => crate::per_cpu::clear_dispatch_mark(),
@@ -1422,12 +1474,14 @@ fn restore_userspace_thread_context(
                                 }
                                 RestoreError::KernelFrame => raw_serial_str("<KFRAME>"),
                             }
-                            // Corrupted process state. Terminate the process and switch to idle.
-                            thread.set_terminated();
-                            process.terminate(-11); // SIGSEGV equivalent
-                            crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
-                                sched_thread.set_terminated();
-                            });
+                            // The thread cannot return to this context: it dies of
+                            // SIGSEGV, through the deferred exit the user #PF and #GP
+                            // take, which tells its parent and retires the row. A
+                            // syscall that returned to a non-canonical RIP lands
+                            // here when its return switched threads, instead of at
+                            // the IRETQ #GP.
+                            let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
+                            crate::task::scheduler::terminate_thread(thread_id);
                             crate::task::scheduler::set_need_resched();
                             setup_idle_return(interrupt_frame);
                             crate::task::scheduler::switch_to_idle();
@@ -1720,10 +1774,17 @@ fn check_and_deliver_signals_for_current_thread(
         return;
     }
 
-    // Try to acquire process manager lock
-    let mut manager_guard = match crate::process::try_manager() {
+    // This returns to Ring 3, so a busy process manager is held on another
+    // CPU. Waiting for it with interrupts masked could deadlock against a
+    // holder waiting for an interrupt routed here, so it is polled for a
+    // bounded time and the delivery is otherwise retried as soon as interrupts
+    // are enabled again, instead of at the next tick.
+    let mut manager_guard = match crate::process::poll_manager() {
         Some(guard) => guard,
-        None => return, // Lock held, skip signal check this time
+        None => {
+            scheduler::retry_after_interrupts_x86();
+            return;
+        }
     };
 
     // Track if signal termination happened (for parent notification after borrow ends)
@@ -1807,29 +1868,13 @@ fn check_and_deliver_signals_for_current_thread(
 /// Simple idle loop - made pub for exception handlers that need to jump to idle
 pub fn idle_loop() -> ! {
     loop {
-        // #775 round 3 (N1): this is the idle loop x86 actually runs, and the
-        // TOP of its body is the position that runs on every idle dispatch.
-        // Once any thread reaches Ring 3, is_ring3_confirmed() latches and
-        // setup_idle_return rewrites the frame to restart this function, so the
-        // code after enable_and_hlt() below runs only when the halt returns
-        // WITHOUT the timer handler switching away. main.rs's idle_thread_fn is
-        // the idle task's stored ENTRY POINT and is never dispatched at all,
-        // which is why the heartbeat used to be certified-but-dead there.
-        // claim-lint:ok: #775 round 3 finding N1; the cadence this position
-        // produces is measured in
-        // docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md
-        //
-        // The call is one rate-limited comparison of a monotonic timestamp,
-        // made outside any interrupt with IF=1 (this loop's other housekeeping
-        // already prints from here), and the callee refuses unless interrupts
-        // are enabled, so the COM2 lock it may take is never acquired from a
-        // masked context. Cadence is only as good as how often the CPU idles:
-        // a wedge that spins instead of idling stops it, which the census
-        // consumer and 775-CENSUS-EQUIVALENCE-2026-09-04.md both state.
-        // claim-lint:ok: the interrupts-enabled refusal is in
-        // kernel/src/task/dispatch_strand_census.rs report_heartbeat_if_due().
-        crate::task::report_dispatch_strand_census_heartbeat();
-        crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+        // This loop writes nothing to a serial port. Placement treats a CPU
+        // running its idle thread as free and queues a woken thread there,
+        // while a serial line is written with interrupts masked for as long as
+        // the port takes to accept it: about 60 ms for the ~300-byte strand
+        // census line under the x86 gate's emulation. A thread queued on an
+        // idle CPU writing that line waited for it, and `kstrandd`, a kernel
+        // thread a busy CPU is seen running, emits the census instead.
         crate::task::process_task::reclaim_deferred_process_resources();
         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
         // from a context that exists AFTER every userspace thread is gone and
@@ -1847,10 +1892,14 @@ pub fn idle_loop() -> ! {
         crate::irq_log::flush_local_try();
         // Reclamation can wake a waiter. Check with interrupts masked so a
         // wakeup cannot slip between the check and the atomic enable/halt.
+        // A reschedule raised while the housekeeping above could not switch
+        // (it holds preemption off) is taken through the interrupt-return path
+        // by a self-IPI, which arrives as the halt enables interrupts. Going
+        // round the housekeeping again instead kept the CPU from halting, and
+        // a tick landing in the housekeeping again left the reschedule pending.
         x86_64::instructions::interrupts::disable();
         if crate::task::scheduler::is_need_resched() {
-            x86_64::instructions::interrupts::enable();
-            continue;
+            crate::task::scheduler::retry_after_interrupts_x86();
         }
         // CRITICAL: Use enable_and_hlt() instead of just hlt()
         // This atomically enables interrupts and halts, preventing race conditions

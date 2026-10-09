@@ -202,19 +202,19 @@ impl fmt::Display for TidList<'_> {
 /// Emit one compact host-gate snapshot on the kernel-log channel (COM2).
 ///
 /// The callers are ordinary thread contexts with interrupts enabled, never
-/// interrupt or context-switch paths: `interrupts::context_switch::idle_loop`,
-/// `net::loopback_pump::loopback_pump_fn`, `census_thread_fn` in this module
-/// (the `kstrandd` kthread), and the syscall-context completion site in
-/// `syscall::handlers`. Acquire loads pair with the release RMWs in the three
+/// interrupt or context-switch paths: `net::loopback_pump::loopback_pump_fn`,
+/// `census_thread_fn` in this module (the `kstrandd` kthread), and the
+/// syscall-context completion site in `syscall::handlers`. The idle loop does
+/// not call it: see `interrupts::context_switch::idle_loop`. Acquire loads pair with the release RMWs in the three
 /// recorders, so a snapshot observes published ledger events across CPUs.
-/// claim-lint:ok: the four call sites are pinned by
+/// claim-lint:ok: the three call sites are pinned by
 /// tests/dispatch_strand_census_structure.rs.
 ///
 /// The snapshot goes to COM2 because that is the channel the three removed
 /// `log::info!`/`log::debug!` dispatch records used, and because COM1 is the
 /// interactive user console (kernel/src/serial.rs). Every in-repo consumer is
 /// handed the kernel serial capture.
-/// claim-lint:ok: the 4 in-repo call sites are enumerated and pinned by
+/// claim-lint:ok: the 3 in-repo call sites are enumerated and pinned by
 /// tests/dispatch_strand_census_structure.rs.
 ///
 /// Fields, in emission order: `seq` (1-based, unique within a boot, strictly
@@ -288,11 +288,11 @@ pub(crate) fn force_snapshot() {
 
 /// Emit at most one census snapshot per second from existing housekeeping.
 pub(crate) fn report_heartbeat_if_due() {
-    // idle_loop, loopback_pump_fn and census_thread_fn all call from ordinary
-    // thread context after a halt returns. Keep this check at the emission
-    // boundary so serial locking cannot silently move into an
-    // interrupts-disabled context.
-    // claim-lint:ok: the 3 call sites are pinned at 1 each by
+    // loopback_pump_fn and census_thread_fn both call from ordinary thread
+    // context after a halt returns. Keep this check at the emission boundary
+    // so serial locking cannot silently move into an interrupts-disabled
+    // context.
+    // claim-lint:ok: the 2 call sites are pinned at 1 each by
     // tests/dispatch_strand_census_structure.rs.
     if !crate::arch_interrupts_enabled() {
         return;
@@ -314,10 +314,12 @@ pub(crate) fn report_heartbeat_if_due() {
 /// The `kstrandd` census kthread: sleep, then offer a snapshot to the shared
 /// limiter.
 ///
-/// This is the THIRD emission context, and the only one that does not need
-/// some other subsystem to act first: `idle_loop` runs only when the CPU has
-/// nothing else to dispatch, and `loopback_pump_fn` runs only when loopback
-/// traffic wakes it. Round 3's review measured the consequence on the
+/// This is the one emission context that does not need some other subsystem
+/// to act first: `loopback_pump_fn` runs only when loopback traffic wakes it.
+/// The idle loop emitted too until it was found holding an idle CPU, the CPU
+/// placement queues woken threads on, with interrupts masked for the ~60 ms
+/// the line takes to write (see `interrupts::context_switch::idle_loop`); a
+/// CPU running this thread is busy to placement instead. Round 3's review measured the consequence on the
 /// zero-feature production profile: 2 of 6 boots published no post-init
 /// snapshot at all, because that profile's single idle dispatch landed inside
 /// the shared 1-second limiter's window (finding R3-5).
@@ -332,22 +334,22 @@ pub(crate) fn report_heartbeat_if_due() {
 /// gate captures this thread was alive and publishing at 1 Hz and then
 /// emitted no snapshot for 19939 ms (boot1, seq=5 at 4789 ms to seq=6 at
 /// 24728 ms) and 17888 ms (boot2, seq=5 at 4840 ms to seq=6 at 22728 ms),
-/// across the userspace-process creation burst. The other two contexts did
-/// not fill either hole, and the capture is what says so rather than an
-/// argument about them: the 3 emitters share ONE limiter, so a hole is an
-/// absence of snapshots from the 3 of them together. Neither of the other two
-/// published in
-/// that window, which is what being demand-driven predicts -- the CPU had
-/// runnable work across the burst, so `idle_loop` did not run, and
-/// `loopback_pump_fn` runs only on loopback traffic.
+/// across the userspace-process creation burst. The two other contexts that
+/// emitted then, the idle loop and `loopback_pump_fn`, did not fill either
+/// hole, and the capture is what says so rather than an argument about them:
+/// the emitters share ONE limiter, so a hole is an absence of snapshots from
+/// all of them together. Neither of the other two published in that window,
+/// which is what being demand-driven predicts -- the CPU had runnable work
+/// across the burst, so the idle loop did not run, and `loopback_pump_fn`
+/// runs only on loopback traffic.
 /// claim-lint:ok: both holes are re-derivable from the `ms=` fields of
 /// docs/planning/green-program/sockets/serials/775/round4/gate-green/
 /// boot{1,2}/serial_kernel.txt, and each boot's own gate.txt line 8 prints
 /// its largest gap.
 ///
 /// The emission goes through `report_heartbeat_if_due()`, the same rate-limited
-/// path the other two contexts call, so adding this thread cannot double the
-/// serial volume: the three contexts share one `AtomicU64` compare-exchange.
+/// path `loopback_pump_fn` calls, so the two cannot double the serial volume:
+/// they share one `AtomicU64` compare-exchange.
 fn census_thread_fn() {
     loop {
         sleep_one_interval();

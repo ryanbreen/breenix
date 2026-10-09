@@ -4,9 +4,10 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use libbreenix::io::{self, status_flags::O_NONBLOCK};
 use libbreenix::signal::SIGUSR1;
 use libbreenix::{kill, sigaction, Sigaction};
-use libbreenix::process::{self, ForkResult, getpid, yield_now};
+use libbreenix::process::{self, ForkResult, getpid};
 
 static SIGUSR1_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -41,6 +42,19 @@ fn main() {
     }
     println!("  PASS: sigaction registered SIGUSR1 handler");
 
+    // The child signals the parent until the parent reports, by closing this
+    // pipe, that pause() has returned. A single signal can arrive before the
+    // parent's pause() call (with the child on another CPU it often does), and
+    // pause() then waits for a signal that never comes.
+    let (done_r, done_w) = match io::pipe2(O_NONBLOCK) {
+        Ok(fds) => fds,
+        Err(_) => {
+            println!("  FAIL: pipe2() failed");
+            println!("PAUSE_TEST_FAILED");
+            std::process::exit(1);
+        }
+    };
+
     // Step 2: Fork child
     println!("\nStep 2: Forking child process...");
     match process::fork() {
@@ -55,52 +69,52 @@ fn main() {
             println!("[CHILD] Process started");
             println!("[CHILD] My PID: {}", my_pid);
 
-            // Give parent time to call pause()
-            println!("[CHILD] Yielding to let parent call pause()...");
-            for _ in 0..5 {
-                let _ = yield_now();
-            }
+            let _ = io::close(done_w);
 
-            // Send SIGUSR1 to parent
-            println!("[CHILD] Sending SIGUSR1 to parent (PID {})...", parent_pid);
-            if kill(parent_pid, SIGUSR1).is_ok() {
-                println!("[CHILD] kill() succeeded");
-            } else {
-                println!("[CHILD] kill() failed");
+            // Send SIGUSR1 to the parent every 10 ms until it closes the pipe,
+            // for at most 5 s.
+            println!(
+                "[CHILD] Sending SIGUSR1 to parent (PID {}) until pause() returns...",
+                parent_pid
+            );
+            let mut byte = [0u8; 1];
+            for _ in 0..500 {
+                if kill(parent_pid, SIGUSR1).is_err() {
+                    println!("[CHILD] kill() failed");
+                    std::process::exit(1);
+                }
+                let _ = libbreenix::time::sleep_ms(10);
+                if let Ok(0) = io::read(done_r, &mut byte) {
+                    println!("[CHILD] Parent's pause() returned; exiting with code 0");
+                    std::process::exit(0);
+                }
             }
-
-            println!("[CHILD] Exiting with code 0");
-            std::process::exit(0);
+            println!("[CHILD] Parent never reported that pause() returned");
+            std::process::exit(1);
         }
         Ok(ForkResult::Parent(child_pid)) => {
             // ========== PARENT PROCESS ==========
             let child_pid_raw = child_pid.raw() as i32;
             println!("[PARENT] Forked child PID: {}", child_pid_raw);
 
-            // Step 3: Call pause() to wait for signal
-            // NOTE: On ARM64, sched_yield doesn't cause an immediate context switch
-            // (it sets need_resched but the SVC return path has PREEMPT_ACTIVE set).
-            // The child may complete all its yields and send the signal before the
-            // parent gets a timer-driven context switch. In that case, the signal
-            // is delivered on a syscall return BEFORE we reach pause().
-            // We handle both paths: signal-before-pause and signal-during-pause.
-            if SIGUSR1_RECEIVED.load(Ordering::SeqCst) {
-                println!("\nStep 3: Signal already received before pause() (race-safe path)");
-                println!("  PASS: SIGUSR1 was delivered before pause() was called");
+            let _ = io::close(done_r);
+
+            // Step 3: Call pause() to wait for signal. The child keeps
+            // signalling until the pipe closes, so a signal arrives after
+            // pause() blocks whenever the first one came earlier.
+            println!("\nStep 3: Calling pause() to wait for signal...");
+            let pause_result = libbreenix::signal::pause();
+            let _ = io::close(done_w);
+
+            // pause() always returns Err with EINTR when a signal is caught
+            println!("[PARENT] pause() returned");
+
+            if pause_result.is_err() {
+                println!("  PASS: pause() correctly returned after signal");
             } else {
-                println!("\nStep 3: Calling pause() to wait for signal...");
-                let pause_result = libbreenix::signal::pause();
-
-                // pause() always returns Err with EINTR when a signal is caught
-                println!("[PARENT] pause() returned");
-
-                if pause_result.is_err() {
-                    println!("  PASS: pause() correctly returned after signal");
-                } else {
-                    println!("  FAIL: pause() should return error (EINTR)");
-                    println!("PAUSE_TEST_FAILED");
-                    std::process::exit(1);
-                }
+                println!("  FAIL: pause() should return error (EINTR)");
+                println!("PAUSE_TEST_FAILED");
+                std::process::exit(1);
             }
 
             // Step 4: Verify signal handler was called
@@ -119,11 +133,20 @@ fn main() {
             let wait_result = process::waitpid(child_pid_raw, &mut status, 0);
 
             match wait_result {
-                Ok(pid) if pid.raw() as i32 == child_pid_raw => {
+                Ok(pid)
+                    if pid.raw() as i32 == child_pid_raw
+                        && process::wifexited(status)
+                        && process::wexitstatus(status) == 0 =>
+                {
                     println!("  Child reaped successfully");
                 }
                 _ => {
-                    println!("  Warning: waitpid returned unexpected result");
+                    println!(
+                        "  FAIL: child did not exit with code 0 (status {:#x})",
+                        status
+                    );
+                    println!("PAUSE_TEST_FAILED");
+                    std::process::exit(1);
                 }
             }
 

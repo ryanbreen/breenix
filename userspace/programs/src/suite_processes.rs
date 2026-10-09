@@ -1104,6 +1104,67 @@ fn fork_cow() -> CaseResult {
     cow_round(&fill, &differs, false)
 }
 
+/// A write that breaks copy-on-write is seen by another thread of the writing process
+/// that was reading the page on another processor. The break maps a new frame, and a
+/// processor still holding the old read-only translation would go on reading the old
+/// frame. The reader spins while the writer runs, so with a processor to spare the two
+/// run on different processors; there is no getcpu to confirm where each one ran.
+fn fork_cow_threads() -> CaseResult {
+    const BEFORE: u64 = 0x1111_1111;
+    const AFTER: u64 = 0x2222_2222;
+    const READ_MS: u64 = 2000;
+    let cpus = processors();
+    if cpus < 2 {
+        return skip(format!("{cpus} processor online; the case needs 2, one for each thread"));
+    }
+    let page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
+    // SAFETY: the mapping is a page, page-aligned, and stays mapped until both threads are done.
+    let cell = unsafe { &*(page as *const AtomicU64) };
+    cell.store(BEFORE, Ordering::SeqCst);
+    // The child keeps the page shared until it is released, so the write below copies it.
+    let (rel_r, rel_w) = io::pipe()?;
+    let mut child = Child::start(|| {
+        let _ = io::close(rel_w);
+        drain(rel_r);
+        if cell.load(Ordering::SeqCst) == BEFORE { 0 } else { 1 }
+    })?;
+    io::close(rel_r)?;
+    // Made after the fork, so the reader's handshake copies nothing.
+    let flag_page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
+    // SAFETY: as for `page`.
+    let reading = unsafe { &*(flag_page as *const AtomicU64) };
+    let (page_addr, flag_addr) = (page as usize, flag_page as usize);
+    let reader = std::thread::spawn(move || {
+        // SAFETY: both pages stay mapped until this thread is joined.
+        let (cell, reading) = unsafe { (&*(page_addr as *const AtomicU64), &*(flag_addr as *const AtomicU64)) };
+        let mut seen = cell.load(Ordering::Acquire);
+        reading.store(1, Ordering::Release);
+        let deadline = now_ms() + READ_MS;
+        while seen != AFTER && now_ms() < deadline {
+            seen = cell.load(Ordering::Acquire);
+        }
+        seen
+    });
+    let started = now_ms();
+    while reading.load(Ordering::Acquire) == 0 && now_ms() < started + READ_MS {
+        core::hint::spin_loop();
+    }
+    let began = reading.load(Ordering::Acquire) != 0;
+    // Run beside the reader for a moment, so each holds a processor, then write.
+    burn(5);
+    cell.store(AFTER, Ordering::SeqCst);
+    let seen = reader.join().map_err(|_| "the reading thread panicked".to_string());
+    io::close(rel_w)?;
+    let child_result = child.expect_exit(0, "the child, whose copy of the page must keep the old value");
+    memory::munmap(flag_page, 4096)?;
+    memory::munmap(page, 4096)?;
+    let seen = seen?;
+    check(began, "the reading thread did not start within 2 s")?;
+    check(seen == AFTER, &format!(
+        "with {cpus} processors online, a thread reading a copy-on-write page still read {seen:#x} {READ_MS} ms after another thread of its process wrote {AFTER:#x} to it"))?;
+    child_result
+}
+
 fn fork_private_mapping() -> CaseResult {
     const LEN: usize = 16384;
     let map = memory::mmap(core::ptr::null_mut(), LEN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
@@ -2837,29 +2898,47 @@ fn sched_yield() -> CaseResult {
 }
 
 /// One reading of the kernel's tick: the global tick and the idle ticks of all processors
-/// together, from /proc/stat, and the CPU time charged to the calling thread in ms. The
+/// together, from /proc/stat and converted to ms at its ms_per_tick (1 on aarch64, 5 on
+/// x86_64), and the CPU time charged to the calling thread in ms. The
 /// kernel charges CPU time from that same global tick, so between two readings elapsed
 /// ticks less charged time is the time the thread spent off its processor, and a pause of
 /// the whole machine shortens both alike.
 #[derive(Clone, Copy)]
 struct TickSample { tick: i64, idle: i64, charged: i64 }
 
+/// The reading allocates nothing: an allocation is an mmap and its release a munmap,
+/// and the dozens a line-by-line parse made fell between the tick this reading takes,
+/// when /proc/stat is opened, and the caller's next clock reading.
 fn tick_sample() -> Result<TickSample, String> {
-    let stat = std::fs::read_to_string("/proc/stat").map_err(|e| format!("reading /proc/stat failed: {e}"))?;
-    let (mut tick, mut idle) = (None, 0);
+    use std::io::Read;
+    let mut buf = [0u8; 4096];
+    let mut len = 0;
+    let mut file = std::fs::File::open("/proc/stat").map_err(|e| format!("reading /proc/stat failed: {e}"))?;
+    loop {
+        let n = file.read(&mut buf[len..]).map_err(|e| format!("reading /proc/stat failed: {e}"))?;
+        if n == 0 { break; }
+        len += n;
+        if len == buf.len() { return Err(format!("/proc/stat is longer than {len} bytes")); }
+    }
+    drop(file);
+    let stat = core::str::from_utf8(&buf[..len]).map_err(|_| "/proc/stat is not UTF-8".to_string())?;
+    let (mut tick, mut idle, mut ms_per_tick) = (None, 0, None);
     for line in stat.lines() {
-        match line.split_whitespace().collect::<Vec<_>>()[..] {
-            ["global_ticks", n] => tick = n.parse::<i64>().ok(),
-            [cpu, _, n] if cpu.starts_with("cpu") =>
+        let mut words = line.split_whitespace();
+        match (words.next(), words.next(), words.next(), words.next()) {
+            (Some("global_ticks"), Some(n), None, None) => tick = n.parse::<i64>().ok(),
+            (Some("ms_per_tick"), Some(n), None, None) => ms_per_tick = n.parse::<i64>().ok(),
+            (Some(cpu), Some(_), Some(n), None) if cpu.starts_with("cpu") =>
                 idle += n.parse::<i64>().map_err(|_| format!("/proc/stat line {line:?} has no idle tick count"))?,
             _ => {}
         }
     }
     let tick = tick.ok_or("/proc/stat has no global_ticks line")?;
-    Ok(TickSample { tick, idle, charged: cpu_us(&getrusage(RUSAGE_THREAD)?) / 1000 })
+    let ms_per_tick = ms_per_tick.ok_or("/proc/stat has no ms_per_tick line")?;
+    Ok(TickSample { tick: tick * ms_per_tick, idle: idle * ms_per_tick, charged: cpu_us(&getrusage(RUSAGE_THREAD)?) / 1000 })
 }
 
-/// Whether the processors' idle ticks over `elapsed` ticks, less the `away` ticks this
+/// Whether the processors' idle time over `elapsed` ms, less the `away` ms this
 /// thread spent off its own processor (which may have been idle meanwhile), add up to a
 /// whole processor idle for at least nine tenths of that time.
 fn spare_processor(idle: i64, away: i64, elapsed: i64) -> bool {
@@ -2895,10 +2974,10 @@ fn burn_off_cpu(ms: u64) -> Result<OffCpu, String> {
         last = now;
     }
     let (end, _) = times()?;
-    // The comparisons above take the global tick to be 1 ms, as it is on aarch64.
+    // The comparisons above take the global tick, converted to ms, to keep time.
     let ticks = last.tick - first.tick;
     if ((end - start) * 10 - ticks).abs() > 20 {
-        return Err(format!("times() measured {} ms while the kernel's global tick advanced {ticks}: the case assumes a 1 ms tick", (end - start) * 10));
+        return Err(format!("times() measured {} ms while the kernel's global tick advanced {ticks} ms", (end - start) * 10));
     }
     Ok(off)
 }
@@ -2925,7 +3004,7 @@ const WOKEN_SHORT_SLEEP: i32 = 6;
 const WOKEN_SLEEP_MS: i64 = 100;
 
 /// The process woken while its parent computes. Once the parent says it is computing, it
-/// sleeps WOKEN_SLEEP_MS and records how many ticks passed before it ran again, then
+/// sleeps WOKEN_SLEEP_MS and records how many ms of global tick passed before it ran again, then
 /// computes for 100 ms. The sleep must last the time asked for by the monotonic clock,
 /// and it must wake, and finish computing, while the parent is still computing.
 fn woken_process(shared: &[AtomicI64]) -> i32 {
@@ -2989,7 +3068,7 @@ fn sched_idle_cpu() -> CaseResult {
         0 => None,
         WOKEN_LATE if !wait_measured => None,
         WOKEN_LATE => Some(format!(
-            "ran again {wait} ms after beginning a {WOKEN_SLEEP_MS} ms sleep, after the computing process had finished, though the processors were idle for {wait_idle} ticks of that time")),
+            "ran again {wait} ms after beginning a {WOKEN_SLEEP_MS} ms sleep, after the computing process had finished, though the processors were idle for {wait_idle} ms of that time")),
         WOKEN_NO_START => Some("never saw the computing process start".to_string()),
         WOKEN_SLEEP_FAILED => Some(format!("failed its {WOKEN_SLEEP_MS} ms sleep")),
         WOKEN_SHORT_SLEEP => Some(format!("returned from a {WOKEN_SLEEP_MS} ms sleep after {slept} ms")),
@@ -3000,14 +3079,14 @@ fn sched_idle_cpu() -> CaseResult {
     if let Some(why) = why { return fail(format!("the process woken while another computed {why}")); }
     if wait_measured {
         check(wait - WOKEN_SLEEP_MS <= OFF_CPU_LIMIT_MS, &format!(
-            "with {cpus} processors online, a process woken from a {WOKEN_SLEEP_MS} ms sleep ran again {wait} ms after it began, though the processors were idle for {wait_idle} ticks of that time"))?;
+            "with {cpus} processors online, a process woken from a {WOKEN_SLEEP_MS} ms sleep ran again {wait} ms after it began, though the processors were idle for {wait_idle} ms of that time"))?;
     }
     let mut unmeasured = Vec::new();
     if ran.idle_ms < ran.busy_ms {
         unmeasured.push(format!("the computing process had one for {} of {} ms", ran.idle_ms, ran.idle_ms + ran.busy_ms));
     }
     if !wait_measured {
-        unmeasured.push(format!("the woken process's {wait} ms wait had {wait_idle} idle ticks"));
+        unmeasured.push(format!("the woken process's {wait} ms wait had {wait_idle} ms of idle processor time"));
     }
     if !unmeasured.is_empty() {
         return skip(format!("no processor was left idle to measure against: {}", unmeasured.join("; ")));
@@ -3148,6 +3227,7 @@ static SUITE: Suite = suite(
         category("fork", "fork & copy-on-write", &[
             case("pids", "fork returns the child's PID to the parent, and the child's getppid is the parent", fork_pids),
             case("cow-memory", "Writes after fork to data, stack and heap stay in the process that made them, whichever writes first", fork_cow),
+            case("cow-threads", "A write that copies a copy-on-write page is seen by another thread of the process reading it on another processor", fork_cow_threads),
             case("private-mapping", "A private anonymous mapping is copied on write across fork, whichever side writes first", fork_private_mapping),
             case("shared-mapping", "A shared anonymous mapping stays shared across fork", fork_shared_mapping),
             case("descriptors", "The child inherits descriptors sharing file offsets, and closing its copy leaves the parent's", fork_descriptors),

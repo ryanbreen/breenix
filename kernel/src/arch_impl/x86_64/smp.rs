@@ -7,14 +7,10 @@
 //! `cpus_online()` / `cpus_present()` / `is_cpu_online()` from atomics instead
 //! of from a compile-time constant.
 //!
-//! It starts no processor. No INIT/SIPI sequence is sent and no trampoline
-//! exists, so the boot processor is the only CPU marked online: `CPU_ONLINE`
-//! has CPU 0 set statically and no store site yet, and `CPUS_ONLINE` is 1. On
-//! a `-smp N` boot the other N-1 processors stay where the firmware left them:
-//! OVMF starts them during its own init and parks them, and this kernel does
-//! not address them again. `online=1` in the marker below is that fact,
-//! reported rather than assumed. Secondary bring-up (#1179) marks each AP
-//! online only after it has run `super::cpu_init::init_cpu`.
+//! The boot processor is online from the first instruction. Each application
+//! processor is started by `super::ap_start` and marks itself online with
+//! `mark_online` once it has run `super::cpu_init::init_cpu` and registered
+//! its idle thread with the scheduler.
 //!
 //! ## Logical CPU numbers
 //!
@@ -60,8 +56,8 @@ const SOURCE_MADT: u32 = 1;
 const SOURCE_CPUID_FALLBACK: u32 = 2;
 
 /// Processors currently online, in the sense the scheduler means: entered and
-/// able to dispatch. Seeded at 1 for the boot processor. No AP is started yet,
-/// so nothing raises it.
+/// able to dispatch. Seeded at 1 for the boot processor; each application
+/// processor raises it in `mark_online`.
 static CPUS_ONLINE: AtomicU64 = AtomicU64::new(1);
 
 /// Per-CPU online flags, indexed by logical CPU number. The boot processor,
@@ -97,6 +93,14 @@ static MADT_X2APIC: AtomicU32 = AtomicU32::new(0);
 static APIC_IDS: [AtomicU32; MAX_ENUMERATED_CPUS] =
     [const { AtomicU32::new(0) }; MAX_ENUMERATED_CPUS];
 
+/// Whether each recorded MADT entry carries the Enabled flag.
+static APIC_ENABLED: [AtomicBool; MAX_ENUMERATED_CPUS] =
+    [const { AtomicBool::new(false) }; MAX_ENUMERATED_CPUS];
+
+/// MADT entries, by index, whose processor was sent a startup sequence and
+/// did not come online. Bit `n` is entry `n`.
+static UNANSWERED: AtomicU64 = AtomicU64::new(0);
+
 /// How many of `APIC_IDS` are populated.
 static APIC_ID_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -109,6 +113,61 @@ static SOURCE: AtomicU32 = AtomicU32::new(SOURCE_NOT_RUN);
 
 /// Set by the first `init()`, so a second call cannot emit a second marker.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Ticks each CPU has been credited with, and the tick each CPU's last credit
+/// ran to. Read by /proc/stat beside the idle ticks credited to
+/// `IDLE_TICK_TOTAL`.
+static ELAPSED_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static CREDITED_TO_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Credit logical CPU `cpu`, the executing CPU, with the ticks since its
+/// previous credit: to its elapsed time, and to its idle time when `idle`, the
+/// interrupted thread being its idle thread. Called on every interrupt return
+/// through the scheduler, which every tick makes, as aarch64's timer interrupt
+/// credits its CPU. No lock.
+pub fn credit_ticks(cpu: usize, idle: bool) {
+    if cpu >= MAX_CPUS {
+        return;
+    }
+    let now = crate::time::get_ticks();
+    let last = CREDITED_TO_TICK[cpu].swap(now, Ordering::Relaxed);
+    if last == 0 || now <= last {
+        return;
+    }
+    ELAPSED_TICKS[cpu].fetch_add(now - last, Ordering::Relaxed);
+    if idle {
+        crate::tracing::providers::counters::IDLE_TICK_TOTAL.add_cpu(cpu, now - last);
+    }
+}
+
+/// Ticks logical CPU `cpu` has been credited with.
+pub fn cpu_elapsed_ticks(cpu: usize) -> u64 {
+    ELAPSED_TICKS
+        .get(cpu)
+        .map_or(0, |ticks| ticks.load(Ordering::Relaxed))
+}
+
+/// User-thread dispatches each logical CPU has made: switches that installed a
+/// user thread as the CPU's current thread.
+static USER_DISPATCHES: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Count a dispatch of a user thread on logical CPU `cpu`. One relaxed add.
+#[inline]
+pub fn note_user_dispatch(cpu: usize) {
+    if cpu < MAX_CPUS {
+        USER_DISPATCHES[cpu].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Print how many user-thread dispatches each online CPU made.
+pub fn report_user_dispatches() {
+    let mut line = alloc::string::String::new();
+    for cpu in (0..MAX_CPUS).filter(|&cpu| is_cpu_online(cpu)) {
+        let count = USER_DISPATCHES[cpu].load(Ordering::Relaxed);
+        line.push_str(&alloc::format!(" cpu{}={}", cpu, count));
+    }
+    log::info!("[smp] user-thread dispatches per CPU:{}", line);
+}
 
 /// Number of processors online. Mirrors
 /// `crate::arch_impl::aarch64::smp::cpus_online()`.
@@ -129,6 +188,28 @@ pub fn online_mask() -> u64 {
     (0..MAX_CPUS)
         .filter(|&cpu| is_cpu_online(cpu))
         .fold(0, |mask, cpu| mask | (1 << cpu))
+}
+
+/// Mark logical CPU `cpu` online. Called once by that CPU, after its per-CPU
+/// init and idle-thread registration, with interrupts masked; logical numbers
+/// are handed out in order, so `cpu` is always the current online count.
+pub fn mark_online(cpu: usize) {
+    assert!(
+        cpu < MAX_CPUS && cpu as u64 == cpus_online(),
+        "CPU {} came online out of order ({} online)",
+        cpu,
+        cpus_online()
+    );
+    CPU_ONLINE[cpu].store(true, Ordering::Release);
+    CPUS_ONLINE.fetch_add(1, Ordering::Release);
+}
+
+/// Record that the processor at MADT entry `index` was started and did not
+/// come online.
+pub fn note_unanswered(index: usize) {
+    if index < 64 {
+        UNANSWERED.fetch_or(1 << index, Ordering::AcqRel);
+    }
 }
 
 /// Record the local APIC id of logical CPU `cpu`. Called by that CPU's own
@@ -195,6 +276,14 @@ pub fn apic_id_of(index: usize) -> Option<u32> {
     APIC_IDS.get(index).map(|id| id.load(Ordering::Acquire))
 }
 
+/// Whether the MADT entry at `index` carries the Enabled flag.
+pub fn apic_entry_enabled(index: usize) -> bool {
+    index < enumerated_cpu_count()
+        && APIC_ENABLED
+            .get(index)
+            .is_some_and(|enabled| enabled.load(Ordering::Acquire))
+}
+
 /// Where the enumeration came from.
 pub fn enumeration_source() -> EnumerationSource {
     match SOURCE.load(Ordering::Acquire) {
@@ -253,7 +342,7 @@ fn cpuid_bsp_apic_id() -> u32 {
 /// Called from `kernel_main` after `memory::init` has installed the master
 /// kernel page table, because the MADT walk reads physical memory through the
 /// bootloader's offset window (see `super::acpi`). This path starts no
-/// processor.
+/// processor; `super::ap_start::start_application_processors` does.
 pub fn init(rsdp_phys: Option<u64>, physical_memory_offset: u64) {
     if INITIALIZED.swap(true, Ordering::AcqRel) {
         return;
@@ -268,6 +357,7 @@ pub fn init(rsdp_phys: Option<u64>, physical_memory_offset: u64) {
             Ok(census) => {
                 for index in 0..census.recorded {
                     APIC_IDS[index].store(census.apic_ids[index], Ordering::Release);
+                    APIC_ENABLED[index].store(census.apic_enabled[index], Ordering::Release);
                 }
                 APIC_ID_COUNT.store(census.recorded as u32, Ordering::Release);
                 (
@@ -318,16 +408,23 @@ pub fn init(rsdp_phys: Option<u64>, physical_memory_offset: u64) {
     );
 }
 
-/// Report the SMP measurement once secondary bring-up would be complete: how
-/// many CPUs the firmware's MADT reports enabled and how many are online.
+/// Report the SMP measurement once secondary bring-up is complete: how many
+/// CPUs the firmware's MADT reports enabled and how many are online, and one
+/// line for each started processor that did not come online.
 ///
 /// The second line is the boot-path stage, printed only when more than one
-/// CPU is reported and every one of them is online. No x86 AP is started yet
-/// (#1179), so on a multi-CPU machine this prints `online=1` and no stage line.
-/// A refused MADT walk reports 0: the CPUID cross-check is not an enumeration.
+/// CPU is reported and every one of them is online. A refused MADT walk
+/// reports 0: the CPUID cross-check is not an enumeration.
 pub fn report_bring_up() {
     let online = cpus_online();
     let reported = u64::from(madt_enabled_count());
+    let unanswered = UNANSWERED.load(Ordering::Acquire);
+    for index in (0..64).filter(|index| unanswered & (1 << index) != 0) {
+        log::warn!(
+            "[smp] CPU with APIC id {} did not come online",
+            apic_id_of(index).unwrap_or(u32::MAX)
+        );
+    }
     log::info!(
         "[smp] online={} reported={} source={}",
         online,

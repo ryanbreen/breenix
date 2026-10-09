@@ -160,26 +160,25 @@ fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
         1
     );
 
-    // #775 round 3, N1: the heartbeat lives in the idle loop x86 actually runs.
-    // `main.rs`'s idle_thread_fn is the idle task's stored entry point and is
-    // never dispatched, so a call there would be certified-but-dead wiring.
-    // claim-lint:ok: #775 round 3 finding N1, measured in
-    // docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
+    // The idle loop writes no census line: placement queues woken threads on
+    // an idle CPU, and the line holds the CPU writing it with interrupts
+    // masked for tens of milliseconds. kstrandd and kloopbackd, kernel threads
+    // a busy CPU is seen running, emit it.
     let idle_loop_start = context_switch
         .find("pub fn idle_loop()")
         .expect("context_switch.rs must still define idle_loop()");
     assert_eq!(
         context_switch[idle_loop_start..]
-            .matches("crate::task::report_dispatch_strand_census_heartbeat()")
+            .matches("report_dispatch_strand_census_heartbeat()")
             .count(),
-        1,
-        "the census heartbeat is not called from idle_loop()"
+        0,
+        "the census heartbeat is called from idle_loop() again"
     );
     assert_eq!(
         context_switch
-            .matches("crate::task::report_dispatch_strand_census_heartbeat()")
+            .matches("report_dispatch_strand_census_heartbeat()")
             .count(),
-        1
+        0
     );
     assert_eq!(
         main.matches("task::report_dispatch_strand_census_heartbeat()")

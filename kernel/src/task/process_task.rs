@@ -44,6 +44,13 @@ impl DeferredFaultExitBuffer {
         false
     }
 
+    #[cfg(target_arch = "x86_64")]
+    fn is_empty(&self) -> bool {
+        self.slots
+            .iter()
+            .all(|slot| slot.load(Ordering::Acquire) == DEFERRED_FAULT_EXIT_EMPTY)
+    }
+
     fn drain(&self, out: &mut alloc::vec::Vec<u64>) {
         for slot in &self.slots {
             let tid = slot.swap(DEFERRED_FAULT_EXIT_EMPTY, Ordering::AcqRel);
@@ -56,6 +63,29 @@ impl DeferredFaultExitBuffer {
 
 static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; scheduler::MAX_CPUS] =
     [const { DeferredFaultExitBuffer::new() }; scheduler::MAX_CPUS];
+
+/// Deferred fault exits that found their CPU's ring full. Locked only with
+/// interrupts masked, and the heap masks interrupts while it is held, so a
+/// fault handler can push here whatever it interrupted.
+static DEFERRED_FAULT_EXIT_OVERFLOW: spin::Mutex<alloc::vec::Vec<u64>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
+
+fn spill_fault_exit(thread_id: u64) -> bool {
+    crate::arch_without_interrupts(|| {
+        let mut overflow = DEFERRED_FAULT_EXIT_OVERFLOW.lock();
+        if overflow.try_reserve(1).is_err() {
+            return false;
+        }
+        overflow.push(thread_id);
+        true
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn fault_exits_pending() -> bool {
+    !DEFERRED_FAULT_EXIT_BUFFERS.iter().all(|buf| buf.is_empty())
+        || crate::arch_without_interrupts(|| !DEFERRED_FAULT_EXIT_OVERFLOW.lock().is_empty())
+}
 
 pub(crate) struct PendingProcessReclaim {
     pid: u64,
@@ -241,14 +271,28 @@ impl PendingProcessReclaim {
     /// sends nothing. A peer whose saved user-return CR3 names a root keeps
     /// it (see `release_root_on_other_cpus`), so the shadow proof is taken
     /// again once every peer has answered: returns whether it still holds.
+    ///
+    /// A peer that kept a root in that round can retire its shadow (by
+    /// dispatching idle) before the proof is retaken, and still have the root
+    /// in CR3: it never left it. So once no shadow names a root, a second
+    /// round is sent. Nothing can name a dead root in a shadow again, so that
+    /// round moves every peer still on one, and a frame freed after it is not
+    /// a CPU's page-table root.
     #[cfg(target_arch = "x86_64")]
     fn release_root_on_peers(&self) -> bool {
-        for page_table in self.page_table.iter().chain(self.old_page_tables.iter()) {
-            crate::memory::tlb::release_root_on_other_cpus(
-                page_table.level_4_frame().start_address().as_u64(),
-            );
+        let release = || {
+            for page_table in self.page_table.iter().chain(self.old_page_tables.iter()) {
+                crate::memory::tlb::release_root_on_other_cpus(
+                    page_table.level_4_frame().start_address().as_u64(),
+                );
+            }
+        };
+        release();
+        if shadow_root_is_live(self, self.after_epoch.online_mask) {
+            return false;
         }
-        !shadow_root_is_live(self, self.after_epoch.online_mask)
+        release();
+        true
     }
 
     fn live_row_names_root(&self) -> bool {
@@ -297,6 +341,25 @@ static PENDING_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
 static PARKED_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
+/// A reclaim queue for publishing into or sweeping. x86_64 waits for a holder
+/// on another CPU: every hold is short and masks interrupts, so it always
+/// finishes, and the try-lock's `None` -- park nothing, sweep nothing, abandon
+/// the reclaim and leak its address space -- was the answer for nesting on one
+/// CPU, not for contention between CPUs, which with four CPUs leaked a dead
+/// process's page tables at a time. aarch64 keeps its try-lock.
+fn reclaim_queue<T>(
+    queue: &crate::irq_safe_mutex::IrqSafeMutex<T>,
+) -> Option<crate::irq_safe_mutex::IrqSafeMutexGuard<'_, T>> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        Some(queue.lock())
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        queue.try_lock()
+    }
+}
+
 static RECLAIM_PASS_ID: AtomicU32 = AtomicU32::new(0);
 static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 
@@ -661,7 +724,7 @@ fn boot_forces_reclaim_reserve_failure() -> bool {
 fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
     let mut reclaim = Some(reclaim);
     let queued = crate::arch_without_interrupts(|| {
-        let Some(mut pending) = PENDING_PROCESS_RECLAIMS.try_lock() else {
+        let Some(mut pending) = reclaim_queue(&PENDING_PROCESS_RECLAIMS) else {
             return false;
         };
         #[cfg(feature = "boot_tests")]
@@ -1034,6 +1097,9 @@ fn next_reclaim_pass_id(mut pass: u32) -> u32 {
 }
 
 /// Defer a SIGSEGV-style process exit for a user thread that faulted in kernel mode.
+///
+/// Returns false only when this CPU's ring is full and the heap could not
+/// grow the overflow list; the exit is then lost and the caller says so.
 pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     #[cfg(target_arch = "aarch64")]
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
@@ -1044,7 +1110,12 @@ pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     };
 
     let idx = cpu.min(DEFERRED_FAULT_EXIT_BUFFERS.len().saturating_sub(1));
-    DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id)
+    let queued = DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id) || spill_fault_exit(thread_id);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
+        crate::task::kthread::kthread_unpark(daemon);
+    }
+    queued
 }
 
 /// Drain deferred kernel-fault exits from a normal scheduling context.
@@ -1053,8 +1124,37 @@ pub fn drain_deferred_fault_sigsegv_exits() {
     for buf in &DEFERRED_FAULT_EXIT_BUFFERS {
         buf.drain(&mut tids);
     }
+    crate::arch_without_interrupts(|| tids.append(&mut DEFERRED_FAULT_EXIT_OVERFLOW.lock()));
     for tid in tids {
         ProcessScheduler::handle_thread_exit(tid, -11);
+    }
+}
+
+/// x86_64: the kernel thread that runs deferred fault exits (#511).
+///
+/// An exit can block and takes locks other CPUs hold, so it runs in a thread
+/// of its own, which a dispatch saves and resumes. x86 restarts its idle
+/// thread at the top of `idle_loop` on every dispatch, abandoning whatever it
+/// was doing, so an exit drained from the idle loop could be cut off half
+/// done by the next tick.
+#[cfg(target_arch = "x86_64")]
+static FAULT_EXIT_DAEMON: spin::Once<crate::task::kthread::KthreadHandle> = spin::Once::new();
+
+/// x86_64: start the fault-exit kernel thread. Called once during boot,
+/// before any user process exists.
+#[cfg(target_arch = "x86_64")]
+pub fn start_fault_exit_daemon() {
+    FAULT_EXIT_DAEMON.call_once(|| {
+        crate::task::kthread::kthread_run(fault_exit_daemon, "kfaultexit")
+            .expect("could not spawn the fault-exit kernel thread")
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+fn fault_exit_daemon() {
+    loop {
+        drain_deferred_fault_sigsegv_exits();
+        crate::task::kthread::kthread_park_if(|| !fault_exits_pending());
     }
 }
 
@@ -1122,7 +1222,7 @@ fn park_reclaim(mut reclaim: PendingProcessReclaim) {
     reclaim.parked = Some(park_record);
     let mut reclaim = Some(reclaim);
     let parked = crate::arch_without_interrupts(|| {
-        let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else {
+        let Some(mut parked) = reclaim_queue(&PARKED_PROCESS_RECLAIMS) else {
             return false;
         };
         if parked.try_reserve(1).is_err() {
@@ -1148,7 +1248,7 @@ fn park_reclaim(mut reclaim: PendingProcessReclaim) {
 fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch: u64) {
     let mut ready = alloc::vec::Vec::new();
     let swept = crate::arch_without_interrupts(|| {
-        let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else {
+        let Some(mut parked) = reclaim_queue(&PARKED_PROCESS_RECLAIMS) else {
             return false;
         };
         let mut index = 0;
@@ -1179,7 +1279,7 @@ fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch
     if !ready.is_empty() {
         let mut ready = Some(ready);
         let queued = crate::arch_without_interrupts(|| {
-            let Some(mut pending) = PENDING_PROCESS_RECLAIMS.try_lock() else {
+            let Some(mut pending) = reclaim_queue(&PENDING_PROCESS_RECLAIMS) else {
                 return false;
             };
             let ready_len = ready.as_ref().expect("ready reclaims retained").len();

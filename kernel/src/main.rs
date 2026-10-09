@@ -590,8 +590,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     process::init();
     log::info!("Process management initialized");
 
-    // Secondary CPU bring-up belongs here, after the scheduler and process
-    // manager exist; none is started yet (#1179). Report what came online.
+    // Start the application processors now that the scheduler and process
+    // manager exist, then report what came online.
+    kernel::arch_impl::x86_64::ap_start::start_application_processors();
     kernel::arch_impl::x86_64::smp::report_bring_up();
 
     // Initialize workqueue subsystem (depends on kthread infrastructure)
@@ -608,6 +609,8 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // zero-feature production profile. idle_loop and the pump both emit only
     // when the rest of the kernel gives them a reason to run.
     task::start_dispatch_strand_census_kthread();
+    // Deferred user-fault process exits run in their own kernel thread (#511).
+    task::process_task::start_fault_exit_daemon();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
@@ -2271,7 +2274,7 @@ fn kernel_main_continue() -> ! {
 
     // PRECONDITION 5: Scheduler Has Runnable Threads
     log::info!("PRECONDITION 5: Checking scheduler has runnable threads...");
-    let has_runnable = task::scheduler::with_scheduler(|s| s.has_runnable_threads());
+    let has_runnable = task::scheduler::with_scheduler(|s| s.has_schedulable_work());
     if let Some(true) = has_runnable {
         log::info!("PRECONDITION 5: Scheduler has runnable threads ✓ PASS");
     } else {

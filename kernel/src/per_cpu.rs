@@ -914,6 +914,13 @@ pub fn idle_thread() -> Option<&'static mut crate::task::thread::Thread> {
     }
 }
 
+/// Whether the executing CPU's current thread is its idle thread. Lock-free.
+pub fn running_idle_thread() -> bool {
+    use crate::arch_impl::PerCpuOps;
+    let idle = hal_percpu::X86PerCpu::idle_thread_ptr();
+    !idle.is_null() && hal_percpu::X86PerCpu::current_thread_ptr() == idle
+}
+
 /// Set the idle thread in per-CPU data
 pub fn set_idle_thread(thread: *mut crate::task::thread::Thread) {
     // Use HAL for GS-relative access

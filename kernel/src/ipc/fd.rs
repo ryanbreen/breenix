@@ -499,12 +499,11 @@ impl FdTable {
         Ok(slot as i32)
     }
 
-    /// Whether a slot exists below the soft limit, including growable slots.
-    pub fn has_free_slot(&self) -> bool {
-        self.fds[..self.allocation_limit.min(self.fds.len())]
-            .iter()
-            .any(|slot| slot.is_none())
-            || self.fds.len() < self.allocation_limit
+    /// Make sure a slot is free below the soft limit, growing the table now if
+    /// that is what it takes, so a later allocation needs no memory. Returns
+    /// false at the limit or when the table cannot grow.
+    pub fn reserve_free_slot(&mut self) -> bool {
+        self.free_slot(0).is_ok()
     }
 
     fn free_slot(&mut self, start: usize) -> Result<usize, i32> {
