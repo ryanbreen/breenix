@@ -49,13 +49,14 @@ pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
 pub const RESCHEDULE_VECTOR: u8 = 0xf0;
 
 /// Self-IPI vector for retrying an interrupt-return step deferred because the
-/// process manager was held (`scheduler::retry_after_interrupts_x86`). Its
-/// gate is also the timer entry. It ranks below every device vector, so
-/// pending device interrupts are taken first, and above none of them, so it
-/// is taken as soon as the last returns, before the next instruction of the
-/// code they return to. It is IRQ2's slot, the 8259 cascade, which is never
-/// routed to a CPU.
-pub const RETRY_VECTOR: u8 = 0x22;
+/// process manager was held (`scheduler::retry_after_interrupts_x86`). It is
+/// the timer's own vector, 0x20, the lowest that can be delivered: every
+/// device vector, the keyboard's 0x21 included, ranks above it and is taken
+/// first, and it is taken as soon as the last of them returns, before the
+/// next instruction of the code they return to. An extra timer entry changes
+/// no accounting (see `RESCHEDULE_VECTOR`), and a self-IPI that coincides
+/// with a tick is one entry that does both.
+pub const RETRY_VECTOR: u8 = InterruptIndex::Timer as u8;
 
 // Assembly entry points
 extern "C" {
@@ -157,7 +158,6 @@ pub fn init_idt() {
                 log::warn!("Using low-half address for timer entry (temporary workaround)");
                 idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(timer_entry_low));
                 idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_low));
-                idt[RETRY_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_low));
             } else {
                 let timer_entry_high = crate::memory::layout::high_alias_from_low(timer_entry_low);
                 log::info!(
@@ -168,7 +168,6 @@ pub fn init_idt() {
                 idt[InterruptIndex::Timer.as_u8()]
                     .set_handler_addr(VirtAddr::new(timer_entry_high));
                 idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_high));
-                idt[RETRY_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_high));
             }
         }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
@@ -237,7 +236,6 @@ pub fn init_idt() {
                 && i != InterruptIndex::Irq11.as_u8()
                 && i != SYSCALL_INTERRUPT_ID
                 && i != RESCHEDULE_VECTOR
-                && i != RETRY_VECTOR
             {
                 idt[i].set_handler_fn(generic_handler);
             }
