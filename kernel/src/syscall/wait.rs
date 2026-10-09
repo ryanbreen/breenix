@@ -11,6 +11,7 @@ use super::userptr;
 use super::SyscallResult;
 use crate::process::process::JobReport;
 use crate::process::ProcessId;
+use crate::signal::constants::{CLD_CONTINUED, CLD_STOPPED};
 
 /// Ensure TTBR0 is set to the current thread's process page tables.
 ///
@@ -68,13 +69,6 @@ const WAITID_OPTIONS: u32 =
 const P_ALL: u32 = 0;
 const P_PID: u32 = 1;
 const P_PGID: u32 = 2;
-
-/// siginfo si_code values for SIGCHLD.
-const CLD_EXITED: i32 = 1;
-const CLD_KILLED: i32 = 2;
-const CLD_DUMPED: i32 = 3;
-const CLD_STOPPED: i32 = 5;
-const CLD_CONTINUED: i32 = 6;
 
 /// Which children a wait considers.
 #[derive(Clone, Copy)]
@@ -317,9 +311,7 @@ pub fn sys_waitid(idtype: u32, id: u64, infop: u64, options: u32) -> SyscallResu
     let mut info = [0i32; 32];
     if let Some(found) = &found {
         let (code, status) = match found.event {
-            Event::Exited(code) if code < 0 && (-code) & 0x80 != 0 => (CLD_DUMPED, (-code) & 0x7f),
-            Event::Exited(code) if code < 0 => (CLD_KILLED, (-code) & 0x7f),
-            Event::Exited(code) => (CLD_EXITED, code & 0xff),
+            Event::Exited(code) => crate::signal::types::child_exit_code_status(code),
             Event::Stopped(sig) => (CLD_STOPPED, sig as i32),
             Event::Continued => (CLD_CONTINUED, crate::signal::constants::SIGCONT as i32),
         };

@@ -131,10 +131,11 @@ syscall_save_registers:
     cmp byte [gs:36], 0
     je .syscall_return_to_user
     push rax                  ; Save syscall return value
-    mov rdi, rsp              ; Pass pointer to saved registers (after push)
-    add rdi, 8                ; Adjust for the pushed rax
-    lea rsi, [rsp + 16*8]     ; Pass pointer to interrupt frame
+    sub rsp, 8                ; Keep RSP 16-byte aligned at the call (SysV ABI)
+    lea rdi, [rsp + 16]       ; Pass pointer to saved registers (past rax and pad)
+    lea rsi, [rsp + 17*8]     ; Pass pointer to interrupt frame
     call check_need_resched_and_switch
+    add rsp, 8
     pop rax                   ; Restore syscall return value
 
     ; A switch installs the next thread's frame. A kernel thread, idle or a

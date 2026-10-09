@@ -27,16 +27,13 @@ fn now() -> u64 {
 /// The recheck runs before preemption is enabled. It takes descriptor locks
 /// (a pipe buffer's) while the thread is already marked blocked, and an
 /// interrupt that preempted it there would switch it out holding the lock,
-/// for good: the writer that would wake it spins on that lock first.
+/// for good: the writer that would wake it spins on that lock first. The
+/// signal check runs before it too (#1230): see `blocking_io::wait_prepared`.
 fn park(deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
     crate::task::scheduler::with_scheduler(|s| {
         s.block_current_for_io_with_timeout((deadline != u64::MAX).then_some(deadline));
     });
     let already_ready = ready();
-    #[cfg(target_arch = "aarch64")]
-    crate::per_cpu_aarch64::preempt_enable();
-    #[cfg(target_arch = "x86_64")]
-    crate::per_cpu::preempt_enable();
     let mut interrupted = false;
     while !already_ready {
         if super::check_signals_for_eintr().is_some() {
@@ -52,8 +49,10 @@ fn park(deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
         if !blocked {
             break;
         }
+        crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
         crate::arch_halt_with_interrupts();
+        crate::per_cpu::preempt_disable();
     }
     crate::task::scheduler::with_scheduler(|s| {
         if let Some(t) = s.current_thread_mut() {
@@ -64,10 +63,6 @@ fn park(deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
             }
         }
     });
-    #[cfg(target_arch = "aarch64")]
-    crate::per_cpu_aarch64::preempt_disable();
-    #[cfg(target_arch = "x86_64")]
-    crate::per_cpu::preempt_disable();
     #[cfg(target_arch = "aarch64")]
     super::handlers::poll_ensure_address_space();
     if interrupted {

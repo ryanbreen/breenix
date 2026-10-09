@@ -272,7 +272,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             // Needs frame access like pause() for saving userspace context
             super::signal::sys_sigsuspend_with_frame(args.0, args.1, frame)
         }
-        Some(SyscallNumber::Sigaltstack) => super::signal::sys_sigaltstack(args.0, args.1),
+        Some(SyscallNumber::Sigaltstack) => {
+            super::signal::sys_sigaltstack(args.0, args.1, frame.rsp)
+        }
         Some(SyscallNumber::Sigreturn) => {
             // CRITICAL: sigreturn restores ALL registers including RAX from the signal frame.
             // We must NOT overwrite RAX with the syscall return value after this call!

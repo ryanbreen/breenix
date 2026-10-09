@@ -71,7 +71,7 @@ mod instruction {
     }
     static RESTARTED: AtomicBool = AtomicBool::new(false);
 
-    // Capture the SignalFrame pointer before a Rust prologue changes RSP.
+    // Capture the signal frame pointer before a Rust prologue changes RSP.
     #[unsafe(naked)]
     extern "C" fn restart_handler(_sig: i32) {
         core::arch::naked_asm!(
@@ -89,13 +89,15 @@ mod instruction {
 
     extern "C" fn restart_handler_body(sig: i32, frame: *const u64) {
         assert_eq!(sig, SIGUSR1);
-        // SignalFrame's saved RIP, RAX and RCX are at offsets 40, 64 and 80.
+        // The frame is Linux's rt_sigframe: the return address, then the
+        // ucontext, whose uc_mcontext (at byte 48) saves RAX, RCX and RIP at
+        // its bytes 104, 112 and 128.
         // ERESTARTSYS must restore READ's number and rewind onto SYSCALL.
         // RCX holds the next RIP only if SYSCALL ran: read_entered() loads
         // zero, so a frame interrupted before READ entered cannot match.
-        let rip = unsafe { *frame.add(5) };
-        let rax = unsafe { *frame.add(8) };
-        let rcx = unsafe { *frame.add(10) };
+        let rip = unsafe { *frame.add(22) };
+        let rax = unsafe { *frame.add(19) };
+        let rcx = unsafe { *frame.add(20) };
         if rax == 0
             && rcx == rip.wrapping_add(2)
             && unsafe { std::ptr::read_unaligned(rip as *const u16) } == 0x050f

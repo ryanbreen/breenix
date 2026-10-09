@@ -1712,7 +1712,15 @@ pub(crate) fn handle_fault(
                 .map(|(_, owner)| owner),
         };
         if let Some(process) = target {
-            process.signals.force_signal(signal);
+            // A mapping that forbids the access, or a page past the file's end.
+            let code = if signal == SIGSEGV {
+                crate::signal::constants::SEGV_ACCERR
+            } else {
+                crate::signal::constants::BUS_ADRERR
+            };
+            process
+                .signals
+                .force_signal(signal, crate::signal::types::SigInfo::fault(code, address));
         }
     }
     outcome

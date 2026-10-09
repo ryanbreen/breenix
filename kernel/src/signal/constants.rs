@@ -62,11 +62,14 @@ pub const SIG_SETMASK: i32 = 2;
 pub const SS_ONSTACK: u32 = 1;
 /// Alternate signal stack is disabled
 pub const SS_DISABLE: u32 = 2;
-/// Minimum size for alternate signal stack (POSIX standard)
+/// Linux: disarm the alternate stack while a handler runs on it
+pub const SS_AUTODISARM: u32 = 1 << 31;
+/// Minimum size for an alternate signal stack: the Linux ABI's value, which
+/// holds one signal frame on this architecture.
+#[cfg(target_arch = "x86_64")]
 pub const MINSIGSTKSZ: usize = 2048;
-/// Default/recommended size for alternate signal stack
-#[allow(dead_code)] // Part of POSIX sigaltstack API, used by userspace
-pub const SIGSTKSZ: usize = 8192;
+#[cfg(target_arch = "aarch64")]
+pub const MINSIGSTKSZ: usize = 5120;
 
 // sigaction flags
 /// SIGCHLD only: no SIGCHLD when a child stops or continues
@@ -87,6 +90,56 @@ pub const SA_ONSTACK: u64 = 0x08000000;
 /// Provide restorer function
 #[allow(dead_code)] // Part of POSIX sigaction API, used by userspace
 pub const SA_RESTORER: u64 = 0x04000000;
+/// Reset the action to SIG_DFL on entry to the handler
+pub const SA_RESETHAND: u64 = 0x80000000;
+
+// siginfo si_code values (Linux ABI)
+/// Sent by kill or raise
+pub const SI_USER: i32 = 0;
+/// Sent by the kernel
+pub const SI_KERNEL: i32 = 0x80;
+/// SIGSEGV: address not mapped
+pub const SEGV_MAPERR: i32 = 1;
+/// SIGSEGV: access not permitted by the mapping
+pub const SEGV_ACCERR: i32 = 2;
+/// SIGBUS: misaligned address
+pub const BUS_ADRALN: i32 = 1;
+/// SIGBUS: no backing for the address
+pub const BUS_ADRERR: i32 = 2;
+/// SIGBUS: a hardware error at the address (external abort, parity or ECC)
+pub const BUS_OBJERR: i32 = 3;
+/// SIGTRAP: a breakpoint instruction
+pub const TRAP_BRKPT: i32 = 1;
+/// SIGTRAP: a single step
+pub const TRAP_TRACE: i32 = 2;
+/// SIGTRAP: a hardware breakpoint or watchpoint
+pub const TRAP_HWBKPT: i32 = 4;
+/// SIGILL: illegal opcode
+pub const ILL_ILLOPC: i32 = 1;
+/// SIGILL: illegal operand
+pub const ILL_ILLOPN: i32 = 2;
+/// SIGFPE: integer divide by zero
+pub const FPE_INTDIV: i32 = 1;
+/// SIGFPE: floating-point divide by zero
+pub const FPE_FLTDIV: i32 = 3;
+/// SIGFPE: floating-point overflow
+pub const FPE_FLTOVF: i32 = 4;
+/// SIGFPE: floating-point underflow
+pub const FPE_FLTUND: i32 = 5;
+/// SIGFPE: floating-point inexact result
+pub const FPE_FLTRES: i32 = 6;
+/// SIGFPE: invalid floating-point operation
+pub const FPE_FLTINV: i32 = 7;
+/// SIGCHLD: the child exited
+pub const CLD_EXITED: i32 = 1;
+/// SIGCHLD: the child was killed
+pub const CLD_KILLED: i32 = 2;
+/// SIGCHLD: the child was killed and dumped core
+pub const CLD_DUMPED: i32 = 3;
+/// SIGCHLD: the child stopped
+pub const CLD_STOPPED: i32 = 5;
+/// SIGCHLD: the stopped child continued
+pub const CLD_CONTINUED: i32 = 6;
 
 /// Convert signal number to bit mask
 ///
@@ -102,6 +155,15 @@ pub const fn sig_mask(sig: u32) -> u64 {
 
 /// Signals that cannot be caught, blocked, or ignored
 pub const UNCATCHABLE_SIGNALS: u64 = sig_mask(SIGKILL) | sig_mask(SIGSTOP);
+
+/// Signals a fault raises, which are taken before any other pending signal
+/// so that the handler sees the fault's context (as Linux's next_signal).
+pub const SYNCHRONOUS_SIGNALS: u64 = sig_mask(SIGSEGV)
+    | sig_mask(SIGBUS)
+    | sig_mask(SIGILL)
+    | sig_mask(SIGTRAP)
+    | sig_mask(SIGFPE)
+    | sig_mask(SIGSYS);
 
 /// Check if a signal number is valid
 #[inline]

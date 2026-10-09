@@ -628,7 +628,11 @@ fn dispatch_syscall_enum(
             result_to_u64(crate::syscall::signal::sys_sigpending(arg1, arg2))
         }
         SyscallNumber::Sigaltstack => {
-            result_to_u64(crate::syscall::signal::sys_sigaltstack(arg1, arg2))
+            result_to_u64(crate::syscall::signal::sys_sigaltstack(
+                arg1,
+                arg2,
+                crate::arch_impl::aarch64::context::read_sp_el0(),
+            ))
         }
         SyscallNumber::Alarm => result_to_u64(crate::syscall::signal::sys_alarm(arg1)),
         SyscallNumber::Getitimer => {

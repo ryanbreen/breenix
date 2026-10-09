@@ -6,7 +6,7 @@
 //!
 //! Two static caches are provided:
 //! - `FD_TABLE_SLAB`: for `[Option<FileDescriptor>; 256]` (~6 KiB each, 64 slots)
-//! - `SIGNAL_HANDLERS_SLAB`: for `[SignalAction; 64]` (~2 KiB each, 64 slots)
+//! - `SIGNAL_HANDLERS_SLAB`: for `SignalTable` (~3.5 KiB each, 64 slots)
 //!
 //! Objects that cannot be served from the slab fall back to the global heap
 //! allocator transparently via `SlabBox`.
@@ -306,7 +306,7 @@ impl<T: Clone> Clone for SlabBox<[T]> {
     }
 }
 
-/// Clone for sized types (used by SignalState handlers array)
+/// Clone for fixed-size arrays
 impl<T: Clone, const N: usize> Clone for SlabBox<[T; N]> {
     fn clone(&self) -> Self {
         if let Some(slab) = self.slab {
@@ -326,18 +326,37 @@ impl<T: Clone, const N: usize> Clone for SlabBox<[T; N]> {
     }
 }
 
+/// Clone for the signal table (SignalState::fork)
+impl Clone for SlabBox<SignalTable> {
+    fn clone(&self) -> Self {
+        if let Some(slab) = self.slab {
+            if let Some(raw) = slab.alloc() {
+                let dst = raw as *mut SignalTable;
+                // SAFETY: the slab hands out blocks sized and aligned for a
+                // SignalTable, which is plain data, copied in place.
+                unsafe {
+                    ptr::copy_nonoverlapping(self.ptr.as_ptr() as *const SignalTable, dst, 1);
+                    return SlabBox::from_slab(dst, slab);
+                }
+            }
+        }
+        // Fall back to heap
+        SlabBox::from_box(Box::new((**self).clone()))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Static cache declarations and initialization
 // ---------------------------------------------------------------------------
 
 use crate::ipc::fd::FileDescriptor;
-use crate::signal::types::SignalAction;
+use crate::signal::types::SignalTable;
 
 /// Slab cache for `[Option<FileDescriptor>; 256]` (~6 KiB each).
 /// Used by `FdTable::new()` and `FdTable::clone()` (fork).
 pub static FD_TABLE_SLAB: SlabCache = SlabCache::uninit("fd_table");
 
-/// Slab cache for `[SignalAction; 64]` (~2 KiB each).
+/// Slab cache for `SignalTable` (~3.5 KiB each).
 /// Used by `SignalState::default()` and `SignalState::fork()`.
 pub static SIGNAL_HANDLERS_SLAB: SlabCache = SlabCache::uninit("signal_handlers");
 
@@ -349,5 +368,5 @@ pub fn init() {
     use core::mem::size_of;
 
     FD_TABLE_SLAB.init(size_of::<[Option<FileDescriptor>; INITIAL_FDS]>(), 64);
-    SIGNAL_HANDLERS_SLAB.init(size_of::<[SignalAction; 64]>(), 64);
+    SIGNAL_HANDLERS_SLAB.init(size_of::<SignalTable>(), 64);
 }

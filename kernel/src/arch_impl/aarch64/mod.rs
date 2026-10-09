@@ -19,6 +19,7 @@ pub mod cpuinfo;
 pub mod elf;
 pub mod exception;
 pub mod exception_frame;
+pub mod fpsimd;
 pub mod gic;
 pub mod mmu;
 pub mod paging;

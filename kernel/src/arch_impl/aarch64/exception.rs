@@ -196,6 +196,136 @@ fn current_thread_lock_free() -> Option<&'static crate::task::thread::Thread> {
     }
 }
 
+/// Raise fault signal `sig` with `info` for the thread whose EL0
+/// instruction faulted. Returns None when the process manager is busy on
+/// another CPU: the instruction is retried and faults again. Otherwise
+/// returns whether a handler will run.
+fn queue_el0_fault_signal(sig: u32, info: crate::signal::types::SigInfo) -> Option<bool> {
+    let thread_id = crate::syscall::memory_common::get_current_thread_id()?;
+    let mut guard = crate::process::try_manager()?;
+    let caught = guard
+        .as_mut()
+        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+        .is_some_and(|(_, process)| {
+            crate::signal::delivery::raise_fault_signal(process, sig, info)
+        });
+    Some(caught)
+}
+
+/// An EL0 fault the kernel cannot resolve: raise `sig` with `info` for the
+/// faulting thread. Returns true when the exception is finished: a handler
+/// runs on this exception's return, or the busy process manager leaves the
+/// instruction to fault again. Returns false when the signal takes its
+/// default action, which the caller carries out by ending the process with
+/// status `-(sig)`.
+fn raise_el0_fault_signal(
+    frame: &mut Aarch64ExceptionFrame,
+    sig: u32,
+    info: crate::signal::types::SigInfo,
+) -> bool {
+    match queue_el0_fault_signal(sig, info) {
+        None => true,
+        Some(true) => {
+            crate::arch_impl::aarch64::context_switch::check_and_deliver_signals_for_current_thread_arm64(frame);
+            true
+        }
+        Some(false) => false,
+    }
+}
+
+/// An EL0 fault with no teardown of its own: raise `sig` with `info`, and
+/// when its default action applies end the process (`end_process_for_el0_fault`)
+/// with the status signal delivery gives that death.
+fn take_el0_fault_signal(
+    frame: &mut Aarch64ExceptionFrame,
+    sig: u32,
+    info: crate::signal::types::SigInfo,
+) {
+    if !raise_el0_fault_signal(frame, sig, info) {
+        end_process_for_el0_fault(frame, crate::signal::delivery::fault_death_exit_code(sig));
+    }
+}
+
+/// A fault signal `sig` already raised for the EL0 thread (a file or
+/// anonymous mapping that cannot back the access): a handler runs on this
+/// exception's return; the default action ends the process. A busy process
+/// manager leaves the access to fault again.
+fn act_on_raised_el0_fault_signal(frame: &mut Aarch64ExceptionFrame, sig: u32) {
+    let Some(thread_id) = crate::syscall::memory_common::get_current_thread_id() else {
+        return;
+    };
+    let Some(guard) = crate::process::try_manager() else {
+        return;
+    };
+    let caught = guard
+        .as_ref()
+        .and_then(|manager| manager.find_process_by_thread(thread_id))
+        .is_some_and(|(_, process)| process.signals.get_handler(sig).is_handler());
+    drop(guard);
+    if caught {
+        crate::arch_impl::aarch64::context_switch::check_and_deliver_signals_for_current_thread_arm64(frame);
+    } else {
+        end_process_for_el0_fault(frame, crate::signal::delivery::fault_death_exit_code(sig));
+    }
+}
+
+/// The signal and si_code of an EL0 data or instruction abort the kernel did
+/// not resolve, from its fault status code (ESR ISS bits 0-5, DFSC/IFSC).
+fn el0_abort_signal(fsc: u32) -> (u32, i32) {
+    use crate::signal::constants::*;
+    match fsc {
+        // Translation fault: nothing is mapped there.
+        0x04..=0x07 => (SIGSEGV, SEGV_MAPERR),
+        0x21 => (SIGBUS, BUS_ADRALN),
+        // Synchronous external abort, on the access or on a table walk, and
+        // parity or ECC errors: the memory failed, not the access rights.
+        0x10 | 0x13..=0x18 | 0x1B..=0x1F => (SIGBUS, BUS_OBJERR),
+        // Access flag and permission faults, and the rest.
+        _ => (SIGSEGV, SEGV_ACCERR),
+    }
+}
+
+/// End the process of the EL0 thread whose fault signal takes its default
+/// action, as the data-abort path does: the rest of its thread group dies
+/// with it, its row exits and retires with `status`, and this exception
+/// returns to the idle loop instead of EL0.
+fn end_process_for_el0_fault(frame_ref: &mut Aarch64ExceptionFrame, status: i32) {
+    crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
+    let ttbr0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+    let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+    // The process exit below can retire this root. Leave it before
+    // acquiring the process manager and freeing any resources.
+    super::quiesce_ttbr0_for_exit();
+    if let Some((pid, was_terminated)) = resolve_el0_fault_victim(page_table_phys) {
+        let _ = crate::task::scheduler::with_scheduler(|sched| {
+            sched.terminate_process_threads(pid.as_u64());
+        });
+        if !was_terminated {
+            let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
+            crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch);
+            crate::signal::delivery::terminate_thread_group_peers(pid, status);
+            crate::tracing::providers::process::trace_process_exit(
+                pid.as_u64() as u16,
+                status as i16 as u16,
+            );
+            let _ = crate::process::exit_process_and_retire(pid, status);
+        }
+    }
+    // Mark the scheduler's thread Terminated before switch_to_idle(), so no
+    // CPU dispatches it again into the retired address space.
+    terminate_current_scheduler_thread();
+    crate::task::scheduler::set_need_resched();
+    // Set the frame before switch_to_idle(): a nested exception there must
+    // already find a safe ELR/SPSR for the assembly ERET path.
+    frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+    frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
+    set_idle_stack_for_eret();
+    crate::task::scheduler::switch_to_idle();
+}
+
 #[cold]
 #[inline(never)]
 fn dump_el1_fatal_frame_and_dispatch_trace(
@@ -824,7 +954,14 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 };
                 match file_mapping_fault(far, iss, access, from_el0) {
                     crate::memory::file_map::FaultOutcome::NotFile => {}
-                    crate::memory::file_map::FaultOutcome::Signal(_) if !from_el0 => {}
+                    crate::memory::file_map::FaultOutcome::Signal(sig) => {
+                        // Raised for the thread: its handler runs on this
+                        // return, or its default action ends the process.
+                        if from_el0 {
+                            act_on_raised_el0_fault_signal(frame_ref, sig);
+                            return;
+                        }
+                    }
                     _ => return,
                 }
             }
@@ -845,6 +982,18 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     return;
                 }
             }
+
+            // Anything else from EL0 raises SIGSEGV, or SIGBUS for a
+            // misaligned access or a hardware error, for the thread's
+            // handler; the default action ends the process below.
+            let (el0_sig, el0_code) = el0_abort_signal(dfsc as u32);
+            if from_el0 {
+                let info = crate::signal::types::SigInfo::fault(el0_code, far).from_trap(0, esr);
+                if raise_el0_fault_signal(frame_ref, el0_sig, info) {
+                    return;
+                }
+            }
+            let el0_status = -(el0_sig as i32);
             let fatal_uart_guard = if from_el0 {
                 None
             } else {
@@ -1058,9 +1207,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     } else {
                         let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
                         crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch);
+                        crate::signal::delivery::terminate_thread_group_peers(pid, el0_status);
                         crate::tracing::providers::process::trace_process_exit(
-                            pid.as_u64() as u16, (-11i16) as u16);
-                        let _ = crate::process::exit_process_and_retire(pid, -11);
+                            pid.as_u64() as u16, el0_status as i16 as u16);
+                        let _ = crate::process::exit_process_and_retire(pid, el0_status);
                         terminated = true;
                     }
                 }
@@ -1139,14 +1289,29 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let ifsc = (iss & 0x3F) as u16;
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
             // An EL0 fetch from a private file mapping, as for data aborts.
-            if from_el0
-                && file_mapping_fault(far, iss, crate::memory::file_map::Access::Execute, true)
-                    != crate::memory::file_map::FaultOutcome::NotFile
-            {
-                return;
+            if from_el0 {
+                match file_mapping_fault(far, iss, crate::memory::file_map::Access::Execute, true) {
+                    crate::memory::file_map::FaultOutcome::NotFile => {}
+                    crate::memory::file_map::FaultOutcome::Signal(sig) => {
+                        act_on_raised_el0_fault_signal(frame_ref, sig);
+                        return;
+                    }
+                    _ => return,
+                }
             }
             if from_el0 {
                 EL0_INSTRUCTION_FAULTS.fetch_add(1, Ordering::Relaxed);
+                // SIGSEGV (SIGBUS for a hardware error) for the thread's
+                // handler; the default action ends the process.
+                let (sig, code) = el0_abort_signal(ifsc as u32);
+                let info = crate::signal::types::SigInfo::fault(code, far).from_trap(0, esr);
+                if sig != crate::signal::constants::SIGSEGV {
+                    take_el0_fault_signal(frame_ref, sig, info);
+                    return;
+                }
+                if raise_el0_fault_signal(frame_ref, sig, info) {
+                    return;
+                }
             }
             let fatal_uart_guard = if from_el0 {
                 None
@@ -1461,6 +1626,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         killed_pid = pid.as_u64();
                         let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
                         crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch);
+                        crate::signal::delivery::terminate_thread_group_peers(pid, -11);
                         crate::tracing::providers::process::trace_process_exit(
                             pid.as_u64() as u16, (-11i16) as u16);
                         let _ = crate::process::exit_process_and_retire(pid, -11);
@@ -1537,16 +1703,68 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
         exception_class::BRK_AARCH64 => {
             let frame = unsafe { &mut *frame };
+            let from_el0 = (frame.spsr & 0xF) == 0;
+            if from_el0 {
+                // From EL0: SIGTRAP at the BRK, which is not stepped over, as
+                // on Linux; a handler that returns runs it again unless it
+                // moves the PC.
+                let pc = frame.elr;
+                take_el0_fault_signal(
+                    frame,
+                    crate::signal::constants::SIGTRAP,
+                    crate::signal::types::SigInfo::fault(crate::signal::constants::TRAP_BRKPT, pc)
+                        .from_trap(0, esr),
+                );
+                return;
+            }
             let imm = iss & 0xFFFF;
             crate::serial_println!("[exception] Breakpoint (BRK #{}) at {:#x}", imm, frame.elr);
             // Skip the BRK instruction
             frame.elr += 4;
         }
 
+        // Debug exceptions taken from EL0: a hardware breakpoint, a software
+        // step or a watchpoint. SIGTRAP, reporting the instruction, or for a
+        // watchpoint the data address.
+        exception_class::BREAKPOINT_LOWER
+        | exception_class::SOFTWARE_STEP_LOWER
+        | exception_class::WATCHPOINT_LOWER => {
+            let frame = unsafe { &mut *frame };
+            // These classes are taken only from a lower exception level.
+            let from_el0 = (frame.spsr & 0xF) == 0;
+            if from_el0 {
+                let (code, addr) = match ec {
+                    exception_class::SOFTWARE_STEP_LOWER => (crate::signal::constants::TRAP_TRACE, frame.elr),
+                    exception_class::WATCHPOINT_LOWER => (crate::signal::constants::TRAP_HWBKPT, far),
+                    _ => (crate::signal::constants::TRAP_HWBKPT, frame.elr),
+                };
+                take_el0_fault_signal(
+                    frame,
+                    crate::signal::constants::SIGTRAP,
+                    crate::signal::types::SigInfo::fault(code, addr).from_trap(0, esr),
+                );
+            }
+        }
+
         exception_class::SP_ALIGNMENT => {
             // SP alignment fault — redirect to idle to avoid hang.
             let frame_ref = unsafe { &mut *frame };
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            // From EL0: SIGBUS for the thread's handler, reporting the stack
+            // pointer, as Linux does; the default action ends the process.
+            if from_el0 {
+                if raise_el0_fault_signal(
+                    frame_ref,
+                    crate::signal::constants::SIGBUS,
+                    crate::signal::types::SigInfo::fault(
+                        crate::signal::constants::BUS_ADRALN,
+                        super::context::read_sp_el0(),
+                    )
+                    .from_trap(0, esr),
+                ) {
+                    return;
+                }
+            }
             {
                 let mut line = crate::serial_line::Line::new();
 
@@ -1582,7 +1800,16 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
                     }); if !was_terminated { let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()); crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch); }
-                    let _ = crate::process::exit_process_and_retire(pid, -11);
+                    if !was_terminated {
+                        crate::signal::delivery::terminate_thread_group_peers(
+                            pid,
+                            -(crate::signal::constants::SIGBUS as i32),
+                        );
+                    }
+                    let _ = crate::process::exit_process_and_retire(
+                        pid,
+                        -(crate::signal::constants::SIGBUS as i32),
+                    );
                 }
                 terminate_current_scheduler_thread();
             }
@@ -1602,6 +1829,16 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
             if from_el0 {
                 EL0_INSTRUCTION_FAULTS.fetch_add(1, Ordering::Relaxed);
+                // SIGBUS for the thread's handler; the default action ends
+                // the process below.
+                if raise_el0_fault_signal(
+                    frame_ref,
+                    crate::signal::constants::SIGBUS,
+                    crate::signal::types::SigInfo::fault(crate::signal::constants::BUS_ADRALN, far)
+                        .from_trap(0, esr),
+                ) {
+                    return;
+                }
             }
             let verbose = PC_ALIGN_VERBOSE_CAPTURED
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
@@ -1709,7 +1946,16 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
                     }); if !was_terminated { let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()); crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch); }
-                    let _ = crate::process::exit_process_and_retire(pid, -11);
+                    if !was_terminated {
+                        crate::signal::delivery::terminate_thread_group_peers(
+                            pid,
+                            -(crate::signal::constants::SIGBUS as i32),
+                        );
+                    }
+                    let _ = crate::process::exit_process_and_retire(
+                        pid,
+                        -(crate::signal::constants::SIGBUS as i32),
+                    );
                 }
                 terminate_current_scheduler_thread();
             }
@@ -1722,6 +1968,35 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         }
 
         _ => {
+            // An undefined instruction or a trapped floating-point exception at
+            // EL0: SIGILL or SIGFPE, delivered on this exception's return, where
+            // the handler runs or the default action ends the process.
+            let from_el0 = unsafe { (*frame).spsr & 0xF } == 0;
+            if from_el0 && matches!(ec, exception_class::UNKNOWN | exception_class::FP_EXCEPTION) {
+                let frame_ref = unsafe { &mut *frame };
+                let pc = frame_ref.elr;
+                let (sig, code) = if ec == exception_class::UNKNOWN {
+                    (crate::signal::constants::SIGILL, crate::signal::constants::ILL_ILLOPC)
+                } else {
+                    use crate::signal::constants::*;
+                    // ISS: IOF, DZF, OFF, UFF, IXF in bits 0-4.
+                    let code = match iss & 0x1f {
+                        flags if flags & 0x1 != 0 => FPE_FLTINV,
+                        flags if flags & 0x2 != 0 => FPE_FLTDIV,
+                        flags if flags & 0x4 != 0 => FPE_FLTOVF,
+                        flags if flags & 0x8 != 0 => FPE_FLTUND,
+                        flags if flags & 0x10 != 0 => FPE_FLTRES,
+                        _ => FPE_FLTINV,
+                    };
+                    (SIGFPE, code)
+                };
+                take_el0_fault_signal(
+                    frame_ref,
+                    sig,
+                    crate::signal::types::SigInfo::fault(code, pc).from_trap(0, esr),
+                );
+                return;
+            }
             if unsafe { (*frame).spsr & 0xF } != 0 {
                 handle_unhandled_el1_exception(unsafe { &*frame }, ec, esr, far);
             }
@@ -2440,10 +2715,6 @@ fn file_mapping_fault(
 /// The caller must not hold PROCESS_MANAGER on this CPU. Returns true if
 /// the page is now mapped.
 fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
-    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
-    use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
-    use crate::memory::layout::MAX_USER_STACK_SIZE;
-
     // Translation fault, level 0 to 3: nothing is mapped at `far`.
     if !(0x04..=0x07).contains(&(iss & 0x3F))
         || far >= crate::memory::layout::USER_STACK_REGION_START
@@ -2465,73 +2736,10 @@ fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
     let Some((_pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) else {
         return false;
     };
-    let stack_top = process.user_stack_top;
-    let stack_bottom = process.user_stack_bottom;
-    let page_aligned_fault = far & !0xFFF;
-    if stack_top == 0
-        || page_aligned_fault > stack_top
-        || stack_top - page_aligned_fault > MAX_USER_STACK_SIZE
-        || stack_top - page_aligned_fault > process.limits.get(crate::process::limits::STACK).soft
-        || (page_aligned_fault < stack_bottom
-            && process
-                .mapped_bytes()
-                .saturating_add(stack_bottom - page_aligned_fault)
-                > process.limits.get(crate::process::limits::AS).soft)
-    {
-        return false;
-    }
-    let Some(page_table) = process.page_table.as_mut() else {
-        return false;
-    };
-    if far >= stack_bottom {
-        // Another thread sharing this address space faulted below the same
-        // bottom and grew the stack before this CPU took PROCESS_MANAGER.
-        // The access is retried if its page is mapped now.
-        return page_table.translate(VirtAddr::new(page_aligned_fault)).is_some();
-    }
-
-    // Map from the current bottom down, moving the recorded bottom with each
-    // page, so a growth that stops part way leaves the bottom at the lowest
-    // page it mapped. Stack pages are never executable, as on x86_64.
-    let flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::USER_ACCESSIBLE
-        | PageTableFlags::NO_EXECUTE;
-    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-    let mut addr = stack_bottom;
-    let mut grown = true;
-    while addr > page_aligned_fault {
-        addr -= 4096;
-        let Some(frame) = allocate_frame() else {
-            grown = false;
-            break;
-        };
-        // SAFETY: the frame was just allocated and is reached through the
-        // HHDM; nothing else refers to it yet.
-        unsafe {
-            core::ptr::write_bytes(
-                (hhdm_base + frame.start_address().as_u64()) as *mut u8,
-                0,
-                4096,
-            );
-        }
-        let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(addr));
-        if page_table.map_page(page, frame, flags).is_err() {
-            let _ = deallocate_leaf_frame(frame);
-            grown = false;
-            break;
-        }
-        process.user_stack_bottom = addr;
-    }
-
-    // Make the new descriptors visible to the table walker before the
-    // faulting access is retried. They replace invalid entries, which the
-    // TLB does not hold, so no invalidation is needed.
-    // SAFETY: barriers only.
-    unsafe {
-        core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
-    }
-    grown
+    // A fault at or above the bottom: another thread sharing this address
+    // space faulted below the same bottom and grew the stack before this CPU
+    // took PROCESS_MANAGER. The access is retried if its page is mapped now.
+    process.grow_user_stack(far)
 }
 
 /// Handle CoW (Copy-on-Write) page fault for ARM64

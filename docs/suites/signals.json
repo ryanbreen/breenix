@@ -247,7 +247,7 @@
         },
         {
           "id": "fp-registers",
-          "title": "All 128 bits of every floating-point and SIMD register survive handlers that overwrite them"
+          "title": "Every floating-point and SIMD register, and the FP control and status state, survive handlers that overwrite them, nested or not; a handler's edit to the saved FP image takes effect"
         },
         {
           "id": "spinning-target",

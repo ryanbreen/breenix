@@ -477,12 +477,15 @@ fill_l2_loop:
  * All other sync exceptions (page faults, etc.) go to the generic
  * sync_exception_handler which passes ESR/FAR to the Rust handler.
  *
- * Uses x16/x17 as scratch (intra-procedure call scratch registers per ABI).
+ * Preserve x16/x17 before using them as scratch: an exception is not a
+ * procedure call, so even the ABI's call-clobbered registers belong to EL0.
  */
 lower_el_sync_dispatch:
+    stp x16, x17, [sp, #-16]!
     mrs x16, esr_el1
     lsr x17, x16, #26          // Extract EC field (bits [31:26])
     cmp x17, #0x15              // EC 0x15 = SVC instruction from AArch64
+    ldp x16, x17, [sp], #16    // LDP preserves the comparison flags
     b.ne sync_exception_handler
     b syscall_entry_from_el0
 

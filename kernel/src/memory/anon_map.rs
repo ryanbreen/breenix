@@ -79,7 +79,17 @@ pub(crate) fn handle_fault(
         };
         if let (FaultOutcome::Signal(signal), Some(tid)) = (outcome, user_thread) {
             if let Some((_, process)) = manager.find_process_by_thread_mut(tid) {
-                process.signals.force_signal(signal);
+                // SIGSEGV is a mapping that forbids the access; SIGKILL is no
+                // memory to back it.
+                let info = if signal == crate::signal::constants::SIGSEGV {
+                    crate::signal::types::SigInfo::fault(
+                        crate::signal::constants::SEGV_ACCERR,
+                        address,
+                    )
+                } else {
+                    crate::signal::types::SigInfo::kernel()
+                };
+                process.signals.force_signal(signal, info);
             }
         }
         outcome

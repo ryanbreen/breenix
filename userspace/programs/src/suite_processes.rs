@@ -33,6 +33,9 @@ use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 static SIGNALS: AtomicUsize = AtomicUsize::new(0);
 static HANDLER_STACK: AtomicUsize = AtomicUsize::new(0);
+/// The siginfo_t and ucontext_t the last `child_exited_info` was passed.
+static HANDLER_INFO: AtomicUsize = AtomicUsize::new(0);
+static HANDLER_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 
 /// Wait until `pid`'s threads are all blocked. Each waiting parent here does
 /// nothing between fork and its waitpid, so that block is the wait.
@@ -53,18 +56,35 @@ extern "C" fn child_exited(_: i32) {
     SIGNALS.fetch_add(1, Ordering::Relaxed);
 }
 
+extern "C" fn child_exited_info(sig: i32, info: *const u8, context: *const u8) {
+    HANDLER_INFO.store(info as usize, Ordering::Relaxed);
+    HANDLER_CONTEXT.store(context as usize, Ordering::Relaxed);
+    child_exited(sig);
+}
+
+/// Read the `T` at `addr` in the signal frame a handler was given.
+fn frame_read<T: Copy>(addr: usize) -> T {
+    // SAFETY: callers pass an address inside the mapped alternate stack.
+    unsafe { core::ptr::read_volatile(addr as *const T) }
+}
+
 fn cow_signal_stack() -> CaseResult {
     let stack = memory::mmap(
         core::ptr::null_mut(), 16384, PROT_READ | PROT_WRITE,
         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0,
     )?;
     // Populate before fork; the parent leaves these pages untouched until delivery.
-    // The top sits 128 bytes into a page, so the saved frame crosses two pages.
+    // The top sits 704 bytes into the third page, so that the Linux signal frame
+    // (rt_sigframe) crosses from the second page into the third with a known field
+    // on each side: on x86-64 uc_stack before the boundary and uc_sigmask and the
+    // siginfo after it, on ARM64 the siginfo before it and the frame record after.
+    const ALT_SIZE: usize = 8896;
     unsafe { core::ptr::write_bytes(stack, 0xa5, 16384) };
-    let alt = StackT { ss_sp: stack as u64, ss_flags: 0, _pad: 0, ss_size: 8320 };
+    let alt = StackT { ss_sp: stack as u64, ss_flags: 0, _pad: 0, ss_size: ALT_SIZE };
     signal::sigaltstack(Some(&alt), None)?;
     let mut action = Sigaction::new(child_exited);
-    action.flags |= SA_RESTART | SA_ONSTACK;
+    action.handler = child_exited_info as usize as u64;
+    action.flags |= SA_RESTART | SA_ONSTACK | signal::SA_SIGINFO;
     signal::sigaction(SIGCHLD, Some(&action), None)?;
     // A second child keeps sharing the stack pages through delivery, so the
     // frame write must copy them, and checks that its own bytes stay intact.
@@ -88,22 +108,50 @@ fn cow_signal_stack() -> CaseResult {
             check(process::wifexited(status) && process::wexitstatus(status) == 42,
                 "CoW signal stack: wrong exit status")?;
             check(SIGNALS.load(Ordering::Relaxed) == 1, "CoW signal stack: missing handler")?;
+            let base = stack as usize;
+            let top = base + ALT_SIZE;
             let local = HANDLER_STACK.load(Ordering::Relaxed);
-            check(local >= stack as usize && local < stack as usize + 8320,
-                "handler did not run on the alternate stack")?;
-            // Validate the installed frame itself, including the saved mask on
-            // the second page. These sizes are the architecture's signal ABI.
-            #[cfg(target_arch = "aarch64")]
-            let frame_size = 320;
+            check(local >= base && local < top, "handler did not run on the alternate stack")?;
+            // Validate the installed frame itself, a field on each of the two pages
+            // it spans, at the offsets of the Linux ABI's rt_sigframe.
+            let info = HANDLER_INFO.load(Ordering::Relaxed);
+            let uc = HANDLER_CONTEXT.load(Ordering::Relaxed);
+            check(info >= base && info + 128 <= top && uc >= base && uc < top,
+                "the handler's siginfo and context are not on the alternate stack")?;
+            // x86-64: pretcode, then the ucontext_t, then the siginfo_t. ARM64: the
+            // siginfo_t, the ucontext_t, then the frame record.
             #[cfg(target_arch = "x86_64")]
-            let frame_size = 192;
-            let frame = (stack as usize + 8320 - frame_size) & !15;
-            check(frame / 4096 != (frame + frame_size - 1) / 4096,
-                "signal frame did not span two pages")?;
-            check(unsafe { core::ptr::read_volatile((frame + 8) as *const u64) }
-                == 0xDEAD_BEEF_CAFE_BABE, "signal frame magic missing")?;
-            check(unsafe { core::ptr::read_volatile((frame + frame_size - 8) as *const u64) }
-                == 0, "saved signal mask missing on second page")?;
+            let (first, last, sigmask) = (uc - 8, info + 127, uc + 296);
+            #[cfg(target_arch = "aarch64")]
+            let (first, last, sigmask) = (info, uc + 4560 + 15, uc + 40);
+            check(first / 4096 != last / 4096, "signal frame did not span two pages")?;
+            check(frame_read::<i32>(info) == SIGCHLD
+                && frame_read::<i32>(info + 8) == 1
+                && frame_read::<i32>(info + 16) == child.raw() as i32
+                && frame_read::<i32>(info + 24) == 42,
+                "the siginfo in the frame is not SIGCHLD, CLD_EXITED, the child's PID and status 42")?;
+            // uc_stack names the alternate stack, with ss_flags 0: the parent was
+            // interrupted on its own stack.
+            check(frame_read::<u64>(uc + 16) == base as u64
+                && frame_read::<i32>(uc + 24) == 0
+                && frame_read::<u64>(uc + 32) == ALT_SIZE as u64,
+                "the frame's uc_stack does not describe the alternate stack")?;
+            check(frame_read::<u64>(sigmask) == 0, "the frame's saved signal mask is wrong")?;
+            #[cfg(target_arch = "x86_64")]
+            check(uc / 4096 != sigmask / 4096,
+                "uc_stack and uc_sigmask are not on the frame's two pages")?;
+            // The frame record, on the last page, holds the interrupted x29 and
+            // x30, which the context saves too.
+            #[cfg(target_arch = "aarch64")]
+            {
+                let regs = uc + 176 + 8;
+                let record = uc + 4560;
+                check(info / 4096 != record / 4096,
+                    "the siginfo and the frame record are not on the frame's two pages")?;
+                check(frame_read::<u64>(record) == frame_read::<u64>(regs + 29 * 8)
+                    && frame_read::<u64>(record + 8) == frame_read::<u64>(regs + 30 * 8),
+                    "the frame record does not hold the interrupted x29 and x30")?;
+            }
         }
     }
     io::write(release_w, b"r")?;

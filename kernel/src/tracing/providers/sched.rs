@@ -473,6 +473,9 @@ pub enum DispatchAbandonSite {
     /// `check_and_deliver_signals_for_current_thread`: the process was already
     /// terminated after a signal was delivered on a no-switch return arm.
     IdleProcessTerminatedOnReturn = 15,
+    /// `kernel/src/interrupts.rs`: a Ring 3 #DE, #UD, #SS, #MF, #AC or #XM
+    /// whose signal took its default action redirected the thread to idle.
+    ExceptionUserFault = 16,
 }
 
 impl DispatchAbandonSite {
@@ -487,9 +490,9 @@ impl DispatchAbandonSite {
             | Self::RollbackTls
             | Self::RollbackFirstEntry
             | Self::RollbackKernelContextLock => &DISPATCH_SWITCH_ROLLED_BACK,
-            Self::ExceptionPageFault | Self::ExceptionGeneralProtection => {
-                &DISPATCH_EXC_IDLE_REDIRECT
-            }
+            Self::ExceptionPageFault
+            | Self::ExceptionGeneralProtection
+            | Self::ExceptionUserFault => &DISPATCH_EXC_IDLE_REDIRECT,
             _ => &DISPATCH_SWITCH_IDLE_REDIRECT,
         }
     }

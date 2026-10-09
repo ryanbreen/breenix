@@ -1788,11 +1788,12 @@ pub unsafe extern "C" fn sigaction(signum: i32, act: *const u8, oldact: *mut u8)
     //   offset 20: padding - 4 bytes
     //   offset 24: sa_restorer (Option<extern "C" fn()>) - 8 bytes
     //
-    // The kernel Sigaction struct layout (libbreenix::signal::Sigaction):
+    // The kernel Sigaction struct layout (libbreenix::signal::Sigaction),
+    // Linux's for rt_sigaction:
     //   offset 0: handler - 8 bytes (u64)
-    //   offset 8: mask - 8 bytes (u64)
-    //   offset 16: flags - 8 bytes (u64)
-    //   offset 24: restorer - 8 bytes (u64)
+    //   offset 8: flags - 8 bytes (u64)
+    //   offset 16: restorer - 8 bytes (u64)
+    //   offset 24: mask - 8 bytes (u64)
 
     let act_ptr = if act.is_null() {
         core::ptr::null()

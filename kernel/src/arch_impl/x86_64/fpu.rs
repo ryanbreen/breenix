@@ -58,6 +58,66 @@ impl FpuState {
         }
     }
 
+    /// The image's bytes, as a signal frame stores them.
+    pub fn as_bytes(&self) -> &[u8; 512] {
+        &self.0
+    }
+
+    /// An image read from a signal frame, made safe to load: MXCSR bits this
+    /// CPU does not implement, on which FXRSTOR faults, are cleared. The
+    /// supported bits are MXCSR_MASK from an FXSAVE, or 0xffbf where that
+    /// field is zero (Intel SDM Vol. 1, 11.6.6).
+    pub fn from_signal_frame(bytes: [u8; 512]) -> Self {
+        let mut state = Self(bytes);
+        let probe = Self::capture();
+        let mask = match u32::from_le_bytes([probe.0[28], probe.0[29], probe.0[30], probe.0[31]]) {
+            0 => 0xffbf,
+            mask => mask,
+        };
+        let mxcsr = u32::from_le_bytes([state.0[24], state.0[25], state.0[26], state.0[27]]) & mask;
+        state.0[24..28].copy_from_slice(&mxcsr.to_le_bytes());
+        state
+    }
+
+    /// The SIGFPE si_code of the x87 exception an #MF reports: the first of
+    /// the exceptions the status word flags that the control word leaves
+    /// unmasked (Intel SDM Vol. 1, 8.1.3 and 8.1.5).
+    pub fn x87_fault_code(&self) -> i32 {
+        let control = u16::from_le_bytes([self.0[0], self.0[1]]);
+        let status = u16::from_le_bytes([self.0[2], self.0[3]]);
+        Self::fault_code((status & !control) as u32)
+    }
+
+    /// The SIGFPE si_code of the SSE exception an #XM reports: the first of
+    /// the exceptions MXCSR flags (bits 0-5) that its masks (bits 7-12) leave
+    /// unmasked (Intel SDM Vol. 1, 10.2.3).
+    pub fn simd_fault_code(&self) -> i32 {
+        let mxcsr = u32::from_le_bytes([self.0[24], self.0[25], self.0[26], self.0[27]]);
+        Self::fault_code(mxcsr & !(mxcsr >> 7))
+    }
+
+    /// The si_code of unmasked exception flags `flags`, in the x87 status
+    /// word's and MXCSR's shared order: invalid operation, denormal operand,
+    /// divide by zero, overflow, underflow, precision.
+    fn fault_code(flags: u32) -> i32 {
+        use crate::signal::constants::*;
+        if flags & 0x01 != 0 {
+            FPE_FLTINV
+        } else if flags & 0x04 != 0 {
+            FPE_FLTDIV
+        } else if flags & 0x08 != 0 {
+            FPE_FLTOVF
+        } else if flags & 0x12 != 0 {
+            FPE_FLTUND
+        } else if flags & 0x20 != 0 {
+            FPE_FLTRES
+        } else {
+            // No unmasked exception is flagged: the fault is reported as an
+            // invalid operation rather than retried.
+            FPE_FLTINV
+        }
+    }
+
     /// Load the executing CPU's x87/SSE registers from here.
     pub fn restore(&self) {
         // SAFETY: the image is either `initial()` or an FXSAVE result, so
@@ -109,6 +169,39 @@ pub fn hand_over(sched: &mut Scheduler, outgoing: Option<u64>, incoming: u64) {
         thread.fpu.restore();
         OWNER[cpu].store(incoming, Ordering::Relaxed);
     }
+}
+
+/// The x87/SSE state thread `thread_id` returns to user mode with: this
+/// CPU's registers when it holds them, otherwise the image the thread saved
+/// when it gave them up. For the thread running on this CPU, in a syscall or
+/// on an interrupt's return to it.
+pub fn user_state(thread_id: u64) -> FpuState {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        if OWNER[crate::per_cpu::cpu_id()].load(Ordering::Relaxed) == thread_id {
+            return FpuState::capture();
+        }
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.get_thread(thread_id).map(|thread| thread.fpu)
+        })
+        .flatten()
+        .unwrap_or(FpuState::initial())
+    })
+}
+
+/// Set the x87/SSE state thread `thread_id` returns to user mode with, as
+/// `user_state` reads it.
+pub fn set_user_state(thread_id: u64, state: &FpuState) {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        if OWNER[crate::per_cpu::cpu_id()].load(Ordering::Relaxed) == thread_id {
+            state.restore();
+            return;
+        }
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.get_thread_mut(thread_id) {
+                thread.fpu = *state;
+            }
+        });
+    })
 }
 
 /// Load the starting state into this CPU's registers, for a thread whose

@@ -893,19 +893,14 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                         log::trace!("sys_read: Thread {} blocking on stdin", thread_id);
 
-                        // CRITICAL: Re-enable preemption before entering blocking loop!
-                        // The syscall handler called preempt_disable() at entry, but we need
-                        // to allow timer interrupts to schedule other threads while we're blocked.
-                        crate::per_cpu::preempt_enable();
+                        // Preemption stays disabled until the signal check below has run (#1230):
+                        // see `blocking_io::wait_prepared`.
 
                         // HLT loop - wait for timer interrupt which will switch to another thread
                         // When keyboard data arrives, the interrupt handler will unblock us
                         loop {
                             // Check for pending signals that should interrupt this syscall
                             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                                // Not preemptible from here: a kill must never find this thread
-                                // switched out while it holds the lock its waiter list is under.
-                                crate::per_cpu::preempt_disable();
                                 // Signal pending - unblock and return EINTR
                                 crate::ipc::stdin::unregister_blocked_reader(thread_id);
                                 crate::task::scheduler::with_scheduler(|sched| {
@@ -921,8 +916,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 return SyscallResult::Err(e as u64);
                             }
 
+                            crate::per_cpu::preempt_enable();
                             crate::task::scheduler::yield_current();
                             crate::arch_halt_with_interrupts();
+                            crate::per_cpu::preempt_disable();
 
                             // Check if we were unblocked (thread state changed from Blocked)
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -942,9 +939,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 break;
                             }
                         }
-
-                        // Re-disable preemption before continuing to balance syscall's preempt_disable
-                        crate::per_cpu::preempt_disable();
 
                         // Clear blocked_in_syscall now that we're resuming normal syscall execution
                         crate::task::scheduler::with_scheduler(|sched| {
@@ -1050,16 +1044,13 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             continue; // Retry read
                         }
 
-                        // Enable preemption for HLT loop
-                        crate::per_cpu::preempt_enable();
+                        // Preemption stays disabled until the signal check below has run (#1230):
+                        // see `blocking_io::wait_prepared`.
 
                         // HLT loop - wait for data or EOF
                         loop {
                             // Check for pending signals that should interrupt this syscall
                             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                                // Not preemptible from here: a kill must never find this thread
-                                // switched out while it holds the lock its waiter list is under.
-                                crate::per_cpu::preempt_disable();
                                 // Signal pending - clean up and return EINTR
                                 {
                                     let mut pipe = pipe_buffer_clone.lock();
@@ -1078,8 +1069,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 return SyscallResult::Err(e as u64);
                             }
 
+                            crate::per_cpu::preempt_enable();
                             crate::task::scheduler::yield_current();
                             crate::arch_halt_with_interrupts();
+                            crate::per_cpu::preempt_disable();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
@@ -1091,7 +1084,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             .unwrap_or(false);
 
                             if !still_blocked {
-                                crate::per_cpu::preempt_disable();
                                 log::debug!(
                                     "sys_read: Pipe thread {} woken from blocking",
                                     thread_id
@@ -1200,16 +1192,13 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             continue; // Retry read
                         }
 
-                        // Enable preemption for HLT loop
-                        crate::per_cpu::preempt_enable();
+                        // Preemption stays disabled until the signal check below has run (#1230):
+                        // see `blocking_io::wait_prepared`.
 
                         // HLT loop - wait for data or EOF
                         loop {
                             // Check for pending signals that should interrupt this syscall
                             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                                // Not preemptible from here: a kill must never find this thread
-                                // switched out while it holds the lock its waiter list is under.
-                                crate::per_cpu::preempt_disable();
                                 // Signal pending - clean up and return EINTR
                                 {
                                     let mut pipe = pipe_buffer_clone.lock();
@@ -1228,8 +1217,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 return SyscallResult::Err(e as u64);
                             }
 
+                            crate::per_cpu::preempt_enable();
                             crate::task::scheduler::yield_current();
                             crate::arch_halt_with_interrupts();
+                            crate::per_cpu::preempt_disable();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
@@ -1241,7 +1232,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             .unwrap_or(false);
 
                             if !still_blocked {
-                                crate::per_cpu::preempt_disable();
                                 log::debug!(
                                     "sys_read: FIFO thread {} woken from blocking",
                                     thread_id
@@ -1492,8 +1482,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     continue;
                 }
 
-                // Re-enable preemption before HLT loop
-                crate::per_cpu::preempt_enable();
+                // Preemption stays disabled until the signal check below has run (#1230):
+                // see `blocking_io::wait_prepared`.
 
                 log::debug!(
                     "TCP_BLOCK: Thread {} entering blocked state for recv",
@@ -1504,9 +1494,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 loop {
                     // Check for pending signals that should interrupt this syscall
                     if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                        // Not preemptible from here: a kill must never find this thread
-                        // switched out while it holds the lock its waiter list is under.
-                        crate::per_cpu::preempt_disable();
                         // Signal pending - clean up and return EINTR
                         crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
                         crate::task::scheduler::with_scheduler(|sched| {
@@ -1522,8 +1509,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Err(e as u64);
                     }
 
+                    crate::per_cpu::preempt_enable();
                     crate::task::scheduler::yield_current();
                     crate::arch_halt_with_interrupts();
+                    crate::per_cpu::preempt_disable();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
@@ -1551,7 +1540,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
 
                     if !still_blocked {
-                        crate::per_cpu::preempt_disable();
                         log::debug!("TCP_BLOCK: Thread {} woken from recv blocking", thread_id);
                         break;
                     }
@@ -1622,14 +1610,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     continue;
                 }
 
-                crate::per_cpu::preempt_enable();
+                // Preemption stays disabled until the signal check below has run (#1230):
+                // see `blocking_io::wait_prepared`.
 
                 // HLT loop - wait for data to arrive
                 loop {
                     if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                        // Not preemptible from here: a kill must never find this thread
-                        // switched out while it holds the lock its waiter list is under.
-                        crate::per_cpu::preempt_disable();
                         pair.unregister_master_waiter(thread_id);
                         crate::task::scheduler::with_scheduler(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
@@ -1640,8 +1626,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Err(e as u64);
                     }
 
+                    crate::per_cpu::preempt_enable();
                     crate::task::scheduler::yield_current();
                     crate::arch_halt_with_interrupts();
+                    crate::per_cpu::preempt_disable();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
@@ -1653,7 +1641,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     .unwrap_or(false);
 
                     if !still_blocked {
-                        crate::per_cpu::preempt_disable();
                         break;
                     }
                 }
@@ -1722,14 +1709,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     continue;
                 }
 
-                crate::per_cpu::preempt_enable();
+                // Preemption stays disabled until the signal check below has run (#1230):
+                // see `blocking_io::wait_prepared`.
 
                 // HLT loop - wait for data to arrive
                 loop {
                     if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                        // Not preemptible from here: a kill must never find this thread
-                        // switched out while it holds the lock its waiter list is under.
-                        crate::per_cpu::preempt_disable();
                         pair.unregister_slave_waiter(thread_id);
                         crate::task::scheduler::with_scheduler(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
@@ -1740,8 +1725,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Err(e as u64);
                     }
 
+                    crate::per_cpu::preempt_enable();
                     crate::task::scheduler::yield_current();
                     crate::arch_halt_with_interrupts();
+                    crate::per_cpu::preempt_disable();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
@@ -1753,7 +1740,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     .unwrap_or(false);
 
                     if !still_blocked {
-                        crate::per_cpu::preempt_disable();
                         break;
                     }
                 }
@@ -1838,16 +1824,13 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         }
                         drop(socket);
 
-                        // Re-enable preemption before HLT loop
-                        crate::per_cpu::preempt_enable();
+                        // Preemption stays disabled until the signal check below has run (#1230):
+                        // see `blocking_io::wait_prepared`.
 
                         // HLT loop
                         loop {
                             // Check for pending signals that should interrupt this syscall
                             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                                // Not preemptible from here: a kill must never find this thread
-                                // switched out while it holds the lock its waiter list is under.
-                                crate::per_cpu::preempt_disable();
                                 // Signal pending - clean up and return EINTR
                                 let socket = socket_clone.lock();
                                 socket.unregister_waiter(thread_id);
@@ -1865,8 +1848,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 return SyscallResult::Err(e as u64);
                             }
 
+                            crate::per_cpu::preempt_enable();
                             crate::task::scheduler::yield_current();
                             crate::arch_halt_with_interrupts();
+                            crate::per_cpu::preempt_disable();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
@@ -1878,7 +1863,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             .unwrap_or(false);
 
                             if !still_blocked {
-                                crate::per_cpu::preempt_disable();
                                 break;
                             }
                         }

@@ -736,10 +736,8 @@ pub fn sys_recvfrom(
             continue; // Retry the receive loop
         }
 
-        // CRITICAL: Re-enable preemption before entering blocking loop!
-        // The syscall handler called preempt_disable() at entry, but we need
-        // to allow timer interrupts to schedule other threads while we're blocked.
-        crate::per_cpu::preempt_enable();
+        // Preemption stays disabled until the signal check below has run (#1230):
+        // see `blocking_io::wait_prepared`.
 
         // HLT loop - wait for timer interrupt which will switch to another thread
         // When packet arrives via softirq, enqueue_packet() will unblock us
@@ -756,13 +754,14 @@ pub fn sys_recvfrom(
                         thread.set_ready();
                     }
                 });
-                crate::per_cpu::preempt_disable();
                 log::debug!("UDP: Thread {} interrupted by signal (EINTR)", thread_id);
                 return SyscallResult::Err(e as u64);
             }
 
+            crate::per_cpu::preempt_enable();
             crate::task::scheduler::yield_current();
             Cpu::halt_with_interrupts();
+            crate::per_cpu::preempt_disable();
 
             // Check if we were unblocked (thread state changed from Blocked)
             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -775,12 +774,6 @@ pub fn sys_recvfrom(
             .unwrap_or(false);
 
             if !still_blocked {
-                // CRITICAL: Disable preemption BEFORE breaking from HLT loop!
-                // At this point blocked_in_syscall is still true. If we break with
-                // preemption enabled, a timer interrupt could fire and do a context
-                // switch while blocked_in_syscall=true, causing the <B> path to
-                // incorrectly try to restore HLT context when we've already woken.
-                crate::per_cpu::preempt_disable();
                 log::info!("UDP: Thread {} woken from blocking", thread_id);
                 break;
             }
@@ -1095,8 +1088,8 @@ fn sys_accept_tcp(
             continue;
         }
 
-        // Re-enable preemption before HLT loop
-        crate::per_cpu::preempt_enable();
+        // Preemption stays disabled until the signal check below has run (#1230):
+        // see `blocking_io::wait_prepared`.
 
         log::info!(
             "TCP_BLOCK: Thread {} entering blocked state for accept on port {}",
@@ -1108,9 +1101,6 @@ fn sys_accept_tcp(
         loop {
             // Check for pending signals that should interrupt this syscall
             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                // Not preemptible from here: a kill must never find this thread
-                // switched out while it holds the lock its waiter list is under.
-                crate::per_cpu::preempt_disable();
                 // Signal pending - unblock and return EINTR
                 crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
                 crate::task::scheduler::with_scheduler(|sched| {
@@ -1137,14 +1127,15 @@ fn sys_accept_tcp(
             .unwrap_or(false);
 
             if !still_blocked {
-                crate::per_cpu::preempt_disable();
                 log::info!("TCP_BLOCK: Thread {} woken from accept blocking", thread_id);
                 break;
             }
 
             // Still blocked - yield and wait for interrupt (timer or NIC)
+            crate::per_cpu::preempt_enable();
             crate::task::scheduler::yield_current();
             Cpu::halt_with_interrupts();
+            crate::per_cpu::preempt_disable();
         }
 
         // Clear blocked_in_syscall
@@ -1261,8 +1252,8 @@ fn sys_accept_unix(
             continue;
         }
 
-        // Re-enable preemption before HLT loop
-        crate::per_cpu::preempt_enable();
+        // Preemption stays disabled until the signal check below has run (#1230):
+        // see `blocking_io::wait_prepared`.
 
         log::info!(
             "Unix_BLOCK: Thread {} entering blocked state for accept",
@@ -1284,7 +1275,6 @@ fn sys_accept_unix(
                         thread.set_ready();
                     }
                 });
-                crate::per_cpu::preempt_disable();
                 log::debug!(
                     "Unix accept: Thread {} interrupted by signal (EINTR)",
                     thread_id
@@ -1303,7 +1293,6 @@ fn sys_accept_unix(
             .unwrap_or(false);
 
             if !still_blocked {
-                crate::per_cpu::preempt_disable();
                 log::info!(
                     "Unix_BLOCK: Thread {} woken from accept blocking",
                     thread_id
@@ -1312,8 +1301,10 @@ fn sys_accept_unix(
             }
 
             // Still blocked - yield and wait for interrupt
+            crate::per_cpu::preempt_enable();
             crate::task::scheduler::yield_current();
             Cpu::halt_with_interrupts();
+            crate::per_cpu::preempt_disable();
         }
 
         // Clear blocked_in_syscall
@@ -1572,8 +1563,8 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             continue;
         }
 
-        // Re-enable preemption before HLT loop
-        crate::per_cpu::preempt_enable();
+        // Preemption stays disabled until the signal check below has run (#1230):
+        // see `blocking_io::wait_prepared`.
 
         log::info!(
             "TCP_BLOCK: Thread {} entering blocked state for connect",
@@ -1592,7 +1583,6 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                         thread.set_ready();
                     }
                 });
-                crate::per_cpu::preempt_disable();
                 log::debug!(
                     "TCP connect: Thread {} interrupted by signal (EINTR)",
                     thread_id
@@ -1611,7 +1601,6 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             .unwrap_or(false);
 
             if !still_blocked {
-                crate::per_cpu::preempt_disable();
                 log::info!(
                     "TCP_BLOCK: Thread {} woken from connect blocking",
                     thread_id
@@ -1620,8 +1609,10 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             }
 
             // Still blocked - yield and wait for interrupt (timer or NIC)
+            crate::per_cpu::preempt_enable();
             crate::task::scheduler::yield_current();
             Cpu::halt_with_interrupts();
+            crate::per_cpu::preempt_disable();
         }
 
         // Clear blocked_in_syscall
