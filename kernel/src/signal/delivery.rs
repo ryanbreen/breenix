@@ -95,12 +95,6 @@ pub fn deliver_pending_signals(
             return SignalDeliveryResult::NoAction;
         }
 
-        // Select under the temporary wait mask, then restore before creating
-        // the handler frame or stopping. Each nested frame owns its own mask.
-        if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
-            process.signals.set_blocked(saved);
-        }
-
         // Clear pending flag for this signal
         process.signals.clear_pending(sig);
 
@@ -197,12 +191,6 @@ pub fn deliver_pending_signals(
         if is_default_stop(process, sig) {
             crate::task::scheduler::set_need_resched();
             return SignalDeliveryResult::NoAction;
-        }
-
-        // Select under the temporary wait mask, then restore before creating
-        // the handler frame or stopping. Each nested frame owns its own mask.
-        if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
-            process.signals.set_blocked(saved);
         }
 
         // Clear pending flag for this signal
@@ -521,10 +509,6 @@ pub fn deliver_caught_signal_on_syscall_return(
             }
             SIG_IGN => {}
             handler_addr => {
-                // The wait mask selects the signal; its frame saves the original mask.
-                if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
-                    process.signals.set_blocked(saved);
-                }
                 if install_user_handler_x86_64(
                     process,
                     &mut shared_table,
@@ -667,7 +651,11 @@ fn install_user_handler_x86_64(
     let thread_id = process.main_thread.as_ref().map(|thread| thread.id);
     let fp_state = thread_id.map_or_else(fpu::FpuState::initial, fpu::user_state);
     let info = process.signals.pending_info(sig);
-    let blocked = process.signals.blocked;
+    let blocked = process
+        .signals
+        .thread
+        .take_wait_mask()
+        .unwrap_or_else(|| process.signals.blocked());
 
     let signal_frame = SignalFrame {
         // When the handler does 'ret', it pops this and jumps there.
@@ -844,7 +832,11 @@ fn deliver_to_user_handler_aarch64(
     let return_addr = trampoline_addr.unwrap_or(action.restorer);
 
     let info = process.signals.pending_info(sig);
-    let blocked = process.signals.blocked;
+    let blocked = process
+        .signals
+        .thread
+        .take_wait_mask()
+        .unwrap_or_else(|| process.signals.blocked());
     let regs = [
         saved_regs.x0,
         saved_regs.x1,
@@ -1675,52 +1667,21 @@ fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification>
 // Timer Functions (Architecture-Independent)
 // =============================================================================
 
-/// Check if a process has an expired ITIMER_REAL and queue SIGALRM if needed
-///
-/// This function is called before signal delivery to tick the process's
-/// interval timer. If the timer expires, it queues SIGALRM for delivery.
-/// The timer automatically rearms if it has an interval set.
-///
-/// Returns true if SIGALRM was queued.
+/// Collect process timers the scheduler expired, including while this thread
+/// was blocked. Expiry and recipient selection belong to the scheduler.
 #[inline]
-pub fn check_and_fire_itimer_real(process: &mut Process, elapsed_usec: u64) -> bool {
-    if process.itimers.real.is_active() {
-        if process.itimers.real.tick(elapsed_usec) {
-            // Timer expired - queue SIGALRM
-            process.signals.set_pending(SIGALRM);
-            log::debug!(
-                "ITIMER_REAL fired for process {} (elapsed {} usec)",
-                process.id.as_u64(),
-                elapsed_usec
-            );
-            return true;
-        }
-    }
-    false
+pub fn collect_itimer_signals(process: &mut Process) {
+    process.signals.collect_timer_signals();
 }
 
-/// Check if a process has an expired alarm and queue SIGALRM if needed
-///
-/// This function is called before signal delivery to check if the process's
-/// alarm timer has expired. If so, it queues SIGALRM for delivery.
-///
-/// Returns true if SIGALRM was queued.
+/// Consume resource-limit signals at a user-return boundary.
 #[inline]
-pub fn check_and_fire_alarm(process: &mut Process) -> bool {
+pub fn check_and_fire_alarm(process: &mut Process) {
     process.check_cpu_limit();
-    if let Some(deadline) = process.alarm_deadline {
-        let current_ticks = crate::time::get_ticks();
-        if current_ticks >= deadline {
-            // Alarm expired - clear it and queue SIGALRM
-            process.alarm_deadline = None;
-            process.signals.set_pending(SIGALRM);
-            log::debug!(
-                "Alarm fired for process {} at tick {}",
-                process.id.as_u64(),
-                current_ticks
-            );
-            return true;
-        }
-    }
-    false
+}
+
+/// Preserve the dispatcher API until its separate architecture commit switches
+/// to clock-owned expiry. The elapsed argument has no timer role anymore.
+pub fn check_and_fire_itimer_real(process: &mut Process, _: u64) {
+    collect_itimer_signals(process);
 }

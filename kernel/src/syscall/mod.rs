@@ -14,6 +14,7 @@ pub mod memory;
 pub mod memory_common;
 pub mod mmap;
 pub mod time;
+pub mod sleep;
 pub mod userptr;
 // Syscall handler - the main dispatcher
 // x86_64: Full handler with signal delivery and process management
@@ -119,6 +120,8 @@ pub enum SyscallNumber {
     GetPgid,
     GetSid,
     Sigpending,
+    #[cfg(target_arch = "aarch64")]
+    Sigtimedwait,
     Sigsuspend,
     Sigaltstack,
     ArchPrctl, // x86_64 TLS setup (FS/GS base)
@@ -472,6 +475,7 @@ impl SyscallNumber {
             134 => Some(Self::Sigaction),
             135 => Some(Self::Sigprocmask),
             136 => Some(Self::Sigpending),
+            137 => Some(Self::Sigtimedwait),
             139 => Some(Self::Sigreturn),
             // Session/process group
             154 => Some(Self::SetPgid),

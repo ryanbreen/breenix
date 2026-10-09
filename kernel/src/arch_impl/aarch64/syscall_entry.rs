@@ -262,7 +262,7 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
         {
             // Check alarms
             crate::signal::delivery::check_and_fire_alarm(process);
-            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+            crate::signal::delivery::collect_itimer_signals(process);
 
             // Check if there are any deliverable signals, or a stop in force
             if !crate::signal::delivery::needs_action_on_return_to_user(process) {
@@ -624,6 +624,9 @@ fn dispatch_syscall_enum(
             arg3,
             arg4,
         )),
+        SyscallNumber::Sigtimedwait => {
+            result_to_u64(crate::syscall::signal::sys_sigtimedwait(arg1, arg2, arg3, arg4))
+        }
         SyscallNumber::Sigpending => {
             result_to_u64(crate::syscall::signal::sys_sigpending(arg1, arg2))
         }

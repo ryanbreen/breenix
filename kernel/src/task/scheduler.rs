@@ -3926,6 +3926,7 @@ impl Scheduler {
             // Charge elapsed CPU ticks before blocking
             current.charge_cpu(crate::time::get_cpu_ticks());
 
+            current.stop_timer_cpu();
             current.state = ThreadState::Blocked;
             #[cfg(feature = "coreproof_component_a")]
             crate::proof_point!(BlockAfterStateStore);
@@ -4313,27 +4314,14 @@ impl Scheduler {
                 // the context is already saved and ready for signal delivery.
                 if let Some(ctx) = userspace_context {
                     thread.saved_userspace_context = Some(ctx);
-                    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-                    #[cfg(target_arch = "x86_64")]
-                    log_serial_println!(
-                        "Thread {} saving userspace context: RIP={:#x}",
-                        current_id,
-                        thread.saved_userspace_context.as_ref().unwrap().rip
-                    );
-                    // ARM64: No logging - would cause deadlock
                 }
+                thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnSignal;
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
                 // When the thread is resumed, we must NOT restore userspace context
                 // because that would return to the pre-syscall location instead of
                 // letting the syscall complete and return properly.
                 thread.blocked_in_syscall = true;
-                // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-                #[cfg(target_arch = "x86_64")]
-                log_serial_println!(
-                    "Thread {} blocked waiting for signal (blocked_in_syscall=true)",
-                    current_id
-                );
             }
             // Remove from ready queue (shouldn't be there but make sure)
             for q in self.per_cpu_queues.iter_mut() {
@@ -4375,6 +4363,12 @@ impl Scheduler {
             // brings it back to that check, as Linux's signal_wake_up wakes
             // TASK_INTERRUPTIBLE sleepers.
             if thread.state == ThreadState::Blocked && thread.blocked_in_syscall {
+                self.unblock(thread_id);
+                set_need_resched();
+                return;
+            }
+            if thread.state == ThreadState::BlockedOnTimer {
+                thread.wake_time_ns = None;
                 self.unblock(thread_id);
                 set_need_resched();
                 return;
@@ -4445,6 +4439,7 @@ impl Scheduler {
                 // Charge elapsed CPU ticks before blocking
                 thread.charge_cpu(crate::time::get_cpu_ticks());
 
+                thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnChildExit;
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
                 // When the thread is resumed, we must NOT restore userspace context
@@ -4541,6 +4536,7 @@ impl Scheduler {
         {
             return false;
         }
+        thread.stop_timer_cpu();
         thread.state = ThreadState::Blocked;
         for q in self.per_cpu_queues.iter_mut() {
             q.retain(|&id| id != thread_id);
@@ -4582,6 +4578,7 @@ impl Scheduler {
                 // Charge elapsed CPU ticks before blocking
                 thread.charge_cpu(crate::time::get_cpu_ticks());
 
+                thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(wake_time_ns);
                 thread.timer_pop = Some(TimerPopRecord::armed(wake_time_ns));
@@ -4646,6 +4643,7 @@ impl Scheduler {
         // Charge elapsed CPU ticks before blocking
         thread.charge_cpu(crate::time::get_cpu_ticks());
 
+        thread.stop_timer_cpu();
         thread.state = ThreadState::BlockedOnIO;
         thread.wake_time_ns = wake_time_ns;
         // The observation belongs to this wait, not to whatever the thread did
@@ -4904,6 +4902,7 @@ impl Scheduler {
                 // including blocked/sleeping time — as CPU usage.
                 thread.charge_cpu(crate::time::get_cpu_ticks());
 
+                thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(timeout_ns);
                 thread.timer_pop = Some(TimerPopRecord::armed(timeout_ns));
@@ -4928,9 +4927,54 @@ impl Scheduler {
     /// Called from schedule() on every reschedule, and from the nanosleep
     /// HLT loop to immediately detect timer expiry without waiting for
     /// a scheduling decision on another CPU.
+    fn wake_signal_timers(&mut self) {
+        if crate::signal::ACTIVE_SIGNAL_TIMERS.load(Ordering::Acquire) == 0 { return; }
+        let wall = crate::signal::monotonic_micros();
+        // Charge dispatched threads before reading their shared CPU clocks.
+        if let Some(thread) = self.current_thread_mut() {
+            thread.charge_timer_cpu();
+        }
+        for index in 0..self.threads.len() {
+            let thread = &self.threads[index];
+            if thread.state == ThreadState::Terminated { continue; }
+            let (Some(timers), Some(cpu)) = (&thread.signal_timers, &thread.cpu_account) else { continue; };
+            let user = cpu.user_ns.load(Ordering::Relaxed) / 1000;
+            let system = cpu.system_ns.load(Ordering::Relaxed) / 1000;
+            let pending = [
+                (timers.real.expire(wall), crate::signal::constants::SIGALRM),
+                (timers.virtual_timer.expire(user), crate::signal::constants::SIGVTALRM),
+                (timers.prof.expire(user.saturating_add(system)), crate::signal::constants::SIGPROF),
+            ];
+            if !pending.iter().any(|(expired, _)| *expired) { continue; }
+            let group = timers.clone();
+            let fallback = thread.id;
+            for (expired, sig) in pending {
+                if !expired { continue; }
+                let bit = crate::signal::constants::sig_mask(sig);
+                let recipient = self.threads.iter().find(|t| {
+                    t.state != ThreadState::Terminated
+                        && t.signal_timers.as_ref().is_some_and(|timers| alloc::sync::Arc::ptr_eq(timers, &group))
+                        && ((!t.signals.blocked.load(Ordering::Relaxed)
+                            | t.signals.wait_set.load(Ordering::Acquire)) & bit != 0)
+                }).map(|t| t.id).unwrap_or(fallback);
+                if let Some(target) = self.get_thread_mut(recipient) {
+                    target.signals.timer_pending.fetch_or(bit, Ordering::Release);
+                    let eligible = ((!target.signals.blocked.load(Ordering::Relaxed)
+                        | target.signals.wait_set.load(Ordering::Acquire)) & bit) != 0;
+                    if eligible {
+                        self.unblock_for_signal(recipient);
+                        self.unblock_for_child_exit(recipient);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn wake_expired_timers(&mut self) {
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
+
+        self.wake_signal_timers();
 
         // Pop all expired entries from the min-heap
         while let Some(&Reverse((wake_time, tid))) = self.timer_heap.peek() {
@@ -7679,6 +7723,7 @@ pub mod tests {
         let blocked_thread = make_thread(blocked_thread_id, ThreadState::Blocked);
         scheduler.add_thread(blocked_thread);
         if let Some(thread) = scheduler.get_thread_mut(blocked_thread_id) {
+            thread.stop_timer_cpu();
             thread.state = ThreadState::Blocked;
         }
         scheduler.remove_from_ready_queue(blocked_thread_id);

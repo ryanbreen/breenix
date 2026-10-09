@@ -1526,6 +1526,8 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1616,6 +1618,8 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -2160,6 +2164,34 @@ impl ProcessManager {
             .map(|row| row.thread_group_id.unwrap_or(pid.as_u64()))
     }
 
+    /// Move process-directed pending signals to an eligible accepting thread.
+    /// Thread-directed pending signals never move. PM serializes the transfer.
+    pub fn route_pending_signals_to(&mut self, tid: u64) {
+        use crate::signal::constants::sig_mask;
+        use core::sync::atomic::Ordering;
+        let Some((pid, target)) = self.find_process_by_thread(tid) else {
+            return;
+        };
+        let group = target.thread_group_id.unwrap_or(pid.as_u64());
+        let eligible =
+            !target.signals.blocked() | target.signals.thread.wait_set.load(Ordering::Acquire);
+        loop {
+            let source = self.group_rows(group).find_map(|p| {
+                let bits = p.signals.process_pending & eligible;
+                (p.id != pid && bits != 0).then(|| (p.id, bits.trailing_zeros() + 1))
+            });
+            let Some((source, sig)) = source else {
+                break;
+            };
+            let row = self.get_process_mut(source).unwrap();
+            let info = row.signals.pending_info(sig);
+            row.signals.clear_pending(sig);
+            let target = self.get_process_mut(pid).unwrap();
+            target.signals.set_pending_info(sig, info);
+            target.signals.process_pending |= sig_mask(sig) & target.signals.pending;
+        }
+    }
+
     /// The live, unterminated rows of thread group `group`, the leader's
     /// included. Walks the table in place, so it allocates nothing.
     pub fn group_rows(&self, group: u64) -> impl Iterator<Item = &Process> {
@@ -2185,16 +2217,21 @@ impl ProcessManager {
     /// of the process manager; with no reset recorded it costs one load.
     /// Walks the table in place and allocates nothing.
     pub(crate) fn finish_group_resets(&mut self) {
-        use core::sync::atomic::Ordering;
         use crate::signal::types::{SignalAction, GROUP_RESETS_PENDING};
+        use core::sync::atomic::Ordering;
         if !GROUP_RESETS_PENDING.swap(false, Ordering::Relaxed) {
             return;
         }
         loop {
             let Some((pid, group, resets)) = self.processes.values_mut().find_map(|row| {
                 let resets = row.signals.take_group_resets();
-                (resets != 0)
-                    .then(|| (row.id, row.thread_group_id.unwrap_or(row.id.as_u64()), resets))
+                (resets != 0).then(|| {
+                    (
+                        row.id,
+                        row.thread_group_id.unwrap_or(row.id.as_u64()),
+                        resets,
+                    )
+                })
             }) else {
                 return;
             };
@@ -3432,6 +3469,8 @@ impl ProcessManager {
                 cpu_ticks_total: 0,
                 resource_limits: None,
                 cpu_account: None,
+                signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+                signal_timers: None,
                 owner_pid: Some(child_pid.as_u64()),
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),

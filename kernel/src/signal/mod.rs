@@ -2,7 +2,7 @@
 //!
 //! This module implements POSIX-compatible signal handling, including:
 //! - Signal constants (SIGKILL, SIGTERM, etc.)
-//! - Per-process signal state (pending, blocked, handlers)
+//! - Process dispositions and pending signals, with thread-owned masks and waits
 //! - Signal delivery to userspace handlers
 //! - Signal trampoline for returning from handlers
 //!

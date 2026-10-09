@@ -60,6 +60,8 @@ pub fn dispatch_syscall(
         SyscallNumber::Kill => super::signal::sys_kill(arg1 as i64, arg2 as i32),
         SyscallNumber::Sigaction => super::signal::sys_sigaction(arg1 as i32, arg2, arg3, arg4),
         SyscallNumber::Sigprocmask => super::signal::sys_sigprocmask(arg1 as i32, arg2, arg3, arg4),
+        #[cfg(target_arch = "aarch64")]
+        SyscallNumber::Sigtimedwait => super::signal::sys_sigtimedwait(arg1, arg2, arg3, arg4),
         SyscallNumber::Sigpending => super::signal::sys_sigpending(arg1, arg2),
         SyscallNumber::Sigsuspend => {
             // sigsuspend requires frame access - must use handler.rs path
