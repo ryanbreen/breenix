@@ -1406,33 +1406,54 @@ fn kill_readers() -> CaseResult {
     heap_back_within(before, SLACK_KB, &format!("{READERS} readers killed"))
 }
 
-/// A copy of the helper with zeros after it, which the loader ignores but an
-/// exec reads. Zeros are appended for at most 50 ms of writing, up to 8 MiB:
-/// a disk that writes them fast also reads them fast, and needs them to keep
-/// an exec long enough to catch, while on a slow one the helper alone is.
-/// Written 64 KiB per call, so a kill ends the writer within one.
+/// How long reading the padded helper must take, so that an exec of it, which
+/// reads the whole file, lasts well past `inside_exec_or_ended`'s 5 ms.
 #[cfg(not(target_arch = "x86_64"))]
-fn padded_helper(tmp: &Tmp) -> Result<String, CaseError> {
+const PADDED_READ_MS: u64 = 20;
+
+/// A copy of the helper with zeros after it, which the loader ignores but an
+/// exec reads through the same file read path. The zeros double until reading
+/// the whole file takes PADDED_READ_MS, up to 8 MiB: a slow disk may need none,
+/// and how fast one writes says little about how fast it reads back what it
+/// just wrote. Written 64 KiB per call, so a kill ends the writer within one,
+/// and synced. Returns the path, the file's size and how long the last read of
+/// it took.
+#[cfg(not(target_arch = "x86_64"))]
+fn padded_helper(tmp: &Tmp) -> Result<(String, usize, u64), CaseError> {
     const CHUNK: usize = 64 * 1024;
-    const MAX_PADDING: usize = 8 << 20;
+    const MAX_SIZE: usize = 8 << 20;
     let image = std::fs::read(HELPER).map_err(|e| format!("reading {HELPER}: {e}"))?;
     let path = tmp.path("padded-helper");
     let fd = fs::open_with_mode(&path, fs::O_CREAT | fs::O_EXCL | fs::O_WRONLY, 0o600)?;
-    let written = (|| -> Result<(), Error> {
-        for chunk in image.chunks(CHUNK) { write_all(fd, chunk)?; }
-        let zeros = vec![0u8; CHUNK];
+    let zeros = vec![0u8; CHUNK];
+    let read_ms = |size: usize| -> Result<u64, CaseError> {
         let start = now_ms();
-        let mut padding = 0;
-        while padding < MAX_PADDING && now_ms().saturating_sub(start) < 50 {
-            write_all(fd, &zeros)?;
-            padding += CHUNK;
+        let read = std::fs::read(&path).map_err(|e| format!("reading the padded helper: {e}"))?;
+        check(read.len() == size, &format!("the padded helper read back {} of its {size} bytes", read.len()))?;
+        Ok(now_ms().saturating_sub(start))
+    };
+    let written = (|| -> Result<(usize, u64), CaseError> {
+        for chunk in image.chunks(CHUNK) { write_all(fd, chunk)?; }
+        let mut size = image.len();
+        loop {
+            let took = read_ms(size)?;
+            if took >= PADDED_READ_MS || size >= MAX_SIZE { return Ok((size, took)); }
+            let target = (size * 2).min(MAX_SIZE);
+            while size < target {
+                let n = CHUNK.min(target - size);
+                write_all(fd, &zeros[..n])?;
+                size += n;
+            }
         }
-        Ok(())
     })();
+    // Written back before the case measures the heap: the execs then read a
+    // file whose cached state no longer changes underneath them.
+    let synced = want("fsync of the padded helper", sc(libbreenix::syscall::nr::FSYNC, &[fd.raw()]));
     io::close(fd)?;
-    written?;
+    let (size, took) = written?;
+    synced?;
     want("chmod", chmod(&path, 0o755))?;
-    Ok(path)
+    Ok((path, size, took))
 }
 
 /// Fork a child that writes a byte and then execs `path` (the helper, or
@@ -1474,11 +1495,10 @@ fn kill_inside_exec(path: &CString, what: &str) -> Result<bool, CaseError> {
 /// partly read data behind, about 46 KiB each. When an exec finishes before
 /// the kill, the kill is tried again with a new child.
 ///
-/// A first, unmeasured kill decides what the children run: the helper, or,
-/// when its exec finished before the kill, `padded_helper`. On Parallels the
-/// helper's own few reads finished before the parent ever saw the child
-/// inside its exec; on ARM64 QEMU even writing the padded copy took most of
-/// the case's time.
+/// The children exec `padded_helper`, whose read is made to last long enough
+/// to catch on any disk. Choosing between the bare helper and a copy padded for
+/// 50 ms of writes by one probe exec stopped catching any exec on Parallels and
+/// VMware once AHCI requests no longer spun on a busy port.
 ///
 /// Not run on x86-64, which brings up one CPU: there the parent was never
 /// seen to run while a child was inside an exec, so no kill can land in one.
@@ -1488,25 +1508,23 @@ fn kill_execs() -> CaseResult {
     const TRIES: usize = 4;
     const SLACK_KB: u64 = 256;
     let tmp = Tmp::new()?;
-    let helper = cpath(HELPER);
-    let padded;
-    let path = if kill_inside_exec(&helper, "exec probe")? {
-        &helper
-    } else {
-        padded = cpath(&padded_helper(&tmp)?);
-        &padded
-    };
+    let (padded, size, read_ms) = padded_helper(&tmp)?;
+    let path = cpath(&padded);
+    // One unmeasured exec first: the first exec of a file sets up what the
+    // kernel keeps for it while it stays resident, which no kill leaves behind.
+    kill_inside_exec(&path, "first exec")?;
     let before = kernel_heap_free_kb()?;
     for round in 0..EXECS {
         let what = format!("exec {round}");
         let mut killed = false;
         for _ in 0..TRIES {
-            if kill_inside_exec(path, &what)? {
+            if kill_inside_exec(&path, &what)? {
                 killed = true;
                 break;
             }
         }
-        check(killed, &format!("{what}: the exec finished before the kill in all {TRIES} tries"))?;
+        check(killed, &format!(
+            "{what}: the exec finished before the kill in all {TRIES} tries, of a {size}-byte image that took {read_ms} ms to read"))?;
     }
     heap_back_within(before, SLACK_KB, &format!("{EXECS} execs killed"))
 }
