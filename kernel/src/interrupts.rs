@@ -311,19 +311,8 @@ pub extern "C" fn rust_breakpoint_handler(frame_ptr: *mut u64) {
     // Note: CLI and swapgs already handled by assembly entry
     // No need to disable interrupts here
 
-    // Raw serial output FIRST to confirm we're in BP handler
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x42", // 'B' for Breakpoint
-            "out dx, al",
-            "mov al, 0x50", // 'P' for bP
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-    }
-
-    // Use serial_println first - it might work even if log doesn't
+    // Whole lines under SERIAL1 only: with several CPUs online, bytes written
+    // straight to the port land inside another CPU's line.
     crate::serial_println!("BP_HANDLER_ENTRY!");
 
     // Enter exception context - use preempt_disable for exceptions (not IRQs)
@@ -354,18 +343,6 @@ pub extern "C" fn rust_breakpoint_handler(frame_ptr: *mut u64) {
         crate::serial_println!("BP from_userspace={}, CS={:#x}", from_userspace, cs);
 
         if from_userspace {
-            // Raw serial output for userspace breakpoint - SUCCESS!
-            core::arch::asm!(
-                "mov dx, 0x3F8",
-                "mov al, 0x55", // 'U' for Userspace
-                "out dx, al",
-                "mov al, 0x33", // '3' for Ring 3
-                "out dx, al",
-                "mov al, 0x21", // '!' for success
-                "out dx, al",
-                options(nostack, nomem, preserves_flags)
-            );
-
             // Use only serial output to avoid framebuffer issues
             crate::serial_println!("🎉 BREAKPOINT from USERSPACE - Ring 3 SUCCESS!");
             crate::serial_println!("  RIP: {:#x}, CS: {:#x} (RPL={})", rip, cs, cs & 3);
@@ -1306,73 +1283,9 @@ extern "x86-interrupt" fn page_fault_handler(
     // Use the cr2 value we already read safely above (line 894)
     let accessed_addr = x86_64::VirtAddr::new(cr2);
 
-    // Skip raw serial output for faults resolved quietly
-    if !quiet {
-        // Use raw serial output for critical info to avoid recursion
-        unsafe {
-            // Output 'P' for page fault
-            core::arch::asm!(
-                "mov dx, 0x3F8",
-                "mov al, 0x50", // 'P'
-                "out dx, al",
-                options(nostack, nomem, preserves_flags)
-            );
-
-            // Output 'F' for fault
-            core::arch::asm!(
-                "mov dx, 0x3F8",
-                "mov al, 0x46", // 'F'
-                "out dx, al",
-                options(nostack, nomem, preserves_flags)
-            );
-
-            // Check error code bits
-            let error_bits = error_code.bits();
-            if error_bits & 1 == 0 {
-                // Not present
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x30", // '0' for not present
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            } else {
-                // Protection violation
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x31", // '1' for protection
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            }
-
-            // Check if fault is at 0x400000 (our int3 page)
-            if accessed_addr.as_u64() == 0x400000 {
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x34", // '4' for 0x400000
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            } else if accessed_addr.as_u64() >= 0x800000 && accessed_addr.as_u64() < 0x900000 {
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x38", // '8' for stack area
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            } else {
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x3F", // '?' for other
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            }
-        }
-    }
-
-    // Only print verbose diagnostics for faults not resolved quietly
+    // Only print verbose diagnostics for faults not resolved quietly, and
+    // only as whole lines under SERIAL1: with several CPUs online, bytes
+    // written straight to the port land inside another CPU's line.
     if !quiet {
         // Emergency output to confirm we're in page fault handler
         crate::serial_println!("PF_ENTRY!");
@@ -1404,30 +1317,6 @@ extern "x86-interrupt" fn page_fault_handler(
                 0
             }
         );
-    }
-
-    // Quick debug output for int3 test - only for faults not resolved quietly
-    if !quiet {
-        unsafe {
-            // Output 'F' for Fault
-            core::arch::asm!(
-                "mov dx, 0x3F8",
-                "mov al, 0x46", // 'F'
-                "out dx, al",
-                options(nostack, nomem, preserves_flags)
-            );
-
-            // Check if it's 0x400000 (our int3 page)
-            if accessed_addr.as_u64() == 0x400000 {
-                // Output '4' to indicate fault at 0x400000
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x34", // '4'
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            }
-        }
     }
 
     // Check if this came from userspace
@@ -1844,18 +1733,6 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     crate::serial_println!("[DIAG:GPF] SS: {:#x}", stack_frame.stack_segment.0);
     crate::serial_println!("[DIAG:GPF] CR3: {:#x}", cr3);
     crate::serial_println!("[DIAG:GPF] ==============================");
-
-    // Raw serial output FIRST to confirm we're in GP handler
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x47", // 'G' for GP fault
-            "out dx, al",
-            "mov al, 0x50", // 'P'
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-    }
 
     // Increment preempt count on exception entry
     crate::per_cpu::preempt_disable();
