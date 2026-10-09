@@ -91,7 +91,7 @@
         },
         {
           "id": "fork",
-          "title": "A child inherits its parent's handlers and ignored signals, and the handlers run in it"
+          "title": "A child inherits handlers and ignored signals, and handles a signal on a CoW stack with an unpopulated frame page"
         },
         {
           "id": "exec",
@@ -375,7 +375,7 @@
         },
         {
           "id": "runs-on",
-          "title": "An SA_ONSTACK handler runs on the alternate stack, which reports SS_ONSTACK only while it does"
+          "title": "An SA_ONSTACK handler runs on untouched anonymous and private file stacks, which report SS_ONSTACK only while active"
         },
         {
           "id": "without-onstack",
