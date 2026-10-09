@@ -51,6 +51,41 @@ use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 /// SCRATCH #1238 forcing: tid of the thread inside sys_rmdir, or 0.
 pub static FORCE_SWITCH_TID: AtomicU64 = AtomicU64::new(0);
 
+/// SCRATCH #1238 diagnostics: per forced wait, TSC stamps and CPUs.
+pub mod force_diag {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    pub const N: usize = 16;
+    const Z: AtomicU64 = AtomicU64::new(0);
+    pub static IDX: AtomicU64 = AtomicU64::new(0);
+    pub static BLOCK: [AtomicU64; N] = [Z; N];
+    pub static BLOCK_CPU: [AtomicU64; N] = [Z; N];
+    pub static COMPLETE: [AtomicU64; N] = [Z; N];
+    pub static COMPLETE_CPU: [AtomicU64; N] = [Z; N];
+    pub static APPLIED: [AtomicU64; N] = [Z; N];
+    pub static APPLIED_CPU: [AtomicU64; N] = [Z; N];
+    pub static APPLIED_HOW: [AtomicU64; N] = [Z; N];
+    pub static TARGET: [AtomicU64; N] = [Z; N];
+    pub static RESUME: [AtomicU64; N] = [Z; N];
+    pub static RESUME_CPU: [AtomicU64; N] = [Z; N];
+    pub static LOOPS: [AtomicU64; N] = [Z; N];
+    pub static DONE: [AtomicU64; N] = [Z; N];
+    pub fn slot() -> Option<usize> {
+        let i = IDX.load(Ordering::Acquire) as usize;
+        (i >= 1 && i <= N).then(|| i - 1)
+    }
+    pub fn stamp(arr: &[AtomicU64; N], v: u64) {
+        if let Some(i) = slot() {
+            arr[i].store(v, Ordering::Release);
+        }
+    }
+    pub fn now() -> u64 {
+        crate::time::tsc::read_tsc()
+    }
+    pub fn cpu() -> u64 {
+        crate::per_cpu::cpu_id() as u64
+    }
+}
+
 /// SCRATCH #1238 forcing: run `f` with the current thread's completion waits
 /// forced off its CPU when `path` names one of mkdir-rmdir/reclaim's d0-d7.
 pub fn force_switch_for_path<R>(path: &str, f: impl FnOnce() -> R) -> R {
@@ -60,9 +95,27 @@ pub fn force_switch_for_path<R>(path: &str, f: impl FnOnce() -> R) -> R {
         return f();
     }
     let tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    force_diag::IDX.store(0, Ordering::Release);
     FORCE_SWITCH_TID.store(tid, Ordering::Release);
     let result = f();
     FORCE_SWITCH_TID.store(0, Ordering::Release);
+    let n = (force_diag::IDX.load(Ordering::Acquire) as usize).min(force_diag::N);
+    let us = |t: u64, base: u64| -> i64 {
+        if t == 0 { -1 } else { ((t.wrapping_sub(base)) as i64) * 1_000_000 / crate::time::tsc::frequency_hz() as i64 }
+    };
+    for i in 0..n {
+        use force_diag::*;
+        let b = BLOCK[i].load(Ordering::Acquire);
+        log::info!(
+            "FORCE1238 {} wait={} blk_cpu={} complete_us={} irq_cpu={} applied_us={} apply_cpu={} how={} target={} resume_us={} resume_cpu={} done_us={} loops={}",
+            name, i, BLOCK_CPU[i].load(Ordering::Acquire), us(COMPLETE[i].load(Ordering::Acquire), b),
+            COMPLETE_CPU[i].load(Ordering::Acquire), us(APPLIED[i].load(Ordering::Acquire), b),
+            APPLIED_CPU[i].load(Ordering::Acquire), APPLIED_HOW[i].load(Ordering::Acquire),
+            TARGET[i].load(Ordering::Acquire) as i64 - 1, us(RESUME[i].load(Ordering::Acquire), b),
+            RESUME_CPU[i].load(Ordering::Acquire), us(DONE[i].load(Ordering::Acquire), b),
+            LOOPS[i].load(Ordering::Acquire)
+        );
+    }
     result
 }
 
@@ -325,6 +378,35 @@ impl Completion {
         timeout_ns: u64,
         interruptible: bool,
     ) -> Result<bool, i32> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let forced = FORCE_SWITCH_TID.load(Ordering::Acquire);
+            if forced != 0 && crate::task::scheduler::current_thread_id() == Some(forced) {
+                let i = force_diag::IDX.fetch_add(1, Ordering::AcqRel) as usize;
+                if i < force_diag::N {
+                    for a in [&force_diag::BLOCK, &force_diag::BLOCK_CPU, &force_diag::COMPLETE, &force_diag::COMPLETE_CPU, &force_diag::APPLIED, &force_diag::APPLIED_CPU, &force_diag::APPLIED_HOW, &force_diag::TARGET, &force_diag::RESUME, &force_diag::RESUME_CPU, &force_diag::LOOPS, &force_diag::DONE] {
+                        a[i].store(0, Ordering::Release);
+                    }
+                }
+            }
+        }
+        let result = self.wait_timeout_inner_real(expected_token, timeout_ns, interruptible);
+        #[cfg(target_arch = "x86_64")]
+        {
+            let forced = FORCE_SWITCH_TID.load(Ordering::Acquire);
+            if forced != 0 && crate::task::scheduler::current_thread_id() == Some(forced) {
+                force_diag::stamp(&force_diag::DONE, force_diag::now());
+            }
+        }
+        result
+    }
+
+    fn wait_timeout_inner_real(
+        &self,
+        expected_token: u32,
+        timeout_ns: u64,
+        interruptible: bool,
+    ) -> Result<bool, i32> {
         // Fast path: already done (e.g., very fast device, or spurious call).
         if self.done.load(Ordering::Acquire) == expected_token {
             let in_syscall = syscall_sleep_path_available();
@@ -477,11 +559,23 @@ impl Completion {
                         // SCRATCH #1238 forcing: switch the rmdir thread off
                         // its CPU before the device can complete.
                         let forced = FORCE_SWITCH_TID.load(Ordering::Acquire);
-                        if forced != 0 && crate::task::scheduler::current_thread_id() == Some(forced)
-                        {
+                        let is_forced = forced != 0
+                            && crate::task::scheduler::current_thread_id() == Some(forced);
+                        if is_forced {
+                            if force_diag::BLOCK[force_diag::slot().unwrap_or(0)].load(Ordering::Acquire) == 0 {
+                                force_diag::stamp(&force_diag::BLOCK, force_diag::now());
+                                force_diag::stamp(&force_diag::BLOCK_CPU, force_diag::cpu());
+                            }
                             crate::task::scheduler::retry_after_interrupts_x86();
                         }
                         crate::task::waitqueue::halt_blocked_current();
+                        if is_forced {
+                            force_diag::stamp(&force_diag::RESUME, force_diag::now());
+                            force_diag::stamp(&force_diag::RESUME_CPU, force_diag::cpu());
+                            if let Some(i) = force_diag::slot() {
+                                force_diag::LOOPS[i].fetch_add(1, Ordering::AcqRel);
+                            }
+                        }
                     }
 
                     #[cfg(target_arch = "aarch64")]
@@ -658,6 +752,11 @@ impl Completion {
         }
 
         let tid = self.waiter.load(Ordering::Acquire);
+        #[cfg(target_arch = "x86_64")]
+        if tid != 0 && tid == FORCE_SWITCH_TID.load(Ordering::Acquire) {
+            force_diag::stamp(&force_diag::COMPLETE, force_diag::now());
+            force_diag::stamp(&force_diag::COMPLETE_CPU, force_diag::cpu() + 1);
+        }
         if tid != 0 {
             crate::task::scheduler::isr_unblock_for_io(tid);
         }

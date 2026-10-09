@@ -1713,6 +1713,10 @@ pub fn note_x86_interrupt_return(cpu: usize) {
 /// done. Its scheduler entry then went stale, placement took it for a CPU
 /// that had stopped dispatching, and new and woken threads were queued on the
 /// busy CPUs instead.
+/// SCRATCH #1238 diagnostics.
+#[cfg(target_arch = "x86_64")]
+static X86_IN_IDLE_PASS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 #[cfg(target_arch = "x86_64")]
 pub fn x86_idle_pass() -> bool {
     let cpu = current_cpu_id_raw();
@@ -1724,7 +1728,9 @@ pub fn x86_idle_pass() -> bool {
         return true;
     }
     scheduler.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
+    X86_IN_IDLE_PASS.store(true, Ordering::Release);
     scheduler.apply_isr_wakeups();
+    X86_IN_IDLE_PASS.store(false, Ordering::Release);
     scheduler.wake_expired_timers();
     PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) != 0
         || scheduler
@@ -4798,6 +4804,26 @@ impl Scheduler {
     }
 
     fn wake_io_thread_locked(&mut self, tid: u64, from_isr_buffer: bool) -> IoWakeResult {
+        let state = self.get_thread(tid).map(|t| t.state as u64).unwrap_or(15);
+        let wake = self.wake_io_thread_locked_real(tid, from_isr_buffer);
+        #[cfg(target_arch = "x86_64")]
+        if tid != 0 && tid == crate::task::completion::FORCE_SWITCH_TID.load(Ordering::Acquire) {
+            use crate::task::completion::force_diag;
+            let how = (from_isr_buffer as u64)
+                | ((X86_IN_IDLE_PASS.load(Ordering::Acquire) as u64) << 1)
+                | (state << 4)
+                | ((wake.current_cpu.map(|c| c as u64 + 1).unwrap_or(0)) << 12);
+            if force_diag::slot().is_some_and(|i| force_diag::APPLIED[i].load(Ordering::Acquire) == 0) {
+                force_diag::stamp(&force_diag::APPLIED, force_diag::now());
+                force_diag::stamp(&force_diag::APPLIED_CPU, force_diag::cpu());
+                force_diag::stamp(&force_diag::APPLIED_HOW, how);
+                force_diag::stamp(&force_diag::TARGET, wake.enqueued_target.map(|c| c as u64 + 1).unwrap_or(0));
+            }
+        }
+        wake
+    }
+
+    fn wake_io_thread_locked_real(&mut self, tid: u64, from_isr_buffer: bool) -> IoWakeResult {
         let mut wake = IoWakeResult::default();
         if let Some(thread) = self.get_thread_mut(tid) {
             let mut published_ready = false;
