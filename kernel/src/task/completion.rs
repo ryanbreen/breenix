@@ -48,6 +48,9 @@
 
 use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 
+/// SCRATCH #1238 forcing: tid of the thread inside sys_rmdir, or 0.
+pub static FORCE_SWITCH_TID: AtomicU64 = AtomicU64::new(0);
+
 /// POSIX EINTR errno value.
 const EINTR: i32 = 4;
 
@@ -455,7 +458,16 @@ impl Completion {
                         crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
                     }
                     #[cfg(not(target_arch = "aarch64"))]
-                    crate::task::waitqueue::halt_blocked_current();
+                    {
+                        // SCRATCH #1238 forcing: switch the rmdir thread off
+                        // its CPU before the device can complete.
+                        let forced = FORCE_SWITCH_TID.load(Ordering::Acquire);
+                        if forced != 0 && crate::task::scheduler::current_thread_id() == Some(forced)
+                        {
+                            crate::task::scheduler::retry_after_interrupts_x86();
+                        }
+                        crate::task::waitqueue::halt_blocked_current();
+                    }
 
                     #[cfg(target_arch = "aarch64")]
                     trace_wait_timeout_stage(1);
