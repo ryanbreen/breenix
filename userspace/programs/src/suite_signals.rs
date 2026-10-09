@@ -1672,12 +1672,14 @@ fn h_restart_read() -> CaseResult {
     catch_with(SIGUSR1, on_sig as usize as u64, SA_RESTART, 0)?;
     let (r, w) = io::pipe()?;
     let me = pid();
-    let mut kid = Child::start(move || {
+    let s = Shared::new()?;
+    let mut kid = Child::start(|| {
         let _ = io::close(r);
         if !parked(me, WAIT_MS) || kill(me, SIGUSR1) != 0 { return 10; }
         // Give the restarted read time to block again before the data arrives.
         let _ = time::sleep_ms(20);
         let _ = parked(me, WAIT_MS);
+        s.set(0, now_ms().max(1));
         let _ = io::write(w, b"x");
         0
     })?;
@@ -1687,6 +1689,8 @@ fn h_restart_read() -> CaseResult {
     io::close(r)?;
     kid.expect_exit(0, "the signalling child")?;
     check(count(SIGUSR1) == 1, "the handler did not run")?;
+    check(SEEN_AT.load(Ordering::SeqCst) < s.get(0),
+        "the handler ran only after the data arrived: the signal did not interrupt the blocked read")?;
     check(got == 1 && buf[0] == b'x',
         &format!("a read interrupted by an SA_RESTART handler returned {}, expected the byte written after the signal", shown(got)))
 }
@@ -1714,6 +1718,7 @@ fn h_nanosleep() -> CaseResult {
     kid.expect_exit(0, "the signalling child")?;
     check(count(SIGUSR1) == 1, "the handler did not run")?;
     want_err("a 3 s nanosleep interrupted by a handler, even with SA_RESTART", got, EINTR)?;
+    check(slept < 1500, &format!("nanosleep returned only after {slept} ms of its 3000: the signal, sent once it blocked, did not end the sleep"))?;
     let left = rem[0] * 1000 + rem[1] / 1_000_000;
     check((left + slept - 3000).abs() <= 250,
         &format!("nanosleep slept {slept} ms of 3000 and reported {left} ms remaining"))
@@ -1722,16 +1727,20 @@ fn h_nanosleep() -> CaseResult {
 fn h_restart_wait() -> CaseResult {
     catch_with(SIGUSR2, on_sig as usize as u64, SA_RESTART, 0)?;
     let me = pid();
-    let mut kid = Child::start(move || {
+    let s = Shared::new()?;
+    let mut kid = Child::start(|| {
         if !parked(me, WAIT_MS) || kill(me, SIGUSR2) != 0 { return 10; }
         let _ = time::sleep_ms(50);
         let _ = parked(me, WAIT_MS);
+        s.set(0, now_ms().max(1));
         7
     })?;
     let mut status = 0;
     let got = wait4(kid.pid, &mut status, 0);
     if got == kid.pid as i64 { kid.live = false; }
     check(count(SIGUSR2) == 1, "the handler did not run")?;
+    check(SEEN_AT.load(Ordering::SeqCst) < s.get(0),
+        "the handler ran only after the child exited: the signal did not interrupt the blocked waitpid")?;
     want_eq("waitpid interrupted by an SA_RESTART handler", got, kid.pid as i64)?;
     check(exited(status) && exit_code(status) == 7, &format!("the restarted waitpid reported {}", status_text(status)))
 }
@@ -1882,6 +1891,12 @@ fn h_spinning_target() -> CaseResult {
 /// The signal a watchdog uses to end a wait that would otherwise never end.
 const DOG: i32 = SIGHUP;
 
+/// Fail if the watchdog's signal was handled: then the wait ended only because it
+/// arrived, even if the awaited signal's handler ran alongside it.
+fn dog_quiet(wait: &str) -> CaseResult {
+    check(count(DOG) == 0, &format!("{wait} ended only when the watchdog's later signal arrived"))
+}
+
 fn w_sigsuspend() -> CaseResult {
     catch(SIGUSR1)?;
     catch(DOG)?;
@@ -1889,6 +1904,7 @@ fn w_sigsuspend() -> CaseResult {
     let mut kid = signal_when_parked(SIGUSR1)?;
     let _dog = watchdog(4000, DOG)?;
     let got = sigsuspend(0);
+    dog_quiet("sigsuspend")?;
     check(count(SIGUSR1) == 1, "sigsuspend did not return when SIGUSR1 arrived; only the watchdog's later signal ended it")?;
     want_err("sigsuspend", got, EINTR)?;
     let after = mask_now()?;
@@ -1905,6 +1921,7 @@ fn w_sigsuspend_pending() -> CaseResult {
     let start = now_ms();
     let got = sigsuspend(0);
     let took = now_ms().saturating_sub(start);
+    dog_quiet("sigsuspend")?;
     check(count(SIGUSR1) == 1, "with SIGUSR1 already pending, sigsuspend(empty mask) did not run its handler; only the watchdog's signal ended the wait")?;
     want_err("sigsuspend", got, EINTR)?;
     check(took < 1000, &format!("with SIGUSR1 already pending, sigsuspend took {took} ms to return"))
@@ -1936,6 +1953,7 @@ fn w_temp_mask() -> CaseResult {
     let usr1_sent = s.get(0) == 1;
     let _ = until(200, || count(SIGUSR2) > 0);
     kid.expect_exit(0, "the signalling child")?;
+    dog_quiet("sigsuspend")?;
     check(usr1_sent, "SIGUSR2, blocked by sigsuspend's temporary mask, ended the wait before SIGUSR1 was sent")?;
     want_err("sigsuspend", got, EINTR)?;
     check(count(SIGUSR1) == 1, "sigsuspend did not return when SIGUSR1 arrived; only the watchdog's later signal ended it")?;
@@ -1967,6 +1985,7 @@ fn w_ignored() -> CaseResult {
     let got = sigsuspend(0);
     let usr1_sent = s.get(0) == 1;
     kid.expect_exit(0, "the signalling child")?;
+    dog_quiet("sigsuspend")?;
     check(usr1_sent, "an ignored SIGUSR2 ended sigsuspend before SIGUSR1 was sent")?;
     check(count(SIGUSR1) == 1, "sigsuspend did not return when SIGUSR1 arrived")?;
     want_err("sigsuspend", got, EINTR)
@@ -1979,6 +1998,7 @@ fn w_pause() -> CaseResult {
     let mut kid = signal_when_parked(SIGUSR1)?;
     let _dog = watchdog(4000, DOG)?;
     let got = pause();
+    dog_quiet("pause")?;
     check(count(SIGUSR1) == 1, "pause did not return when SIGUSR1 arrived; only the watchdog's later signal ended it")?;
     want_err("pause", got, EINTR)?;
     kid.expect_exit(0, "the signalling child")
@@ -1996,6 +2016,7 @@ fn w_signal_first() -> CaseResult {
     let start = now_ms();
     let got = sigsuspend(old & !bit(SIGUSR1));
     let took = now_ms().saturating_sub(start);
+    dog_quiet("sigsuspend")?;
     check(count(SIGUSR1) == 1, "a SIGUSR1 sent by a child before the parent's sigsuspend was lost")?;
     want_err("sigsuspend", got, EINTR)?;
     check(took < 1000, &format!("sigsuspend took {took} ms to return for a signal already pending"))
@@ -2016,6 +2037,7 @@ fn w_race_loop() -> CaseResult {
     while round < ROUNDS && now_ms().saturating_sub(start) < ROUNDS_MS {
         let mut kid = Child::start(move || if kill(me, SIGUSR1) == 0 { 0 } else { 1 })?;
         let got = sigsuspend(0);
+        dog_quiet(&format!("round {round}: sigsuspend"))?;
         check(count(SIGUSR1) == round + 1,
             &format!("round {round}: a child's SIGUSR1 racing the parent's mask-then-sigsuspend was lost"))?;
         want_err(&format!("round {round}: sigsuspend"), got, EINTR)?;
