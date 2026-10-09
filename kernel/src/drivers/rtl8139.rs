@@ -16,7 +16,7 @@
 use crate::memory::frame_allocator;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 use spin::Mutex;
-use x86_64::instructions::port::Port;
+use x86_64::structures::paging::PhysFrame;
 
 pub const VENDOR_ID: u16 = 0x10ec;
 pub const DEVICE_ID: u16 = 0x8139;
@@ -91,29 +91,38 @@ static IO_BASE: AtomicU16 = AtomicU16::new(0);
 static IRQ_LINE: AtomicU8 = AtomicU8::new(0);
 static MAC: [AtomicU8; 6] = [const { AtomicU8::new(0) }; 6];
 
+// Port accessors without the `nomem` option the `x86_64` crate's `Port` uses,
+// so the compiler orders them with the loads and stores of the receive ring
+// and transmit buffers around them.
 fn inb(port: u16) -> u8 {
+    let value: u8;
     // SAFETY: a register of the controller this driver owns.
-    unsafe { Port::<u8>::new(port).read() }
+    unsafe { core::arch::asm!("in al, dx", out("al") value, in("dx") port, options(nostack, preserves_flags)) };
+    value
 }
 fn outb(port: u16, value: u8) {
     // SAFETY: as `inb`.
-    unsafe { Port::<u8>::new(port).write(value) }
+    unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nostack, preserves_flags)) };
 }
 fn inw(port: u16) -> u16 {
+    let value: u16;
     // SAFETY: as `inb`.
-    unsafe { Port::<u16>::new(port).read() }
+    unsafe { core::arch::asm!("in ax, dx", out("ax") value, in("dx") port, options(nostack, preserves_flags)) };
+    value
 }
 fn outw(port: u16, value: u16) {
     // SAFETY: as `inb`.
-    unsafe { Port::<u16>::new(port).write(value) }
+    unsafe { core::arch::asm!("out dx, ax", in("dx") port, in("ax") value, options(nostack, preserves_flags)) };
 }
 fn inl(port: u16) -> u32 {
+    let value: u32;
     // SAFETY: as `inb`.
-    unsafe { Port::<u32>::new(port).read() }
+    unsafe { core::arch::asm!("in eax, dx", out("eax") value, in("dx") port, options(nostack, preserves_flags)) };
+    value
 }
 fn outl(port: u16, value: u32) {
     // SAFETY: as `inb`.
-    unsafe { Port::<u32>::new(port).write(value) }
+    unsafe { core::arch::asm!("out dx, eax", in("dx") port, in("eax") value, options(nostack, preserves_flags)) };
 }
 
 fn with_device<R>(f: impl FnOnce(&mut Rtl8139) -> R) -> Option<R> {
@@ -133,7 +142,6 @@ pub fn init() -> Result<(), &'static str> {
     }
     let io_base = pci_dev.get_io_bar().ok_or("RTL8139: no I/O BAR")?.address as u16;
     pci_dev.enable_io_space();
-    pci_dev.enable_bus_master();
 
     // Power on, then software reset; the controller clears RST when done.
     outb(io_base + CONFIG1, 0);
@@ -155,29 +163,49 @@ pub fn init() -> Result<(), &'static str> {
         *byte = inb(io_base + IDR0 + offset as u16);
     }
 
-    let mut frames = [None; RX_BUFFER_FRAMES];
-    let rx_base = frame_allocator::allocate_contiguous_frames(RX_BUFFER_FRAMES, &mut frames)
+    // Every buffer is allocated before the controller is told about any of
+    // them, so a failure here frees memory the controller has never seen.
+    let mut rx_frames = [None; RX_BUFFER_FRAMES];
+    let rx_base = frame_allocator::allocate_contiguous_frames(RX_BUFFER_FRAMES, &mut rx_frames)
         .ok_or("RTL8139: no contiguous receive buffer")?;
-    let rx_phys = rx_base.start_address().as_u64();
-    if rx_phys + (RX_BUFFER_FRAMES * 4096) as u64 > u32::MAX as u64 {
-        return Err("RTL8139: receive buffer above 4 GiB");
+    let mut tx_frames: [Option<PhysFrame>; TX_SLOTS] = [None; TX_SLOTS];
+    let mut failure = None;
+    if rx_base.start_address().as_u64() + (RX_BUFFER_FRAMES * 4096) as u64 > u32::MAX as u64 {
+        failure = Some("RTL8139: receive buffer above 4 GiB");
     }
+    for slot in tx_frames.iter_mut() {
+        if failure.is_some() {
+            break;
+        }
+        *slot = frame_allocator::allocate_frame();
+        failure = match *slot {
+            None => Some("RTL8139: no transmit buffer"),
+            Some(frame) if frame.start_address().as_u64() + 4096 > u32::MAX as u64 => {
+                Some("RTL8139: transmit buffer above 4 GiB")
+            }
+            Some(_) => None,
+        };
+    }
+    if let Some(error) = failure {
+        for frame in rx_frames.into_iter().chain(tx_frames).flatten() {
+            frame_allocator::deallocate_frame(frame);
+        }
+        return Err(error);
+    }
+
+    let rx_phys = rx_base.start_address().as_u64();
     let rx_virt = direct_map(rx_phys);
     // SAFETY: the run is exclusively owned and mapped by the direct map.
     unsafe { core::ptr::write_bytes(rx_virt, 0, RX_BUFFER_FRAMES * 4096) };
-
     let mut tx_phys = [0u64; TX_SLOTS];
     let mut tx_virt = [core::ptr::null_mut(); TX_SLOTS];
-    for slot in 0..TX_SLOTS {
-        let frame = frame_allocator::allocate_frame().ok_or("RTL8139: no transmit buffer")?;
+    for (slot, frame) in tx_frames.into_iter().flatten().enumerate() {
         tx_phys[slot] = frame.start_address().as_u64();
-        if tx_phys[slot] + 4096 > u32::MAX as u64 {
-            return Err("RTL8139: transmit buffer above 4 GiB");
-        }
         tx_virt[slot] = direct_map(tx_phys[slot]);
         outl(io_base + TSAD0 + 4 * slot as u16, tx_phys[slot] as u32);
     }
 
+    pci_dev.enable_bus_master();
     outl(io_base + RBSTART, rx_phys as u32);
     outw(io_base + IMR, INT_RX | INT_TOK | INT_TER);
     outw(io_base + ISR, 0xffff);
@@ -282,16 +310,17 @@ pub fn receive(out: &mut [u8]) -> Option<usize> {
         if inb(nic.io_base + CR) & CR_BUFE != 0 {
             return None;
         }
+        // The controller wrote the frame before it cleared BUFE: read the ring
+        // only after the check.
+        core::sync::atomic::fence(Ordering::SeqCst);
         let offset = nic.rx_offset;
         // SAFETY: `offset` is below the 8 KiB ring and the 4-byte header lies
         // within its 16-byte tail at worst.
-        let (status, len) = unsafe {
-            let header = nic.rx_virt.add(offset);
-            (
-                u16::from_le_bytes([*header, *header.add(1)]),
-                u16::from_le_bytes([*header.add(2), *header.add(3)]) as usize,
-            )
-        };
+        let header: [u8; 4] = core::array::from_fn(|byte| unsafe {
+            core::ptr::read_volatile(nic.rx_virt.add(offset + byte))
+        });
+        let status = u16::from_le_bytes([header[0], header[1]]);
+        let len = u16::from_le_bytes([header[2], header[3]]) as usize;
         if status & RX_ROK == 0 || !(4..=RX_LEN_MAX).contains(&len) {
             // A bad header leaves no way to find the next frame: skip to the
             // controller's write pointer, dropping whatever is unread.
@@ -308,6 +337,8 @@ pub fn receive(out: &mut [u8]) -> Option<usize> {
             core::ptr::copy_nonoverlapping(nic.rx_virt.add(offset + 4), out.as_mut_ptr(), frame_len);
         }
         nic.rx_offset = next;
+        // The copy completes before CAPR hands the space back to the controller.
+        core::sync::atomic::fence(Ordering::SeqCst);
         // CAPR trails the read pointer by 16 bytes (RTL8139 datasheet).
         outw(nic.io_base + CAPR, (next as u16).wrapping_sub(16));
         Some(frame_len)
