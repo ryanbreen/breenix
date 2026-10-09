@@ -564,7 +564,7 @@ fn arm64_kernel_stages() -> Vec<BootStage> {
             name: "User work ran on every online CPU",
             marker: "[smp] user work ran on every online CPU",
             failure_meaning: "Once the testing kernel's userspace finished, at least one online CPU had never dispatched a user thread, or only one CPU was online",
-            check_hint: "Read the `[smp] user-thread dispatches per CPU:` line after TEST_TALLY; counts come from task::user_dispatch::note() in dispatch_thread_locked (arch_impl/aarch64/context_switch.rs)",
+            check_hint: "Read the `[smp] user-thread dispatches per CPU:` line after TEST_TALLY; counts come from task::user_dispatch::note() at the user-thread commit points in arch_impl/aarch64/context_switch.rs (dispatch_thread_locked and both ret-based resumes)",
         },
         BootStage {
             name: "ARM64 boot complete",

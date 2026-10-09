@@ -1,11 +1,12 @@
 //! User-thread dispatches per logical CPU, on every architecture.
 //!
 //! Each arch's context-switch path counts a dispatch once the switch to a user
-//! thread has committed: x86-64 after `switch_to_thread` has installed the
-//! thread as the CPU's current one, ARM64 once the EL0 return frame and the
-//! thread's address space are in place. The userspace completion report prints
-//! the counts, and the scheduler milestone's "user work ran on every online CPU"
-//! stage is printed from them.
+//! (non-kernel) thread has committed: x86-64 after `switch_to_thread` has
+//! installed the thread as the CPU's current one; ARM64 at an EL0 return frame,
+//! at a kernel context restored for a user thread inside a syscall, and at a
+//! ret-based kernel resume of a user thread. The userspace completion report
+//! prints the counts, and the scheduler milestone's "user work ran on every
+//! online CPU" stage is printed from them.
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};

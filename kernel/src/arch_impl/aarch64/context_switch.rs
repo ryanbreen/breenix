@@ -3564,6 +3564,10 @@ struct RetDispatchInfo {
     /// reading it here is what lets both call sites stop dereferencing a raw
     /// context pointer after the lock is gone.
     live_ctx_elr: u64,
+    /// The thread is a user thread resuming inside a syscall or an EL1
+    /// interruption: its user work continues on this CPU once the kernel path
+    /// returns, so the dispatch counts as a user-thread dispatch.
+    user: bool,
 }
 
 #[inline(always)]
@@ -3672,6 +3676,7 @@ fn take_inline_ret_dispatch_info(
         saved_by_inline_schedule,
     );
     let live_ctx_elr = thread.context.elr_el1;
+    let user = thread.privilege != ThreadPrivilege::Kernel;
     // The staging copy is taken LAST, after every field this dispatch will use
     // has been settled, and while the scheduler lock is still held. From here
     // the assembly restores from `ctx`, so the bytes admitted above and the
@@ -3692,6 +3697,7 @@ fn take_inline_ret_dispatch_info(
         resume_sp,
         resume_lr_slot,
         live_ctx_elr,
+        user,
     })
 }
 
@@ -4972,6 +4978,11 @@ fn dispatch_thread_locked(
             }
             // OWNER-TID CANARY: the frame was just finalized for thread_id.
             stamp_last_dispatched_tid(cpu_id, thread_id);
+            // A user thread resumed in the kernel has committed too: its
+            // address space is installed and its user work continues here.
+            if !is_kernel {
+                crate::task::user_dispatch::note(cpu_id);
+            }
         }
 
         if !restore_ok {
@@ -5777,6 +5788,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         resume_sp,
         resume_lr_slot,
         live_ctx_elr,
+        user,
     }) = ret_dispatch_info
     {
         let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
@@ -5867,6 +5879,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // reads this canary; without the stamp it names the last ERET-dispatched
         // thread instead, and an innocent thread gets terminated.
         stamp_last_dispatched_tid_for_stack(cpu_id, new_id, resume_sp);
+        if user {
+            crate::task::user_dispatch::note(cpu_id);
+        }
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -6347,6 +6362,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         resume_sp,
         resume_lr_slot,
         live_ctx_elr,
+        user,
     }) = ret_dispatch_info
     {
         let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
@@ -6441,6 +6457,9 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         // reads this canary; without the stamp it names the last ERET-dispatched
         // thread instead, and an innocent thread gets terminated.
         stamp_last_dispatched_tid_for_stack(cpu_id, new_id, resume_sp);
+        if user {
+            crate::task::user_dispatch::note(cpu_id);
+        }
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
