@@ -182,8 +182,9 @@ suite milestone, `fork`, `exec`, `wait`, `groups-sessions`, `credentials`, `limi
 suite, moved unchanged (same iterations, checks and limits); that suite is retired.
 
 Cases call the kernel by its Linux numbers and assert on the raw return, so an
-unimplemented call fails with ENOSYS. Library-level interfaces are made as a C library
-makes them: getrlimit and setrlimit through prlimit64, nice through
+unimplemented call fails with ENOSYS. On x86-64 they use the SYSCALL instruction, for those
+calls and for the handlers' rt_sigreturn, so the cases run the kernel's SYSCALL entry and
+return path. Library-level interfaces are made as a C library makes them: getrlimit and setrlimit through prlimit64, nice through
 getpriority/setpriority, getpgrp as getpgid(0), and fork as clone(SIGCHLD) on ARM64.
 Each case uses the runner's default 10-second deadline. Every wait on another process
 inside a case is bounded at 3 seconds (6 for an exec) and stops 1.5 seconds before the
@@ -221,14 +222,21 @@ milestone, `dispositions`, `masks`, `handlers`, `waits`, `altstack`, `realtime` 
 rules and the signal state fork and exec keep are in `dispositions` and `masks`.
 
 Cases call the kernel by its Linux numbers and assert on the raw return, so an
-unimplemented call fails with ENOSYS. Library-level interfaces are made as a C library
-makes them: sigqueue through rt_sigqueueinfo, sigwaitinfo and sigtimedwait through
+unimplemented call fails with ENOSYS. On x86-64 they use the SYSCALL instruction, for those
+calls and for the handlers' rt_sigreturn, so the cases run the kernel's SYSCALL entry and
+return path. Library-level interfaces are made as a C library makes them: sigqueue through rt_sigqueueinfo, sigwaitinfo and sigtimedwait through
 rt_sigtimedwait, pthread_kill through tgkill, raise as kill(getpid()), and on ARM64 pause
 through ppoll and alarm through setitimer. Handlers are installed with the
 `struct sigaction` libbreenix passes to rt_sigaction; `dispositions/sigaction-layout`
 checks that call against the Linux ABI's layout (handler, flags, restorer, mask) on its own,
 so a layout mismatch fails that case rather than every handler case. Realtime signals are
-the kernel's 32 to 64, before a C library reserves any for itself.
+the kernel's 32 to 64, before a C library reserves any for itself. Where POSIX leaves a
+behaviour to the implementation, the case title begins `Linux policy:` and the case measures
+what Linux does: a standard signal sent repeatedly while blocked is delivered once
+(`masks/not-queued`), and a realtime signal sent by kill is queued (`realtime/kill-queued`).
+The queuing POSIX requires, for sigqueue to a signal with SA_SIGINFO set, is measured on its
+own (`realtime/queued`, `fifo`, `sigwaitinfo`). `realtime/eagain` sets the queue limit
+through Linux's RLIMIT_SIGPENDING.
 
 Each case uses the runner's default 10-second deadline. Waits on other processes are
 bounded at 3 seconds (6 for an exec) and stop 1.5 seconds before the deadline; a wait for a
@@ -237,18 +245,22 @@ sending SIGHUP after 3 to 6 seconds, and the case fails when that signal is what
 wait, so a lost signal is reported as such. Children that must be blocked before they are
 signalled are observed through `/proc/<pid>/status`.
 
-The two register cases need handlers to land in the middle of a computation: each run is
-sized to outlast a timer tick and has no system call in it, and a case needs ten handlers
-to have interrupted a run. The floating-point case holds known values in v0-v31 or
-xmm0-xmm15 with inline asm, and its handler overwrites them; the x86-64 userspace target is
-built without SSE, so compiled code there never uses those registers.
+The two register cases hold known values in registers with inline asm and check them in a
+loop with no system call in it: the general registers, and all 128 bits of v0-v31 or
+xmm0-xmm15. The asm raises a flag once the values are loaded and lowers it before they are
+released, and a case needs ten handlers to have run while the flag was up, within five
+seconds. The handler overwrites the registers. The x86-64 userspace target is built without
+SSE, so compiled code there never uses the xmm registers.
 Permission cases switch to user IDs 4242 and 4343 in children; the suite itself runs as
 root. Two cases need two processors (`handlers/spinning-target` and
-`job-control/stop-threads`) and skip below that; none assumes more.
+`job-control/stop-threads`). They read the count from /proc/cpuinfo, fail when it cannot be
+read, and skip below two. Before measuring, each shows that its two workers run on
+different processors at once: a thousand handoffs through shared memory, which two that
+take turns on one processor cannot make in the time allowed. None assumes more than two.
 
 The exec cases run `/usr/local/test/bin/signals-exec_test`, which reports the mask,
-pending set, ignored and caught signals and alternate stack exec kept, or unblocks a
-signal, on a descriptor named on its command line.
+pending set, ignored and caught signals and alternate stack exec kept on a descriptor named
+on its command line, or says there that it runs and then unblocks a signal.
 
 ```bash
 scripts/boot-interactive.sh --mode suite --suite signals

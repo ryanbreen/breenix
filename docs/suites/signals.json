@@ -113,7 +113,7 @@
         },
         {
           "id": "not-queued",
-          "title": "A standard signal raised five times while blocked is delivered once"
+          "title": "Linux policy: a standard signal sent by kill five times while blocked is delivered once"
         },
         {
           "id": "how",
@@ -195,7 +195,7 @@
         },
         {
           "id": "resethand",
-          "title": "SA_RESETHAND runs the handler once and restores SIG_DFL"
+          "title": "SA_RESETHAND resets the action to SIG_DFL on entry to the handler, so the handler runs once"
         },
         {
           "id": "self-blocked",
@@ -243,15 +243,15 @@
         },
         {
           "id": "registers",
-          "title": "Integer registers survive handlers that interrupt a computation mid-way"
+          "title": "General registers survive handlers that interrupt code holding them"
         },
         {
           "id": "fp-registers",
-          "title": "Floating-point and SIMD registers survive handlers that overwrite them mid-computation"
+          "title": "All 128 bits of every floating-point and SIMD register survive handlers that overwrite them"
         },
         {
           "id": "spinning-target",
-          "title": "A process spinning in user mode on another processor runs its handler within 50 ms"
+          "title": "A process spinning in user mode, with no system call, on another processor runs its handler"
         }
       ]
     },
@@ -289,7 +289,7 @@
         },
         {
           "id": "race-loop",
-          "title": "Rounds of a child signalling while the parent enters sigsuspend, up to 100 in 4.5 s, lose no signal"
+          "title": "100 rounds of a child signalling while the parent enters sigsuspend lose no signal"
         },
         {
           "id": "sigtimedwait-pending",
@@ -333,7 +333,7 @@
         },
         {
           "id": "interval",
-          "title": "A periodic ITIMER_REAL delivers SIGALRM once per interval"
+          "title": "A periodic ITIMER_REAL keeps delivering SIGALRM, no more often than its interval"
         },
         {
           "id": "itimer-old",
@@ -345,11 +345,11 @@
         },
         {
           "id": "itimer-virtual",
-          "title": "ITIMER_VIRTUAL delivers SIGVTALRM after the process computes for its interval"
+          "title": "ITIMER_VIRTUAL counts CPU time, not sleep, and delivers SIGVTALRM after the process computes for its interval"
         },
         {
           "id": "itimer-prof",
-          "title": "ITIMER_PROF delivers SIGPROF after the process computes for its interval"
+          "title": "ITIMER_PROF counts CPU time, not sleep, and delivers SIGPROF after the process computes for its interval"
         }
       ]
     },
@@ -417,7 +417,11 @@
         },
         {
           "id": "queued",
-          "title": "A realtime signal raised five times while blocked is delivered five times"
+          "title": "A realtime signal sent by sigqueue five times while blocked, to an SA_SIGINFO handler, is delivered five times"
+        },
+        {
+          "id": "kill-queued",
+          "title": "Linux policy: a realtime signal sent by kill five times while blocked is delivered five times"
         },
         {
           "id": "lowest-first",
@@ -449,11 +453,11 @@
         },
         {
           "id": "eagain",
-          "title": "sigqueue fails with EAGAIN at the queue limit, after at least 32, and every queued signal is delivered"
+          "title": "Linux ABI: with RLIMIT_SIGPENDING lowered to 64, sigqueue fails with EAGAIN at that limit, after at least 32, and every queued signal is delivered"
         },
         {
           "id": "sigwaitinfo",
-          "title": "sigtimedwait takes queued realtime signals one at a time, in order, with their values"
+          "title": "sigtimedwait takes realtime signals queued by sigqueue one at a time, in order, with their values"
         }
       ]
     },

@@ -4,8 +4,10 @@
 //! - `state FD`: write `key=value` lines to FD describing the signal state exec kept:
 //!   `mask`, `pending`, `ign` and `caught` as hexadecimal signal sets (bit N-1 for signal
 //!   N; `caught` holds the signals with a handler), and `altstack`, the alternate signal
-//!   stack's ss_flags in decimal.
-//! - `unblock SIG`: unblock SIG, then exit 0.
+//!   stack's ss_flags in decimal. A sigaction query that fails for a signal other than
+//!   SIGKILL and SIGSTOP writes `error=` naming it and exits 6.
+//! - `unblock SIG FD`: write `exec'd` to FD, so the case knows this program runs, then
+//!   unblock SIG and exit 0.
 use libbreenix::syscall::raw;
 use libbreenix::{io, process, types::Fd};
 use std::fmt::Write as _;
@@ -29,6 +31,8 @@ const SIG_DFL: u64 = 0;
 const SIG_IGN: u64 = 1;
 const SIG_BLOCK: u64 = 0;
 const SIG_UNBLOCK: u64 = 1;
+const SIGKILL: u64 = 9;
+const SIGSTOP: u64 = 19;
 
 fn sys(n: u64, a: [u64; 4]) -> i64 {
     // SAFETY: every caller passes pointers to buffers that live through the call.
@@ -54,9 +58,16 @@ fn state(fd: Fd) -> ! {
     }
     let (mut ign, mut caught) = (0u64, 0u64);
     for sig in 1..=64u64 {
+        // SIGKILL's and SIGSTOP's actions are fixed at SIG_DFL, so exec has nothing of
+        // theirs to keep or reset; `dispositions/kill-stop-fixed` checks their query.
+        if sig == SIGKILL || sig == SIGSTOP { continue; }
         // The kernel's struct sigaction starts with the handler, whatever order the rest takes.
         let mut old = [0u64; 4];
-        if sys(nr::RT_SIGACTION, [sig, 0, old.as_mut_ptr() as u64, 8]) != 0 { continue; }
+        let ret = sys(nr::RT_SIGACTION, [sig, 0, old.as_mut_ptr() as u64, 8]);
+        if ret != 0 {
+            write_all(fd, format!("error=querying sigaction({sig}) failed with errno {}\n", -ret).as_bytes());
+            process::exit(6);
+        }
         match old[0] {
             SIG_DFL => {}
             SIG_IGN => ign |= 1 << (sig - 1),
@@ -82,6 +93,7 @@ fn main() {
     match args.get(1).map(String::as_str) {
         Some("state") => state(Fd::from_raw(number(2))),
         Some("unblock") => {
+            write_all(Fd::from_raw(number(3)), b"exec'd\n");
             let set = [1u64 << (number(2) - 1)];
             if sys(nr::RT_SIGPROCMASK, [SIG_UNBLOCK, set.as_ptr() as u64, 0, 8]) != 0 { process::exit(5); }
             process::exit(0)

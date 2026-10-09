@@ -9,7 +9,8 @@
 //! that remain before the next case, so no case depends on another.
 //!
 //! Cases call the kernel by its Linux numbers and assert on the raw return, so an
-//! unimplemented call fails with ENOSYS. Library-level interfaces are made as a C library
+//! unimplemented call fails with ENOSYS. On x86-64 they use the SYSCALL instruction, as a
+//! C library does, and so does the handlers' restorer. Library-level interfaces are made as a C library
 //! makes them: sigqueue through rt_sigqueueinfo, sigwaitinfo and sigtimedwait through
 //! rt_sigtimedwait, pthread_kill through tgkill, raise as kill(getpid()), and, where the
 //! architecture has no such call, pause through ppoll and alarm through setitimer.
@@ -18,8 +19,9 @@
 use libbreenix::io;
 use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE};
 use libbreenix::process::{self, ForkResult};
-use libbreenix::signal::{Sigaction, StackT, __restore_rt};
+use libbreenix::signal::{Sigaction, StackT};
 use libbreenix::suite::{case, case_ms_left, category, check, fail, skip, suite, CaseError, CaseResult, Suite};
+#[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use libbreenix::time;
 use libbreenix::types::Fd;
@@ -184,10 +186,42 @@ const FD_ARG: &str = "{fd}";
 
 type Checked = Result<(), String>;
 
+/// A system call made as a C library makes it: on x86-64 the SYSCALL instruction, so
+/// the cases run the kernel's SYSCALL entry and return path, and on ARM64 svc.
 fn sc(n: u64, args: &[u64]) -> i64 {
     let a = |i: usize| args.get(i).copied().unwrap_or(0);
+    #[cfg(target_arch = "x86_64")]
+    {
+        let ret: i64;
+        // SAFETY: every caller keeps the buffers its arguments point to alive through the
+        // call; SYSCALL writes only rax, rcx and r11.
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                inlateout("rax") n as i64 => ret,
+                in("rdi") a(0), in("rsi") a(1), in("rdx") a(2), in("r10") a(3), in("r8") a(4), in("r9") a(5),
+                lateout("rcx") _, lateout("r11") _,
+                options(nostack),
+            );
+        }
+        ret
+    }
+    #[cfg(target_arch = "aarch64")]
     // SAFETY: every caller keeps the buffers its arguments point to alive through the call.
     unsafe { raw::syscall6(n, a(0), a(1), a(2), a(3), a(4), a(5)) as i64 }
+}
+
+/// The signal restorer the suite's handlers return through: rt_sigreturn made the way
+/// `sc` makes calls.
+#[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
+extern "C" fn restore_rt() -> ! {
+    core::arch::naked_asm!("mov rax, 15", "syscall", "ud2")
+}
+#[cfg(target_arch = "aarch64")]
+#[unsafe(naked)]
+extern "C" fn restore_rt() -> ! {
+    core::arch::naked_asm!("mov x8, 139", "svc #0", "brk #1")
 }
 
 fn errname(errno: i64) -> String {
@@ -251,9 +285,9 @@ fn wait4(pid: i32, status: *mut i32, options: i32) -> i64 {
 }
 fn tgkill(tgid: i32, tid: i32, sig: i32) -> i64 { sc(nr::TGKILL, &[tgid as u64, tid as u64, sig as u64]) }
 
-/// The `struct sigaction` libbreenix passes to rt_sigaction, with libbreenix's restorer.
+/// The `struct sigaction` libbreenix passes to rt_sigaction, with the suite's restorer.
 fn action(handler: u64, flags: u64, mask: u64) -> Sigaction {
-    Sigaction { handler, mask, flags: flags | SA_RESTORER, restorer: __restore_rt as usize as u64 }
+    Sigaction { handler, mask, flags: flags | SA_RESTORER, restorer: restore_rt as usize as u64 }
 }
 
 fn sigaction(sig: i32, act: Option<&Sigaction>, old: Option<&mut Sigaction>) -> i64 {
@@ -459,12 +493,46 @@ fn burn(ms: u64) {
     }
 }
 
-/// Processors online, from the `processor` lines of /proc/cpuinfo; 1 if it cannot be read.
-fn processors() -> usize {
-    std::fs::read_to_string("/proc/cpuinfo")
-        .map(|info| info.lines().filter(|line| line.starts_with("processor")).count())
-        .unwrap_or(0)
-        .max(1)
+/// Processors online, from the `processor` lines of /proc/cpuinfo. A census that cannot
+/// be read or counts none fails the case rather than passing for one processor.
+fn processors() -> Result<usize, CaseError> {
+    let info = std::fs::read_to_string("/proc/cpuinfo").map_err(|e| format!("reading /proc/cpuinfo failed: {e}"))?;
+    let n = info.lines().filter(|line| line.starts_with("processor")).count();
+    if n == 0 { return err("/proc/cpuinfo lists no processor"); }
+    Ok(n)
+}
+
+/// Handoffs a pair must make within HANDOFF_MS to show they run at the same time.
+const HANDOFFS: u64 = 1000;
+const HANDOFF_MS: u64 = 1000;
+
+/// Answer handoffs on `slot` for as long as the caller spins: an odd value there becomes
+/// the next even one. No system call.
+fn answer_handoff(slot: &AtomicU64) {
+    let v = slot.load(Ordering::SeqCst);
+    if v & 1 == 1 { slot.store(v + 1, Ordering::SeqCst); }
+}
+
+/// Make HANDOFFS round trips on `slot` with a process or thread spinning in
+/// `answer_handoff`. Every round trip needs the other side to run, and two that share a
+/// processor take turns no faster than the timer tick, a millisecond or more apiece, so
+/// HANDOFFS of them within HANDOFF_MS show the two running on different processors.
+fn handoffs_show_parallel(slot: &AtomicU64) -> Checked {
+    let start = now_ms();
+    let base = slot.load(Ordering::SeqCst) & !1;
+    for i in 0..HANDOFFS {
+        let odd = base + 2 * i + 1;
+        slot.store(odd, Ordering::SeqCst);
+        let mut spins = 0u64;
+        while slot.load(Ordering::SeqCst) != odd + 1 {
+            core::hint::spin_loop();
+            spins += 1;
+            if spins % 4096 == 0 && now_ms().saturating_sub(start) >= HANDOFF_MS {
+                return Err(format!("only {i} of {HANDOFFS} handoffs finished in {HANDOFF_MS} ms: the two never ran on different processors at once"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether every thread of `pid` is blocked, as /proc reports it.
@@ -933,12 +1001,16 @@ fn exec_state(setup: impl FnOnce() -> Checked) -> Result<HashMap<String, String>
     let _ = io::close(r);
     let out = out?;
     let status = child.wait_for("the exec'd helper")?;
+    let state: HashMap<String, String> = String::from_utf8_lossy(&out).lines()
+        .filter_map(|line| line.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .collect();
+    if let Some(error) = state.get("error") {
+        return err(format!("in the exec'd helper: {error}"));
+    }
     if !(exited(status) && exit_code(status) == 0) {
         return err(format!("the exec'd helper ended with {}", status_text(status)));
     }
-    Ok(String::from_utf8_lossy(&out).lines()
-        .filter_map(|line| line.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
-        .collect())
+    Ok(state)
 }
 
 fn state_set(state: &HashMap<String, String>, key: &str) -> Result<u64, CaseError> {
@@ -1089,7 +1161,7 @@ fn disp_kill_stop() -> CaseResult {
 /// library built for the Linux ABI fills it in that order.
 fn disp_sigaction_layout() -> CaseResult {
     in_child(|| {
-        let act: [u64; 4] = [on_sig as usize as u64, SA_RESTORER, __restore_rt as usize as u64, bit(SIGUSR2)];
+        let act: [u64; 4] = [on_sig as usize as u64, SA_RESTORER, restore_rt as usize as u64, bit(SIGUSR2)];
         ok("rt_sigaction with the Linux struct sigaction",
             sc(nr::RT_SIGACTION, &[SIGUSR1 as u64, act.as_ptr() as u64, 0, 8]))?;
         ok("raise(SIGUSR1)", raise(SIGUSR1))?;
@@ -1280,6 +1352,8 @@ fn mask_stays_pending() -> CaseResult {
     check(count(SIGUSR1) == 1, "the pending SIGUSR1 was not delivered once unblocked")
 }
 
+/// POSIX leaves whether a repeated standard signal is delivered more than once to the
+/// implementation; Linux delivers it once.
 fn mask_not_queued() -> CaseResult {
     catch(SIGUSR1)?;
     block(bit(SIGUSR1))?;
@@ -1395,24 +1469,39 @@ fn mask_thread_inherits() -> CaseResult {
     check(mask_now()? == bit(SIGUSR2), "a thread unblocking SIGUSR2 changed its creator's mask")
 }
 
-/// A thread with SIGUSR1 unblocked, waiting up to two seconds for its handler to run.
+/// Set by a case to let its waiting thread finish.
+static THREAD_RELEASE: AtomicU32 = AtomicU32::new(0);
+
+/// A thread with SIGUSR1 unblocked, waiting until its handler has run or the case
+/// releases it, so it is alive whenever the case signals it.
 fn waiting_thread() -> std::thread::JoinHandle<Result<(), String>> {
     std::thread::spawn(|| -> Result<(), String> {
         unblock(bit(SIGUSR1))?;
         THREAD_TID.store(gettid(), Ordering::SeqCst);
-        let start = now_ms();
-        while count(SIGUSR1) == 0 && now_ms().saturating_sub(start) < 2000 { let _ = process::yield_now(); }
+        while count(SIGUSR1) == 0 && THREAD_RELEASE.load(Ordering::SeqCst) == 0 { let _ = process::yield_now(); }
         Ok(())
     })
+}
+
+/// Wait for SIGUSR1's handler, then release the waiting thread and join it.
+fn finish_waiting(thread: std::thread::JoinHandle<Result<(), String>>) -> CaseResult {
+    let _ = until(WAIT_MS, || count(SIGUSR1) > 0);
+    THREAD_RELEASE.store(1, Ordering::SeqCst);
+    join(thread)
 }
 
 fn mask_process_directed() -> CaseResult {
     catch(SIGUSR1)?;
     block(bit(SIGUSR1))?;
     let thread = waiting_thread();
-    check(until(WAIT_MS, || THREAD_TID.load(Ordering::SeqCst) != 0), "the thread never started")?;
-    want_eq("kill(getpid(), SIGUSR1)", raise(SIGUSR1), 0)?;
-    join(thread)?;
+    if !until(WAIT_MS, || THREAD_TID.load(Ordering::SeqCst) != 0) {
+        THREAD_RELEASE.store(1, Ordering::SeqCst);
+        let _ = join(thread);
+        return fail("the thread never started");
+    }
+    let r = raise(SIGUSR1);
+    finish_waiting(thread)?;
+    want_eq("kill(getpid(), SIGUSR1)", r, 0)?;
     check(count(SIGUSR1) == 1, "a signal sent to the process, blocked in one thread, did not reach the thread that has it unblocked")?;
     check(SEEN_TID.load(Ordering::SeqCst) == THREAD_TID.load(Ordering::SeqCst),
         "the handler ran on the thread that blocks the signal")
@@ -1422,11 +1511,14 @@ fn mask_thread_directed() -> CaseResult {
     catch(SIGUSR1)?;
     setmask(0)?;
     let thread = waiting_thread();
-    check(until(WAIT_MS, || THREAD_TID.load(Ordering::SeqCst) != 0), "the thread never started")?;
+    if !until(WAIT_MS, || THREAD_TID.load(Ordering::SeqCst) != 0) {
+        THREAD_RELEASE.store(1, Ordering::SeqCst);
+        let _ = join(thread);
+        return fail("the thread never started");
+    }
     let r = tgkill(pid(), THREAD_TID.load(Ordering::SeqCst), SIGUSR1);
-    let joined = join(thread);
+    finish_waiting(thread)?;
     want_eq("tgkill (pthread_kill)", r, 0)?;
-    joined?;
     check(count(SIGUSR1) == 1, "pthread_kill's signal was never handled")?;
     check(SEEN_TID.load(Ordering::SeqCst) == THREAD_TID.load(Ordering::SeqCst),
         "pthread_kill's signal was handled on another thread than the one named")
@@ -1468,17 +1560,36 @@ fn mask_exec() -> CaseResult {
 }
 
 fn mask_exec_delivered() -> CaseResult {
-    let args = ["signals-exec".to_string(), "unblock".to_string(), SIGTERM.to_string()];
-    let (mut child, errno) = spawn_helper(&args, || {
+    // The helper says it runs before it unblocks: a SIGTERM that killed the child before
+    // the exec also closes the exec pipe, and would otherwise look like a successful exec.
+    let (r, w) = io::pipe()?;
+    let args = ["signals-exec".to_string(), "unblock".to_string(), SIGTERM.to_string(), w.raw().to_string()];
+    let started = spawn_helper(&args, || {
+        let _ = io::close(r);
         default(SIGTERM)?;
         block(bit(SIGTERM))?;
-        ok("raise(SIGTERM)", raise(SIGTERM)).map(|_| ())
-    })?;
+        ok("raise(SIGTERM)", raise(SIGTERM))?;
+        let set = pending()?;
+        if set & bit(SIGTERM) == 0 { return Err(format!("the raised SIGTERM is not pending before the exec: pending set {set:#x}")); }
+        Ok(())
+    });
+    let _ = io::close(w);
+    let (mut child, errno) = match started {
+        Ok(started) => started,
+        Err(e) => { let _ = io::close(r); return Err(e); }
+    };
     if let Some(errno) = errno {
+        let _ = io::close(r);
         let _ = child.wait();
         return fail(format!("exec of {HELPER} failed with {}", errname(errno)));
     }
+    let said = read_to_eof(r, EXEC_MS);
+    let _ = io::close(r);
+    let said = said?;
     let status = child.wait_for("the child")?;
+    if said != b"exec'd\n" {
+        return fail(format!("the exec'd helper never reported that it ran; the child ended with {}", status_text(status)));
+    }
     check(signaled(status) && term_sig(status) == SIGTERM,
         &format!("a program that unblocked the SIGTERM pending across exec ended with {}, expected death by SIGTERM", status_text(status)))
 }
@@ -1560,11 +1671,22 @@ fn h_siginfo_fault() -> CaseResult {
     })
 }
 
+/// The handler sigaction reported from inside the SA_RESETHAND handler, or u64::MAX
+/// when the query failed.
+static RESET_SEEN: AtomicU64 = AtomicU64::new(0);
+
+extern "C" fn on_reset(sig: i32) {
+    let mut old = Sigaction::default();
+    let ret = sigaction(sig, None, Some(&mut old));
+    RESET_SEEN.store(if ret == 0 { old.handler } else { u64::MAX }, Ordering::SeqCst);
+    record(sig);
+}
+
 fn h_resethand() -> CaseResult {
     let mut kid = Child::start(|| {
-        if catch_with(SIGUSR1, on_sig as usize as u64, SA_RESETHAND, 0).is_err() { return 10; }
+        if catch_with(SIGUSR1, on_reset as usize as u64, SA_RESETHAND, 0).is_err() { return 10; }
         if raise(SIGUSR1) != 0 || count(SIGUSR1) != 1 { return 11; }
-        match disposition(SIGUSR1) { Ok(a) if a.handler == SIG_DFL => {} _ => return 12 }
+        match RESET_SEEN.load(Ordering::SeqCst) { SIG_DFL => {} u64::MAX => return 13, _ => return 12 }
         raise(SIGUSR1);
         0
     })?;
@@ -1572,7 +1694,8 @@ fn h_resethand() -> CaseResult {
     coded(status, SIGUSR1, "a child raising SIGUSR1 twice under SA_RESETHAND", &[
         (10, "installing the SA_RESETHAND handler failed"),
         (11, "the SA_RESETHAND handler did not run on the first SIGUSR1"),
-        (12, "after an SA_RESETHAND delivery the disposition is not SIG_DFL"),
+        (12, "inside the SA_RESETHAND handler the disposition was not yet SIG_DFL: it is to be reset on entry"),
+        (13, "querying sigaction inside the SA_RESETHAND handler failed"),
         (0, "a second SIGUSR1 after an SA_RESETHAND delivery did not terminate the process"),
     ])
 }
@@ -1643,10 +1766,15 @@ fn h_nested() -> CaseResult {
         &format!("handler entries and exits ran in the order {seen:?}; expected SIGUSR2's handler inside SIGUSR1's ([10, 12, 110])"))
 }
 
+/// What on_blocks_hup's sigprocmask returned, and the mask it left the handler with.
+static HUP_RET: AtomicI64 = AtomicI64::new(1);
+static HUP_MASK: AtomicU64 = AtomicU64::new(0);
+
 extern "C" fn on_blocks_hup(sig: i32) {
     record(sig);
     let set = [bit(SIGHUP)];
-    sc(nr::RT_SIGPROCMASK, &[SIG_BLOCK as u64, set.as_ptr() as u64, 0, 8]);
+    HUP_RET.store(sc(nr::RT_SIGPROCMASK, &[SIG_BLOCK as u64, set.as_ptr() as u64, 0, 8]), Ordering::SeqCst);
+    HUP_MASK.store(mask_raw(), Ordering::SeqCst);
 }
 
 fn h_mask_restored() -> CaseResult {
@@ -1654,6 +1782,9 @@ fn h_mask_restored() -> CaseResult {
     catch_with(SIGUSR1, on_blocks_hup as usize as u64, 0, 0)?;
     want_eq("raise(SIGUSR1)", raise(SIGUSR1), 0)?;
     check(count(SIGUSR1) == 1, "the handler did not run")?;
+    want_eq("sigprocmask(SIG_BLOCK, SIGHUP) in the handler", HUP_RET.load(Ordering::SeqCst), 0)?;
+    let inside = HUP_MASK.load(Ordering::SeqCst);
+    check(inside & bit(SIGHUP) != 0, &format!("the handler blocked SIGHUP, but its mask was then {inside:#x}"))?;
     let after = mask_now()?;
     check(after == 0, &format!("a handler that blocked SIGHUP returned to a mask of {after:#x}, expected the empty mask it interrupted"))
 }
@@ -1695,16 +1826,30 @@ fn h_restart_read() -> CaseResult {
         &format!("a read interrupted by an SA_RESTART handler returned {}, expected the byte written after the signal", shown(got)))
 }
 
+/// How long after its signal a child ends a wait that was wrongly restarted rather than
+/// interrupted, so the case reports that instead of reaching the runner's limit.
+const RESTART_END_MS: u64 = 1000;
+
 fn h_eintr_read() -> CaseResult {
     catch(SIGUSR1)?;
     let (r, w) = io::pipe()?;
-    let mut kid = signal_when_parked(SIGUSR1)?;
+    let me = pid();
+    let mut kid = Child::start(|| {
+        let _ = io::close(r);
+        if !parked(me, WAIT_MS) || kill(me, SIGUSR1) != 0 { return 10; }
+        let _ = time::sleep_ms(RESTART_END_MS);
+        let _ = io::write(w, b"x");
+        0
+    })?;
+    io::close(w)?;
     let mut buf = [0u8; 1];
     let got = read_raw(r, &mut buf);
-    let _ = io::close(w);
+    // Kept open until the child has written, so its write does not raise SIGPIPE.
+    let ended = kid.expect_exit(0, "the signalling child");
     let _ = io::close(r);
-    kid.expect_exit(0, "the signalling child")?;
+    ended?;
     check(count(SIGUSR1) == 1, "the handler did not run")?;
+    check(got != 1, &format!("a read interrupted by a handler without SA_RESTART was restarted: it returned the byte written {RESTART_END_MS} ms after the signal"))?;
     want_err("a read interrupted by a handler without SA_RESTART", got, EINTR)
 }
 
@@ -1748,18 +1893,21 @@ fn h_restart_wait() -> CaseResult {
 fn h_eintr_wait() -> CaseResult {
     catch(SIGUSR2)?;
     let me = pid();
-    let kid = Child::start(move || {
-        if !parked(me, WAIT_MS) { return 10; }
-        kill(me, SIGUSR2);
-        loop { pause(); }
+    let mut kid = Child::start(move || {
+        if !parked(me, WAIT_MS) || kill(me, SIGUSR2) != 0 { return 10; }
+        let _ = time::sleep_ms(RESTART_END_MS);
+        7
     })?;
     let mut status = 0;
     let got = wait4(kid.pid, &mut status, 0);
+    if got == kid.pid as i64 { kid.live = false; }
     check(count(SIGUSR2) == 1, "the handler did not run")?;
+    check(got != kid.pid as i64, &format!("waitpid interrupted by a handler without SA_RESTART was restarted: it reported the child, which exited {RESTART_END_MS} ms after the signal, with {}", status_text(status)))?;
     want_err("waitpid interrupted by a handler without SA_RESTART", got, EINTR)
 }
 
-/// A pure function that keeps many values live in registers at once.
+/// Integer work for the register cases' handler: it keeps many values live in registers,
+/// overwriting what the interrupted code held there.
 #[inline(never)]
 fn checksum(rounds: u64) -> u64 {
     let (mut a, mut b, mut c, mut d) = (1u64, 2u64, 3u64, 5u64);
@@ -1777,154 +1925,291 @@ fn checksum(rounds: u64) -> u64 {
     a ^ b ^ c ^ d ^ e ^ f ^ g ^ h
 }
 
-/// Load a known value into every floating-point/SIMD register, then check them all
-/// `rounds` times without a system call, so a signal can only arrive through an
-/// interrupt between two checks. Returns 0, or the value the first wrong register
-/// should have held (0x100 + its number).
+/// Known values for the register cases, distinct in every 64-bit half.
+const fn pattern(i: u64, salt: u64) -> u64 { (i + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ salt }
+
+const fn int_pattern() -> [u64; 32] {
+    let mut out = [0u64; 32];
+    let mut i = 0;
+    while i < 32 { out[i] = pattern(i as u64, 0x5a5a_0f0f_3c3c_9696); i += 1; }
+    out
+}
+
+const fn fp_pattern() -> [[u64; 2]; 32] {
+    let mut out = [[0u64; 2]; 32];
+    let mut i = 0;
+    while i < 32 {
+        out[i] = [pattern(i as u64, 0x0123_4567_89ab_cdef), pattern(i as u64, 0xfedc_ba98_7654_3210)];
+        i += 1;
+    }
+    out
+}
+
+static INT_PATTERN: [u64; 32] = int_pattern();
+static FP_PATTERN: [[u64; 2]; 32] = fp_pattern();
+
+/// Load a known value into every general register the calling convention lets this
+/// code hold, set IN_WORK, then check them all `rounds` times without a system call, so
+/// a signal can only arrive through an interrupt while they are live; IN_WORK is cleared
+/// before any of them is released. Returns 0, or 0x100 + the index of the first register
+/// found wrong.
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
-fn fp_hold(rounds: u64) -> u64 {
+fn int_hold(rounds: u64) -> u64 {
     let bad: u64;
-    // SAFETY: only registers declared as outputs or clobbered are written.
+    // SAFETY: reads INT_PATTERN, writes IN_WORK, and writes only registers declared below.
     unsafe {
         core::arch::asm!(
-            "mov x9, {rounds}",
-            "movz x11, #256", "fmov d0, x11",
-            "movz x11, #257", "fmov d1, x11",
-            "movz x11, #258", "fmov d2, x11",
-            "movz x11, #259", "fmov d3, x11",
-            "movz x11, #260", "fmov d4, x11",
-            "movz x11, #261", "fmov d5, x11",
-            "movz x11, #262", "fmov d6, x11",
-            "movz x11, #263", "fmov d7, x11",
-            "movz x11, #264", "fmov d8, x11",
-            "movz x11, #265", "fmov d9, x11",
-            "movz x11, #266", "fmov d10, x11",
-            "movz x11, #267", "fmov d11, x11",
-            "movz x11, #268", "fmov d12, x11",
-            "movz x11, #269", "fmov d13, x11",
-            "movz x11, #270", "fmov d14, x11",
-            "movz x11, #271", "fmov d15, x11",
-            "movz x11, #272", "fmov d16, x11",
-            "movz x11, #273", "fmov d17, x11",
-            "movz x11, #274", "fmov d18, x11",
-            "movz x11, #275", "fmov d19, x11",
-            "movz x11, #276", "fmov d20, x11",
-            "movz x11, #277", "fmov d21, x11",
-            "movz x11, #278", "fmov d22, x11",
-            "movz x11, #279", "fmov d23, x11",
-            "movz x11, #280", "fmov d24, x11",
-            "movz x11, #281", "fmov d25, x11",
-            "movz x11, #282", "fmov d26, x11",
-            "movz x11, #283", "fmov d27, x11",
-            "movz x11, #284", "fmov d28, x11",
-            "movz x11, #285", "fmov d29, x11",
-            "movz x11, #286", "fmov d30, x11",
-            "movz x11, #287", "fmov d31, x11",
+            "ldr x1, [x10, #0]",
+            "ldr x2, [x10, #8]",
+            "ldr x3, [x10, #16]",
+            "ldr x4, [x10, #24]",
+            "ldr x5, [x10, #32]",
+            "ldr x6, [x10, #40]",
+            "ldr x7, [x10, #48]",
+            "ldr x8, [x10, #56]",
+            "ldr x13, [x10, #64]",
+            "ldr x14, [x10, #72]",
+            "ldr x16, [x10, #80]",
+            "ldr x17, [x10, #88]",
+            "ldr x20, [x10, #96]",
+            "ldr x21, [x10, #104]",
+            "ldr x22, [x10, #112]",
+            "ldr x23, [x10, #120]",
+            "ldr x24, [x10, #128]",
+            "ldr x25, [x10, #136]",
+            "ldr x26, [x10, #144]",
+            "ldr x27, [x10, #152]",
+            "ldr x28, [x10, #160]",
+            "mov w11, #1", "str w11, [x15]",
             "2:",
-            "movz x12, #256", "fmov x11, d0", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #257", "fmov x11, d1", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #258", "fmov x11, d2", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #259", "fmov x11, d3", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #260", "fmov x11, d4", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #261", "fmov x11, d5", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #262", "fmov x11, d6", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #263", "fmov x11, d7", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #264", "fmov x11, d8", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #265", "fmov x11, d9", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #266", "fmov x11, d10", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #267", "fmov x11, d11", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #268", "fmov x11, d12", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #269", "fmov x11, d13", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #270", "fmov x11, d14", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #271", "fmov x11, d15", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #272", "fmov x11, d16", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #273", "fmov x11, d17", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #274", "fmov x11, d18", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #275", "fmov x11, d19", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #276", "fmov x11, d20", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #277", "fmov x11, d21", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #278", "fmov x11, d22", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #279", "fmov x11, d23", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #280", "fmov x11, d24", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #281", "fmov x11, d25", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #282", "fmov x11, d26", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #283", "fmov x11, d27", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #284", "fmov x11, d28", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #285", "fmov x11, d29", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #286", "fmov x11, d30", "cmp x11, x12", "b.ne 3f",
-            "movz x12, #287", "fmov x11, d31", "cmp x11, x12", "b.ne 3f",
+            "mov x12, #256", "ldr x11, [x10, #0]", "cmp x1, x11", "b.ne 3f",
+            "mov x12, #257", "ldr x11, [x10, #8]", "cmp x2, x11", "b.ne 3f",
+            "mov x12, #258", "ldr x11, [x10, #16]", "cmp x3, x11", "b.ne 3f",
+            "mov x12, #259", "ldr x11, [x10, #24]", "cmp x4, x11", "b.ne 3f",
+            "mov x12, #260", "ldr x11, [x10, #32]", "cmp x5, x11", "b.ne 3f",
+            "mov x12, #261", "ldr x11, [x10, #40]", "cmp x6, x11", "b.ne 3f",
+            "mov x12, #262", "ldr x11, [x10, #48]", "cmp x7, x11", "b.ne 3f",
+            "mov x12, #263", "ldr x11, [x10, #56]", "cmp x8, x11", "b.ne 3f",
+            "mov x12, #264", "ldr x11, [x10, #64]", "cmp x13, x11", "b.ne 3f",
+            "mov x12, #265", "ldr x11, [x10, #72]", "cmp x14, x11", "b.ne 3f",
+            "mov x12, #266", "ldr x11, [x10, #80]", "cmp x16, x11", "b.ne 3f",
+            "mov x12, #267", "ldr x11, [x10, #88]", "cmp x17, x11", "b.ne 3f",
+            "mov x12, #268", "ldr x11, [x10, #96]", "cmp x20, x11", "b.ne 3f",
+            "mov x12, #269", "ldr x11, [x10, #104]", "cmp x21, x11", "b.ne 3f",
+            "mov x12, #270", "ldr x11, [x10, #112]", "cmp x22, x11", "b.ne 3f",
+            "mov x12, #271", "ldr x11, [x10, #120]", "cmp x23, x11", "b.ne 3f",
+            "mov x12, #272", "ldr x11, [x10, #128]", "cmp x24, x11", "b.ne 3f",
+            "mov x12, #273", "ldr x11, [x10, #136]", "cmp x25, x11", "b.ne 3f",
+            "mov x12, #274", "ldr x11, [x10, #144]", "cmp x26, x11", "b.ne 3f",
+            "mov x12, #275", "ldr x11, [x10, #152]", "cmp x27, x11", "b.ne 3f",
+            "mov x12, #276", "ldr x11, [x10, #160]", "cmp x28, x11", "b.ne 3f",
             "subs x9, x9, #1",
             "b.ne 2b",
-            "mov {bad}, #0",
-            "b 4f",
+            "mov x12, #0",
             "3:",
-            "mov {bad}, x12",
-            "4:",
-            rounds = in(reg) rounds,
-            bad = out(reg) bad,
-            out("x9") _, out("x11") _, out("x12") _,
-            out("v0") _, out("v1") _, out("v2") _, out("v3") _, out("v4") _, out("v5") _, out("v6") _, out("v7") _, out("v8") _, out("v9") _, out("v10") _, out("v11") _, out("v12") _, out("v13") _, out("v14") _, out("v15") _, out("v16") _, out("v17") _, out("v18") _, out("v19") _, out("v20") _, out("v21") _, out("v22") _, out("v23") _, out("v24") _, out("v25") _, out("v26") _, out("v27") _, out("v28") _, out("v29") _, out("v30") _, out("v31") _,
+            "str wzr, [x15]",
+            inout("x9") rounds => _,
+            in("x10") INT_PATTERN.as_ptr(),
+            in("x15") IN_WORK.as_ptr(),
+            out("x11") _, out("x12") bad,
+            out("x1") _, out("x2") _, out("x3") _, out("x4") _, out("x5") _, out("x6") _, out("x7") _, out("x8") _, out("x13") _, out("x14") _, out("x16") _, out("x17") _, out("x20") _, out("x21") _, out("x22") _, out("x23") _, out("x24") _, out("x25") _, out("x26") _, out("x27") _, out("x28") _,
+            options(nostack),
         );
     }
     bad
 }
 
-/// As on ARM64, with xmm0-xmm15. The userspace target is built without SSE, so the
-/// compiler never uses these registers itself; the instructions run on the processor's
-/// SSE unit, as they do in any program built for the standard x86-64 ABI.
+/// As on ARM64, with the general registers x86-64 code may use in inline asm.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn int_hold(rounds: u64) -> u64 {
+    let bad: u64;
+    // SAFETY: reads INT_PATTERN, writes IN_WORK, and writes only registers declared below.
+    unsafe {
+        core::arch::asm!(
+            "mov rax, [rsi + 0]",
+            "mov rcx, [rsi + 8]",
+            "mov rdx, [rsi + 16]",
+            "mov r8, [rsi + 24]",
+            "mov r12, [rsi + 32]",
+            "mov r13, [rsi + 40]",
+            "mov r14, [rsi + 48]",
+            "mov r15, [rsi + 56]",
+            "mov dword ptr [rdi], 1",
+            "2:",
+            "mov r10, 256", "cmp rax, [rsi + 0]", "jne 3f",
+            "mov r10, 257", "cmp rcx, [rsi + 8]", "jne 3f",
+            "mov r10, 258", "cmp rdx, [rsi + 16]", "jne 3f",
+            "mov r10, 259", "cmp r8, [rsi + 24]", "jne 3f",
+            "mov r10, 260", "cmp r12, [rsi + 32]", "jne 3f",
+            "mov r10, 261", "cmp r13, [rsi + 40]", "jne 3f",
+            "mov r10, 262", "cmp r14, [rsi + 48]", "jne 3f",
+            "mov r10, 263", "cmp r15, [rsi + 56]", "jne 3f",
+            "dec r9",
+            "jnz 2b",
+            "xor r10d, r10d",
+            "3:",
+            "mov dword ptr [rdi], 0",
+            inout("r9") rounds => _,
+            in("rsi") INT_PATTERN.as_ptr(),
+            in("rdi") IN_WORK.as_ptr(),
+            out("r10") bad, out("r11") _,
+            out("rax") _, out("rcx") _, out("rdx") _, out("r8") _, out("r12") _, out("r13") _, out("r14") _, out("r15") _,
+            options(nostack),
+        );
+    }
+    bad
+}
+
+/// As `int_hold`, with all 128 bits of every floating-point/SIMD register, v0-v31.
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+fn fp_hold(rounds: u64) -> u64 {
+    let bad: u64;
+    // SAFETY: reads FP_PATTERN, writes IN_WORK, and writes only registers declared below.
+    unsafe {
+        core::arch::asm!(
+            "ldr q0, [x10, #0]",
+            "ldr q1, [x10, #16]",
+            "ldr q2, [x10, #32]",
+            "ldr q3, [x10, #48]",
+            "ldr q4, [x10, #64]",
+            "ldr q5, [x10, #80]",
+            "ldr q6, [x10, #96]",
+            "ldr q7, [x10, #112]",
+            "ldr q8, [x10, #128]",
+            "ldr q9, [x10, #144]",
+            "ldr q10, [x10, #160]",
+            "ldr q11, [x10, #176]",
+            "ldr q12, [x10, #192]",
+            "ldr q13, [x10, #208]",
+            "ldr q14, [x10, #224]",
+            "ldr q15, [x10, #240]",
+            "ldr q16, [x10, #256]",
+            "ldr q17, [x10, #272]",
+            "ldr q18, [x10, #288]",
+            "ldr q19, [x10, #304]",
+            "ldr q20, [x10, #320]",
+            "ldr q21, [x10, #336]",
+            "ldr q22, [x10, #352]",
+            "ldr q23, [x10, #368]",
+            "ldr q24, [x10, #384]",
+            "ldr q25, [x10, #400]",
+            "ldr q26, [x10, #416]",
+            "ldr q27, [x10, #432]",
+            "ldr q28, [x10, #448]",
+            "ldr q29, [x10, #464]",
+            "ldr q30, [x10, #480]",
+            "ldr q31, [x10, #496]",
+            "mov w11, #1", "str w11, [x15]",
+            "2:",
+            "mov x12, #256", "ldp x13, x14, [x10, #0]", "mov x11, v0.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v0.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #257", "ldp x13, x14, [x10, #16]", "mov x11, v1.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v1.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #258", "ldp x13, x14, [x10, #32]", "mov x11, v2.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v2.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #259", "ldp x13, x14, [x10, #48]", "mov x11, v3.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v3.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #260", "ldp x13, x14, [x10, #64]", "mov x11, v4.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v4.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #261", "ldp x13, x14, [x10, #80]", "mov x11, v5.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v5.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #262", "ldp x13, x14, [x10, #96]", "mov x11, v6.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v6.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #263", "ldp x13, x14, [x10, #112]", "mov x11, v7.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v7.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #264", "ldp x13, x14, [x10, #128]", "mov x11, v8.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v8.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #265", "ldp x13, x14, [x10, #144]", "mov x11, v9.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v9.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #266", "ldp x13, x14, [x10, #160]", "mov x11, v10.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v10.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #267", "ldp x13, x14, [x10, #176]", "mov x11, v11.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v11.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #268", "ldp x13, x14, [x10, #192]", "mov x11, v12.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v12.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #269", "ldp x13, x14, [x10, #208]", "mov x11, v13.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v13.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #270", "ldp x13, x14, [x10, #224]", "mov x11, v14.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v14.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #271", "ldp x13, x14, [x10, #240]", "mov x11, v15.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v15.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #272", "ldp x13, x14, [x10, #256]", "mov x11, v16.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v16.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #273", "ldp x13, x14, [x10, #272]", "mov x11, v17.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v17.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #274", "ldp x13, x14, [x10, #288]", "mov x11, v18.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v18.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #275", "ldp x13, x14, [x10, #304]", "mov x11, v19.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v19.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #276", "ldp x13, x14, [x10, #320]", "mov x11, v20.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v20.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #277", "ldp x13, x14, [x10, #336]", "mov x11, v21.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v21.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #278", "ldp x13, x14, [x10, #352]", "mov x11, v22.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v22.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #279", "ldp x13, x14, [x10, #368]", "mov x11, v23.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v23.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #280", "ldp x13, x14, [x10, #384]", "mov x11, v24.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v24.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #281", "ldp x13, x14, [x10, #400]", "mov x11, v25.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v25.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #282", "ldp x13, x14, [x10, #416]", "mov x11, v26.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v26.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #283", "ldp x13, x14, [x10, #432]", "mov x11, v27.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v27.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #284", "ldp x13, x14, [x10, #448]", "mov x11, v28.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v28.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #285", "ldp x13, x14, [x10, #464]", "mov x11, v29.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v29.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #286", "ldp x13, x14, [x10, #480]", "mov x11, v30.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v30.d[1]", "cmp x11, x14", "b.ne 3f",
+            "mov x12, #287", "ldp x13, x14, [x10, #496]", "mov x11, v31.d[0]", "cmp x11, x13", "b.ne 3f", "mov x11, v31.d[1]", "cmp x11, x14", "b.ne 3f",
+            "subs x9, x9, #1",
+            "b.ne 2b",
+            "mov x12, #0",
+            "3:",
+            "str wzr, [x15]",
+            inout("x9") rounds => _,
+            in("x10") FP_PATTERN.as_ptr(),
+            in("x15") IN_WORK.as_ptr(),
+            out("x11") _, out("x12") bad, out("x13") _, out("x14") _,
+            out("v0") _, out("v1") _, out("v2") _, out("v3") _, out("v4") _, out("v5") _, out("v6") _, out("v7") _, out("v8") _, out("v9") _, out("v10") _, out("v11") _, out("v12") _, out("v13") _, out("v14") _, out("v15") _, out("v16") _, out("v17") _, out("v18") _, out("v19") _, out("v20") _, out("v21") _, out("v22") _, out("v23") _, out("v24") _, out("v25") _, out("v26") _, out("v27") _, out("v28") _, out("v29") _, out("v30") _, out("v31") _,
+            options(nostack),
+        );
+    }
+    bad
+}
+
+/// As on ARM64, with all 128 bits of xmm0-xmm15. The userspace target is built without
+/// SSE, so the compiler never uses these registers itself; the instructions run on the
+/// processor's SSE unit, as they do in any program built for the standard x86-64 ABI.
+/// Each register is copied to `seen` to be compared a half at a time.
 #[cfg(target_arch = "x86_64")]
 #[inline(never)]
 fn fp_hold(rounds: u64) -> u64 {
     let bad: u64;
-    // SAFETY: writes only the xmm registers, which compiled code here never uses, and
-    // the general registers declared below.
+    let mut seen = [0u64; 2];
+    // SAFETY: reads FP_PATTERN, writes IN_WORK and `seen`, and writes only the xmm
+    // registers, which compiled code here never uses, and the registers declared below.
     unsafe {
         core::arch::asm!(
-            "mov r9, {rounds}",
-            "mov r11, 256", "movq xmm0, r11",
-            "mov r11, 257", "movq xmm1, r11",
-            "mov r11, 258", "movq xmm2, r11",
-            "mov r11, 259", "movq xmm3, r11",
-            "mov r11, 260", "movq xmm4, r11",
-            "mov r11, 261", "movq xmm5, r11",
-            "mov r11, 262", "movq xmm6, r11",
-            "mov r11, 263", "movq xmm7, r11",
-            "mov r11, 264", "movq xmm8, r11",
-            "mov r11, 265", "movq xmm9, r11",
-            "mov r11, 266", "movq xmm10, r11",
-            "mov r11, 267", "movq xmm11, r11",
-            "mov r11, 268", "movq xmm12, r11",
-            "mov r11, 269", "movq xmm13, r11",
-            "mov r11, 270", "movq xmm14, r11",
-            "mov r11, 271", "movq xmm15, r11",
+            "movdqu xmm0, [rsi + 0]",
+            "movdqu xmm1, [rsi + 16]",
+            "movdqu xmm2, [rsi + 32]",
+            "movdqu xmm3, [rsi + 48]",
+            "movdqu xmm4, [rsi + 64]",
+            "movdqu xmm5, [rsi + 80]",
+            "movdqu xmm6, [rsi + 96]",
+            "movdqu xmm7, [rsi + 112]",
+            "movdqu xmm8, [rsi + 128]",
+            "movdqu xmm9, [rsi + 144]",
+            "movdqu xmm10, [rsi + 160]",
+            "movdqu xmm11, [rsi + 176]",
+            "movdqu xmm12, [rsi + 192]",
+            "movdqu xmm13, [rsi + 208]",
+            "movdqu xmm14, [rsi + 224]",
+            "movdqu xmm15, [rsi + 240]",
+            "mov dword ptr [rdi], 1",
             "2:",
-            "mov r10, 256", "movq r11, xmm0", "cmp r11, r10", "jne 3f",
-            "mov r10, 257", "movq r11, xmm1", "cmp r11, r10", "jne 3f",
-            "mov r10, 258", "movq r11, xmm2", "cmp r11, r10", "jne 3f",
-            "mov r10, 259", "movq r11, xmm3", "cmp r11, r10", "jne 3f",
-            "mov r10, 260", "movq r11, xmm4", "cmp r11, r10", "jne 3f",
-            "mov r10, 261", "movq r11, xmm5", "cmp r11, r10", "jne 3f",
-            "mov r10, 262", "movq r11, xmm6", "cmp r11, r10", "jne 3f",
-            "mov r10, 263", "movq r11, xmm7", "cmp r11, r10", "jne 3f",
-            "mov r10, 264", "movq r11, xmm8", "cmp r11, r10", "jne 3f",
-            "mov r10, 265", "movq r11, xmm9", "cmp r11, r10", "jne 3f",
-            "mov r10, 266", "movq r11, xmm10", "cmp r11, r10", "jne 3f",
-            "mov r10, 267", "movq r11, xmm11", "cmp r11, r10", "jne 3f",
-            "mov r10, 268", "movq r11, xmm12", "cmp r11, r10", "jne 3f",
-            "mov r10, 269", "movq r11, xmm13", "cmp r11, r10", "jne 3f",
-            "mov r10, 270", "movq r11, xmm14", "cmp r11, r10", "jne 3f",
-            "mov r10, 271", "movq r11, xmm15", "cmp r11, r10", "jne 3f",
+            "mov r10, 256", "movdqu [rdx], xmm0", "mov r11, [rdx]", "cmp r11, [rsi + 0]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 8]", "jne 3f",
+            "mov r10, 257", "movdqu [rdx], xmm1", "mov r11, [rdx]", "cmp r11, [rsi + 16]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 24]", "jne 3f",
+            "mov r10, 258", "movdqu [rdx], xmm2", "mov r11, [rdx]", "cmp r11, [rsi + 32]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 40]", "jne 3f",
+            "mov r10, 259", "movdqu [rdx], xmm3", "mov r11, [rdx]", "cmp r11, [rsi + 48]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 56]", "jne 3f",
+            "mov r10, 260", "movdqu [rdx], xmm4", "mov r11, [rdx]", "cmp r11, [rsi + 64]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 72]", "jne 3f",
+            "mov r10, 261", "movdqu [rdx], xmm5", "mov r11, [rdx]", "cmp r11, [rsi + 80]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 88]", "jne 3f",
+            "mov r10, 262", "movdqu [rdx], xmm6", "mov r11, [rdx]", "cmp r11, [rsi + 96]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 104]", "jne 3f",
+            "mov r10, 263", "movdqu [rdx], xmm7", "mov r11, [rdx]", "cmp r11, [rsi + 112]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 120]", "jne 3f",
+            "mov r10, 264", "movdqu [rdx], xmm8", "mov r11, [rdx]", "cmp r11, [rsi + 128]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 136]", "jne 3f",
+            "mov r10, 265", "movdqu [rdx], xmm9", "mov r11, [rdx]", "cmp r11, [rsi + 144]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 152]", "jne 3f",
+            "mov r10, 266", "movdqu [rdx], xmm10", "mov r11, [rdx]", "cmp r11, [rsi + 160]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 168]", "jne 3f",
+            "mov r10, 267", "movdqu [rdx], xmm11", "mov r11, [rdx]", "cmp r11, [rsi + 176]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 184]", "jne 3f",
+            "mov r10, 268", "movdqu [rdx], xmm12", "mov r11, [rdx]", "cmp r11, [rsi + 192]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 200]", "jne 3f",
+            "mov r10, 269", "movdqu [rdx], xmm13", "mov r11, [rdx]", "cmp r11, [rsi + 208]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 216]", "jne 3f",
+            "mov r10, 270", "movdqu [rdx], xmm14", "mov r11, [rdx]", "cmp r11, [rsi + 224]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 232]", "jne 3f",
+            "mov r10, 271", "movdqu [rdx], xmm15", "mov r11, [rdx]", "cmp r11, [rsi + 240]", "jne 3f", "mov r11, [rdx + 8]", "cmp r11, [rsi + 248]", "jne 3f",
             "dec r9",
             "jnz 2b",
-            "xor {bad}, {bad}",
-            "jmp 4f",
+            "xor r10d, r10d",
             "3:",
-            "mov {bad}, r10",
-            "4:",
-            rounds = in(reg) rounds,
-            bad = out(reg) bad,
-            out("r9") _, out("r10") _, out("r11") _,
+            "mov dword ptr [rdi], 0",
+            inout("r9") rounds => _,
+            in("rsi") FP_PATTERN.as_ptr(),
+            in("rdi") IN_WORK.as_ptr(),
+            in("rdx") seen.as_mut_ptr(),
+            out("r10") bad, out("r11") _,
+            options(nostack),
         );
     }
     bad
@@ -1996,9 +2281,12 @@ fn clobber_fp() {
     }
 }
 
-/// Set while the interrupted computation runs; a handler that sees it counts itself in MID.
+/// Set by `int_hold` and `fp_hold` while their registers hold the known values; a handler
+/// that sees it counts itself in MID.
 static IN_WORK: AtomicU32 = AtomicU32::new(0);
 static MID: AtomicU32 = AtomicU32::new(0);
+/// Handlers that must have interrupted a register check for its case to pass.
+const MID_WANTED: u32 = 10;
 
 extern "C" fn on_clobber(sig: i32) {
     if IN_WORK.load(Ordering::SeqCst) == 1 { MID.fetch_add(1, Ordering::SeqCst); }
@@ -2007,10 +2295,11 @@ extern "C" fn on_clobber(sig: i32) {
     clobber_fp();
 }
 
-/// Run `f` again and again for `ms` while a child sends SIGUSR1 to this process every
-/// millisecond; returns the first result that differs from `expected`, and how many
-/// handlers ran in the middle of `f` rather than between two runs of it.
-fn under_signals<T: PartialEq + Copy>(ms: u64, expected: T, f: impl Fn() -> T) -> Result<(Option<T>, u32), CaseError> {
+/// Run `hold` again and again while a child sends SIGUSR1 to this process every
+/// millisecond, until MID_WANTED handlers have interrupted it while its registers were
+/// live or `ms` have passed; returns the first nonzero result, and how many handlers
+/// interrupted it.
+fn under_signals(ms: u64, hold: impl Fn() -> u64) -> Result<(u64, u32), CaseError> {
     catch_with(SIGUSR1, on_clobber as usize as u64, 0, 0)?;
     let shared = Shared::new()?;
     let me = pid();
@@ -2021,49 +2310,52 @@ fn under_signals<T: PartialEq + Copy>(ms: u64, expected: T, f: impl Fn() -> T) -
         }
         0
     })?;
+    let ms = bounded(ms, CLEANUP_MS);
     let start = now_ms();
-    let mut wrong = None;
-    while now_ms().saturating_sub(start) < ms {
-        IN_WORK.store(1, Ordering::SeqCst);
-        let got = f();
-        IN_WORK.store(0, Ordering::SeqCst);
-        if got != expected { wrong = Some(got); break; }
+    let mut wrong = 0;
+    while MID.load(Ordering::SeqCst) < MID_WANTED && now_ms().saturating_sub(start) < ms {
+        wrong = hold();
+        if wrong != 0 { break; }
     }
     shared.set(0, 1);
     sender.expect_exit(0, "the signalling child")?;
     Ok((wrong, MID.load(Ordering::SeqCst)))
 }
 
-/// A round count for `f` that takes at least 20 ms, longer than a timer tick on either
+/// A round count for `hold` that takes at least 20 ms, longer than a timer tick on either
 /// architecture, so a pending signal is taken by an interrupt in the middle of a run.
-fn rounds_for(f: impl Fn(u64)) -> u64 {
+/// Each size is timed three times and the shortest counts, since time spent descheduled
+/// only lengthens a run.
+fn rounds_for(hold: impl Fn(u64) -> u64) -> u64 {
     let mut rounds = 10_000u64;
     while rounds < 1 << 30 {
-        let start = now_ms();
-        f(rounds);
-        if now_ms().saturating_sub(start) >= 20 { break; }
+        let fastest = (0..3).map(|_| {
+            let start = now_ms();
+            core::hint::black_box(hold(core::hint::black_box(rounds)));
+            now_ms().saturating_sub(start)
+        }).min().unwrap_or(0);
+        if fastest >= 20 { break; }
         rounds *= 2;
     }
     rounds
 }
 
 fn h_registers() -> CaseResult {
-    let rounds = rounds_for(|n| { core::hint::black_box(checksum(core::hint::black_box(n))); });
-    let expected = checksum(core::hint::black_box(rounds));
-    let (wrong, mid) = under_signals(400, expected, || checksum(core::hint::black_box(rounds)))?;
-    if let Some(got) = wrong {
-        return fail(format!("an integer computation interrupted by handlers gave {got:#x}, expected {expected:#x}"));
+    let rounds = rounds_for(int_hold);
+    let (wrong, mid) = under_signals(5000, || int_hold(core::hint::black_box(rounds)))?;
+    if wrong != 0 {
+        return fail(format!("after handlers interrupted it, general register {} of the check no longer held its value", wrong - 0x100));
     }
-    check(mid >= 10, &format!("only {mid} handlers interrupted the computation itself in 400 ms; the case needs 10"))
+    check(mid >= MID_WANTED, &format!("only {mid} handlers interrupted the register checks while the registers were live; the case needs {MID_WANTED}"))
 }
 
 fn h_fp_registers() -> CaseResult {
-    let rounds = rounds_for(|n| { core::hint::black_box(fp_hold(core::hint::black_box(n))); });
-    let (wrong, mid) = under_signals(400, 0, || fp_hold(core::hint::black_box(rounds)))?;
-    if let Some(reg) = wrong {
-        return fail(format!("after handlers that overwrite the floating-point registers, register {} no longer held its value", reg - 0x100));
+    let rounds = rounds_for(fp_hold);
+    let (wrong, mid) = under_signals(5000, || fp_hold(core::hint::black_box(rounds)))?;
+    if wrong != 0 {
+        return fail(format!("after handlers that overwrite the floating-point registers, register {} no longer held all 128 bits of its value", wrong - 0x100));
     }
-    check(mid >= 10, &format!("only {mid} handlers interrupted the register checks themselves in 400 ms; the case needs 10"))
+    check(mid >= MID_WANTED, &format!("only {mid} handlers interrupted the register checks while the registers were live; the case needs {MID_WANTED}"))
 }
 
 static SHARED_AT: AtomicUsize = AtomicUsize::new(0);
@@ -2087,8 +2379,7 @@ fn shared_for_handlers() -> Result<Shared, CaseError> {
 }
 
 fn h_spinning_target() -> CaseResult {
-    const LIMIT_MS: u64 = 50;
-    let cpus = processors();
+    let cpus = processors()?;
     if cpus < 2 {
         return skip(format!("{cpus} processor online; the case needs 2, so the target spins on one while the sender runs on another"));
     }
@@ -2097,19 +2388,23 @@ fn h_spinning_target() -> CaseResult {
         if catch_with(SIGUSR1, on_mark as usize as u64, 0, 0).is_err() { return 10; }
         s.set(0, 1);
         // No system calls: only an interrupt can bring the signal in.
-        while s.get(1) == 0 && s.get(2) == 0 { core::hint::spin_loop(); }
+        while s.get(1) == 0 && s.get(2) == 0 {
+            answer_handoff(s.slot(4));
+            core::hint::spin_loop();
+        }
         0
     })?;
     check(until(WAIT_MS, || s.get(0) == 1), "the target never started spinning")?;
-    let _ = time::sleep_ms(20);
-    let sent = now_ms();
+    if let Err(why) = handoffs_show_parallel(s.slot(4)) {
+        s.set(2, 1);
+        let _ = kid.wait();
+        return fail(format!("with {cpus} processors online, the target and this process: {why}"));
+    }
     want_eq("kill(SIGUSR1)", kill(kid.pid, SIGUSR1), 0)?;
-    let handled = until(1000, || s.get(1) != 0);
+    let handled = until(WAIT_MS, || s.get(1) != 0);
     s.set(2, 1);
     kid.expect_exit(0, "the spinning target")?;
-    check(handled, &format!("with {cpus} processors online, a process spinning in user mode ran no handler within 1000 ms of being sent SIGUSR1"))?;
-    let took = s.get(1).saturating_sub(sent);
-    check(took <= LIMIT_MS, &format!("with {cpus} processors online, a process spinning in user mode ran its handler {took} ms after the signal was sent"))
+    check(handled, &format!("with {cpus} processors online, a process spinning in user mode on another processor ran no handler within {WAIT_MS} ms of being sent SIGUSR1"))
 }
 
 // ---------------------------------------------------------------------------
@@ -2250,28 +2545,48 @@ fn w_signal_first() -> CaseResult {
 }
 
 fn w_race_loop() -> CaseResult {
-    const ROUNDS: u32 = 100;
-    /// New rounds start only this long, leaving the watchdog's time for the last one.
-    const ROUNDS_MS: u64 = 4500;
+    const ROUNDS: u64 = 100;
     const DOG_MS: u64 = 6000;
     catch(SIGUSR1)?;
     catch(DOG)?;
     setmask(bit(SIGUSR1))?;
     let me = pid();
-    let start = now_ms();
+    // Slot 0 holds the round this process has asked for; the sender, a child that never
+    // makes a system call while it watches, sends SIGUSR1 as soon as the slot changes,
+    // racing this process's way into sigsuspend. Slot 1 counts what it has sent.
+    let s = Shared::new()?;
+    let mut sender = Child::start(|| {
+        let mut sent = 0;
+        loop {
+            let round = s.get(0);
+            if round == u64::MAX { return 0; }
+            if round > sent {
+                if kill(me, SIGUSR1) != 0 { return 10; }
+                sent = round;
+                s.set(1, sent);
+            }
+            core::hint::spin_loop();
+        }
+    })?;
     let _dog = watchdog(DOG_MS, DOG)?;
-    let mut round = 0;
-    while round < ROUNDS && now_ms().saturating_sub(start) < ROUNDS_MS {
-        let mut kid = Child::start(move || if kill(me, SIGUSR1) == 0 { 0 } else { 1 })?;
+    let mut lost = None;
+    for round in 1..=ROUNDS {
+        s.set(0, round);
         let got = sigsuspend(0);
-        dog_quiet(&format!("round {round}: sigsuspend"))?;
-        check(count(SIGUSR1) == round + 1,
-            &format!("round {round}: a child's SIGUSR1 racing the parent's mask-then-sigsuspend was lost"))?;
-        want_err(&format!("round {round}: sigsuspend"), got, EINTR)?;
-        kid.expect_exit(0, "a signalling child")?;
-        round += 1;
+        if count(DOG) != 0 || count(SIGUSR1) as u64 != round || got != -EINTR {
+            lost = Some((round, got));
+            break;
+        }
     }
-    check(round > 0, "no round finished")
+    s.set(0, u64::MAX);
+    sender.expect_exit(0, "the signalling child")?;
+    if let Some((round, got)) = lost {
+        dog_quiet(&format!("round {round} of {ROUNDS}: sigsuspend"))?;
+        check(count(SIGUSR1) as u64 == round,
+            &format!("round {round} of {ROUNDS}: a child's SIGUSR1 racing the parent's mask-then-sigsuspend was lost"))?;
+        return want_err(&format!("round {round} of {ROUNDS}: sigsuspend"), got, EINTR);
+    }
+    Ok(())
 }
 
 fn w_timedwait_pending() -> CaseResult {
@@ -2390,13 +2705,22 @@ fn w_setitimer() -> CaseResult {
     check(after == [0; 4], &format!("an expired one-shot ITIMER_REAL still reports {after:?}"))
 }
 
+/// A periodic timer reloads after each expiry, so it keeps delivering; expiries the
+/// process misses while it is not running coalesce into one pending SIGALRM, so only an
+/// upper bound on the count follows from the time elapsed.
 fn w_interval() -> CaseResult {
+    const WANT: u32 = 3;
     catch(SIGALRM)?;
+    let start = now_ms();
     want_eq("setitimer(ITIMER_REAL, every 50 ms)", setitimer(ITIMER_REAL, &itimer(50_000, 50_000), None), 0)?;
-    let _ = until(525, || false);
-    want_eq("disarming ITIMER_REAL", setitimer(ITIMER_REAL, &itimer(0, 0), None), 0)?;
+    let reloaded = until(WAIT_MS, || count(SIGALRM) >= WANT);
     let n = count(SIGALRM);
-    check((6..=12).contains(&n), &format!("a 50 ms periodic ITIMER_REAL delivered {n} SIGALRMs in 525 ms, expected about 10"))
+    let cur = getitimer(ITIMER_REAL)?;
+    let took = now_ms().saturating_sub(start);
+    want_eq("disarming ITIMER_REAL", setitimer(ITIMER_REAL, &itimer(0, 0), None), 0)?;
+    check(reloaded, &format!("a 50 ms periodic ITIMER_REAL delivered {n} SIGALRMs in {took} ms, expected it to keep firing"))?;
+    check(n as u64 <= took / 50 + 1, &format!("a 50 ms periodic ITIMER_REAL delivered {n} SIGALRMs in {took} ms, more than it can expire"))?;
+    check(us((cur[0], cur[1])) == 50_000, &format!("while it runs, getitimer reports an interval of {} us, expected 50000", us((cur[0], cur[1]))))
 }
 
 fn w_itimer_old() -> CaseResult {
@@ -2419,16 +2743,24 @@ fn w_itimer_einval() -> CaseResult {
     want_err("setitimer with tv_usec -1", setitimer(ITIMER_REAL, &[0, 0, 0, -1], None), EINVAL)
 }
 
-/// An ITIMER_VIRTUAL or ITIMER_PROF timer of 100 ms delivers `sig` while the process computes.
+/// An ITIMER_VIRTUAL or ITIMER_PROF timer of 100 ms counts only the process's CPU time:
+/// it does not expire while the process sleeps for longer than that, and delivers `sig`
+/// once the process has computed for its interval.
 fn cpu_timer(which: i32, sig: i32, what: &str) -> CaseResult {
+    const SLEEP_MS: u64 = 300;
     catch(sig)?;
-    let start = now_ms();
     want_eq(&format!("setitimer({what}, 100 ms)"), setitimer(which, &itimer(0, 100_000), None), 0)?;
+    let _ = time::sleep_ms(SLEEP_MS);
+    check(count(sig) == 0, &format!("a 100 ms {what} delivered {} while the process slept for {SLEEP_MS} ms: it counts wall-clock time, not CPU time", name(sig)))?;
+    let left = getitimer(which)?;
+    let left_us = us((left[2], left[3]));
+    check(left_us > 50_000, &format!("after the process slept for {SLEEP_MS} ms, a 100 ms {what} reports {left_us} us left"))?;
+    let start = now_ms();
     let ms = bounded(3000, CLEANUP_MS);
     while count(sig) == 0 && now_ms().saturating_sub(start) < ms { burn(10); }
     let took = now_ms().saturating_sub(start);
     check(count(sig) == 1, &format!("a 100 ms {what} delivered {} within {took} ms of computation", name(sig)))?;
-    check(took >= 90, &format!("a 100 ms {what} expired after {took} ms of wall-clock time"))
+    check(took >= 45, &format!("a 100 ms {what}, with {left_us} us left, expired after {took} ms of computation"))
 }
 
 fn w_virtual() -> CaseResult { cpu_timer(ITIMER_VIRTUAL, SIGVTALRM, "ITIMER_VIRTUAL") }
@@ -2606,6 +2938,9 @@ fn a_nested() -> CaseResult {
     catch_with(SIGUSR2, on_sig as usize as u64, SA_ONSTACK, 0)?;
     want_eq("raise(SIGUSR1)", raise(SIGUSR1), 0)?;
     check(count(SIGUSR2) == 1, "the nested SIGUSR2 handler did not run")?;
+    let seen = order();
+    check(seen == [SIGUSR2, SIGUSR1],
+        &format!("handlers finished in the order {seen:?}; expected SIGUSR2's inside SIGUSR1's, which finishes after it ([12, 10])"))?;
     let (outer, inner) = (OUTER_SP.load(Ordering::SeqCst), SEEN_SP.load(Ordering::SeqCst));
     check(on_alt(outer) && on_alt(inner),
         &format!("the outer and nested handlers ran at {outer:#x} and {inner:#x}; both belong on the alternate stack"))?;
@@ -2646,14 +2981,28 @@ fn r_range() -> CaseResult {
     check(missing.is_empty(), &format!("these realtime signals were not delivered exactly once: {missing:?}"))
 }
 
+/// POSIX requires queuing for a signal sent by sigqueue to a process with SA_SIGINFO set
+/// for it.
 fn r_queued() -> CaseResult {
+    let sig = SIGRTMIN + 1;
+    catch_info(sig)?;
+    block(bit(sig))?;
+    for value in 0..5 { want_eq("sigqueue(getpid(), SIGRTMIN+1)", sigqueue(pid(), sig, value), 0)?; }
+    unblock(bit(sig))?;
+    let _ = until(200, || count(sig) >= 5);
+    check(count(sig) == 5, &format!("SIGRTMIN+1 sent by sigqueue five times while blocked, to an SA_SIGINFO handler, was delivered {} times", count(sig)))
+}
+
+/// POSIX leaves queuing of a realtime signal sent by kill, to a handler without
+/// SA_SIGINFO, to the implementation; Linux queues it.
+fn r_kill_queued() -> CaseResult {
     let sig = SIGRTMIN + 1;
     catch(sig)?;
     block(bit(sig))?;
     for _ in 0..5 { want_eq("raise(SIGRTMIN+1)", raise(sig), 0)?; }
     unblock(bit(sig))?;
     let _ = until(200, || count(sig) >= 5);
-    check(count(sig) == 5, &format!("SIGRTMIN+1 raised five times while blocked was delivered {} times", count(sig)))
+    check(count(sig) == 5, &format!("SIGRTMIN+1 sent by kill five times while blocked was delivered {} times", count(sig)))
 }
 
 fn r_lowest_first() -> CaseResult {
@@ -2723,26 +3072,26 @@ fn r_sigqueue_errors() -> CaseResult {
     want_eq("sigqueue of signal 0 to the caller", sigqueue(pid(), 0, 0), 0)
 }
 
+/// Linux sets the queue limit, POSIX's SIGQUEUE_MAX, with RLIMIT_SIGPENDING. The case
+/// lowers it, so sigqueue must refuse within that many signals.
 fn r_eagain() -> CaseResult {
-    const LOWERED: u64 = 64;
     const POSIX_SIGQUEUE_MAX: u64 = 32;
     let sig = SIGRTMIN + 4;
     catch_info(sig)?;
     block(bit(sig))?;
-    let lowered = getrlimit(RLIMIT_SIGPENDING).map(|(_, hard)| prlimit(RLIMIT_SIGPENDING, LOWERED, hard) == 0).unwrap_or(false);
+    let (_, hard) = getrlimit(RLIMIT_SIGPENDING)?;
+    let limit = hard.min(64);
+    want_eq(&format!("prlimit(RLIMIT_SIGPENDING, {limit})"), prlimit(RLIMIT_SIGPENDING, limit, hard), 0)?;
     let mut queued = 0u64;
     let refused = loop {
         let r = sigqueue(pid(), sig, queued);
         if r == -EAGAIN { break true; }
         want("sigqueue", r)?;
         queued += 1;
-        if queued >= 1 << 16 { break false; }
+        if queued > limit { break false; }
     };
-    check(refused, &format!("sigqueue queued {queued} signals and never failed with EAGAIN"))?;
+    check(refused, &format!("with RLIMIT_SIGPENDING at {limit}, sigqueue queued {queued} signals without failing with EAGAIN"))?;
     check(queued >= POSIX_SIGQUEUE_MAX, &format!("sigqueue failed with EAGAIN after {queued} signals, fewer than _POSIX_SIGQUEUE_MAX (32)"))?;
-    if lowered {
-        check(queued <= LOWERED, &format!("with RLIMIT_SIGPENDING at {LOWERED}, sigqueue queued {queued} signals"))?;
-    }
     unblock(bit(sig))?;
     let _ = until(500, || count(sig) as u64 >= queued);
     check(count(sig) as u64 == queued, &format!("{queued} signals were queued, {} delivered", count(sig)))
@@ -2750,6 +3099,8 @@ fn r_eagain() -> CaseResult {
 
 fn r_sigwaitinfo() -> CaseResult {
     let sig = SIGRTMIN + 5;
+    // SA_SIGINFO set for the signal is what makes POSIX require sigqueue to queue it.
+    catch_info(sig)?;
     setmask(bit(sig))?;
     for value in [11u64, 22, 33] { want_eq("sigqueue", sigqueue(pid(), sig, value), 0)?; }
     for value in [11u64, 22, 33] {
@@ -2975,6 +3326,24 @@ fn j_waitid() -> CaseResult {
         &format!("waitid(WEXITED) reported si_code {} si_status {}, expected CLD_EXITED and 0", info.code, info.status()))
 }
 
+/// Expect a member of a group continued by kill(-pgid, SIGCONT), and then released, to
+/// exit 0. If it does not, a second SIGCONT tells the two ways it can be stuck apart: a
+/// process still stopped runs on and exits, one that missed its wakeup stays blocked.
+fn released_member_exits(member: &mut Held, what: &str) -> CaseResult {
+    let Err(e) = member.child.expect_exit(0, what) else { return Ok(()) };
+    if !member.child.live { return Err(e); }
+    let pid = member.pid();
+    want_eq("a second kill(SIGCONT)", kill(pid, SIGCONT), 0)?;
+    let stuck = match reports_within(pid, 0, bounded(1000, REPORT_MS))? {
+        Some(status) => {
+            member.child.live = false;
+            format!("it was still stopped: a second SIGCONT sent to it alone let it run on, and it ended with {}", status_text(status))
+        }
+        None => "it was not stopped: a second SIGCONT sent to it alone did not end it either, so it stayed blocked reading a pipe at end of file".to_string(),
+    };
+    fail(format!("{}; {stuck}", msg(e)))
+}
+
 fn j_group() -> CaseResult {
     let mut leader = held(|| ok("setpgid", setpgid(0, 0)).map(|_| ()))?;
     let group = leader.pid();
@@ -2987,31 +3356,42 @@ fn j_group() -> CaseResult {
     member.child.expect_continued("the group's other member")?;
     leader.let_go();
     member.let_go();
-    leader.child.expect_exit(0, "the group's leader, released after SIGCONT,")?;
-    member.child.expect_exit(0, "the group's other member, released after SIGCONT,")
+    released_member_exits(&mut leader, "the group's leader, released after SIGCONT,")?;
+    released_member_exits(&mut member, "the group's other member, released after SIGCONT,")
 }
 
 fn j_stop_threads() -> CaseResult {
-    let cpus = processors();
+    let cpus = processors()?;
     if cpus < 2 {
         return skip(format!("{cpus} processor online; the case needs 2, so both threads compute at once"));
     }
     let s = Shared::new()?;
     let page = s.page as usize;
+    // Slots 0 and 1 count each thread's turns; slot 2 carries handoffs from the first
+    // thread to the second.
     let mut kid = Child::start(move || {
         // SAFETY: the shared page stays mapped in the child for its whole life.
-        let slot = |i: usize| unsafe { &*((page + 8 * i) as *const AtomicU64) };
+        let slot = move |i: usize| unsafe { &*((page + 8 * i) as *const AtomicU64) };
         let _thread = std::thread::spawn(move || loop {
-            // SAFETY: as above.
-            unsafe { &*((page + 8) as *const AtomicU64) }.fetch_add(1, Ordering::SeqCst);
-            for _ in 0..1000 { core::hint::spin_loop(); }
+            slot(1).fetch_add(1, Ordering::SeqCst);
+            answer_handoff(slot(2));
         });
+        let mut next = 1u64;
         loop {
             slot(0).fetch_add(1, Ordering::SeqCst);
-            for _ in 0..1000 { core::hint::spin_loop(); }
+            // Hand off once the second thread has answered the last one.
+            if slot(2).load(Ordering::SeqCst) == next - 1 {
+                slot(2).store(next, Ordering::SeqCst);
+                next += 2;
+            }
         }
     })?;
     check(until(WAIT_MS, || s.get(0) > 0 && s.get(1) > 0), "the child's two threads never both ran")?;
+    // Taking turns on one processor, the threads hand off at most once per timer tick.
+    let (before, start) = (s.get(2), now_ms());
+    let _ = time::sleep_ms(200);
+    let (made, took) = ((s.get(2) - before) / 2, now_ms().saturating_sub(start));
+    check(made >= HANDOFFS, &format!("with {cpus} processors online, the child's two threads made {made} handoffs in {took} ms, fewer than {HANDOFFS}: they never ran on different processors at once"))?;
     want_eq("kill(SIGSTOP)", kill(kid.pid, SIGSTOP), 0)?;
     kid.expect_stop(SIGSTOP, "a two-threaded child sent SIGSTOP")?;
     let (a, b) = (s.get(0), s.get(1));
@@ -3052,7 +3432,7 @@ static SUITE: Suite = suite(
         category("masks", "masks & pending signals", &[
             case("block-pending", "A blocked signal stays pending and is delivered before sigprocmask returns once unblocked", mask_block_pending),
             case("stays-pending", "A blocked signal stays pending across system calls, sleeps and yields", mask_stays_pending),
-            case("not-queued", "A standard signal raised five times while blocked is delivered once", mask_not_queued),
+            case("not-queued", "Linux policy: a standard signal sent by kill five times while blocked is delivered once", mask_not_queued),
             case("how", "SIG_BLOCK adds to the mask, SIG_UNBLOCK removes from it, SIG_SETMASK replaces it, and each returns the old mask", mask_how),
             case("einval", "sigprocmask with an invalid how fails with EINVAL and leaves the mask unchanged", mask_einval),
             case("null-set", "sigprocmask with a null set ignores how and reports the mask", mask_null_set),
@@ -3073,7 +3453,7 @@ static SUITE: Suite = suite(
             case("siginfo-self", "An SA_SIGINFO handler gets si_signo, si_code SI_USER, si_pid, si_uid and a context", h_siginfo_self),
             case("siginfo-sender", "SA_SIGINFO reports the sending process's PID and real user ID", h_siginfo_sender),
             case("siginfo-fault", "A fault on an unmapped address gives SIGSEGV with SEGV_MAPERR and the address in si_addr", h_siginfo_fault),
-            case("resethand", "SA_RESETHAND runs the handler once and restores SIG_DFL", h_resethand),
+            case("resethand", "SA_RESETHAND resets the action to SIG_DFL on entry to the handler, so the handler runs once", h_resethand),
             case("self-blocked", "A signal is blocked while its own handler runs and unblocked when it returns", h_self_blocked),
             case("sa-mask", "sa_mask is blocked while the handler runs and unblocked when it returns", h_sa_mask),
             case("nodefer", "With SA_NODEFER the signal raised in its own handler interrupts it", h_nodefer),
@@ -3085,9 +3465,9 @@ static SUITE: Suite = suite(
             case("nanosleep", "A caught signal interrupts nanosleep with EINTR and the time left, even with SA_RESTART", h_nanosleep),
             case("restart-wait", "waitpid interrupted by an SA_RESTART handler is restarted", h_restart_wait),
             case("eintr-wait", "waitpid interrupted by a handler without SA_RESTART fails with EINTR", h_eintr_wait),
-            case("registers", "Integer registers survive handlers that interrupt a computation mid-way", h_registers),
-            case("fp-registers", "Floating-point and SIMD registers survive handlers that overwrite them mid-computation", h_fp_registers),
-            case("spinning-target", "A process spinning in user mode on another processor runs its handler within 50 ms", h_spinning_target),
+            case("registers", "General registers survive handlers that interrupt code holding them", h_registers),
+            case("fp-registers", "All 128 bits of every floating-point and SIMD register survive handlers that overwrite them", h_fp_registers),
+            case("spinning-target", "A process spinning in user mode, with no system call, on another processor runs its handler", h_spinning_target),
         ]),
         category("waits", "sigsuspend, pause & sigtimedwait", &[
             case("sigsuspend", "sigsuspend returns EINTR after the handler and restores the mask", w_sigsuspend),
@@ -3097,7 +3477,7 @@ static SUITE: Suite = suite(
             case("ignored", "An ignored signal does not end sigsuspend", w_ignored),
             case("pause", "pause returns EINTR after a handler runs", w_pause),
             case("signal-first", "A child's signal sent before the parent waits is caught by mask-then-sigsuspend", w_signal_first),
-            case("race-loop", "Rounds of a child signalling while the parent enters sigsuspend, up to 100 in 4.5 s, lose no signal", w_race_loop),
+            case("race-loop", "100 rounds of a child signalling while the parent enters sigsuspend lose no signal", w_race_loop),
             case("sigtimedwait-pending", "sigtimedwait accepts a pending signal with its siginfo, without running the handler", w_timedwait_pending),
             case("sigtimedwait-timeout", "sigtimedwait with nothing pending fails with EAGAIN after its timeout", w_timedwait_timeout),
             case("sigtimedwait-poll", "sigtimedwait with a zero timeout and nothing pending fails with EAGAIN at once", w_timedwait_poll),
@@ -3108,11 +3488,11 @@ static SUITE: Suite = suite(
             case("alarm-default", "SIGALRM from alarm with the default action terminates the process", w_alarm_default),
             case("alarm-cancel", "alarm(0) returns the seconds left and cancels the alarm", w_alarm_cancel),
             case("setitimer", "A one-shot ITIMER_REAL delivers SIGALRM on time and getitimer reports the time left", w_setitimer),
-            case("interval", "A periodic ITIMER_REAL delivers SIGALRM once per interval", w_interval),
+            case("interval", "A periodic ITIMER_REAL keeps delivering SIGALRM, no more often than its interval", w_interval),
             case("itimer-old", "setitimer returns the previous value and disarming leaves getitimer at zero", w_itimer_old),
             case("itimer-einval", "getitimer and setitimer fail with EINVAL for an unknown timer or an invalid time", w_itimer_einval),
-            case("itimer-virtual", "ITIMER_VIRTUAL delivers SIGVTALRM after the process computes for its interval", w_virtual),
-            case("itimer-prof", "ITIMER_PROF delivers SIGPROF after the process computes for its interval", w_prof),
+            case("itimer-virtual", "ITIMER_VIRTUAL counts CPU time, not sleep, and delivers SIGVTALRM after the process computes for its interval", w_virtual),
+            case("itimer-prof", "ITIMER_PROF counts CPU time, not sleep, and delivers SIGPROF after the process computes for its interval", w_prof),
         ]),
         category("altstack", "alternate signal stacks", &[
             case("initial", "A process starts with its alternate stack disabled", a_initial),
@@ -3130,7 +3510,8 @@ static SUITE: Suite = suite(
         ]),
         category("realtime", "realtime signals & sigqueue", &[
             case("range", "Every realtime signal from 32 to 64 can be caught, blocked, held pending and delivered", r_range),
-            case("queued", "A realtime signal raised five times while blocked is delivered five times", r_queued),
+            case("queued", "A realtime signal sent by sigqueue five times while blocked, to an SA_SIGINFO handler, is delivered five times", r_queued),
+            case("kill-queued", "Linux policy: a realtime signal sent by kill five times while blocked is delivered five times", r_kill_queued),
             case("lowest-first", "Pending realtime signals are delivered lowest-numbered first", r_lowest_first),
             case("default", "A realtime signal with the default action terminates the process", r_default),
             case("kill-info", "A realtime signal sent by kill reports SI_USER and the sender", r_kill_info),
@@ -3138,8 +3519,8 @@ static SUITE: Suite = suite(
             case("fifo", "Queued instances of one realtime signal arrive in the order sent, each with its value", r_fifo),
             case("standard", "sigqueue of a standard signal delivers its value with SI_QUEUE", r_sigqueue_standard),
             case("sigqueue-errors", "sigqueue fails with ESRCH and EINVAL, and signal 0 checks the target", r_sigqueue_errors),
-            case("eagain", "sigqueue fails with EAGAIN at the queue limit, after at least 32, and every queued signal is delivered", r_eagain),
-            case("sigwaitinfo", "sigtimedwait takes queued realtime signals one at a time, in order, with their values", r_sigwaitinfo),
+            case("eagain", "Linux ABI: with RLIMIT_SIGPENDING lowered to 64, sigqueue fails with EAGAIN at that limit, after at least 32, and every queued signal is delivered", r_eagain),
+            case("sigwaitinfo", "sigtimedwait takes realtime signals queued by sigqueue one at a time, in order, with their values", r_sigwaitinfo),
         ]),
         category("job-control", "SIGSTOP, SIGCONT & SIGCHLD", &[
             case("stop-cont", "A stopped process does not run until SIGCONT, and waitpid reports the stop and the continue", j_stop_cont),
