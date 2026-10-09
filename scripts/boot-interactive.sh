@@ -102,6 +102,16 @@ if [ -z "$DISPLAY_MODE" ]; then
     fi
 fi
 DISPLAY_ARGS=(-display "$DISPLAY_MODE")
+QEMU=qemu-system-aarch64
+if [ "$DISPLAY_MODE" = cocoa ] && [ "$(uname -s)" = Darwin ]; then
+    # Draw the window at one guest pixel per point, as large as a VMware or Parallels window
+    # (QEMU's Retina rendering otherwise shows the guest at a quarter of the area).
+    QEMU="$("$ROOT/scripts/qemu-1x-app.sh" qemu-system-aarch64)"
+    if [ "$QEMU" != qemu-system-aarch64 ] && QEMU_REAL="$(realpath "$(command -v qemu-system-aarch64)")"; then
+        # The copy lives outside Homebrew, so name the firmware and keymap directory it would find beside itself.
+        DISPLAY_ARGS+=(-L "$(dirname "$(dirname "$QEMU_REAL")")/share/qemu")
+    fi
+fi
 MODE_ARGS=()
 KERNEL_FEATURES=(--features testing)
 if [ "$MODE" != tests ]; then
@@ -184,7 +194,7 @@ trap 'exit 130' INT
 exec 3<&0
 set +e
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
-    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- qemu-system-aarch64 \
+    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- "$QEMU" \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
