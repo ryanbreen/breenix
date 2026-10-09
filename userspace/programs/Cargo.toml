@@ -685,3 +685,11 @@ path = "src/suite_processes.rs"
 [[bin]]
 name = "processes-exec_test"
 path = "src/processes_exec.rs"
+
+[[bin]]
+name = "suite-signals"
+path = "src/suite_signals.rs"
+
+[[bin]]
+name = "signals-exec_test"
+path = "src/signals_exec.rs"

@@ -39,18 +39,6 @@ static DISPATCH_GUARD_UNAVAILABLE_STREAK: AtomicU64 = AtomicU64::new(0);
 static DISPATCH_GUARD_ESCALATION_LOGGED: AtomicBool = AtomicBool::new(false);
 const DISPATCH_GUARD_ESCALATION_THRESHOLD: u64 = 1024;
 
-/// Raw serial debug output - single character, no locks, no allocations.
-/// Use this for debugging context switch paths where any allocation/locking
-/// could perturb timing or cause deadlocks.
-#[inline(always)]
-pub fn raw_serial_char(c: u8) {
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port: Port<u8> = Port::new(0x3F8); // COM1 data port
-        port.write(c);
-    }
-}
-
 /// Serial string output that allocates nothing and waits on SERIAL1 for a
 /// bounded time only (`serial::write_str_bounded`), then writes straight to
 /// the port. Every caller prints once per boot. Under SERIAL1, with several
@@ -61,24 +49,67 @@ fn raw_serial_str(s: &str) {
     crate::serial::write_str_bounded(s);
 }
 
-/// Raw serial decimal output - no locks, no allocations.
-#[inline(always)]
-fn raw_serial_u64(mut value: u64) {
-    if value == 0 {
-        raw_serial_char(b'0');
-        return;
+/// One diagnostic line, built on the stack and written in a single
+/// `raw_serial_str` call, so another CPU's serial output cannot land inside it.
+/// No allocation; a line longer than the buffer is cut short.
+struct DiagLine {
+    bytes: [u8; 128],
+    len: usize,
+}
+
+impl DiagLine {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            bytes: [0; 128],
+            len: 0,
+        }
     }
 
-    let mut digits = [0_u8; 20];
-    let mut index = digits.len();
-    while value != 0 {
-        index -= 1;
-        digits[index] = b'0' + (value % 10) as u8;
-        value /= 10;
+    #[inline(always)]
+    fn text(&mut self, s: &str) -> &mut Self {
+        for &byte in s.as_bytes() {
+            if self.len < self.bytes.len() {
+                self.bytes[self.len] = byte;
+                self.len += 1;
+            }
+        }
+        self
     }
-    while index < digits.len() {
-        raw_serial_char(digits[index]);
-        index += 1;
+
+    #[inline(always)]
+    fn number(&mut self, mut value: u64) -> &mut Self {
+        let mut digits = [0_u8; 20];
+        let mut index = digits.len();
+        loop {
+            index -= 1;
+            digits[index] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        for &digit in &digits[index..] {
+            if self.len < self.bytes.len() {
+                self.bytes[self.len] = digit;
+                self.len += 1;
+            }
+        }
+        self
+    }
+
+    #[inline(always)]
+    fn write(&self) {
+        let bytes = &self.bytes[..self.len];
+        match core::str::from_utf8(bytes) {
+            Ok(line) => raw_serial_str(line),
+            // Cut inside a multi-byte character: write the whole characters.
+            Err(error) => {
+                if let Ok(line) = core::str::from_utf8(&bytes[..error.valid_up_to()]) {
+                    raw_serial_str(line);
+                }
+            }
+        }
     }
 }
 
@@ -96,11 +127,13 @@ pub(crate) fn refuse_unpublished_dispatch(
     }
     USERSPACE_DISPATCH_CREATING_REFUSED.fetch_add(1, Ordering::Relaxed);
     if !USERSPACE_DISPATCH_CREATING_LOGGED.swap(true, Ordering::Relaxed) {
-        raw_serial_str("[PMGUARD] creating dispatch refused tid=");
-        raw_serial_u64(thread_id);
-        raw_serial_str(" pid=");
-        raw_serial_u64(pid);
-        raw_serial_str("\n");
+        DiagLine::new()
+            .text("[PMGUARD] creating dispatch refused tid=")
+            .number(thread_id)
+            .text(" pid=")
+            .number(pid)
+            .text("\n")
+            .write();
     }
     true
 }
@@ -130,15 +163,17 @@ fn note_dispatch_guard_unavailable() {
         let current_tid = crate::per_cpu::current_thread_id_lock_free()
             .unwrap_or(crate::process::PM_LOCK_OWNER_TID_UNKNOWN);
 
-        raw_serial_str("[PMGUARD] dispatch refused streak=");
-        raw_serial_u64(streak);
-        raw_serial_str(" owner_cpu=");
-        raw_serial_u64(owner_cpu);
-        raw_serial_str(" owner_tid=");
-        raw_serial_u64(owner_tid);
-        raw_serial_str(" current_tid=");
-        raw_serial_u64(current_tid);
-        raw_serial_str("\n");
+        DiagLine::new()
+            .text("[PMGUARD] dispatch refused streak=")
+            .number(streak)
+            .text(" owner_cpu=")
+            .number(owner_cpu)
+            .text(" owner_tid=")
+            .number(owner_tid)
+            .text(" current_tid=")
+            .number(current_tid)
+            .text("\n")
+            .write();
     }
 }
 
@@ -450,7 +485,7 @@ pub extern "C" fn check_need_resched_and_switch(
 
         // NOTE: No logging here - log statements in the context switch path
         // cause deadlocks when the logger tries to acquire locks during a switch
-        // to a newly created kthread. Use raw_serial_char() for debugging only.
+        // to a newly created kthread. Use the tracing framework for debugging.
 
         // Note, once per boot, the first switch away from a Ring 3 frame. This
         // proves only that a CPU was running user code when it was preempted;
@@ -982,11 +1017,13 @@ fn switch_to_thread(
                         None => {
                             USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
                             if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
-                                raw_serial_str("[PMGUARD] no-cr3 dispatch refused tid=");
-                                raw_serial_u64(thread_id);
-                                raw_serial_str(" pid=");
-                                raw_serial_u64(pid.as_u64());
-                                raw_serial_str("\n");
+                                DiagLine::new()
+                                    .text("[PMGUARD] no-cr3 dispatch refused tid=")
+                                    .number(thread_id)
+                                    .text(" pid=")
+                                    .number(pid.as_u64())
+                                    .text("\n")
+                                    .write();
                             }
                             if let Some(ref mut thread) = process.main_thread {
                                 thread.set_terminated();
@@ -1422,11 +1459,13 @@ fn restore_userspace_thread_context(
             FirstUserspaceEntry::Aborted(reason) => {
                 FIRST_USERSPACE_ENTRY_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
                 if !FIRST_USERSPACE_ENTRY_ABORT_LOGGED.swap(true, Ordering::Relaxed) {
-                    raw_serial_str("[PMGUARD] first-entry aborted tid=");
-                    raw_serial_u64(thread_id);
-                    raw_serial_str(" reason=");
-                    raw_serial_str(reason);
-                    raw_serial_str("\n");
+                    DiagLine::new()
+                        .text("[PMGUARD] first-entry aborted tid=")
+                        .number(thread_id)
+                        .text(" reason=")
+                        .text(reason)
+                        .text("\n")
+                        .write();
                 }
                 scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
                 trace_dispatch_abandon(DispatchAbandonSite::RollbackFirstEntry);
@@ -1511,11 +1550,13 @@ fn restore_userspace_thread_context(
                             } else {
                                 USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
                                 if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
-                                    raw_serial_str("[PMGUARD] no-cr3 dispatch refused tid=");
-                                    raw_serial_u64(thread_id);
-                                    raw_serial_str(" pid=");
-                                    raw_serial_u64(pid.as_u64());
-                                    raw_serial_str("\n");
+                                    DiagLine::new()
+                                        .text("[PMGUARD] no-cr3 dispatch refused tid=")
+                                        .number(thread_id)
+                                        .text(" pid=")
+                                        .number(pid.as_u64())
+                                        .text("\n")
+                                        .write();
                                 }
                                 // With next_cr3 == 0, timer_entry.asm takes its fallback path
                                 // and restores the interrupted process's address space. Refuse

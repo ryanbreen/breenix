@@ -1,0 +1,531 @@
+{
+  "id": "signals",
+  "title": "Signals",
+  "area": "Signals",
+  "summary": "Signals are generated, blocked, delivered and handled as POSIX specifies, including realtime signals, interval timers and job control.",
+  "binary": "/sbin/suite-signals",
+  "categories": [
+    {
+      "id": "dispositions",
+      "title": "dispositions & default actions",
+      "cases": [
+        {
+          "id": "terminate",
+          "title": "Signals whose default action is to terminate end the process with that signal in its wait status"
+        },
+        {
+          "id": "core",
+          "title": "Signals whose default action is to terminate with a core end the process with that signal in its wait status"
+        },
+        {
+          "id": "ignore",
+          "title": "SIGCHLD, SIGURG and SIGWINCH are ignored by default"
+        },
+        {
+          "id": "stop",
+          "title": "SIGSTOP, SIGTSTP, SIGTTIN and SIGTTOU stop the process by default, reported by WUNTRACED with the signal"
+        },
+        {
+          "id": "continue",
+          "title": "SIGCONT sent to a running process with the default action leaves it running"
+        },
+        {
+          "id": "sig-ign",
+          "title": "Signals set to SIG_IGN, including terminal stop and realtime signals, have no effect"
+        },
+        {
+          "id": "ign-discards-pending",
+          "title": "Setting SIG_IGN discards a pending signal, even a blocked one"
+        },
+        {
+          "id": "dfl-restores",
+          "title": "Setting SIG_DFL after a handler restores the default action"
+        },
+        {
+          "id": "sigaction-old",
+          "title": "sigaction returns the previous handler, mask and flags, and a null action only queries"
+        },
+        {
+          "id": "sigaction-einval",
+          "title": "sigaction of signal 0, a negative signal or one above 64 fails with EINVAL"
+        },
+        {
+          "id": "kill-stop-fixed",
+          "title": "SIGKILL and SIGSTOP cannot be caught or ignored (EINVAL) and report SIG_DFL"
+        },
+        {
+          "id": "sigaction-layout",
+          "title": "Linux ABI: rt_sigaction takes struct sigaction as handler, flags, restorer, mask"
+        },
+        {
+          "id": "kill-zero",
+          "title": "kill with signal 0 succeeds for a live process and a zombie, and fails with ESRCH once it is reaped"
+        },
+        {
+          "id": "kill-einval",
+          "title": "kill with an invalid signal number fails with EINVAL"
+        },
+        {
+          "id": "kill-esrch",
+          "title": "kill of a missing process or process group fails with ESRCH"
+        },
+        {
+          "id": "kill-group",
+          "title": "kill(-pgid) signals every member of that process group and no other process"
+        },
+        {
+          "id": "kill-own-group",
+          "title": "kill(0) signals every member of the caller's process group, the caller included"
+        },
+        {
+          "id": "kill-all",
+          "title": "kill(-1) as non-root signals every process of the caller's user and none of another user"
+        },
+        {
+          "id": "kill-eperm",
+          "title": "kill as non-root fails with EPERM for another user's process and works for its own"
+        },
+        {
+          "id": "sigcont-session",
+          "title": "SIGCONT may be sent to another user's process in the caller's session"
+        },
+        {
+          "id": "fork",
+          "title": "A child inherits its parent's handlers and ignored signals, and the handlers run in it"
+        },
+        {
+          "id": "exec",
+          "title": "exec resets caught signals to SIG_DFL and keeps ignored ones ignored"
+        }
+      ]
+    },
+    {
+      "id": "masks",
+      "title": "masks & pending signals",
+      "cases": [
+        {
+          "id": "block-pending",
+          "title": "A blocked signal stays pending and is delivered before sigprocmask returns once unblocked"
+        },
+        {
+          "id": "stays-pending",
+          "title": "A blocked signal stays pending across system calls, sleeps and yields"
+        },
+        {
+          "id": "not-queued",
+          "title": "Linux policy: a standard signal sent by kill five times while blocked is delivered once"
+        },
+        {
+          "id": "how",
+          "title": "SIG_BLOCK adds to the mask, SIG_UNBLOCK removes from it, SIG_SETMASK replaces it, and each returns the old mask"
+        },
+        {
+          "id": "einval",
+          "title": "sigprocmask with an invalid how fails with EINVAL and leaves the mask unchanged"
+        },
+        {
+          "id": "null-set",
+          "title": "sigprocmask with a null set ignores how and reports the mask"
+        },
+        {
+          "id": "unblockable",
+          "title": "SIGKILL and SIGSTOP cannot be blocked and still kill and stop"
+        },
+        {
+          "id": "sigpending",
+          "title": "sigpending reports exactly the blocked signals that are pending"
+        },
+        {
+          "id": "unblock-all",
+          "title": "Unblocking two pending signals delivers both"
+        },
+        {
+          "id": "per-thread",
+          "title": "pthread_sigmask in one thread leaves another thread's mask alone"
+        },
+        {
+          "id": "thread-inherits",
+          "title": "A new thread starts with its creator's signal mask"
+        },
+        {
+          "id": "process-directed",
+          "title": "A signal sent to the process is delivered to a thread that does not block it"
+        },
+        {
+          "id": "thread-directed",
+          "title": "pthread_kill delivers a signal to the thread it names"
+        },
+        {
+          "id": "fork-mask",
+          "title": "A child inherits its parent's signal mask"
+        },
+        {
+          "id": "fork-pending",
+          "title": "A child starts with no pending signals and the parent's stay pending"
+        },
+        {
+          "id": "exec-mask",
+          "title": "exec keeps the signal mask and the pending signals"
+        },
+        {
+          "id": "exec-delivered",
+          "title": "A signal pending across exec is delivered with its default action once the new program unblocks it"
+        }
+      ]
+    },
+    {
+      "id": "handlers",
+      "title": "handlers, SA_RESTART & EINTR",
+      "cases": [
+        {
+          "id": "runs",
+          "title": "A handler runs with the signal number before kill to the caller returns"
+        },
+        {
+          "id": "siginfo-self",
+          "title": "An SA_SIGINFO handler gets si_signo, si_code SI_USER, si_pid, si_uid and a context"
+        },
+        {
+          "id": "siginfo-sender",
+          "title": "SA_SIGINFO reports the sending process's PID and real user ID"
+        },
+        {
+          "id": "siginfo-fault",
+          "title": "A fault on an unmapped address gives SIGSEGV with SEGV_MAPERR and the address in si_addr"
+        },
+        {
+          "id": "resethand",
+          "title": "SA_RESETHAND resets the action to SIG_DFL on entry to the handler, so the handler runs once"
+        },
+        {
+          "id": "self-blocked",
+          "title": "A signal is blocked while its own handler runs and unblocked when it returns"
+        },
+        {
+          "id": "sa-mask",
+          "title": "sa_mask is blocked while the handler runs and unblocked when it returns"
+        },
+        {
+          "id": "nodefer",
+          "title": "With SA_NODEFER the signal raised in its own handler interrupts it"
+        },
+        {
+          "id": "deferred",
+          "title": "Without SA_NODEFER the signal raised in its own handler runs after it returns"
+        },
+        {
+          "id": "nested",
+          "title": "A different signal raised in a handler runs its own handler inside it"
+        },
+        {
+          "id": "mask-restored",
+          "title": "Returning from a handler restores the mask it interrupted, undoing the handler's sigprocmask"
+        },
+        {
+          "id": "restart-read",
+          "title": "A blocking read interrupted by an SA_RESTART handler is restarted"
+        },
+        {
+          "id": "eintr-read",
+          "title": "A blocking read interrupted by a handler without SA_RESTART fails with EINTR"
+        },
+        {
+          "id": "nanosleep",
+          "title": "A caught signal interrupts nanosleep with EINTR and the time left, even with SA_RESTART"
+        },
+        {
+          "id": "restart-wait",
+          "title": "waitpid interrupted by an SA_RESTART handler is restarted"
+        },
+        {
+          "id": "eintr-wait",
+          "title": "waitpid interrupted by a handler without SA_RESTART fails with EINTR"
+        },
+        {
+          "id": "registers",
+          "title": "General registers survive handlers that interrupt code holding them"
+        },
+        {
+          "id": "fp-registers",
+          "title": "All 128 bits of every floating-point and SIMD register survive handlers that overwrite them"
+        },
+        {
+          "id": "spinning-target",
+          "title": "A process spinning in user mode, with no system call, on another processor runs its handler"
+        }
+      ]
+    },
+    {
+      "id": "waits",
+      "title": "sigsuspend, pause & sigtimedwait",
+      "cases": [
+        {
+          "id": "sigsuspend",
+          "title": "sigsuspend returns EINTR after the handler and restores the mask"
+        },
+        {
+          "id": "sigsuspend-pending",
+          "title": "A signal already pending when sigsuspend unblocks it ends the wait at once with its handler run"
+        },
+        {
+          "id": "temp-mask",
+          "title": "A signal blocked by sigsuspend's mask does not end the wait and is delivered after it"
+        },
+        {
+          "id": "terminates",
+          "title": "A default-action terminating signal ends a process in sigsuspend"
+        },
+        {
+          "id": "ignored",
+          "title": "An ignored signal does not end sigsuspend"
+        },
+        {
+          "id": "pause",
+          "title": "pause returns EINTR after a handler runs"
+        },
+        {
+          "id": "signal-first",
+          "title": "A child's signal sent before the parent waits is caught by mask-then-sigsuspend"
+        },
+        {
+          "id": "race-loop",
+          "title": "100 rounds of a child signalling while the parent enters sigsuspend lose no signal"
+        },
+        {
+          "id": "sigtimedwait-pending",
+          "title": "sigtimedwait accepts a pending signal with its siginfo, without running the handler"
+        },
+        {
+          "id": "sigtimedwait-timeout",
+          "title": "sigtimedwait with nothing pending fails with EAGAIN after its timeout"
+        },
+        {
+          "id": "sigtimedwait-poll",
+          "title": "sigtimedwait with a zero timeout and nothing pending fails with EAGAIN at once"
+        },
+        {
+          "id": "sigtimedwait-einval",
+          "title": "sigtimedwait with an invalid timeout fails with EINVAL"
+        },
+        {
+          "id": "sigwaitinfo",
+          "title": "sigwaitinfo waits for a signal sent by another process and reports its sender"
+        },
+        {
+          "id": "sigtimedwait-eintr",
+          "title": "A caught signal outside the set interrupts sigtimedwait with EINTR"
+        },
+        {
+          "id": "alarm",
+          "title": "alarm(1) delivers SIGALRM about a second later"
+        },
+        {
+          "id": "alarm-default",
+          "title": "SIGALRM from alarm with the default action terminates the process"
+        },
+        {
+          "id": "alarm-cancel",
+          "title": "alarm(0) returns the seconds left and cancels the alarm"
+        },
+        {
+          "id": "setitimer",
+          "title": "A one-shot ITIMER_REAL delivers SIGALRM on time and getitimer reports the time left"
+        },
+        {
+          "id": "interval",
+          "title": "A periodic ITIMER_REAL keeps delivering SIGALRM, no more often than its interval"
+        },
+        {
+          "id": "itimer-old",
+          "title": "setitimer returns the previous value and disarming leaves getitimer at zero"
+        },
+        {
+          "id": "itimer-einval",
+          "title": "getitimer and setitimer fail with EINVAL for an unknown timer or an invalid time"
+        },
+        {
+          "id": "itimer-virtual",
+          "title": "ITIMER_VIRTUAL counts CPU time, not sleep, and delivers SIGVTALRM after the process computes for its interval"
+        },
+        {
+          "id": "itimer-prof",
+          "title": "ITIMER_PROF counts CPU time, not sleep, and delivers SIGPROF after the process computes for its interval"
+        }
+      ]
+    },
+    {
+      "id": "altstack",
+      "title": "alternate signal stacks",
+      "cases": [
+        {
+          "id": "initial",
+          "title": "A process starts with its alternate stack disabled"
+        },
+        {
+          "id": "set",
+          "title": "sigaltstack installs a stack and reads it back"
+        },
+        {
+          "id": "enomem",
+          "title": "A stack smaller than MINSIGSTKSZ fails with ENOMEM"
+        },
+        {
+          "id": "einval",
+          "title": "An undefined ss_flags value fails with EINVAL"
+        },
+        {
+          "id": "runs-on",
+          "title": "An SA_ONSTACK handler runs on the alternate stack, which reports SS_ONSTACK only while it does"
+        },
+        {
+          "id": "without-onstack",
+          "title": "A handler without SA_ONSTACK runs on the normal stack"
+        },
+        {
+          "id": "eperm",
+          "title": "Changing or disabling the alternate stack while running on it fails with EPERM"
+        },
+        {
+          "id": "disable",
+          "title": "SS_DISABLE disables the stack and SA_ONSTACK handlers run on the normal stack"
+        },
+        {
+          "id": "overflow",
+          "title": "After a stack overflow, the SIGSEGV handler runs on the alternate stack"
+        },
+        {
+          "id": "nested",
+          "title": "A signal nested in an alternate-stack handler runs further down the same alternate stack"
+        },
+        {
+          "id": "thread",
+          "title": "A new thread does not inherit its creator's alternate stack"
+        },
+        {
+          "id": "exec",
+          "title": "exec leaves the new program with no alternate stack"
+        }
+      ]
+    },
+    {
+      "id": "realtime",
+      "title": "realtime signals & sigqueue",
+      "cases": [
+        {
+          "id": "range",
+          "title": "Every realtime signal from 32 to 64 can be caught, blocked, held pending and delivered"
+        },
+        {
+          "id": "queued",
+          "title": "A realtime signal sent by sigqueue five times while blocked, to an SA_SIGINFO handler, is delivered five times"
+        },
+        {
+          "id": "kill-queued",
+          "title": "Linux policy: a realtime signal sent by kill five times while blocked is delivered five times"
+        },
+        {
+          "id": "lowest-first",
+          "title": "Pending realtime signals are delivered lowest-numbered first"
+        },
+        {
+          "id": "default",
+          "title": "A realtime signal with the default action terminates the process"
+        },
+        {
+          "id": "kill-info",
+          "title": "A realtime signal sent by kill reports SI_USER and the sender"
+        },
+        {
+          "id": "sigqueue",
+          "title": "sigqueue delivers its value with SI_QUEUE and the sender"
+        },
+        {
+          "id": "fifo",
+          "title": "Queued instances of one realtime signal arrive in the order sent, each with its value"
+        },
+        {
+          "id": "standard",
+          "title": "sigqueue of a standard signal delivers its value with SI_QUEUE"
+        },
+        {
+          "id": "sigqueue-errors",
+          "title": "sigqueue fails with ESRCH and EINVAL, and signal 0 checks the target"
+        },
+        {
+          "id": "eagain",
+          "title": "Linux ABI: with RLIMIT_SIGPENDING lowered to 64, sigqueue fails with EAGAIN at that limit, after at least 32, and every queued signal is delivered"
+        },
+        {
+          "id": "sigwaitinfo",
+          "title": "sigtimedwait takes realtime signals queued by sigqueue one at a time, in order, with their values"
+        }
+      ]
+    },
+    {
+      "id": "job-control",
+      "title": "SIGSTOP, SIGCONT & SIGCHLD",
+      "cases": [
+        {
+          "id": "stop-cont",
+          "title": "A stopped process does not run until SIGCONT, and waitpid reports the stop and the continue"
+        },
+        {
+          "id": "pending-while-stopped",
+          "title": "A signal sent to a stopped process is delivered after SIGCONT, not before"
+        },
+        {
+          "id": "kill-stopped",
+          "title": "SIGKILL ends a stopped process"
+        },
+        {
+          "id": "tstp-caught",
+          "title": "A caught SIGTSTP runs its handler and does not stop the process"
+        },
+        {
+          "id": "orphaned",
+          "title": "SIGTSTP, SIGTTIN and SIGTTOU do not stop a process in an orphaned process group"
+        },
+        {
+          "id": "cont-blocked",
+          "title": "SIGCONT continues a stopped process even when blocked or ignored"
+        },
+        {
+          "id": "cont-discards",
+          "title": "SIGCONT discards a pending stop signal"
+        },
+        {
+          "id": "sigchld-exit",
+          "title": "A child's exit raises SIGCHLD with CLD_EXITED, its PID and exit status"
+        },
+        {
+          "id": "sigchld-killed",
+          "title": "A child killed by a signal raises SIGCHLD with CLD_KILLED and the signal"
+        },
+        {
+          "id": "sigchld-stop",
+          "title": "A child's stop and continue raise SIGCHLD with CLD_STOPPED and CLD_CONTINUED"
+        },
+        {
+          "id": "nocldstop",
+          "title": "With SA_NOCLDSTOP a child's stop and continue raise no SIGCHLD, but its exit does"
+        },
+        {
+          "id": "nocldwait",
+          "title": "With SA_NOCLDWAIT an exited child leaves no zombie and waitpid fails with ECHILD"
+        },
+        {
+          "id": "waitid",
+          "title": "waitid reports CLD_STOPPED, CLD_CONTINUED and CLD_EXITED with their signals and status"
+        },
+        {
+          "id": "group",
+          "title": "kill(-pgid) with SIGSTOP and SIGCONT stops and continues every member"
+        },
+        {
+          "id": "stop-threads",
+          "title": "SIGSTOP stops every thread of a process computing on two processors, and SIGCONT resumes them"
+        }
+      ]
+    }
+  ]
+}
