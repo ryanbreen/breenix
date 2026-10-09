@@ -1743,15 +1743,9 @@ pub fn sys_rmdir(pathname: u64) -> SyscallResult {
     let rmdir_result = {
         let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => {
-                let tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
-                crate::task::completion::FORCE_SWITCH_TID
-                    .store(tid, core::sync::atomic::Ordering::Release);
-                let result = fs.remove_directory(resolved.fs_path());
-                crate::task::completion::FORCE_SWITCH_TID
-                    .store(0, core::sync::atomic::Ordering::Release);
-                result
-            }
+            Some(fs) => crate::task::completion::force_switch_for_path(&resolved.path, || {
+                fs.remove_directory(resolved.fs_path())
+            }),
             None => {
                 log::error!("sys_rmdir: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
@@ -1941,7 +1935,9 @@ pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
     let mkdir_result = {
         let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.create_directory_owned(resolved.fs_path(), dir_mode, cred.euid, cred.egid),
+            Some(fs) => crate::task::completion::force_switch_for_path(&resolved.path, || {
+                fs.create_directory_owned(resolved.fs_path(), dir_mode, cred.euid, cred.egid)
+            }),
             None => {
                 log::error!("sys_mkdir: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
