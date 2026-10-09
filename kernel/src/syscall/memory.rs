@@ -17,7 +17,7 @@ use x86_64::VirtAddr;
 use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
 
 // Import common memory syscall helpers
-use crate::syscall::memory_common::{flush_tlb, get_current_thread_id, MAX_HEAP_SIZE};
+use crate::syscall::memory_common::{flush_new_mapping, get_current_thread_id, MAX_HEAP_SIZE};
 
 /// Syscall 12: brk - change data segment size
 ///
@@ -174,8 +174,8 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
                 return SyscallResult::Ok(current_break); // Return old break on error
             }
 
-            // Flush TLB for this page so CPU sees the new mapping
-            flush_tlb(current_page.start_address());
+            // The page was not present, so only this CPU's entry is dropped.
+            flush_new_mapping(current_page.start_address());
             pages_mapped += 1;
 
             // Stop after mapping the end page
