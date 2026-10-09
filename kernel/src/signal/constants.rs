@@ -39,6 +39,8 @@ pub const SIGSYS: u32 = 31;
 // Real-time signals (32-64) - for future use
 pub const SIGRTMIN: u32 = 32;
 pub const SIGRTMAX: u32 = 64;
+/// The realtime signals, SIGRTMIN through SIGRTMAX.
+pub const REALTIME_SIGNALS: u64 = u64::MAX << (SIGRTMIN - 1);
 
 /// Maximum signal number supported
 pub const NSIG: u32 = 64;

@@ -800,8 +800,7 @@ impl TtyDevice {
                 }
                 let recipient = pm.signal_recipient(pid, sig);
                 if let Some(proc) = pm.get_process_mut(recipient) {
-                    proc.signals.set_pending(sig);
-                    proc.signals.process_pending |= proc.signals.pending & crate::signal::constants::sig_mask(sig);
+                    proc.signals.set_process_pending(sig);
 
                     let sig_name = match sig {
                         SIGINT => "SIGINT",
@@ -880,8 +879,7 @@ impl TtyDevice {
                 }
                 let recipient = pm.signal_recipient(pid, sig);
                 if let Some(proc) = pm.get_process_mut(recipient) {
-                    proc.signals.set_pending(sig);
-                    proc.signals.process_pending |= proc.signals.pending & crate::signal::constants::sig_mask(sig);
+                    proc.signals.set_process_pending(sig);
 
                     // Lock-free diagnostic output, one write per architecture
                     // and the same subject on both. The signal number and the
