@@ -15,9 +15,30 @@
 
 use libbreenix::error::Error;
 use libbreenix::errno::Errno;
-use libbreenix::io;
+use libbreenix::io::{self, poll_events, PollFd};
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_DGRAM, SOCK_NONBLOCK};
+use libbreenix::types::Fd;
 use std::process;
+
+/// How long a datagram sent over loopback may take to arrive.
+const DELIVERY_MS: i32 = 5000;
+
+/// Wait until `fd` has a datagram to read. A datagram that never arrives fails
+/// the test here instead of blocking the recvfrom after it forever.
+fn wait_readable(fd: Fd, what: &str, code: i32) {
+    let mut fds = [PollFd::new(fd, poll_events::POLLIN)];
+    match io::poll(&mut fds, DELIVERY_MS) {
+        Ok(n) if n > 0 && fds[0].revents & poll_events::POLLIN != 0 => {}
+        Ok(_) => {
+            println!("UDP Socket Test: FAILED - {} did not arrive within {} ms", what, DELIVERY_MS);
+            process::exit(code);
+        }
+        Err(e) => {
+            println!("UDP Socket Test: FAILED - poll for {} returned errno={:?}", what, e);
+            process::exit(code);
+        }
+    }
+}
 
 fn main() {
     println!("UDP Socket Test: Starting");
@@ -98,6 +119,7 @@ fn main() {
     let mut recv_buf = [0u8; 128];
     let mut src_addr = SockAddrIn::default();
 
+    wait_readable(rx_fd, "the loopback datagram", 9);
     match socket::recvfrom(rx_fd, &mut recv_buf, Some(&mut src_addr)) {
         Ok(bytes) => {
             println!("UDP: Received packet! bytes={}", bytes);
@@ -304,6 +326,7 @@ fn main() {
     let mut received_count = 0;
 
     for i in 0..3 {
+        wait_readable(multi_rx_fd, &format!("loopback packet {}", i + 1), 26);
         match socket::recvfrom(multi_rx_fd, &mut multi_recv_buf, None) {
             Ok(bytes) => {
                 println!("UDP: Received packet {}, bytes={}", i + 1, bytes);

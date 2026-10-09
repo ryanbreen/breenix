@@ -226,8 +226,8 @@
     },
     {
       "name": "UDP packet delivered to socket RX queue",
-      "marker": "UDP: Delivered packet to socket on port",
-      "failureMeaning": "Packet arrived but was not delivered to socket - RX delivery path broken",
+      "marker": "UDP: Delivered packet to socket on port 54321",
+      "failureMeaning": "udp_socket_test's loopback datagram was not delivered to its RX socket on port 54321 - loopback or RX delivery path broken",
       "checkHint": "Check net/udp.rs:deliver_to_socket()"
     },
     {
