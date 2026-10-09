@@ -307,28 +307,41 @@ fn next_cmd_num() -> u32 {
 static PORT_IO_IN_PROGRESS: [AtomicBool; MAX_AHCI_PORTS] =
     [const { AtomicBool::new(false) }; MAX_AHCI_PORTS];
 
-// A syscall holds the x86 preemption brake. Spinning on an owner that
-// sleeps for I/O prevents that owner from ever running to retire its request.
-#[cfg(target_arch = "x86_64")]
+// A syscall holds the preemption brake. Spinning on an owner that sleeps for
+// I/O prevents that owner from ever running to retire its request once every
+// CPU is held by a spinning contender.
 static PORT_IO_WAITERS: [crate::task::waitqueue::WaitQueueHead; MAX_AHCI_PORTS] =
     [const { crate::task::waitqueue::WaitQueueHead::new() }; MAX_AHCI_PORTS];
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 fn relax_port_io_wait() {
-    #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!("yield", options(nomem, nostack));
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    core::hint::spin_loop();
+}
+
+/// Whether the current thread can sleep on a port's waitqueue: a thread other
+/// than idle, inside a syscall (the preemption brake alone held), outside
+/// interrupt context.
+fn can_park_for_port_io() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    let (preempt_count, in_interrupt) =
+        (crate::per_cpu::preempt_count(), crate::per_cpu::in_interrupt());
+    #[cfg(target_arch = "aarch64")]
+    let (preempt_count, in_interrupt) = (
+        crate::per_cpu_aarch64::preempt_count(),
+        crate::per_cpu_aarch64::in_interrupt(),
+    );
+    let tid = crate::task::scheduler::current_thread_id();
+    let idle = crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid);
+    tid.is_some() && idle == Some(false) && preempt_count == 1 && !in_interrupt
 }
 
 /// Acquire exclusive ownership of a port's slot-0 I/O lifecycle.
 ///
 /// Returns with the port mutex held and `PORT_IO_IN_PROGRESS[port] = true`.
 fn begin_port_io(port: usize) -> Result<MutexGuard<'static, ()>, BlockError> {
-    #[cfg(target_arch = "x86_64")]
     let deadline = {
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         (secs * 1_000_000_000 + nanos).saturating_add(AHCI_TIMEOUT_SECS * 1_000_000_000)
@@ -340,41 +353,37 @@ fn begin_port_io(port: usize) -> Result<MutexGuard<'static, ()>, BlockError> {
             return Ok(guard);
         }
         drop(guard);
-        #[cfg(target_arch = "x86_64")]
-        {
-            let tid = crate::task::scheduler::current_thread_id();
-            let idle =
-                crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid);
-            if tid.is_none()
-                || idle != Some(false)
-                || crate::per_cpu::preempt_count() != 1
-                || crate::per_cpu::in_interrupt()
+        if !can_park_for_port_io() {
+            // A caller that cannot sleep is refused on x86; on ARM64 it is
+            // preemptible (kernel threads) and keeps polling.
+            #[cfg(target_arch = "x86_64")]
+            return Err(BlockError::DeviceNotReady);
+            #[cfg(target_arch = "aarch64")]
             {
-                return Err(BlockError::DeviceNotReady);
-            }
-            let (secs, nanos) = crate::time::get_monotonic_time_ns();
-            if secs * 1_000_000_000 + nanos >= deadline {
-                return Err(BlockError::Timeout);
-            }
-            // x86 syscall entry keeps IF clear; schedule_current_wait enables
-            // interrupts around HLT, so IF is not a prerequisite for parking.
-            match PORT_IO_WAITERS[port].prepare_to_wait_checked(
-                crate::task::thread::ThreadState::BlockedOnIO,
-                Some(deadline),
-                || PORT_IO_IN_PROGRESS[port].load(Ordering::Acquire),
-            ) {
-                crate::task::waitqueue::PrepareOutcome::Queued => {
-                    crate::task::waitqueue::schedule_current_wait();
-                    PORT_IO_WAITERS[port].finish_wait();
-                }
-                crate::task::waitqueue::PrepareOutcome::Mismatch => {}
-                crate::task::waitqueue::PrepareOutcome::PublishFailed => {
-                    return Err(BlockError::DeviceNotReady)
-                }
+                relax_port_io_wait();
+                continue;
             }
         }
-        #[cfg(target_arch = "aarch64")]
-        relax_port_io_wait();
+        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+        if secs * 1_000_000_000 + nanos >= deadline {
+            return Err(BlockError::Timeout);
+        }
+        // x86 syscall entry keeps IF clear; schedule_current_wait enables
+        // interrupts around HLT, so IF is not a prerequisite for parking.
+        match PORT_IO_WAITERS[port].prepare_to_wait_checked(
+            crate::task::thread::ThreadState::BlockedOnIO,
+            Some(deadline),
+            || PORT_IO_IN_PROGRESS[port].load(Ordering::Acquire),
+        ) {
+            crate::task::waitqueue::PrepareOutcome::Queued => {
+                crate::task::waitqueue::schedule_current_wait();
+                PORT_IO_WAITERS[port].finish_wait();
+            }
+            crate::task::waitqueue::PrepareOutcome::Mismatch => {}
+            crate::task::waitqueue::PrepareOutcome::PublishFailed => {
+                return Err(BlockError::DeviceNotReady)
+            }
+        }
     }
 }
 
@@ -382,7 +391,6 @@ fn begin_port_io(port: usize) -> Result<MutexGuard<'static, ()>, BlockError> {
 fn end_port_io(port: usize, port_guard: MutexGuard<'static, ()>) {
     PORT_IO_IN_PROGRESS[port].store(false, Ordering::Release);
     drop(port_guard);
-    #[cfg(target_arch = "x86_64")]
     PORT_IO_WAITERS[port].wake_up_one();
 }
 
