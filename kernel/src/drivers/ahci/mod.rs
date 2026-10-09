@@ -323,8 +323,14 @@ fn relax_port_io_wait() {
 
 /// Whether the current thread can sleep on a port's waitqueue: a thread other
 /// than idle, inside a syscall (the preemption brake alone held), outside
-/// interrupt context.
+/// interrupt context, once the timer runs. ARM64 boot holds the same brake
+/// before it starts the timer, while it pre-loads PID 1's image; a thread
+/// parked then is never switched back in.
 fn can_park_for_port_io() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    if !crate::arch_impl::aarch64::timer_interrupt::timer_is_running() {
+        return false;
+    }
     #[cfg(target_arch = "x86_64")]
     let (preempt_count, in_interrupt) =
         (crate::per_cpu::preempt_count(), crate::per_cpu::in_interrupt());
