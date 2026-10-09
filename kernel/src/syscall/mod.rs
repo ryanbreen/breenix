@@ -723,3 +723,18 @@ pub const MSYNC_SYSCALL_NUMBER: u64 = 227;
 pub const SETRLIMIT_SYSCALL_NUMBER: u64 = 160;
 #[cfg(target_arch = "aarch64")]
 pub const SETRLIMIT_SYSCALL_NUMBER: u64 = 164;
+
+/// Native Linux rt_sigqueueinfo, tkill and tgkill numbers, dispatched like
+/// msync without enum variants.
+#[cfg(target_arch = "x86_64")]
+pub const RT_SIGQUEUEINFO_SYSCALL_NUMBER: u64 = 129;
+#[cfg(target_arch = "aarch64")]
+pub const RT_SIGQUEUEINFO_SYSCALL_NUMBER: u64 = 138;
+#[cfg(target_arch = "x86_64")]
+pub const TKILL_SYSCALL_NUMBER: u64 = 200;
+#[cfg(target_arch = "aarch64")]
+pub const TKILL_SYSCALL_NUMBER: u64 = 130;
+#[cfg(target_arch = "x86_64")]
+pub const TGKILL_SYSCALL_NUMBER: u64 = 234;
+#[cfg(target_arch = "aarch64")]
+pub const TGKILL_SYSCALL_NUMBER: u64 = 131;
