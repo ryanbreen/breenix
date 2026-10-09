@@ -2034,9 +2034,23 @@ fn under_signals<T: PartialEq + Copy>(ms: u64, expected: T, f: impl Fn() -> T) -
     Ok((wrong, MID.load(Ordering::SeqCst)))
 }
 
+/// A round count for `f` that takes at least 20 ms, longer than a timer tick on either
+/// architecture, so a pending signal is taken by an interrupt in the middle of a run.
+fn rounds_for(f: impl Fn(u64)) -> u64 {
+    let mut rounds = 10_000u64;
+    while rounds < 1 << 30 {
+        let start = now_ms();
+        f(rounds);
+        if now_ms().saturating_sub(start) >= 20 { break; }
+        rounds *= 2;
+    }
+    rounds
+}
+
 fn h_registers() -> CaseResult {
-    let expected = checksum(core::hint::black_box(20_000));
-    let (wrong, mid) = under_signals(400, expected, || checksum(core::hint::black_box(20_000)))?;
+    let rounds = rounds_for(|n| { core::hint::black_box(checksum(core::hint::black_box(n))); });
+    let expected = checksum(core::hint::black_box(rounds));
+    let (wrong, mid) = under_signals(400, expected, || checksum(core::hint::black_box(rounds)))?;
     if let Some(got) = wrong {
         return fail(format!("an integer computation interrupted by handlers gave {got:#x}, expected {expected:#x}"));
     }
@@ -2044,7 +2058,8 @@ fn h_registers() -> CaseResult {
 }
 
 fn h_fp_registers() -> CaseResult {
-    let (wrong, mid) = under_signals(400, 0, || fp_hold(core::hint::black_box(20_000)))?;
+    let rounds = rounds_for(|n| { core::hint::black_box(fp_hold(core::hint::black_box(n))); });
+    let (wrong, mid) = under_signals(400, 0, || fp_hold(core::hint::black_box(rounds)))?;
     if let Some(reg) = wrong {
         return fail(format!("after handlers that overwrite the floating-point registers, register {} no longer held its value", reg - 0x100));
     }
