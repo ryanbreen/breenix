@@ -2,11 +2,11 @@
   "x86_64": {
     "file": "busybox-x86_64",
     "machine": 62,
-    "sha256": "c275871476d3895623ad25b37706004e1d444be879e5cae9121e1208b1b8ca52"
+    "sha256": "76d040695c33a3d6f0d4e1e10ef790e112dc01ce9f33be84be5b6e5dea6904b4"
   },
   "aarch64": {
     "file": "busybox-aarch64",
     "machine": 183,
-    "sha256": "14dcf94e26504156622312b8851523d3b04cf48d275dde0c82c8d3196abc534f"
+    "sha256": "36b13403d9501f9eb421b165b39d4639d181b1dcfd1a10e31dae2fa0500629d4"
   }
 }
