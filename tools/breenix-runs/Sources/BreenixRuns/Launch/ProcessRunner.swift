@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public struct ProcessRequest: Equatable {
     public var executable: String
@@ -43,18 +44,27 @@ public struct ProcessResult: Equatable {
 }
 
 public protocol ProcessRunner {
+    func interrupt()
     // `@Sendable`: the handler is invoked from Pipe's readabilityHandler, which
     // fires on a GCD dispatch queue Foundation owns, never the caller's thread.
     func run(_ request: ProcessRequest, outputHandler: (@Sendable (Data) -> Void)?) throws -> ProcessResult
 }
 
 public extension ProcessRunner {
+    func interrupt() {}
     func run(_ request: ProcessRequest) throws -> ProcessResult {
         try run(request, outputHandler: nil)
     }
 }
 
-public final class RealProcessRunner: ProcessRunner {
+public final class RealProcessRunner: ProcessRunner, @unchecked Sendable {
+    private let processLock = NSLock()
+    private var active: [Process] = []
+
+    public func interrupt() {
+        processLock.lock(); defer { processLock.unlock() }
+        for process in active where process.isRunning { kill(process.processIdentifier, SIGKILL) }
+    }
     public init() {}
 
     public func run(_ request: ProcessRequest, outputHandler: (@Sendable (Data) -> Void)? = nil) throws -> ProcessResult {
@@ -98,7 +108,20 @@ public final class RealProcessRunner: ProcessRunner {
             }
         }
 
-        try process.run()
+        processLock.lock()
+        do {
+            try process.run()
+            active.append(process)
+            processLock.unlock()
+        } catch {
+            processLock.unlock()
+            throw error
+        }
+        defer {
+            processLock.lock()
+            active.removeAll { $0 === process }
+            processLock.unlock()
+        }
         process.waitUntilExit()
 
         stdoutPipe.fileHandleForReading.readabilityHandler = nil

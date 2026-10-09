@@ -102,6 +102,7 @@ public struct BeastLauncher {
     public var slotHelperBase64: String?
     public var vigilScript: URL?
     public var treeHelperBase64: String?
+    public var serialStreaming: X86SerialStreaming
 
     public init(
         store: RunStore,
@@ -110,7 +111,8 @@ public struct BeastLauncher {
         pathsTemplate: BeastPaths = BeastPaths(clonePath: ""),
         slotHelperBase64: String? = nil,
         treeHelperBase64: String? = nil,
-        vigilScript: URL? = nil
+        vigilScript: URL? = nil,
+        serialStreaming: X86SerialStreaming = SSHSerialStreaming()
     ) {
         self.store = store
         self.runner = runner
@@ -121,6 +123,7 @@ public struct BeastLauncher {
         self.slotHelperBase64 = slotHelperBase64
         self.treeHelperBase64 = treeHelperBase64
         self.vigilScript = vigilScript
+        self.serialStreaming = serialStreaming
     }
 
     public static func localGitIdentity(repoRoot: URL, runner: ProcessRunner) throws -> (sha: String?, dirty: Bool?) {
@@ -181,6 +184,15 @@ public struct BeastLauncher {
             }
         }
 
+        let signals = X86LaunchSignals(runner: runner)
+        defer { withExtendedLifetime(signals) {} }
+        let live = try LiveX86Serials(directory: runDirectory, id: id, options: options, script: vigilScript, runner: runner)
+        let stream = try? serialStreaming.start(RemoteCommand.streamSerialsRequest(paths: planResult.paths, boots: options.boots)) { data in
+            live.receive(data)
+        }
+        var finishStatus: Int32 = 1
+        defer { stream?.stop(); live.finish(status: finishStatus) }
+
         let gateStdoutURL = runDirectory.appendingPathComponent("gate-stdout.txt")
         FileManager.default.createFile(atPath: gateStdoutURL.path, contents: nil)
         let gateOutputHandle = try FileHandle(forWritingTo: gateStdoutURL)
@@ -195,14 +207,26 @@ public struct BeastLauncher {
             )
         } catch {
             try? gateOutputHandle.close()
+            stream?.stop()
+            _ = try? runner.run(RemoteCommand.stopGateRequest(paths: planResult.paths))
             throw error
         }
+        stream?.stop()
+        finishStatus = signals.signalNumber.map { 128 + $0 } ?? gateResult.exitCode
         try gateOutputHandle.close()
+        let interrupted = gateResult.exitCode == 255 || signals.signalNumber != nil
+        let quiesced = !interrupted || (try? runner.run(RemoteCommand.stopGateRequest(paths: planResult.paths)).exitCode) == 0
 
         let endedAt = Date()
         let endFacts = parseHostFactsSample(runner: runner, paths: planResult.paths, wallTime: endedAt)
-        let pullResult = (try? runner.run(planResult.pullEvidence)) ?? ProcessResult(exitCode: 127)
-        let serialRefs = try harvestSerials(pullResult: pullResult, runDirectory: runDirectory)
+        let pullResult = quiesced ? ((try? runner.run(planResult.pullEvidence)) ?? ProcessResult(exitCode: 127)) : ProcessResult(exitCode: 127)
+        let serialRefs: [SerialRef]
+        do {
+            serialRefs = try harvestSerials(pullResult: pullResult, runDirectory: runDirectory)
+        } catch {
+            finishStatus = 1
+            throw error
+        }
         let gateStdoutBytes = fileSize(gateStdoutURL)
         let command = readableGateCommand(paths: planResult.paths, boots: options.boots, mode: options.mode)
         var env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile, suite: options.suite)
@@ -227,12 +251,12 @@ public struct BeastLauncher {
             gateVerdictString = "PASS-WITH-ATTRIBUTED-LOCKUP"
         } else if gateStdoutText.split(separator: "\n").contains(where: {
             $0.trimmingCharacters(in: .whitespaces).hasPrefix("FAIL:")
-        }) || gateResult.exitCode != 0 {
+        }) || finishStatus != 0 {
             gateVerdictString = "FAIL"
         } else {
             gateVerdictString = "PASS"
         }
-        let verdict = Verdict.projectGateVerdict(gateVerdictString, exitCode: Int(gateResult.exitCode), command: command)
+        let verdict = Verdict.projectGateVerdict(gateVerdictString, exitCode: Int(finishStatus), command: command)
 
         let manifest = RunManifest(
             id: id,
@@ -246,7 +270,7 @@ public struct BeastLauncher {
             // total RAM, and QEMU version here rather than this Mac's sysctl values.
             host: startFacts.flatMap { start in endFacts.map { HostFactsTrace(start: start, end: $0) } },
             verdict: verdict,
-            verdictSource: .gateScript(command: command, exitCode: Int(gateResult.exitCode)),
+            verdictSource: .gateScript(command: command, exitCode: Int(finishStatus)),
             serials: serialRefs,
             captures: captures,
             command: command,
@@ -255,7 +279,8 @@ public struct BeastLauncher {
             notes: nil
         )
 
-        if let vigilScript {
+        live.finish(status: finishStatus)
+        if !live.registered, let vigilScript {
             do {
                 try FinishedX86Registration.file(script: vigilScript, manifest: manifest, runDirectory: runDirectory, runner: runner)
             } catch {
@@ -331,8 +356,6 @@ public struct BeastLauncher {
     private func harvestSerials(pullResult: ProcessResult, runDirectory: URL) throws -> [SerialRef] {
         let userURL = runDirectory.appendingPathComponent("serial_user.txt")
         let kernelURL = runDirectory.appendingPathComponent("serial_kernel.txt")
-        FileManager.default.createFile(atPath: userURL.path, contents: nil)
-        FileManager.default.createFile(atPath: kernelURL.path, contents: nil)
 
         let tarballURL = runDirectory.appendingPathComponent("gate-tmp.tar.gz")
         let gateTmpURL = runDirectory.appendingPathComponent("gate-tmp", isDirectory: true)
@@ -343,10 +366,17 @@ public struct BeastLauncher {
 
         if pullResult.exitCode == 0 && !pullResult.stdout.isEmpty {
             try pullResult.stdout.write(to: tarballURL)
-            _ = try? runner.run(ProcessRequest(
+            let extraction = try runner.run(ProcessRequest(
                 executable: "/usr/bin/tar",
                 arguments: ["-xzf", tarballURL.path, "-C", runDirectory.path]
             ))
+            guard extraction.exitCode == 0 else {
+                throw NSError(domain: "x86 evidence extraction", code: Int(extraction.exitCode),
+                              userInfo: [NSLocalizedDescriptionKey: extraction.stderrString])
+            }
+            // Preserve live partials on failed harvest; a valid archive replaces them.
+            try Data().write(to: userURL)
+            try Data().write(to: kernelURL)
             try mergeSerials(from: gateTmpURL, userURL: userURL, kernelURL: kernelURL)
             keepScreens(from: gateTmpURL, runDirectory: runDirectory)
             let boots = try FileManager.default.contentsOfDirectory(at: gateTmpURL, includingPropertiesForKeys: nil)

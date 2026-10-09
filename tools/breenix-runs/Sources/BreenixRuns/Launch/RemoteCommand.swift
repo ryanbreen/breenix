@@ -166,9 +166,11 @@ public enum RemoteCommand {
         let historicalAdmission = paths.laneKey == nil ? "if [ ! -f \(paths.clonePath)/scripts/host-slots.py ]; then python3 \(helper) acquire x86-build && python3 \(helper) acquire x86-boot || exit 1; fi; " : ""
         let launch = slotHelperBase64 == nil ? gate :
             "python3 \(helper) supervise -- bash -c \"\(historicalAdmission)exec \(gate)\""
+        let identityCode = #"import json,pathlib,sys;pid=int(sys.argv[1]);birth=pathlib.Path(\"/proc/%d/stat\"%pid).read_text().rsplit(\")\",1)[1].split()[19];pathlib.Path(sys.argv[2]).write_text(json.dumps([pid,birth]))"#
         let script = "mkdir -p \(paths.gateTmpPath)" + installHelper
+            + " && python3 -c \"\(identityCode)\" \"$$\" \(paths.gateTmpPath)/launcher-gate.json"
             + " && source \(paths.cargoEnvPath)"
-            + " && env BREENIX_GATE_TMP=\(paths.gateTmpPath)"
+            + " && exec env BREENIX_GATE_TMP=\(paths.gateTmpPath)"
             + " BREENIX_REPO_DIR=\(paths.clonePath)"
             + " BREENIX_RUST_FORK=\(paths.rustForkPath)"
             + " BREENIX_GATE_TIMEOUT=\(timeoutSecs)"
@@ -178,6 +180,70 @@ public enum RemoteCommand {
             + featureEnv + profileEnv + suiteEnv + slotIdentity
             + " " + launch
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
+    }
+
+    /// One remote reader, no tail children. EOF or five seconds without a heartbeat
+    /// ends it even when a transport disappears without delivering a signal.
+    static let serialReader = #"""
+import base64, json, os, pathlib, select, sys, time
+root = pathlib.Path(sys.argv[1])
+count = int(sys.argv[2])
+offsets = {}
+last = time.monotonic()
+while time.monotonic() - last < 5:
+    ready, _, _ = select.select([sys.stdin.buffer], [], [], 1)
+    if ready:
+        if not os.read(0, 4096):
+            break
+        last = time.monotonic()
+    for boot in range(1, count + 1):
+        directory = root / ("breenix_gate_%d" % boot)
+        if not all((directory / ("serial_%s.log" % stream)).exists() for stream in ("user", "kernel")):
+            continue
+        for stream in ("user", "kernel"):
+            key = (boot, stream)
+            path = directory / ("serial_%s.log" % stream)
+            try:
+                with path.open("rb") as log:
+                    log.seek(offsets.get(key, 0))
+                    data = log.read(65536)
+                    if key not in offsets or data:
+                        offsets[key] = log.tell()
+                        print(json.dumps(dict(boot=boot, stream=stream, data=base64.b64encode(data).decode())), flush=True)
+            except FileNotFoundError:
+                pass
+"""#
+
+    public static func streamSerialsRequest(paths: BeastPaths, boots: Int) -> ProcessRequest {
+        let encoded = Data(serialReader.utf8).base64EncodedString()
+        let python = "import base64;exec(base64.b64decode(\"\(encoded)\"))"
+        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -u -c '\(python)' \(paths.gateTmpPath) \(boots)", combineOutput: false)
+    }
+
+    /// The PID and process birth are published by the launch shell before exec.
+    /// Signal only this supervisor, then wait for its descendant cleanup before harvest.
+    public static func stopGateRequest(paths: BeastPaths) -> ProcessRequest {
+        let code = #"""
+import json, os, pathlib, signal, sys, time
+record = pathlib.Path(sys.argv[1])
+if not record.exists():
+    sys.exit(1)
+pid, birth = json.loads(record.read_text())
+def alive():
+    try:
+        fields = pathlib.Path('/proc/%d/stat' % pid).read_text().rsplit(')', 1)[1].split()
+        return fields[19] == birth and fields[0] != 'Z'
+    except FileNotFoundError:
+        return False
+if alive():
+    os.kill(pid, signal.SIGTERM)
+deadline = time.monotonic() + 130
+while alive() and time.monotonic() < deadline:
+    time.sleep(.2)
+sys.exit(1 if alive() else 0)
+"""#
+        let encoded = Data(code.utf8).base64EncodedString()
+        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath)/launcher-gate.json")
     }
 
     // No `bash -lc` needed: a single command, no env sourcing, no shell
@@ -258,7 +324,7 @@ public enum RemoteCommand {
     private static func sshRequest(paths: BeastPaths, remote: String, combineOutput: Bool = true) -> ProcessRequest {
         ProcessRequest(
             executable: "/usr/bin/ssh",
-            arguments: ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=\(sshTimeoutSecs)", paths.host, remote],
+            arguments: ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=\(sshTimeoutSecs)", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", paths.host, remote],
             combineOutput: combineOutput
         )
     }

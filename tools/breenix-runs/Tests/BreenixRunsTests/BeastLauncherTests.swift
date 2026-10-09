@@ -52,6 +52,7 @@ final class BeastLauncherTests: XCTestCase {
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=15",
+            "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2",
             "beast",
             "sudo -n incus exec breenix-x86 -- bash -lc 'git -C /root/breenix fetch --no-tags --no-write-fetch-head --no-auto-gc origin abc123def && rm -rf /root/breenix-testclone && git clone --shared /root/breenix /root/breenix-testclone && git -C /root/breenix-testclone checkout --detach abc123def'"
         ])
@@ -120,15 +121,9 @@ final class BeastLauncherTests: XCTestCase {
         let request = RemoteCommand.runGateRequest(boots: 3, mode: .kthread, timeoutSecs: 900, paths: paths)
 
         XCTAssertEqual(request.executable, "/usr/bin/ssh")
-        XCTAssertEqual(request.arguments, [
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=15",
-            "beast",
-            "sudo -n incus exec breenix-x86 -- bash -lc 'mkdir -p /root/breenix-testclone/gate-tmp && source /root/.cargo/env && env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp BREENIX_REPO_DIR=/root/breenix-testclone BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=900 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6 /root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread'"
-        ])
+        XCTAssertTrue(request.arguments.last!.contains("launcher-gate.json"))
+        XCTAssertEqual(Array(request.arguments.dropLast()), ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", "beast"])
+        XCTAssertTrue(request.arguments.last!.contains("exec env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp"))
         XCTAssertTrue(request.combineOutput)
         XCTAssertTrue(paths.gateTmpPath.hasPrefix(paths.clonePath + "/"))
     }
@@ -138,7 +133,7 @@ final class BeastLauncherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let runner = BeastScriptedProcessRunner()
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")),
-                                     runner: runner, timeoutSecs: 180)
+                                     runner: runner, timeoutSecs: 180, serialStreaming: NoSerialStreaming())
         var selected = options(runID: "q35-run")
         selected.qemuProfile = .q35
         let plan = try launcher.plan(options: selected)
@@ -221,7 +216,7 @@ final class BeastLauncherTests: XCTestCase {
         let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
         let runner = BeastScriptedProcessRunner()
         runner.prepareResult = ProcessResult(stdout: Data("fetch failed\n".utf8), exitCode: 1)
-        let launcher = BeastLauncher(store: store, runner: runner)
+        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming())
 
         XCTAssertThrowsError(try launcher.runX86(options: options(runID: "prepare-fails"))) { error in
             guard case BeastLauncherError.prepareCloneFailed(let exitCode, _) = error else {
@@ -311,7 +306,7 @@ final class BeastLauncherTests: XCTestCase {
             return ProcessResult(exitCode: 0)
         }
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")), runner: runner,
-                                     vigilScript: URL(fileURLWithPath: "/record.sh"))
+                                     vigilScript: URL(fileURLWithPath: "/record.sh"), serialStreaming: NoSerialStreaming())
         let result = try launcher.runX86(options: options(runID: "file-finished"))
         XCTAssertTrue(result.manifest.captures.contains { $0.path == "screen-1-files-io.png" })
         let filings = runner.calls.filter { $0.executable == "/record.sh" }
@@ -351,7 +346,7 @@ final class BeastLauncherTests: XCTestCase {
         let launcher = BeastLauncher(
             store: RunStore(root: root.appendingPathComponent("store", isDirectory: true)),
             runner: runner,
-            pathsTemplate: BeastPaths(host: "localhost", clonePath: "")
+            pathsTemplate: BeastPaths(host: "localhost", clonePath: ""), serialStreaming: NoSerialStreaming()
         )
 
         XCTAssertThrowsError(try launcher.runX86(options: options(runID: "bad-host"))) { error in
@@ -367,7 +362,7 @@ final class BeastLauncherTests: XCTestCase {
         let runner = BeastScriptedProcessRunner()
         let launcher = BeastLauncher(
             store: RunStore(root: root.appendingPathComponent("store", isDirectory: true)),
-            runner: runner
+            runner: runner, serialStreaming: NoSerialStreaming()
         )
         let launchOptions = options(runID: runID)
         let plan = try launcher.plan(options: launchOptions)
@@ -394,7 +389,7 @@ final class BeastLauncherTests: XCTestCase {
 
     private func runSuccessfulX86(root: URL, runner: BeastScriptedProcessRunner, runID: String) throws -> BeastLaunchResult {
         let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
-        let launcher = BeastLauncher(store: store, runner: runner)
+        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming())
         return try launcher.runX86(options: options(runID: runID))
     }
 
@@ -515,5 +510,11 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
 
         XCTFail("unexpected ssh remote command: \(remote)")
         return ProcessResult(exitCode: 127)
+    }
+}
+
+private struct NoSerialStreaming: X86SerialStreaming {
+    func start(_ request: ProcessRequest, receive: @escaping @Sendable (Data) -> Void) throws -> X86SerialStream {
+        throw NSError(domain: "fake stream unavailable", code: 1)
     }
 }
