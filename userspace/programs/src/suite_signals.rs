@@ -2358,7 +2358,249 @@ fn h_fp_registers() -> CaseResult {
     if wrong != 0 {
         return fail(format!("after handlers that overwrite the floating-point registers, register {} no longer held all 128 bits of its value", wrong - 0x100));
     }
-    check(mid >= MID_WANTED, &format!("only {mid} handlers interrupted the register checks while the registers were live; the case needs {MID_WANTED}"))
+    check(mid >= MID_WANTED, &format!("only {mid} handlers interrupted the register checks while the registers were live; the case needs {MID_WANTED}"))?;
+    fp_state_checks()
+}
+
+/// The floating-point state `fp_round_trip` sets and reads back. x86-64: the x87
+/// control word, MXCSR, xmm0 and the value on top of the x87 stack (as a double).
+/// ARM64: FPCR, FPSR and v0; `x87` is unused.
+#[repr(C)]
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+struct FpState { control: u64, status: u64, vector: [u64; 2], x87: u64 }
+
+/// The interrupted code's state: x86-64 rounds toward zero at 64-bit precision with
+/// MXCSR's inexact flag set and pi on the x87 stack; ARM64 rounds toward zero with
+/// flush-to-zero, and FPSR's QC and inexact flags set.
+#[cfg(target_arch = "x86_64")]
+const FP_SET: FpState = FpState { control: 0x0f7f, status: 0x7fa0, vector: [0x1111_2222_3333_4444, 0x5555_6666_7777_8888], x87: 0x4009_21fb_5444_2d18 };
+#[cfg(target_arch = "aarch64")]
+const FP_SET: FpState = FpState { control: 0x01c0_0000, status: 0x0800_0010, vector: [0x1111_2222_3333_4444, 0x5555_6666_7777_8888], x87: 0 };
+/// What an outer handler sets before a nested handler interrupts it.
+#[cfg(target_arch = "x86_64")]
+const FP_NESTED: FpState = FpState { control: 0x0b7f, status: 0x3f81, vector: [0x9999_aaaa_bbbb_cccc, 0xdddd_eeee_ffff_0101], x87: 0x3ff8_0000_0000_0000 };
+#[cfg(target_arch = "aarch64")]
+const FP_NESTED: FpState = FpState { control: 0x0040_0000, status: 0x0000_0001, vector: [0x9999_aaaa_bbbb_cccc, 0xdddd_eeee_ffff_0101], x87: 0 };
+/// What a handler writes into the frame's saved FP image: v0/xmm0, and the rounding
+/// mode (MXCSR on x86-64, FPCR on ARM64), toward plus infinity.
+const FP_EDIT_VECTOR: [u64; 2] = [0x0f0f_0f0f_f0f0_f0f0, 0x1234_5678_9abc_def0];
+#[cfg(target_arch = "x86_64")]
+const FP_EDIT_ROUNDING: u64 = 0x5f80;
+#[cfg(target_arch = "aarch64")]
+const FP_EDIT_ROUNDING: u64 = 0x0040_0000;
+/// What a clobbering handler loads.
+#[cfg(target_arch = "x86_64")]
+static FP_CLOBBER: FpState = FpState { control: 0x0c7f, status: 0x3f80, vector: [0; 2], x87: 0 };
+#[cfg(target_arch = "x86_64")]
+static MXCSR_DEFAULT: u32 = 0x1f80;
+
+/// Whether `on_fp_state` edits the saved FP image (1) or only clobbers the live state.
+static FP_EDIT: AtomicU32 = AtomicU32::new(0);
+/// The control and status words `on_fp_state` found on entry.
+static FP_ENTRY: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+/// What `on_fp_outer` read back after its nested handler returned.
+static FP_OUTER_SEEN: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static FP_HANDLED: AtomicU32 = AtomicU32::new(0);
+
+/// Load `set`, send this process `sig`, whose handler runs on the kill's return, and
+/// read the state back, all in one instruction sequence so that no compiled code
+/// touches the registers in between; then return to the default state.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn fp_round_trip(set: &FpState, sig: i32) -> FpState {
+    let mut got = FpState::default();
+    // SAFETY: reads `set` and MXCSR_DEFAULT, writes `got`, and changes only the x87
+    // and SSE state, which compiled code here never uses, and the registers declared.
+    unsafe {
+        core::arch::asm!(
+            "fninit",
+            "fldcw word ptr [{set}]",
+            "ldmxcsr dword ptr [{set} + 8]",
+            "movdqu xmm0, [{set} + 16]",
+            "fld qword ptr [{set} + 32]",
+            "syscall",
+            "fnstcw word ptr [{got}]",
+            "stmxcsr dword ptr [{got} + 8]",
+            "movdqu [{got} + 16], xmm0",
+            "fstp qword ptr [{got} + 32]",
+            "fninit",
+            "ldmxcsr dword ptr [{dflt}]",
+            set = in(reg) set as *const FpState,
+            got = in(reg) &mut got as *mut FpState,
+            dflt = in(reg) &MXCSR_DEFAULT as *const u32,
+            inlateout("rax") nr::KILL => _,
+            in("rdi") pid() as i64 as u64,
+            in("rsi") sig as i64 as u64,
+            out("rcx") _, out("r11") _, out("xmm0") _,
+        );
+    }
+    got
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+fn fp_round_trip(set: &FpState, sig: i32) -> FpState {
+    let mut got = FpState::default();
+    // SAFETY: reads `set`, writes `got`, and changes only v0, FPCR and FPSR, which are
+    // restored to their values on entry, and the registers declared.
+    unsafe {
+        core::arch::asm!(
+            "mrs {fpcr}, fpcr",
+            "mrs {fpsr}, fpsr",
+            "ldr {t}, [{set}]",
+            "msr fpcr, {t}",
+            "ldr {t}, [{set}, #8]",
+            "msr fpsr, {t}",
+            "ldr q0, [{set}, #16]",
+            "svc #0",
+            "mrs {t}, fpcr",
+            "str {t}, [{got}]",
+            "mrs {t}, fpsr",
+            "str {t}, [{got}, #8]",
+            "str q0, [{got}, #16]",
+            "msr fpcr, {fpcr}",
+            "msr fpsr, {fpsr}",
+            set = in(reg) set as *const FpState,
+            got = in(reg) &mut got as *mut FpState,
+            t = out(reg) _, fpcr = out(reg) _, fpsr = out(reg) _,
+            inlateout("x8") nr::KILL => _,
+            inlateout("x0") pid() as i64 as u64 => _,
+            in("x1") sig as i64 as u64,
+            out("v0") _,
+        );
+    }
+    got
+}
+
+/// Record the control and status words on entry, then load other values into them,
+/// v0/xmm0 and (x86-64) the x87 stack.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn fp_entry_and_clobber() {
+    let mut entry = [0u64; 2];
+    // SAFETY: writes `entry`, reads FP_CLOBBER, and changes only the x87 and SSE state.
+    unsafe {
+        core::arch::asm!(
+            "fnstcw word ptr [{entry}]",
+            "stmxcsr dword ptr [{entry} + 8]",
+            "fninit",
+            "fldz",
+            "fldcw word ptr [{clob}]",
+            "ldmxcsr dword ptr [{clob} + 8]",
+            "pcmpeqd xmm0, xmm0",
+            entry = in(reg) entry.as_mut_ptr(),
+            clob = in(reg) &FP_CLOBBER as *const FpState,
+            out("xmm0") _,
+        );
+    }
+    FP_ENTRY[0].store(entry[0], Ordering::SeqCst);
+    FP_ENTRY[1].store(entry[1], Ordering::SeqCst);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+fn fp_entry_and_clobber() {
+    let (fpcr, fpsr): (u64, u64);
+    // SAFETY: changes only v0, FPCR and FPSR, which the handler's return restores.
+    unsafe {
+        core::arch::asm!(
+            "mrs {fpcr}, fpcr",
+            "mrs {fpsr}, fpsr",
+            "mov {t}, #0x00800000",
+            "msr fpcr, {t}",
+            "msr fpsr, xzr",
+            "movi v0.16b, #0xa5",
+            fpcr = out(reg) fpcr, fpsr = out(reg) fpsr, t = out(reg) _,
+            out("v0") _,
+        );
+    }
+    FP_ENTRY[0].store(fpcr, Ordering::SeqCst);
+    FP_ENTRY[1].store(fpsr, Ordering::SeqCst);
+}
+
+/// Write FP_EDIT_VECTOR and FP_EDIT_ROUNDING into the FP image of the frame whose
+/// ucontext_t is `uc`, at the Linux ABI's offsets.
+fn edit_saved_fp(uc: *mut u8) -> bool {
+    // SAFETY: `uc` is the handler's ucontext_t, which the kernel wrote with its
+    // FP image; only fields of that image are written.
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // uc_mcontext.fpstate points to the FXSAVE image.
+            let image = core::ptr::read_volatile(uc.add(40 + 184) as *const u64) as *mut u8;
+            if image.is_null() { return false; }
+            core::ptr::write_volatile(image.add(24) as *mut u32, FP_EDIT_ROUNDING as u32);
+            core::ptr::write_volatile(image.add(160) as *mut [u64; 2], FP_EDIT_VECTOR);
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // The fpsimd_context record opens uc_mcontext.__reserved.
+            let record = uc.add(176 + 288);
+            if core::ptr::read_volatile(record as *const u32) != 0x4650_8001 { return false; }
+            core::ptr::write_volatile(record.add(12) as *mut u32, FP_EDIT_ROUNDING as u32);
+            core::ptr::write_volatile(record.add(16) as *mut [u64; 2], FP_EDIT_VECTOR);
+        }
+    }
+    true
+}
+
+extern "C" fn on_fp_state(_sig: i32, _info: *const u8, uc: *mut u8) {
+    fp_entry_and_clobber();
+    if FP_EDIT.load(Ordering::SeqCst) == 1 && !edit_saved_fp(uc) {
+        FP_EDIT.store(2, Ordering::SeqCst);
+    }
+    FP_HANDLED.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Load FP_NESTED, take SIGUSR2 (`on_fp_state`, which clobbers), and keep what was
+/// read back after it returned.
+extern "C" fn on_fp_outer(_sig: i32) {
+    let seen = fp_round_trip(&FP_NESTED, SIGUSR2);
+    for (slot, value) in FP_OUTER_SEEN.iter().zip([seen.control, seen.status, seen.vector[0], seen.vector[1], seen.x87]) {
+        slot.store(value, Ordering::SeqCst);
+    }
+    FP_HANDLED.fetch_add(1, Ordering::SeqCst);
+}
+
+fn fp_describe(state: &FpState) -> String {
+    format!("control {:#x}, status {:#x}, vector {:#x}:{:#x}, x87 {:#x}", state.control, state.status, state.vector[0], state.vector[1], state.x87)
+}
+
+/// The x87/SSE or FP/SIMD control and status state, an edit a handler makes to the saved
+/// FP image, and nested handlers: each signal is taken synchronously, at the kill's return.
+fn fp_state_checks() -> CaseResult {
+    FP_EDIT.store(0, Ordering::SeqCst);
+    FP_HANDLED.store(0, Ordering::SeqCst);
+    catch_with(SIGUSR1, on_fp_state as usize as u64, SA_SIGINFO, 0)?;
+    let got = fp_round_trip(&FP_SET, SIGUSR1);
+    check(FP_HANDLED.load(Ordering::SeqCst) == 1, "the SIGUSR1 handler had not run when kill(getpid()) returned")?;
+    // x86-64: a handler starts with the initial x87 and SSE state, as on Linux.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let entry = (FP_ENTRY[0].load(Ordering::SeqCst) & 0xffff, FP_ENTRY[1].load(Ordering::SeqCst));
+        check(entry == (0x037f, 0x1f80), &format!("the handler started with x87 control word {:#x} and MXCSR {:#x}, not the initial 0x37f and 0x1f80", entry.0, entry.1))?;
+    }
+    check(got == FP_SET, &format!("after a handler that changed them, the interrupted floating-point state was {}, not {}", fp_describe(&got), fp_describe(&FP_SET)))?;
+
+    FP_EDIT.store(1, Ordering::SeqCst);
+    let got = fp_round_trip(&FP_SET, SIGUSR1);
+    check(FP_EDIT.load(Ordering::SeqCst) == 1, "the handler's context had no FP image to edit")?;
+    #[cfg(target_arch = "x86_64")]
+    let edited = FpState { status: FP_EDIT_ROUNDING, vector: FP_EDIT_VECTOR, ..FP_SET };
+    #[cfg(target_arch = "aarch64")]
+    let edited = FpState { control: FP_EDIT_ROUNDING, vector: FP_EDIT_VECTOR, ..FP_SET };
+    check(got == edited, &format!("after a handler edited the saved FP image, the state was {}, not the edited {}", fp_describe(&got), fp_describe(&edited)))?;
+
+    FP_EDIT.store(0, Ordering::SeqCst);
+    FP_HANDLED.store(0, Ordering::SeqCst);
+    catch_with(SIGUSR2, on_fp_state as usize as u64, SA_SIGINFO, 0)?;
+    catch_with(SIGUSR1, on_fp_outer as usize as u64, 0, 0)?;
+    let got = fp_round_trip(&FP_SET, SIGUSR1);
+    check(FP_HANDLED.load(Ordering::SeqCst) == 2, "the outer and nested handlers had not both run when kill(getpid()) returned")?;
+    let seen = FP_OUTER_SEEN.each_ref().map(|slot| slot.load(Ordering::SeqCst));
+    let outer = FpState { control: seen[0], status: seen[1], vector: [seen[2], seen[3]], x87: seen[4] };
+    check(outer == FP_NESTED, &format!("after a nested handler returned, the outer handler's floating-point state was {}, not {}", fp_describe(&outer), fp_describe(&FP_NESTED)))?;
+    check(got == FP_SET, &format!("after nested handlers returned, the interrupted floating-point state was {}, not {}", fp_describe(&got), fp_describe(&FP_SET)))
 }
 
 static SHARED_AT: AtomicUsize = AtomicUsize::new(0);
@@ -3481,7 +3723,7 @@ static SUITE: Suite = suite(
             case("restart-wait", "waitpid interrupted by an SA_RESTART handler is restarted", h_restart_wait),
             case("eintr-wait", "waitpid interrupted by a handler without SA_RESTART fails with EINTR", h_eintr_wait),
             case("registers", "General registers survive handlers that interrupt code holding them", h_registers),
-            case("fp-registers", "All 128 bits of every floating-point and SIMD register survive handlers that overwrite them", h_fp_registers),
+            case("fp-registers", "Every floating-point and SIMD register, and the FP control and status state, survive handlers that overwrite them, nested or not; a handler's edit to the saved FP image takes effect", h_fp_registers),
             case("spinning-target", "A process spinning in user mode, with no system call, on another processor runs its handler", h_spinning_target),
         ]),
         category("waits", "sigsuspend, pause & sigtimedwait", &[
