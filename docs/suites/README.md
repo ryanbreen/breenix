@@ -212,3 +212,41 @@ scripts/boot-interactive.sh --mode suite --suite processes
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode suite --boots 1 --suite processes --gate-timeout 1800 --sha <pushed-sha>
 ```
+
+## Signals
+
+`signals` measures the signals effort in `docs/efforts/path.json`: one category per suite
+milestone, `dispositions`, `masks`, `handlers`, `waits`, `altstack`, `realtime` and
+`job-control`. Interval timers and alarm are in `waits`; kill's targets and permission
+rules and the signal state fork and exec keep are in `dispositions` and `masks`.
+
+Cases call the kernel by its Linux numbers and assert on the raw return, so an
+unimplemented call fails with ENOSYS. Library-level interfaces are made as a C library
+makes them: sigqueue through rt_sigqueueinfo, sigwaitinfo and sigtimedwait through
+rt_sigtimedwait, pthread_kill through tgkill, raise as kill(getpid()), and on ARM64 pause
+through ppoll and alarm through setitimer. Handlers are installed with the
+`struct sigaction` libbreenix passes to rt_sigaction; `dispositions/sigaction-layout`
+checks that call against the Linux ABI's layout (handler, flags, restorer, mask) on its own,
+so a layout mismatch fails that case rather than every handler case. Realtime signals are
+the kernel's 32 to 64, before a C library reserves any for itself.
+
+Each case uses the runner's default 10-second deadline. Waits on other processes are
+bounded at 3 seconds (6 for an exec) and stop 1.5 seconds before the deadline; a wait for a
+signal that may never come (sigsuspend, pause, sigwaitinfo) is ended by a watchdog child
+sending SIGHUP after 3 to 4 seconds, so a lost signal is reported as such. Children that
+must be blocked before they are signalled are observed through `/proc/<pid>/status`.
+Permission cases switch to user IDs 4242 and 4343 in children; the suite itself runs as
+root. Two cases need two processors (`handlers/spinning-target` and
+`job-control/stop-threads`) and skip below that; none assumes more.
+
+The exec cases run `/usr/local/test/bin/signals-exec_test`, which reports the mask,
+pending set, ignored and caught signals and alternate stack exec kept, or unblocks a
+signal, on a descriptor named on its command line.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite signals
+./run.sh --parallels --suite signals
+./run.sh --vmware --suite signals
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode suite --boots 1 --suite signals --gate-timeout 1800 --sha <pushed-sha>
+```
