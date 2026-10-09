@@ -220,29 +220,55 @@ while time.monotonic() - last < 5:
         return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -u -c '\(python)' \(paths.gateTmpPath) \(boots)", combineOutput: false)
     }
 
-    /// The PID and process birth are published by the launch shell before exec.
-    /// Signal only this supervisor, then wait for its descendant cleanup before harvest.
-    public static func stopGateRequest(paths: BeastPaths) -> ProcessRequest {
-        let code = #"""
+    /// Signal this run's supervisor and detached worker, including a worker whose
+    /// foreground handle died during disconnect. PID birth checks exclude reused PIDs.
+    static let gateStopper = #"""
 import json, os, pathlib, signal, sys, time
-record = pathlib.Path(sys.argv[1])
-if not record.exists():
-    sys.exit(1)
-pid, birth = json.loads(record.read_text())
-def alive():
+
+def stop_gate(record, proc):
     try:
-        fields = pathlib.Path('/proc/%d/stat' % pid).read_text().rsplit(')', 1)[1].split()
-        return fields[19] == birth and fields[0] != 'Z'
-    except FileNotFoundError:
-        return False
-if alive():
-    os.kill(pid, signal.SIGTERM)
-deadline = time.monotonic() + 130
-while alive() and time.monotonic() < deadline:
-    time.sleep(.2)
-sys.exit(1 if alive() else 0)
+        pid, birth = json.loads(record.read_text())
+    except (FileNotFoundError, ValueError):
+        return 1
+    def identity(pid):
+        try:
+            fields = (proc / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
+            return fields[19] if fields[0] != "Z" else None
+        except (FileNotFoundError, ProcessLookupError):
+            return None
+    targets = {pid: birth}
+    helper = str(record.parent / "host-slots.py").encode()
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+            if helper in argv and b"supervise" in argv:
+                worker = int(entry.name)
+                token = identity(worker)
+                if token is not None:
+                    targets[worker] = token
+        except (FileNotFoundError, ProcessLookupError):
+            pass
+    def alive(pid, token):
+        return identity(pid) == token
+    for target, token in targets.items():
+        if alive(target, token):
+            try:
+                os.kill(target, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    deadline = time.monotonic() + 130
+    while any(alive(p, t) for p, t in targets.items()) and time.monotonic() < deadline:
+        time.sleep(.2)
+    return 1 if any(alive(p, t) for p, t in targets.items()) else 0
+
+if __name__ == "__main__":
+    sys.exit(stop_gate(pathlib.Path(sys.argv[1]), pathlib.Path("/proc")))
 """#
-        let encoded = Data(code.utf8).base64EncodedString()
+
+    public static func stopGateRequest(paths: BeastPaths) -> ProcessRequest {
+        let encoded = Data(gateStopper.utf8).base64EncodedString()
         return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath)/launcher-gate.json")
     }
 

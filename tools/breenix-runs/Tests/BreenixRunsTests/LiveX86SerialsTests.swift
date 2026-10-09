@@ -119,6 +119,41 @@ final class LiveX86SerialsTests: XCTestCase {
         XCTAssertThrowsError(try SSHSerialStreaming().start(ProcessRequest(executable: "/does-not-exist")) { _ in })
     }
 
+    func testDisconnectCleanupFindsDetachedWorkerAndExcludesReusedPIDAndPeer() throws {
+        let fixture = try Fixture(status: 0)
+        defer { fixture.remove() }
+        let code = """
+        import pathlib, json, shutil
+        proc = pathlib.Path(\(String(reflecting: fixture.root.path))) / "proc"
+        record = proc.parent / "gate-tmp" / "launcher-gate.json"
+        record.parent.mkdir()
+        record.write_text(json.dumps([100, "original-birth"]))
+        for pid, birth, helper in [(100, "reused-birth", "/peer/host-slots.py"),
+                                   (200, "worker-birth", str(record.parent / "host-slots.py")),
+                                   (300, "peer-birth", "/another/host-slots.py")]:
+            directory = proc / str(pid)
+            directory.mkdir(parents=True)
+            fields = ["S"] + ["0"] * 18 + [birth]
+            (directory / "stat").write_text(str(pid) + " (python3) " + " ".join(fields))
+            (directory / "cmdline").write_bytes(b"python3\\0" + helper.encode() + b"\\0supervise\\0")
+        namespace = dict(__name__="fake")
+        exec(\(String(reflecting: RemoteCommand.gateStopper)), namespace)
+        killed = []
+        def fake_kill(pid, number):
+            killed.append(pid)
+            shutil.rmtree(proc / str(pid))
+        namespace["os"].kill = fake_kill
+        status = namespace["stop_gate"](record, proc)
+        assert status == 0, status
+        assert killed == [200], killed
+        assert (proc / "100").exists() and (proc / "300").exists()
+        print("detached worker quiesced; reused PID and peer untouched")
+        """
+        let result = try RealProcessRunner().run(ProcessRequest(executable: "/usr/bin/python3", arguments: ["-c", code]))
+        XCTAssertEqual(result.exitCode, 0, result.stderrString)
+        XCTAssertTrue(result.stdoutString.contains("detached worker quiesced"))
+    }
+
     func testRemoteReaderHandlesIterationGrowthAndStopsOnEOFWithoutSSH() throws {
         let fixture = try Fixture(status: 0)
         defer { fixture.remove() }
