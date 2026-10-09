@@ -63,10 +63,12 @@ pub fn sys_kill(pid: i64, sig: i32) -> SyscallResult {
 }
 
 /// rt_sigqueueinfo(pid, sig, info) - sigqueue: send `sig` to process `pid`
-/// with the caller's siginfo, whose si_value its SA_SIGINFO handler is given.
-/// A process may give a si_code of SI_USER or above, or SI_TKILL, only for a
-/// signal to itself; sigqueue's is SI_QUEUE (Linux). Realtime signals are
-/// queued up to RLIMIT_SIGPENDING, beyond which this fails with EAGAIN.
+/// with the caller's siginfo, whose si_errno and si_value its SA_SIGINFO
+/// handler is given. A thread may give a si_code of SI_USER or above, or
+/// SI_TKILL, only when it is the thread that leads process `pid`: Linux
+/// compares the caller's thread ID with `pid`, which only that thread's
+/// equals. sigqueue's si_code is SI_QUEUE. Realtime signals are queued up to
+/// RLIMIT_SIGPENDING, beyond which this fails with EAGAIN.
 pub fn sys_rt_sigqueueinfo(pid: i64, sig: i32, info_ptr: u64) -> SyscallResult {
     let given: crate::signal::LinuxSigInfo =
         match copy_from_user(info_ptr as *const crate::signal::LinuxSigInfo) {
@@ -82,10 +84,11 @@ pub fn sys_rt_sigqueueinfo(pid: i64, sig: i32, info_ptr: u64) -> SyscallResult {
     }
     let code = given.0[1] as u32 as i32;
     let sender = current_sender();
-    if (code >= 0 || code == SI_TKILL) && sender.tgid() != Some(pid as u64) {
+    if (code >= 0 || code == SI_TKILL) && sender.row() != Some(pid as u64) {
         return SyscallResult::Err(EPERM as u64);
     }
-    let info = SigInfo { code, fields: [given.0[2], given.0[3]], ..SigInfo::kernel() };
+    let errno = (given.0[0] >> 32) as u32 as i32;
+    let info = SigInfo { code, errno, fields: [given.0[2], given.0[3]], ..SigInfo::kernel() };
     send_signal_to_process(ProcessId::new(pid as u64), sig, sender, info)
 }
 
@@ -199,16 +202,24 @@ pub(crate) fn signal_orphaned_group(pgid: ProcessId) {
 /// checked and whose identity the siginfo reports, or the kernel.
 #[derive(Clone, Copy)]
 enum Sender {
-    Process { tgid: u64, uid: u32, euid: u32, sid: ProcessId },
+    /// `row` is the calling thread's own row, `tgid` its process.
+    Process { row: u64, tgid: u64, uid: u32, euid: u32, sid: ProcessId },
     Kernel,
 }
 
 impl Sender {
-    fn tgid(&self) -> Option<u64> {
+    fn row(&self) -> Option<u64> {
         match *self {
-            Sender::Process { tgid, .. } => Some(tgid),
+            Sender::Process { row, .. } => Some(row),
             Sender::Kernel => None,
         }
+    }
+
+    /// Whether a realtime signal from this sender with `info` that cannot be
+    /// queued is still generated, without an instance of its own: the
+    /// kernel's, and kill's (SI_USER). Any other fails with EAGAIN (Linux).
+    fn may_lose_info(&self, info: &SigInfo) -> bool {
+        matches!(*self, Sender::Kernel) || info.code == SI_USER
     }
 
     /// Whether this sender may send `sig` to `target` (POSIX kill): a
@@ -247,6 +258,7 @@ fn current_sender() -> Sender {
         .as_ref()
         .and_then(|manager| manager.find_process_by_thread(tid))
         .map(|(pid, process)| Sender::Process {
+            row: pid.as_u64(),
             tgid: process.thread_group_id.unwrap_or(pid.as_u64()),
             uid: process.cred.uid,
             euid: process.cred.euid,
@@ -277,22 +289,38 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
     let mut manager_guard = manager();
 
     if let Some(ref mut manager) = *manager_guard {
-        let group = match manager.get_process(target) {
+        let (group, target) = match manager.get_process(target) {
             None => return SyscallResult::Err(ESRCH as u64),
             Some(process) if !sender.may_signal(process, sig) => {
                 return SyscallResult::Err(EPERM as u64)
             }
-            // A zombie is still a process until it is reaped: the signal is
-            // accepted and has no effect.
-            Some(process) if sig == 0 || process.is_terminated() => return SyscallResult::Ok(0),
-            Some(process) => process.thread_group_id.unwrap_or(target.as_u64()),
+            Some(process) => {
+                let group = process.thread_group_id.unwrap_or(target.as_u64());
+                // A process whose first thread has exited runs on while
+                // another of its threads does: the signal is for one of them.
+                let live = if !process.is_terminated() {
+                    Some(target)
+                } else if to == Recipient::Process {
+                    manager.group_rows(group).next().map(|row| row.id)
+                } else {
+                    None
+                };
+                match live {
+                    // A zombie is still a process until it is reaped: the
+                    // signal is accepted and has no effect.
+                    None => return SyscallResult::Ok(0),
+                    Some(_) if sig == 0 => return SyscallResult::Ok(0),
+                    Some(live) => (group, live),
+                }
+            }
         };
 
-        // SIGKILL cannot be caught or blocked, and ends the whole process.
+        // SIGKILL cannot be caught or blocked, and ends every thread of the
+        // process, whichever of them its sender named.
         if sig == SIGKILL {
-            let victim = if to == Recipient::Thread { ProcessId::new(group) } else { target };
             drop(manager_guard);
-            kill_process_now(victim, -(SIGKILL as i32));
+            crate::signal::delivery::terminate_thread_group_peers(target, -(SIGKILL as i32));
+            kill_process_now(target, -(SIGKILL as i32));
             return SyscallResult::Ok(0);
         }
 
@@ -326,36 +354,37 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
                 .unwrap_or(target),
         };
 
-        if crate::signal::types::is_realtime(sig) {
-            if let Some(process) = manager.get_process(recipient) {
-                // Realtime instances are charged to the real user of the
-                // process they are queued for, against its RLIMIT_SIGPENDING.
-                let uid = process.cred.uid;
-                let limit = process.limits.get(crate::process::limits::SIGPENDING).soft;
-                let queued: u64 = manager
-                    .iter_processes()
-                    .filter(|(_, p)| !p.is_terminated() && p.cred.uid == uid)
-                    .map(|(_, p)| p.signals.queued_count() as u64)
-                    .sum();
-                if queued >= limit {
-                    // At the limit sigqueue and tgkill fail; kill and the
-                    // kernel still generate the signal while none of it is
-                    // pending, as on Linux.
-                    if info.code != SI_USER && info.code != SI_KERNEL {
-                        return SyscallResult::Err(EAGAIN as u64);
-                    }
-                    if process.signals.pending & sig_mask(sig) != 0 {
-                        return SyscallResult::Ok(0);
-                    }
-                }
-            }
-        }
+        let Some(process) = manager.get_process(recipient) else {
+            return SyscallResult::Err(ESRCH as u64);
+        };
+        // Realtime instances are charged to the real user of the process
+        // they are queued for, against its RLIMIT_SIGPENDING. Every row is
+        // counted, exited ones included, so no queue escapes the bound. An
+        // ignored signal is discarded at generation, before the limit
+        // applies; the wakeups below still run for what is already pending.
+        let at_limit = crate::signal::types::is_realtime(sig)
+            && !process.signals.discards(sig)
+            && {
+            let uid = process.cred.uid;
+            let limit = process.limits.get(crate::process::limits::SIGPENDING).soft;
+            let queued: u64 = manager
+                .iter_processes()
+                .filter(|(_, p)| p.cred.uid == uid)
+                .map(|(_, p)| p.signals.queued_count() as u64)
+                .sum();
+            queued >= limit
+        };
 
         if let Some(process) = manager.get_process_mut(recipient) {
-            // Ignored signals are discarded at generation.
-            process.signals.set_pending_info(sig, info);
-            if to == Recipient::Process {
-                process.signals.process_pending |= sig_mask(sig) & process.signals.pending;
+            let process_directed = to == Recipient::Process;
+            if at_limit || !process.signals.try_generate(sig, info, process_directed) {
+                // Not queued: sigqueue and tgkill fail; kill and the kernel
+                // still generate the signal while none of it is pending, as
+                // on Linux.
+                if !sender.may_lose_info(&info) {
+                    return SyscallResult::Err(EAGAIN as u64);
+                }
+                process.signals.generate_unqueued(sig, info, process_directed);
             }
 
             // A stopped process runs nothing until SIGCONT; what is pending
