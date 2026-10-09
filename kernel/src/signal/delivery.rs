@@ -1024,9 +1024,9 @@ pub fn notify_parent_of_job_change_locked(
     });
     let notify = manager.get_process(notification.parent_pid)
         .is_some_and(|p| p.signals.get_handler(SIGCHLD).flags & SA_NOCLDSTOP == 0);
-    if notify {
-        manager.queue_process_signal(notification.parent_pid, SIGCHLD, info.unwrap_or_else(SigInfo::kernel));
-    }
+    let signal_wake = if notify {
+        manager.queue_process_signal(notification.parent_pid, SIGCHLD, info.unwrap_or_else(SigInfo::kernel))
+    } else { None };
     let Some(parent) = manager.get_process_mut(notification.parent_pid) else { return; };
     let signal_eligible = parent.signals.has_deliverable_signals();
     let Some(parent_tid) = parent.main_thread.as_ref().map(|thread| thread.id) else {
@@ -1034,6 +1034,10 @@ pub fn notify_parent_of_job_change_locked(
     };
     crate::task::scheduler::with_scheduler(|scheduler| {
         scheduler.unblock_for_job_change(parent_tid, signal_eligible);
+        if let Some(tid) = signal_wake {
+            scheduler.unblock_for_signal(tid);
+            scheduler.unblock_for_child_exit(tid);
+        }
     });
 }
 
@@ -1577,7 +1581,7 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
 
     // Get process manager to find and update parent
     // This is safe because we're called after the caller released their lock
-    let (parent_thread_id, auto_reaped) = {
+    let (parent_thread_id, auto_reaped, signal_wake) = {
         let mut manager_guard = crate::process::manager();
         let Some(ref mut manager) = *manager_guard else {
             log::warn!("notify_parent_of_termination_deferred: no process manager");
@@ -1588,7 +1592,7 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
         // dropped once the guard is released (condition C8).
         let auto_reaped = manager.reap_if_parent_declines(child_pid);
 
-        manager.queue_process_signal(parent_pid, SIGCHLD, child_info.unwrap_or_else(SigInfo::kernel));
+        let signal_wake = manager.queue_process_signal(parent_pid, SIGCHLD, child_info.unwrap_or_else(SigInfo::kernel));
         // Find parent process and wake its child-status wait
         let parent_thread_id = if let Some(parent_process) = manager.get_process_mut(parent_pid) {
             // Send SIGCHLD to parent
@@ -1612,10 +1616,16 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
             );
             None
         };
-        (parent_thread_id, auto_reaped)
+        (parent_thread_id, auto_reaped, signal_wake)
         // manager_guard is dropped here
     };
     drop(auto_reaped);
+    if let Some(tid) = signal_wake {
+        crate::task::scheduler::with_scheduler(|s| {
+            s.unblock_for_signal(tid);
+            s.unblock_for_child_exit(tid);
+        });
+    }
 
     // Unblock parent thread if it's waiting on waitpid or sigsuspend
     if let Some((parent_tid, signal_eligible)) = parent_thread_id {

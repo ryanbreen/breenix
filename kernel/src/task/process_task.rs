@@ -953,9 +953,10 @@ impl ProcessScheduler {
                     let child_info = manager
                         .get_process(pid)
                         .map(crate::signal::delivery::child_exit_info);
+                    let mut signal_wake = None;
                     let parent_tid = if let Some(parent_pid) = parent_pid {
                         if let (true, Some(info)) = (sigchld_pending, child_info) {
-                            manager.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
+                            signal_wake = manager.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
                         }
                         if let Some(parent_process) = manager.get_process_mut(parent_pid) {
                             parent_process.main_thread.as_ref().map(|t| t.id)
@@ -987,6 +988,7 @@ impl ProcessScheduler {
                         process_name,
                         fd_entries,
                         parent_tid,
+                        signal_wake,
                         retirement_receipt,
                         report_claimed,
                         reported_exit_code,
@@ -1007,6 +1009,7 @@ impl ProcessScheduler {
             process_name,
             fd_entries,
             parent_tid,
+            signal_wake,
             retirement_receipt,
             report_claimed,
             reported_exit_code,
@@ -1033,6 +1036,12 @@ impl ProcessScheduler {
                 crate::syscall::signal::signal_orphaned_group(pgid);
             }
 
+            if let Some(tid) = signal_wake {
+                scheduler::with_scheduler(|s| {
+                    s.unblock_for_signal(tid);
+                    s.unblock_for_child_exit(tid);
+                });
+            }
             // Wake parent thread if blocked on waitpid or pause()
             if let Some(parent_tid) = parent_tid {
                 scheduler::with_scheduler(|sched| {

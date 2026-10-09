@@ -1873,10 +1873,10 @@ impl ProcessManager {
         &mut self,
         pid: ProcessId,
         exit_code: i32,
-    ) -> Option<super::RetirementReceipt> {
+    ) -> (Option<super::RetirementReceipt>, Option<u64>) {
         let already_terminated = match self.processes.live_row(&pid) {
             Some(process) => process.is_terminated(),
-            None => return None,
+            None => return (None, None),
         };
         crate::tracing::providers::teardown::record_exit_request(already_terminated);
 
@@ -1884,6 +1884,7 @@ impl ProcessManager {
         let parent_pid = self.processes.live_row(&pid).and_then(|p| p.parent);
 
         let mut receipt = None;
+        let mut signal_wake = None;
         if let Some(process) = self.processes.live_row_mut(&pid) {
             if !already_terminated {
                 process.exit_notifications.seed();
@@ -1960,14 +1961,14 @@ impl ProcessManager {
                 .live_row(&pid)
                 .map(crate::signal::delivery::child_exit_info);
             if let (Some(parent_pid), Some(info)) = (parent_pid, child_info) {
-                self.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
+                signal_wake = self.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
             }
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.exit_notifications.complete_sigchld();
             }
         }
 
-        receipt
+        (receipt, signal_wake)
     }
 
     /// Get the next ready process to run
@@ -2207,24 +2208,21 @@ impl ProcessManager {
         }).map(|p| p.id).unwrap_or(pid)
     }
 
-    /// Generate and wake a process signal, including blocked synchronous waits.
-    /// Child-status waiters are woken separately on their parent row.
-    pub fn queue_process_signal(&mut self, pid: ProcessId, sig: u32, info: crate::signal::SigInfo) {
+    /// Queue a process signal and return its eligible recipient for the caller
+    /// to wake after releasing PM. The manager never acquires the scheduler.
+    pub fn queue_process_signal(&mut self, pid: ProcessId, sig: u32, info: crate::signal::SigInfo) -> Option<u64> {
         use core::sync::atomic::Ordering;
         let recipient = self.signal_recipient(pid, sig);
-        let Some(row) = self.get_process_mut(recipient) else { return; };
+        let row = self.get_process_mut(recipient)?;
         row.signals.set_pending_info(sig, info);
         let bit = crate::signal::constants::sig_mask(sig);
         row.signals.process_pending |= row.signals.pending & bit;
         let eligible = row.signals.has_deliverable_signals()
             || row.signals.pending & row.signals.thread.wait_set.load(Ordering::Acquire) != 0;
         if row.job.stopped.is_none() && eligible {
-            if let Some(tid) = row.main_thread.as_ref().map(|t| t.id) {
-                crate::task::scheduler::with_scheduler(|s| {
-                    s.unblock_for_signal(tid);
-                    s.unblock_for_child_exit(tid);
-                });
-            }
+            row.main_thread.as_ref().map(|t| t.id)
+        } else {
+            None
         }
     }
 
