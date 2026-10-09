@@ -253,7 +253,7 @@
     },
     {
       "id": "frames",
-      "title": "anonymous and cached private-file signal frames",
+      "title": "demand-backed signal frames",
       "cases": [
         {
           "id": "private-file",
@@ -262,6 +262,26 @@
         {
           "id": "fork-cow",
           "title": "A forked private-file stack populates a missing frame page and preserves the parent's resident CoW page and backing bytes"
+        },
+        {
+          "id": "main-stack",
+          "title": "A handler and sigreturn work on a main-stack page first populated by signal delivery"
+        },
+        {
+          "id": "unpopulated-file",
+          "title": "A private-file alternate stack is populated without a preceding user access and preserves backing bytes"
+        },
+        {
+          "id": "cache-hole",
+          "title": "A private-file alternate stack extended after mmap allocates zero cache pages for its frame"
+        },
+        {
+          "id": "clone-vm",
+          "title": "A CLONE_VM sibling installs its frame in the owner's demand-grown main stack"
+        },
+        {
+          "id": "invalid",
+          "title": "Read-only, unmapped, unreserved and over-limit frame destinations terminate with SIGSEGV"
         }
       ]
     },
