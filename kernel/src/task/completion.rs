@@ -51,6 +51,21 @@ use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 /// SCRATCH #1238 forcing: tid of the thread inside sys_rmdir, or 0.
 pub static FORCE_SWITCH_TID: AtomicU64 = AtomicU64::new(0);
 
+/// SCRATCH #1238 forcing: run `f` with the current thread's completion waits
+/// forced off its CPU when `path` names one of mkdir-rmdir/reclaim's d0-d7.
+pub fn force_switch_for_path<R>(path: &str, f: impl FnOnce() -> R) -> R {
+    let name = path.rsplit('/').next().unwrap_or("");
+    let b = name.as_bytes();
+    if !(b.len() == 2 && b[0] == b'd' && (b'0'..=b'7').contains(&b[1])) {
+        return f();
+    }
+    let tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    FORCE_SWITCH_TID.store(tid, Ordering::Release);
+    let result = f();
+    FORCE_SWITCH_TID.store(0, Ordering::Release);
+    result
+}
+
 /// POSIX EINTR errno value.
 const EINTR: i32 = 4;
 
