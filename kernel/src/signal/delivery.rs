@@ -95,8 +95,8 @@ pub fn deliver_pending_signals(
             return SignalDeliveryResult::NoAction;
         }
 
-        // Clear pending flag for this signal
-        process.signals.clear_pending(sig);
+        // Take one instance of this signal
+        process.signals.take(sig);
 
         // Get the handler for this signal
         let action = *process.signals.get_handler(sig);
@@ -193,8 +193,8 @@ pub fn deliver_pending_signals(
             return SignalDeliveryResult::NoAction;
         }
 
-        // Clear pending flag for this signal
-        process.signals.clear_pending(sig);
+        // Take one instance of this signal
+        process.signals.take(sig);
 
         // Get the handler for this signal
         let action = *process.signals.get_handler(sig);
@@ -494,7 +494,6 @@ pub fn deliver_caught_signal_on_syscall_return(
         let Some(sig) = process.signals.next_deliverable_signal() else {
             return SignalDeliveryResult::NoAction;
         };
-        process.signals.clear_pending(sig);
         let action = *process.signals.get_handler(sig);
         match action.handler {
             SIG_DFL => {
@@ -504,11 +503,13 @@ pub fn deliver_caught_signal_on_syscall_return(
                 if matches!(default_action(sig), SignalDefaultAction::Stop) {
                     crate::task::scheduler::set_need_resched();
                 }
-                process.signals.set_pending(sig);
                 return SignalDeliveryResult::NoAction;
             }
-            SIG_IGN => {}
+            SIG_IGN => {
+                process.signals.take(sig);
+            }
             handler_addr => {
+                process.signals.take(sig);
                 if install_user_handler_x86_64(
                     process,
                     &mut shared_table,
@@ -1440,7 +1441,7 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
 /// process-manager lock, so it does no logging, locking or allocation.
 pub fn take_fatal_default_signal(process: &mut Process) -> Option<u32> {
     let sig = fatal_default_signal(process)?;
-    process.signals.clear_pending(sig);
+    process.signals.take(sig);
     Some(sig)
 }
 

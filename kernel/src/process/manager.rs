@@ -2188,8 +2188,7 @@ impl ProcessManager {
                 break;
             };
             let row = self.get_process_mut(source).unwrap();
-            let info = row.signals.pending_info(sig);
-            row.signals.clear_pending(sig);
+            let info = row.signals.take(sig);
             let target = self.get_process_mut(pid).unwrap();
             target.signals.set_pending_info(sig, info);
             target.signals.process_pending |= sig_mask(sig) & target.signals.pending;

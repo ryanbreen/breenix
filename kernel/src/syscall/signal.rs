@@ -1773,7 +1773,7 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
                 None
             } else {
                 let sig = pending.trailing_zeros() + 1;
-                let info = p.signals.pending_info(sig);
+                let info = p.signals.next_info(sig);
                 Some((sig, info))
             }
         };
@@ -1787,7 +1787,7 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
             // wait_set prevents another accepting thread from retargeting it.
             let mut guard = manager();
             if let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) {
-                p.signals.clear_pending(sig);
+                p.signals.take(sig);
             }
             break SyscallResult::Ok(sig as u64);
         }

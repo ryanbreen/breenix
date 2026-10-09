@@ -3,6 +3,7 @@
 use super::constants::*;
 use crate::memory::slab::{SlabBox, SIGNAL_HANDLERS_SLAB};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Alternate signal stack configuration (matches Linux stack_t)
@@ -262,9 +263,10 @@ pub fn child_exit_code_status(exit_code: i32) -> (i32, i32) {
     }
 }
 
-/// A process's signal dispositions and the siginfo of each pending signal,
-/// one per signal: a signal already pending keeps the information it was
-/// first generated with, as a standard signal does on Linux.
+/// A process's signal dispositions and the siginfo of each standard signal,
+/// one per signal: a standard signal already pending keeps the information it
+/// was first generated with, as on Linux. For a realtime signal the slot holds
+/// the instance delivery last took off the queue (`SignalState::take`).
 #[derive(Clone)]
 pub struct SignalTable {
     actions: [SignalAction; 64],
@@ -343,6 +345,15 @@ pub struct SignalState {
     /// Signals whose SA_RESETHAND action delivery reset in this row and not
     /// yet in the other rows of its thread group (`mark_group_reset`).
     group_resets: u64,
+    /// Pending instances of realtime signals with their siginfo, oldest
+    /// first. A realtime signal's `pending` bit is set while it has one here.
+    queued: Vec<(u32, SigInfo)>,
+}
+
+/// Whether `sig` is a realtime signal, whose instances are queued rather than
+/// coalesced.
+pub const fn is_realtime(sig: u32) -> bool {
+    sig >= SIGRTMIN && sig <= SIGRTMAX
 }
 
 /// Set when a row has group resets the process manager has not yet copied
@@ -370,6 +381,7 @@ impl Default for SignalState {
             ignored: DEFAULT_IGNORED_SIGNALS,
             alt_stack: AltStack::default(),
             group_resets: 0,
+            queued: Vec::new(),
         }
     }
 }
@@ -463,22 +475,26 @@ impl SignalState {
     }
 
     /// Mark a signal as pending with the siginfo its handler is to be given.
-    /// A signal already pending is not queued again and keeps its first
-    /// information.
+    /// A standard signal already pending is not queued again and keeps its
+    /// first information; each instance of a realtime signal is queued after
+    /// those already pending. The caller bounds the queue (RLIMIT_SIGPENDING).
     #[inline]
     pub fn set_pending_info(&mut self, sig: u32, info: SigInfo) {
         // Keep blocked default-ignored signals for synchronous acceptance,
         // as Linux does. Explicit SIG_IGN still discards at generation.
         if is_valid_signal(sig) && (self.ignored & sig_mask(sig) == 0
             || self.is_blocked(sig) && self.get_handler(sig).is_default()) {
-            if self.pending & sig_mask(sig) == 0 {
+            if is_realtime(sig) {
+                self.queued.push((sig, info));
+            } else if self.pending & sig_mask(sig) == 0 {
                 self.handlers.info[(sig - 1) as usize] = info;
             }
             self.pending |= sig_mask(sig);
         }
     }
 
-    /// The siginfo of pending signal `sig`, which delivery hands its handler.
+    /// The siginfo delivery hands the handler of `sig`: a pending standard
+    /// signal's, or the realtime instance `take` last took.
     pub fn pending_info(&self, sig: u32) -> SigInfo {
         if is_valid_signal(sig) {
             self.handlers.info[(sig - 1) as usize]
@@ -487,23 +503,52 @@ impl SignalState {
         }
     }
 
-    /// Discard every pending signal in `mask`.
+    /// The siginfo of the instance of pending signal `sig` that `take` would
+    /// take next, leaving it pending.
+    pub fn next_info(&self, sig: u32) -> SigInfo {
+        match self.queued.iter().find(|(s, _)| *s == sig) {
+            Some((_, info)) if is_realtime(sig) => *info,
+            _ => self.pending_info(sig),
+        }
+    }
+
+    /// Take one instance of pending signal `sig` and return its siginfo,
+    /// which `pending_info` also reports until the next take. A realtime
+    /// signal with more instances queued stays pending.
+    pub fn take(&mut self, sig: u32) -> SigInfo {
+        if is_realtime(sig) {
+            if let Some(at) = self.queued.iter().position(|(s, _)| *s == sig) {
+                self.handlers.info[(sig - 1) as usize] = self.queued.remove(at).1;
+                if self.queued.iter().any(|(s, _)| *s == sig) {
+                    return self.handlers.info[(sig - 1) as usize];
+                }
+            }
+        }
+        self.clear_pending(sig);
+        self.pending_info(sig)
+    }
+
+    /// How many realtime signal instances are queued.
+    pub fn queued_count(&self) -> usize {
+        self.queued.len()
+    }
+
+    /// Discard every pending signal in `mask`, every queued instance included.
     #[inline]
     pub fn discard_pending(&mut self, mask: u64) {
         self.pending &= !mask;
         self.process_pending &= !mask;
         self.thread.timer_pending.fetch_and(!mask, Ordering::AcqRel);
+        if self.queued.iter().any(|(s, _)| sig_mask(*s) & mask != 0) {
+            self.queued.retain(|(s, _)| sig_mask(*s) & mask == 0);
+        }
     }
 
-    /// Clear a pending signal
+    /// Discard pending signal `sig`, every queued instance included.
     #[inline]
     pub fn clear_pending(&mut self, sig: u32) {
         if is_valid_signal(sig) {
-            self.pending &= !sig_mask(sig);
-            self.process_pending &= !sig_mask(sig);
-            self.thread
-                .timer_pending
-                .fetch_and(!sig_mask(sig), Ordering::AcqRel);
+            self.discard_pending(sig_mask(sig));
         }
     }
 
@@ -552,6 +597,7 @@ impl SignalState {
                 // whether blocked or unblocked.
                 self.pending &= !bit;
                 self.process_pending &= !bit;
+                self.queued.retain(|(s, _)| *s != sig);
             } else {
                 self.ignored &= !bit;
             }
@@ -595,6 +641,7 @@ impl SignalState {
             ignored: self.ignored,
             alt_stack: self.alt_stack, // Alt stack is inherited per POSIX
             group_resets: 0,
+            queued: Vec::new(),
         }
     }
 

@@ -639,7 +639,7 @@ pub fn check_signals_for_wait() -> Option<i32> {
         if action.is_handler() || crate::signal::delivery::fatal_exit_code(sig).is_some() {
             return Some(errno::EINTR);
         }
-        p.signals.clear_pending(sig);
+        p.signals.take(sig);
     }
 }
 
