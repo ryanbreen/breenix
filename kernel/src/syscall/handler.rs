@@ -269,6 +269,15 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         None if syscall_num == 128 => {
             super::signal::sys_sigtimedwait(args.0, args.1, args.2, args.3)
         }
+        None if syscall_num == super::RT_SIGQUEUEINFO_SYSCALL_NUMBER => {
+            super::signal::sys_rt_sigqueueinfo(args.0 as i32 as i64, args.1 as i32, args.2)
+        }
+        None if syscall_num == super::TKILL_SYSCALL_NUMBER => {
+            super::signal::sys_tkill(args.0 as i32 as i64, args.1 as i32)
+        }
+        None if syscall_num == super::TGKILL_SYSCALL_NUMBER => {
+            super::signal::sys_tgkill(args.0 as i32 as i64, args.1 as i32 as i64, args.2 as i32)
+        }
         Some(SyscallNumber::Sigpending) => super::signal::sys_sigpending(args.0, args.1),
         Some(SyscallNumber::Sigsuspend) => {
             // sigsuspend(mask, sigsetsize) - atomically set mask and wait for signal

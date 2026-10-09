@@ -2162,10 +2162,10 @@ impl ProcessManager {
             .map(|row| row.thread_group_id.unwrap_or(pid.as_u64()))
     }
 
-    /// Move process-directed pending signals to an eligible accepting thread.
-    /// Thread-directed pending signals never move. PM serializes the transfer.
+    /// Move process-directed pending signals to an eligible accepting thread,
+    /// each signal's instances kept in the order they were generated.
+    /// Thread-directed instances never move. PM serializes the transfer.
     pub fn route_pending_signals_to(&mut self, tid: u64) {
-        use crate::signal::constants::sig_mask;
         use core::sync::atomic::Ordering;
         let Some((pid, target)) = self.find_process_by_thread(tid) else {
             return;
@@ -2187,12 +2187,19 @@ impl ProcessManager {
             let Some((source, sig)) = source else {
                 break;
             };
+            // Make room on the target first, so that an instance taken off
+            // the source is never lost; without memory it stays where it is.
+            if crate::signal::types::is_realtime(sig)
+                && !self.get_process_mut(pid).unwrap().signals.reserve_instance()
+            {
+                break;
+            }
             let row = self.get_process_mut(source).unwrap();
-            let info = row.signals.pending_info(sig);
-            row.signals.clear_pending(sig);
+            let Some((info, seq)) = row.signals.take_process_directed(sig) else {
+                continue;
+            };
             let target = self.get_process_mut(pid).unwrap();
-            target.signals.set_pending_info(sig, info);
-            target.signals.process_pending |= sig_mask(sig) & target.signals.pending;
+            target.signals.accept_moved(sig, info, seq);
         }
     }
 
@@ -2214,9 +2221,7 @@ impl ProcessManager {
         use core::sync::atomic::Ordering;
         let recipient = self.signal_recipient(pid, sig);
         let row = self.get_process_mut(recipient)?;
-        row.signals.set_pending_info(sig, info);
-        let bit = crate::signal::constants::sig_mask(sig);
-        row.signals.process_pending |= row.signals.pending & bit;
+        row.signals.generate(sig, info, true);
         let eligible = row.signals.has_deliverable_signals()
             || row.signals.pending & row.signals.thread.wait_set.load(Ordering::Acquire) != 0;
         if row.job.stopped.is_none() && eligible {

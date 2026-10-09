@@ -3,6 +3,7 @@
 use super::constants::*;
 use crate::memory::slab::{SlabBox, SIGNAL_HANDLERS_SLAB};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Alternate signal stack configuration (matches Linux stack_t)
@@ -171,12 +172,14 @@ impl SignalAction {
 }
 
 /// What a pending signal carries for its handler's `siginfo_t` besides its
-/// number: the si_code and the first 16 bytes of the Linux siginfo union,
+/// number: the si_code, si_errno and the first 16 bytes of the Linux siginfo union,
 /// which hold si_pid and si_uid then si_value or si_status, or si_addr.
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct SigInfo {
     pub code: i32,
+    /// si_errno: zero except where a sender gave one (sigqueue).
+    pub errno: i32,
     /// Bytes 16..32 of the Linux `siginfo_t`.
     pub fields: [u64; 2],
     /// For a fault, what the handler's machine context reports about the
@@ -199,7 +202,7 @@ pub struct Trap {
 impl SigInfo {
     /// A signal the kernel generated with no sender (SI_KERNEL).
     pub const fn kernel() -> Self {
-        Self { code: SI_KERNEL, fields: [0, 0], trap: Trap { number: 0, error: 0 } }
+        Self { code: SI_KERNEL, errno: 0, fields: [0, 0], trap: Trap { number: 0, error: 0 } }
     }
 
     /// A signal sent by a process: `code` SI_USER or SI_TKILL, with the
@@ -235,7 +238,7 @@ impl SigInfo {
     /// The `siginfo_t` for signal `sig` in the Linux ABI's 128-byte layout.
     pub fn to_linux(&self, sig: u32) -> LinuxSigInfo {
         let mut words = [0u64; 16];
-        words[0] = sig as u64;
+        words[0] = sig as u64 | (self.errno as u32 as u64) << 32;
         words[1] = self.code as u32 as u64;
         words[2] = self.fields[0];
         words[3] = self.fields[1];
@@ -262,9 +265,10 @@ pub fn child_exit_code_status(exit_code: i32) -> (i32, i32) {
     }
 }
 
-/// A process's signal dispositions and the siginfo of each pending signal,
-/// one per signal: a signal already pending keeps the information it was
-/// first generated with, as a standard signal does on Linux.
+/// A process's signal dispositions and the siginfo of each standard signal,
+/// one per signal: a standard signal already pending keeps the information it
+/// was first generated with, as on Linux. For a realtime signal the slot holds
+/// the instance delivery last took off the queue (`SignalState::take`).
 #[derive(Clone)]
 pub struct SignalTable {
     actions: [SignalAction; 64],
@@ -343,6 +347,33 @@ pub struct SignalState {
     /// Signals whose SA_RESETHAND action delivery reset in this row and not
     /// yet in the other rows of its thread group (`mark_group_reset`).
     group_resets: u64,
+    /// Pending instances of realtime signals, oldest first. A realtime
+    /// signal's `pending` bit is set while it has one here, and its
+    /// `process_pending` bit while one of them is process-directed.
+    queued: Vec<Instance>,
+}
+
+/// One pending instance of a realtime signal.
+#[derive(Clone, Copy)]
+struct Instance {
+    sig: u32,
+    info: SigInfo,
+    /// Its place in the order signals were generated (`NEXT_INSTANCE`), which
+    /// keeps a signal's instances in that order when one moves to another
+    /// thread of its process.
+    seq: u64,
+    /// Sent to the process, so it may move to another of its threads; else
+    /// sent to this row's thread (tkill, tgkill), where it stays.
+    process: bool,
+}
+
+/// The generation order of the next realtime instance.
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
+
+/// Whether `sig` is a realtime signal, whose instances are queued rather than
+/// coalesced.
+pub const fn is_realtime(sig: u32) -> bool {
+    sig >= SIGRTMIN && sig <= SIGRTMAX
 }
 
 /// Set when a row has group resets the process manager has not yet copied
@@ -370,6 +401,7 @@ impl Default for SignalState {
             ignored: DEFAULT_IGNORED_SIGNALS,
             alt_stack: AltStack::default(),
             group_resets: 0,
+            queued: Vec::new(),
         }
     }
 }
@@ -388,8 +420,7 @@ impl SignalState {
         while pending != 0 {
             let sig = pending.trailing_zeros() + 1;
             pending &= !sig_mask(sig);
-            self.set_pending(sig);
-            self.process_pending |= sig_mask(sig) & self.pending;
+            self.set_process_pending(sig);
         }
     }
 
@@ -462,23 +493,82 @@ impl SignalState {
         self.set_pending_info(sig, SigInfo::kernel());
     }
 
-    /// Mark a signal as pending with the siginfo its handler is to be given.
-    /// A signal already pending is not queued again and keeps its first
-    /// information.
+    /// Whether generating `sig` here discards it: it is ignored, unless it is
+    /// blocked and ignoring is its default action, when it is kept for
+    /// synchronous acceptance, as Linux does. Explicit SIG_IGN discards.
+    pub fn discards(&self, sig: u32) -> bool {
+        !is_valid_signal(sig)
+            || self.ignored & sig_mask(sig) != 0
+                && !(self.is_blocked(sig) && self.get_handler(sig).is_default())
+    }
+
+    /// Mark a signal as pending for this row's thread with the siginfo its
+    /// handler is to be given (`generate`).
     #[inline]
     pub fn set_pending_info(&mut self, sig: u32, info: SigInfo) {
-        // Keep blocked default-ignored signals for synchronous acceptance,
-        // as Linux does. Explicit SIG_IGN still discards at generation.
-        if is_valid_signal(sig) && (self.ignored & sig_mask(sig) == 0
-            || self.is_blocked(sig) && self.get_handler(sig).is_default()) {
-            if self.pending & sig_mask(sig) == 0 {
-                self.handlers.info[(sig - 1) as usize] = info;
+        self.generate(sig, info, false);
+    }
+
+    /// Mark a signal the kernel generated as pending for this row's process,
+    /// which any of its threads may accept (si_code SI_KERNEL).
+    #[inline]
+    pub fn set_process_pending(&mut self, sig: u32) {
+        self.generate(sig, SigInfo::kernel(), true);
+    }
+
+    /// Generate `sig` with `info` for this row's thread or, when `process`,
+    /// for its process. A standard signal already pending is not queued
+    /// again and keeps its first information; each instance of a realtime
+    /// signal is queued after those already pending. Returns false,
+    /// generating nothing, when there is no memory for a realtime instance.
+    /// The caller bounds the queue (RLIMIT_SIGPENDING).
+    pub fn try_generate(&mut self, sig: u32, info: SigInfo, process: bool) -> bool {
+        if self.discards(sig) {
+            return true;
+        }
+        let bit = sig_mask(sig);
+        if is_realtime(sig) {
+            if self.queued.try_reserve(1).is_err() {
+                return false;
             }
-            self.pending |= sig_mask(sig);
+            let seq = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+            self.queued.push(Instance { sig, info, seq, process });
+        } else if self.pending & bit == 0 {
+            self.handlers.info[(sig - 1) as usize] = info;
+        }
+        self.pending |= bit;
+        if process {
+            self.process_pending |= bit;
+        }
+        true
+    }
+
+    /// Generate `sig` as `try_generate` does, except that a realtime signal
+    /// with no memory for its instance is made pending as `generate_unqueued`
+    /// makes it.
+    pub fn generate(&mut self, sig: u32, info: SigInfo, process: bool) {
+        if !self.try_generate(sig, info, process) {
+            self.generate_unqueued(sig, info, process);
         }
     }
 
-    /// The siginfo of pending signal `sig`, which delivery hands its handler.
+    /// Make `sig` pending without queuing an instance of it, when none of it
+    /// is pending, its siginfo kept as a standard signal's is: what Linux's
+    /// kill does with a realtime signal it cannot queue.
+    pub fn generate_unqueued(&mut self, sig: u32, info: SigInfo, process: bool) {
+        let bit = sig_mask(sig);
+        if self.discards(sig) || self.pending & bit != 0 {
+            return;
+        }
+        self.handlers.info[(sig - 1) as usize] = info;
+        self.pending |= bit;
+        if process {
+            self.process_pending |= bit;
+        }
+    }
+
+    /// The siginfo delivery hands the handler of `sig`: a pending standard
+    /// signal's, or the realtime instance `take` last took.
     pub fn pending_info(&self, sig: u32) -> SigInfo {
         if is_valid_signal(sig) {
             self.handlers.info[(sig - 1) as usize]
@@ -487,23 +577,112 @@ impl SignalState {
         }
     }
 
-    /// Discard every pending signal in `mask`.
+    /// The siginfo of the instance of pending signal `sig` that `take` would
+    /// take next, leaving it pending.
+    pub fn next_info(&self, sig: u32) -> SigInfo {
+        match self.queued.iter().find(|i| i.sig == sig) {
+            Some(instance) => instance.info,
+            None => self.pending_info(sig),
+        }
+    }
+
+    /// Take one instance of pending signal `sig`, the oldest, and return its
+    /// siginfo, which `pending_info` also reports until the next take. A
+    /// realtime signal with more instances queued stays pending.
+    pub fn take(&mut self, sig: u32) -> SigInfo {
+        if let Some(at) = self.queued.iter().position(|i| i.sig == sig) {
+            let info = self.queued.remove(at).info;
+            self.handlers.info[(sig - 1) as usize] = info;
+            self.settle(sig);
+            return info;
+        }
+        self.clear_pending(sig);
+        self.pending_info(sig)
+    }
+
+    /// Take the oldest process-directed instance of pending signal `sig`, for
+    /// another thread of the process to accept (`accept_moved`), with its
+    /// generation order. None, clearing `sig`'s `process_pending` bit, when
+    /// only thread-directed instances of a realtime `sig` are queued.
+    pub fn take_process_directed(&mut self, sig: u32) -> Option<(SigInfo, u64)> {
+        if let Some(at) = self.queued.iter().position(|i| i.sig == sig && i.process) {
+            let instance = self.queued.remove(at);
+            self.settle(sig);
+            return Some((instance.info, instance.seq));
+        }
+        if self.queued.iter().any(|i| i.sig == sig) {
+            self.process_pending &= !sig_mask(sig);
+            return None;
+        }
+        let info = self.pending_info(sig);
+        self.clear_pending(sig);
+        Some((info, 0))
+    }
+
+    /// Make room for one realtime instance `accept_moved` will queue, so that
+    /// it allocates nothing. False when there is no memory for it.
+    pub fn reserve_instance(&mut self) -> bool {
+        self.queued.try_reserve(1).is_ok()
+    }
+
+    /// Accept process-directed `sig`, which `take_process_directed` took from
+    /// another thread of this process, in its generation order `seq` among
+    /// the instances queued here. For a realtime `sig`, `reserve_instance`
+    /// must have made room first.
+    pub fn accept_moved(&mut self, sig: u32, info: SigInfo, seq: u64) {
+        if !is_realtime(sig) || self.discards(sig) {
+            self.generate(sig, info, true);
+            return;
+        }
+        let at = self.queued.iter().position(|i| i.seq > seq).unwrap_or(self.queued.len());
+        self.queued.insert(at, Instance { sig, info, seq, process: true });
+        self.pending |= sig_mask(sig);
+        self.process_pending |= sig_mask(sig);
+    }
+
+    /// After an instance of `sig` was taken off the queue: `sig` stays
+    /// pending while it has an instance queued, and process-directed while
+    /// one of those is.
+    fn settle(&mut self, sig: u32) {
+        let mut remaining = self.queued.iter().filter(|i| i.sig == sig);
+        match remaining.next() {
+            None => self.clear_pending(sig),
+            Some(first) => {
+                if !first.process && !remaining.any(|i| i.process) {
+                    self.process_pending &= !sig_mask(sig);
+                }
+            }
+        }
+    }
+
+    /// How many realtime signal instances are queued.
+    pub fn queued_count(&self) -> usize {
+        self.queued.len()
+    }
+
+    /// Discard every pending realtime signal and free the queue, for a row
+    /// that has exited: what it held no longer counts against its user.
+    pub fn release_queued(&mut self) {
+        self.discard_pending(REALTIME_SIGNALS);
+        self.queued = Vec::new();
+    }
+
+    /// Discard every pending signal in `mask`, every queued instance included.
     #[inline]
     pub fn discard_pending(&mut self, mask: u64) {
         self.pending &= !mask;
         self.process_pending &= !mask;
         self.thread.timer_pending.fetch_and(!mask, Ordering::AcqRel);
+        if self.queued.iter().any(|i| sig_mask(i.sig) & mask != 0) {
+            self.queued.retain(|i| sig_mask(i.sig) & mask == 0);
+        }
     }
 
-    /// Clear a pending signal
+    /// Discard pending signal `sig`, every queued instance included.
     #[inline]
     pub fn clear_pending(&mut self, sig: u32) {
         if is_valid_signal(sig) {
-            self.pending &= !sig_mask(sig);
-            self.process_pending &= !sig_mask(sig);
-            self.thread
-                .timer_pending
-                .fetch_and(!sig_mask(sig), Ordering::AcqRel);
+            self.discard_pending(sig_mask(sig));
         }
     }
 
@@ -552,6 +731,7 @@ impl SignalState {
                 // whether blocked or unblocked.
                 self.pending &= !bit;
                 self.process_pending &= !bit;
+                self.queued.retain(|i| i.sig != sig);
             } else {
                 self.ignored &= !bit;
             }
@@ -595,6 +775,7 @@ impl SignalState {
             ignored: self.ignored,
             alt_stack: self.alt_stack, // Alt stack is inherited per POSIX
             group_resets: 0,
+            queued: Vec::new(),
         }
     }
 

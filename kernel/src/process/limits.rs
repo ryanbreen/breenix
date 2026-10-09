@@ -11,6 +11,7 @@ pub const CORE: usize = 4;
 pub const NPROC: usize = 6;
 pub const NOFILE: usize = 7;
 pub const AS: usize = 9;
+pub const SIGPENDING: usize = 11;
 pub const COUNT: usize = 16;
 pub const INFINITY: u64 = u64::MAX;
 
@@ -32,8 +33,16 @@ fn defaults() -> [Rlimit; COUNT] {
         hard: crate::ipc::MAX_FDS as u64,
     };
     limits[CORE].soft = 0;
+    limits[SIGPENDING] = Rlimit {
+        soft: DEFAULT_SIGPENDING,
+        hard: DEFAULT_SIGPENDING,
+    };
     limits
 }
+
+/// RLIMIT_SIGPENDING's default: how many realtime signal instances one real
+/// user may have queued, which bounds the kernel memory they hold.
+const DEFAULT_SIGPENDING: u64 = 4096;
 
 /// Count the user's unreaped tasks under the same lock that publishes a fork.
 /// Zombies retain their charge until wait reaps them; the iterator excludes tombstones.

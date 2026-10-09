@@ -39,6 +39,8 @@ pub const SIGSYS: u32 = 31;
 // Real-time signals (32-64) - for future use
 pub const SIGRTMIN: u32 = 32;
 pub const SIGRTMAX: u32 = 64;
+/// The realtime signals, SIGRTMIN through SIGRTMAX.
+pub const REALTIME_SIGNALS: u64 = u64::MAX << (SIGRTMIN - 1);
 
 /// Maximum signal number supported
 pub const NSIG: u32 = 64;
@@ -98,6 +100,10 @@ pub const SA_RESETHAND: u64 = 0x80000000;
 pub const SI_USER: i32 = 0;
 /// Sent by the kernel
 pub const SI_KERNEL: i32 = 0x80;
+/// Sent by sigqueue
+pub const SI_QUEUE: i32 = -1;
+/// Sent by tkill or tgkill
+pub const SI_TKILL: i32 = -6;
 /// SIGSEGV: address not mapped
 pub const SEGV_MAPERR: i32 = 1;
 /// SIGSEGV: access not permitted by the mapping

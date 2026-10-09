@@ -553,6 +553,8 @@ impl Process {
 
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
+        // An exited row's queued realtime signals are never delivered.
+        self.signals.release_queued();
         // Record at the terminated-state transition so fault and signal deaths
         // count too. The guard above makes this exactly once per process. This
         // is safe under PROCESS_MANAGER: record_exit allocates/logs nothing and
@@ -583,6 +585,8 @@ impl Process {
         self.leave_record_locks();
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
+        // An exited row's queued realtime signals are never delivered.
+        self.signals.release_queued();
         // Record at the terminated-state transition so fault and signal deaths
         // count too. The guard above makes this exactly once per process. This
         // is safe under PROCESS_MANAGER: record_exit allocates/logs nothing and

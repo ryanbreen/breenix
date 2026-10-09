@@ -170,6 +170,15 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
         None if syscall_num == crate::syscall::MSYNC_SYSCALL_NUMBER => {
             result_to_u64(crate::syscall::mmap::sys_msync(arg1, arg2, arg3 as u32))
         }
+        None if syscall_num == crate::syscall::RT_SIGQUEUEINFO_SYSCALL_NUMBER => result_to_u64(
+            crate::syscall::signal::sys_rt_sigqueueinfo(arg1 as i32 as i64, arg2 as i32, arg3),
+        ),
+        None if syscall_num == crate::syscall::TKILL_SYSCALL_NUMBER => {
+            result_to_u64(crate::syscall::signal::sys_tkill(arg1 as i32 as i64, arg2 as i32))
+        }
+        None if syscall_num == crate::syscall::TGKILL_SYSCALL_NUMBER => result_to_u64(
+            crate::syscall::signal::sys_tgkill(arg1 as i32 as i64, arg2 as i32 as i64, arg3 as i32),
+        ),
         None => {
             crate::serial_println!(
                 "[syscall] Unknown ARM64 syscall {} - returning ENOSYS",
@@ -1007,8 +1016,9 @@ fn sys_getpid() -> u64 {
     }
 
     if let Some(ref manager) = *crate::process::manager() {
-        if let Some((pid, _process)) = manager.find_process_by_thread(thread_id) {
-            return pid.as_u64();
+        // Every thread of a process has its ID: the thread group's.
+        if let Some((pid, process)) = manager.find_process_by_thread(thread_id) {
+            return process.thread_group_id.unwrap_or(pid.as_u64());
         }
     }
 
@@ -1023,9 +1033,17 @@ fn sys_getppid() -> u64 {
     }
 
     if let Some(ref manager) = *crate::process::manager() {
-        if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-            if let Some(parent_pid) = process.parent {
-                return parent_pid.as_u64();
+        if let Some((pid, process)) = manager.find_process_by_thread(thread_id) {
+            // A thread's row records the thread that created it as its
+            // parent; the process's parent is its leader's, and that parent
+            // is the process the forking thread belongs to.
+            let leader = process
+                .thread_group_id
+                .and_then(|tgid| manager.get_process(crate::process::ProcessId::new(tgid)))
+                .filter(|leader| leader.id != pid)
+                .unwrap_or(process);
+            if let Some(parent_pid) = leader.parent {
+                return manager.thread_group_of(parent_pid).unwrap_or(parent_pid.as_u64());
             }
         }
     }

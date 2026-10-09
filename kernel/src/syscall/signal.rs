@@ -7,6 +7,7 @@
 //! - sigreturn() - Return from signal handler
 //! - sigaltstack(ss, old_ss) - Set/get alternate signal stack
 
+use super::errno::{EAGAIN, EINVAL, EPERM, ESRCH};
 use super::userptr::{copy_from_user, copy_to_user};
 use super::SyscallResult;
 use crate::process::{manager, ProcessId};
@@ -40,106 +41,93 @@ const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
 /// * 0 on success
 /// * -EINVAL (22) for invalid signal number
 /// * -ESRCH (3) if no such process or process group
-/// * -EPERM (1) if permission denied (not implemented - we allow all for now)
+/// * -EPERM (1) if the caller may signal none of its targets (`Sender::may_signal`)
 pub fn sys_kill(pid: i64, sig: i32) -> SyscallResult {
     let sig = sig as u32;
-
-    // Signal 0 is used to check if process/group exists without sending a signal
-    if sig == 0 {
-        return check_target_exists(pid);
+    if sig != 0 && !is_valid_signal(sig) {
+        return SyscallResult::Err(EINVAL as u64);
     }
-
-    // Validate signal number
-    if !is_valid_signal(sig) {
-        log::warn!("sys_kill: invalid signal number {}", sig);
-        return SyscallResult::Err(22); // EINVAL
-    }
-
+    let sender = current_sender();
+    let info = sender.info(SI_USER);
     if pid > 0 {
-        // Send to specific process
-        send_signal_to_process(ProcessId::new(pid as u64), sig)
+        send_signal_to_process(ProcessId::new(pid as u64), sig, sender, info)
     } else if pid == 0 {
-        // Send to all processes in caller's process group
-        send_signal_to_caller_process_group(sig)
+        send_signal_to_caller_process_group(sig, sender, info)
     } else if pid == -1 {
-        // Send to all processes the caller can signal. The designated init is excluded when one
-        // exists; with no designated init, no process is excluded by identity.
-        send_signal_to_all_processes(sig)
+        // The designated init is excluded when one exists; with no designated
+        // init, no process is excluded by identity.
+        send_signal_to_all_processes(sig, sender, info)
     } else {
-        // pid < -1: Send to process group abs(pid)
-        let pgid = ProcessId::new((-pid) as u64);
-        send_signal_to_process_group(pgid, sig)
+        send_signal_to_process_group(ProcessId::new(pid.unsigned_abs()), sig, sender, info)
     }
 }
 
-/// Check if a target exists (kill with sig=0)
-///
-/// This handles all pid cases per POSIX:
-/// - pid > 0: Check if specific process exists
-/// - pid == 0: Check if caller's process group has members
-/// - pid == -1: Check if any signalable process exists (always true if we have processes)
-/// - pid < -1: Check if process group abs(pid) has members
-fn check_target_exists(pid: i64) -> SyscallResult {
-    if pid > 0 {
-        // Check specific process
-        let target_pid = ProcessId::new(pid as u64);
-        let manager_guard = manager();
-
-        // A child that has exited is a zombie, still a process, until it is
-        // reaped; only a reaped row (invisible to this lookup) is gone.
-        if let Some(ref manager) = *manager_guard {
-            if manager.get_process(target_pid).is_some() {
-                return SyscallResult::Ok(0);
-            }
-        }
-        SyscallResult::Err(3) // ESRCH - No such process
-    } else if pid == 0 {
-        // Check if caller's process group has members
-        let current_thread_id = match crate::task::scheduler::current_thread_id() {
-            Some(id) => id,
-            None => return SyscallResult::Err(3), // ESRCH
+/// rt_sigqueueinfo(pid, sig, info) - sigqueue: send `sig` to process `pid`
+/// with the caller's siginfo, whose si_errno and si_value its SA_SIGINFO
+/// handler is given. A thread may give a si_code of SI_USER or above, or
+/// SI_TKILL, only when it is the thread that leads process `pid`: Linux
+/// compares the caller's thread ID with `pid`, which only that thread's
+/// equals. sigqueue's si_code is SI_QUEUE. Realtime signals are queued up to
+/// RLIMIT_SIGPENDING, beyond which this fails with EAGAIN.
+pub fn sys_rt_sigqueueinfo(pid: i64, sig: i32, info_ptr: u64) -> SyscallResult {
+    let given: crate::signal::LinuxSigInfo =
+        match copy_from_user(info_ptr as *const crate::signal::LinuxSigInfo) {
+            Ok(info) => info,
+            Err(e) => return SyscallResult::Err(e),
         };
-
-        let manager_guard = manager();
-        if let Some(ref manager) = *manager_guard {
-            // Find caller's pgid
-            if let Some((_, caller)) = manager.find_process_by_thread(current_thread_id) {
-                let caller_pgid = caller.pgid;
-                // Check if any process, a zombie included, is in this group
-                for process in manager.all_processes() {
-                    if process.pgid == caller_pgid {
-                        return SyscallResult::Ok(0);
-                    }
-                }
-            }
-        }
-        SyscallResult::Err(3) // ESRCH - No such process group
-    } else if pid == -1 {
-        // Check if any signalable process exists, excluding the designated init when present.
-        let manager_guard = manager();
-        if let Some(ref manager) = *manager_guard {
-            let designated_init = manager.designated_init();
-            for process in manager.all_processes() {
-                // With no designated init, no process is excluded by identity.
-                if Some(process.id) != designated_init && !process.is_terminated() {
-                    return SyscallResult::Ok(0);
-                }
-            }
-        }
-        SyscallResult::Err(3) // ESRCH - No signalable processes
-    } else {
-        // pid < -1: Check if process group abs(pid) has members
-        let pgid = ProcessId::new((-pid) as u64);
-        let manager_guard = manager();
-        if let Some(ref manager) = *manager_guard {
-            for process in manager.all_processes() {
-                if process.pgid == pgid {
-                    return SyscallResult::Ok(0);
-                }
-            }
-        }
-        SyscallResult::Err(3) // ESRCH - No such process group
+    let sig = sig as u32;
+    if sig != 0 && !is_valid_signal(sig) {
+        return SyscallResult::Err(EINVAL as u64);
     }
+    if pid <= 0 {
+        return SyscallResult::Err(ESRCH as u64);
+    }
+    let code = given.0[1] as u32 as i32;
+    let sender = current_sender();
+    if (code >= 0 || code == SI_TKILL) && sender.row() != Some(pid as u64) {
+        return SyscallResult::Err(EPERM as u64);
+    }
+    let errno = (given.0[0] >> 32) as u32 as i32;
+    let info = SigInfo { code, errno, fields: [given.0[2], given.0[3]], ..SigInfo::kernel() };
+    send_signal_to_process(ProcessId::new(pid as u64), sig, sender, info)
+}
+
+/// tgkill(tgid, tid, sig) - pthread_kill: send `sig` to thread `tid` of
+/// process `tgid`, delivered to that thread (si_code SI_TKILL).
+pub fn sys_tgkill(tgid: i64, tid: i64, sig: i32) -> SyscallResult {
+    if tgid <= 0 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    send_signal_to_thread(Some(tgid as u64), tid, sig)
+}
+
+/// tkill(tid, sig) - send `sig` to thread `tid`, of whichever process.
+pub fn sys_tkill(tid: i64, sig: i32) -> SyscallResult {
+    send_signal_to_thread(None, tid, sig)
+}
+
+fn send_signal_to_thread(tgid: Option<u64>, tid: i64, sig: i32) -> SyscallResult {
+    let sig = sig as u32;
+    if tid <= 0 || (sig != 0 && !is_valid_signal(sig)) {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let row = {
+        let manager_guard = manager();
+        let Some(ref manager) = *manager_guard else {
+            return SyscallResult::Err(ESRCH as u64);
+        };
+        match manager.find_process_by_thread(tid as u64) {
+            Some((pid, p))
+                if !p.is_terminated()
+                    && tgid.map_or(true, |tgid| tgid == p.thread_group_id.unwrap_or(pid.as_u64())) =>
+            {
+                pid
+            }
+            _ => return SyscallResult::Err(ESRCH as u64),
+        }
+    };
+    let sender = current_sender();
+    send_signal(row, sig, sender, sender.info(SI_TKILL), Recipient::Thread)
 }
 
 /// Generate SIGPIPE for the calling thread's own process after a write to a
@@ -206,80 +194,198 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
 /// exit has just orphaned while one of its members is stopped (POSIX _exit).
 /// Must be called with no process-manager lock held.
 pub(crate) fn signal_orphaned_group(pgid: ProcessId) {
-    let _ = send_signal_to_process_group(pgid, SIGHUP);
-    let _ = send_signal_to_process_group(pgid, SIGCONT);
+    let _ = send_signal_to_process_group(pgid, SIGHUP, Sender::Kernel, SigInfo::kernel());
+    let _ = send_signal_to_process_group(pgid, SIGCONT, Sender::Kernel, SigInfo::kernel());
 }
 
-/// The siginfo of a signal the calling process sends: SI_USER, with its PID
-/// and real user ID.
-fn sender_info(manager: &crate::process::ProcessManager, caller_tid: Option<u64>) -> SigInfo {
-    caller_tid
-        .and_then(|tid| manager.find_process_by_thread(tid))
-        .map(|(pid, process)| {
-            let tgid = process.thread_group_id.unwrap_or(pid.as_u64());
-            SigInfo::sender(SI_USER, tgid as u32, process.cred.uid)
+/// Who sends a signal: a process, whose permission to signal each target is
+/// checked and whose identity the siginfo reports, or the kernel.
+#[derive(Clone, Copy)]
+enum Sender {
+    /// `row` is the calling thread's own row, `tgid` its process.
+    Process { row: u64, tgid: u64, uid: u32, euid: u32, sid: ProcessId },
+    Kernel,
+}
+
+impl Sender {
+    fn row(&self) -> Option<u64> {
+        match *self {
+            Sender::Process { row, .. } => Some(row),
+            Sender::Kernel => None,
+        }
+    }
+
+    /// Whether a realtime signal from this sender with `info` that cannot be
+    /// queued is still generated, without an instance of its own: the
+    /// kernel's, and kill's (SI_USER). Any other fails with EAGAIN (Linux).
+    fn may_lose_info(&self, info: &SigInfo) -> bool {
+        matches!(*self, Sender::Kernel) || info.code == SI_USER
+    }
+
+    /// Whether this sender may send `sig` to `target` (POSIX kill): a
+    /// privileged sender may signal any process; another needs its real or
+    /// effective user ID to match the target's real or saved set-user-ID,
+    /// except that SIGCONT may go to any process in its session. Signal 0
+    /// checks the same permission.
+    fn may_signal(&self, target: &crate::process::Process, sig: u32) -> bool {
+        match *self {
+            Sender::Kernel => true,
+            Sender::Process { uid, euid, sid, .. } => {
+                euid == 0
+                    || [uid, euid].iter().any(|&id| id == target.cred.uid || id == target.cred.suid)
+                    || (sig == SIGCONT && sid == target.sid)
+            }
+        }
+    }
+
+    /// The siginfo of a signal this sender sends with `code`: its PID and
+    /// real user ID, or SI_KERNEL from the kernel.
+    fn info(&self, code: i32) -> SigInfo {
+        match *self {
+            Sender::Process { tgid, uid, .. } => SigInfo::sender(code, tgid as u32, uid),
+            Sender::Kernel => SigInfo::kernel(),
+        }
+    }
+}
+
+/// The calling thread's process as a signal sender.
+fn current_sender() -> Sender {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return Sender::Kernel;
+    };
+    let manager_guard = manager();
+    manager_guard
+        .as_ref()
+        .and_then(|manager| manager.find_process_by_thread(tid))
+        .map(|(pid, process)| Sender::Process {
+            row: pid.as_u64(),
+            tgid: process.thread_group_id.unwrap_or(pid.as_u64()),
+            uid: process.cred.uid,
+            euid: process.cred.euid,
+            sid: process.sid,
         })
-        .unwrap_or_else(SigInfo::kernel)
+        .unwrap_or(Sender::Kernel)
+}
+
+/// Which thread of its target's thread group a signal is for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Recipient {
+    /// The process: any of its threads that accepts the signal.
+    Process,
+    /// The target row's own thread (tkill, tgkill).
+    Thread,
 }
 
 /// Send a signal to a specific process
-fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
+fn send_signal_to_process(target_pid: ProcessId, sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
+    send_signal(target_pid, sig, sender, info, Recipient::Process)
+}
+
+/// Send `sig` with `info` to the process `target` is a row of, or to that
+/// row's thread. Signal 0 only checks that the target exists and that the
+/// sender may signal it.
+fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: Recipient) -> SyscallResult {
     let caller_tid = crate::task::scheduler::current_thread_id();
     let mut manager_guard = manager();
 
     if let Some(ref mut manager) = *manager_guard {
-        let info = sender_info(manager, caller_tid);
-        match manager.get_process(target_pid) {
-            None => return SyscallResult::Err(3), // ESRCH
-            // A zombie is still a process until it is reaped: the signal is
-            // accepted and has no effect.
-            Some(process) if process.is_terminated() => return SyscallResult::Ok(0),
-            Some(_) => {}
-        }
+        let (group, target) = match manager.get_process(target) {
+            None => return SyscallResult::Err(ESRCH as u64),
+            Some(process) if !sender.may_signal(process, sig) => {
+                return SyscallResult::Err(EPERM as u64)
+            }
+            Some(process) => {
+                let group = process.thread_group_id.unwrap_or(target.as_u64());
+                // A process whose first thread has exited runs on while
+                // another of its threads does: the signal is for one of them.
+                let live = if !process.is_terminated() {
+                    Some(target)
+                } else if to == Recipient::Process {
+                    manager.group_rows(group).next().map(|row| row.id)
+                } else {
+                    None
+                };
+                match live {
+                    // A zombie is still a process until it is reaped: the
+                    // signal is accepted and has no effect.
+                    None => return SyscallResult::Ok(0),
+                    Some(_) if sig == 0 => return SyscallResult::Ok(0),
+                    Some(live) => (group, live),
+                }
+            }
+        };
 
-        // SIGKILL cannot be caught or blocked
+        // SIGKILL cannot be caught or blocked, and ends every thread of the
+        // process, whichever of them its sender named.
         if sig == SIGKILL {
             drop(manager_guard);
-            kill_process_now(target_pid, -(SIGKILL as i32));
+            crate::signal::delivery::terminate_thread_group_peers(target, -(SIGKILL as i32));
+            kill_process_now(target, -(SIGKILL as i32));
             return SyscallResult::Ok(0);
         }
 
         if sig == SIGCONT {
             // SIGCONT continues a stopped process even when it is ignored or
             // blocked; it is then queued when caught, and discarded otherwise.
-            crate::signal::delivery::continue_thread_group_locked(manager, target_pid);
+            crate::signal::delivery::continue_thread_group_locked(manager, target);
         } else if sig_mask(sig) & STOP_SIGNALS != 0
-            && crate::signal::delivery::generate_stop_locked(manager, target_pid, sig, caller_tid)
+            && crate::signal::delivery::generate_stop_locked(manager, target, sig, caller_tid)
         {
             // The stop was taken, or discarded for an orphaned process group.
             return SyscallResult::Ok(0);
         }
 
-        let group = manager
-            .get_process(target_pid)
-            .unwrap()
-            .thread_group_id
-            .unwrap_or(target_pid.as_u64());
-        let recipient = manager
-            .iter_processes()
-            .find(|(pid, p)| {
-                !p.is_terminated()
-                    && p.thread_group_id.unwrap_or(pid.as_u64()) == group
-                    && (!p.signals.is_blocked(sig)
-                        || p.signals
-                            .thread
-                            .wait_set
-                            .load(core::sync::atomic::Ordering::Acquire)
-                            & sig_mask(sig)
-                            != 0)
-            })
-            .map(|(pid, _)| pid)
-            .unwrap_or(target_pid);
+        let recipient = match to {
+            Recipient::Thread => target,
+            Recipient::Process => manager
+                .iter_processes()
+                .find(|(pid, p)| {
+                    !p.is_terminated()
+                        && p.thread_group_id.unwrap_or(pid.as_u64()) == group
+                        && (!p.signals.is_blocked(sig)
+                            || p.signals
+                                .thread
+                                .wait_set
+                                .load(core::sync::atomic::Ordering::Acquire)
+                                & sig_mask(sig)
+                                != 0)
+                })
+                .map(|(pid, _)| pid)
+                .unwrap_or(target),
+        };
+
+        let Some(process) = manager.get_process(recipient) else {
+            return SyscallResult::Err(ESRCH as u64);
+        };
+        // Realtime instances are charged to the real user of the process
+        // they are queued for, against its RLIMIT_SIGPENDING. Every row is
+        // counted, exited ones included, so no queue escapes the bound. An
+        // ignored signal is discarded at generation, before the limit
+        // applies; the wakeups below still run for what is already pending.
+        let at_limit = crate::signal::types::is_realtime(sig)
+            && !process.signals.discards(sig)
+            && {
+            let uid = process.cred.uid;
+            let limit = process.limits.get(crate::process::limits::SIGPENDING).soft;
+            let queued: u64 = manager
+                .iter_processes()
+                .filter(|(_, p)| p.cred.uid == uid)
+                .map(|(_, p)| p.signals.queued_count() as u64)
+                .sum();
+            queued >= limit
+        };
 
         if let Some(process) = manager.get_process_mut(recipient) {
-            // Ignored signals are discarded at generation.
-            process.signals.set_pending_info(sig, info);
-            process.signals.process_pending |= sig_mask(sig) & process.signals.pending;
+            let process_directed = to == Recipient::Process;
+            if at_limit || !process.signals.try_generate(sig, info, process_directed) {
+                // Not queued: sigqueue and tgkill fail; kill and the kernel
+                // still generate the signal while none of it is pending, as
+                // on Linux.
+                if !sender.may_lose_info(&info) {
+                    return SyscallResult::Err(EAGAIN as u64);
+                }
+                process.signals.generate_unqueued(sig, info, process_directed);
+            }
 
             // A stopped process runs nothing until SIGCONT; what is pending
             // waits for it. Every other wakeup below requires a pending,
@@ -300,7 +406,7 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
                 "Signal {} ({}) queued for process {}",
                 sig,
                 signal_name(sig),
-                target_pid.as_u64()
+                target.as_u64()
             );
 
             // Wake up process if blocked (so it can receive the signal)
@@ -316,7 +422,7 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
                 log::info!(
                     "kill: Found main_thread {} for process {}, will unblock if BlockedOnSignal",
                     thread_id,
-                    target_pid.as_u64()
+                    target.as_u64()
                 );
                 // Release the manager lock before acquiring the scheduler lock
                 // to avoid deadlock
@@ -332,7 +438,7 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
             } else {
                 log::warn!(
                     "kill: Process {} has no main_thread - cannot unblock for signal",
-                    target_pid.as_u64()
+                    target.as_u64()
                 );
             }
 
@@ -350,202 +456,100 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
 ///
 /// This implements kill(0, sig) - sends the signal to all processes
 /// that belong to the same process group as the calling process.
-///
-/// # Returns
-/// * 0 on success (signal sent to at least one process)
-/// * -ESRCH (3) if no processes found in the caller's process group
-fn send_signal_to_caller_process_group(sig: u32) -> SyscallResult {
-    // Get the caller's thread ID to find their process group
-    let current_thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("send_signal_to_caller_process_group: no current thread");
-            return SyscallResult::Err(3); // ESRCH
-        }
+fn send_signal_to_caller_process_group(sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
+    let Some(current_thread_id) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(ESRCH as u64);
     };
-
-    // Get the caller's pgid
     let caller_pgid = {
         let manager_guard = manager();
-        if let Some(ref manager) = *manager_guard {
-            if let Some((_, caller)) = manager.find_process_by_thread(current_thread_id) {
-                caller.pgid
-            } else {
-                log::error!(
-                    "send_signal_to_caller_process_group: caller process not found for thread {}",
-                    current_thread_id
-                );
-                return SyscallResult::Err(3); // ESRCH
-            }
-        } else {
-            log::error!("send_signal_to_caller_process_group: process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
+        match manager_guard
+            .as_ref()
+            .and_then(|manager| manager.find_process_by_thread(current_thread_id))
+        {
+            Some((_, caller)) => caller.pgid,
+            None => return SyscallResult::Err(ESRCH as u64),
         }
     };
-
-    log::debug!(
-        "send_signal_to_caller_process_group: sending signal {} to pgid {}",
-        sig,
-        caller_pgid.as_u64()
-    );
-
-    send_signal_to_process_group(caller_pgid, sig)
+    send_signal_to_process_group(caller_pgid, sig, sender, info)
 }
 
 /// Send a signal to all processes in a specific process group
 ///
-/// This implements kill(-pgid, sig) - sends the signal to all processes
-/// that belong to the specified process group.
-///
-/// # Arguments
-/// * `pgid` - The target process group ID
-/// * `sig` - The signal to send
+/// This implements kill(-pgid, sig). A zombie is a member until it is reaped.
 ///
 /// # Returns
-/// * 0 on success (signal sent to at least one process)
-/// * -ESRCH (3) if no processes found in the specified process group
-fn send_signal_to_process_group(pgid: ProcessId, sig: u32) -> SyscallResult {
-    log::info!(
-        "send_signal_to_process_group: sending signal {} ({}) to process group {}",
-        sig,
-        signal_name(sig),
-        pgid.as_u64()
-    );
-
-    // Collect PIDs of processes in this group (we need to do this first
-    // to avoid holding the lock while sending signals)
-    let target_pids: alloc::vec::Vec<ProcessId> = {
+/// * 0 if the signal was sent to at least one process
+/// * -EPERM (1) if the sender may signal no member
+/// * -ESRCH (3) if no process is in the group
+fn send_signal_to_process_group(pgid: ProcessId, sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
+    let targets = {
         let manager_guard = manager();
-        if let Some(ref manager) = *manager_guard {
-            // Zombies are members until reaped; signalling one has no effect.
-            manager
-                .all_processes()
-                .iter()
-                .filter(|p| p.pgid == pgid)
-                .map(|p| p.id)
-                .collect()
-        } else {
-            log::error!("send_signal_to_process_group: process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
+        let Some(ref manager) = *manager_guard else {
+            return SyscallResult::Err(ESRCH as u64);
+        };
+        one_row_per_process(manager, |p| p.pgid == pgid)
     };
-
-    if target_pids.is_empty() {
-        log::warn!(
-            "send_signal_to_process_group: no processes found in group {}",
-            pgid.as_u64()
-        );
-        return SyscallResult::Err(3); // ESRCH
-    }
-
-    log::debug!(
-        "send_signal_to_process_group: found {} processes in group {}",
-        target_pids.len(),
-        pgid.as_u64()
-    );
-
-    // Send signal to each process in the group
-    let mut sent_count = 0;
-    for pid in target_pids {
-        match send_signal_to_process(pid, sig) {
-            SyscallResult::Ok(_) => sent_count += 1,
-            SyscallResult::Err(e) => {
-                log::debug!(
-                    "send_signal_to_process_group: failed to send to pid {}: error {}",
-                    pid.as_u64(),
-                    e
-                );
-            }
-        }
-    }
-
-    if sent_count > 0 {
-        log::info!(
-            "send_signal_to_process_group: sent signal {} to {} processes in group {}",
-            sig,
-            sent_count,
-            pgid.as_u64()
-        );
-        SyscallResult::Ok(0)
-    } else {
-        // All sends failed - this shouldn't happen if we found processes
-        SyscallResult::Err(3) // ESRCH
-    }
+    send_signal_to_each(targets, sig, sender, info)
 }
 
 /// Send a signal to all processes the caller can signal (except the designated init)
 ///
-/// This implements kill(-1, sig) - sends the signal to all processes
-/// for which the calling process has permission to send signals,
-/// except for the designated init process. If no init is designated, no process is excluded.
-///
-/// # Returns
-/// * 0 on success (signal sent to at least one process)
-/// * -ESRCH (3) if no signalable processes exist
-fn send_signal_to_all_processes(sig: u32) -> SyscallResult {
-    log::info!(
-        "send_signal_to_all_processes: sending signal {} ({}) to all processes",
-        sig,
-        signal_name(sig)
-    );
-
-    // Collect PIDs of all signalable processes, excluding the designated init when present.
-    let target_pids: alloc::vec::Vec<ProcessId> = {
+/// This implements kill(-1, sig): every live process the sender may signal,
+/// except the designated init process. If no init is designated, no process
+/// is excluded by identity.
+fn send_signal_to_all_processes(sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
+    let targets = {
         let manager_guard = manager();
-        if let Some(ref manager) = *manager_guard {
-            let designated_init = manager.designated_init();
-            manager
-                .all_processes()
-                .iter()
-                .filter(|p| {
-                    // With no designated init, no process is excluded by identity.
-                    Some(p.id) != designated_init && !p.is_terminated()
-                })
-                .map(|p| p.id)
-                .collect()
-        } else {
-            log::error!("send_signal_to_all_processes: process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
+        let Some(ref manager) = *manager_guard else {
+            return SyscallResult::Err(ESRCH as u64);
+        };
+        let designated_init = manager.designated_init();
+        one_row_per_process(manager, |p| {
+            Some(p.id) != designated_init
+                && p.thread_group_id.map_or(true, |group| Some(ProcessId::new(group)) != designated_init)
+                && !p.is_terminated()
+        })
     };
+    send_signal_to_each(targets, sig, sender, info)
+}
 
-    if target_pids.is_empty() {
-        log::warn!("send_signal_to_all_processes: no signalable processes found");
-        return SyscallResult::Err(3); // ESRCH
-    }
-
-    log::debug!(
-        "send_signal_to_all_processes: found {} signalable processes",
-        target_pids.len()
-    );
-
-    // Send signal to each process
-    // Note: We don't fail if some sends fail - POSIX says we succeed if we
-    // can send to at least one process
-    let mut sent_count = 0;
-    for pid in target_pids {
-        match send_signal_to_process(pid, sig) {
-            SyscallResult::Ok(_) => sent_count += 1,
-            SyscallResult::Err(e) => {
-                log::debug!(
-                    "send_signal_to_all_processes: failed to send to pid {}: error {}",
-                    pid.as_u64(),
-                    e
-                );
-            }
+/// One row of each thread group with a row `member` selects, so that a
+/// process-directed signal is sent to each process once however many threads
+/// it has: the first such row, or a live one where that row has exited.
+fn one_row_per_process(
+    manager: &crate::process::ProcessManager,
+    member: impl Fn(&crate::process::Process) -> bool,
+) -> alloc::vec::Vec<ProcessId> {
+    let mut targets: alloc::vec::Vec<(u64, ProcessId, bool)> = alloc::vec::Vec::new();
+    for p in manager.all_processes().into_iter().filter(|p| member(p)) {
+        let group = p.thread_group_id.unwrap_or(p.id.as_u64());
+        let live = !p.is_terminated();
+        match targets.iter_mut().find(|t| t.0 == group) {
+            Some(t) if live && !t.2 => *t = (group, p.id, live),
+            Some(_) => {}
+            None => targets.push((group, p.id, live)),
         }
     }
+    targets.into_iter().map(|(_, pid, _)| pid).collect()
+}
 
-    if sent_count > 0 {
-        log::info!(
-            "send_signal_to_all_processes: sent signal {} to {} processes",
-            sig,
-            sent_count
-        );
+/// Send to each of `targets`: success if any was sent the signal, else EPERM
+/// if the sender may signal none of them, else ESRCH (POSIX kill).
+fn send_signal_to_each(targets: alloc::vec::Vec<ProcessId>, sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
+    let mut sent = false;
+    let mut refused = false;
+    for pid in targets {
+        match send_signal_to_process(pid, sig, sender, info) {
+            SyscallResult::Ok(_) => sent = true,
+            SyscallResult::Err(e) => refused |= e == EPERM as u64,
+        }
+    }
+    if sent {
         SyscallResult::Ok(0)
+    } else if refused {
+        SyscallResult::Err(EPERM as u64)
     } else {
-        // All sends failed
-        SyscallResult::Err(3) // ESRCH
+        SyscallResult::Err(ESRCH as u64)
     }
 }
 
@@ -1773,7 +1777,7 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
                 None
             } else {
                 let sig = pending.trailing_zeros() + 1;
-                let info = p.signals.pending_info(sig);
+                let info = p.signals.next_info(sig);
                 Some((sig, info))
             }
         };
@@ -1787,7 +1791,7 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
             // wait_set prevents another accepting thread from retargeting it.
             let mut guard = manager();
             if let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) {
-                p.signals.clear_pending(sig);
+                p.signals.take(sig);
             }
             break SyscallResult::Ok(sig as u64);
         }

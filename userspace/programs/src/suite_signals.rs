@@ -3714,8 +3714,10 @@ fn j_group() -> CaseResult {
     member.child.expect_continued("the group's other member")?;
     leader.let_go();
     member.let_go();
-    released_member_exits(&mut leader, "the group's leader, released after SIGCONT,")?;
-    released_member_exits(&mut member, "the group's other member, released after SIGCONT,")
+    // The member was forked holding the write end of the leader's release pipe, so the
+    // leader reads end of file only once the member has exited: the member goes first.
+    released_member_exits(&mut member, "the group's other member, released after SIGCONT,")?;
+    released_member_exits(&mut leader, "the group's leader, released after SIGCONT,")
 }
 
 fn j_stop_threads() -> CaseResult {
