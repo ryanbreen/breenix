@@ -870,11 +870,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 };
                 match file_mapping_fault(far, iss, access, from_el0) {
                     crate::memory::file_map::FaultOutcome::NotFile => {}
-                    crate::memory::file_map::FaultOutcome::Signal(_) if !from_el0 => {}
-                    // Raised for the thread; delivered on this return.
                     crate::memory::file_map::FaultOutcome::Signal(_) => {
-                        crate::arch_impl::aarch64::context_switch::check_and_deliver_signals_for_current_thread_arm64(frame_ref);
-                        return;
+                        // Raised for the thread; delivered on this return.
+                        if from_el0 {
+                            crate::arch_impl::aarch64::context_switch::check_and_deliver_signals_for_current_thread_arm64(frame_ref);
+                            return;
+                        }
                     }
                     _ => return,
                 }
@@ -905,8 +906,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 0x04..=0x07 => (crate::signal::constants::SIGSEGV, crate::signal::constants::SEGV_MAPERR),
                 _ => (crate::signal::constants::SIGSEGV, crate::signal::constants::SEGV_ACCERR),
             };
-            if from_el0 && raise_el0_fault_signal(frame_ref, el0_sig, el0_code, far) {
-                return;
+            if from_el0 {
+                if raise_el0_fault_signal(frame_ref, el0_sig, el0_code, far) {
+                    return;
+                }
             }
             let el0_status = -(el0_sig as i32);
             let fatal_uart_guard = if from_el0 {
@@ -1627,15 +1630,15 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
             // From EL0: SIGBUS for the thread's handler, reporting the stack
             // pointer, as Linux does; the default action ends the process.
-            if from_el0
-                && raise_el0_fault_signal(
+            if from_el0 {
+                if raise_el0_fault_signal(
                     frame_ref,
                     crate::signal::constants::SIGBUS,
                     crate::signal::constants::BUS_ADRALN,
                     super::context::read_sp_el0(),
-                )
-            {
-                return;
+                ) {
+                    return;
+                }
             }
             {
                 let mut line = crate::serial_line::Line::new();
@@ -1827,33 +1830,32 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             crate::task::scheduler::switch_to_idle_best_effort();
         }
 
-        // An undefined instruction or a trapped floating-point exception at
-        // EL0: SIGILL or SIGFPE, delivered on this exception's return, where
-        // the handler runs or the default action ends the process.
-        exception_class::UNKNOWN | exception_class::FP_EXCEPTION
-            if unsafe { (*frame).spsr & 0xF } == 0 =>
-        {
-            let frame_ref = unsafe { &mut *frame };
-            let pc = frame_ref.elr;
-            let (sig, code) = if ec == exception_class::UNKNOWN {
-                (crate::signal::constants::SIGILL, crate::signal::constants::ILL_ILLOPC)
-            } else {
-                use crate::signal::constants::*;
-                // ISS: IOF, DZF, OFF, UFF, IXF in bits 0-4.
-                let code = match iss & 0x1f {
-                    flags if flags & 0x1 != 0 => FPE_FLTINV,
-                    flags if flags & 0x2 != 0 => FPE_FLTDIV,
-                    flags if flags & 0x4 != 0 => FPE_FLTOVF,
-                    flags if flags & 0x8 != 0 => FPE_FLTUND,
-                    flags if flags & 0x10 != 0 => FPE_FLTRES,
-                    _ => FPE_FLTINV,
-                };
-                (SIGFPE, code)
-            };
-            deliver_el0_fault_signal(frame_ref, sig, code, pc);
-        }
-
         _ => {
+            // An undefined instruction or a trapped floating-point exception at
+            // EL0: SIGILL or SIGFPE, delivered on this exception's return, where
+            // the handler runs or the default action ends the process.
+            let from_el0 = unsafe { (*frame).spsr & 0xF } == 0;
+            if from_el0 && matches!(ec, exception_class::UNKNOWN | exception_class::FP_EXCEPTION) {
+                let frame_ref = unsafe { &mut *frame };
+                let pc = frame_ref.elr;
+                let (sig, code) = if ec == exception_class::UNKNOWN {
+                    (crate::signal::constants::SIGILL, crate::signal::constants::ILL_ILLOPC)
+                } else {
+                    use crate::signal::constants::*;
+                    // ISS: IOF, DZF, OFF, UFF, IXF in bits 0-4.
+                    let code = match iss & 0x1f {
+                        flags if flags & 0x1 != 0 => FPE_FLTINV,
+                        flags if flags & 0x2 != 0 => FPE_FLTDIV,
+                        flags if flags & 0x4 != 0 => FPE_FLTOVF,
+                        flags if flags & 0x8 != 0 => FPE_FLTUND,
+                        flags if flags & 0x10 != 0 => FPE_FLTRES,
+                        _ => FPE_FLTINV,
+                    };
+                    (SIGFPE, code)
+                };
+                deliver_el0_fault_signal(frame_ref, sig, code, pc);
+                return;
+            }
             if unsafe { (*frame).spsr & 0xF } != 0 {
                 handle_unhandled_el1_exception(unsafe { &*frame }, ec, esr, far);
             }
