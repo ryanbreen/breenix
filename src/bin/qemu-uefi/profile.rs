@@ -10,11 +10,10 @@ pub enum Profile {
     VirtioModern,
     Ahci,
     Nvme,
-    Smp4,
 }
 
 impl Profile {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 8] = [
         Self::Default,
         Self::Q35,
         Self::E1000e,
@@ -23,7 +22,6 @@ impl Profile {
         Self::VirtioModern,
         Self::Ahci,
         Self::Nvme,
-        Self::Smp4,
     ];
 
     pub fn name(self) -> &'static str {
@@ -36,7 +34,6 @@ impl Profile {
             Self::VirtioModern => "virtio-modern",
             Self::Ahci => "ahci",
             Self::Nvme => "nvme",
-            Self::Smp4 => "smp4",
         }
     }
 

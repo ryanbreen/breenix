@@ -46,11 +46,5 @@
     "title": "NVMe disks",
     "summary": "Attaches each of the three disks to its own NVMe controller.",
     "devices": "pc; OVMF; 3 NVMe controllers; e1000; virtio-vga; 4 configured CPUs"
-  },
-  {
-    "name": "smp4",
-    "title": "Four CPUs",
-    "summary": "Configures four CPUs, as the default profile does; Breenix brings all four online.",
-    "devices": "pc; OVMF; 3 legacy virtio-blk; e1000; virtio-vga; 4 configured CPUs"
   }
 ]
