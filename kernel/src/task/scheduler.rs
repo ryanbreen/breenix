@@ -2651,7 +2651,9 @@ impl Scheduler {
         // Only the times-reset exec helper forks children with this prefix.
         // Keep the 80 ms masked-delay regression leg off production builds.
         #[cfg(feature = "force_cpu_accounting_delay")]
-        if thread.run_start_ticks == 0 && thread.name.starts_with("processes-exec_test_child_") {
+        if thread.run_start_ticks == 0
+            && thread.name.rsplit('/').next().is_some_and(|name| name.starts_with("processes-exec_test_child_"))
+        {
             let start = crate::time::tsc::read_tsc();
             let delay = crate::time::tsc::frequency_hz() * 80 / 1000;
             while crate::time::tsc::read_tsc().saturating_sub(start) < delay {
