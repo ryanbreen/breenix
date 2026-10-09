@@ -1697,10 +1697,16 @@ pub fn note_x86_interrupt_return(cpu: usize) {
 }
 
 /// x86_64: the scheduling entry of an idle CPU, made without the process
-/// manager: records that this CPU is scheduling, wakes expired timers, and
-/// returns whether a full scheduling pass has anything to place, that is,
-/// whether any thread is queued on any CPU or a pinned wake is held for this
-/// one.
+/// manager: records that this CPU is scheduling, applies buffered interrupt
+/// wakes, wakes expired timers, and returns whether a full scheduling pass has
+/// anything to place, that is, whether any thread is queued on any CPU or a
+/// pinned wake is held for this one.
+///
+/// A device interrupt taken on an idle CPU buffers its waiter's wake here and
+/// sets this CPU's need_resched, and this pass is where that reschedule lands.
+/// It used to leave the buffer alone: with every CPU idle and the waiter
+/// already switched off its own CPU, nothing ran a full pass, and a completed
+/// disk request was seen only when the waiter's one-second wait slice expired.
 ///
 /// A full pass needs the process manager for the switch it may make, and an
 /// idle CPU that found it held on another CPU used to return with nothing
@@ -1718,6 +1724,7 @@ pub fn x86_idle_pass() -> bool {
         return true;
     }
     scheduler.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
+    scheduler.apply_isr_wakeups();
     scheduler.wake_expired_timers();
     PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) != 0
         || scheduler
@@ -2681,15 +2688,7 @@ impl Scheduler {
         // milliseconds to write while every other CPU waits for the lock.
 
         // Drain lock-free ISR wakeup buffers (see schedule_deferred_requeue for rationale).
-        {
-            let mut wakeups = alloc::vec::Vec::new();
-            for buf in ISR_WAKEUP_BUFFERS.iter() {
-                buf.drain(&mut wakeups);
-            }
-            for tid in wakeups {
-                self.unblock_for_io_from_isr_buffer(tid);
-            }
-        }
+        self.apply_isr_wakeups();
 
         if crate::net::loopback_queue_has_work() {
             let pump_tid = crate::net::loopback_pump_tid();
@@ -3295,13 +3294,7 @@ impl Scheduler {
         // context.  We drain ALL CPUs' buffers because the ISR that completed the
         // I/O may have run on any CPU.
         if self.drains_wake_inboxes {
-            let mut wakeups = alloc::vec::Vec::new();
-            for buf in ISR_WAKEUP_BUFFERS.iter() {
-                buf.drain(&mut wakeups);
-            }
-            for tid in wakeups {
-                self.unblock_for_io_from_isr_buffer(tid);
-            }
+            self.apply_isr_wakeups();
         }
 
         // If current thread is still runnable, mark it as Ready but DON'T add to queue.
@@ -4744,6 +4737,19 @@ impl Scheduler {
 
     fn unblock_for_io_from_isr_buffer(&mut self, tid: u64) {
         self.unblock_for_io_attributed(tid, true);
+    }
+
+    /// Apply the wakes interrupt handlers buffered with
+    /// `isr_unblock_for_io()`. Every CPU's buffer is drained, because the
+    /// completing interrupt may have run on any CPU.
+    fn apply_isr_wakeups(&mut self) {
+        let mut wakeups = alloc::vec::Vec::new();
+        for buf in ISR_WAKEUP_BUFFERS.iter() {
+            buf.drain(&mut wakeups);
+        }
+        for tid in wakeups {
+            self.unblock_for_io_from_isr_buffer(tid);
+        }
     }
 
     fn unblock_for_io_attributed(&mut self, tid: u64, from_isr_buffer: bool) {
