@@ -597,10 +597,10 @@
       "checkHint": "Check libs/libbreenix/src/http.rs MAX_URL_LEN check"
     },
     {
-      "name": "HTTP HTTPS rejection",
-      "marker": "HTTP_TEST: https_rejected OK",
-      "failureMeaning": "HTTP client should reject HTTPS URLs",
-      "checkHint": "Check libs/libbreenix/src/http.rs HTTPS check"
+      "name": "HTTP HTTPS fetch",
+      "marker": "HTTP_TEST: https_url OK",
+      "failureMeaning": "Fetching https://example.com/ neither returned a status nor failed with a TLS error",
+      "checkHint": "Check the TLS path in libs/libbreenix/src/http.rs; `https_url SKIP` means the network was unavailable"
     },
     {
       "name": "HTTP invalid domain",

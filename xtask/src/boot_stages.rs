@@ -1070,10 +1070,10 @@ fn shared_userspace_stages() -> Vec<BootStage> {
             check_hint: "Check libs/libbreenix/src/http.rs MAX_URL_LEN check",
         },
         BootStage {
-            name: "HTTP HTTPS rejection",
-            marker: "HTTP_TEST: https_rejected OK",
-            failure_meaning: "HTTP client should reject HTTPS URLs",
-            check_hint: "Check libs/libbreenix/src/http.rs HTTPS check",
+            name: "HTTP HTTPS fetch",
+            marker: "HTTP_TEST: https_url OK",
+            failure_meaning: "Fetching https://example.com/ neither returned a status nor failed with a TLS error",
+            check_hint: "Check the TLS path in libs/libbreenix/src/http.rs; `https_url SKIP` means the network was unavailable",
         },
         BootStage {
             name: "HTTP invalid domain",

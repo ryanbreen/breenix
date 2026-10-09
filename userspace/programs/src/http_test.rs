@@ -2,7 +2,7 @@
 //!
 //! Tests the HTTP client implementation:
 //! 1. URL parsing tests (no network needed - specific error assertions)
-//! 2. HTTPS rejection test (no network needed)
+//! 2. HTTPS fetch over TLS (SKIP marker if the network is unavailable)
 //! 3. Error handling for invalid domain (expects DnsError specifically)
 //! 4. Network integration test (clearly separate, with SKIP marker if unavailable)
 //!
@@ -184,7 +184,7 @@ fn main() {
     }
 
     // ========================================================================
-    // SECTION 2: HTTPS REJECTION TEST (no network needed)
+    // SECTION 2: HTTPS FETCH TEST
     // ========================================================================
 
     // Test 5: HTTPS URL parsing (should attempt TLS, may fail without network)

@@ -662,7 +662,7 @@
           "HTTP port non-numeric",
           "HTTP empty host",
           "HTTP URL too long",
-          "HTTP HTTPS rejection",
+          "HTTP HTTPS fetch",
           "HTTP invalid domain",
           "HTTP example fetch",
           "HTTP test completed"
@@ -738,7 +738,7 @@
           "HTTP port non-numeric",
           "HTTP empty host",
           "HTTP URL too long",
-          "HTTP HTTPS rejection",
+          "HTTP HTTPS fetch",
           "HTTP invalid domain",
           "HTTP example fetch",
           "HTTP test completed"
