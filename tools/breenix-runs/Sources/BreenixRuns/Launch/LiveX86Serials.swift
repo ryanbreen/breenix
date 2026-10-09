@@ -24,6 +24,7 @@ final class SSHSerialStream: X86SerialStream, @unchecked Sendable {
     private let timer: DispatchSourceTimer
     private let reader: DispatchSourceRead
     private var stopped = false
+    private var launched = false
 
     init(_ request: ProcessRequest, receive: @escaping @Sendable (Data) -> Void) throws {
         timer = DispatchSource.makeTimerSource(queue: queue)
@@ -36,7 +37,7 @@ final class SSHSerialStream: X86SerialStream, @unchecked Sendable {
         // A disconnected SSH must not deliver SIGPIPE to the launcher.
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETFL, O_NONBLOCK)
-        do { try process.run() } catch {
+        do { try process.run(); launched = true } catch {
             timer.resume(); reader.resume()
             timer.cancel(); reader.cancel()
             throw error
@@ -62,11 +63,17 @@ final class SSHSerialStream: X86SerialStream, @unchecked Sendable {
     var isReading: Bool { queue.sync { !reader.isCancelled } }
 
     func stop() {
-        queue.sync {
-            guard !stopped else { return }
+        let shouldStop = queue.sync {
+            guard !stopped else { return false }
             stopped = true
             timer.cancel()
             try? input.fileHandleForWriting.close()
+            return true
+        }
+        guard shouldStop else { return }
+        guard launched else {
+            queue.sync { reader.cancel(); try? output.fileHandleForReading.close() }
+            return
         }
         // EOF stops the remote reader; its heartbeat deadline also bounds a lost transport.
         let deadline = Date().addingTimeInterval(7)
