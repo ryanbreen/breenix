@@ -1107,12 +1107,17 @@ fn fork_cow() -> CaseResult {
 /// A write that breaks copy-on-write is seen by another thread of the writing process
 /// that was reading the page on another processor. The break maps a new frame, and a
 /// processor still holding the old read-only translation would go on reading the old
-/// frame. The reader spins while the writer runs, so with a processor to spare the two
-/// run on different processors; there is no getcpu to confirm where each one ran.
+/// frame. Before the write the two threads pass a turn back and forth HANDOFFS times
+/// through another page, reading the copy-on-write page as they go. On one processor
+/// each handoff waits for the scheduler to preempt the spinning thread, so finishing
+/// them within HANDOFF_MS shows the threads held two processors at once; the write
+/// follows the last handoff while the reader is still spinning.
 fn fork_cow_threads() -> CaseResult {
     const BEFORE: u64 = 0x1111_1111;
     const AFTER: u64 = 0x2222_2222;
     const READ_MS: u64 = 2000;
+    const HANDOFFS: u64 = 1000;
+    const HANDOFF_MS: u64 = 200;
     let cpus = processors();
     if cpus < 2 {
         return skip(format!("{cpus} processor online; the case needs 2, one for each thread"));
@@ -1129,39 +1134,54 @@ fn fork_cow_threads() -> CaseResult {
         if cell.load(Ordering::SeqCst) == BEFORE { 0 } else { 1 }
     })?;
     io::close(rel_r)?;
-    // Made after the fork, so the reader's handshake copies nothing.
-    let flag_page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
+    // Made after the fork, so the handoffs copy nothing. The writer makes the turn
+    // odd and the reader answers with the next even number.
+    let turn_page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
     // SAFETY: as for `page`.
-    let reading = unsafe { &*(flag_page as *const AtomicU64) };
-    let (page_addr, flag_addr) = (page as usize, flag_page as usize);
+    let turn = unsafe { &*(turn_page as *const AtomicU64) };
+    let (page_addr, turn_addr) = (page as usize, turn_page as usize);
     let reader = std::thread::spawn(move || {
         // SAFETY: both pages stay mapped until this thread is joined.
-        let (cell, reading) = unsafe { (&*(page_addr as *const AtomicU64), &*(flag_addr as *const AtomicU64)) };
-        let mut seen = cell.load(Ordering::Acquire);
-        reading.store(1, Ordering::Release);
+        let (cell, turn) = unsafe { (&*(page_addr as *const AtomicU64), &*(turn_addr as *const AtomicU64)) };
         let deadline = now_ms() + READ_MS;
-        while seen != AFTER && now_ms() < deadline {
+        let mut seen = cell.load(Ordering::Acquire);
+        let mut spins = 0u32;
+        while seen != AFTER {
+            let t = turn.load(Ordering::Acquire);
+            if t % 2 == 1 { turn.store(t + 1, Ordering::Release); }
             seen = cell.load(Ordering::Acquire);
+            spins = spins.wrapping_add(1);
+            if spins % 4096 == 0 && now_ms() >= deadline { break; }
         }
         seen
     });
     let started = now_ms();
-    while reading.load(Ordering::Acquire) == 0 && now_ms() < started + READ_MS {
-        core::hint::spin_loop();
+    let mut handoffs = 0;
+    let mut spins = 0u32;
+    while handoffs < HANDOFFS {
+        turn.store(2 * handoffs + 1, Ordering::Release);
+        while turn.load(Ordering::Acquire) != 2 * handoffs + 2 {
+            spins = spins.wrapping_add(1);
+            if spins % 4096 == 0 && now_ms() >= started + READ_MS { break; }
+            core::hint::spin_loop();
+        }
+        if turn.load(Ordering::Acquire) != 2 * handoffs + 2 { break; }
+        handoffs += 1;
     }
-    let began = reading.load(Ordering::Acquire) != 0;
-    // Run beside the reader for a moment, so each holds a processor, then write.
-    burn(5);
+    let handoff_ms = now_ms().saturating_sub(started);
     cell.store(AFTER, Ordering::SeqCst);
     let seen = reader.join().map_err(|_| "the reading thread panicked".to_string());
     io::close(rel_w)?;
     let child_result = child.expect_exit(0, "the child, whose copy of the page must keep the old value");
-    memory::munmap(flag_page, 4096)?;
+    memory::munmap(turn_page, 4096)?;
     memory::munmap(page, 4096)?;
     let seen = seen?;
-    check(began, "the reading thread did not start within 2 s")?;
+    check(handoffs == HANDOFFS, &format!(
+        "the reading thread answered {handoffs} of {HANDOFFS} turns within {READ_MS} ms"))?;
+    check(handoff_ms < HANDOFF_MS, &format!(
+        "with {cpus} processors online, {HANDOFFS} turns between two spinning threads took {handoff_ms} ms; within {HANDOFF_MS} ms they would have run on two processors at once"))?;
     check(seen == AFTER, &format!(
-        "with {cpus} processors online, a thread reading a copy-on-write page still read {seen:#x} {READ_MS} ms after another thread of its process wrote {AFTER:#x} to it"))?;
+        "with {cpus} processors online, a thread reading a copy-on-write page on another processor still read {seen:#x} {READ_MS} ms after another thread of its process wrote {AFTER:#x} to it"))?;
     child_result
 }
 
