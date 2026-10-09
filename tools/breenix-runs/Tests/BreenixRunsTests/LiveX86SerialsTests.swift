@@ -303,13 +303,13 @@ private final class LaunchRunner: ProcessRunner {
     func interrupt() { lock.lock(); interrupted = true; lock.unlock() }
     func run(_ request: ProcessRequest, outputHandler: (@Sendable (Data) -> Void)?) throws -> ProcessResult {
         if request.executable == "/fake-vigil" {
-            let action = request.arguments[0]
+            let action = request.arguments[safe: 0] ?? ""
             events.append(action)
             if action == "start" {
                 startArguments = request.arguments
-                return ProcessResult(stdout: registers ? Data(((startNoise ? "diagnostic\n" : "") + request.arguments[7] + "\n").utf8) : Data(), exitCode: 0)
+                return ProcessResult(stdout: registers ? Data(((startNoise ? "diagnostic\n" : "") + (request.arguments[safe: 7] ?? "") + "\n").utf8) : Data(), exitCode: 0)
             }
-            if action == "finish" { finishStatus = request.arguments[2] }
+            if action == "finish" { finishStatus = request.arguments[safe: 2] }
             return ProcessResult(exitCode: 0)
         }
         if request.executable == "/usr/bin/tar" {

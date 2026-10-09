@@ -313,8 +313,8 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertEqual(runner.calls.filter { $0.executable == "/record.sh" && $0.arguments.first == "start" }.count, 1)
         XCTAssertEqual(filings.count, 1, "an unconfirmed start must file the exact run id after harvest")
         XCTAssertEqual(filings.first?.arguments.first, "record")
-        XCTAssertEqual(filings.first?.arguments[9], "10.0")
-        XCTAssertEqual(filings.first?.arguments[10], "20.0")
+        XCTAssertEqual(filings.first?.arguments[safe: 9], "10.0")
+        XCTAssertEqual(filings.first?.arguments[safe: 10], "20.0")
     }
 
     func testFailedEvidencePullStillProducesTwoEmptySerialRefs() throws {
@@ -480,8 +480,8 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
         calls.append(request)
 
         if request.executable == "/record.sh" {
-            if request.arguments[0] == "finish" { return ProcessResult(exitCode: 0) }
-            let serial = URL(fileURLWithPath: request.arguments[4])
+            if request.arguments[safe: 0] == "finish" { return ProcessResult(exitCode: 0) }
+            let serial = URL(fileURLWithPath: request.arguments[safe: 4] ?? "/missing-serial-argument")
             let directory = serial.deletingLastPathComponent().deletingLastPathComponent()
             XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path), "file before publishing the manifest so importers cannot duplicate it")
             return ProcessResult(exitCode: 0)
