@@ -59,13 +59,10 @@ impl Profile {
         }
     }
 
-    /// The default gate boots four CPUs so the SMP stage can fail; the
-    /// device variants keep one CPU to isolate their hardware difference.
+    /// Every profile boots four CPUs: x86 is tested only as a multiprocessor,
+    /// so a device variant also proves its hardware with all CPUs online.
     pub fn cpus(self) -> &'static str {
-        match self {
-            Self::Default | Self::Smp4 => "4",
-            _ => "1",
-        }
+        "4"
     }
 
     pub fn census(self, storage_mode: &str) -> (usize, usize) {
