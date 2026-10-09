@@ -16,7 +16,9 @@ mod rtc_tests;
 pub use rtc::DateTime;
 #[allow(unused_imports)]
 pub use time::Time;
-pub use timer::{get_monotonic_time, get_monotonic_time_ns, get_ticks, timer_interrupt};
+pub use timer::{
+    get_cpu_ticks, get_monotonic_time, get_monotonic_time_ns, get_ticks, timer_interrupt,
+};
 
 /// Initialize all time subsystems.
 ///

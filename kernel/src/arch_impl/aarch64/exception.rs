@@ -381,7 +381,7 @@ fn terminate_current_scheduler_thread() {
         crate::task::scheduler::with_scheduler(|sched| {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
                 // It runs on this CPU: keep the time it ran up to its death.
-                thread.charge_cpu_if_running(crate::time::get_ticks());
+                thread.charge_cpu_if_running(crate::time::get_cpu_ticks());
                 thread.set_terminated();
             }
             sched.remove_from_ready_queue(thread_id);

@@ -5,6 +5,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+force_cpu_accounting_delay = ["kernel/force_cpu_accounting_delay"]
 testing = ["kernel/testing"]
 boot_tests = ["kernel/boot_tests"]  # Parallel boot test framework
 force_eret_dispatch_596 = ["boot_tests", "kernel/force_eret_dispatch_596"]  # #596 forced-repro knob

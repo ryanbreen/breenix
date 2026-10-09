@@ -1206,7 +1206,9 @@ pub fn collect_strand_census(
             let deferred = false;
 
             if thread.state == ThreadState::Running && actual_idle_cpu.is_none() && !current {
-                let nonprogress_ms = now_ticks.saturating_sub(thread.run_start_ticks);
+                let nonprogress_ms = crate::time::get_cpu_ticks()
+                    .saturating_sub(thread.run_start_ticks)
+                    .saturating_mul(crate::time::timer::MS_PER_TICK);
                 worst_nonprogress_ms = worst_nonprogress_ms.max(nonprogress_ms);
                 if nonprogress < STRAND_CENSUS_CAPACITY {
                     nonprogress_out[nonprogress] = tid;
@@ -2646,8 +2648,20 @@ impl Scheduler {
                 cpu
             );
         }
+        // Only the times-reset exec helper forks children with this prefix.
+        // Keep the 80 ms masked-delay regression leg off production builds.
+        #[cfg(feature = "force_cpu_accounting_delay")]
+        if thread.run_start_ticks == 0
+            && thread.name.rsplit('/').next().is_some_and(|name| name.starts_with("processes-exec_test_child_"))
+        {
+            let start = crate::time::tsc::read_tsc();
+            let delay = crate::time::tsc::frequency_hz() * 80 / 1000;
+            while crate::time::tsc::read_tsc().saturating_sub(start) < delay {
+                core::hint::spin_loop();
+            }
+        }
         thread.set_running();
-        thread.run_start_ticks = crate::time::get_ticks();
+        thread.run_start_ticks = crate::time::get_cpu_ticks();
     }
 
     /// Schedule the next thread to run
@@ -2725,7 +2739,7 @@ impl Scheduler {
                         // their ticks charged at block time — charging again here
                         // would count blocked/sleeping time as CPU usage.
                         let published_ready = if !was_blocked && !was_terminated {
-                            current.charge_cpu(crate::time::get_ticks());
+                            current.charge_cpu(crate::time::get_cpu_ticks());
                             current.set_ready();
                             WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
                             record_ready_site(current_id, READY_SITE_SCHEDULE);
@@ -2733,7 +2747,7 @@ impl Scheduler {
                         } else {
                             // Reset run_start_ticks so the next dispatch doesn't
                             // charge stale time from the blocked period.
-                            current.run_start_ticks = crate::time::get_ticks();
+                            current.run_start_ticks = crate::time::get_cpu_ticks();
                             false
                         };
 
@@ -3328,7 +3342,7 @@ impl Scheduler {
                         self.cpu_state[Self::current_cpu_id()].previous_thread = Some(current_id);
                     }
                     if let Some(current) = self.get_thread_mut(current_id) {
-                        current.charge_cpu(crate::time::get_ticks());
+                        current.charge_cpu(crate::time::get_cpu_ticks());
                         current.set_ready();
                     }
                     WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
@@ -3910,7 +3924,7 @@ impl Scheduler {
                 return;
             }
             // Charge elapsed CPU ticks before blocking
-            current.charge_cpu(crate::time::get_ticks());
+            current.charge_cpu(crate::time::get_cpu_ticks());
 
             current.state = ThreadState::Blocked;
             #[cfg(feature = "coreproof_component_a")]
@@ -4292,7 +4306,7 @@ impl Scheduler {
                     return;
                 }
                 // Charge elapsed CPU ticks before blocking
-                thread.charge_cpu(crate::time::get_ticks());
+                thread.charge_cpu(crate::time::get_cpu_ticks());
 
                 // CRITICAL: Save userspace context FIRST, THEN set state.
                 // This ensures that when unblock_for_signal() is called,
@@ -4429,7 +4443,7 @@ impl Scheduler {
                     return;
                 }
                 // Charge elapsed CPU ticks before blocking
-                thread.charge_cpu(crate::time::get_ticks());
+                thread.charge_cpu(crate::time::get_cpu_ticks());
 
                 thread.state = ThreadState::BlockedOnChildExit;
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
@@ -4566,7 +4580,7 @@ impl Scheduler {
                     return;
                 }
                 // Charge elapsed CPU ticks before blocking
-                thread.charge_cpu(crate::time::get_ticks());
+                thread.charge_cpu(crate::time::get_cpu_ticks());
 
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(wake_time_ns);
@@ -4630,7 +4644,7 @@ impl Scheduler {
         }
 
         // Charge elapsed CPU ticks before blocking
-        thread.charge_cpu(crate::time::get_ticks());
+        thread.charge_cpu(crate::time::get_cpu_ticks());
 
         thread.state = ThreadState::BlockedOnIO;
         thread.wake_time_ns = wake_time_ns;
@@ -4888,7 +4902,7 @@ impl Scheduler {
                 // Charge elapsed CPU ticks NOW, before blocking. Otherwise the
                 // next schedule() call charges all time since last dispatch —
                 // including blocked/sleeping time — as CPU usage.
-                thread.charge_cpu(crate::time::get_ticks());
+                thread.charge_cpu(crate::time::get_cpu_ticks());
 
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(timeout_ns);
@@ -5131,7 +5145,7 @@ impl Scheduler {
     #[allow(dead_code)]
     pub fn terminate_current(&mut self) {
         if let Some(current) = self.current_thread_mut() {
-            current.charge_cpu_if_running(crate::time::get_ticks());
+            current.charge_cpu_if_running(crate::time::get_cpu_ticks());
             current.set_terminated();
             // Don't put back in ready queue
         }
@@ -5261,7 +5275,7 @@ impl Scheduler {
         // pass after publication consumes it. No CPU-residency predicate is
         // needed, and unobserved collision cases age out with thread retirement.
         let online_cpus = self.online_cpu_count();
-        let now = crate::time::get_ticks();
+        let now = crate::time::get_cpu_ticks();
         for index in 0..self.threads.len() {
             let thread_id = {
                 let thread = &mut self.threads[index];
@@ -7021,6 +7035,8 @@ impl ExecSchedCommit {
                         t.stack_bottom = self.stack_bottom;
                         t.kernel_stack_top = self.kernel_stack_top;
                         t.tls_block = self.tls_block;
+                        // The interval before exec belongs to the old thread group.
+                        t.charge_cpu(crate::time::get_cpu_ticks());
                         replaced_account = core::mem::replace(&mut t.cpu_account, self.cpu_account);
                         t.state = crate::task::thread::ThreadState::Ready;
                         #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
@@ -7066,7 +7082,7 @@ pub fn wake_waitqueue_thread(tid: u64) {
 pub fn terminate_thread(tid: u64) -> Option<()> {
     with_scheduler(|scheduler| {
         let thread = scheduler.get_thread_mut(tid)?;
-        thread.charge_cpu_if_running(crate::time::get_ticks());
+        thread.charge_cpu_if_running(crate::time::get_cpu_ticks());
         thread.set_terminated();
         Some(())
     })
@@ -7079,45 +7095,25 @@ pub fn terminate_thread(tid: u64) -> Option<()> {
 pub fn charge_current_cpu() -> u64 {
     with_scheduler(|scheduler| {
         scheduler.current_thread_mut().map_or(0, |thread| {
-            thread.charge_cpu(crate::time::get_ticks());
+            thread.charge_cpu(crate::time::get_cpu_ticks());
             thread.cpu_ticks_total
         })
     })
     .unwrap_or(0)
 }
 
-/// Get per-process accumulated CPU ticks from all threads in the scheduler.
-///
-/// Returns a Vec of (owner_pid, cpu_ticks_total) for each thread that has an
-/// owner_pid set. For currently-running threads, includes the in-flight ticks
-/// since their last schedule (now - run_start_ticks).
-///
-/// Used by btop monitor to display CPU% per process.
-pub fn get_process_cpu_ticks() -> alloc::vec::Vec<(u64, u64)> {
-    without_interrupts(|| {
-        if let Some(scheduler_lock) = try_lock_scheduler() {
-            if let Some(scheduler) = scheduler_lock.as_ref() {
-                let now = crate::time::get_ticks();
-                return scheduler
-                    .threads
-                    .iter()
-                    .filter_map(|t| {
-                        t.owner_pid.map(|pid| {
-                            let mut ticks = t.cpu_ticks_total;
-                            // If thread is currently running, add in-flight ticks
-                            if t.state == super::thread::ThreadState::Running
-                                && !t.blocked_in_syscall
-                            {
-                                ticks += now.wrapping_sub(t.run_start_ticks);
-                            }
-                            (pid, ticks)
-                        })
-                    })
-                    .collect();
+/// Charge a process's running threads before reading its shared CPU account.
+/// Exited threads remain in that account; procfs must not sum only live threads.
+/// Called before taking the process-manager lock, preserving lock order.
+pub fn charge_process_cpu(pid: u64) {
+    with_scheduler(|scheduler| {
+        let now = crate::time::get_cpu_ticks();
+        for thread in scheduler.threads.iter_mut() {
+            if thread.owner_pid == Some(pid) {
+                thread.charge_cpu_if_running(now);
             }
         }
-        alloc::vec::Vec::new()
-    })
+    });
 }
 
 /// Get a process display state from its scheduler-owned threads.

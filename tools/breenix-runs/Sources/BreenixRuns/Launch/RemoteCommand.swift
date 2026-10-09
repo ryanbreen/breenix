@@ -131,6 +131,12 @@ public enum RemoteCommand {
     // An id that is not one never reaches the shell: the request fails the gate instead of
     // quietly running the ordinary one (BeastLauncher refuses such an id before this).
     public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil) -> ProcessRequest {
+        // Explicit opt-in test/profile features; never interpolate unchecked shell text.
+        let features = ProcessInfo.processInfo.environment["BREENIX_GATE_KERNEL_FEATURES"] ?? ""
+        guard features.isEmpty || features.range(of: "^[a-zA-Z0-9_-]+(,[a-zA-Z0-9_-]+)*$", options: .regularExpression) != nil else {
+            return sshRequest(paths: paths, remote: "exit 2")
+        }
+        let featureEnv = features.isEmpty ? "" : " BREENIX_GATE_KERNEL_FEATURES=\(features)"
         let profileEnv: String = qemuProfile.map { " BREENIX_QEMU_PROFILE=\($0.rawValue)" } ?? ""
         var suiteEnv = ""
         if let suite {
@@ -169,7 +175,7 @@ public enum RemoteCommand {
             + " BREENIX_FULL_BACKSTOP=\(fullBackstopSecs ?? max(1800, timeoutSecs))"
             + " CARGO_BUILD_JOBS=6"
             + (paths.fresh ? " BREENIX_GATE_FRESH=1" : "")
-            + profileEnv + suiteEnv + slotIdentity
+            + featureEnv + profileEnv + suiteEnv + slotIdentity
             + " " + launch
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }

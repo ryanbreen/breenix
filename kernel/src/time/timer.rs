@@ -164,6 +164,30 @@ pub fn get_ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
+/// CPU-accounting timestamp in the same epoch and units as `get_ticks`.
+///
+/// Dispatch and blocking happen with interrupts masked. The last delivered
+/// timer IRQ can precede the outgoing thread's kernel work, so using its
+/// cached timestamp would charge that work to the next thread when the IRQ
+/// catches up. Read the counter at each accounting boundary instead.
+#[inline]
+pub fn get_cpu_ticks() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let cycles = TSC_CYCLES_PER_TICK.load(Ordering::Relaxed);
+        if cycles != 0 {
+            let elapsed =
+                super::tsc::read_tsc_serialized().saturating_sub(TICK_TSC_BASE.load(Ordering::Relaxed));
+            return elapsed / cycles;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(ticks) = crate::arch_impl::aarch64::timer::milliseconds_since_base() {
+        return ticks;
+    }
+    get_ticks()
+}
+
 /// Milliseconds since the kernel was initialized, at `MS_PER_TICK` resolution.
 ///
 /// For finer resolution, use `get_monotonic_time_ns()`, which reads the TSC

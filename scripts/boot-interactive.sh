@@ -100,6 +100,15 @@ if [ "$MODE" != tests ]; then
     MODE_ARGS=(-fw_cfg "name=opt/breenix/mode,string=$MODE")
     KERNEL_FEATURES=()
 fi
+# Explicit regression/profile features supplement the selected normal profile.
+if [ -n "${BREENIX_KERNEL_FEATURES:-}" ]; then
+    [[ "$BREENIX_KERNEL_FEATURES" =~ ^[a-zA-Z0-9_-]+(,[a-zA-Z0-9_-]+)*$ ]] || { echo "invalid kernel features" >&2; exit 2; }
+    if [ "$MODE" = tests ]; then
+        KERNEL_FEATURES=(--features "testing,$BREENIX_KERNEL_FEATURES")
+    else
+        KERNEL_FEATURES=(--features "$BREENIX_KERNEL_FEATURES")
+    fi
+fi
 if [ "$MODE" = program ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/program,string=$PROGRAM")
 fi
