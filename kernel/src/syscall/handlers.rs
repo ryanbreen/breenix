@@ -3312,7 +3312,8 @@ pub fn sys_getppid() -> SyscallResult {
             if let Some(ref manager) = *crate::process::manager() {
                 if let Some((pid, process)) = manager.find_process_by_thread(thread_id) {
                     // A thread's row records the thread that created it as
-                    // its parent; the process's parent is its leader's.
+                    // its parent; the process's parent is its leader's, and
+                    // that parent is the process the forking thread belongs to.
                     let leader = process
                         .thread_group_id
                         .and_then(|tgid| manager.get_process(crate::process::ProcessId::new(tgid)))
@@ -3320,7 +3321,8 @@ pub fn sys_getppid() -> SyscallResult {
                         .unwrap_or(process);
                     // Return parent PID if set, otherwise 1 (init)
                     if let Some(parent) = leader.parent {
-                        return SyscallResult::Ok(parent.as_u64());
+                        let ppid = manager.thread_group_of(parent).unwrap_or(parent.as_u64());
+                        return SyscallResult::Ok(ppid);
                     }
                     return SyscallResult::Ok(1); // init
                 }

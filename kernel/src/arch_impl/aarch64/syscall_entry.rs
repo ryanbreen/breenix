@@ -1035,14 +1035,15 @@ fn sys_getppid() -> u64 {
     if let Some(ref manager) = *crate::process::manager() {
         if let Some((pid, process)) = manager.find_process_by_thread(thread_id) {
             // A thread's row records the thread that created it as its
-            // parent; the process's parent is its leader's.
+            // parent; the process's parent is its leader's, and that parent
+            // is the process the forking thread belongs to.
             let leader = process
                 .thread_group_id
                 .and_then(|tgid| manager.get_process(crate::process::ProcessId::new(tgid)))
                 .filter(|leader| leader.id != pid)
                 .unwrap_or(process);
             if let Some(parent_pid) = leader.parent {
-                return parent_pid.as_u64();
+                return manager.thread_group_of(parent_pid).unwrap_or(parent_pid.as_u64());
             }
         }
     }
