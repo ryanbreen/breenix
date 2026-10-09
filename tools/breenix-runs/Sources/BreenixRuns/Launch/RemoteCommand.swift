@@ -151,7 +151,7 @@ public enum RemoteCommand {
             let worktree = paths.fresh ? "${BREENIX_GATE_CACHE_DIR:-\(parent)/breenix-gate-cache}/fresh/" + URL(fileURLWithPath: paths.clonePath).lastPathComponent : "${BREENIX_GATE_CACHE_DIR:-\(parent)/breenix-gate-cache}/trees/\(lane)"
             slotIdentity = " BREENIX_SLOT_WORKTREE=\"\(worktree)\" BREENIX_SLOT_COMMIT=\(sha)"
         }
-        let helper = paths.gateTmpPath + "/host-slots.py"
+        let helper = slotHelperBase64 == nil ? paths.canonicalRepoDir + "/scripts/host-slots.py" : paths.gateTmpPath + "/host-slots.py"
         let installHelper = slotHelperBase64.map {
             " && printf %s \($0) | base64 -d > \(helper)"
         } ?? ""
@@ -164,11 +164,12 @@ public enum RemoteCommand {
         // Historical gates lack an internal supervisor: hold both resources
         // around that gate, using the current launcher's helper outside checkout.
         let historicalAdmission = paths.laneKey == nil ? "if [ ! -f \(paths.clonePath)/scripts/host-slots.py ]; then python3 \(helper) acquire x86-build && python3 \(helper) acquire x86-boot || exit 1; fi; " : ""
-        let launch = slotHelperBase64 == nil ? gate :
-            "python3 \(helper) supervise -- bash -c \"\(historicalAdmission)exec \(gate)\""
+        let launch = "python3 \(helper) supervise -- bash -c \"\(historicalAdmission)exec \(gate)\""
+        let identityCode = #"import json,pathlib,sys;pid=int(sys.argv[1]);birth=pathlib.Path(\"/proc/%d/stat\"%pid).read_text().rsplit(\")\",1)[1].split()[19];pathlib.Path(sys.argv[2]).write_text(json.dumps([pid,birth,sys.argv[3]]))"#
         let script = "mkdir -p \(paths.gateTmpPath)" + installHelper
+            + " && python3 -c \"\(identityCode)\" \"$$\" \(paths.gateTmpPath)/launcher-gate.json \(helper)"
             + " && source \(paths.cargoEnvPath)"
-            + " && env BREENIX_GATE_TMP=\(paths.gateTmpPath)"
+            + " && exec env BREENIX_GATE_TMP=\(paths.gateTmpPath)"
             + " BREENIX_REPO_DIR=\(paths.clonePath)"
             + " BREENIX_RUST_FORK=\(paths.rustForkPath)"
             + " BREENIX_GATE_TIMEOUT=\(timeoutSecs)"
@@ -178,6 +179,108 @@ public enum RemoteCommand {
             + featureEnv + profileEnv + suiteEnv + slotIdentity
             + " " + launch
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
+    }
+
+    /// Nonblocking output keeps the heartbeat deadline active under backpressure.
+    /// Catch up in bounded bursts; the final evidence is harvested independently.
+    static let serialReader = #"""
+import base64, json, os, pathlib, select, sys, time
+root = pathlib.Path(sys.argv[1])
+count = int(sys.argv[2])
+offsets = {}
+last = time.monotonic()
+pending = bytearray()
+os.set_blocking(1, False)
+while time.monotonic() - last < 5:
+    ready, writable, _ = select.select([0], [1] if pending else [], [], .01 if pending else 1)
+    if ready:
+        if not os.read(0, 4096):
+            break
+        last = time.monotonic()
+    if len(pending) < 4 * 1024 * 1024:
+        for boot in range(1, count + 1):
+            directory = root / ("breenix_gate_%d" % boot)
+            if not all((directory / ("serial_%s.log" % stream)).exists() for stream in ("user", "kernel")):
+                continue
+            for stream in ("user", "kernel"):
+                key = (boot, stream)
+                path = directory / ("serial_%s.log" % stream)
+                try:
+                    with path.open("rb") as log:
+                        log.seek(offsets.get(key, 0))
+                        data = log.read(1024 * 1024)
+                        if key not in offsets or data:
+                            offsets[key] = log.tell()
+                            pending.extend((json.dumps(dict(boot=boot, stream=stream, data=base64.b64encode(data).decode())) + "\n").encode())
+                except FileNotFoundError:
+                    pass
+    if pending:
+        try:
+            written = os.write(1, pending)
+            del pending[:written]
+        except BlockingIOError:
+            pass
+        except BrokenPipeError:
+            break
+"""#
+
+    public static func streamSerialsRequest(paths: BeastPaths, boots: Int) -> ProcessRequest {
+        let encoded = Data(serialReader.utf8).base64EncodedString()
+        let python = "import base64;exec(base64.b64decode(\"\(encoded)\"))"
+        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -u -c '\(python)' \(paths.gateTmpPath) \(boots)", combineOutput: false, liveStream: true)
+    }
+
+    /// Signal this run's supervisor and detached worker, including a worker whose
+    /// foreground handle died during disconnect. PID birth checks exclude reused PIDs.
+    static let gateStopper = #"""
+import json, os, pathlib, signal, sys, time
+
+def stop_gate(record, proc):
+    try:
+        saved = json.loads(record.read_text())
+        pid, birth = saved[:2]
+    except (FileNotFoundError, ValueError):
+        return 1
+    def identity(pid):
+        try:
+            fields = (proc / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
+            return fields[19] if fields[0] != "Z" else None
+        except (FileNotFoundError, ProcessLookupError):
+            return None
+    targets = {pid: birth}
+    helper = (saved[2] if len(saved) > 2 else str(record.parent / "host-slots.py")).encode()
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+            if helper in argv and b"supervise" in argv:
+                worker = int(entry.name)
+                token = identity(worker)
+                if token is not None:
+                    targets[worker] = token
+        except (FileNotFoundError, ProcessLookupError):
+            pass
+    def alive(pid, token):
+        return identity(pid) == token
+    for target, token in targets.items():
+        if alive(target, token):
+            try:
+                os.kill(target, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    deadline = time.monotonic() + 130
+    while any(alive(p, t) for p, t in targets.items()) and time.monotonic() < deadline:
+        time.sleep(.2)
+    return 1 if any(alive(p, t) for p, t in targets.items()) else 0
+
+if __name__ == "__main__":
+    sys.exit(stop_gate(pathlib.Path(sys.argv[1]), pathlib.Path("/proc")))
+"""#
+
+    public static func stopGateRequest(paths: BeastPaths) -> ProcessRequest {
+        let encoded = Data(gateStopper.utf8).base64EncodedString()
+        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath)/launcher-gate.json")
     }
 
     // No `bash -lc` needed: a single command, no env sourcing, no shell
@@ -255,10 +358,10 @@ public enum RemoteCommand {
         "sudo -n incus exec \(paths.container) -- bash -lc '\(script)'"
     }
 
-    private static func sshRequest(paths: BeastPaths, remote: String, combineOutput: Bool = true) -> ProcessRequest {
+    private static func sshRequest(paths: BeastPaths, remote: String, combineOutput: Bool = true, liveStream: Bool = false) -> ProcessRequest {
         ProcessRequest(
             executable: "/usr/bin/ssh",
-            arguments: ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=\(sshTimeoutSecs)", paths.host, remote],
+            arguments: ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=\(sshTimeoutSecs)"] + (liveStream ? ["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"] : []) + [paths.host, remote],
             combineOutput: combineOutput
         )
     }

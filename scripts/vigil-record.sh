@@ -28,7 +28,7 @@ case "${1:-}" in
         [ -n "$platform" ] && [ -n "$serial" ] || exit 0
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 0
         dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')
-        args=(breenix start --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "$PPID")
+        args=(breenix start --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "${BREENIX_LAUNCHER_PID:-$PPID}")
         if [ -n "$suite" ]; then
             args+=(--suite "$suite")
         elif [ -n "$mode" ] && [ "$mode" != default ]; then
@@ -37,7 +37,8 @@ case "${1:-}" in
         [ -z "$user" ] || args+=(--serial-user "$user")
         [ -z "$profile" ] || [ "$profile" = default ] || args+=(--profile "$profile")
         [ -z "$id" ] || args+=(--id "$id")
-        "$CLI" "${args[@]}" 2>/dev/null || true
+        "$CLI" "${args[@]}"
+        exit $?
         ;;
     record)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
@@ -45,7 +46,13 @@ case "${1:-}" in
         args=(breenix record --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --serial-user "$user" --id "$id" --started "$started" --ended "$ended" --exit-status "$status")
         if [ -n "$suite" ]; then args+=(--suite "$suite"); else args+=(--mode "$mode"); fi
         [ -z "$profile" ] || args+=(--profile "$profile")
-        "$CLI" "${args[@]}"
+        # A timed-out start may already have published this exact id. Finish it
+        # instead of creating a second record or letting the importer assign zero.
+        if [ -f "$HOME/Library/Application Support/Vigil/breenix/boots/$id/run.json" ]; then
+            "$CLI" breenix finish --id "$id" --exit-status "$status" --ended "$ended"
+        else
+            "$CLI" "${args[@]}"
+        fi
         exit $?
         ;;
     finish)

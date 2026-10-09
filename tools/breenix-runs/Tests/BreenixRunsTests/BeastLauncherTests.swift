@@ -121,13 +121,8 @@ final class BeastLauncherTests: XCTestCase {
 
         XCTAssertEqual(request.executable, "/usr/bin/ssh")
         XCTAssertEqual(request.arguments, [
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=15",
-            "beast",
-            "sudo -n incus exec breenix-x86 -- bash -lc 'mkdir -p /root/breenix-testclone/gate-tmp && source /root/.cargo/env && env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp BREENIX_REPO_DIR=/root/breenix-testclone BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=900 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6 /root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread'"
+            "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "beast",
+            #"sudo -n incus exec breenix-x86 -- bash -lc 'mkdir -p /root/breenix-testclone/gate-tmp && python3 -c "import json,pathlib,sys;pid=int(sys.argv[1]);birth=pathlib.Path(\"/proc/%d/stat\"%pid).read_text().rsplit(\")\",1)[1].split()[19];pathlib.Path(sys.argv[2]).write_text(json.dumps([pid,birth,sys.argv[3]]))" "$$" /root/breenix-testclone/gate-tmp/launcher-gate.json /root/breenix/scripts/host-slots.py && source /root/.cargo/env && exec env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp BREENIX_REPO_DIR=/root/breenix-testclone BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=900 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6 python3 /root/breenix/scripts/host-slots.py supervise -- bash -c "if [ ! -f /root/breenix-testclone/scripts/host-slots.py ]; then python3 /root/breenix/scripts/host-slots.py acquire x86-build && python3 /root/breenix/scripts/host-slots.py acquire x86-boot || exit 1; fi; exec /root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread"'"#
         ])
         XCTAssertTrue(request.combineOutput)
         XCTAssertTrue(paths.gateTmpPath.hasPrefix(paths.clonePath + "/"))
@@ -138,7 +133,7 @@ final class BeastLauncherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let runner = BeastScriptedProcessRunner()
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")),
-                                     runner: runner, timeoutSecs: 180)
+                                     runner: runner, timeoutSecs: 180, serialStreaming: NoSerialStreaming())
         var selected = options(runID: "q35-run")
         selected.qemuProfile = .q35
         let plan = try launcher.plan(options: selected)
@@ -221,7 +216,7 @@ final class BeastLauncherTests: XCTestCase {
         let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
         let runner = BeastScriptedProcessRunner()
         runner.prepareResult = ProcessResult(stdout: Data("fetch failed\n".utf8), exitCode: 1)
-        let launcher = BeastLauncher(store: store, runner: runner)
+        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming())
 
         XCTAssertThrowsError(try launcher.runX86(options: options(runID: "prepare-fails"))) { error in
             guard case BeastLauncherError.prepareCloneFailed(let exitCode, _) = error else {
@@ -239,7 +234,7 @@ final class BeastLauncherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let runner = BeastScriptedProcessRunner()
         runner.gateResult = ProcessResult(
-            stdout: Data("PASS-WITH-ATTRIBUTED-LOCKUP: 1/1 boots reached the loader marker; 1 locked up afterwards\n".utf8),
+            stdout: Data("PASS-WITH-ATTRIBUTED-LOCKUP: 1/1 boots reached the loader marker; 1 locked up afterwards\nGATE: PASS (1/1 boot tests passed)\n".utf8),
             exitCode: 0)
         let result = try runSuccessfulX86(root: root, runner: runner, runID: "attributed-lockup")
 
@@ -311,11 +306,12 @@ final class BeastLauncherTests: XCTestCase {
             return ProcessResult(exitCode: 0)
         }
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")), runner: runner,
-                                     vigilScript: URL(fileURLWithPath: "/record.sh"))
+                                     vigilScript: URL(fileURLWithPath: "/record.sh"), serialStreaming: NoSerialStreaming())
         let result = try launcher.runX86(options: options(runID: "file-finished"))
         XCTAssertTrue(result.manifest.captures.contains { $0.path == "screen-1-files-io.png" })
-        let filings = runner.calls.filter { $0.executable == "/record.sh" }
-        XCTAssertEqual(filings.count, 1, "a completed x86 run must reach Vigil")
+        let filings = runner.calls.filter { $0.executable == "/record.sh" && $0.arguments.first == "record" }
+        XCTAssertEqual(runner.calls.filter { $0.executable == "/record.sh" && $0.arguments.first == "start" }.count, 1)
+        XCTAssertEqual(filings.count, 1, "an unconfirmed start must file the exact run id after harvest")
         XCTAssertEqual(filings.first?.arguments.first, "record")
         XCTAssertEqual(filings.first?.arguments[9], "10.0")
         XCTAssertEqual(filings.first?.arguments[10], "20.0")
@@ -328,6 +324,7 @@ final class BeastLauncherTests: XCTestCase {
         runner.pullResult = ProcessResult(stdout: Data(), stderr: Data("tar failed\n".utf8), exitCode: 1)
         let result = try runSuccessfulX86(root: root, runner: runner, runID: "pull-fails")
 
+        XCTAssertTrue(result.manifest.verdict.isFailure)
         XCTAssertEqual(result.manifest.serials, [
             SerialRef(name: "serial_user.txt", path: "serial_user.txt", bytes: 0, stream: .com1),
             SerialRef(name: "serial_kernel.txt", path: "serial_kernel.txt", bytes: 0, stream: .com2)
@@ -351,7 +348,7 @@ final class BeastLauncherTests: XCTestCase {
         let launcher = BeastLauncher(
             store: RunStore(root: root.appendingPathComponent("store", isDirectory: true)),
             runner: runner,
-            pathsTemplate: BeastPaths(host: "localhost", clonePath: "")
+            pathsTemplate: BeastPaths(host: "localhost", clonePath: ""), serialStreaming: NoSerialStreaming()
         )
 
         XCTAssertThrowsError(try launcher.runX86(options: options(runID: "bad-host"))) { error in
@@ -367,7 +364,7 @@ final class BeastLauncherTests: XCTestCase {
         let runner = BeastScriptedProcessRunner()
         let launcher = BeastLauncher(
             store: RunStore(root: root.appendingPathComponent("store", isDirectory: true)),
-            runner: runner
+            runner: runner, serialStreaming: NoSerialStreaming()
         )
         let launchOptions = options(runID: runID)
         let plan = try launcher.plan(options: launchOptions)
@@ -394,7 +391,7 @@ final class BeastLauncherTests: XCTestCase {
 
     private func runSuccessfulX86(root: URL, runner: BeastScriptedProcessRunner, runID: String) throws -> BeastLaunchResult {
         let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
-        let launcher = BeastLauncher(store: store, runner: runner)
+        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming())
         return try launcher.runX86(options: options(runID: runID))
     }
 
@@ -471,15 +468,19 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
     cpu_model=Intel(R) Xeon(R) CPU E5-2640 v4 @ 2.40GHz
     """.utf8), exitCode: 0)
     var prepareResult = ProcessResult(stdout: Data("prepared\n".utf8), exitCode: 0)
-    var gateResult = ProcessResult(stdout: Data("gate ok\n".utf8), exitCode: 0)
-    var pullResult = ProcessResult(stdout: Data(), exitCode: 0)
+    var gateResult = ProcessResult(stdout: Data("GATE: PASS (1/1 boot tests passed)\n".utf8), exitCode: 0)
+    var pullResult = ProcessResult(stdout: Data([1]), exitCode: 0)
     var removeResult = ProcessResult(exitCode: 0)
-    var extractTarball: (ProcessRequest) throws -> ProcessResult = { _ in ProcessResult(exitCode: 0) }
+    var extractTarball: (ProcessRequest) throws -> ProcessResult = { request in
+        try FileManager.default.createDirectory(at: URL(fileURLWithPath: request.arguments.last!).appendingPathComponent("gate-tmp"), withIntermediateDirectories: true)
+        return ProcessResult(exitCode: 0)
+    }
 
     func run(_ request: ProcessRequest, outputHandler: ((Data) -> Void)?) throws -> ProcessResult {
         calls.append(request)
 
         if request.executable == "/record.sh" {
+            if request.arguments[0] == "finish" { return ProcessResult(exitCode: 0) }
             let serial = URL(fileURLWithPath: request.arguments[4])
             let directory = serial.deletingLastPathComponent().deletingLastPathComponent()
             XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path), "file before publishing the manifest so importers cannot duplicate it")
@@ -515,5 +516,11 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
 
         XCTFail("unexpected ssh remote command: \(remote)")
         return ProcessResult(exitCode: 127)
+    }
+}
+
+private struct NoSerialStreaming: X86SerialStreaming {
+    func start(_ request: ProcessRequest, receive: @escaping @Sendable (Data) -> Void) throws -> X86SerialStream {
+        throw NSError(domain: "fake stream unavailable", code: 1)
     }
 }

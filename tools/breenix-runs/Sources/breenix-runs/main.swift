@@ -492,7 +492,7 @@ func main() -> Int32 {
                     return 0
                 }
 
-                // File harvested finished boots with Vigil; preparation is never a running boot.
+                // Register Vigil when remote serials appear; harvest remains authoritative.
                 let runID = RunManifest.makeID(startedAt: Date(), arch: .x86_64, profile: "gate")
                 options.runID = runID
                 let result = try launcher.runX86(options: options)

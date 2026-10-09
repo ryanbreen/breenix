@@ -42,23 +42,19 @@ final class StageCatalogStateMachineTests: XCTestCase {
         XCTAssertEqual(both[0].reachedLine, 2)
     }
 
-    func testGreenStrictFixtureReachesAarch64KernelBootPrefix() throws {
+    func testHistoricalStrictFixtureReportsMissingSMPMarkers() throws {
         let catalog = try StageCatalog.load(for: .aarch64)
         let bootCompleteIndex = try XCTUnwrap(catalog.firstIndex { $0.name == "ARM64 boot complete" })
         let index = try MarkerScanner().scanFile(at: fixtureURL("05-runtime-anti-vacuity-strict-serial.txt"))
-        // The fixture predates the `[smp] every reported CPU is online` line,
-        // so its kernel prefix reaches every stage except that one.
-        let smpStage = "All reported CPUs online"
-        let kernelBootPrefix = Array(catalog[...bootCompleteIndex]).filter { $0.name != smpStage }
-        let states = StateMachine.evaluate(catalog: kernelBootPrefix, index: index)
-
+        // This historical fixture predates both SMP markers. Keep the full catalog
+        // and assert the missing stages instead of calling an incomplete prefix green.
+        let states = StateMachine.evaluate(catalog: Array(catalog[...bootCompleteIndex]), index: index)
         XCTAssertEqual(states.map(\.stage.name).last, "ARM64 boot complete")
-        XCTAssertTrue(states.allSatisfy(\.isReached))
-        XCTAssertEqual(states.filter(\.isStoppedHere).count, 0)
+        XCTAssertEqual(states.filter { !$0.isReached }.map(\.stage.name), [
+            "All reported CPUs online", "User work ran on every online CPU"
+        ])
+        XCTAssertEqual(states.filter(\.isStoppedHere).map(\.stage.name), ["All reported CPUs online"])
 
-        let smp = StateMachine.evaluate(catalog: catalog.filter { $0.name == smpStage }, index: index)
-        XCTAssertEqual(smp.count, 1)
-        XCTAssertFalse(smp[0].isReached)
     }
 
     func testPartialAarch64BootReportsExactlyOneStoppedHereStage() throws {

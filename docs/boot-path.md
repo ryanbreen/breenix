@@ -180,8 +180,17 @@ its private raw disk snapshot before allowing the next exec. Each suite gets its
 DONE deadline and unchanged manifest; unstarted suites are NOT-RUN. Exec closes only
 FD_CLOEXEC descriptors, while /tmp, PID allocation and the page cache persist, so
 case equivalence must be verified against separate boots on the same commit.
-Run Inspector files each finished boot with Vigil after harvest, one record per
-started suite with its own serial window and start/end times. Duplicate suite IDs are rejected. Single-suite boots keep their
+Run Inspector streams both beast serial logs into its local run directory over a separate
+owned SSH connection. It registers the gate with Vigil at launch, before building or receiving
+serial bytes, with the launcher's PID and links to the local files. After the gate ends it
+stops the stream and pulls the remote evidence before finishing Vigil. Interrupted gates,
+failed builds and failed evidence pulls finish with nonzero status; captured remote evidence
+is harvested after the supervisor has stopped. Runs with no boot directories still receive a
+finished record. Multi-suite sequences keep an overall gate record and file each started
+suite separately with its own serial window, times and result. Registration subprocesses are
+bounded and run outside the serial frame lock. The stream reader uses nonblocking writes so
+EOF and its heartbeat deadline remain effective when output stalls.
+Duplicate suite IDs are rejected. Single-suite boots keep their
 final panel as before. Run cache helper tests with `python3 tests/gate_cache_test.py`.
 
 
