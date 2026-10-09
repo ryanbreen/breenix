@@ -3376,7 +3376,8 @@ fn fresh_file_frame(hole: bool) -> CaseResult {
     let stack = StackT { ss_sp: base as u64, ss_flags: 0, _pad: 0, ss_size: ALT_SIZE };
     want_eq("install the untouched private-file stack", sigaltstack(Some(&stack), None), 0)?;
     catch_with(SIGUSR1, on_alt_query as usize as u64, SA_ONSTACK, 0)?;
-    check_file_stack_handler()?;
+    check_file_stack_handler_with(|| tgkill(pid(), gettid(), SIGUSR1))?;
+    check(SEEN_TID.load(Ordering::SeqCst) == gettid(), "the private-file handler ran in another thread")?;
     // The frame must leave private bytes behind, yet change no backing byte.
     check((ALT_SIZE - 8192..len).any(|i| unsafe {
         core::ptr::read_volatile(mapping.add(i)) != contents[i]
@@ -3427,8 +3428,12 @@ fn frame_invalid() -> CaseResult {
 fn frame_fork_cow() -> CaseResult { file_stack_delivery(true) }
 
 fn check_file_stack_handler() -> CaseResult {
+    check_file_stack_handler_with(|| raise(SIGUSR1))
+}
+
+fn check_file_stack_handler_with(send: impl FnOnce() -> i64) -> CaseResult {
     let before = count(SIGUSR1);
-    want_eq("raise on the file-backed stack", raise(SIGUSR1), 0)?;
+    want_eq("send SIGUSR1 on the file-backed stack", send(), 0)?;
     check(count(SIGUSR1) == before + 1, "the file-backed stack handler did not run once")?;
     check(on_alt(SEEN_SP.load(Ordering::SeqCst)), "the handler missed the file-backed alternate stack")?;
     check(SEEN_SS_FLAGS.load(Ordering::SeqCst) == SS_ONSTACK,
