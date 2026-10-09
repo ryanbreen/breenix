@@ -777,7 +777,7 @@ fn validate_tcp_accept_publish_recovery(source: &str) -> Result<(), String> {
     let retry = braced_block(handle, &code_mask(handle), retry_anchor)
         .ok_or_else(|| "cannot parse handle_tcp connection re-check".to_string())?;
     if identifier_offsets(retry, &code_mask(retry), "with_tcp_connections").len() != 1
-        || !retry.contains("handle_tcp_for_connection(conn, &header, payload, &config);")
+        || !retry.contains("handle_tcp_for_connection(conn, &header, payload);")
         || !retry.contains("TCP_ACCEPT_PUBLISH_RACE_RECOVERED.fetch_add(1, Ordering::Relaxed);")
     {
         return Err(
@@ -838,7 +838,7 @@ fn validate_unmatched_tcp_rst_is_dropped(source: &str) -> Result<(), String> {
     let (_, listener_return_close) = braced_block_span(handle, &handle_mask, listener_return)
         .ok_or_else(|| "cannot parse handle_tcp listener-found return".to_string())?;
     let send_rst = handle
-        .find("send_rst(&config, ip.src_ip, &header);")
+        .find("send_rst(local_ip, ip.src_ip, &header);")
         .ok_or_else(|| "handle_tcp lost its no-socket RST response".to_string())?;
     if identifier_offsets(handle, &handle_mask, "send_rst").len() != 1 {
         return Err("handle_tcp must have exactly one no-socket send_rst call".to_string());

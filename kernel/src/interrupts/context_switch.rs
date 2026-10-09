@@ -586,7 +586,7 @@ pub extern "C" fn check_need_resched_and_switch(
                     && crate::per_cpu::current_thread()
                         .is_some_and(|thread| thread.privilege != ThreadPrivilege::Kernel)
                 {
-                    crate::arch_impl::x86_64::smp::note_user_dispatch(crate::per_cpu::cpu_id());
+                    crate::task::user_dispatch::note(crate::per_cpu::cpu_id());
                 }
             }
             // No nameable current thread: invalidate rather than record a

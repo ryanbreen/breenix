@@ -319,6 +319,12 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "Read the `[smp] online=N reported=M` line from arch_impl::x86_64::smp::report_bring_up()",
         },
         BootStage {
+            name: "User work ran on every online CPU",
+            marker: "[smp] user work ran on every online CPU",
+            failure_meaning: "Once the testing kernel's userspace finished, at least one online CPU had never dispatched a user thread, or only one CPU was online",
+            check_hint: "Read the `[smp] user-thread dispatches per CPU:` line after TEST_TALLY; counts come from task::user_dispatch::note() in interrupts/context_switch.rs",
+        },
+        BootStage {
             name: "First userspace process scheduled",
             marker: "RING3_SMOKE: created userspace PID",
             failure_meaning: "Failed to schedule first userspace process",
@@ -555,6 +561,12 @@ fn arm64_kernel_stages() -> Vec<BootStage> {
             check_hint: "Read the `[smp] online=N reported=M` line in main_aarch64.rs and the `[smp]` bring-up lines before it",
         },
         BootStage {
+            name: "User work ran on every online CPU",
+            marker: "[smp] user work ran on every online CPU",
+            failure_meaning: "Once the testing kernel's userspace finished, at least one online CPU had never dispatched a user thread, or only one CPU was online",
+            check_hint: "Read the `[smp] user-thread dispatches per CPU:` line after TEST_TALLY; counts come from task::user_dispatch::note() at the user-thread commit points in arch_impl/aarch64/context_switch.rs (dispatch_thread_locked and both ret-based resumes)",
+        },
+        BootStage {
             name: "ARM64 boot complete",
             marker: "Breenix ARM64 Boot Complete!",
             failure_meaning: "Kernel boot sequence did not finish - something failed between SMP init and boot complete message",
@@ -680,8 +692,8 @@ fn shared_userspace_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "UDP packet delivered to socket RX queue",
-            marker: "UDP: Delivered packet to socket on port",
-            failure_meaning: "Packet arrived but was not delivered to socket - RX delivery path broken",
+            marker: "UDP: Delivered packet to socket on port 54321",
+            failure_meaning: "udp_socket_test's loopback datagram was not delivered to its RX socket on port 54321 - loopback or RX delivery path broken",
             check_hint: "Check net/udp.rs:deliver_to_socket()",
         },
         BootStage {
@@ -953,9 +965,9 @@ fn shared_userspace_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "TCP address test passed",
-            marker: "TCP_ADDR_TEST: 10.x.x.x OK",
-            failure_meaning: "Accept did not return client address correctly",
-            check_hint: "Check sys_accept address output handling",
+            marker: "TCP_ADDR_TEST: 127.0.0.1 OK",
+            failure_meaning: "Accept did not report 127.0.0.1 as the address of a client that connected to 127.0.0.1",
+            check_hint: "Check net::source_ip_in (the local address of a loopback connection) and sys_accept's address output",
         },
         BootStage {
             name: "TCP simultaneous close test started",
@@ -1058,10 +1070,10 @@ fn shared_userspace_stages() -> Vec<BootStage> {
             check_hint: "Check libs/libbreenix/src/http.rs MAX_URL_LEN check",
         },
         BootStage {
-            name: "HTTP HTTPS rejection",
-            marker: "HTTP_TEST: https_rejected OK",
-            failure_meaning: "HTTP client should reject HTTPS URLs",
-            check_hint: "Check libs/libbreenix/src/http.rs HTTPS check",
+            name: "HTTP HTTPS fetch",
+            marker: "HTTP_TEST: https_url OK",
+            failure_meaning: "Fetching https://example.com/ did not return an HTTP response over TLS: `https_url FAILED` names the error, `https_url SKIP` means the network was unavailable",
+            check_hint: "Check the TLS path in libs/libbreenix/src/http.rs and libs/libbreenix/src/tls/",
         },
         BootStage {
             name: "HTTP invalid domain",

@@ -227,6 +227,18 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
                 arp.sender_mac[5]
             );
             // Already updated cache above
+            #[cfg(target_arch = "x86_64")]
+            if arp.sender_ip == config.gateway {
+                log::info!(
+                    "NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    arp.sender_mac[0],
+                    arp.sender_mac[1],
+                    arp.sender_mac[2],
+                    arp.sender_mac[3],
+                    arp.sender_mac[4],
+                    arp.sender_mac[5]
+                );
+            }
         }
         _ => {}
     }

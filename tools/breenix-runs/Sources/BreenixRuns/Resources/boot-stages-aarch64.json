@@ -111,6 +111,12 @@
       "checkHint": "Read the `[smp] online=N reported=M` line in main_aarch64.rs and the `[smp]` bring-up lines before it"
     },
     {
+      "name": "User work ran on every online CPU",
+      "marker": "[smp] user work ran on every online CPU",
+      "failureMeaning": "Once the testing kernel's userspace finished, at least one online CPU had never dispatched a user thread, or only one CPU was online",
+      "checkHint": "Read the `[smp] user-thread dispatches per CPU:` line after TEST_TALLY; counts come from task::user_dispatch::note() at the user-thread commit points in arch_impl/aarch64/context_switch.rs (dispatch_thread_locked and both ret-based resumes)"
+    },
+    {
       "name": "ARM64 boot complete",
       "marker": "Breenix ARM64 Boot Complete!",
       "failureMeaning": "Kernel boot sequence did not finish - something failed between SMP init and boot complete message",
@@ -220,8 +226,8 @@
     },
     {
       "name": "UDP packet delivered to socket RX queue",
-      "marker": "UDP: Delivered packet to socket on port",
-      "failureMeaning": "Packet arrived but was not delivered to socket - RX delivery path broken",
+      "marker": "UDP: Delivered packet to socket on port 54321",
+      "failureMeaning": "udp_socket_test's loopback datagram was not delivered to its RX socket on port 54321 - loopback or RX delivery path broken",
       "checkHint": "Check net/udp.rs:deliver_to_socket()"
     },
     {
@@ -490,9 +496,9 @@
     },
     {
       "name": "TCP address test passed",
-      "marker": "TCP_ADDR_TEST: 10.x.x.x OK",
-      "failureMeaning": "Accept did not return client address correctly",
-      "checkHint": "Check sys_accept address output handling"
+      "marker": "TCP_ADDR_TEST: 127.0.0.1 OK",
+      "failureMeaning": "Accept did not report 127.0.0.1 as the address of a client that connected to 127.0.0.1",
+      "checkHint": "Check net::source_ip_in (the local address of a loopback connection) and sys_accept's address output"
     },
     {
       "name": "TCP simultaneous close test started",
@@ -591,10 +597,10 @@
       "checkHint": "Check libs/libbreenix/src/http.rs MAX_URL_LEN check"
     },
     {
-      "name": "HTTP HTTPS rejection",
-      "marker": "HTTP_TEST: https_rejected OK",
-      "failureMeaning": "HTTP client should reject HTTPS URLs",
-      "checkHint": "Check libs/libbreenix/src/http.rs HTTPS check"
+      "name": "HTTP HTTPS fetch",
+      "marker": "HTTP_TEST: https_url OK",
+      "failureMeaning": "Fetching https://example.com/ did not return an HTTP response over TLS: `https_url FAILED` names the error, `https_url SKIP` means the network was unavailable",
+      "checkHint": "Check the TLS path in libs/libbreenix/src/http.rs and libs/libbreenix/src/tls/"
     },
     {
       "name": "HTTP invalid domain",

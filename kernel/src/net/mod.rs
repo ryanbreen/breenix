@@ -1247,9 +1247,41 @@ pub fn send_ethernet(
     driver_transmit(&frame)
 }
 
-/// Send an IPv4 packet
-/// Loopback packets are queued from both thread context and the NetRx softirq.
+/// The local address a new flow to `dst` is sent from under `config`:
+/// 127.0.0.1 to the loopback network, as Linux's route lookup chooses, else the
+/// interface's.
+pub fn source_ip_in(config: &NetConfig, dst: [u8; 4]) -> [u8; 4] {
+    if dst[0] == 127 {
+        [127, 0, 0, 1]
+    } else {
+        config.ip_addr
+    }
+}
+
+/// The local address of an inbound packet sent to `dst`: the loopback address
+/// it was sent to, else the interface's.
+pub fn local_ip_of_inbound(config: &NetConfig, dst: [u8; 4]) -> [u8; 4] {
+    if dst[0] == 127 {
+        dst
+    } else {
+        config.ip_addr
+    }
+}
+
+/// Send an IPv4 packet from the address `source_ip_in` picks for `dst_ip`.
 pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'static str> {
+    send_ipv4_from(source_ip_in(&config(), dst_ip), dst_ip, protocol, payload)
+}
+
+/// Send an IPv4 packet from `src_ip`, a local address: a connection's own, for
+/// a reply on a loopback address other than 127.0.0.1.
+/// Loopback packets are queued from both thread context and the NetRx softirq.
+pub fn send_ipv4_from(
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    protocol: u8,
+    payload: &[u8],
+) -> Result<(), &'static str> {
     let config = config();
 
     // Check for loopback - sending to ourselves or to 127.x.x.x network
@@ -1257,7 +1289,7 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
         net_debug!("NET: Loopback detected, queueing packet for deferred delivery");
 
         // Build IP packet
-        let ip_packet = ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
+        let ip_packet = ipv4::Ipv4Packet::build(src_ip, dst_ip, protocol, payload);
 
         // Queue for deferred delivery (to avoid deadlock with process manager lock)
         // The caller must call drain_loopback_queue() after releasing locks

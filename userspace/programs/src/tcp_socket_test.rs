@@ -933,9 +933,6 @@ fn main() {
                client_addr.addr[2] == 0 && client_addr.addr[3] == 1 {
                 println!("TCP_ADDR_TEST: 127.0.0.1 OK");
                 _passed += 1;
-            } else if client_addr.addr[0] == 10 {
-                println!("TCP_ADDR_TEST: 10.x.x.x OK");
-                _passed += 1;
             } else if client_addr.addr[0] == 0 && client_addr.addr[1] == 0 &&
                       client_addr.addr[2] == 0 && client_addr.addr[3] == 0 {
                 println!("TCP_ADDR_TEST: address not filled FAILED");
@@ -948,6 +945,33 @@ fn main() {
         Err(_) => {
             println!("TCP_ADDR_TEST: accept FAILED");
             failed += 1;
+        }
+    }
+
+    // Any 127.x.x.x is local: the handshake to 127.0.0.2 completes, and the
+    // client connects from 127.0.0.1.
+    let alias_client_fd = match socket::socket(AF_INET, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => { println!("TCP_ADDR_TEST: 127.0.0.2 client socket FAILED"); failed += 1; process::exit(22); }
+    };
+    let alias_addr = SockAddrIn::new([127, 0, 0, 2], 8092);
+    if socket::connect_inet(alias_client_fd, &alias_addr).is_err() {
+        println!("TCP_ADDR_TEST: 127.0.0.2 connect FAILED");
+        failed += 1;
+    } else {
+        let mut alias_peer = SockAddrIn::new([0, 0, 0, 0], 0);
+        match accept_with_retry_addr(addr_server_fd, &mut alias_peer).0 {
+            Ok(_) if alias_peer.addr == [127, 0, 0, 1] => {
+                println!("TCP_ADDR_TEST: 127.0.0.2 connect OK");
+            }
+            Ok(_) => {
+                println!("TCP_ADDR_TEST: 127.0.0.2 peer address FAILED");
+                failed += 1;
+            }
+            Err(_) => {
+                println!("TCP_ADDR_TEST: 127.0.0.2 accept FAILED");
+                failed += 1;
+            }
         }
     }
 

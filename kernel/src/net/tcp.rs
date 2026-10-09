@@ -17,6 +17,7 @@ use super::ipv4::{internet_checksum, Ipv4Packet, PROTOCOL_TCP};
 // ============================================================================
 
 struct DeferredTx {
+    src_ip: [u8; 4],
     dst_ip: [u8; 4],
     dst_mac: Option<[u8; 6]>,
     tcp_segment: Vec<u8>,
@@ -71,10 +72,16 @@ fn take_forced_connection_lookup_miss(_: &ConnectionId) -> bool {
 }
 
 /// Thread-context and NetRx TCP paths both enqueue, so exclude softirq re-entry.
-fn queue_deferred_tx_with_mac(dst_ip: [u8; 4], dst_mac: Option<[u8; 6]>, tcp_segment: Vec<u8>) {
+fn queue_deferred_tx_with_mac(
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    dst_mac: Option<[u8; 6]>,
+    tcp_segment: Vec<u8>,
+) {
     let _guard = super::net_lock_guard();
     let mut queue = DEFERRED_TX_QUEUE.lock();
     queue.push(DeferredTx {
+        src_ip,
         dst_ip,
         dst_mac,
         tcp_segment,
@@ -107,19 +114,19 @@ pub fn drain_deferred_tx() {
         let config = super::config();
         let is_loopback = pkt.dst_ip == config.ip_addr || pkt.dst_ip[0] == 127;
         let result = if is_loopback {
-            super::send_ipv4(pkt.dst_ip, PROTOCOL_TCP, &pkt.tcp_segment)
+            super::send_ipv4_from(pkt.src_ip, pkt.dst_ip, PROTOCOL_TCP, &pkt.tcp_segment)
         } else if let Some(mac) = pkt.dst_mac {
             // Send directly to the known MAC (bypasses ARP, which can't work
             // during process_rx since the re-entrancy guard is held).
             let ip_packet = super::ipv4::Ipv4Packet::build(
-                super::config().ip_addr,
+                pkt.src_ip,
                 pkt.dst_ip,
                 PROTOCOL_TCP,
                 &pkt.tcp_segment,
             );
             super::send_ethernet(&mac, super::ethernet::ETHERTYPE_IPV4, &ip_packet)
         } else {
-            super::send_ipv4(pkt.dst_ip, PROTOCOL_TCP, &pkt.tcp_segment)
+            super::send_ipv4_from(pkt.src_ip, pkt.dst_ip, PROTOCOL_TCP, &pkt.tcp_segment)
         };
         match result {
             Ok(()) => {}
@@ -600,6 +607,8 @@ impl TcpConnection {
 /// Pending connection (from SYN received, waiting for accept)
 #[derive(Clone)]
 pub struct PendingConnection {
+    /// The address the SYN was sent to: a loopback address, or the interface's.
+    pub local_ip: [u8; 4],
     pub remote_ip: [u8; 4],
     pub remote_port: u16,
     pub recv_initial: u32,
@@ -684,8 +693,9 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     };
 
     let config = super::config();
+    let local_ip = super::local_ip_of_inbound(&config, ip.dst_ip);
     let conn_id = ConnectionId {
-        local_ip: config.ip_addr,
+        local_ip,
         local_port: header.dst_port,
         remote_ip: ip.src_ip,
         remote_port: header.src_port,
@@ -695,7 +705,7 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     if !take_forced_connection_lookup_miss(&conn_id)
         && with_tcp_connections(|connections| {
             if let Some(conn) = connections.get_mut(&conn_id) {
-                handle_tcp_for_connection(conn, &header, payload, &config);
+                handle_tcp_for_connection(conn, &header, payload);
                 true
             } else {
                 false
@@ -710,11 +720,13 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
         if let Some(listener) = listeners.get_mut(&header.dst_port) {
             if header.flags.syn && !header.flags.ack {
                 // SYN received on listening socket - add to pending queue
-                handle_syn_for_listener(listener, ip.src_ip, &header, &config);
+                handle_syn_for_listener(listener, local_ip, ip.src_ip, &header);
                 (true, false)
             } else if !header.flags.syn {
                 if let Some(pending) = listener.pending.iter_mut().find(|pending| {
-                    pending.remote_ip == ip.src_ip && pending.remote_port == header.src_port
+                    pending.local_ip == local_ip
+                        && pending.remote_ip == ip.src_ip
+                        && pending.remote_port == header.src_port
                 }) {
                     if header.flags.ack {
                         // ACK received - this completes the 3-way handshake.
@@ -760,7 +772,7 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
         // One re-check is sufficient; no polling or retransmit delay is needed.
         let recovered = with_tcp_connections(|connections| {
             if let Some(conn) = connections.get_mut(&conn_id) {
-                handle_tcp_for_connection(conn, &header, payload, &config);
+                handle_tcp_for_connection(conn, &header, payload);
                 true
             } else {
                 false
@@ -783,7 +795,7 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
 
     // No connection and no listener - send RST
     log::debug!("TCP: No socket for port {}, sending RST", header.dst_port);
-    send_rst(&config, ip.src_ip, &header);
+    send_rst(local_ip, ip.src_ip, &header);
 }
 
 /// Handle TCP packet for an established connection
@@ -791,7 +803,6 @@ fn handle_tcp_for_connection(
     conn: &mut TcpConnection,
     header: &TcpHeader,
     payload: &[u8],
-    config: &super::NetConfig,
 ) {
     match conn.state {
         TcpState::SynSent => {
@@ -813,7 +824,7 @@ fn handle_tcp_for_connection(
 
                     // Send ACK
                     send_tcp_packet(
-                        config,
+                        conn.id.local_ip,
                         conn.id.remote_ip,
                         conn.id.local_port,
                         conn.id.remote_port,
@@ -846,7 +857,7 @@ fn handle_tcp_for_connection(
                         conn.publish_rx(payload);
                         conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
                         send_tcp_packet(
-                            config,
+                            conn.id.local_ip,
                             conn.id.remote_ip,
                             conn.id.local_port,
                             conn.id.remote_port,
@@ -864,7 +875,7 @@ fn handle_tcp_for_connection(
                         conn.recv_next = conn.recv_next.wrapping_add(1);
                         conn.state = TcpState::CloseWait;
                         send_tcp_packet(
-                            config,
+                            conn.id.local_ip,
                             conn.id.remote_ip,
                             conn.id.local_port,
                             conn.id.remote_port,
@@ -880,7 +891,7 @@ fn handle_tcp_for_connection(
                 }
             } else if header.flags.syn && !header.flags.ack {
                 send_tcp_packet(
-                    config,
+                    conn.id.local_ip,
                     conn.id.remote_ip,
                     conn.id.local_port,
                     conn.id.remote_port,
@@ -912,7 +923,7 @@ fn handle_tcp_for_connection(
 
                 // Send ACK
                 send_tcp_packet(
-                    config,
+                    conn.id.local_ip,
                     conn.id.remote_ip,
                     conn.id.local_port,
                     conn.id.remote_port,
@@ -950,7 +961,7 @@ fn handle_tcp_for_connection(
 
                     // Send ACK for FIN
                     send_tcp_packet(
-                        config,
+                        conn.id.local_ip,
                         conn.id.remote_ip,
                         conn.id.local_port,
                         conn.id.remote_port,
@@ -1007,7 +1018,7 @@ fn handle_tcp_for_connection(
 
                 // Send ACK for data
                 send_tcp_packet(
-                    config,
+                    conn.id.local_ip,
                     conn.id.remote_ip,
                     conn.id.local_port,
                     conn.id.remote_port,
@@ -1029,7 +1040,7 @@ fn handle_tcp_for_connection(
 
                 // Send ACK for FIN
                 send_tcp_packet(
-                    config,
+                    conn.id.local_ip,
                     conn.id.remote_ip,
                     conn.id.local_port,
                     conn.id.remote_port,
@@ -1055,7 +1066,7 @@ fn handle_tcp_for_connection(
 
                 // Send ACK for data
                 send_tcp_packet(
-                    config,
+                    conn.id.local_ip,
                     conn.id.remote_ip,
                     conn.id.local_port,
                     conn.id.remote_port,
@@ -1077,7 +1088,7 @@ fn handle_tcp_for_connection(
 
                 // Send ACK for FIN
                 send_tcp_packet(
-                    config,
+                    conn.id.local_ip,
                     conn.id.remote_ip,
                     conn.id.local_port,
                     conn.id.remote_port,
@@ -1112,17 +1123,15 @@ fn handle_tcp_for_connection(
 /// Handle SYN packet for a listening socket
 fn handle_syn_for_listener(
     listener: &mut ListenSocket,
+    local_ip: [u8; 4],
     src_ip: [u8; 4],
     header: &TcpHeader,
-    config: &super::NetConfig,
 ) {
-    if let Some(pending) = listener
-        .pending
-        .iter()
-        .find(|p| p.remote_ip == src_ip && p.remote_port == header.src_port)
-    {
+    if let Some(pending) = listener.pending.iter().find(|p| {
+        p.local_ip == local_ip && p.remote_ip == src_ip && p.remote_port == header.src_port
+    }) {
         let syn_ack = build_tcp_packet_with_checksum(
-            config.ip_addr,
+            local_ip,
             src_ip,
             listener.local_port,
             header.src_port,
@@ -1133,7 +1142,7 @@ fn handle_syn_for_listener(
             &[],
         );
         let src_mac = super::current_packet_src_mac();
-        queue_deferred_tx_with_mac(src_ip, Some(src_mac), syn_ack);
+        queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), syn_ack);
         return;
     }
 
@@ -1143,7 +1152,7 @@ fn handle_syn_for_listener(
             header.dst_port
         );
         // Send RST to tell client the connection was refused
-        send_rst(config, src_ip, header);
+        send_rst(local_ip, src_ip, header);
         return;
     }
 
@@ -1151,6 +1160,7 @@ fn handle_syn_for_listener(
 
     // Add to pending queue
     listener.pending.push_back(PendingConnection {
+        local_ip,
         remote_ip: src_ip,
         remote_port: header.src_port,
         recv_initial: header.seq_num,
@@ -1166,7 +1176,7 @@ fn handle_syn_for_listener(
     // TX packet to be silently dropped (the device doesn't process the TX ring
     // while the RX ring is being consumed).
     let syn_ack = build_tcp_packet_with_checksum(
-        config.ip_addr,
+        local_ip,
         src_ip,
         listener.local_port,
         header.src_port,
@@ -1177,14 +1187,14 @@ fn handle_syn_for_listener(
         &[],
     );
     let src_mac = super::current_packet_src_mac();
-    queue_deferred_tx_with_mac(src_ip, Some(src_mac), syn_ack);
+    queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), syn_ack);
 
     // Wake threads blocked in accept() - connection is now pending
     wake_accept_waiters(listener);
 }
 
 /// Send a RST packet
-fn send_rst(config: &super::NetConfig, dst_ip: [u8; 4], header: &TcpHeader) {
+fn send_rst(src_ip: [u8; 4], dst_ip: [u8; 4], header: &TcpHeader) {
     let seq = if header.flags.ack { header.ack_num } else { 0 };
     let ack = header.seq_num.wrapping_add(1);
 
@@ -1194,7 +1204,7 @@ fn send_rst(config: &super::NetConfig, dst_ip: [u8; 4], header: &TcpHeader) {
     }
 
     send_tcp_packet(
-        config,
+        src_ip,
         dst_ip,
         header.dst_port,
         header.src_port,
@@ -1207,8 +1217,9 @@ fn send_rst(config: &super::NetConfig, dst_ip: [u8; 4], header: &TcpHeader) {
 }
 
 /// Send a TCP packet
+/// `src_ip` is the connection's local address.
 pub fn send_tcp_packet(
-    config: &super::NetConfig,
+    src_ip: [u8; 4],
     dst_ip: [u8; 4],
     src_port: u16,
     dst_port: u16,
@@ -1219,7 +1230,7 @@ pub fn send_tcp_packet(
     payload: &[u8],
 ) {
     let packet = build_tcp_packet_with_checksum(
-        config.ip_addr,
+        src_ip,
         dst_ip,
         src_port,
         dst_port,
@@ -1230,7 +1241,7 @@ pub fn send_tcp_packet(
         payload,
     );
 
-    if let Err(e) = super::send_ipv4(dst_ip, PROTOCOL_TCP, &packet) {
+    if let Err(e) = super::send_ipv4_from(src_ip, dst_ip, PROTOCOL_TCP, &packet) {
         log::warn!("TCP: Failed to send packet: {}", e);
     }
 }
@@ -1244,18 +1255,13 @@ pub fn tcp_connect(
 ) -> Result<ConnectionId, &'static str> {
     let config = super::config();
 
-    // Normalize loopback addresses (127.x.x.x) to our own IP
-    // This ensures connection lookups work when SYN-ACK replies come from our IP
-    let effective_remote = if remote_ip[0] == 127 {
-        config.ip_addr
-    } else {
-        remote_ip
-    };
-
+    // A connection to the loopback network is made from 127.0.0.1, so its
+    // peer sees 127.0.0.1. The peer replies from the address the SYN was sent
+    // to, any 127.x.x.x, which is this connection's remote address.
     let conn_id = ConnectionId {
-        local_ip: config.ip_addr,
+        local_ip: super::source_ip_in(&config, remote_ip),
         local_port,
-        remote_ip: effective_remote,
+        remote_ip,
         remote_port,
     };
 
@@ -1277,7 +1283,7 @@ pub fn tcp_connect(
 
     // Send SYN
     send_tcp_packet(
-        &config,
+        conn_id.local_ip,
         remote_ip,
         local_port,
         remote_port,
@@ -1342,8 +1348,6 @@ pub fn tcp_listen(
 
 /// Accept a pending connection (called from accept syscall)
 pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
-    let config = super::config();
-
     let pending = with_tcp_listeners(|listeners| {
         listeners.get_mut(&local_port).and_then(|listener| {
             listener
@@ -1359,7 +1363,7 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
     let copied_early_data_len = pending.early_data.len();
 
     let conn_id = ConnectionId {
-        local_ip: config.ip_addr,
+        local_ip: pending.local_ip,
         local_port,
         remote_ip: pending.remote_ip,
         remote_port: pending.remote_port,
@@ -1454,8 +1458,6 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
 
 /// Send data on a connection
 pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static str> {
-    let config = super::config();
-
     match with_tcp_connections(|connections| {
         connections.get(conn_id).map(|conn| conn.send_shutdown)
     }) {
@@ -1530,7 +1532,7 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
         let send_len = data.len().min(conn.mss as usize);
 
         send_tcp_packet(
-            &config,
+            conn.id.local_ip,
             conn.id.remote_ip,
             conn.id.local_port,
             conn.id.remote_port,
@@ -1668,8 +1670,6 @@ pub fn tcp_is_failed(conn_id: &ConnectionId) -> bool {
 /// shut_rd: stop receiving
 /// shut_wr: stop sending (also sends FIN to remote)
 pub fn tcp_shutdown(conn_id: &ConnectionId, shut_rd: bool, shut_wr: bool) {
-    let config = super::config();
-
     with_tcp_connections(|connections| {
         if let Some(conn) = connections.get_mut(conn_id) {
             if shut_rd {
@@ -1680,7 +1680,7 @@ pub fn tcp_shutdown(conn_id: &ConnectionId, shut_rd: bool, shut_wr: bool) {
                 // Send FIN to signal we're done sending
                 if conn.state == TcpState::Established {
                     send_tcp_packet(
-                        &config,
+                        conn.id.local_ip,
                         conn.id.remote_ip,
                         conn.id.local_port,
                         conn.id.remote_port,
@@ -1710,8 +1710,6 @@ pub fn tcp_add_ref(conn_id: &ConnectionId) {
 
 /// Close a connection (decrement refcount, only actually close when last reference dropped)
 pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
-    let config = super::config();
-
     with_tcp_connections(|connections| {
         let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
 
@@ -1730,7 +1728,7 @@ pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
             TcpState::Established => {
                 // Send FIN
                 send_tcp_packet(
-                    &config,
+                    conn.id.local_ip,
                     conn.id.remote_ip,
                     conn.id.local_port,
                     conn.id.remote_port,
@@ -1746,7 +1744,7 @@ pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
             TcpState::CloseWait => {
                 // Send FIN
                 send_tcp_packet(
-                    &config,
+                    conn.id.local_ip,
                     conn.id.remote_ip,
                     conn.id.local_port,
                     conn.id.remote_port,
