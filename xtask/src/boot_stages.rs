@@ -1072,8 +1072,8 @@ fn shared_userspace_stages() -> Vec<BootStage> {
         BootStage {
             name: "HTTP HTTPS fetch",
             marker: "HTTP_TEST: https_url OK",
-            failure_meaning: "Fetching https://example.com/ neither returned a status nor failed with a TLS error",
-            check_hint: "Check the TLS path in libs/libbreenix/src/http.rs; `https_url SKIP` means the network was unavailable",
+            failure_meaning: "Fetching https://example.com/ did not return an HTTP response over TLS: `https_url FAILED` names the error, `https_url SKIP` means the network was unavailable",
+            check_hint: "Check the TLS path in libs/libbreenix/src/http.rs and libs/libbreenix/src/tls/",
         },
         BootStage {
             name: "HTTP invalid domain",

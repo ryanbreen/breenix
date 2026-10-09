@@ -599,8 +599,8 @@
     {
       "name": "HTTP HTTPS fetch",
       "marker": "HTTP_TEST: https_url OK",
-      "failureMeaning": "Fetching https://example.com/ neither returned a status nor failed with a TLS error",
-      "checkHint": "Check the TLS path in libs/libbreenix/src/http.rs; `https_url SKIP` means the network was unavailable"
+      "failureMeaning": "Fetching https://example.com/ did not return an HTTP response over TLS: `https_url FAILED` names the error, `https_url SKIP` means the network was unavailable",
+      "checkHint": "Check the TLS path in libs/libbreenix/src/http.rs and libs/libbreenix/src/tls/"
     },
     {
       "name": "HTTP invalid domain",

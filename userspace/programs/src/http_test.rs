@@ -187,8 +187,9 @@ fn main() {
     // SECTION 2: HTTPS FETCH TEST
     // ========================================================================
 
-    // Test 5: HTTPS URL parsing (should attempt TLS, may fail without network)
-    print!("HTTP_TEST: testing HTTPS URL parsing...\n");
+    // Test 5: HTTPS fetch. OK only for an HTTP response received over TLS; a
+    // TLS failure is a failure, and only connect-phase network errors skip.
+    print!("HTTP_TEST: testing HTTPS fetch...\n");
     let https_deadline_ms = monotonic_ms()
         .unwrap_or(1)
         .saturating_add(EXTERNAL_FETCH_DEADLINE_MS);
@@ -204,7 +205,8 @@ fn main() {
             print!("HTTP_TEST: https_url OK (status {})\n", code);
         }
         Err(HttpError::TlsError) => {
-            print!("HTTP_TEST: https_url OK (TLS attempted, failed as expected without network/certs)\n");
+            print!("HTTP_TEST: https_url FAILED (TLS handshake or TLS record exchange failed)\n");
+            process::exit(5);
         }
         Err(HttpError::ConnectError) | Err(HttpError::DnsError(_)) | Err(HttpError::Timeout) => {
             print!("HTTP_TEST: https_url SKIP (network unavailable)\n");
