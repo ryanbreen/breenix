@@ -590,6 +590,15 @@ if [ "$PARALLELS" = true ]; then
     # old VMs are cleaned up in the background, never blocking new launches.
     PARALLELS_VM="breenix-$(date +%s)"
     echo "VM name: $PARALLELS_VM"
+    # Delete earlier boots' VMs, which nothing else removed: only stopped ones named breenix-<epoch>, never a running,
+    # stopping or suspended VM and never the named VMs (breenix-dev, breenix-parallels-*). In the background, so a slow
+    # delete never holds up this boot.
+    (
+        prlctl list -a -o status,name 2>/dev/null | awk '$1 == "stopped" && $2 ~ /^breenix-[0-9]+$/ { print $2 }' |
+            while read -r old_vm; do
+                [ "$old_vm" = "$PARALLELS_VM" ] || prlctl delete "$old_vm" >/dev/null 2>&1 || true
+            done
+    ) &
 
     echo "Creating fresh VM '$PARALLELS_VM'..."
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
@@ -646,6 +655,13 @@ if [ "$PARALLELS" = true ]; then
     install_vm_boot_traps
     VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" prlctl stop "$PARALLELS_VM" --kill
+    # Open the VM in its own window, as VMware's `gui` start does, so a boot can be watched;
+    # BREENIX_PARALLELS_NOGUI=1 keeps unattended automation off the operator's desktop.
+    if [ -n "${BREENIX_PARALLELS_NOGUI:-}" ]; then
+        prlctl set "$PARALLELS_VM" --startup-view headless 2>/dev/null || true
+    else
+        prlctl set "$PARALLELS_VM" --startup-view window 2>/dev/null || true
+    fi
     prlctl start "$PARALLELS_VM"
     echo ""
     echo "========================================="
