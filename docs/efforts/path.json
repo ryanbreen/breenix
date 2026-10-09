@@ -394,7 +394,7 @@
     {
       "id": "signals",
       "title": "Signals",
-      "outcome": "Signals are generated, blocked, delivered and handled exactly as POSIX specifies, including realtime signals and interval timers.",
+      "outcome": "Signals are generated, blocked, delivered and handled as POSIX specifies on all four targets, including realtime signals, interval timers and fault-safe frames on demand-backed and copy-on-write stacks.",
       "suite": "signals",
       "area": "Signals",
       "subsystems": [
@@ -435,6 +435,17 @@
             "suite": "signals",
             "categories": [
               "handlers"
+            ]
+          }
+        },
+        {
+          "id": "frames",
+          "title": "Demand-backed and copy-on-write signal frames",
+          "measure": {
+            "suite": "signals",
+            "categories": [
+              "dispositions",
+              "altstack"
             ]
           }
         },

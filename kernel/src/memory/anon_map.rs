@@ -184,7 +184,9 @@ pub(crate) fn page_flags(prot: Protection) -> PageTableFlags {
 }
 
 /// A signal frame is copied through the direct map and cannot take a user fault.
-/// Back missing anonymous pages before performing the permission-checked copy.
+/// Back missing anonymous or file pages before the permission-checked copy,
+/// which resolves resident CoW pages through the same owned table. Neither
+/// preparation nor copying touches a user VA with PROCESS_MANAGER held.
 pub(crate) fn prepare_write(
     table: &mut super::process_memory::ProcessPageTable,
     vmas: &[super::vma::Vma],
@@ -202,6 +204,10 @@ pub(crate) fn prepare_write(
         if table.translate(VirtAddr::new(address)).is_none()
             && !matches!(
                 resolve_page(table, vmas, address, Access::Write),
+                FaultOutcome::Resolved
+            )
+            && !matches!(
+                super::file_map::resolve_page(table, vmas, address, Access::Write),
                 FaultOutcome::Resolved
             )
         {

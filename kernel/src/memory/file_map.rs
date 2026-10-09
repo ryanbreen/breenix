@@ -1595,9 +1595,22 @@ fn entry_flags(prot: Protection, writable: bool) -> PageTableFlags {
 /// Resolve a fault at `address` in `process`'s address space. PROCESS_MANAGER
 /// held. The access is classified against the VMA's protection before EOF.
 pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access) -> FaultOutcome {
-    let Process {
-        vmas, page_table, ..
-    } = process;
+    let Some(table) = process.page_table.as_deref_mut() else {
+        return FaultOutcome::NotFile;
+    };
+    resolve_page(table, &process.vmas, address, access)
+}
+
+/// Resolve through the owned table and VMA bindings without acquiring PM or
+/// accessing a user virtual address. Signal-frame installation also uses this
+/// for CLONE_VM threads, whose table and bindings belong to another row.
+/// PROCESS_MANAGER is held; the file cache supplies the page without disk I/O.
+pub(crate) fn resolve_page(
+    pt: &mut ProcessPageTable,
+    vmas: &[Vma],
+    address: u64,
+    access: Access,
+) -> FaultOutcome {
     let Some(vma) = vmas
         .iter()
         .find(|vma| vma.start.as_u64() <= address && address < vma.end.as_u64())
@@ -1610,9 +1623,6 @@ pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access)
     if !permits(vma.prot, access) {
         return FaultOutcome::Signal(SIGSEGV);
     }
-    let Some(pt) = page_table.as_deref_mut() else {
-        return FaultOutcome::NotFile;
-    };
     let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
     if let Some((_, flags)) = pt.get_page_info(page) {
         if entry_permits(flags, access) {
