@@ -22,15 +22,15 @@ final class FinishedX86RegistrationTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 2, "finished runs must be filed; unstarted suites must not be filed")
         for (index, suite) in ["files-io", "directories"].enumerated() {
             let call = runner.calls[index]
-            XCTAssertEqual(call.arguments[0], "record")
-            XCTAssertEqual(call.arguments[3], suite)
-            XCTAssertTrue(call.arguments[4].hasSuffix("suite-\(suite)/serial_kernel.log"))
-            XCTAssertTrue(call.arguments[5].hasSuffix("suite-\(suite)/serial_user.log"))
-            XCTAssertEqual(call.arguments[6], "q35")
-            XCTAssertEqual(call.arguments[7], index == 0 ? "finished" : "finished-breenix_gate_1-directories")
-            XCTAssertEqual(call.arguments[9], index == 0 ? "10.0" : "20.0")
-            XCTAssertEqual(call.arguments[10], index == 0 ? "20.0" : "30.0")
-            XCTAssertEqual(call.arguments[11], index == 0 ? "0" : "1")
+            XCTAssertEqual(call.arguments[safe: 0], "record")
+            XCTAssertEqual(call.arguments[safe: 3], suite)
+            XCTAssertTrue(call.arguments[safe: 4]?.hasSuffix("suite-\(suite)/serial_kernel.log") == true)
+            XCTAssertTrue(call.arguments[safe: 5]?.hasSuffix("suite-\(suite)/serial_user.log") == true)
+            XCTAssertEqual(call.arguments[safe: 6], "q35")
+            XCTAssertEqual(call.arguments[safe: 7], index == 0 ? "finished" : "finished-breenix_gate_1-directories")
+            XCTAssertEqual(call.arguments[safe: 9], index == 0 ? "10.0" : "20.0")
+            XCTAssertEqual(call.arguments[safe: 10], index == 0 ? "20.0" : "30.0")
+            XCTAssertEqual(call.arguments[safe: 11], index == 0 ? "0" : "1")
         }
     }
 
@@ -46,8 +46,8 @@ final class FinishedX86RegistrationTests: XCTestCase {
             let runner = Recorder()
             try FinishedX86Registration.file(script: URL(fileURLWithPath: "/record.sh"), manifest: manifest, runDirectory: root, runner: runner)
             XCTAssertEqual(runner.calls.count, 1)
-            XCTAssertEqual(runner.calls[0].arguments[11], String(status))
-            XCTAssertTrue(runner.calls[0].arguments[4].hasSuffix("serial_kernel.txt"))
+            XCTAssertEqual(try XCTUnwrap(runner.calls.first).arguments[safe: 11], String(status))
+            XCTAssertTrue(try XCTUnwrap(runner.calls.first).arguments[safe: 4]?.hasSuffix("serial_kernel.txt") == true)
         }
     }
 
