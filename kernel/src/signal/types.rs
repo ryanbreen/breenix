@@ -317,6 +317,12 @@ impl ThreadSignals {
         self.saved_mask_valid.store(true, Ordering::Release);
     }
 
+    pub fn wait_mask(&self) -> Option<u64> {
+        self.saved_mask_valid
+            .load(Ordering::Acquire)
+            .then(|| self.saved_mask.load(Ordering::Relaxed))
+    }
+
     pub fn take_wait_mask(&self) -> Option<u64> {
         self.saved_mask_valid
             .swap(false, Ordering::AcqRel)

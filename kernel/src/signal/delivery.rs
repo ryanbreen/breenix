@@ -9,6 +9,7 @@
 
 use super::constants::*;
 use super::types::*;
+use crate::memory::anon_map::PrepareWriteError;
 use crate::memory::process_memory::ProcessPageTable;
 use crate::process::process::{JobReport, Process};
 use crate::process::{ProcessId, ProcessManager};
@@ -95,9 +96,6 @@ pub fn deliver_pending_signals(
             return SignalDeliveryResult::NoAction;
         }
 
-        // Take one instance of this signal
-        process.signals.take(sig);
-
         // Get the handler for this signal
         let action = *process.signals.get_handler(sig);
 
@@ -111,6 +109,7 @@ pub fn deliver_pending_signals(
 
         match action.handler {
             SIG_DFL => {
+                process.signals.take(sig);
                 // Default action may terminate/stop the process
                 match deliver_default_action(process, sig) {
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
@@ -123,13 +122,14 @@ pub fn deliver_pending_signals(
                 }
             }
             SIG_IGN => {
+                process.signals.take(sig);
                 log::debug!("Signal {} ignored by process {}", sig, process.id.as_u64());
                 // Signal ignored - continue loop to check for more signals
             }
             handler_addr => {
                 // User-defined handler - set up signal frame and return
                 // Only one user handler can be delivered at a time
-                if deliver_to_user_handler_x86_64(
+                return match deliver_to_user_handler_x86_64(
                     process,
                     &mut shared_table,
                     interrupt_frame,
@@ -138,9 +138,10 @@ pub fn deliver_pending_signals(
                     handler_addr,
                     &action,
                 ) {
-                    return SignalDeliveryResult::Delivered;
-                }
-                return defer_frame_fault_exit(process);
+                    Ok(()) => SignalDeliveryResult::Delivered,
+                    Err(PrepareWriteError::Retry) => SignalDeliveryResult::NoAction,
+                    Err(PrepareWriteError::Fault) => defer_frame_fault_exit(process),
+                };
             }
         }
     }
@@ -193,9 +194,6 @@ pub fn deliver_pending_signals(
             return SignalDeliveryResult::NoAction;
         }
 
-        // Take one instance of this signal
-        process.signals.take(sig);
-
         // Get the handler for this signal
         let action = *process.signals.get_handler(sig);
 
@@ -209,6 +207,7 @@ pub fn deliver_pending_signals(
 
         match action.handler {
             SIG_DFL => {
+                process.signals.take(sig);
                 // Default action may terminate/stop the process
                 match deliver_default_action(process, sig) {
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
@@ -221,13 +220,14 @@ pub fn deliver_pending_signals(
                 }
             }
             SIG_IGN => {
+                process.signals.take(sig);
                 log::debug!("Signal {} ignored by process {}", sig, process.id.as_u64());
                 // Signal ignored - continue loop to check for more signals
             }
             handler_addr => {
                 // User-defined handler - set up signal frame and return
                 // Only one user handler can be delivered at a time
-                if deliver_to_user_handler_aarch64(
+                return match deliver_to_user_handler_aarch64(
                     process,
                     &mut shared_table,
                     exception_frame,
@@ -236,9 +236,10 @@ pub fn deliver_pending_signals(
                     handler_addr,
                     &action,
                 ) {
-                    return SignalDeliveryResult::Delivered;
-                }
-                return defer_frame_fault_exit(process);
+                    Ok(()) => SignalDeliveryResult::Delivered,
+                    Err(PrepareWriteError::Retry) => SignalDeliveryResult::NoAction,
+                    Err(PrepareWriteError::Fault) => defer_frame_fault_exit(process),
+                };
             }
         }
     }
@@ -315,7 +316,7 @@ fn write_signal_stack(
     shared_table: &mut Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
     addr: u64,
     bytes: &[u8],
-) -> bool {
+) -> Result<(), PrepareWriteError> {
     if process.page_table.is_some() && addr < process.user_stack_bottom {
         let _ = process.grow_user_stack(addr);
     }
@@ -324,11 +325,15 @@ fn write_signal_stack(
         Some(table) => (table, process.vmas.as_slice()),
         None => match shared_table.as_mut() {
             Some((table, vmas)) => (&mut **table, *vmas),
-            None => return false,
+            None => return Err(PrepareWriteError::Fault),
         },
     };
-    crate::memory::anon_map::prepare_write(table, vmas, addr, bytes.len())
-        && table.write_user_memory(addr, bytes, pid)
+    crate::memory::anon_map::prepare_write(table, vmas, addr, bytes.len())?;
+    if table.write_user_memory(addr, bytes, pid) {
+        Ok(())
+    } else {
+        Err(PrepareWriteError::Fault)
+    }
 }
 
 /// Deliver a signal's default action
@@ -449,13 +454,13 @@ fn deliver_to_user_handler_x86_64(
     sig: u32,
     handler_addr: u64,
     action: &SignalAction,
-) -> bool {
+) -> Result<(), PrepareWriteError> {
     let mut user_return = X86UserReturn {
         rip: interrupt_frame.instruction_pointer.as_u64(),
         rsp: interrupt_frame.stack_pointer.as_u64(),
         rflags: interrupt_frame.cpu_flags.bits(),
     };
-    if !install_user_handler_x86_64(
+    install_user_handler_x86_64(
         process,
         shared_table,
         &mut user_return,
@@ -463,9 +468,7 @@ fn deliver_to_user_handler_x86_64(
         sig,
         handler_addr,
         action,
-    ) {
-        return false;
-    }
+    )?;
     // The installer accepted both addresses as canonical.
     unsafe {
         interrupt_frame.as_mut().update(|frame| {
@@ -476,7 +479,7 @@ fn deliver_to_user_handler_x86_64(
             // Keep same code segment and stack segment
         });
     }
-    true
+    Ok(())
 }
 
 /// x86-64 syscall return: deliver the next caught signal. A default
@@ -509,8 +512,7 @@ pub fn deliver_caught_signal_on_syscall_return(
                 process.signals.take(sig);
             }
             handler_addr => {
-                process.signals.take(sig);
-                if install_user_handler_x86_64(
+                return match install_user_handler_x86_64(
                     process,
                     &mut shared_table,
                     user_return,
@@ -519,10 +521,10 @@ pub fn deliver_caught_signal_on_syscall_return(
                     handler_addr,
                     &action,
                 ) {
-                    return SignalDeliveryResult::Delivered;
-                }
-                // The syscall return path exits the thread itself, outside PM.
-                return SignalDeliveryResult::FrameFault;
+                    Ok(()) => SignalDeliveryResult::Delivered,
+                    Err(PrepareWriteError::Retry) => SignalDeliveryResult::NoAction,
+                    Err(PrepareWriteError::Fault) => SignalDeliveryResult::FrameFault,
+                };
             }
         }
     }
@@ -537,6 +539,8 @@ pub fn deliver_caught_signal_on_syscall_return(
 /// whose thread takes the signal and copied to the group's other rows before
 /// the process manager is released (`mark_group_reset`).
 fn enter_handler(process: &mut Process, sig: u32, action: &SignalAction) {
+    process.signals.take(sig);
+    process.signals.thread.take_wait_mask();
     if action.flags & SA_RESETHAND != 0 {
         process.signals.set_handler(sig, SignalAction::default());
         process.signals.mark_group_reset(sig);
@@ -559,7 +563,7 @@ fn fault_address(sig: u32, info: &SigInfo) -> u64 {
 }
 
 /// Install the handler frame for `sig` and point `user_return` at the handler.
-/// Returns false, with nothing changed but the stack bytes below the
+/// Returns an error, with nothing changed but the stack bytes below the
 /// interrupted stack pointer, when the frame cannot be installed.
 ///
 /// The frame is Linux's: the handler is called as
@@ -577,7 +581,7 @@ fn install_user_handler_x86_64(
     sig: u32,
     handler_addr: u64,
     action: &SignalAction,
-) -> bool {
+) -> Result<(), PrepareWriteError> {
     use crate::arch_impl::x86_64::fpu;
 
     const RED_ZONE: u64 = 128;
@@ -601,18 +605,18 @@ fn install_user_handler_x86_64(
             .checked_add(process.signals.alt_stack.size as u64)
         {
             Some(alt_top) => alt_top,
-            None => return false,
+            None => return Err(PrepareWriteError::Fault),
         }
     } else {
         match original_rsp.checked_sub(RED_ZONE) {
             Some(top) => top,
-            None => return false,
+            None => return Err(PrepareWriteError::Fault),
         }
     };
 
     // The FXSAVE image, 64-byte aligned, at the top.
     let Some(fp_addr) = top.checked_sub(core::mem::size_of::<fpu::FpuState>() as u64) else {
-        return false;
+        return Err(PrepareWriteError::Fault);
     };
     let fp_addr = fp_addr & !63;
 
@@ -625,7 +629,7 @@ fn install_user_handler_x86_64(
     } else {
         let size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
         let Some(addr) = fp_addr.checked_sub(size) else {
-            return false;
+            return Err(PrepareWriteError::Fault);
         };
         let addr = addr & !0xF;
         (addr, Some(addr))
@@ -635,27 +639,27 @@ fn install_user_handler_x86_64(
         .map(|base| base & !0xF)
         .and_then(|base| base.checked_sub(8))
     else {
-        return false;
+        return Err(PrepareWriteError::Fault);
     };
     // A frame on the alternate stack, first or nested, must fit on it.
     let alt = &process.signals.alt_stack;
     if (use_alt_stack || alt.on_stack(original_rsp)) && !alt.on_stack(frame_rsp) {
-        return false;
+        return Err(PrepareWriteError::Fault);
     }
     if x86_64::VirtAddr::try_new(handler_addr).is_err()
         || x86_64::VirtAddr::try_new(frame_rsp).is_err()
     {
-        return false;
+        return Err(PrepareWriteError::Fault);
     }
     let return_addr = trampoline_addr.unwrap_or(action.restorer);
 
     let thread_id = process.main_thread.as_ref().map(|thread| thread.id);
     let fp_state = thread_id.map_or_else(fpu::FpuState::initial, fpu::user_state);
-    let info = process.signals.pending_info(sig);
+    let info = process.signals.next_info(sig);
     let blocked = process
         .signals
         .thread
-        .take_wait_mask()
+        .wait_mask()
         .unwrap_or_else(|| process.signals.blocked());
 
     let signal_frame = SignalFrame {
@@ -699,14 +703,14 @@ fn install_user_handler_x86_64(
     };
 
     if let Some(addr) = trampoline_addr {
-        if !write_signal_stack(process, shared_table, addr, &super::trampoline::SIGNAL_TRAMPOLINE)
-        {
-            return false;
-        }
+        write_signal_stack(
+            process,
+            shared_table,
+            addr,
+            &super::trampoline::SIGNAL_TRAMPOLINE,
+        )?;
     }
-    if !write_signal_stack(process, shared_table, fp_addr, fp_state.as_bytes()) {
-        return false;
-    }
+    write_signal_stack(process, shared_table, fp_addr, fp_state.as_bytes())?;
     // SAFETY: SignalFrame is repr(C) plain data with no padding (types.rs
     // checks each size against its fields), and every field is initialized.
     let bytes = unsafe {
@@ -715,9 +719,7 @@ fn install_user_handler_x86_64(
             SignalFrame::SIZE,
         )
     };
-    if !write_signal_stack(process, shared_table, frame_rsp, bytes) {
-        return false;
-    }
+    write_signal_stack(process, shared_table, frame_rsp, bytes)?;
     enter_handler(process, sig, action);
     if let Some(thread_id) = thread_id {
         fpu::set_user_state(thread_id, &fpu::FpuState::initial());
@@ -750,7 +752,7 @@ fn install_user_handler_x86_64(
         return_addr
     );
 
-    true
+    Ok(())
 }
 
 // =============================================================================
@@ -777,7 +779,7 @@ fn deliver_to_user_handler_aarch64(
     sig: u32,
     handler_addr: u64,
     action: &SignalAction,
-) -> bool {
+) -> Result<(), PrepareWriteError> {
     // On ARM64, user SP is in SP_EL0, which we save in saved_regs.sp
     let original_sp = saved_regs.sp;
 
@@ -799,7 +801,7 @@ fn deliver_to_user_handler_aarch64(
             .checked_add(process.signals.alt_stack.size as u64)
         {
             Some(alt_top) => alt_top,
-            None => return false,
+            None => return Err(PrepareWriteError::Fault),
         }
     } else {
         original_sp
@@ -814,7 +816,7 @@ fn deliver_to_user_handler_aarch64(
     } else {
         let size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
         let Some(addr) = top.checked_sub(size) else {
-            return false;
+            return Err(PrepareWriteError::Fault);
         };
         let addr = addr & !0xF;
         (addr, Some(addr))
@@ -823,20 +825,20 @@ fn deliver_to_user_handler_aarch64(
         .checked_sub(SignalFrame::SIZE as u64)
         .map(|base| base & !0xF)
     else {
-        return false;
+        return Err(PrepareWriteError::Fault);
     };
     // A frame on the alternate stack, first or nested, must fit on it.
     let alt = &process.signals.alt_stack;
     if (use_alt_stack || alt.on_stack(original_sp)) && !alt.on_stack(frame_sp) {
-        return false;
+        return Err(PrepareWriteError::Fault);
     }
     let return_addr = trampoline_addr.unwrap_or(action.restorer);
 
-    let info = process.signals.pending_info(sig);
+    let info = process.signals.next_info(sig);
     let blocked = process
         .signals
         .thread
-        .take_wait_mask()
+        .wait_mask()
         .unwrap_or_else(|| process.signals.blocked());
     let regs = [
         saved_regs.x0,
@@ -925,10 +927,12 @@ fn deliver_to_user_handler_aarch64(
         // PM is held by the delivery caller. Copy through the owned table:
         // a raw user-VA write here can fault on fork's CoW stack and deadlock
         // trying to reacquire PM before child exit can complete its wake.
-        if !write_signal_stack(process, shared_table, addr, &super::trampoline::SIGNAL_TRAMPOLINE)
-        {
-            return false;
-        }
+        write_signal_stack(
+            process,
+            shared_table,
+            addr,
+            &super::trampoline::SIGNAL_TRAMPOLINE,
+        )?;
     }
     // SignalFrame is repr(C) plain data with no padding (types.rs checks each
     // size against its fields), and every field is initialized. Read its
@@ -941,9 +945,7 @@ fn deliver_to_user_handler_aarch64(
             SignalFrame::SIZE,
         )
     };
-    if !write_signal_stack(process, shared_table, frame_sp, bytes) {
-        return false;
-    }
+    write_signal_stack(process, shared_table, frame_sp, bytes)?;
 
     enter_handler(process, sig, action);
 
@@ -982,7 +984,7 @@ fn deliver_to_user_handler_aarch64(
         return_addr
     );
 
-    true
+    Ok(())
 }
 
 // =============================================================================

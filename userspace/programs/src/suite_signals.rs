@@ -1316,10 +1316,12 @@ fn disp_fork() -> CaseResult {
         if count(SIGUSR1) != 1 { return Err("the inherited handler did not run in the child".into()); }
         ok("raise(SIGUSR2)", raise(SIGUSR2))?;
         Ok(())
-    })
+    })?;
+    Ok(())
 }
 
 fn disp_exec() -> CaseResult {
+    disp_fork()?;
     let state = exec_state(|| { catch(SIGUSR1)?; ignore(SIGUSR2)?; ignore(SIGTERM) })?;
     let caught = state_set(&state, "caught")?;
     let ign = state_set(&state, "ign")?;
@@ -3200,7 +3202,82 @@ fn a_runs_on() -> CaseResult {
     let flags = SEEN_SS_FLAGS.load(Ordering::SeqCst);
     check(flags == SS_ONSTACK, &format!("inside the handler sigaltstack reports ss_flags {flags}, expected SS_ONSTACK"))?;
     let after = query_alt()?.ss_flags;
-    check(after == 0, &format!("after the handler returned sigaltstack reports ss_flags {after}, expected 0"))
+    check(after == 0, &format!("after the handler returned sigaltstack reports ss_flags {after}, expected 0"))?;
+    file_stack_delivery(false)
+}
+
+/// Untouched private file pages must be populated for a frame, just as an
+/// untouched anonymous alternate stack is above. Put the top 128 bytes into
+/// the last page so both architectures' frames cross a page boundary. In the
+/// fork variant, only that last page is read before fork: the child must
+/// resolve its resident CoW page and populate the preceding missing page.
+fn file_stack_delivery(forked: bool) -> CaseResult {
+    use libbreenix::fs::{self, O_CREAT, O_RDWR, O_TRUNC};
+
+    let path = format!("/tmp/signal-stack-{}", pid());
+    let fill = if forked { 0x5a } else { 0 };
+    let contents = vec![fill; ALT_SIZE + 4096];
+    let fd = fs::open(&path, O_CREAT | O_TRUNC | O_RDWR)?;
+    // The descriptor and VMA keep the inode alive; no name survives a case
+    // error or signal death, which need not run Rust destructors.
+    fs::unlink(&path)?;
+    let mut written = 0;
+    while written < contents.len() {
+        let n = io::write(fd, &contents[written..])?;
+        check(n != 0, "writing the signal-stack file made no progress")?;
+        written += n;
+    }
+    let mapping = memory::mmap(core::ptr::null_mut(), contents.len(),
+        PROT_READ | PROT_WRITE, MAP_PRIVATE, fd.raw() as i32, 0)?;
+    let base = mapping as usize + 128;
+    let top = base + ALT_SIZE;
+    ALT_LO.store(base, Ordering::SeqCst);
+    ALT_HI.store(top, Ordering::SeqCst);
+    let stack = StackT { ss_sp: base as u64, ss_flags: 0, _pad: 0, ss_size: ALT_SIZE };
+    want_eq("install the file-backed alternate stack", sigaltstack(Some(&stack), None), 0)?;
+    catch_with(SIGUSR1, on_alt_query as usize as u64, SA_ONSTACK, 0)?;
+
+    if forked {
+        // A read installs the cache page read-only/CoW, without a private write.
+        check(unsafe { core::ptr::read_volatile((top - 1) as *const u8) } == fill,
+            "the file-backed stack's initial byte is wrong")?;
+        in_child(|| match check_file_stack_handler() {
+            Ok(()) => Ok(()),
+            Err(CaseError::Fail(msg) | CaseError::Skip(msg)) => Err(msg),
+        })?;
+        // The parent's mapping must still hold the original file bytes after
+        // the child wrote its frame and ran its handler on private copies.
+        let unchanged = (0..contents.len()).all(|i| unsafe {
+            core::ptr::read_volatile(mapping.add(i)) == fill
+        });
+        check(unchanged, "the child's signal frame changed the parent's CoW stack")?;
+    } else {
+        // No user PTE before delivery: populate from cached file pages.
+        check_file_stack_handler()?;
+    }
+    fs::lseek(fd, 0, fs::SEEK_SET)?;
+    let mut saved = vec![0; contents.len()];
+    let mut read = 0;
+    while read < saved.len() {
+        let n = io::read(fd, &mut saved[read..])?;
+        check(n != 0, "reading the signal-stack file ended early")?;
+        read += n;
+    }
+    check(saved == contents, "a private signal frame changed the backing file")?;
+    io::close(fd)?;
+    Ok(())
+}
+
+fn frame_fork_cow() -> CaseResult { file_stack_delivery(true) }
+
+fn check_file_stack_handler() -> CaseResult {
+    let before = count(SIGUSR1);
+    want_eq("raise on the file-backed stack", raise(SIGUSR1), 0)?;
+    check(count(SIGUSR1) == before + 1, "the file-backed stack handler did not run once")?;
+    check(on_alt(SEEN_SP.load(Ordering::SeqCst)), "the handler missed the file-backed alternate stack")?;
+    check(SEEN_SS_FLAGS.load(Ordering::SeqCst) == SS_ONSTACK,
+        "the file-backed stack handler did not observe SS_ONSTACK")?;
+    check(query_alt()?.ss_flags == 0, "sigreturn left the file-backed stack active")
 }
 
 fn a_without_onstack() -> CaseResult {
@@ -3798,8 +3875,7 @@ static SUITE: Suite = suite(
             case("kill-all", "kill(-1) as non-root signals every process of the caller's user and none of another user", disp_kill_all),
             case("kill-eperm", "kill as non-root fails with EPERM for another user's process and works for its own", disp_kill_eperm),
             case("sigcont-session", "SIGCONT may be sent to another user's process in the caller's session", disp_sigcont_session),
-            case("fork", "A child inherits its parent's handlers and ignored signals, and the handlers run in it", disp_fork),
-            case("exec", "exec resets caught signals to SIG_DFL and keeps ignored ones ignored", disp_exec),
+            case("exec", "Fork inherits handlers and ignored signals; exec resets caught signals to SIG_DFL and preserves ignored signals", disp_exec),
         ]),
         category("masks", "masks & pending signals", &[
             case("block-pending", "A blocked signal stays pending and is delivered before sigprocmask returns once unblocked", mask_block_pending),
@@ -3841,6 +3917,10 @@ static SUITE: Suite = suite(
             case("fp-registers", "Every floating-point and SIMD register, and the FP control and status state, survive handlers that overwrite them, nested or not; a handler's edit to the saved FP image takes effect", h_fp_registers),
             case("spinning-target", "A process spinning in user mode, with no system call, on another processor runs its handler", h_spinning_target),
         ]),
+        category("frames", "anonymous and cached private-file signal frames", &[
+            case("private-file", "An SA_ONSTACK handler runs on untouched anonymous and cached private-file stacks, with SS_ONSTACK only while active", a_runs_on),
+            case("fork-cow", "A forked private-file stack populates a missing frame page and preserves the parent's resident CoW page and backing bytes", frame_fork_cow),
+        ]),
         category("waits", "sigsuspend, pause & sigtimedwait", &[
             case("sigsuspend", "sigsuspend returns EINTR after the handler and restores the mask", w_sigsuspend),
             case("sigsuspend-pending", "A signal already pending when sigsuspend unblocks it ends the wait at once with its handler run", w_sigsuspend_pending),
@@ -3871,7 +3951,6 @@ static SUITE: Suite = suite(
             case("set", "sigaltstack installs a stack and reads it back", a_set),
             case("enomem", "A stack smaller than MINSIGSTKSZ fails with ENOMEM", a_enomem),
             case("einval", "An undefined ss_flags value fails with EINVAL", a_einval),
-            case("runs-on", "An SA_ONSTACK handler runs on the alternate stack, which reports SS_ONSTACK only while it does", a_runs_on),
             case("without-onstack", "A handler without SA_ONSTACK runs on the normal stack", a_without_onstack),
             case("eperm", "Changing or disabling the alternate stack while running on it fails with EPERM", a_eperm),
             case("disable", "SS_DISABLE disables the stack and SA_ONSTACK handlers run on the normal stack", a_disable),

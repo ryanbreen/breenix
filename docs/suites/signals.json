@@ -90,12 +90,8 @@
           "title": "SIGCONT may be sent to another user's process in the caller's session"
         },
         {
-          "id": "fork",
-          "title": "A child inherits its parent's handlers and ignored signals, and the handlers run in it"
-        },
-        {
           "id": "exec",
-          "title": "exec resets caught signals to SIG_DFL and keeps ignored ones ignored"
+          "title": "Fork inherits handlers and ignored signals; exec resets caught signals to SIG_DFL and preserves ignored signals"
         }
       ]
     },
@@ -256,6 +252,20 @@
       ]
     },
     {
+      "id": "frames",
+      "title": "anonymous and cached private-file signal frames",
+      "cases": [
+        {
+          "id": "private-file",
+          "title": "An SA_ONSTACK handler runs on untouched anonymous and cached private-file stacks, with SS_ONSTACK only while active"
+        },
+        {
+          "id": "fork-cow",
+          "title": "A forked private-file stack populates a missing frame page and preserves the parent's resident CoW page and backing bytes"
+        }
+      ]
+    },
+    {
       "id": "waits",
       "title": "sigsuspend, pause & sigtimedwait",
       "cases": [
@@ -372,10 +382,6 @@
         {
           "id": "einval",
           "title": "An undefined ss_flags value fails with EINVAL"
-        },
-        {
-          "id": "runs-on",
-          "title": "An SA_ONSTACK handler runs on the alternate stack, which reports SS_ONSTACK only while it does"
         },
         {
           "id": "without-onstack",

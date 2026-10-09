@@ -20,7 +20,9 @@
 //! reserved capacity, draining a range and truncating never allocate.
 //!
 //! Lock order: ext2 mount guard, PROCESS_MANAGER, live-inode table, `MapState`,
-//! frame ledger and allocator. The inode table may take `MapState` without PM.
+//! frame ledger and allocator. Signal-frame delivery also takes `MapState`
+//! under PROCESS_MANAGER with interrupts masked. The inode table may take
+//! `MapState` without PM.
 //! No disk I/O runs under PROCESS_MANAGER or `MapState`. No path
 //! takes an ext2 guard with PROCESS_MANAGER held: faults never touch the
 //! filesystem, and mmap releases PROCESS_MANAGER before taking the mount guard.
@@ -1595,9 +1597,22 @@ fn entry_flags(prot: Protection, writable: bool) -> PageTableFlags {
 /// Resolve a fault at `address` in `process`'s address space. PROCESS_MANAGER
 /// held. The access is classified against the VMA's protection before EOF.
 pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access) -> FaultOutcome {
-    let Process {
-        vmas, page_table, ..
-    } = process;
+    let Some(table) = process.page_table.as_deref_mut() else {
+        return FaultOutcome::NotFile;
+    };
+    resolve_page(table, &process.vmas, address, access)
+}
+
+/// Resolve through the owned table and VMA bindings without acquiring PM or
+/// accessing a user virtual address. Signal-frame installation also uses this
+/// for CLONE_VM threads, whose table and bindings belong to another row.
+/// PROCESS_MANAGER is held; the file cache supplies the page without disk I/O.
+pub(crate) fn resolve_page(
+    pt: &mut ProcessPageTable,
+    vmas: &[Vma],
+    address: u64,
+    access: Access,
+) -> FaultOutcome {
     let Some(vma) = vmas
         .iter()
         .find(|vma| vma.start.as_u64() <= address && address < vma.end.as_u64())
@@ -1610,9 +1625,6 @@ pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access)
     if !permits(vma.prot, access) {
         return FaultOutcome::Signal(SIGSEGV);
     }
-    let Some(pt) = page_table.as_deref_mut() else {
-        return FaultOutcome::NotFile;
-    };
     let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
     if let Some((_, flags)) = pt.get_page_info(page) {
         if entry_permits(flags, access) {
@@ -1623,7 +1635,11 @@ pub(crate) fn resolve_fault(process: &mut Process, address: u64, access: Access)
         return FaultOutcome::NotFile;
     }
     let object = &binding.handle.object;
-    let mut inner = object.map.inner.lock();
+    let Some(mut inner) = object.map.inner.try_lock() else {
+        // Delivery runs with interrupts masked. A contended cache requests a
+        // retry, just like the in-progress size transition below.
+        return FaultOutcome::Resolved;
+    };
     let mapped_size = inner.mapped_size;
     let Some(rec) = inner.rec_mut(binding.id) else {
         return FaultOutcome::NotFile;
