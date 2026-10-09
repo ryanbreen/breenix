@@ -9,6 +9,8 @@ pub mod fw_cfg;
 #[cfg(target_arch = "x86_64")]
 pub mod nvme;
 pub mod pci;
+#[cfg(target_arch = "x86_64")]
+pub mod rtl8139;
 #[cfg(target_arch = "aarch64")]
 pub mod usb;
 pub mod virtio; // Now available on both x86_64 and aarch64
@@ -76,6 +78,7 @@ pub fn init() -> usize {
         }
         Err(e) => {
             log::warn!("E1000 network driver initialization failed: {}", e);
+            init_other_network_device();
         }
     }
 
@@ -91,6 +94,31 @@ pub fn init() -> usize {
 
     log::info!("Driver subsystem initialized");
     device_count
+}
+
+/// Attach the legacy VirtIO network device or the RTL8139 when there is no
+/// e1000, and unmask the interrupt line the attached controller uses.
+#[cfg(target_arch = "x86_64")]
+fn init_other_network_device() {
+    let line = match virtio::net_legacy::init() {
+        Ok(()) => virtio::net_legacy::irq_line(),
+        Err(virtio_err) => match rtl8139::init() {
+            Ok(()) => rtl8139::irq_line(),
+            Err(rtl_err) => {
+                log::info!(
+                    "No other network driver attached: {}; {}",
+                    virtio_err,
+                    rtl_err
+                );
+                None
+            }
+        },
+    };
+    match line {
+        Some(10) => crate::interrupts::enable_irq10(),
+        Some(11) => crate::interrupts::enable_irq11(),
+        _ => {}
+    }
 }
 
 /// Run driver self-tests that require fully initialized interrupts.

@@ -165,6 +165,8 @@ fn get_mac_address() -> Option<[u8; 6]> {
     #[cfg(target_arch = "x86_64")]
     {
         e1000::mac_address()
+            .or_else(crate::drivers::virtio::net_legacy::mac_address)
+            .or_else(crate::drivers::rtl8139::mac_address)
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -179,6 +181,12 @@ fn get_mac_address() -> Option<[u8; 6]> {
 fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
     {
+        if crate::drivers::virtio::net_legacy::is_initialized() {
+            return crate::drivers::virtio::net_legacy::transmit(data);
+        }
+        if crate::drivers::rtl8139::is_initialized() {
+            return crate::drivers::rtl8139::transmit(data);
+        }
         if !e1000::link_up() {
             return Err("e1000 link down");
         }
@@ -805,7 +813,7 @@ pub fn init() {
 
     log::info!("NET: Initializing network stack...");
 
-    if let Some(mac) = e1000::mac_address() {
+    if let Some(mac) = get_mac_address() {
         log::info!(
             "NET: MAC address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             mac[0],
@@ -1037,6 +1045,21 @@ static X86_RX_DRAINING: core::sync::atomic::AtomicBool = core::sync::atomic::Ato
 static X86_RX_REQUESTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// The next frame from whichever controller is attached, copied into `buffer`.
+#[cfg(target_arch = "x86_64")]
+fn x86_receive(buffer: &mut [u8]) -> Option<usize> {
+    if crate::drivers::virtio::net_legacy::is_initialized() {
+        return crate::drivers::virtio::net_legacy::receive(buffer);
+    }
+    if crate::drivers::rtl8139::is_initialized() {
+        return crate::drivers::rtl8139::receive(buffer);
+    }
+    if !e1000::can_receive() {
+        return None;
+    }
+    e1000::receive(buffer).ok()
+}
+
 /// Process incoming packets up to `budget` frames.
 ///
 /// Returns `InProgress` when another CPU is draining; that CPU drains again
@@ -1060,14 +1083,12 @@ pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
         }
         X86_RX_REQUESTED.store(false, SeqCst);
 
-        while remaining > 0 && e1000::can_receive() {
-            match e1000::receive(&mut buffer) {
-                Ok(len) => {
-                    process_packet(&buffer[..len]);
-                    remaining -= 1;
-                }
-                Err(_) => break,
-            }
+        while remaining > 0 {
+            let Some(len) = x86_receive(&mut buffer) else {
+                break;
+            };
+            process_packet(&buffer[..len]);
+            remaining -= 1;
         }
 
         X86_RX_DRAINING.store(false, SeqCst);

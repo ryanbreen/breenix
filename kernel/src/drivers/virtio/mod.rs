@@ -21,6 +21,8 @@
 #[cfg(target_arch = "x86_64")]
 pub mod block;
 #[cfg(target_arch = "x86_64")]
+pub mod net_legacy;
+#[cfg(target_arch = "x86_64")]
 pub mod queue;
 
 #[cfg(target_arch = "aarch64")]
@@ -196,6 +198,11 @@ impl VirtioDevice {
     /// Notify the device that there are buffers in a queue
     pub fn notify_queue(&self, queue: u16) {
         self.write_u16(regs::QUEUE_NOTIFY, queue);
+    }
+
+    /// Read a byte from device-specific configuration
+    pub fn read_config_u8(&self, offset: u16) -> u8 {
+        self.read_u8(regs::DEVICE_CONFIG + offset)
     }
 
     /// Read a u32 from device-specific configuration

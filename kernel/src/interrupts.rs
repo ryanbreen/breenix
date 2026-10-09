@@ -536,6 +536,8 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
 
     // Dispatch to E1000 network if initialized
     crate::drivers::e1000::handle_interrupt();
+    crate::drivers::virtio::net_legacy::handle_interrupt(10);
+    crate::drivers::rtl8139::handle_interrupt(10);
 
     // Send EOI to both PICs (IRQ 10 is on PIC2)
     crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Irq10.as_u8());
@@ -561,6 +563,8 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
 
     // Also check E1000 on IRQ 11 - some QEMU configurations route E1000 here
     crate::drivers::e1000::handle_interrupt();
+    crate::drivers::virtio::net_legacy::handle_interrupt(11);
+    crate::drivers::rtl8139::handle_interrupt(11);
 
     // Send EOI to both PICs (IRQ 11 is on PIC2)
     crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Irq11.as_u8());
