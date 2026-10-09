@@ -105,10 +105,15 @@ pub fn eoi(vector: u8) {
     }
 }
 
-/// Stage 1 knows QEMU PC/PIIX's PCI-to-ISA wiring, not arbitrary ACPI _PRT.
-/// The caller requires QEMU firmware as well as the i440FX/PIIX3 pair; a MADT alone says
-/// nothing about a PCI function's config Interrupt Line versus its GSI.
+/// Stage 1 knows QEMU's PCI-to-ISA wiring for PC/PIIX and Q35/ICH9, not
+/// arbitrary ACPI _PRT. On both, a PCI interrupt the chipset routes to ISA IRQ
+/// n (the function's config Interrupt Line, as the firmware programmed the
+/// PIRQ routing) drives the I/O APIC input with GSI n as well as the 8259's.
+/// The caller requires QEMU firmware as well as the i440FX/PIIX3 or MCH/ICH9
+/// LPC pair; a MADT alone says nothing about an Interrupt Line versus its GSI.
 fn known_isa_intx_mapping() -> bool {
-    crate::drivers::pci::pci_read_config_dword(0, 0, 0, 0) == 0x1237_8086
-        && crate::drivers::pci::pci_read_config_dword(0, 1, 0, 0) == 0x7000_8086
+    let read = crate::drivers::pci::pci_read_config_dword;
+    let piix = read(0, 0, 0, 0) == 0x1237_8086 && read(0, 1, 0, 0) == 0x7000_8086;
+    let ich9 = read(0, 0, 0, 0) == 0x29c0_8086 && read(0, 31, 0, 0) == 0x2918_8086;
+    piix || ich9
 }
