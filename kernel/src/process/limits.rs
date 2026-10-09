@@ -50,6 +50,96 @@ pub fn fork_allowed(manager: &ProcessManager, pid: ProcessId) -> bool {
 }
 
 impl Process {
+    /// Grow the user stack down to the page holding `addr`, as an access
+    /// there grows it on Linux: every page from the current bottom down is
+    /// mapped, within MAX_USER_STACK_SIZE, RLIMIT_STACK and RLIMIT_AS. The
+    /// bottom moves with each page, so a growth that stops part way leaves it
+    /// at the lowest page mapped. Stack pages are never executable. An
+    /// address at or above the bottom needs no growth; another thread may
+    /// have grown the stack past it first. Returns whether `addr`'s page is
+    /// mapped now. PROCESS_MANAGER held.
+    pub fn grow_user_stack(&mut self, addr: u64) -> bool {
+        #[cfg(target_arch = "aarch64")]
+        use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
+        #[cfg(target_arch = "x86_64")]
+        use x86_64::{
+            structures::paging::{Page, PageTableFlags, Size4KiB},
+            VirtAddr,
+        };
+        use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
+        use crate::memory::layout::MAX_USER_STACK_SIZE;
+
+        let stack_top = self.user_stack_top;
+        let stack_bottom = self.user_stack_bottom;
+        let page_aligned = addr & !0xFFF;
+        if stack_top == 0
+            || page_aligned >= stack_top
+            || stack_top - page_aligned > MAX_USER_STACK_SIZE
+            || stack_top - page_aligned > self.limits.get(STACK).soft
+            || (page_aligned < stack_bottom
+                && self
+                    .mapped_bytes()
+                    .saturating_add(stack_bottom - page_aligned)
+                    > self.limits.get(AS).soft)
+        {
+            return false;
+        }
+        let Some(page_table) = self.page_table.as_mut() else {
+            return false;
+        };
+        if addr >= stack_bottom {
+            return page_table.translate(VirtAddr::new(page_aligned)).is_some();
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+        #[cfg(target_arch = "x86_64")]
+        let hhdm_base = crate::memory::physical_memory_offset().as_u64();
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::USER_ACCESSIBLE
+            | PageTableFlags::NO_EXECUTE;
+        let mut page_addr = stack_bottom;
+        let mut grown = true;
+        while page_addr > page_aligned {
+            page_addr -= 4096;
+            let Some(frame) = allocate_frame() else {
+                grown = false;
+                break;
+            };
+            // SAFETY: the frame was just allocated and is reached through the
+            // direct map; nothing else refers to it yet.
+            unsafe {
+                core::ptr::write_bytes(
+                    (hhdm_base + frame.start_address().as_u64()) as *mut u8,
+                    0,
+                    4096,
+                );
+            }
+            let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(page_addr));
+            if page_table.map_page(page, frame, flags).is_err() {
+                let _ = deallocate_leaf_frame(frame);
+                grown = false;
+                break;
+            }
+            // The page was not present, and x86 caches no translation for a
+            // non-present page, so no other CPU has one to drop.
+            #[cfg(target_arch = "x86_64")]
+            x86_64::instructions::tlb::flush(VirtAddr::new(page_addr));
+            self.user_stack_bottom = page_addr;
+        }
+
+        // ARM64: make the new descriptors visible to the table walker before
+        // the access is made. They replace invalid entries, which the TLB
+        // does not hold, so no invalidation is needed.
+        // SAFETY: barriers only.
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
+        }
+        grown
+    }
+
     pub fn mapped_bytes(&self) -> u64 {
         self.image_size
             .saturating_add(self.heap_end.saturating_sub(self.heap_start))

@@ -319,13 +319,18 @@ fn defer_frame_fault_exit(process: &Process) -> SignalDeliveryResult {
 }
 
 /// Copy `bytes` onto the user stack through the table of the address space the
-/// thread runs in: its own, or for a CLONE_VM thread the owner's.
+/// thread runs in: its own, or for a CLONE_VM thread the owner's. A frame
+/// below the main stack's bottom grows the stack, as a user access there
+/// would.
 fn write_signal_stack(
     process: &mut Process,
     shared_table: &mut Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
     addr: u64,
     bytes: &[u8],
 ) -> bool {
+    if process.page_table.is_some() && addr < process.user_stack_bottom {
+        let _ = process.grow_user_stack(addr);
+    }
     let pid = process.id.as_u64();
     let (table, vmas) = match process.page_table.as_deref_mut() {
         Some(table) => (table, process.vmas.as_slice()),

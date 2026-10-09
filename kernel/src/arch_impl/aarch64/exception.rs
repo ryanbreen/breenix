@@ -2572,10 +2572,6 @@ fn file_mapping_fault(
 /// The caller must not hold PROCESS_MANAGER on this CPU. Returns true if
 /// the page is now mapped.
 fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
-    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
-    use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
-    use crate::memory::layout::MAX_USER_STACK_SIZE;
-
     // Translation fault, level 0 to 3: nothing is mapped at `far`.
     if !(0x04..=0x07).contains(&(iss & 0x3F))
         || far >= crate::memory::layout::USER_STACK_REGION_START
@@ -2597,73 +2593,10 @@ fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
     let Some((_pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) else {
         return false;
     };
-    let stack_top = process.user_stack_top;
-    let stack_bottom = process.user_stack_bottom;
-    let page_aligned_fault = far & !0xFFF;
-    if stack_top == 0
-        || page_aligned_fault > stack_top
-        || stack_top - page_aligned_fault > MAX_USER_STACK_SIZE
-        || stack_top - page_aligned_fault > process.limits.get(crate::process::limits::STACK).soft
-        || (page_aligned_fault < stack_bottom
-            && process
-                .mapped_bytes()
-                .saturating_add(stack_bottom - page_aligned_fault)
-                > process.limits.get(crate::process::limits::AS).soft)
-    {
-        return false;
-    }
-    let Some(page_table) = process.page_table.as_mut() else {
-        return false;
-    };
-    if far >= stack_bottom {
-        // Another thread sharing this address space faulted below the same
-        // bottom and grew the stack before this CPU took PROCESS_MANAGER.
-        // The access is retried if its page is mapped now.
-        return page_table.translate(VirtAddr::new(page_aligned_fault)).is_some();
-    }
-
-    // Map from the current bottom down, moving the recorded bottom with each
-    // page, so a growth that stops part way leaves the bottom at the lowest
-    // page it mapped. Stack pages are never executable, as on x86_64.
-    let flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::USER_ACCESSIBLE
-        | PageTableFlags::NO_EXECUTE;
-    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-    let mut addr = stack_bottom;
-    let mut grown = true;
-    while addr > page_aligned_fault {
-        addr -= 4096;
-        let Some(frame) = allocate_frame() else {
-            grown = false;
-            break;
-        };
-        // SAFETY: the frame was just allocated and is reached through the
-        // HHDM; nothing else refers to it yet.
-        unsafe {
-            core::ptr::write_bytes(
-                (hhdm_base + frame.start_address().as_u64()) as *mut u8,
-                0,
-                4096,
-            );
-        }
-        let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(addr));
-        if page_table.map_page(page, frame, flags).is_err() {
-            let _ = deallocate_leaf_frame(frame);
-            grown = false;
-            break;
-        }
-        process.user_stack_bottom = addr;
-    }
-
-    // Make the new descriptors visible to the table walker before the
-    // faulting access is retried. They replace invalid entries, which the
-    // TLB does not hold, so no invalidation is needed.
-    // SAFETY: barriers only.
-    unsafe {
-        core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
-    }
-    grown
+    // A fault at or above the bottom: another thread sharing this address
+    // space faulted below the same bottom and grew the stack before this CPU
+    // took PROCESS_MANAGER. The access is retried if its page is mapped now.
+    process.grow_user_stack(far)
 }
 
 /// Handle CoW (Copy-on-Write) page fault for ARM64

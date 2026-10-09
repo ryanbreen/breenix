@@ -1096,9 +1096,6 @@ fn in_user_stack_growth_range(fault_addr: u64) -> bool {
 /// interrupts masked, could deadlock against a holder waiting for an interrupt
 /// routed to this CPU.
 fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bool {
-    use crate::memory::layout::MAX_USER_STACK_SIZE;
-    use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
-
     let fault_addr = faulting_addr.as_u64();
 
     if !in_user_stack_growth_range(fault_addr) {
@@ -1122,80 +1119,12 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bo
         None => return false,
     };
 
-    // Check if the process has stack bounds set
-    if process.user_stack_top == 0 {
-        return false;
-    }
-
-    let stack_bottom = process.user_stack_bottom;
-    let stack_top = process.user_stack_top;
-
-    // The fault must be below the current stack bottom (stack grows down)
-    if fault_addr >= stack_bottom {
-        return false;
-    }
-
+    // The fault must be below the current stack bottom (stack grows down).
     // Any access between the current bottom and the stack's maximum extent
     // grows it, as on Linux: a function whose frame is larger than the
     // distance to the current bottom touches its first page far below it
-    // (a 128 KiB local array lands 64 KiB past a fresh 64 KiB stack). The
-    // extent check below is what keeps growth inside the stack's own range.
-    // Check we wouldn't exceed MAX_USER_STACK_SIZE
-    let page_aligned_fault = fault_addr & !0xFFF;
-    let new_stack_size = stack_top - page_aligned_fault;
-    if new_stack_size > MAX_USER_STACK_SIZE
-        || new_stack_size > process.limits.get(crate::process::limits::STACK).soft
-        || process
-            .mapped_bytes()
-            .saturating_add(stack_bottom - page_aligned_fault)
-            > process.limits.get(crate::process::limits::AS).soft
-    {
-        return false;
-    }
-
-    // Get the process page table
-    let page_table = match &mut process.page_table {
-        Some(pt) => pt,
-        None => return false,
-    };
-
-    // Map every page from the current bottom down to the fault address
-    // (page-aligned), moving the recorded bottom with each one, so a growth
-    // that stops part way leaves the bottom at the lowest page it mapped.
-    let mut addr = stack_bottom;
-    while addr > page_aligned_fault {
-        addr -= 4096;
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
-
-        let frame = match crate::memory::frame_allocator::allocate_frame() {
-            Some(f) => f,
-            None => return false,
-        };
-
-        // Zero the frame
-        let phys_offset = crate::memory::physical_memory_offset();
-        unsafe {
-            let dst = (phys_offset + frame.start_address().as_u64()).as_mut_ptr::<u8>();
-            core::ptr::write_bytes(dst, 0, 4096);
-        }
-
-        // Map with user-accessible, writable, no-execute flags
-        let flags = PageTableFlags::PRESENT
-            | PageTableFlags::WRITABLE
-            | PageTableFlags::USER_ACCESSIBLE
-            | PageTableFlags::NO_EXECUTE;
-
-        if page_table.map_page(page, frame, flags).is_err() {
-            let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
-            return false;
-        }
-        // The page was not present, and x86 caches no translation for a
-        // non-present page, so no other CPU has one to drop.
-        x86_64::instructions::tlb::flush(VirtAddr::new(addr));
-        process.user_stack_bottom = addr;
-    }
-
-    true
+    // (a 128 KiB local array lands 64 KiB past a fresh 64 KiB stack).
+    fault_addr < process.user_stack_bottom && process.grow_user_stack(fault_addr)
 }
 
 extern "x86-interrupt" fn page_fault_handler(
