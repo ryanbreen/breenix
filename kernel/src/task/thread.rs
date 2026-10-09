@@ -621,7 +621,7 @@ pub struct Thread {
     /// futex timed-wait record (#608 F4).
     pub timer_pop: Option<TimerPopRecord>,
 
-    /// Tick count when this thread started its current run (for CPU accounting)
+    /// Counter-backed tick timestamp when this thread started its current run.
     pub run_start_ticks: u64,
 
     /// Accumulated CPU ticks consumed by this thread across all scheduling quanta.
