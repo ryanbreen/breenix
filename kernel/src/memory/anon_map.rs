@@ -79,7 +79,9 @@ pub(crate) fn handle_fault(
         };
         if let (FaultOutcome::Signal(signal), Some(tid)) = (outcome, user_thread) {
             if let Some((_, process)) = manager.find_process_by_thread_mut(tid) {
-                process.signals.force_signal(signal);
+                process
+                    .signals
+                    .force_signal(signal, crate::signal::types::SigInfo::kernel());
             }
         }
         outcome

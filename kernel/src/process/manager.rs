@@ -1951,10 +1951,14 @@ impl ProcessManager {
             )
         });
         if sigchld_pending {
-            if let Some(parent_pid) = parent_pid {
+            let child_info = self
+                .processes
+                .live_row(&pid)
+                .map(crate::signal::delivery::child_exit_info);
+            if let (Some(parent_pid), Some(info)) = (parent_pid, child_info) {
                 if let Some(parent_process) = self.processes.live_row_mut(&parent_pid) {
                     use crate::signal::constants::SIGCHLD;
-                    parent_process.signals.set_pending(SIGCHLD);
+                    parent_process.signals.set_pending_info(SIGCHLD, info);
                 }
             }
             if let Some(process) = self.processes.live_row_mut(&pid) {

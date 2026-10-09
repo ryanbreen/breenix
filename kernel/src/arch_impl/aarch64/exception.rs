@@ -196,6 +196,52 @@ fn current_thread_lock_free() -> Option<&'static crate::task::thread::Thread> {
     }
 }
 
+/// Raise fault signal `sig` (`code`, `addr`) for the thread whose EL0
+/// instruction faulted. Returns None when the process manager is busy on
+/// another CPU: the instruction is retried and faults again. Otherwise
+/// returns whether a handler will run.
+fn queue_el0_fault_signal(sig: u32, code: i32, addr: u64) -> Option<bool> {
+    let thread_id = crate::syscall::memory_common::get_current_thread_id()?;
+    let mut guard = crate::process::try_manager()?;
+    let caught = guard
+        .as_mut()
+        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+        .is_some_and(|(_, process)| {
+            crate::signal::delivery::raise_fault_signal(
+                process,
+                sig,
+                crate::signal::types::SigInfo::fault(code, addr),
+            )
+        });
+    Some(caught)
+}
+
+/// An EL0 fault the kernel cannot resolve: raise `sig` (`code`, `addr`) for
+/// the faulting thread. Returns true when the exception is finished: a
+/// handler runs on this exception's return, or the busy process manager
+/// leaves the instruction to fault again. Returns false when the signal
+/// takes its default action, which the caller carries out by ending the
+/// process with status `-(sig)`.
+fn raise_el0_fault_signal(frame: &mut Aarch64ExceptionFrame, sig: u32, code: i32, addr: u64) -> bool {
+    match queue_el0_fault_signal(sig, code, addr) {
+        None => true,
+        Some(true) => {
+            crate::arch_impl::aarch64::context_switch::check_and_deliver_signals_for_current_thread_arm64(frame);
+            true
+        }
+        Some(false) => false,
+    }
+}
+
+/// An EL0 fault whose signal is delivered on this exception's return
+/// whatever its action: the handler runs, or the default action ends the
+/// process there.
+fn deliver_el0_fault_signal(frame: &mut Aarch64ExceptionFrame, sig: u32, code: i32, addr: u64) {
+    if queue_el0_fault_signal(sig, code, addr).is_some() {
+        crate::arch_impl::aarch64::context_switch::check_and_deliver_signals_for_current_thread_arm64(frame);
+    }
+}
+
 #[cold]
 #[inline(never)]
 fn dump_el1_fatal_frame_and_dispatch_trace(
@@ -825,6 +871,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 match file_mapping_fault(far, iss, access, from_el0) {
                     crate::memory::file_map::FaultOutcome::NotFile => {}
                     crate::memory::file_map::FaultOutcome::Signal(_) if !from_el0 => {}
+                    // Raised for the thread; delivered on this return.
+                    crate::memory::file_map::FaultOutcome::Signal(_) => {
+                        crate::arch_impl::aarch64::context_switch::check_and_deliver_signals_for_current_thread_arm64(frame_ref);
+                        return;
+                    }
                     _ => return,
                 }
             }
@@ -845,6 +896,19 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     return;
                 }
             }
+
+            // Anything else from EL0 raises SIGSEGV, or SIGBUS for a
+            // misaligned access, for the thread's handler; the default
+            // action ends the process below.
+            let (el0_sig, el0_code) = match dfsc {
+                0x21 => (crate::signal::constants::SIGBUS, crate::signal::constants::BUS_ADRALN),
+                0x04..=0x07 => (crate::signal::constants::SIGSEGV, crate::signal::constants::SEGV_MAPERR),
+                _ => (crate::signal::constants::SIGSEGV, crate::signal::constants::SEGV_ACCERR),
+            };
+            if from_el0 && raise_el0_fault_signal(frame_ref, el0_sig, el0_code, far) {
+                return;
+            }
+            let el0_status = -(el0_sig as i32);
             let fatal_uart_guard = if from_el0 {
                 None
             } else {
@@ -1059,8 +1123,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
                         crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch);
                         crate::tracing::providers::process::trace_process_exit(
-                            pid.as_u64() as u16, (-11i16) as u16);
-                        let _ = crate::process::exit_process_and_retire(pid, -11);
+                            pid.as_u64() as u16, el0_status as i16 as u16);
+                        let _ = crate::process::exit_process_and_retire(pid, el0_status);
                         terminated = true;
                     }
                 }
@@ -1139,14 +1203,28 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let ifsc = (iss & 0x3F) as u16;
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
             // An EL0 fetch from a private file mapping, as for data aborts.
-            if from_el0
-                && file_mapping_fault(far, iss, crate::memory::file_map::Access::Execute, true)
-                    != crate::memory::file_map::FaultOutcome::NotFile
-            {
-                return;
+            if from_el0 {
+                match file_mapping_fault(far, iss, crate::memory::file_map::Access::Execute, true) {
+                    crate::memory::file_map::FaultOutcome::NotFile => {}
+                    crate::memory::file_map::FaultOutcome::Signal(_) => {
+                        crate::arch_impl::aarch64::context_switch::check_and_deliver_signals_for_current_thread_arm64(frame_ref);
+                        return;
+                    }
+                    _ => return,
+                }
             }
             if from_el0 {
                 EL0_INSTRUCTION_FAULTS.fetch_add(1, Ordering::Relaxed);
+                // SIGSEGV for the thread's handler; the default action ends
+                // the process below.
+                let code = if (0x04..=0x07).contains(&ifsc) {
+                    crate::signal::constants::SEGV_MAPERR
+                } else {
+                    crate::signal::constants::SEGV_ACCERR
+                };
+                if raise_el0_fault_signal(frame_ref, crate::signal::constants::SIGSEGV, code, far) {
+                    return;
+                }
             }
             let fatal_uart_guard = if from_el0 {
                 None
@@ -1547,6 +1625,18 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // SP alignment fault — redirect to idle to avoid hang.
             let frame_ref = unsafe { &mut *frame };
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            // From EL0: SIGBUS for the thread's handler, reporting the stack
+            // pointer, as Linux does; the default action ends the process.
+            if from_el0
+                && raise_el0_fault_signal(
+                    frame_ref,
+                    crate::signal::constants::SIGBUS,
+                    crate::signal::constants::BUS_ADRALN,
+                    super::context::read_sp_el0(),
+                )
+            {
+                return;
+            }
             {
                 let mut line = crate::serial_line::Line::new();
 
@@ -1582,7 +1672,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
                     }); if !was_terminated { let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()); crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch); }
-                    let _ = crate::process::exit_process_and_retire(pid, -11);
+                    let _ = crate::process::exit_process_and_retire(
+                        pid,
+                        -(crate::signal::constants::SIGBUS as i32),
+                    );
                 }
                 terminate_current_scheduler_thread();
             }
@@ -1602,6 +1695,16 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
             if from_el0 {
                 EL0_INSTRUCTION_FAULTS.fetch_add(1, Ordering::Relaxed);
+                // SIGBUS for the thread's handler; the default action ends
+                // the process below.
+                if raise_el0_fault_signal(
+                    frame_ref,
+                    crate::signal::constants::SIGBUS,
+                    crate::signal::constants::BUS_ADRALN,
+                    far,
+                ) {
+                    return;
+                }
             }
             let verbose = PC_ALIGN_VERBOSE_CAPTURED
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
@@ -1709,7 +1812,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
                     }); if !was_terminated { let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()); crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch); }
-                    let _ = crate::process::exit_process_and_retire(pid, -11);
+                    let _ = crate::process::exit_process_and_retire(
+                        pid,
+                        -(crate::signal::constants::SIGBUS as i32),
+                    );
                 }
                 terminate_current_scheduler_thread();
             }
@@ -1719,6 +1825,32 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
             set_idle_stack_for_eret();
             crate::task::scheduler::switch_to_idle_best_effort();
+        }
+
+        // An undefined instruction or a trapped floating-point exception at
+        // EL0: SIGILL or SIGFPE, delivered on this exception's return, where
+        // the handler runs or the default action ends the process.
+        exception_class::UNKNOWN | exception_class::FP_EXCEPTION
+            if unsafe { (*frame).spsr & 0xF } == 0 =>
+        {
+            let frame_ref = unsafe { &mut *frame };
+            let pc = frame_ref.elr;
+            let (sig, code) = if ec == exception_class::UNKNOWN {
+                (crate::signal::constants::SIGILL, crate::signal::constants::ILL_ILLOPC)
+            } else {
+                use crate::signal::constants::*;
+                // ISS: IOF, DZF, OFF, UFF, IXF in bits 0-4.
+                let code = match iss & 0x1f {
+                    flags if flags & 0x1 != 0 => FPE_FLTINV,
+                    flags if flags & 0x2 != 0 => FPE_FLTDIV,
+                    flags if flags & 0x4 != 0 => FPE_FLTOVF,
+                    flags if flags & 0x8 != 0 => FPE_FLTUND,
+                    flags if flags & 0x10 != 0 => FPE_FLTRES,
+                    _ => FPE_FLTINV,
+                };
+                (SIGFPE, code)
+            };
+            deliver_el0_fault_signal(frame_ref, sig, code, pc);
         }
 
         _ => {

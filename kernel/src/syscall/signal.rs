@@ -11,7 +11,7 @@ use super::userptr::{copy_from_user, copy_to_user};
 use super::SyscallResult;
 use crate::process::{manager, ProcessId};
 use crate::signal::constants::*;
-use crate::signal::types::{SignalAction, StackT};
+use crate::signal::types::{SigInfo, SignalAction, StackT};
 
 // Architecture-specific imports
 use crate::arch_impl::traits::CpuOps;
@@ -210,12 +210,25 @@ pub(crate) fn signal_orphaned_group(pgid: ProcessId) {
     let _ = send_signal_to_process_group(pgid, SIGCONT);
 }
 
+/// The siginfo of a signal the calling process sends: SI_USER, with its PID
+/// and real user ID.
+fn sender_info(manager: &crate::process::ProcessManager, caller_tid: Option<u64>) -> SigInfo {
+    caller_tid
+        .and_then(|tid| manager.find_process_by_thread(tid))
+        .map(|(pid, process)| {
+            let tgid = process.thread_group_id.unwrap_or(pid.as_u64());
+            SigInfo::sender(SI_USER, tgid as u32, process.cred.uid)
+        })
+        .unwrap_or_else(SigInfo::kernel)
+}
+
 /// Send a signal to a specific process
 fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
     let caller_tid = crate::task::scheduler::current_thread_id();
     let mut manager_guard = manager();
 
     if let Some(ref mut manager) = *manager_guard {
+        let info = sender_info(manager, caller_tid);
         match manager.get_process(target_pid) {
             None => return SyscallResult::Err(3), // ESRCH
             // A zombie is still a process until it is reaped: the signal is
@@ -244,7 +257,7 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
 
         if let Some(process) = manager.get_process_mut(target_pid) {
             // Ignored signals are discarded at generation.
-            process.signals.set_pending(sig);
+            process.signals.set_pending_info(sig, info);
 
             // A stopped process runs nothing until SIGCONT; what is pending
             // waits for it. Every other wakeup below requires a pending,
@@ -526,8 +539,8 @@ pub fn sys_sigaction(sig: i32, new_act: u64, old_act: u64, sigsetsize: u64) -> S
         return SyscallResult::Err(22); // EINVAL
     }
 
-    // Cannot change handler for SIGKILL or SIGSTOP
-    if !is_catchable(sig) {
+    // SIGKILL's and SIGSTOP's action can be queried (SIG_DFL) but not changed
+    if new_act != 0 && !is_catchable(sig) {
         log::warn!(
             "sys_sigaction: cannot set handler for {} (uncatchable)",
             signal_name(sig)
@@ -562,9 +575,9 @@ pub fn sys_sigaction(sig: i32, new_act: u64, old_act: u64, sigsetsize: u64) -> S
 
         Some(SignalAction {
             handler: new_action.handler,
-            mask: new_action.mask & !UNCATCHABLE_SIGNALS,
             flags: new_action.flags,
             restorer: new_action.restorer,
+            mask: new_action.mask & !UNCATCHABLE_SIGNALS,
         })
     } else {
         None
@@ -1041,108 +1054,27 @@ const REQUIRED_RFLAGS: u64 = 0x0000_0200;
 
 /// rt_sigreturn() - Return from signal handler with frame access (x86_64)
 ///
-/// This syscall is called by the signal trampoline after a signal handler
-/// returns. It restores the pre-signal execution context from the SignalFrame
-/// that was pushed to the user stack when the signal was delivered.
+/// This syscall is called by the restorer after a signal handler returns. It
+/// restores the interrupted context from the `ucontext_t` of the signal frame
+/// delivery pushed (`SignalFrame`, Linux's rt_sigframe), including any
+/// changes the handler made to it: the general registers, RIP, RSP and the
+/// arithmetic flags, the signal mask, and the x87/SSE state from the FXSAVE
+/// image `uc_mcontext.fpstate` points to (the initial state when it is null).
 ///
-/// The SignalFrame is located at the current user RSP (the stack pointer
-/// when the syscall was made from the signal handler).
+/// The handler's `ret` popped the frame's return address, so the frame
+/// starts 8 bytes below the current RSP.
 ///
 /// # Security
-/// This function validates the signal frame to prevent privilege escalation:
-/// - Verifies magic number to detect forged/corrupt frames
-/// - Ensures saved_rip points to userspace (prevents jumping to kernel code)
-/// - Ensures saved_rsp points to userspace (prevents using kernel stack)
-/// - Sanitizes saved_rflags (prevents disabling interrupts, changing IOPL)
+/// The restored context cannot leave user mode: RIP and RSP must be user
+/// addresses, RFLAGS keeps only the bits user code may change, CS and SS are
+/// not taken from the frame, and MXCSR bits the CPU does not implement are
+/// cleared. A frame that cannot be read or fails these checks raises SIGSEGV,
+/// as on Linux.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> SyscallResult {
+    use crate::arch_impl::x86_64::fpu::{self, FpuState};
     use crate::signal::types::SignalFrame;
 
-    // The signal frame is at RSP - 8
-    // When we delivered the signal, we set RSP to point to the signal frame.
-    // The signal handler's 'ret' instruction popped the return address (trampoline_addr)
-    // from RSP, incrementing it by 8. So the signal frame starts 8 bytes below
-    // the current RSP.
-    let signal_frame_ptr = (frame.rsp - 8) as *const SignalFrame;
-
-    // Read the signal frame from userspace (with validation)
-    let signal_frame = match copy_from_user(signal_frame_ptr) {
-        Ok(frame) => frame,
-        Err(errno) => {
-            log::error!(
-                "sys_sigreturn: invalid signal frame pointer at {:#x}",
-                frame.rsp
-            );
-            return SyscallResult::Err(errno);
-        }
-    };
-
-    // SECURITY: Verify magic number to detect forged or corrupt frames
-    // This prevents attackers from crafting fake signal frames for privilege escalation
-    if signal_frame.magic != SignalFrame::MAGIC {
-        log::error!(
-            "sys_sigreturn: invalid magic {:#x} (expected {:#x}) - possible attack!",
-            signal_frame.magic,
-            SignalFrame::MAGIC
-        );
-        return SyscallResult::Err(14); // EFAULT
-    }
-
-    // SECURITY: Validate saved_rip is in userspace
-    // Prevents returning to kernel code for privilege escalation
-    if signal_frame.saved_rip >= USER_SPACE_END {
-        log::error!(
-            "sys_sigreturn: saved_rip {:#x} is not in userspace - privilege escalation attempt!",
-            signal_frame.saved_rip
-        );
-        return SyscallResult::Err(14); // EFAULT
-    }
-
-    // SECURITY: Validate saved_rsp is in userspace
-    // Prevents using kernel stack after sigreturn
-    if signal_frame.saved_rsp >= USER_SPACE_END {
-        log::error!(
-            "sys_sigreturn: saved_rsp {:#x} is not in userspace - privilege escalation attempt!",
-            signal_frame.saved_rsp
-        );
-        return SyscallResult::Err(14); // EFAULT
-    }
-
-    log::debug!(
-        "sigreturn: restoring context from frame at {:#x}, saved_rip={:#x}",
-        frame.rsp,
-        signal_frame.saved_rip
-    );
-
-    // Restore the original execution context by modifying the syscall frame
-    // When the syscall returns, IRETQ will use these values
-    frame.rip = signal_frame.saved_rip;
-    frame.rsp = signal_frame.saved_rsp;
-
-    // SECURITY: Sanitize RFLAGS - only allow user-modifiable bits
-    // Must keep IF (interrupt flag) set, IOPL=0, VM=0, etc.
-    // This prevents userspace from disabling interrupts or escalating privilege
-    let sanitized_rflags = (signal_frame.saved_rflags & USER_RFLAGS_MASK) | REQUIRED_RFLAGS;
-    frame.rflags = sanitized_rflags;
-
-    // Restore general-purpose registers
-    frame.rax = signal_frame.saved_rax;
-    frame.rbx = signal_frame.saved_rbx;
-    frame.rcx = signal_frame.saved_rcx;
-    frame.rdx = signal_frame.saved_rdx;
-    frame.rdi = signal_frame.saved_rdi;
-    frame.rsi = signal_frame.saved_rsi;
-    frame.rbp = signal_frame.saved_rbp;
-    frame.r8 = signal_frame.saved_r8;
-    frame.r9 = signal_frame.saved_r9;
-    frame.r10 = signal_frame.saved_r10;
-    frame.r11 = signal_frame.saved_r11;
-    frame.r12 = signal_frame.saved_r12;
-    frame.r13 = signal_frame.saved_r13;
-    frame.r14 = signal_frame.saved_r14;
-    frame.r15 = signal_frame.saved_r15;
-
-    // Restore the signal mask
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
         None => {
@@ -1151,13 +1083,66 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
         }
     };
 
+    let signal_frame_ptr = frame.rsp.wrapping_sub(8) as *const SignalFrame;
+    let restored = copy_from_user(signal_frame_ptr).ok().and_then(|signal_frame| {
+        let ctx = signal_frame.uc.uc_mcontext;
+        if ctx.rip >= USER_SPACE_END || ctx.rsp >= USER_SPACE_END {
+            return None;
+        }
+        let fp_state = match ctx.fpstate {
+            0 => FpuState::initial(),
+            addr => FpuState::from_signal_frame(copy_from_user(addr as *const [u8; 512]).ok()?),
+        };
+        Some((ctx, signal_frame.uc.uc_sigmask, fp_state))
+    });
+    let Some((ctx, sigmask, fp_state)) = restored else {
+        log::error!("sys_sigreturn: bad signal frame at {:#x}", frame.rsp);
+        force_sigreturn_segv(current_thread_id);
+        return SyscallResult::Err(14); // EFAULT
+    };
+
+    log::debug!(
+        "sigreturn: restoring context from frame at {:#x}, rip={:#x}",
+        frame.rsp,
+        ctx.rip
+    );
+
+    // Restore the original execution context by modifying the syscall frame
+    // When the syscall returns, IRETQ will use these values
+    frame.rip = ctx.rip;
+    frame.rsp = ctx.rsp;
+
+    // SECURITY: Sanitize RFLAGS - only allow user-modifiable bits
+    // Must keep IF (interrupt flag) set, IOPL=0, VM=0, etc.
+    // This prevents userspace from disabling interrupts or escalating privilege
+    frame.rflags = (ctx.eflags & USER_RFLAGS_MASK) | REQUIRED_RFLAGS;
+
+    // Restore general-purpose registers
+    frame.rax = ctx.rax;
+    frame.rbx = ctx.rbx;
+    frame.rcx = ctx.rcx;
+    frame.rdx = ctx.rdx;
+    frame.rdi = ctx.rdi;
+    frame.rsi = ctx.rsi;
+    frame.rbp = ctx.rbp;
+    frame.r8 = ctx.r8;
+    frame.r9 = ctx.r9;
+    frame.r10 = ctx.r10;
+    frame.r11 = ctx.r11;
+    frame.r12 = ctx.r12;
+    frame.r13 = ctx.r13;
+    frame.r14 = ctx.r14;
+    frame.r15 = ctx.r15;
+
+    fpu::set_user_state(current_thread_id, &fp_state);
+
     {
         // This is a userspace syscall with no PM guard held. Contention must
         // wait: skipping restoration would leave the handler's mask installed.
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
-                process.signals.set_blocked(signal_frame.saved_blocked);
+                process.signals.set_blocked(sigmask);
 
                 // Clear the on_stack flag - we're leaving the signal handler
                 // This allows the alternate stack to be used for future signals
@@ -1171,13 +1156,24 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
 
     log::debug!(
         "sigreturn: restored context, returning to RIP={:#x} RSP={:#x}",
-        signal_frame.saved_rip,
-        signal_frame.saved_rsp
+        ctx.rip,
+        ctx.rsp
     );
 
     // Return value is ignored - the original RAX was restored above
     // But return 0 to indicate success in case anything checks
     SyscallResult::Ok(0)
+}
+
+/// rt_sigreturn found no usable signal frame: the thread gets SIGSEGV, as
+/// on Linux, which its return to user mode acts on.
+fn force_sigreturn_segv(thread_id: u64) {
+    let mut manager_guard = crate::process::manager();
+    if let Some(ref mut manager) = *manager_guard {
+        if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+            process.signals.force_signal(SIGSEGV, SigInfo::kernel());
+        }
+    }
 }
 
 /// sigaltstack(ss, old_ss) - Set/get alternate signal stack
@@ -1193,7 +1189,8 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
 ///
 /// # Returns
 /// * 0 on success
-/// * -EINVAL (22) for invalid arguments
+/// * -EINVAL (22) for an undefined ss_flags value or a null ss_sp
+/// * -ENOMEM (12) for a stack smaller than MINSIGSTKSZ
 /// * -EFAULT (14) for invalid pointers
 /// * -EPERM (1) if trying to change while executing on the alternate stack
 /// * -ESRCH (3) if current process not found
@@ -1203,7 +1200,7 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
 /// - If `ss` is non-NULL:
 ///   - If SS_DISABLE flag is set, disables the alternate stack
 ///   - Otherwise, validates and sets the new alternate stack
-///   - Size must be >= MINSIGSTKSZ (2048 bytes)
+///   - Size must be >= MINSIGSTKSZ
 /// - Cannot change the alternate stack while executing on it
 pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
     // Get current thread/process
@@ -1277,8 +1274,17 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
             return SyscallResult::Err(1); // EPERM
         }
 
+        // POSIX: EINVAL for any flag but SS_DISABLE. SS_ONSTACK is accepted
+        // and ignored, as Linux does. Linux's SS_AUTODISARM is not
+        // implemented, and is refused as kernels before it refused it.
+        let mode = new_stack.ss_flags as u32;
+        if mode != 0 && mode != SS_DISABLE && mode != SS_ONSTACK {
+            log::warn!("sys_sigaltstack: invalid ss_flags {:#x}", mode);
+            return SyscallResult::Err(22); // EINVAL
+        }
+
         // Check if disabling the alternate stack
-        let next_alt_stack = if (new_stack.ss_flags as u32 & SS_DISABLE) != 0 {
+        let next_alt_stack = if mode == SS_DISABLE {
             log::debug!(
                 "sigaltstack: disabled alternate stack for thread {}",
                 current_thread_id
@@ -1290,20 +1296,20 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
                 on_stack: false,
             }
         } else {
-            // Validate the new stack configuration
-            // ss_sp must not be NULL
-            if new_stack.ss_sp == 0 {
-                log::warn!("sys_sigaltstack: ss_sp is NULL");
-                return SyscallResult::Err(22); // EINVAL
-            }
-
-            // ss_size must be at least MINSIGSTKSZ
+            // POSIX: ENOMEM for a stack smaller than MINSIGSTKSZ
             if new_stack.ss_size < MINSIGSTKSZ {
                 log::warn!(
                     "sys_sigaltstack: ss_size {} < MINSIGSTKSZ {}",
                     new_stack.ss_size,
                     MINSIGSTKSZ
                 );
+                return SyscallResult::Err(12); // ENOMEM
+            }
+
+            // Validate the new stack configuration
+            // ss_sp must not be NULL
+            if new_stack.ss_sp == 0 {
+                log::warn!("sys_sigaltstack: ss_sp is NULL");
                 return SyscallResult::Err(22); // EINVAL
             }
 
@@ -2007,117 +2013,26 @@ pub fn sys_pause_with_frame_aarch64(
 
 /// rt_sigreturn() - Return from signal handler with frame access (ARM64)
 ///
-/// This syscall is called by the signal trampoline after a signal handler
-/// returns. It restores the pre-signal execution context from the SignalFrame
-/// that was pushed to the user stack when the signal was delivered.
+/// This syscall is called by the restorer after a signal handler returns. It
+/// restores the interrupted context from the `ucontext_t` of the signal frame
+/// at SP (`SignalFrame`, Linux's rt_sigframe), including any changes the
+/// handler made to it: x0-x30, SP, PC and the condition flags, the signal
+/// mask, and v0-v31 with FPSR and FPCR from the frame's FP/SIMD record.
 ///
 /// # Security
-/// This function validates the signal frame to prevent privilege escalation.
+/// The restored context cannot leave EL0: PC and SP must be user addresses
+/// and PSTATE keeps only the NZCV, DIT and SSBS bits, so the return is to
+/// EL0t with interrupts unmasked. A frame that cannot be read, or whose
+/// FP/SIMD record is missing, raises SIGSEGV, as on Linux.
 #[cfg(target_arch = "aarch64")]
 pub fn sys_sigreturn_with_frame_aarch64(
     frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
 ) -> SyscallResult {
-    use crate::signal::types::SignalFrame;
+    use crate::signal::types::{FpsimdContext, SignalFrame};
 
-    // On ARM64, signal frame is at current SP_EL0
-    // The signal handler returns via BLR to the trampoline, which calls sigreturn.
-    // SP_EL0 still points to where we set it during signal delivery.
-    let sp = crate::arch_impl::aarch64::context::read_sp_el0();
-    let signal_frame_ptr = sp as *const SignalFrame;
+    /// PSTATE bits user code may set: NZCV, DIT and SSBS.
+    const USER_PSTATE_MASK: u64 = 0xf000_0000 | (1 << 24) | (1 << 12);
 
-    // Read the signal frame from userspace (with validation)
-    let signal_frame = match copy_from_user(signal_frame_ptr) {
-        Ok(f) => f,
-        Err(errno) => {
-            log::error!(
-                "sys_sigreturn_aarch64: invalid signal frame pointer at {:#x}",
-                sp
-            );
-            return SyscallResult::Err(errno);
-        }
-    };
-
-    // Validate magic number
-    if signal_frame.magic != SignalFrame::MAGIC {
-        log::error!(
-            "sys_sigreturn_aarch64: invalid magic {:#x} (expected {:#x}) - possible attack!",
-            signal_frame.magic,
-            SignalFrame::MAGIC
-        );
-        return SyscallResult::Err(14); // EFAULT
-    }
-
-    // Validate saved_pc is in userspace
-    if signal_frame.saved_pc >= USER_SPACE_END {
-        log::error!(
-            "sys_sigreturn_aarch64: saved_pc {:#x} is not in userspace - privilege escalation attempt!",
-            signal_frame.saved_pc
-        );
-        return SyscallResult::Err(14); // EFAULT
-    }
-
-    // Validate saved_sp is in userspace
-    if signal_frame.saved_sp >= USER_SPACE_END {
-        log::error!(
-            "sys_sigreturn_aarch64: saved_sp {:#x} is not in userspace - privilege escalation attempt!",
-            signal_frame.saved_sp
-        );
-        return SyscallResult::Err(14); // EFAULT
-    }
-
-    log::debug!(
-        "sigreturn_aarch64: restoring context from frame at {:#x}, saved_pc={:#x}",
-        sp,
-        signal_frame.saved_pc
-    );
-
-    // Restore the original execution context
-    frame.elr = signal_frame.saved_pc;
-
-    // Restore SP_EL0
-    unsafe {
-        crate::arch_impl::aarch64::context::write_sp_el0(signal_frame.saved_sp);
-    }
-
-    // Sanitize SPSR - ensure we return to EL0 with interrupts enabled
-    // SPSR.M[3:0] = 0 for EL0t, DAIF clear for interrupts enabled
-    let sanitized_spsr = signal_frame.saved_pstate & 0xFFFFFFFF_FFFFF000; // Clear mode and DAIF
-    frame.spsr = sanitized_spsr;
-
-    // Restore general-purpose registers (X0-X30)
-    frame.x0 = signal_frame.saved_x[0];
-    frame.x1 = signal_frame.saved_x[1];
-    frame.x2 = signal_frame.saved_x[2];
-    frame.x3 = signal_frame.saved_x[3];
-    frame.x4 = signal_frame.saved_x[4];
-    frame.x5 = signal_frame.saved_x[5];
-    frame.x6 = signal_frame.saved_x[6];
-    frame.x7 = signal_frame.saved_x[7];
-    frame.x8 = signal_frame.saved_x[8];
-    frame.x9 = signal_frame.saved_x[9];
-    frame.x10 = signal_frame.saved_x[10];
-    frame.x11 = signal_frame.saved_x[11];
-    frame.x12 = signal_frame.saved_x[12];
-    frame.x13 = signal_frame.saved_x[13];
-    frame.x14 = signal_frame.saved_x[14];
-    frame.x15 = signal_frame.saved_x[15];
-    frame.x16 = signal_frame.saved_x[16];
-    frame.x17 = signal_frame.saved_x[17];
-    frame.x18 = signal_frame.saved_x[18];
-    frame.x19 = signal_frame.saved_x[19];
-    frame.x20 = signal_frame.saved_x[20];
-    frame.x21 = signal_frame.saved_x[21];
-    frame.x22 = signal_frame.saved_x[22];
-    frame.x23 = signal_frame.saved_x[23];
-    frame.x24 = signal_frame.saved_x[24];
-    frame.x25 = signal_frame.saved_x[25];
-    frame.x26 = signal_frame.saved_x[26];
-    frame.x27 = signal_frame.saved_x[27];
-    frame.x28 = signal_frame.saved_x[28];
-    frame.x29 = signal_frame.saved_x[29];
-    frame.x30 = signal_frame.saved_x[30];
-
-    // Restore the signal mask
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
         None => {
@@ -2126,13 +2041,93 @@ pub fn sys_sigreturn_with_frame_aarch64(
         }
     };
 
+    // On ARM64, signal frame is at current SP_EL0
+    // The signal handler returns via RET to the restorer, which calls
+    // sigreturn with SP where delivery set it.
+    let sp = crate::arch_impl::aarch64::context::read_sp_el0();
+    let restored = copy_from_user(sp as *const SignalFrame).ok().and_then(|signal_frame| {
+        let ctx = signal_frame.uc.uc_mcontext;
+        if ctx.pc >= USER_SPACE_END || ctx.sp >= USER_SPACE_END {
+            return None;
+        }
+        // SAFETY: the reserved area is 16-byte aligned and holds a record
+        // header's worth of bytes; the header is checked before the record
+        // is trusted.
+        let fpsimd = unsafe {
+            core::ptr::read(ctx.reserved.0.as_ptr() as *const FpsimdContext)
+        };
+        if fpsimd.magic != FpsimdContext::MAGIC || fpsimd.size != FpsimdContext::SIZE {
+            return None;
+        }
+        Some((ctx, signal_frame.uc.uc_sigmask, fpsimd))
+    });
+    let Some((ctx, sigmask, fpsimd)) = restored else {
+        log::error!("sys_sigreturn_aarch64: bad signal frame at {:#x}", sp);
+        force_sigreturn_segv(current_thread_id);
+        return SyscallResult::Err(14); // EFAULT
+    };
+
+    log::debug!(
+        "sigreturn_aarch64: restoring context from frame at {:#x}, pc={:#x}",
+        sp,
+        ctx.pc
+    );
+
+    // Restore the original execution context
+    frame.elr = ctx.pc;
+
+    // Restore SP_EL0
+    unsafe {
+        crate::arch_impl::aarch64::context::write_sp_el0(ctx.sp);
+    }
+
+    // EL0t (M = 0) with D, A, I and F clear, and only the flags user code owns.
+    frame.spsr = ctx.pstate & USER_PSTATE_MASK;
+
+    // Restore general-purpose registers (X0-X30)
+    frame.x0 = ctx.regs[0];
+    frame.x1 = ctx.regs[1];
+    frame.x2 = ctx.regs[2];
+    frame.x3 = ctx.regs[3];
+    frame.x4 = ctx.regs[4];
+    frame.x5 = ctx.regs[5];
+    frame.x6 = ctx.regs[6];
+    frame.x7 = ctx.regs[7];
+    frame.x8 = ctx.regs[8];
+    frame.x9 = ctx.regs[9];
+    frame.x10 = ctx.regs[10];
+    frame.x11 = ctx.regs[11];
+    frame.x12 = ctx.regs[12];
+    frame.x13 = ctx.regs[13];
+    frame.x14 = ctx.regs[14];
+    frame.x15 = ctx.regs[15];
+    frame.x16 = ctx.regs[16];
+    frame.x17 = ctx.regs[17];
+    frame.x18 = ctx.regs[18];
+    frame.x19 = ctx.regs[19];
+    frame.x20 = ctx.regs[20];
+    frame.x21 = ctx.regs[21];
+    frame.x22 = ctx.regs[22];
+    frame.x23 = ctx.regs[23];
+    frame.x24 = ctx.regs[24];
+    frame.x25 = ctx.regs[25];
+    frame.x26 = ctx.regs[26];
+    frame.x27 = ctx.regs[27];
+    frame.x28 = ctx.regs[28];
+    frame.x29 = ctx.regs[29];
+    frame.x30 = ctx.regs[30];
+
+    // This thread is running here and the kernel uses no FP/SIMD register,
+    // so the restored state reaches EL0 unchanged.
+    crate::arch_impl::aarch64::fpsimd::restore(&fpsimd);
+
     {
         // This is a userspace syscall with no PM guard held. Contention must
         // wait: skipping restoration would leave the handler's mask installed.
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
-                process.signals.set_blocked(signal_frame.saved_blocked);
+                process.signals.set_blocked(sigmask);
 
                 // Clear the on_stack flag
                 if process.signals.alt_stack.on_stack {
@@ -2145,8 +2140,8 @@ pub fn sys_sigreturn_with_frame_aarch64(
 
     log::info!(
         "sigreturn_aarch64: restored context, returning to PC={:#x} SP={:#x}",
-        signal_frame.saved_pc,
-        signal_frame.saved_sp
+        ctx.pc,
+        ctx.sp
     );
 
     // Return value is ignored - original X0 was restored above

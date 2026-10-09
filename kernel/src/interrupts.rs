@@ -587,7 +587,57 @@ fn dispatch_virtio_sound_interrupts() {
     crate::drivers::virtio::sound::handle_interrupt();
 }
 
+/// Raise fault signal `sig` (`code`, `addr`) for the thread this CPU was
+/// running in Ring 3, with the process manager held, as Linux's
+/// force_sig_fault. Returns whether a handler will run for it.
+fn raise_user_fault_signal_locked(
+    manager: &mut crate::process::ProcessManager,
+    sig: u32,
+    code: i32,
+    addr: u64,
+) -> bool {
+    crate::per_cpu::current_thread_id_lock_free()
+        .and_then(|tid| manager.find_process_by_thread_mut(tid))
+        .is_some_and(|(_, process)| {
+            crate::signal::delivery::raise_fault_signal(
+                process,
+                sig,
+                crate::signal::types::SigInfo::fault(code, addr),
+            )
+        })
+}
+
+/// A Ring 3 fault whose signal is taken whatever its action: raise it and
+/// send this CPU the reschedule vector, whose return path delivers it, so
+/// the handler runs, or the default action ends the process, before the
+/// faulting instruction runs again. A busy process manager leaves the
+/// instruction to fault again. Runs with the kernel's GS.
+fn deliver_user_fault_signal(sig: u32, code: i32, addr: u64) {
+    if let Some(mut guard) = crate::process::try_manager() {
+        if let Some(manager) = guard.as_mut() {
+            raise_user_fault_signal_locked(manager, sig, code, addr);
+        }
+        drop(guard);
+        crate::task::scheduler::retry_after_interrupts_x86();
+    }
+}
+
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFrame) {
+    if stack_frame.code_segment.0 & 3 == 3 {
+        // As #UD below: SIGFPE, delivered before the instruction runs again.
+        unsafe {
+            core::arch::asm!("swapgs", options(nostack, preserves_flags));
+        }
+        deliver_user_fault_signal(
+            crate::signal::constants::SIGFPE,
+            crate::signal::constants::FPE_INTDIV,
+            stack_frame.instruction_pointer.as_u64(),
+        );
+        unsafe {
+            core::arch::asm!("swapgs", options(nostack, preserves_flags));
+        }
+        return;
+    }
     // Increment preempt count on exception entry
     crate::per_cpu::preempt_disable();
 
@@ -610,31 +660,17 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
     if stack_frame.code_segment.0 & 3 == 3 {
         // Unlike an assembly interrupt entry, x86-interrupt does not switch GS.
         // Queue the synchronous fault with kernel GS, then retry the instruction.
-        // The timer return path owns the full register frame and delivers SIGILL
-        // through the ordinary signal dispositions before resuming this thread.
+        // The reschedule vector's return path owns the full register frame and
+        // delivers SIGILL through the ordinary signal dispositions before the
+        // instruction runs again.
         unsafe {
             core::arch::asm!("swapgs", options(nostack, preserves_flags));
         }
-        if let Some(mut guard) = crate::process::try_manager() {
-            if let Some(manager) = guard.as_mut() {
-                let tid = crate::per_cpu::current_thread_id_lock_free();
-                let cr3 = x86_64::registers::control::Cr3::read()
-                    .0
-                    .start_address()
-                    .as_u64();
-                let target = match tid.and_then(|tid| manager.find_process_by_thread_mut(tid)) {
-                    Some((_, process)) => Some(process),
-                    None => manager
-                        .find_process_by_cr3_mut(cr3)
-                        .map(|(_, process)| process),
-                };
-                if let Some(process) = target {
-                    process
-                        .signals
-                        .force_signal(crate::signal::constants::SIGILL);
-                }
-            }
-        }
+        deliver_user_fault_signal(
+            crate::signal::constants::SIGILL,
+            crate::signal::constants::ILL_ILLOPN,
+            stack_frame.instruction_pointer.as_u64(),
+        );
         unsafe {
             core::arch::asm!("swapgs", options(nostack, preserves_flags));
         }
@@ -1370,8 +1406,12 @@ extern "x86-interrupt" fn page_fault_handler(
     // When the tables now allow the access the fault was spurious, and the
     // access is retried, as Linux does when the entry is valid by the time it
     // looks.
+    //
+    // Otherwise the fault raises SIGSEGV for the thread. When a handler will
+    // run, the reschedule vector's return path delivers it before the
+    // instruction runs again; the default action ends the process below.
     if from_userspace {
-        let Some(guard) = crate::process::try_manager() else {
+        let Some(mut guard) = crate::process::try_manager() else {
             crate::per_cpu::preempt_enable();
             return;
         };
@@ -1383,8 +1423,25 @@ extern "x86-interrupt" fn page_fault_handler(
         let raced = !error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH)
             && accessed_addr.as_u64() < crate::memory::layout::USER_STACK_REGION_END
             && resolve_stale_translation(cr3, accessed_addr, needed);
+        let caught = !raced
+            && guard.as_mut().is_some_and(|manager| {
+                let code = if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+                    crate::signal::constants::SEGV_ACCERR
+                } else {
+                    crate::signal::constants::SEGV_MAPERR
+                };
+                raise_user_fault_signal_locked(
+                    manager,
+                    crate::signal::constants::SIGSEGV,
+                    code,
+                    accessed_addr.as_u64(),
+                )
+            });
         drop(guard);
-        if raced {
+        if caught {
+            crate::task::scheduler::retry_after_interrupts_x86();
+        }
+        if raced || caught {
             crate::per_cpu::preempt_enable();
             return;
         }
@@ -1873,6 +1930,12 @@ extern "x86-interrupt" fn general_protection_fault_handler(
         // manager busy on another CPU is taken again once pending interrupts
         // have run. The IRETQ fault on a return to Ring 3 runs with them
         // masked and has no such window, so it waits for the lock.
+        //
+        // A #GP in Ring 3 raises SIGSEGV for the thread (si_code SI_KERNEL, as
+        // Linux). When a handler will run, the reschedule vector's return
+        // path delivers it before the instruction runs again; the default
+        // action ends the process below. A faulting IRETQ has no user
+        // instruction to retry, and ends the process.
         if fault_on_user_return {
             crate::process::with_process_manager(find_faulting_thread);
         } else {
@@ -1880,6 +1943,20 @@ extern "x86-interrupt" fn general_protection_fault_handler(
                 crate::per_cpu::preempt_enable();
                 return;
             };
+            let caught = guard.as_mut().is_some_and(|pm| {
+                raise_user_fault_signal_locked(
+                    pm,
+                    crate::signal::constants::SIGSEGV,
+                    crate::signal::constants::SI_KERNEL,
+                    0,
+                )
+            });
+            if caught {
+                drop(guard);
+                crate::task::scheduler::retry_after_interrupts_x86();
+                crate::per_cpu::preempt_enable();
+                return;
+            }
             if let Some(pm) = guard.as_mut() {
                 find_faulting_thread(pm);
             }

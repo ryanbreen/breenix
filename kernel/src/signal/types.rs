@@ -99,27 +99,28 @@ pub fn default_action(sig: u32) -> SignalDefaultAction {
 const DEFAULT_IGNORED_SIGNALS: u64 =
     sig_mask(SIGCHLD) | sig_mask(SIGURG) | sig_mask(SIGWINCH) | sig_mask(SIGCONT);
 
-/// Signal handler configuration (matches Linux sigaction structure layout)
+/// Signal handler configuration: the Linux ABI's `struct sigaction` for
+/// rt_sigaction, on x86-64 and ARM64 alike (handler, flags, restorer, mask).
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct SignalAction {
     /// Handler address (SIG_DFL, SIG_IGN, or user function pointer)
     pub handler: u64,
-    /// Signals to block during handler execution
-    pub mask: u64,
     /// Flags (SA_RESTART, SA_SIGINFO, etc.)
     pub flags: u64,
     /// Restorer function for sigreturn (provided by libc or kernel)
     pub restorer: u64,
+    /// Signals to block during handler execution
+    pub mask: u64,
 }
 
 impl Default for SignalAction {
     fn default() -> Self {
         SignalAction {
             handler: SIG_DFL,
-            mask: 0,
             flags: 0,
             restorer: 0,
+            mask: 0,
         }
     }
 }
@@ -144,20 +145,107 @@ impl SignalAction {
     }
 }
 
+/// What a pending signal carries for its handler's `siginfo_t` besides its
+/// number: the si_code and the first 16 bytes of the Linux siginfo union,
+/// which hold si_pid and si_uid then si_value or si_status, or si_addr.
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct SigInfo {
+    pub code: i32,
+    /// Bytes 16..32 of the Linux `siginfo_t`.
+    pub fields: [u64; 2],
+}
+
+impl SigInfo {
+    /// A signal the kernel generated with no sender (SI_KERNEL).
+    pub const fn kernel() -> Self {
+        Self { code: SI_KERNEL, fields: [0, 0] }
+    }
+
+    /// A signal sent by a process: `code` SI_USER or SI_TKILL, with the
+    /// sender's PID and real user ID.
+    pub const fn sender(code: i32, pid: u32, uid: u32) -> Self {
+        Self { code, fields: [pid as u64 | (uid as u64) << 32, 0] }
+    }
+
+    /// A fault at `addr` (si_addr).
+    pub const fn fault(code: i32, addr: u64) -> Self {
+        Self { code, fields: [addr, 0] }
+    }
+
+    /// SIGCHLD for child `pid` of real user `uid`: `code` is a CLD_* value
+    /// and `status` the exit status or the signal.
+    pub const fn child(code: i32, pid: u32, uid: u32, status: i32) -> Self {
+        Self { code, fields: [pid as u64 | (uid as u64) << 32, status as u32 as u64] }
+    }
+
+    /// The `siginfo_t` for signal `sig` in the Linux ABI's 128-byte layout.
+    pub fn to_linux(&self, sig: u32) -> LinuxSigInfo {
+        let mut words = [0u64; 16];
+        words[0] = sig as u64;
+        words[1] = self.code as u32 as u64;
+        words[2] = self.fields[0];
+        words[3] = self.fields[1];
+        LinuxSigInfo(words)
+    }
+}
+
+/// A Linux `siginfo_t`: si_signo, si_errno and si_code as ints, then the
+/// union from byte 16. 128 bytes on x86-64 and ARM64.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct LinuxSigInfo(pub [u64; 16]);
+
+/// The si_code and si_status of the SIGCHLD a child's exit raises, from the
+/// exit code the kernel records: a negative code is the signal that ended
+/// it, with 0x80 for a core dump.
+pub fn child_exit_code_status(exit_code: i32) -> (i32, i32) {
+    if exit_code < 0 && (-exit_code) & 0x80 != 0 {
+        (CLD_DUMPED, (-exit_code) & 0x7f)
+    } else if exit_code < 0 {
+        (CLD_KILLED, (-exit_code) & 0x7f)
+    } else {
+        (CLD_EXITED, exit_code & 0xff)
+    }
+}
+
+/// A process's signal dispositions and the siginfo of each pending signal,
+/// one per signal: a signal already pending keeps the information it was
+/// first generated with, as a standard signal does on Linux.
+#[derive(Clone)]
+pub struct SignalTable {
+    actions: [SignalAction; 64],
+    info: [SigInfo; 64],
+}
+
+impl SignalTable {
+    const fn new() -> Self {
+        SignalTable {
+            actions: [SignalAction {
+                handler: SIG_DFL,
+                flags: 0,
+                restorer: 0,
+                mask: 0,
+            }; 64],
+            info: [SigInfo::kernel(); 64],
+        }
+    }
+}
+
 /// Per-process signal state
 ///
-/// Note: handlers are boxed to avoid stack overflow. The 64-element array
-/// is 2KB (64 * 32 bytes) which causes stack overflow during process creation
-/// if stored inline.
+/// Note: the dispositions and siginfo are boxed to avoid stack overflow. The
+/// table is 3.5KB, which causes stack overflow during process creation if
+/// stored inline.
 #[derive(Clone)]
 pub struct SignalState {
     /// Pending signals bitmap (signals waiting to be delivered)
     pub pending: u64,
     /// Blocked signals bitmap (sigprocmask)
     pub blocked: u64,
-    /// Signal handlers (one per signal, indices 0-63 for signals 1-64)
-    /// Slab-allocated for O(1) alloc/free, falls back to heap - 64 * 32 bytes = 2KB
-    handlers: SlabBox<[SignalAction; 64]>,
+    /// Signal handlers and pending siginfo (one each per signal, indices 0-63
+    /// for signals 1-64). Slab-allocated for O(1) alloc/free, falls back to heap.
+    handlers: SlabBox<SignalTable>,
     /// Cached disposition mask, maintained alongside the private handler table.
     ignored: u64,
     /// Alternate signal stack configuration
@@ -171,13 +259,13 @@ pub struct SignalState {
 impl Default for SignalState {
     fn default() -> Self {
         let handlers = if let Some(raw) = SIGNAL_HANDLERS_SLAB.alloc() {
-            let arr = raw as *mut [SignalAction; 64];
+            let table = raw as *mut SignalTable;
             unsafe {
-                core::ptr::write(arr, [SignalAction::default(); 64]);
-                SlabBox::from_slab(arr, &SIGNAL_HANDLERS_SLAB)
+                core::ptr::write(table, SignalTable::new());
+                SlabBox::from_slab(table, &SIGNAL_HANDLERS_SLAB)
             }
         } else {
-            SlabBox::from_box(alloc::boxed::Box::new([SignalAction::default(); 64]))
+            SlabBox::from_box(alloc::boxed::Box::new(SignalTable::new()))
         };
         SignalState {
             pending: 0,
@@ -223,36 +311,64 @@ impl SignalState {
         }
     }
 
-    /// Get the next deliverable signal (lowest number first)
+    /// Get the next deliverable signal: a fault's signal first, then the
+    /// lowest number.
     ///
     /// Returns None if no signals are pending and unblocked
     pub fn next_deliverable_signal(&self) -> Option<u32> {
-        let deliverable = self.pending & !self.blocked & !self.ignored;
+        let mut deliverable = self.pending & !self.blocked & !self.ignored;
         if deliverable == 0 {
             return None;
+        }
+        if deliverable & SYNCHRONOUS_SIGNALS != 0 {
+            deliverable &= SYNCHRONOUS_SIGNALS;
         }
         // Find lowest set bit (trailing zeros gives the bit position)
         let bit = deliverable.trailing_zeros();
         Some(bit + 1) // Signal numbers are 1-based
     }
 
-    /// Queue a synchronous fault even when its disposition blocks or ignores it.
-    pub fn force_signal(&mut self, sig: u32) {
+    /// Queue a synchronous fault, with its siginfo, even when its
+    /// disposition blocks or ignores it: then it is unblocked and its action
+    /// reset to SIG_DFL, as Linux's force_sig_info does. The fault's
+    /// information replaces whatever an earlier instance left pending.
+    pub fn force_signal(&mut self, sig: u32, info: SigInfo) {
         if self.is_blocked(sig) || self.get_handler(sig).is_ignore() {
             self.unblock_signals(super::constants::sig_mask(sig));
             self.set_handler(sig, SignalAction::default());
         }
-        self.set_pending(sig);
+        self.clear_pending(sig);
+        self.set_pending_info(sig, info);
     }
 
-    /// Mark a signal as pending.
+    /// Mark a signal the kernel generated as pending (si_code SI_KERNEL).
     #[inline]
     pub fn set_pending(&mut self, sig: u32) {
+        self.set_pending_info(sig, SigInfo::kernel());
+    }
+
+    /// Mark a signal as pending with the siginfo its handler is to be given.
+    /// A signal already pending is not queued again and keeps its first
+    /// information.
+    #[inline]
+    pub fn set_pending_info(&mut self, sig: u32, info: SigInfo) {
         // POSIX.1-2024 2.4.1/2.4.3: choose discard at generation for ignored
         // signals, including blocked ignored signals (an unspecified choice).
         // https://pubs.opengroup.org/onlinepubs/9799919799/functions/V2_chap02.html
         if is_valid_signal(sig) && self.ignored & sig_mask(sig) == 0 {
+            if self.pending & sig_mask(sig) == 0 {
+                self.handlers.info[(sig - 1) as usize] = info;
+            }
             self.pending |= sig_mask(sig);
+        }
+    }
+
+    /// The siginfo of pending signal `sig`, which delivery hands its handler.
+    pub fn pending_info(&self, sig: u32) -> SigInfo {
+        if is_valid_signal(sig) {
+            self.handlers.info[(sig - 1) as usize]
+        } else {
+            SigInfo::kernel()
         }
     }
 
@@ -292,13 +408,13 @@ impl SignalState {
             // Return a static default for invalid signals
             static DEFAULT: SignalAction = SignalAction {
                 handler: SIG_DFL,
-                mask: 0,
                 flags: 0,
                 restorer: 0,
+                mask: 0,
             };
             &DEFAULT
         } else {
-            &self.handlers[(sig - 1) as usize]
+            &self.handlers.actions[(sig - 1) as usize]
         }
     }
 
@@ -308,7 +424,7 @@ impl SignalState {
     pub fn set_handler(&mut self, sig: u32, action: SignalAction) {
         if is_valid_signal(sig) && sig_mask(sig) & UNCATCHABLE_SIGNALS == 0 {
             let bit = sig_mask(sig);
-            self.handlers[(sig - 1) as usize] = action;
+            self.handlers.actions[(sig - 1) as usize] = action;
             if action.is_ignore() || (action.is_default() && DEFAULT_IGNORED_SIGNALS & bit != 0) {
                 self.ignored |= bit;
                 // POSIX 2.4.3: installing ignore discards a pending signal,
@@ -387,109 +503,161 @@ impl SignalState {
     }
 }
 
-/// Signal frame structure pushed to user stack when delivering a signal (x86_64)
-///
-/// This structure contains all state needed to restore execution after
-/// the signal handler returns via sigreturn().
-///
-/// CRITICAL: trampoline_addr MUST be at offset 0!
-/// When the signal handler executes 'ret', it pops from RSP.
-/// RSP points to the start of SignalFrame, so trampoline_addr must be first.
+/// x86-64 `struct sigcontext`, the machine context of a Linux `ucontext_t`.
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SigContext {
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rbp: u64,
+    pub rbx: u64,
+    pub rdx: u64,
+    pub rax: u64,
+    pub rcx: u64,
+    pub rsp: u64,
+    pub rip: u64,
+    pub eflags: u64,
+    pub cs: u16,
+    pub gs: u16,
+    pub fs: u16,
+    pub ss: u16,
+    pub err: u64,
+    pub trapno: u64,
+    pub oldmask: u64,
+    pub cr2: u64,
+    /// User address of the FXSAVE image saved with the frame, or 0.
+    pub fpstate: u64,
+    pub reserved: [u64; 8],
+}
+
+/// x86-64 Linux `ucontext_t` as the kernel writes it (uc_sigmask is the
+/// kernel's 8-byte sigset).
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UContext {
+    pub uc_flags: u64,
+    pub uc_link: u64,
+    pub uc_stack: StackT,
+    pub uc_mcontext: SigContext,
+    pub uc_sigmask: u64,
+}
+
+/// The x86-64 signal frame: Linux's `rt_sigframe`. The handler is entered
+/// with RSP pointing at `pretcode`, as if called, so its `ret` goes to the
+/// restorer, which calls rt_sigreturn with RSP just above `pretcode`. The
+/// FXSAVE image `uc_mcontext.fpstate` points to lies above the frame.
 #[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SignalFrame {
-    // Return address points to signal trampoline that calls sigreturn
-    // MUST BE AT OFFSET 0 - this is what 'ret' will pop!
-    pub trampoline_addr: u64,
-
-    // Magic number for integrity checking (prevents privilege escalation)
-    pub magic: u64,
-
-    // Arguments for signal handler (in registers, but saved here too)
-    pub signal: u64,       // Signal number (also in RDI)
-    pub siginfo_ptr: u64,  // Pointer to siginfo_t (also in RSI) - future
-    pub ucontext_ptr: u64, // Pointer to ucontext_t (also in RDX) - future
-
-    // Saved CPU state to restore after handler
-    pub saved_rip: u64,
-    pub saved_rsp: u64,
-    pub saved_rflags: u64,
-
-    // Saved general-purpose registers
-    pub saved_rax: u64,
-    pub saved_rbx: u64,
-    pub saved_rcx: u64,
-    pub saved_rdx: u64,
-    pub saved_rdi: u64,
-    pub saved_rsi: u64,
-    pub saved_rbp: u64,
-    pub saved_r8: u64,
-    pub saved_r9: u64,
-    pub saved_r10: u64,
-    pub saved_r11: u64,
-    pub saved_r12: u64,
-    pub saved_r13: u64,
-    pub saved_r14: u64,
-    pub saved_r15: u64,
-
-    // Signal state to restore
-    pub saved_blocked: u64,
+    pub pretcode: u64,
+    pub uc: UContext,
+    pub info: LinuxSigInfo,
 }
 
 #[cfg(target_arch = "x86_64")]
 impl SignalFrame {
     /// Size of the signal frame in bytes
     pub const SIZE: usize = core::mem::size_of::<Self>();
-
-    /// Magic number for frame integrity validation
-    /// This prevents privilege escalation via forged signal frames
-    pub const MAGIC: u64 = 0xDEAD_BEEF_CAFE_BABE;
 }
 
-/// Signal frame structure pushed to user stack when delivering a signal (ARM64)
-///
-/// This structure contains all state needed to restore execution after
-/// the signal handler returns via sigreturn().
-///
-/// On ARM64, the return address is stored in x30 (link register), not on stack.
-/// The trampoline address is still stored here for the signal delivery code.
+/// ARM64 `__reserved` area of a `struct sigcontext`, in which the kernel
+/// writes a sequence of records ending in an empty one.
+#[cfg(target_arch = "aarch64")]
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy)]
+pub struct SigContextReserved(pub [u8; 4096]);
+
+/// ARM64 `struct sigcontext`.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SigContext {
+    pub fault_address: u64,
+    pub regs: [u64; 31],
+    pub sp: u64,
+    pub pc: u64,
+    pub pstate: u64,
+    pub reserved: SigContextReserved,
+}
+
+/// ARM64 Linux `ucontext_t`: uc_sigmask is padded to the 1024-bit sigset
+/// glibc reserves, then the machine context.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UContext {
+    pub uc_flags: u64,
+    pub uc_link: u64,
+    pub uc_stack: StackT,
+    pub uc_sigmask: u64,
+    pub unused: [u8; 120],
+    pub uc_mcontext: SigContext,
+}
+
+/// The FP/SIMD record in an ARM64 sigcontext's `__reserved` area.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FpsimdContext {
+    pub magic: u32,
+    pub size: u32,
+    pub fpsr: u32,
+    pub fpcr: u32,
+    pub vregs: [u128; 32],
+}
+
+#[cfg(target_arch = "aarch64")]
+impl FpsimdContext {
+    pub const MAGIC: u32 = 0x4650_8001;
+    pub const SIZE: u32 = core::mem::size_of::<Self>() as u32;
+}
+
+/// The ARM64 signal frame: Linux's `rt_sigframe` followed by the frame
+/// record (saved x29, x30) the handler's x29 points to. The handler is
+/// entered with SP at `info` and x30 at the restorer, which calls
+/// rt_sigreturn with SP unchanged.
 #[cfg(target_arch = "aarch64")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SignalFrame {
-    // Return address for signal trampoline (stored in x30/lr on ARM64)
-    pub trampoline_addr: u64,
-
-    // Magic number for integrity checking (prevents privilege escalation)
-    pub magic: u64,
-
-    // Arguments for signal handler
-    pub signal: u64,       // Signal number (also in x0)
-    pub siginfo_ptr: u64,  // Pointer to siginfo_t (also in x1) - future
-    pub ucontext_ptr: u64, // Pointer to ucontext_t (also in x2) - future
-
-    // Saved CPU state to restore after handler
-    pub saved_pc: u64,     // Program counter (ELR_EL1)
-    pub saved_sp: u64,     // Stack pointer
-    pub saved_pstate: u64, // Processor state (SPSR_EL1)
-
-    // Saved general-purpose registers (x0-x30)
-    pub saved_x: [u64; 31],
-
-    // Signal state to restore
-    pub saved_blocked: u64,
+    pub info: LinuxSigInfo,
+    pub uc: UContext,
+    pub frame_record: [u64; 2],
 }
 
 #[cfg(target_arch = "aarch64")]
 impl SignalFrame {
     /// Size of the signal frame in bytes
     pub const SIZE: usize = core::mem::size_of::<Self>();
-
-    /// Magic number for frame integrity validation
-    /// This prevents privilege escalation via forged signal frames
-    pub const MAGIC: u64 = 0xDEAD_BEEF_CAFE_BABE;
 }
+
+#[cfg(target_arch = "x86_64")]
+const _: () = {
+    assert!(core::mem::size_of::<SigContext>() == 256);
+    assert!(core::mem::size_of::<UContext>() == 304);
+    assert!(core::mem::size_of::<SignalFrame>() == 440);
+};
+
+#[cfg(target_arch = "aarch64")]
+const _: () = {
+    assert!(core::mem::size_of::<SigContext>() == 4384);
+    assert!(core::mem::offset_of!(UContext, uc_mcontext) == 176);
+    assert!(core::mem::size_of::<UContext>() == 4560);
+    assert!(core::mem::offset_of!(SignalFrame, uc) == 128);
+    assert!(core::mem::size_of::<FpsimdContext>() == 528);
+    assert!(core::mem::size_of::<SignalFrame>() == 4704);
+};
 
 // ============================================================================
 // Interval Timer Types (for setitimer/getitimer)

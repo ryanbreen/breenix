@@ -7295,7 +7295,7 @@ fn emit_el0_entry_marker() {
 /// NOTE: This function acquires its own locks (SCHEDULER for current_thread_id,
 /// PROCESS_MANAGER for signal delivery). It is called AFTER the consolidated
 /// context switch lock is released.
-fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64ExceptionFrame) {
+pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64ExceptionFrame) {
     // Get current thread ID
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,

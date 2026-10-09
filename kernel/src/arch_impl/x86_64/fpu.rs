@@ -58,6 +58,27 @@ impl FpuState {
         }
     }
 
+    /// The image's bytes, as a signal frame stores them.
+    pub fn as_bytes(&self) -> &[u8; 512] {
+        &self.0
+    }
+
+    /// An image read from a signal frame, made safe to load: MXCSR bits this
+    /// CPU does not implement, on which FXRSTOR faults, are cleared. The
+    /// supported bits are MXCSR_MASK from an FXSAVE, or 0xffbf where that
+    /// field is zero (Intel SDM Vol. 1, 11.6.6).
+    pub fn from_signal_frame(bytes: [u8; 512]) -> Self {
+        let mut state = Self(bytes);
+        let probe = Self::capture();
+        let mask = match u32::from_le_bytes([probe.0[28], probe.0[29], probe.0[30], probe.0[31]]) {
+            0 => 0xffbf,
+            mask => mask,
+        };
+        let mxcsr = u32::from_le_bytes([state.0[24], state.0[25], state.0[26], state.0[27]]) & mask;
+        state.0[24..28].copy_from_slice(&mxcsr.to_le_bytes());
+        state
+    }
+
     /// Load the executing CPU's x87/SSE registers from here.
     pub fn restore(&self) {
         // SAFETY: the image is either `initial()` or an FXSAVE result, so
@@ -109,6 +130,39 @@ pub fn hand_over(sched: &mut Scheduler, outgoing: Option<u64>, incoming: u64) {
         thread.fpu.restore();
         OWNER[cpu].store(incoming, Ordering::Relaxed);
     }
+}
+
+/// The x87/SSE state thread `thread_id` returns to user mode with: this
+/// CPU's registers when it holds them, otherwise the image the thread saved
+/// when it gave them up. For the thread running on this CPU, in a syscall or
+/// on an interrupt's return to it.
+pub fn user_state(thread_id: u64) -> FpuState {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        if OWNER[crate::per_cpu::cpu_id()].load(Ordering::Relaxed) == thread_id {
+            return FpuState::capture();
+        }
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.get_thread(thread_id).map(|thread| thread.fpu)
+        })
+        .flatten()
+        .unwrap_or(FpuState::initial())
+    })
+}
+
+/// Set the x87/SSE state thread `thread_id` returns to user mode with, as
+/// `user_state` reads it.
+pub fn set_user_state(thread_id: u64, state: &FpuState) {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        if OWNER[crate::per_cpu::cpu_id()].load(Ordering::Relaxed) == thread_id {
+            state.restore();
+            return;
+        }
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.get_thread_mut(thread_id) {
+                thread.fpu = *state;
+            }
+        });
+    })
 }
 
 /// Load the starting state into this CPU's registers, for a thread whose

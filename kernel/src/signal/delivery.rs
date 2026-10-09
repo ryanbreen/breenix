@@ -294,6 +294,16 @@ pub fn stop_pending_or_in_force(process: &Process) -> bool {
                 .is_some_and(|sig| is_default_stop(process, sig)))
 }
 
+/// Raise fault signal `sig` for the thread of `process` whose instruction
+/// faulted, with its siginfo, as Linux's force_sig_fault: a blocked or
+/// ignored fault signal is unblocked and its action reset to SIG_DFL, since
+/// the faulting instruction cannot go on. Returns whether a handler will run
+/// for it; otherwise its default action ends the process. PM held.
+pub fn raise_fault_signal(process: &mut Process, sig: u32, info: SigInfo) -> bool {
+    process.signals.force_signal(sig, info);
+    process.signals.get_handler(sig).is_handler()
+}
+
 /// An unusable signal stack cannot silently discard a caught signal: the
 /// process dies as a bad user-stack access, through the deferred SIGSEGV exit a
 /// kernel-mode user fault takes. Nothing is torn down under PROCESS_MANAGER
@@ -468,7 +478,9 @@ fn deliver_to_user_handler_x86_64(
         interrupt_frame.as_mut().update(|frame| {
             frame.instruction_pointer = x86_64::VirtAddr::new(user_return.rip);
             frame.stack_pointer = x86_64::VirtAddr::new(user_return.rsp);
-            // Keep same code segment, stack segment, and flags
+            frame.cpu_flags =
+                x86_64::registers::rflags::RFlags::from_bits_truncate(user_return.rflags);
+            // Keep same code segment and stack segment
         });
     }
     true
@@ -526,9 +538,62 @@ pub fn deliver_caught_signal_on_syscall_return(
     }
 }
 
+/// The `uc_stack` a handler's context reports: the alternate stack, and
+/// whether the interrupted code was running on it.
+fn saved_alt_stack(process: &Process) -> StackT {
+    let alt = &process.signals.alt_stack;
+    StackT {
+        ss_sp: alt.base,
+        ss_flags: if alt.on_stack {
+            SS_ONSTACK as i32
+        } else if alt.flags & SS_DISABLE != 0 {
+            SS_DISABLE as i32
+        } else {
+            0
+        },
+        _pad: 0,
+        ss_size: alt.size,
+    }
+}
+
+/// What delivering a caught `sig` does to the dispositions and mask once its
+/// frame is installed: SA_RESETHAND resets the action to SIG_DFL on entry to
+/// the handler, and the handler runs with the signal (unless SA_NODEFER) and
+/// its sa_mask blocked.
+///
+/// Dispositions are per thread-group row here; the reset applies to the row
+/// whose thread takes the signal.
+fn enter_handler(process: &mut Process, sig: u32, action: &SignalAction) {
+    if action.flags & SA_RESETHAND != 0 {
+        process.signals.set_handler(sig, SignalAction::default());
+    }
+    if (action.flags & SA_NODEFER) == 0 {
+        // Block this signal while handler runs (prevents recursive delivery)
+        process.signals.block_signals(sig_mask(sig));
+    }
+    // Also block any signals specified in the handler's mask
+    process.signals.block_signals(action.mask);
+}
+
+/// The si_addr a fault signal reports, for the sigcontext's fault address.
+fn fault_address(sig: u32, info: &SigInfo) -> u64 {
+    if sig_mask(sig) & SYNCHRONOUS_SIGNALS != 0 && info.code > 0 {
+        info.fields[0]
+    } else {
+        0
+    }
+}
+
 /// Install the handler frame for `sig` and point `user_return` at the handler.
 /// Returns false, with nothing changed but the stack bytes below the
 /// interrupted stack pointer, when the frame cannot be installed.
+///
+/// The frame is Linux's: the handler is called as
+/// `handler(sig, &frame.info, &frame.uc)` with RSP pointing at the return
+/// address, so RSP + 8 is 16-byte aligned. The FXSAVE image of the
+/// interrupted x87/SSE state lies above the frame, and the handler starts
+/// with the initial x87/SSE state, as on Linux. On the thread's own stack the
+/// 128-byte red zone below the interrupted RSP is left alone.
 #[cfg(target_arch = "x86_64")]
 fn install_user_handler_x86_64(
     process: &mut Process,
@@ -539,9 +604,10 @@ fn install_user_handler_x86_64(
     handler_addr: u64,
     action: &SignalAction,
 ) -> bool {
-    // Get current user stack pointer from the return context
-    let current_rsp = user_return.rsp;
-    let original_rsp = current_rsp;
+    use crate::arch_impl::x86_64::fpu;
+
+    const RED_ZONE: u64 = 128;
+    let original_rsp = user_return.rsp;
 
     // Check if we should use the alternate signal stack
     // SA_ONSTACK flag means use alt stack if one is configured and enabled
@@ -550,108 +616,51 @@ fn install_user_handler_x86_64(
         && process.signals.alt_stack.size > 0
         && !process.signals.alt_stack.on_stack; // Don't nest on alt stack
 
-    let user_rsp = if use_alt_stack {
+    let top = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
-        let Some(alt_top) = process.signals.alt_stack.base
-            .checked_add(process.signals.alt_stack.size as u64) else {
-            return false;
-        };
-        log::debug!(
-            "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
-            process.signals.alt_stack.base,
-            process.signals.alt_stack.size,
-            alt_top
-        );
-        alt_top
+        match process
+            .signals
+            .alt_stack
+            .base
+            .checked_add(process.signals.alt_stack.size as u64)
+        {
+            Some(alt_top) => alt_top,
+            None => return false,
+        }
     } else {
-        current_rsp
+        match original_rsp.checked_sub(RED_ZONE) {
+            Some(top) => top,
+            None => return false,
+        }
     };
 
-    // Calculate space needed for signal frame (and optionally trampoline)
-    let frame_size = SignalFrame::SIZE as u64;
+    // The FXSAVE image, 64-byte aligned, at the top.
+    let Some(fp_addr) = top.checked_sub(core::mem::size_of::<fpu::FpuState>() as u64) else {
+        return false;
+    };
+    let fp_addr = fp_addr & !63;
 
-    // Check if the handler provides a restorer function (SA_RESTORER flag)
-    // If so, use it instead of writing trampoline to the stack.
-    // This is essential for signals delivered on alternate stacks where the
-    // stack may not be executable (NX bit set).
+    // Check if the handler provides a restorer function (SA_RESTORER flag).
+    // Without one the trampoline is written to the stack, which works when
+    // the stack is executable.
     let use_restorer = (action.flags & super::constants::SA_RESTORER) != 0 && action.restorer != 0;
-
-    let (frame_rsp, return_addr) = if use_restorer {
-        // Use the restorer function provided by the application/libc
-        // Only allocate space for the signal frame (no trampoline needed)
-        let Some(base) = user_rsp.checked_sub(frame_size) else {
-            return false;
-        };
-        let frame_rsp = base & !0xF; // 16-byte align
-        log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
-        (frame_rsp, action.restorer)
+    let (below, trampoline_addr) = if use_restorer {
+        (fp_addr, None)
     } else {
-        // Fall back to writing trampoline on the stack
-        // This works when the stack is executable (main stack without NX)
-        let trampoline_size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
-        let total_size = frame_size + trampoline_size;
-        let Some(base) = user_rsp.checked_sub(total_size) else {
+        let size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
+        let Some(addr) = fp_addr.checked_sub(size) else {
             return false;
         };
-        let frame_rsp = base & !0xF; // 16-byte align
-        let trampoline_rsp = frame_rsp + frame_size;
-
-        if use_alt_stack && frame_rsp < process.signals.alt_stack.base {
-            return false;
-        }
-        if !write_signal_stack(
-            process,
-            shared_table,
-            trampoline_rsp,
-            &super::trampoline::SIGNAL_TRAMPOLINE,
-        ) {
-            return false;
-        }
-
-        (frame_rsp, trampoline_rsp)
+        let addr = addr & !0xF;
+        (addr, Some(addr))
     };
-
-    // Build signal frame with saved context
-    let signal_frame = SignalFrame {
-        // Return address: either restorer function or trampoline on stack
-        // When the handler does 'ret', it will pop this and jump there
-        // MUST BE AT OFFSET 0 in the struct - verified by struct definition
-        trampoline_addr: return_addr,
-
-        // Magic number for integrity validation
-        magic: SignalFrame::MAGIC,
-
-        // Signal info
-        signal: sig as u64,
-        siginfo_ptr: 0,  // Not implemented yet
-        ucontext_ptr: 0, // Not implemented yet
-
-        // Save current execution state
-        saved_rip: user_return.rip,
-        saved_rsp: original_rsp,
-        saved_rflags: user_return.rflags,
-
-        // Save all general-purpose registers
-        saved_rax: saved_regs.rax,
-        saved_rbx: saved_regs.rbx,
-        saved_rcx: saved_regs.rcx,
-        saved_rdx: saved_regs.rdx,
-        saved_rdi: saved_regs.rdi,
-        saved_rsi: saved_regs.rsi,
-        saved_rbp: saved_regs.rbp,
-        saved_r8: saved_regs.r8,
-        saved_r9: saved_regs.r9,
-        saved_r10: saved_regs.r10,
-        saved_r11: saved_regs.r11,
-        saved_r12: saved_regs.r12,
-        saved_r13: saved_regs.r13,
-        saved_r14: saved_regs.r14,
-        saved_r15: saved_regs.r15,
-
-        // Save signal mask to restore after handler
-        saved_blocked: process.signals.blocked,
+    let Some(frame_rsp) = below
+        .checked_sub(SignalFrame::SIZE as u64)
+        .map(|base| base & !0xF)
+        .and_then(|base| base.checked_sub(8))
+    else {
+        return false;
     };
-
     if use_alt_stack && frame_rsp < process.signals.alt_stack.base {
         return false;
     }
@@ -660,6 +669,61 @@ fn install_user_handler_x86_64(
     {
         return false;
     }
+    let return_addr = trampoline_addr.unwrap_or(action.restorer);
+
+    let thread_id = process.main_thread.as_ref().map(|thread| thread.id);
+    let fp_state = thread_id.map_or_else(fpu::FpuState::initial, fpu::user_state);
+    let info = process.signals.pending_info(sig);
+    let blocked = process.signals.blocked;
+
+    let signal_frame = SignalFrame {
+        // When the handler does 'ret', it pops this and jumps there.
+        pretcode: return_addr,
+        uc: UContext {
+            uc_flags: 0,
+            uc_link: 0,
+            uc_stack: saved_alt_stack(process),
+            uc_mcontext: SigContext {
+                r8: saved_regs.r8,
+                r9: saved_regs.r9,
+                r10: saved_regs.r10,
+                r11: saved_regs.r11,
+                r12: saved_regs.r12,
+                r13: saved_regs.r13,
+                r14: saved_regs.r14,
+                r15: saved_regs.r15,
+                rdi: saved_regs.rdi,
+                rsi: saved_regs.rsi,
+                rbp: saved_regs.rbp,
+                rbx: saved_regs.rbx,
+                rdx: saved_regs.rdx,
+                rax: saved_regs.rax,
+                rcx: saved_regs.rcx,
+                rsp: original_rsp,
+                rip: user_return.rip,
+                eflags: user_return.rflags,
+                cs: crate::gdt::user_code_selector().0,
+                ss: crate::gdt::user_data_selector().0,
+                oldmask: blocked,
+                cr2: fault_address(sig, &info),
+                fpstate: fp_addr,
+                ..SigContext::default()
+            },
+            uc_sigmask: blocked,
+        },
+        info: info.to_linux(sig),
+    };
+
+    if let Some(addr) = trampoline_addr {
+        if !write_signal_stack(process, shared_table, addr, &super::trampoline::SIGNAL_TRAMPOLINE)
+        {
+            return false;
+        }
+    }
+    if !write_signal_stack(process, shared_table, fp_addr, fp_state.as_bytes()) {
+        return false;
+    }
+    // SAFETY: SignalFrame is repr(C) plain data, fully initialized.
     let bytes = unsafe {
         core::slice::from_raw_parts(
             core::ptr::addr_of!(signal_frame) as *const u8,
@@ -672,44 +736,37 @@ fn install_user_handler_x86_64(
     if use_alt_stack {
         process.signals.alt_stack.on_stack = true;
     }
-
-    // Block signals during handler execution
-    if (action.flags & SA_NODEFER) == 0 {
-        // Block this signal while handler runs (prevents recursive delivery)
-        process.signals.block_signals(sig_mask(sig));
+    enter_handler(process, sig, action);
+    if let Some(thread_id) = thread_id {
+        fpu::set_user_state(thread_id, &fpu::FpuState::initial());
     }
-    // Also block any signals specified in the handler's mask
-    process.signals.block_signals(action.mask);
 
     // The complete frame is installed before changing the return context.
     user_return.rip = handler_addr;
     user_return.rsp = frame_rsp;
+    // The handler starts with DF clear, as the ABI requires at a call, and
+    // without single-stepping.
+    const TF: u64 = 1 << 8;
+    const DF: u64 = 1 << 10;
+    const RF: u64 = 1 << 16;
+    user_return.rflags &= !(TF | DF | RF);
 
-    // Set up arguments for signal handler
     // void handler(int signum, siginfo_t *info, void *ucontext)
-    saved_regs.rdi = sig as u64; // First argument: signal number
-    saved_regs.rsi = 0; // Second argument: siginfo_t* (not implemented)
-    saved_regs.rdx = 0; // Third argument: ucontext_t* (not implemented)
+    saved_regs.rdi = sig as u64;
+    saved_regs.rsi = frame_rsp + core::mem::offset_of!(SignalFrame, info) as u64;
+    saved_regs.rdx = frame_rsp + core::mem::offset_of!(SignalFrame, uc) as u64;
+    // For a handler declared without a prototype, as Linux does.
+    saved_regs.rax = 0;
 
-    if use_alt_stack {
-        log::debug!(
-            "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, RSP={:#x}->{:#x}, return={:#x}",
-            sig,
-            handler_addr,
-            user_rsp,
-            frame_rsp,
-            return_addr
-        );
-    } else {
-        log::debug!(
-            "Signal {} delivered to handler at {:#x}, RSP={:#x}->{:#x}, return={:#x}",
-            sig,
-            handler_addr,
-            user_rsp,
-            frame_rsp,
-            return_addr
-        );
-    }
+    log::debug!(
+        "Signal {} delivered to handler at {:#x}{}, RSP={:#x}->{:#x}, return={:#x}",
+        sig,
+        handler_addr,
+        if use_alt_stack { " on ALTERNATE STACK" } else { "" },
+        original_rsp,
+        frame_rsp,
+        return_addr
+    );
 
     true
 }
@@ -723,11 +780,12 @@ fn install_user_handler_x86_64(
 /// This modifies the exception frame so that when we return to userspace,
 /// we jump to the signal handler instead of the interrupted code.
 ///
-/// Key differences from x86_64:
-/// - User stack is accessed via SP_EL0, not from the exception frame
-/// - Return address goes in X30 (link register), not pushed on stack
-/// - PSTATE is used instead of RFLAGS
-/// - Signal trampoline uses `mov x8, #15; svc #0` for sigreturn
+/// The frame is Linux's: the handler is called as
+/// `handler(sig, &frame.info, &frame.uc)` with SP at the frame, X30 at the
+/// restorer (or the trampoline written to the stack) and X29 at a frame
+/// record holding the interrupted X29 and X30. The context saves the
+/// FP/SIMD registers, v0-v31 with FPSR and FPCR, which the handler starts
+/// with, as on Linux.
 #[cfg(target_arch = "aarch64")]
 fn deliver_to_user_handler_aarch64(
     process: &mut Process,
@@ -738,10 +796,8 @@ fn deliver_to_user_handler_aarch64(
     handler_addr: u64,
     action: &SignalAction,
 ) -> bool {
-    // Get current user stack pointer from saved registers
     // On ARM64, user SP is in SP_EL0, which we save in saved_regs.sp
-    let current_sp = saved_regs.sp;
-    let original_sp = current_sp;
+    let original_sp = saved_regs.sp;
 
     // Check if we should use the alternate signal stack
     // SA_ONSTACK flag means use alt stack if one is configured and enabled
@@ -750,71 +806,49 @@ fn deliver_to_user_handler_aarch64(
         && process.signals.alt_stack.size > 0
         && !process.signals.alt_stack.on_stack; // Don't nest on alt stack
 
-    let user_sp = if use_alt_stack {
+    let top = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
-        let Some(alt_top) = process.signals.alt_stack.base
-            .checked_add(process.signals.alt_stack.size as u64) else {
-            return false;
-        };
-        log::debug!(
-            "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
-            process.signals.alt_stack.base,
-            process.signals.alt_stack.size,
-            alt_top
-        );
-        alt_top
+        match process
+            .signals
+            .alt_stack
+            .base
+            .checked_add(process.signals.alt_stack.size as u64)
+        {
+            Some(alt_top) => alt_top,
+            None => return false,
+        }
     } else {
-        current_sp
+        original_sp
     };
 
-    // Calculate space needed for signal frame (and optionally trampoline)
-    let frame_size = SignalFrame::SIZE as u64;
-
-    // Check if the handler provides a restorer function (SA_RESTORER flag)
-    // If so, use it instead of writing trampoline to the stack.
+    // Check if the handler provides a restorer function (SA_RESTORER flag).
+    // Without one the trampoline is written to the stack, which works when
+    // the stack is executable.
     let use_restorer = (action.flags & super::constants::SA_RESTORER) != 0 && action.restorer != 0;
-
-    let (frame_sp, return_addr) = if use_restorer {
-        // Use the restorer function provided by the application/libc
-        // Only allocate space for the signal frame (no trampoline needed)
-        let Some(base) = user_sp.checked_sub(frame_size) else {
-            return false;
-        };
-        let frame_sp = base & !0xF; // 16-byte align
-        log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
-        (frame_sp, action.restorer)
+    let (below, trampoline_addr) = if use_restorer {
+        (top, None)
     } else {
-        // Fall back to writing trampoline on the stack
-        // This works when the stack is executable (main stack without NX)
-        let trampoline_size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
-        let total_size = frame_size + trampoline_size;
-        let Some(base) = user_sp.checked_sub(total_size) else {
+        let size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
+        let Some(addr) = top.checked_sub(size) else {
             return false;
         };
-        let frame_sp = base & !0xF; // 16-byte align
-        let trampoline_sp = frame_sp + frame_size;
-        if use_alt_stack && frame_sp < process.signals.alt_stack.base {
-            return false;
-        }
-
-        // PM is held by the delivery caller. Copy through the owned table:
-        // a raw user-VA write here can fault on fork's CoW stack and deadlock
-        // trying to reacquire PM before child exit can complete its wake.
-        if !write_signal_stack(
-            process,
-            shared_table,
-            trampoline_sp,
-            &super::trampoline::SIGNAL_TRAMPOLINE,
-        ) {
-            return false;
-        }
-
-        (frame_sp, trampoline_sp)
+        let addr = addr & !0xF;
+        (addr, Some(addr))
     };
+    let Some(frame_sp) = below
+        .checked_sub(SignalFrame::SIZE as u64)
+        .map(|base| base & !0xF)
+    else {
+        return false;
+    };
+    if use_alt_stack && frame_sp < process.signals.alt_stack.base {
+        return false;
+    }
+    let return_addr = trampoline_addr.unwrap_or(action.restorer);
 
-    // Build signal frame with saved context
-    // Copy all X registers to the saved_x array
-    let saved_x: [u64; 31] = [
+    let info = process.signals.pending_info(sig);
+    let blocked = process.signals.blocked;
+    let regs = [
         saved_regs.x0,
         saved_regs.x1,
         saved_regs.x2,
@@ -848,37 +882,55 @@ fn deliver_to_user_handler_aarch64(
         saved_regs.x30,
     ];
 
-    let signal_frame = SignalFrame {
-        // Return address stored in x30/lr on ARM64
-        trampoline_addr: return_addr,
-
-        // Magic number for integrity validation
-        magic: SignalFrame::MAGIC,
-
-        // Signal info
-        signal: sig as u64,
-        siginfo_ptr: 0,  // Not implemented yet
-        ucontext_ptr: 0, // Not implemented yet
-
-        // Save current execution state (ARM64 specific)
-        saved_pc: saved_regs.elr,      // Program counter (ELR_EL1)
-        saved_sp: original_sp,         // Stack pointer
-        saved_pstate: saved_regs.spsr, // Processor state (SPSR_EL1)
-
-        // Save all general-purpose registers (X0-X30)
-        saved_x,
-
-        // Save signal mask to restore after handler
-        saved_blocked: process.signals.blocked,
+    let mut signal_frame = SignalFrame {
+        info: info.to_linux(sig),
+        uc: UContext {
+            uc_flags: 0,
+            uc_link: 0,
+            uc_stack: saved_alt_stack(process),
+            uc_sigmask: blocked,
+            unused: [0; 120],
+            uc_mcontext: SigContext {
+                fault_address: fault_address(sig, &info),
+                regs,
+                sp: original_sp,
+                pc: saved_regs.elr,
+                pstate: saved_regs.spsr,
+                reserved: SigContextReserved([0; 4096]),
+            },
+        },
+        frame_record: [saved_regs.x29, saved_regs.x30],
     };
-
-    if use_alt_stack && frame_sp < process.signals.alt_stack.base {
-        return false;
+    // The FP/SIMD record, then the empty record that ends the list.
+    let mut fpsimd = FpsimdContext {
+        magic: FpsimdContext::MAGIC,
+        size: FpsimdContext::SIZE,
+        fpsr: 0,
+        fpcr: 0,
+        vregs: [0; 32],
+    };
+    crate::arch_impl::aarch64::fpsimd::save(&mut fpsimd);
+    // SAFETY: the reserved area is 16-byte aligned and larger than the
+    // record, and FpsimdContext is repr(C) plain data.
+    unsafe {
+        core::ptr::write(
+            signal_frame.uc.uc_mcontext.reserved.0.as_mut_ptr() as *mut FpsimdContext,
+            fpsimd,
+        );
     }
 
-    // SignalFrame is a repr(C) collection of initialized u64 fields. Read its
-    // bytes from the kernel buffer rather than faulting through a user VA while PM is
-    // held. The table copy validates permissions and resolves CoW first.
+    if let Some(addr) = trampoline_addr {
+        // PM is held by the delivery caller. Copy through the owned table:
+        // a raw user-VA write here can fault on fork's CoW stack and deadlock
+        // trying to reacquire PM before child exit can complete its wake.
+        if !write_signal_stack(process, shared_table, addr, &super::trampoline::SIGNAL_TRAMPOLINE)
+        {
+            return false;
+        }
+    }
+    // SignalFrame is repr(C) plain data, fully initialized. Read its bytes
+    // from the kernel buffer rather than faulting through a user VA while PM
+    // is held. The table copy validates permissions and resolves CoW first.
     let bytes = unsafe {
         core::slice::from_raw_parts(
             core::ptr::addr_of!(signal_frame) as *const u8,
@@ -892,57 +944,42 @@ fn deliver_to_user_handler_aarch64(
     if use_alt_stack {
         process.signals.alt_stack.on_stack = true;
     }
+    enter_handler(process, sig, action);
 
-    // Block signals during handler execution
-    if (action.flags & SA_NODEFER) == 0 {
-        // Block this signal while handler runs (prevents recursive delivery)
-        process.signals.block_signals(sig_mask(sig));
-    }
-    // Also block any signals specified in the handler's mask
-    process.signals.block_signals(action.mask);
+    let info_addr = frame_sp + core::mem::offset_of!(SignalFrame, info) as u64;
+    let uc_addr = frame_sp + core::mem::offset_of!(SignalFrame, uc) as u64;
+    let record_addr = frame_sp + core::mem::offset_of!(SignalFrame, frame_record) as u64;
 
     // Modify exception frame to jump to signal handler
-    // Set PC (ELR_EL1) to handler address
     exception_frame.elr = handler_addr;
-
-    // Set X30 (link register) to the return address (trampoline or restorer)
-    // When the handler returns (via RET instruction), it will jump to x30
-    exception_frame.x30 = return_addr;
-    saved_regs.x30 = return_addr;
-
-    // Update stack pointer in saved registers
-    // The actual SP_EL0 update happens on exception return
-    saved_regs.sp = frame_sp;
     saved_regs.elr = handler_addr;
 
-    // Set up arguments for signal handler (ARM64 ABI: X0-X2)
-    // void handler(int signum, siginfo_t *info, void *ucontext)
-    exception_frame.x0 = sig as u64; // First argument: signal number
-    exception_frame.x1 = 0; // Second argument: siginfo_t* (not implemented)
-    exception_frame.x2 = 0; // Third argument: ucontext_t* (not implemented)
-    saved_regs.x0 = sig as u64;
-    saved_regs.x1 = 0;
-    saved_regs.x2 = 0;
+    // When the handler returns (via RET instruction), it jumps to x30
+    exception_frame.x30 = return_addr;
+    saved_regs.x30 = return_addr;
+    exception_frame.x29 = record_addr;
+    saved_regs.x29 = record_addr;
 
-    if use_alt_stack {
-        log::info!(
-            "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, SP={:#x}->{:#x}, return={:#x}",
-            sig,
-            handler_addr,
-            user_sp,
-            frame_sp,
-            return_addr
-        );
-    } else {
-        log::info!(
-            "Signal {} delivered to handler at {:#x}, SP={:#x}->{:#x}, return={:#x}",
-            sig,
-            handler_addr,
-            user_sp,
-            frame_sp,
-            return_addr
-        );
-    }
+    // The actual SP_EL0 update happens on exception return
+    saved_regs.sp = frame_sp;
+
+    // void handler(int signum, siginfo_t *info, void *ucontext)
+    exception_frame.x0 = sig as u64;
+    exception_frame.x1 = info_addr;
+    exception_frame.x2 = uc_addr;
+    saved_regs.x0 = sig as u64;
+    saved_regs.x1 = info_addr;
+    saved_regs.x2 = uc_addr;
+
+    log::info!(
+        "Signal {} delivered to handler at {:#x}{}, SP={:#x}->{:#x}, return={:#x}",
+        sig,
+        handler_addr,
+        if use_alt_stack { " on ALTERNATE STACK" } else { "" },
+        original_sp,
+        frame_sp,
+        return_addr
+    );
 
     true
 }
@@ -978,11 +1015,20 @@ pub fn notify_parent_of_job_change_locked(
     manager: &mut ProcessManager,
     notification: &JobNotification,
 ) {
+    let info = manager.get_process(notification.child_pid).and_then(|child| {
+        let (code, status) = match child.job.report? {
+            JobReport::Stopped(sig) => (CLD_STOPPED, sig as i32),
+            JobReport::Continued => (CLD_CONTINUED, SIGCONT as i32),
+        };
+        Some(SigInfo::child(code, child.id.as_u64() as u32, child.cred.uid, status))
+    });
     let Some(parent) = manager.get_process_mut(notification.parent_pid) else {
         return;
     };
     if parent.signals.get_handler(SIGCHLD).flags & SA_NOCLDSTOP == 0 {
-        parent.signals.set_pending(SIGCHLD);
+        parent
+            .signals
+            .set_pending_info(SIGCHLD, info.unwrap_or_else(SigInfo::kernel));
     }
     let signal_eligible = parent.signals.has_deliverable_signals();
     let Some(parent_tid) = parent.main_thread.as_ref().map(|thread| thread.id) else {
@@ -1511,6 +1557,7 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
             log::warn!("notify_parent_of_termination_deferred: no process manager");
             return;
         };
+        let child_info = manager.get_process(child_pid).map(child_exit_info);
         // A parent that declines zombies reaps the child now; the row is
         // dropped once the guard is released (condition C8).
         let auto_reaped = manager.reap_if_parent_declines(child_pid);
@@ -1518,7 +1565,9 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
         // Find parent process and send SIGCHLD
         let parent_thread_id = if let Some(parent_process) = manager.get_process_mut(parent_pid) {
             // Send SIGCHLD to parent
-            parent_process.signals.set_pending(SIGCHLD);
+            parent_process
+                .signals
+                .set_pending_info(SIGCHLD, child_info.unwrap_or_else(SigInfo::kernel));
             log::debug!(
                 "notify_parent_of_termination_deferred: sent SIGCHLD to parent {} for child {} termination",
                 parent_pid.as_u64(),
@@ -1560,6 +1609,13 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
             child_pid.as_u64()
         );
     }
+}
+
+/// The siginfo of the SIGCHLD `child`'s exit raises: how it ended, its PID
+/// and real user ID, and its exit status or the signal that ended it.
+pub fn child_exit_info(child: &Process) -> SigInfo {
+    let (code, status) = child_exit_code_status(child.exit_code.unwrap_or(0));
+    SigInfo::child(code, child.id.as_u64() as u32, child.cred.uid, status)
 }
 
 /// Internal function called from deliver_default_action

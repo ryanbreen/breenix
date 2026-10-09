@@ -950,11 +950,14 @@ impl ProcessScheduler {
                     );
 
                     // Set SIGCHLD on parent and get parent thread ID for wakeup
+                    let child_info = manager
+                        .get_process(pid)
+                        .map(crate::signal::delivery::child_exit_info);
                     let parent_tid = if let Some(parent_pid) = parent_pid {
                         if let Some(parent_process) = manager.get_process_mut(parent_pid) {
-                            if sigchld_pending {
+                            if let (true, Some(info)) = (sigchld_pending, child_info) {
                                 use crate::signal::constants::SIGCHLD;
-                                parent_process.signals.set_pending(SIGCHLD);
+                                parent_process.signals.set_pending_info(SIGCHLD, info);
                             }
                             parent_process.main_thread.as_ref().map(|t| t.id)
                         } else {

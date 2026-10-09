@@ -57,39 +57,49 @@ pub const SA_NODEFER: u64 = 0x40000000;
 pub const SA_SIGINFO: u64 = 0x00000004;
 pub const SA_ONSTACK: u64 = 0x08000000;
 pub const SA_RESTORER: u64 = 0x04000000;
+pub const SA_RESETHAND: u64 = 0x80000000;
 
 // sigaltstack flags
 pub const SS_ONSTACK: i32 = 1;
 pub const SS_DISABLE: i32 = 2;
+// The Linux ABI's sizes: an ARM64 signal frame holds the 4 KiB sigcontext
+// reserve, so its alternate stacks are larger.
+#[cfg(target_arch = "x86_64")]
 pub const MINSIGSTKSZ: usize = 2048;
+#[cfg(target_arch = "x86_64")]
 pub const SIGSTKSZ: usize = 8192;
+#[cfg(target_arch = "aarch64")]
+pub const MINSIGSTKSZ: usize = 5120;
+#[cfg(target_arch = "aarch64")]
+pub const SIGSTKSZ: usize = 16384;
 
 // Interval timer types
 pub const ITIMER_REAL: i32 = 0;
 pub const ITIMER_VIRTUAL: i32 = 1;
 pub const ITIMER_PROF: i32 = 2;
 
-/// Signal action structure (must match kernel layout)
+/// The Linux ABI's `struct sigaction` for rt_sigaction, on x86-64 and ARM64
+/// alike: handler, flags, restorer, mask.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Sigaction {
     /// Handler function pointer, SIG_DFL, or SIG_IGN
     pub handler: u64,
-    /// Signals to block during handler execution
-    pub mask: u64,
     /// Flags (SA_RESTART, SA_SIGINFO, etc.)
     pub flags: u64,
     /// Restorer function (for sigreturn)
     pub restorer: u64,
+    /// Signals to block during handler execution
+    pub mask: u64,
 }
 
 impl Default for Sigaction {
     fn default() -> Self {
         Sigaction {
             handler: SIG_DFL,
-            mask: 0,
             flags: 0,
             restorer: 0,
+            mask: 0,
         }
     }
 }
