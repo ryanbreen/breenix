@@ -6,6 +6,7 @@ public struct ProcessRequest: Equatable {
     public var arguments: [String]
     public var environment: [String: String]
     public var workingDirectory: URL?
+    public var timeoutSecs: Double?
     public var combineOutput: Bool
 
     public init(
@@ -13,12 +14,14 @@ public struct ProcessRequest: Equatable {
         arguments: [String] = [],
         environment: [String: String] = [:],
         workingDirectory: URL? = nil,
-        combineOutput: Bool = false
+        combineOutput: Bool = false,
+        timeoutSecs: Double? = nil
     ) {
         self.executable = executable
         self.arguments = arguments
         self.environment = environment
         self.workingDirectory = workingDirectory
+        self.timeoutSecs = timeoutSecs
         self.combineOutput = combineOutput
     }
 }
@@ -63,7 +66,7 @@ public final class RealProcessRunner: ProcessRunner, @unchecked Sendable {
 
     public func interrupt() {
         processLock.lock(); defer { processLock.unlock() }
-        for process in active where process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        for process in active where process.isRunning { kill(process.processIdentifier, SIGTERM) }
     }
     public init() {}
 
@@ -71,6 +74,12 @@ public final class RealProcessRunner: ProcessRunner, @unchecked Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: request.executable)
         process.arguments = request.arguments
+        if let timeout = request.timeoutSecs {
+            // Own a process group so a timed-out script cannot leave its CLI child
+            // holding the output pipes open. All output still uses the normal runner.
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            process.arguments = ["-c", Self.boundedProcess, String(timeout), request.executable] + request.arguments
+        }
         if let workingDirectory = request.workingDirectory {
             process.currentDirectoryURL = workingDirectory
         }
@@ -91,9 +100,7 @@ public final class RealProcessRunner: ProcessRunner, @unchecked Sendable {
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty else {
-                return
-            }
+            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
             stdoutBuffer.append(data)
             outputHandler?(data)
         }
@@ -101,9 +108,7 @@ public final class RealProcessRunner: ProcessRunner, @unchecked Sendable {
         if !request.combineOutput {
             stderrPipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
-                guard !data.isEmpty else {
-                    return
-                }
+                guard !data.isEmpty else { handle.readabilityHandler = nil; return }
                 stderrBuffer.append(data)
             }
         }
@@ -137,6 +142,28 @@ public final class RealProcessRunner: ProcessRunner, @unchecked Sendable {
             exitCode: process.terminationStatus
         )
     }
+
+    private static let boundedProcess = #"""
+import os, signal, subprocess, sys
+child = subprocess.Popen(sys.argv[2:], start_new_session=True)
+def stop(number, frame):
+    try: os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError: pass
+    child.wait()
+    sys.exit(128 + number)
+for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(number, stop)
+try:
+    status = child.wait(timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    try: os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError: pass
+    child.wait()
+    status = 124
+try: os.killpg(child.pid, signal.SIGKILL)
+except ProcessLookupError: pass
+sys.exit(status if status >= 0 else 128 - status)
+"""#
 
     private func appendRemaining(from pipe: Pipe, to buffer: LockedBuffer, outputHandler: (@Sendable (Data) -> Void)?) {
         let data = pipe.fileHandleForReading.availableData

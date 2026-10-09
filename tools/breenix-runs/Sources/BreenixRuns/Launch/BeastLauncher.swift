@@ -102,6 +102,7 @@ public struct BeastLauncher {
     public var slotHelperBase64: String?
     public var vigilScript: URL?
     public var treeHelperBase64: String?
+    var makeSignals: (ProcessRunner) -> X86LaunchSignals = { X86LaunchSignals(runner: $0) }
     public var serialStreaming: X86SerialStreaming
 
     public init(
@@ -184,9 +185,10 @@ public struct BeastLauncher {
             }
         }
 
-        let signals = X86LaunchSignals(runner: runner)
+        let signals = makeSignals(runner)
         defer { withExtendedLifetime(signals) {} }
         let live = try LiveX86Serials(directory: runDirectory, id: id, options: options, script: vigilScript, runner: runner)
+        live.start()
         let stream = try? serialStreaming.start(RemoteCommand.streamSerialsRequest(paths: planResult.paths, boots: options.boots)) { data in
             live.receive(data)
         }
@@ -197,6 +199,7 @@ public struct BeastLauncher {
         FileManager.default.createFile(atPath: gateStdoutURL.path, contents: nil)
         let gateOutputHandle = try FileHandle(forWritingTo: gateStdoutURL)
         let gateResult: ProcessResult
+        var gateError: Error?
         do {
             gateResult = try runner.run(
                 planResult.runGate,
@@ -206,26 +209,34 @@ public struct BeastLauncher {
                 }
             )
         } catch {
-            try? gateOutputHandle.close()
-            stream?.stop()
-            _ = try? runner.run(RemoteCommand.stopGateRequest(paths: planResult.paths))
-            throw error
+            gateError = error
+            gateResult = ProcessResult(exitCode: 1)
         }
         stream?.stop()
         finishStatus = signals.signalNumber.map { 128 + $0 } ?? gateResult.exitCode
         try gateOutputHandle.close()
-        let interrupted = gateResult.exitCode == 255 || signals.signalNumber != nil
+        let interrupted = gateError != nil || gateResult.exitCode == 255 || signals.signalNumber != nil
         let quiesced = !interrupted || (try? runner.run(RemoteCommand.stopGateRequest(paths: planResult.paths)).exitCode) == 0
 
         let endedAt = Date()
         let endFacts = parseHostFactsSample(runner: runner, paths: planResult.paths, wallTime: endedAt)
         let pullResult = quiesced ? ((try? runner.run(planResult.pullEvidence)) ?? ProcessResult(exitCode: 127)) : ProcessResult(exitCode: 127)
+        if pullResult.exitCode != 0 || pullResult.stdout.isEmpty {
+            if finishStatus == 0 { finishStatus = 1 }
+        }
+        finishStatus = signals.signalNumber.map { 128 + $0 } ?? finishStatus
         let serialRefs: [SerialRef]
+        var authoritative = false
         do {
             serialRefs = try harvestSerials(pullResult: pullResult, runDirectory: runDirectory)
+            authoritative = pullResult.exitCode == 0 && !pullResult.stdout.isEmpty
         } catch {
             finishStatus = 1
-            throw error
+            gateError = error
+            serialRefs = [
+                SerialRef(name: "serial_user.txt", path: "serial_user.txt", bytes: fileSize(runDirectory.appendingPathComponent("serial_user.txt")), stream: .com1),
+                SerialRef(name: "serial_kernel.txt", path: "serial_kernel.txt", bytes: fileSize(runDirectory.appendingPathComponent("serial_kernel.txt")), stream: .com2)
+            ]
         }
         let gateStdoutBytes = fileSize(gateStdoutURL)
         let command = readableGateCommand(paths: planResult.paths, boots: options.boots, mode: options.mode)
@@ -237,6 +248,9 @@ public struct BeastLauncher {
         }
 
         let gateStdoutText = String(decoding: try Data(contentsOf: gateStdoutURL), as: UTF8.self)
+        if finishStatus == 0 && !gateStdoutText.split(separator: "\n").contains(where: { $0.hasPrefix("GATE: PASS (") }) {
+            finishStatus = 1
+        }
         env["BREENIX_GATE_FRESH"] = options.fresh ? "1" : "0"
         for line in gateStdoutText.split(separator: "\n") {
             if line.hasPrefix("[gate-tree] tree="), let field = line.split(separator: " ").first(where: { $0.hasPrefix("tree=") }) {
@@ -280,9 +294,9 @@ public struct BeastLauncher {
         )
 
         live.finish(status: finishStatus)
-        if !live.registered, let vigilScript {
+        if let vigilScript {
             do {
-                try FinishedX86Registration.file(script: vigilScript, manifest: manifest, runDirectory: runDirectory, runner: runner)
+                try FinishedX86Registration.file(script: vigilScript, manifest: manifest, runDirectory: runDirectory, runner: runner, liveRegistered: live.registered, authoritative: authoritative)
             } catch {
                 if options.persist { try store.writeManifest(manifest) }
                 throw error
@@ -293,9 +307,10 @@ public struct BeastLauncher {
         }
         // Only remove evidence after a completed gate and successful harvest.
         // A disconnected SSH session leaves its remote supervisor and evidence alone.
-        if pullResult.exitCode == 0 {
+        if gateError == nil && pullResult.exitCode == 0 && !pullResult.stdout.isEmpty {
             _ = try? runner.run(planResult.removeClone)
         }
+        if let gateError { throw gateError }
         return BeastLaunchResult(
             manifest: manifest,
             runDirectory: runDirectory,

@@ -34,6 +34,23 @@ final class FinishedX86RegistrationTests: XCTestCase {
         }
     }
 
+    func testNoBootDirectoriesUsesManifestStatusExactlyOnce() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for status in [130, 1, 255] {
+            let manifest = RunManifest(id: "empty", startedAt: Date(), endedAt: Date(), arch: .x86_64,
+                profile: "gate", launcher: .beastSSH, kernel: KernelIdentity(gitSHA: String(repeating: "a", count: 40)),
+                host: nil, verdict: .fail("no boot"), verdictSource: .gateScript(command: [], exitCode: status),
+                serials: [], captures: [], command: [], env: [:], tags: [], notes: nil)
+            let runner = Recorder()
+            try FinishedX86Registration.file(script: URL(fileURLWithPath: "/record.sh"), manifest: manifest, runDirectory: root, runner: runner)
+            XCTAssertEqual(runner.calls.count, 1)
+            XCTAssertEqual(runner.calls[0].arguments[11], String(status))
+            XCTAssertTrue(runner.calls[0].arguments[4].hasSuffix("serial_kernel.txt"))
+        }
+    }
+
     private final class Recorder: ProcessRunner {
         var calls: [ProcessRequest] = []
         func run(_ request: ProcessRequest, outputHandler: (@Sendable (Data) -> Void)?) throws -> ProcessResult {

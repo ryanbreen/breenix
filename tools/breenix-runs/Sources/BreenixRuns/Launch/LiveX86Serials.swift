@@ -16,7 +16,7 @@ public struct SSHSerialStreaming: X86SerialStreaming {
     }
 }
 
-private final class SSHSerialStream: X86SerialStream, @unchecked Sendable {
+final class SSHSerialStream: X86SerialStream, @unchecked Sendable {
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
@@ -35,14 +35,20 @@ private final class SSHSerialStream: X86SerialStream, @unchecked Sendable {
         process.standardError = FileHandle.nullDevice
         // A disconnected SSH must not deliver SIGPIPE to the launcher.
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+        _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETFL, O_NONBLOCK)
         do { try process.run() } catch {
             timer.resume(); reader.resume()
             timer.cancel(); reader.cancel()
             throw error
         }
-        reader.setEventHandler { [output] in
+        reader.setEventHandler { [weak self, output] in
             let data = output.fileHandleForReading.availableData
-            if !data.isEmpty { receive(data) }
+            guard !data.isEmpty else {
+                self?.reader.cancel()
+                self?.timer.cancel()
+                return
+            }
+            receive(data)
         }
         timer.setEventHandler { [input] in
             var heartbeat: UInt8 = 1
@@ -52,6 +58,8 @@ private final class SSHSerialStream: X86SerialStream, @unchecked Sendable {
         reader.resume()
         timer.resume()
     }
+
+    var isReading: Bool { queue.sync { !reader.isCancelled } }
 
     func stop() {
         queue.sync {
@@ -85,7 +93,6 @@ final class LiveX86Serials: @unchecked Sendable {
     private var bootByStream: [String: Int] = [:]
     private var handles: [String: FileHandle] = [:]
     private var registeredID: String?
-    private var attemptedRegistration = false
     private var finished = false
     private let runner: ProcessRunner
     private let script: URL?
@@ -107,6 +114,23 @@ final class LiveX86Serials: @unchecked Sendable {
         return registeredID != nil
     }
 
+    // Registration is synchronous at gate launch, outside the frame lock, and bounded.
+    func start() {
+        guard let script else { return }
+        let result = try? runner.run(ProcessRequest(executable: script.path, arguments: [
+            "start", "beast", options.suite == nil || options.suite?.contains(",") == true ? "tests" : "suite",
+            options.suite?.contains(",") == true ? "" : options.suite ?? "",
+            directory.appendingPathComponent("serial_kernel.txt").path,
+            directory.appendingPathComponent("serial_user.txt").path,
+            (options.qemuProfile ?? .default).rawValue, id, options.sha
+        ], environment: ["BREENIX_LAUNCHER_PID": String(getpid())], timeoutSecs: 10))
+        // A diagnostic line must not cause duplicate registration. The requested id
+        // is also used by the idempotent finished fallback after an uncertain start.
+        if let result, result.exitCode == 0, result.stdoutString.split(whereSeparator: \.isNewline).contains(Substring(id)) {
+            registeredID = id
+        }
+    }
+
     func receive(_ bytes: Data) {
         lock.lock(); defer { lock.unlock() }
         guard !finished else { return }
@@ -122,30 +146,18 @@ final class LiveX86Serials: @unchecked Sendable {
                 bootByStream[frame.stream] = frame.boot
             }
             handle.write(data)
-            if !attemptedRegistration {
-                attemptedRegistration = true
-                if let script, let result = try? runner.run(ProcessRequest(executable: script.path, arguments: [
-                    "start", "beast", options.suite == nil ? "tests" : "suite", options.suite?.split(separator: ",").first.map(String.init) ?? "",
-                    directory.appendingPathComponent("serial_kernel.txt").path,
-                    directory.appendingPathComponent("serial_user.txt").path,
-                    (options.qemuProfile ?? .default).rawValue, id, options.sha
-                ])), result.exitCode == 0 {
-                    let response = result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
-                    // The script intentionally succeeds without output when Vigil is unavailable.
-                    if response == id { registeredID = id }
-                }
-            }
         }
     }
 
     func finish(status: Int32) {
-        lock.lock(); defer { lock.unlock() }
-        guard !finished else { return }
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
         finished = true
         for handle in handles.values { try? handle.close() }
         handles.removeAll()
+        lock.unlock()
         if let registeredID, let script {
-            _ = try? runner.run(ProcessRequest(executable: script.path, arguments: ["finish", registeredID, String(status)]))
+            _ = try? runner.run(ProcessRequest(executable: script.path, arguments: ["finish", registeredID, String(status)], timeoutSecs: 10))
         }
     }
 }
@@ -159,22 +171,27 @@ final class X86LaunchSignals: @unchecked Sendable {
     private var received: Int32?
     var signalNumber: Int32? { lock.lock(); defer { lock.unlock() }; return received }
 
-    init(runner: ProcessRunner) {
+    func receive(_ number: Int32) {
+        lock.lock(); received = number; lock.unlock()
+        runner.interrupt()
+    }
+
+    init(runner: ProcessRunner, installHandlers: Bool = true) {
         self.runner = runner
         let numbers: [Int32] = [SIGINT, SIGTERM, SIGHUP]
+        if !installHandlers { previous = []; sources = []; return }
         previous = numbers.map { Darwin.signal($0, SIG_IGN) }
         sources = numbers.map { DispatchSource.makeSignalSource(signal: $0, queue: .global()) }
         for (source, number) in zip(sources, numbers) {
             source.setEventHandler { [weak self] in
                 guard let self else { return }
-                self.lock.lock(); self.received = number; self.lock.unlock()
-                self.runner.interrupt()
+                self.receive(number)
             }
             source.resume()
         }
     }
     deinit {
-        for (index, number) in [SIGINT, SIGTERM, SIGHUP].enumerated() {
+        for (index, number) in [SIGINT, SIGTERM, SIGHUP].prefix(sources.count).enumerated() {
             sources[index].cancel()
             _ = Darwin.signal(number, previous[index])
         }

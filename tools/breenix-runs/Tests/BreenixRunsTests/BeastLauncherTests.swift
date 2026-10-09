@@ -52,7 +52,6 @@ final class BeastLauncherTests: XCTestCase {
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=15",
-            "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2",
             "beast",
             "sudo -n incus exec breenix-x86 -- bash -lc 'git -C /root/breenix fetch --no-tags --no-write-fetch-head --no-auto-gc origin abc123def && rm -rf /root/breenix-testclone && git clone --shared /root/breenix /root/breenix-testclone && git -C /root/breenix-testclone checkout --detach abc123def'"
         ])
@@ -121,9 +120,10 @@ final class BeastLauncherTests: XCTestCase {
         let request = RemoteCommand.runGateRequest(boots: 3, mode: .kthread, timeoutSecs: 900, paths: paths)
 
         XCTAssertEqual(request.executable, "/usr/bin/ssh")
-        XCTAssertTrue(request.arguments.last!.contains("launcher-gate.json"))
-        XCTAssertEqual(Array(request.arguments.dropLast()), ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", "beast"])
-        XCTAssertTrue(request.arguments.last!.contains("exec env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp"))
+        XCTAssertEqual(request.arguments, [
+            "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "beast",
+            #"sudo -n incus exec breenix-x86 -- bash -lc 'mkdir -p /root/breenix-testclone/gate-tmp && python3 -c "import json,pathlib,sys;pid=int(sys.argv[1]);birth=pathlib.Path(\"/proc/%d/stat\"%pid).read_text().rsplit(\")\",1)[1].split()[19];pathlib.Path(sys.argv[2]).write_text(json.dumps([pid,birth,sys.argv[3]]))" "$$" /root/breenix-testclone/gate-tmp/launcher-gate.json /root/breenix/scripts/host-slots.py && source /root/.cargo/env && exec env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp BREENIX_REPO_DIR=/root/breenix-testclone BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=900 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6 python3 /root/breenix/scripts/host-slots.py supervise -- bash -c "if [ ! -f /root/breenix-testclone/scripts/host-slots.py ]; then python3 /root/breenix/scripts/host-slots.py acquire x86-build && python3 /root/breenix/scripts/host-slots.py acquire x86-boot || exit 1; fi; exec /root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread"'"#
+        ])
         XCTAssertTrue(request.combineOutput)
         XCTAssertTrue(paths.gateTmpPath.hasPrefix(paths.clonePath + "/"))
     }
@@ -234,7 +234,7 @@ final class BeastLauncherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let runner = BeastScriptedProcessRunner()
         runner.gateResult = ProcessResult(
-            stdout: Data("PASS-WITH-ATTRIBUTED-LOCKUP: 1/1 boots reached the loader marker; 1 locked up afterwards\n".utf8),
+            stdout: Data("PASS-WITH-ATTRIBUTED-LOCKUP: 1/1 boots reached the loader marker; 1 locked up afterwards\nGATE: PASS (1/1 boot tests passed)\n".utf8),
             exitCode: 0)
         let result = try runSuccessfulX86(root: root, runner: runner, runID: "attributed-lockup")
 
@@ -309,8 +309,9 @@ final class BeastLauncherTests: XCTestCase {
                                      vigilScript: URL(fileURLWithPath: "/record.sh"), serialStreaming: NoSerialStreaming())
         let result = try launcher.runX86(options: options(runID: "file-finished"))
         XCTAssertTrue(result.manifest.captures.contains { $0.path == "screen-1-files-io.png" })
-        let filings = runner.calls.filter { $0.executable == "/record.sh" }
-        XCTAssertEqual(filings.count, 1, "a completed x86 run must reach Vigil")
+        let filings = runner.calls.filter { $0.executable == "/record.sh" && $0.arguments.first == "record" }
+        XCTAssertEqual(runner.calls.filter { $0.executable == "/record.sh" && $0.arguments.first == "start" }.count, 1)
+        XCTAssertEqual(filings.count, 1, "an unconfirmed start must file the exact run id after harvest")
         XCTAssertEqual(filings.first?.arguments.first, "record")
         XCTAssertEqual(filings.first?.arguments[9], "10.0")
         XCTAssertEqual(filings.first?.arguments[10], "20.0")
@@ -323,6 +324,7 @@ final class BeastLauncherTests: XCTestCase {
         runner.pullResult = ProcessResult(stdout: Data(), stderr: Data("tar failed\n".utf8), exitCode: 1)
         let result = try runSuccessfulX86(root: root, runner: runner, runID: "pull-fails")
 
+        XCTAssertTrue(result.manifest.verdict.isFailure)
         XCTAssertEqual(result.manifest.serials, [
             SerialRef(name: "serial_user.txt", path: "serial_user.txt", bytes: 0, stream: .com1),
             SerialRef(name: "serial_kernel.txt", path: "serial_kernel.txt", bytes: 0, stream: .com2)
@@ -466,15 +468,19 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
     cpu_model=Intel(R) Xeon(R) CPU E5-2640 v4 @ 2.40GHz
     """.utf8), exitCode: 0)
     var prepareResult = ProcessResult(stdout: Data("prepared\n".utf8), exitCode: 0)
-    var gateResult = ProcessResult(stdout: Data("gate ok\n".utf8), exitCode: 0)
-    var pullResult = ProcessResult(stdout: Data(), exitCode: 0)
+    var gateResult = ProcessResult(stdout: Data("GATE: PASS (1/1 boot tests passed)\n".utf8), exitCode: 0)
+    var pullResult = ProcessResult(stdout: Data([1]), exitCode: 0)
     var removeResult = ProcessResult(exitCode: 0)
-    var extractTarball: (ProcessRequest) throws -> ProcessResult = { _ in ProcessResult(exitCode: 0) }
+    var extractTarball: (ProcessRequest) throws -> ProcessResult = { request in
+        try FileManager.default.createDirectory(at: URL(fileURLWithPath: request.arguments.last!).appendingPathComponent("gate-tmp"), withIntermediateDirectories: true)
+        return ProcessResult(exitCode: 0)
+    }
 
     func run(_ request: ProcessRequest, outputHandler: ((Data) -> Void)?) throws -> ProcessResult {
         calls.append(request)
 
         if request.executable == "/record.sh" {
+            if request.arguments[0] == "finish" { return ProcessResult(exitCode: 0) }
             let serial = URL(fileURLWithPath: request.arguments[4])
             let directory = serial.deletingLastPathComponent().deletingLastPathComponent()
             XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path), "file before publishing the manifest so importers cannot duplicate it")
