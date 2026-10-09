@@ -1743,7 +1743,15 @@ pub fn sys_rmdir(pathname: u64) -> SyscallResult {
     let rmdir_result = {
         let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.remove_directory(resolved.fs_path()),
+            Some(fs) => {
+                let tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
+                crate::task::completion::FORCE_SWITCH_TID
+                    .store(tid, core::sync::atomic::Ordering::Release);
+                let result = fs.remove_directory(resolved.fs_path());
+                crate::task::completion::FORCE_SWITCH_TID
+                    .store(0, core::sync::atomic::Ordering::Release);
+                result
+            }
             None => {
                 log::error!("sys_rmdir: ext2 filesystem not mounted");
                 return SyscallResult::Err(EIO as u64);
