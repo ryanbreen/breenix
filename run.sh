@@ -332,6 +332,8 @@ finish_vm_boot() {
         prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1 || true
     else
         "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
+        vmware_check_network_log "$VM_BUNDLE/vmware.log"
+        vmware_network_summary
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
@@ -363,6 +365,9 @@ vm_is_running() {
 follow_vm_serial() {
     local offset=0 size
     while vm_is_running; do
+        if [ "$VMWARE" = true ]; then
+            vmware_check_network_log "$VM_BUNDLE/vmware.log"
+        fi
         size=$(wc -c < "$SERIAL_LOG" | tr -d ' ')
         if [ "$size" -gt "$offset" ]; then
             tail -c +$((offset + 1)) "$SERIAL_LOG"
@@ -750,6 +755,12 @@ if [ "$VMWARE" = true ]; then
         exit 1
     fi
 
+    # Fusion cannot attach NAT (vmnet8) without its host networking database.
+    # msg.autoAnswer otherwise dismisses the error and boots with Ethernet0
+    # disconnected, even when the VMX requests a connected adapter.
+    source "$BREENIX_ROOT/scripts/vmware-network.sh"
+    vmware_check_nat_config "/Library/Preferences/VMware Fusion/networking"
+
     VMWARE_DIR="$BREENIX_ROOT/target/vmware"
     SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial.log}"
     # Fusion's "Use full resolution for Retina display": off by default so the guest is scaled 2x.
@@ -970,6 +981,7 @@ VMXEOF
 
     echo ""
     echo "--- Starting VM ---"
+    vmware_network_summary
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
@@ -1001,6 +1013,8 @@ VMXEOF
     echo ""
     if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ]; then
         wait_boot_done || exit $?
+        vmware_check_network_log "$VM_BUNDLE/vmware.log"
+        vmware_network_summary
         if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
         hold_suite_panel
     fi

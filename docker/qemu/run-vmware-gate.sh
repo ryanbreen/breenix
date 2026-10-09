@@ -121,7 +121,8 @@ sleep "$BOOT_WAIT_SECS"
 echo "[vmware-gate] === Stopping VM and reading evidence ==="
 "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
 kill_run_sh_tree "$RUN_SH_PID"
-reap_leaked_vmware_log_tail
+# Surface host networking diagnostics even when the driver fallback gate passes.
+grep '^VMWARE NETWORK HOST WARNING:' "$RUN_LOG" || true
 # Confirm the stop actually took before disarming the EXIT trap's cleanup --
 # `vmrun stop`'s own exit status is already discarded above (`|| true`, it is
 # not reliable enough to gate on), so trust `vmrun list` instead. If the VM
