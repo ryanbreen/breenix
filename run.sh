@@ -17,6 +17,7 @@
 #   ./run.sh --parallels --test 60   # Same with custom wait (default: 35s)
 #   ./run.sh --parallels --probe     # Production probe, stop after PROBE DONE
 #   ./run.sh --vmware --probe        # Same probe on VMware Fusion
+#   ./run.sh --parallels --tests     # Testing kernel, stop after its userspace report
 #   ./run.sh --ahci             # ARM64 with AHCI (SATA) disk instead of virtio-blk
 #   ./run.sh --ahci --headless # ARM64 AHCI with serial output only
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
@@ -64,6 +65,7 @@ PARALLELS_TEST_WAIT=35
 VMWARE=false
 SUITE=""
 PROBE=false
+TESTS=false
 BOOT_MODE=default
 GATE_TIMEOUT=1800
 DEBUG=false
@@ -150,6 +152,10 @@ while [[ $# -gt 0 ]]; do
             PROBE=true
             shift
             ;;
+        --tests)
+            TESTS=true
+            shift
+            ;;
         --suite)
             SUITE="${2:-}"
             shift 2
@@ -187,6 +193,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --debug                    Enable GDB stub (port 1234) for debugging"
             echo "  --serial-log PATH          Parallels/VMware: write the VM's serial output to PATH"
             echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
+            echo "  --tests                    Parallels/VMware: boot the testing kernel, wait for its userspace report, stop VM"
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
@@ -245,13 +252,38 @@ elif [ -n "$SUITE" ]; then
     BOOT_MODE=suite
 fi
 
+# --tests: the testing kernel (--features testing) and its test loader, as
+# scripts/boot-interactive.sh --mode tests runs it on ARM64 QEMU.
+KERNEL_FEATURE_ARGS=()
+if [ "$TESTS" = true ]; then
+    if [ "$PARALLELS" != true ] && [ "$VMWARE" != true ]; then
+        echo "--tests is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode tests)"
+        exit 1
+    fi
+    if [ "$PROBE" = true ] || [ -n "$SUITE" ] || [ "$PARALLELS_TEST" = true ] || [ "$BTRT" = true ]; then
+        echo "--tests cannot be combined with --probe, --suite, --test or --btrt"
+        exit 1
+    fi
+    if [ "$NO_BUILD" = true ]; then
+        echo "--tests builds the testing kernel; it cannot be combined with --no-build"
+        exit 1
+    fi
+    BOOT_MODE=tests
+    KERNEL_FEATURE_ARGS=(--features testing)
+fi
+
+# Whether this boot writes a boot target onto a copy of the ext2 disk.
+writes_boot_target() {
+    [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]
+}
+
 # The ext2 disk a Parallels or VMware VM boots: the built disk itself, or with
 # --suite or --probe a copy carrying the boot target (the built disk never gets one, so later
 # ordinary boots keep using the built disk). Sets BOOT_EXT2_DISK.
 stage_boot_ext2_disk() {
     local built="$1" staging_dir="$2"
     BOOT_EXT2_DISK="$built"
-    [ "$BOOT_MODE" != default ] || return 0
+    writes_boot_target || return 0
     if [ ! -f "$built" ]; then
         echo "ERROR: $BOOT_MODE needs the ext2 disk at $built (run without --no-build to create it)"
         exit 1
@@ -275,13 +307,13 @@ stage_boot_ext2_disk() {
 # disk, and any changes the guest made to it, is kept.
 ext2_rewrap_needed() {
     local rebuilt="$1" marker="$2"
-    [ "$rebuilt" = true ] || [ "$BOOT_MODE" != default ] || [ -f "$marker" ]
+    [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ]
 }
 
 # Record whether the data disk just wrapped carries a boot target.
 mark_wrapped_ext2() {
     local marker="$1"
-    if [ "$BOOT_MODE" != default ]; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
+    if writes_boot_target; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
 }
 
 # Wait for a userspace completion record and reject missing or failing verdicts.
@@ -409,7 +441,7 @@ if [ "$PARALLELS" = true ]; then
         cargo build --release --target aarch64-breenix-kernel.json \
             -Z build-std=core,alloc \
             -Z build-std-features=compiler-builtins-mem \
-            -p kernel --bin kernel-aarch64
+            -p kernel --bin kernel-aarch64 ${KERNEL_FEATURE_ARGS[@]+"${KERNEL_FEATURE_ARGS[@]}"}
 
         if [ ! -f "$LOADER_EFI" ]; then
             echo "ERROR: UEFI loader not found at $LOADER_EFI"
@@ -619,9 +651,9 @@ if [ "$PARALLELS" = true ]; then
     echo "Stop:   prlctl stop $PARALLELS_VM --kill"
     echo ""
 
-    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]; then
+    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ]; then
         wait_boot_done || exit $?
-        if [ "$BOOT_MODE" = probe ]; then exit 0; fi
+        if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
         if [ "$PARALLELS_TEST" != true ]; then hold_suite_panel; fi
     fi
 
@@ -750,7 +782,7 @@ if [ "$VMWARE" = true ]; then
         cargo build --release --target aarch64-breenix-kernel.json \
             -Z build-std=core,alloc \
             -Z build-std-features=compiler-builtins-mem \
-            -p kernel --bin kernel-aarch64
+            -p kernel --bin kernel-aarch64 ${KERNEL_FEATURE_ARGS[@]+"${KERNEL_FEATURE_ARGS[@]}"}
 
         LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
         KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -967,9 +999,9 @@ VMXEOF
     echo "VMX:    $VMX_FILE"
     echo "Stop:   \"$VMRUN\" stop \"$VMX_FILE\" hard"
     echo ""
-    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]; then
+    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ]; then
         wait_boot_done || exit $?
-        if [ "$BOOT_MODE" = probe ]; then exit 0; fi
+        if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
         hold_suite_panel
     fi
 

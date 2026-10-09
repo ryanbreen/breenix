@@ -31,6 +31,9 @@ stage list and shown alongside, but does not block moving on.
 `boot-path.json`):
 
 - `tests` (default): the testing kernel and its test loader. This is the gate above.
+  Parallels and VMware boot the testing kernel with `./run.sh --parallels --tests` and
+  `./run.sh --vmware --tests`, which wait for the kernel's `USERSPACE TEST REPORT DONE`
+  line (or fatal output, or the `--gate-timeout` deadline), then stop the VM.
 - `probe`: the production kernel runs `/sbin/probe` as PID 1, which checks one
   subsystem per line (`PROBE <id> OK|FAIL ...`) and ends with `PROBE DONE`.
   Parallels and VMware run it with `./run.sh --parallels --probe` and

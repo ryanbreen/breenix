@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Wait for a probe or suite verdict; fatal output and missing DONE are failures."""
+"""Wait for a probe or suite verdict, or the testing kernel's userspace report.
+
+Fatal output and a missing completion line are failures. A testing-kernel boot
+completes at its "USERSPACE TEST REPORT DONE" line; its stages are scored from
+the serial against docs/boot-path.json, so the line itself is the whole verdict.
+"""
 
 import argparse
 import json
@@ -10,6 +15,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 FATAL = json.loads((ROOT / "docs/boot-path.json").read_text())["fatal"] + ["KERNEL PANIC:"]
+TESTS_DONE = "USERSPACE TEST REPORT DONE"
 
 
 def completion(serial, mode, suite):
@@ -19,6 +25,11 @@ def completion(serial, mode, suite):
     for line in serial.split("\n"):
         if any(re.search(pattern, line) for pattern in FATAL):
             return False, f"fatal kernel output: {line}"
+    if mode == "tests":
+        if not any(line == TESTS_DONE for line in lines):
+            return None
+        tally = [line for line in lines if line.startswith("TEST_TALLY: ")]
+        return True, tally[0] if tally else TESTS_DONE
     prefix = "PROBE DONE " if mode == "probe" else f"SUITE {suite} DONE "
     done = [line for line in lines if line.startswith(prefix)]
     if not done:
@@ -36,7 +47,7 @@ def completion(serial, mode, suite):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("serial", type=Path)
-    parser.add_argument("mode", choices=("probe", "suite"))
+    parser.add_argument("mode", choices=("probe", "suite", "tests"))
     parser.add_argument("--suite", default="")
     parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
