@@ -528,7 +528,7 @@ fn handoffs_show_parallel(slot: &AtomicU64) -> Checked {
             core::hint::spin_loop();
             spins += 1;
             if spins % 4096 == 0 && now_ms().saturating_sub(start) >= HANDOFF_MS {
-                return Err(format!("only {i} of {HANDOFFS} handoffs finished in {HANDOFF_MS} ms: the two never ran on different processors at once"));
+                return Err(format!("only {i} of {HANDOFFS} handoffs finished in {HANDOFF_MS} ms: the handoff threshold was not reached"));
             }
         }
     }
@@ -772,6 +772,9 @@ impl Drop for Held {
 /// A page shared with the case's children: slots that any of them can read and write.
 struct Shared { page: *mut u8 }
 
+// Keep independently written words on separate 64-byte cache lines.
+const SHARED_SLOT_BYTES: usize = 64;
+
 impl Shared {
     fn new() -> Result<Shared, CaseError> {
         let page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)?;
@@ -779,9 +782,9 @@ impl Shared {
     }
 
     fn slot(&self, i: usize) -> &AtomicU64 {
-        assert!(i < 512);
+        assert!(i < 4096 / SHARED_SLOT_BYTES);
         // SAFETY: the page is mapped, aligned and zero-filled for as long as `self` lives.
-        unsafe { &*(self.page as *const AtomicU64).add(i) }
+        unsafe { &*(self.page.add(i * SHARED_SLOT_BYTES) as *const AtomicU64) }
     }
 
     fn get(&self, i: usize) -> u64 { self.slot(i).load(Ordering::SeqCst) }
@@ -2365,9 +2368,9 @@ extern "C" fn on_mark(sig: i32) {
     let page = SHARED_AT.load(Ordering::SeqCst);
     if page != 0 {
         // SAFETY: SHARED_AT holds the address of a mapped shared page.
-        let slots = unsafe { core::slice::from_raw_parts(page as *const AtomicU64, 8) };
-        slots[1].store(now_ms().max(1), Ordering::SeqCst);
-        slots[3].fetch_add(1, Ordering::SeqCst);
+        let slot = |i: usize| unsafe { &*((page + i * SHARED_SLOT_BYTES) as *const AtomicU64) };
+        slot(1).store(now_ms().max(1), Ordering::SeqCst);
+        slot(3).fetch_add(1, Ordering::SeqCst);
     }
     record(sig);
 }
@@ -3371,14 +3374,23 @@ fn j_stop_threads() -> CaseResult {
     // thread to the second.
     let mut kid = Child::start(move || {
         // SAFETY: the shared page stays mapped in the child for its whole life.
-        let slot = move |i: usize| unsafe { &*((page + 8 * i) as *const AtomicU64) };
-        let _thread = std::thread::spawn(move || loop {
-            slot(1).fetch_add(1, Ordering::SeqCst);
-            answer_handoff(slot(2));
+        let slot = move |i: usize| unsafe { &*((page + SHARED_SLOT_BYTES * i) as *const AtomicU64) };
+        // Each counter has one writer. Keep its count in a register and
+        // publish it with a store, avoiding LL/SC retries for a value that
+        // does not need a read-modify-write operation.
+        let _thread = std::thread::spawn(move || {
+            let mut turns = 0u64;
+            loop {
+                turns = turns.wrapping_add(1);
+                slot(1).store(turns, Ordering::SeqCst);
+                answer_handoff(slot(2));
+            }
         });
         let mut next = 1u64;
+        let mut turns = 0u64;
         loop {
-            slot(0).fetch_add(1, Ordering::SeqCst);
+            turns = turns.wrapping_add(1);
+            slot(0).store(turns, Ordering::SeqCst);
             // Hand off once the second thread has answered the last one.
             if slot(2).load(Ordering::SeqCst) == next - 1 {
                 slot(2).store(next, Ordering::SeqCst);
@@ -3388,10 +3400,13 @@ fn j_stop_threads() -> CaseResult {
     })?;
     check(until(WAIT_MS, || s.get(0) > 0 && s.get(1) > 0), "the child's two threads never both ran")?;
     // Taking turns on one processor, the threads hand off at most once per timer tick.
+    let (first_before, second_before) = (s.get(0), s.get(1));
     let (before, start) = (s.get(2), now_ms());
     let _ = time::sleep_ms(200);
     let (made, took) = ((s.get(2) - before) / 2, now_ms().saturating_sub(start));
-    check(made >= HANDOFFS, &format!("with {cpus} processors online, the child's two threads made {made} handoffs in {took} ms, fewer than {HANDOFFS}: they never ran on different processors at once"))?;
+    let first_delta = s.get(0).wrapping_sub(first_before);
+    let second_delta = s.get(1).wrapping_sub(second_before);
+    check(made >= HANDOFFS, &format!("with {cpus} processors online, the child's two threads made {made} handoffs in {took} ms, fewer than {HANDOFFS}; first counter advanced {first_delta}, second counter advanced {second_delta}"))?;
     want_eq("kill(SIGSTOP)", kill(kid.pid, SIGSTOP), 0)?;
     kid.expect_stop(SIGSTOP, "a two-threaded child sent SIGSTOP")?;
     let (a, b) = (s.get(0), s.get(1));
