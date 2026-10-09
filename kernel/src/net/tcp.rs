@@ -685,7 +685,7 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
 
     let config = super::config();
     let conn_id = ConnectionId {
-        local_ip: config.ip_addr,
+        local_ip: super::source_ip_in(&config, ip.src_ip),
         local_port: header.dst_port,
         remote_ip: ip.src_ip,
         remote_port: header.src_port,
@@ -1122,7 +1122,7 @@ fn handle_syn_for_listener(
         .find(|p| p.remote_ip == src_ip && p.remote_port == header.src_port)
     {
         let syn_ack = build_tcp_packet_with_checksum(
-            config.ip_addr,
+            super::source_ip_in(config, src_ip),
             src_ip,
             listener.local_port,
             header.src_port,
@@ -1166,7 +1166,7 @@ fn handle_syn_for_listener(
     // TX packet to be silently dropped (the device doesn't process the TX ring
     // while the RX ring is being consumed).
     let syn_ack = build_tcp_packet_with_checksum(
-        config.ip_addr,
+        super::source_ip_in(config, src_ip),
         src_ip,
         listener.local_port,
         header.src_port,
@@ -1219,7 +1219,7 @@ pub fn send_tcp_packet(
     payload: &[u8],
 ) {
     let packet = build_tcp_packet_with_checksum(
-        config.ip_addr,
+        super::source_ip_in(config, dst_ip),
         dst_ip,
         src_port,
         dst_port,
@@ -1244,18 +1244,12 @@ pub fn tcp_connect(
 ) -> Result<ConnectionId, &'static str> {
     let config = super::config();
 
-    // Normalize loopback addresses (127.x.x.x) to our own IP
-    // This ensures connection lookups work when SYN-ACK replies come from our IP
-    let effective_remote = if remote_ip[0] == 127 {
-        config.ip_addr
-    } else {
-        remote_ip
-    };
-
+    // A connection to the loopback network is made from 127.0.0.1, so its
+    // peer sees 127.0.0.1, and its replies, sent from there, find it.
     let conn_id = ConnectionId {
-        local_ip: config.ip_addr,
+        local_ip: super::source_ip_in(&config, remote_ip),
         local_port,
-        remote_ip: effective_remote,
+        remote_ip,
         remote_port,
     };
 
@@ -1359,7 +1353,7 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
     let copied_early_data_len = pending.early_data.len();
 
     let conn_id = ConnectionId {
-        local_ip: config.ip_addr,
+        local_ip: super::source_ip_in(&config, pending.remote_ip),
         local_port,
         remote_ip: pending.remote_ip,
         remote_port: pending.remote_port,

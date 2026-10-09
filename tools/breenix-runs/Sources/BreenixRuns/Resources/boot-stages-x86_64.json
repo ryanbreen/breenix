@@ -706,9 +706,9 @@
     },
     {
       "name": "TCP address test passed",
-      "marker": "TCP_ADDR_TEST: 10.x.x.x OK",
-      "failureMeaning": "Accept did not return client address correctly",
-      "checkHint": "Check sys_accept address output handling"
+      "marker": "TCP_ADDR_TEST: 127.0.0.1 OK",
+      "failureMeaning": "Accept did not report 127.0.0.1 as the address of a client that connected to 127.0.0.1",
+      "checkHint": "Check net::source_ip_in (the local address of a loopback connection) and sys_accept's address output"
     },
     {
       "name": "TCP simultaneous close test started",

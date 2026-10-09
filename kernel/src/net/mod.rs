@@ -1247,6 +1247,17 @@ pub fn send_ethernet(
     driver_transmit(&frame)
 }
 
+/// The local address a packet to `dst` is sent from under `config`: 127.0.0.1
+/// to the loopback network, as Linux's route lookup chooses, else the
+/// interface's.
+pub fn source_ip_in(config: &NetConfig, dst: [u8; 4]) -> [u8; 4] {
+    if dst[0] == 127 {
+        [127, 0, 0, 1]
+    } else {
+        config.ip_addr
+    }
+}
+
 /// Send an IPv4 packet
 /// Loopback packets are queued from both thread context and the NetRx softirq.
 pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'static str> {
@@ -1257,7 +1268,8 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
         net_debug!("NET: Loopback detected, queueing packet for deferred delivery");
 
         // Build IP packet
-        let ip_packet = ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
+        let ip_packet =
+            ipv4::Ipv4Packet::build(source_ip_in(&config, dst_ip), dst_ip, protocol, payload);
 
         // Queue for deferred delivery (to avoid deadlock with process manager lock)
         // The caller must call drain_loopback_queue() after releasing locks

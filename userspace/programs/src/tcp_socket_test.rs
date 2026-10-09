@@ -933,9 +933,6 @@ fn main() {
                client_addr.addr[2] == 0 && client_addr.addr[3] == 1 {
                 println!("TCP_ADDR_TEST: 127.0.0.1 OK");
                 _passed += 1;
-            } else if client_addr.addr[0] == 10 {
-                println!("TCP_ADDR_TEST: 10.x.x.x OK");
-                _passed += 1;
             } else if client_addr.addr[0] == 0 && client_addr.addr[1] == 0 &&
                       client_addr.addr[2] == 0 && client_addr.addr[3] == 0 {
                 println!("TCP_ADDR_TEST: address not filled FAILED");

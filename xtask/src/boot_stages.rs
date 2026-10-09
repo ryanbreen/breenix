@@ -965,9 +965,9 @@ fn shared_userspace_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "TCP address test passed",
-            marker: "TCP_ADDR_TEST: 10.x.x.x OK",
-            failure_meaning: "Accept did not return client address correctly",
-            check_hint: "Check sys_accept address output handling",
+            marker: "TCP_ADDR_TEST: 127.0.0.1 OK",
+            failure_meaning: "Accept did not report 127.0.0.1 as the address of a client that connected to 127.0.0.1",
+            check_hint: "Check net::source_ip_in (the local address of a loopback connection) and sys_accept's address output",
         },
         BootStage {
             name: "TCP simultaneous close test started",
