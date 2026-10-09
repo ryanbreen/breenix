@@ -255,6 +255,8 @@ pub fn sys_clone(
         cpu_ticks_total: 0,
         resource_limits: None,
         cpu_account: None,
+        signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+        signal_timers: None,
         owner_pid: Some(child_pid.as_u64()),
         cached_ttbr0: 0,
         wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -285,6 +287,7 @@ pub fn sys_clone(
     child_process.nice = parent.nice;
     // A thread's CPU time is its process's: the group shares one account.
     child_process.cpu = parent.cpu.clone();
+    child_process.itimers = parent.itimers.clone();
     child_process.umask = parent.umask;
     // A thread is in its process's process group and session.
     child_process.pgid = parent.pgid;

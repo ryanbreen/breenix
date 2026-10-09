@@ -445,6 +445,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
                 None,
                 exit_code,
                 alloc::vec::Vec::new(),
+                None,
             );
         };
         let outcome = if process.is_terminated() {
@@ -454,7 +455,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         };
         let thread_id = process.main_thread.as_ref().map(|thread| thread.id);
         let children = process.children.clone();
-        let receipt = pm.exit_process_locked(pid, exit_code);
+        let (receipt, signal_wake) = pm.exit_process_locked(pid, exit_code);
         let reported_exit_code = pm
             .get_process(pid)
             .and_then(|process| process.exit_code)
@@ -468,6 +469,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             thread_id,
             reported_exit_code,
             orphaned_groups,
+            signal_wake,
         )
     });
 
@@ -475,10 +477,16 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         crate::ipc::fifo::abandon_fifo_open(open);
     }
 
-    let Some((outcome, receipt, thread_id, reported_exit_code, orphaned_groups)) = locked else {
+    let Some((outcome, receipt, thread_id, reported_exit_code, orphaned_groups, signal_wake)) = locked else {
         return ExitOutcome::Missing;
     };
 
+    if let Some(tid) = signal_wake {
+        crate::task::scheduler::with_scheduler(|s| {
+            s.unblock_for_signal(tid);
+            s.unblock_for_child_exit(tid);
+        });
+    }
     if let Some(mut receipt) = receipt {
         if let Some(reclaim) = receipt.take_contents() {
             crate::task::process_task::enqueue_process_reclaim(reclaim);

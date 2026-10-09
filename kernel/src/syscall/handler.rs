@@ -266,6 +266,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Sigprocmask) => {
             super::signal::sys_sigprocmask(args.0 as i32, args.1, args.2, args.3)
         }
+        None if syscall_num == 128 => {
+            super::signal::sys_sigtimedwait(args.0, args.1, args.2, args.3)
+        }
         Some(SyscallNumber::Sigpending) => super::signal::sys_sigpending(args.0, args.1),
         Some(SyscallNumber::Sigsuspend) => {
             // sigsuspend(mask, sigsetsize) - atomically set mask and wait for signal
@@ -673,7 +676,7 @@ fn deliver_signals_on_syscall_return(frame: &mut SyscallFrame) -> bool {
         {
             // Check interval timers
             crate::signal::delivery::check_and_fire_alarm(process);
-            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+            crate::signal::delivery::collect_itimer_signals(process);
 
             // Check if there are any deliverable signals, or a stop in force
             if !crate::signal::delivery::needs_action_on_return_to_user(process) {

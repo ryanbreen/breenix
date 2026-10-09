@@ -1044,7 +1044,7 @@ fn switch_to_thread(
 
                     // Check if there are pending signals to deliver
                     crate::signal::delivery::check_and_fire_alarm(process);
-                    crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+                    crate::signal::delivery::collect_itimer_signals(process);
 
                     // A stopped process's thread, or one with a stop to take,
                     // resumes its wait in the kernel: the stop is acted on
@@ -1587,7 +1587,7 @@ fn restore_userspace_thread_context(
                             // This is the correct point to deliver signals - after context is restored
                             // but before we actually return to userspace
                             crate::signal::delivery::check_and_fire_alarm(process);
-                            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+                            crate::signal::delivery::collect_itimer_signals(process);
 
                             // A stop in force or pending is deliverable work too:
                             // delivery declines it and arms the next scheduling
@@ -1838,7 +1838,7 @@ fn check_and_deliver_signals_for_current_thread(
         {
             // Note: Debug logging removed from hot path - use GDB if debugging is needed
             crate::signal::delivery::check_and_fire_alarm(process);
-            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+            crate::signal::delivery::collect_itimer_signals(process);
 
             // A stop in force or pending is deliverable work too: delivery
             // declines it and arms the next scheduling point, which holds the

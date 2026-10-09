@@ -335,11 +335,8 @@ pub struct Process {
     /// plain kill. The first kill sets it.
     pub group_exit_code: Option<i32>,
 
-    /// Alarm deadline (tick count when SIGALRM should be delivered)
-    pub alarm_deadline: Option<u64>,
-
     /// Interval timers for setitimer/getitimer (ITIMER_REAL, ITIMER_VIRTUAL, ITIMER_PROF)
-    pub itimers: crate::signal::IntervalTimers,
+    pub itimers: alloc::sync::Arc<crate::signal::IntervalTimers>,
 
     /// Thread group ID for futex keying. Threads created with CLONE_VM share
     /// the same thread_group_id so futexes at the same virtual address map to
@@ -443,8 +440,7 @@ impl Process {
             fd_table: FdTable::new(),
             pending_fifo_opens: Vec::new(),
             group_exit_code: None,
-            alarm_deadline: None,
-            itimers: crate::signal::IntervalTimers::default(),
+            itimers: alloc::sync::Arc::new(crate::signal::IntervalTimers::default()),
             thread_group_id: None,
             lock_owner: crate::fs::locks::LockOwner::new(id.as_u64()),
             inherited_cr3: None,
@@ -464,6 +460,8 @@ impl Process {
     pub fn set_main_thread(&mut self, mut thread: Thread) {
         thread.resource_limits = Some(self.limits.clone());
         thread.cpu_account = Some(self.cpu.clone());
+        thread.signals = self.signals.thread.clone();
+        thread.signal_timers = Some(self.itimers.clone());
         self.main_thread = Some(thread);
         self.state = ProcessState::Ready;
     }
@@ -474,6 +472,8 @@ impl Process {
     pub fn attach_main_thread_unpublished(&mut self, mut thread: Thread) {
         thread.resource_limits = Some(self.limits.clone());
         thread.cpu_account = Some(self.cpu.clone());
+        thread.signals = self.signals.thread.clone();
+        thread.signal_timers = Some(self.itimers.clone());
         self.main_thread = Some(thread);
     }
 
@@ -642,9 +642,20 @@ impl Process {
         if self.thread_group_id.map_or(true, |group| group == id) {
             return;
         }
+        use core::sync::atomic::Ordering;
+        let wall = crate::signal::monotonic_micros();
+        let user = self.cpu.user_ns.load(Ordering::Relaxed) / 1000;
+        let total = user.saturating_add(self.cpu.system_ns.load(Ordering::Relaxed) / 1000);
+        let timers = alloc::sync::Arc::new(crate::signal::IntervalTimers::default());
+        timers.real.set_value(&self.itimers.real.get_value(wall), wall);
+        timers.virtual_timer.set_value(&self.itimers.virtual_timer.get_value(user), 0);
+        timers.prof.set_value(&self.itimers.prof.get_value(total), 0);
+        self.itimers = timers;
         self.cpu = alloc::sync::Arc::new(crate::task::thread::CpuAccount::default());
         if let Some(thread) = self.main_thread.as_mut() {
             thread.cpu_account = Some(self.cpu.clone());
+            thread.signals = self.signals.thread.clone();
+            thread.signal_timers = Some(self.itimers.clone());
         }
     }
 

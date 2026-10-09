@@ -36,7 +36,7 @@ fn park(deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
     let already_ready = ready();
     let mut interrupted = false;
     while !already_ready {
-        if super::check_signals_for_eintr().is_some() {
+        if super::check_signals_for_wait().is_some() {
             interrupted = true;
             break;
         }
@@ -128,7 +128,7 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
             }
             return Ok(0);
         }
-        if super::check_signals_for_eintr().is_some() {
+        if super::check_signals_for_wait().is_some() {
             return Err(4);
         }
         // Register pipe readers before publishing the blocked state. The
@@ -258,9 +258,10 @@ fn with_mask(mask: u64, size: u64, call: impl FnOnce() -> Result<u64, u64>) -> R
         let mut g = crate::process::manager();
         let m = g.as_mut().ok_or(3u64)?;
         let (_, p) = m.find_process_by_thread_mut(tid).ok_or(3u64)?;
-        let saved = p.signals.blocked;
+        let saved = p.signals.blocked();
         p.signals
             .set_blocked(new & !crate::signal::constants::UNCATCHABLE_SIGNALS);
+        m.route_pending_signals_to(tid);
         saved
     };
     let ret = call();
@@ -268,7 +269,7 @@ fn with_mask(mask: u64, size: u64, call: impl FnOnce() -> Result<u64, u64>) -> R
     let m = g.as_mut().ok_or(3u64)?;
     let (_, p) = m.find_process_by_thread_mut(tid).ok_or(3u64)?;
     if ret == Err(4) {
-        p.signals.sigsuspend_saved_mask = Some(saved);
+        p.signals.thread.save_wait_mask(saved);
     } else {
         p.signals.set_blocked(saved);
     }

@@ -7325,7 +7325,7 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
         {
             // Check for expired timers
             crate::signal::delivery::check_and_fire_alarm(process);
-            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+            crate::signal::delivery::collect_itimer_signals(process);
 
             if crate::signal::delivery::needs_action_on_return_to_user(process) {
                 // Read current SP_EL0 (user stack pointer)

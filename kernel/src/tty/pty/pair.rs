@@ -370,8 +370,10 @@ impl PtyPair {
                     {
                         continue;
                     }
-                    if let Some(proc) = pm.get_process_mut(pid) {
+                    let recipient = pm.signal_recipient(pid, sig);
+                    if let Some(proc) = pm.get_process_mut(recipient) {
                         proc.signals.set_pending(sig);
+                        proc.signals.process_pending |= proc.signals.pending & crate::signal::constants::sig_mask(sig);
                         if proc.job.stopped.is_none() {
                             woken.extend(proc.main_thread.as_ref().map(|thread| thread.id));
                         }

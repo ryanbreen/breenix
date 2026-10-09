@@ -504,6 +504,8 @@ pub enum TimerPop {
 pub struct CpuAccount {
     own: AtomicU64,
     children: AtomicU64,
+    pub user_ns: AtomicU64,
+    pub system_ns: AtomicU64,
 }
 
 impl CpuAccount {
@@ -633,6 +635,8 @@ pub struct Thread {
     /// to, so a process's CPU time outlives its threads. Attached when the
     /// thread becomes a process's main thread; None for kernel threads.
     pub cpu_account: Option<alloc::sync::Arc<CpuAccount>>,
+    pub signals: alloc::sync::Arc<crate::signal::ThreadSignals>,
+    pub signal_timers: Option<alloc::sync::Arc<crate::signal::IntervalTimers>>,
 
     /// Owner process PID (for mapping thread CPU time to process in btop).
     /// None for idle threads and kernel-internal threads not associated with a process.
@@ -797,6 +801,7 @@ impl Thread {
     /// CPU account and its resource limits, and start the next interval at
     /// `now`. Called before blocking, switching away or exiting.
     pub fn charge_cpu(&mut self, now: u64) {
+        self.charge_timer_cpu();
         // A remote CPU may read a counter behind this thread's last CPU.
         let ran = now.saturating_sub(self.run_start_ticks);
         self.cpu_ticks_total = self.cpu_ticks_total.saturating_add(ran);
@@ -816,6 +821,39 @@ impl Thread {
         if self.state == ThreadState::Running && !self.blocked_in_syscall {
             self.charge_cpu(now);
         }
+    }
+
+    /// Atomically account each dispatched interval once, including a remote
+    /// scheduler read racing a syscall boundary. The timestamp's low bit is
+    /// its mode, so a boundary charges the mode that preceded it.
+    fn update_timer_cpu(&self, mode: Option<bool>, stop: bool) {
+        let now = crate::signal::monotonic_micros();
+        let stamp = &self.signals.cpu_clock;
+        let mut old = stamp.load(Ordering::Acquire);
+        loop {
+            if old == 0 && mode.is_none() { return; }
+            let user = mode.unwrap_or(old & 1 != 0);
+            let next = if stop { 0 } else { (now.max(old >> 1) << 1) | u64::from(user) };
+            match stamp.compare_exchange_weak(old, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break,
+                Err(value) => old = value,
+            }
+        }
+        if old != 0 {
+            if let Some(account) = &self.cpu_account {
+                let counter = if old & 1 != 0 { &account.user_ns } else { &account.system_ns };
+                counter.fetch_add(now.saturating_sub(old >> 1).saturating_mul(1000), Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub fn charge_timer_cpu(&self) { self.update_timer_cpu(None, false); }
+
+    pub fn stop_timer_cpu(&self) { self.update_timer_cpu(None, true); }
+
+    fn switch_timer_mode(&self, user: bool) {
+        self.update_timer_cpu(Some(user), false);
+        self.signals.in_user.store(user, Ordering::Relaxed);
     }
 
     /// Claim this thread for an immediate kill. Refused while the thread is
@@ -884,7 +922,7 @@ impl Thread {
 /// terminating the thread, and the thread dies at its return to user mode
 /// with the lock released. A thread already claimed by a kill enters no
 /// section, and must not take the lock either: see `try_enter`.
-pub struct KillCustody(Option<&'static AtomicU64>);
+pub struct KillCustody(Option<&'static AtomicU64>, bool);
 
 impl KillCustody {
     /// Open a section for the running thread. `None` means a kill has claimed
@@ -898,7 +936,7 @@ impl KillCustody {
         #[cfg(target_arch = "aarch64")]
         let thread = crate::per_cpu_aarch64::current_thread();
         let Some(thread) = thread else {
-            return Some(KillCustody(None));
+            return Some(KillCustody(None, false));
         };
         let thread: &'static Thread = thread;
         let word = &thread.kill_custody;
@@ -906,7 +944,7 @@ impl KillCustody {
             (count & KILL_CLAIMED == 0).then_some(count + 1)
         })
         .ok()
-        .map(|_| KillCustody(Some(word)))
+        .map(|_| KillCustody(Some(word), false))
     }
 
     /// Open the section a syscall runs in, from syscall entry to the start of
@@ -920,7 +958,11 @@ impl KillCustody {
     /// be withdrawn. Called with the syscall's preempt_disable() in force.
     pub fn enter_syscall() -> Self {
         loop {
-            if let Some(custody) = Self::try_enter() {
+            if let Some(mut custody) = Self::try_enter() {
+                if let Some(thread) = current_cpu_thread() {
+                    thread.switch_timer_mode(false);
+                }
+                custody.1 = true;
                 return custody;
             }
             crate::per_cpu::preempt_enable();
@@ -932,6 +974,11 @@ impl KillCustody {
 
 impl Drop for KillCustody {
     fn drop(&mut self) {
+        if self.1 {
+            if let Some(thread) = current_cpu_thread() {
+                thread.switch_timer_mode(true);
+            }
+        }
         if let Some(word) = self.0 {
             word.fetch_sub(1, Ordering::Release);
         }
@@ -972,6 +1019,8 @@ impl Clone for Thread {
             cpu_ticks_total: self.cpu_ticks_total,
             resource_limits: self.resource_limits.clone(),
             cpu_account: self.cpu_account.clone(),
+            signals: self.signals.clone(),
+            signal_timers: self.signal_timers.clone(),
             owner_pid: self.owner_pid,
             cached_ttbr0: self.cached_ttbr0,
             // Carried, not reset: `publish_to_scheduler` clones a process-table
@@ -1094,6 +1143,8 @@ impl Thread {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1165,6 +1216,8 @@ impl Thread {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1223,6 +1276,8 @@ impl Thread {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1280,6 +1335,8 @@ impl Thread {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1350,6 +1407,8 @@ impl Thread {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1415,6 +1474,8 @@ impl Thread {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1436,10 +1497,15 @@ impl Thread {
     /// Mark thread as running
     pub fn set_running(&mut self) {
         self.state = ThreadState::Running;
+        self.signals.cpu_clock.store(
+            (crate::signal::monotonic_micros() << 1) | u64::from(self.signals.in_user.load(Ordering::Relaxed)),
+            Ordering::Release,
+        );
     }
 
     /// Mark thread as ready
     pub fn set_ready(&mut self) {
+        self.stop_timer_cpu();
         if self.state != ThreadState::Terminated {
             self.state = ThreadState::Ready;
         }
@@ -1447,6 +1513,7 @@ impl Thread {
 
     /// Mark thread as terminated
     pub fn set_terminated(&mut self) {
+        self.stop_timer_cpu();
         self.state = ThreadState::Terminated;
     }
 
@@ -1499,6 +1566,8 @@ impl Thread {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1552,6 +1621,8 @@ impl Thread {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1587,4 +1658,12 @@ extern "C" fn thread_entry_trampoline() -> ! {
 
     // Should never reach here
     unreachable!("Thread exit failed");
+}
+
+fn current_cpu_thread() -> Option<&'static Thread> {
+    #[cfg(target_arch = "x86_64")]
+    let thread = crate::per_cpu::current_thread();
+    #[cfg(target_arch = "aarch64")]
+    let thread = crate::per_cpu_aarch64::current_thread();
+    thread.map(|t| &*t)
 }

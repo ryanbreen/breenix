@@ -510,6 +510,9 @@ pub fn copy_process_state(
 
     // 2. Copy signal state (handlers and mask, NOT pending signals)
     child_process.signals = parent_process.signals.fork();
+    if let Some(thread) = child_process.main_thread.as_mut() {
+        thread.signals = child_process.signals.thread.clone();
+    }
 
     // 3. Verify/correct process group and session IDs
     if child_process.pgid != parent_process.pgid {

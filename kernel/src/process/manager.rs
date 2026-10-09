@@ -1526,6 +1526,8 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1616,6 +1618,8 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             resource_limits: None,
             cpu_account: None,
+            signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+            signal_timers: None,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -1869,10 +1873,10 @@ impl ProcessManager {
         &mut self,
         pid: ProcessId,
         exit_code: i32,
-    ) -> Option<super::RetirementReceipt> {
+    ) -> (Option<super::RetirementReceipt>, Option<u64>) {
         let already_terminated = match self.processes.live_row(&pid) {
             Some(process) => process.is_terminated(),
-            None => return None,
+            None => return (None, None),
         };
         crate::tracing::providers::teardown::record_exit_request(already_terminated);
 
@@ -1880,6 +1884,7 @@ impl ProcessManager {
         let parent_pid = self.processes.live_row(&pid).and_then(|p| p.parent);
 
         let mut receipt = None;
+        let mut signal_wake = None;
         if let Some(process) = self.processes.live_row_mut(&pid) {
             if !already_terminated {
                 process.exit_notifications.seed();
@@ -1956,17 +1961,14 @@ impl ProcessManager {
                 .live_row(&pid)
                 .map(crate::signal::delivery::child_exit_info);
             if let (Some(parent_pid), Some(info)) = (parent_pid, child_info) {
-                if let Some(parent_process) = self.processes.live_row_mut(&parent_pid) {
-                    use crate::signal::constants::SIGCHLD;
-                    parent_process.signals.set_pending_info(SIGCHLD, info);
-                }
+                signal_wake = self.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
             }
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.exit_notifications.complete_sigchld();
             }
         }
 
-        receipt
+        (receipt, signal_wake)
     }
 
     /// Get the next ready process to run
@@ -2160,6 +2162,70 @@ impl ProcessManager {
             .map(|row| row.thread_group_id.unwrap_or(pid.as_u64()))
     }
 
+    /// Move process-directed pending signals to an eligible accepting thread.
+    /// Thread-directed pending signals never move. PM serializes the transfer.
+    pub fn route_pending_signals_to(&mut self, tid: u64) {
+        use crate::signal::constants::sig_mask;
+        use core::sync::atomic::Ordering;
+        let Some((pid, target)) = self.find_process_by_thread(tid) else {
+            return;
+        };
+        let group = target.thread_group_id.unwrap_or(pid.as_u64());
+        let eligible =
+            !target.signals.blocked() | target.signals.thread.wait_set.load(Ordering::Acquire);
+        // Scheduler expiries may have parked their process-directed bit
+        // on a blocking thread before an accepting thread entered sigwait.
+        for row in self.group_rows_mut(group) {
+            row.signals.collect_timer_signals();
+        }
+        loop {
+            let source = self.group_rows(group).find_map(|p| {
+                let bits = p.signals.process_pending & eligible & p.signals.blocked()
+                    & !p.signals.thread.wait_set.load(Ordering::Acquire);
+                (p.id != pid && bits != 0).then(|| (p.id, bits.trailing_zeros() + 1))
+            });
+            let Some((source, sig)) = source else {
+                break;
+            };
+            let row = self.get_process_mut(source).unwrap();
+            let info = row.signals.pending_info(sig);
+            row.signals.clear_pending(sig);
+            let target = self.get_process_mut(pid).unwrap();
+            target.signals.set_pending_info(sig, info);
+            target.signals.process_pending |= sig_mask(sig) & target.signals.pending;
+        }
+    }
+
+    /// Choose one accepting thread for any process-directed signal source.
+    pub fn signal_recipient(&self, pid: ProcessId, sig: u32) -> ProcessId {
+        use core::sync::atomic::Ordering;
+        let Some(group) = self.thread_group_of(pid) else { return pid; };
+        self.group_rows(group).find(|p| {
+            (!p.signals.is_blocked(sig)
+                || p.signals.thread.wait_set.load(Ordering::Acquire)
+                    & crate::signal::constants::sig_mask(sig) != 0)
+                && p.main_thread.is_some()
+        }).map(|p| p.id).unwrap_or(pid)
+    }
+
+    /// Queue a process signal and return its eligible recipient for the caller
+    /// to wake after releasing PM. The manager never acquires the scheduler.
+    pub fn queue_process_signal(&mut self, pid: ProcessId, sig: u32, info: crate::signal::SigInfo) -> Option<u64> {
+        use core::sync::atomic::Ordering;
+        let recipient = self.signal_recipient(pid, sig);
+        let row = self.get_process_mut(recipient)?;
+        row.signals.set_pending_info(sig, info);
+        let bit = crate::signal::constants::sig_mask(sig);
+        row.signals.process_pending |= row.signals.pending & bit;
+        let eligible = row.signals.has_deliverable_signals()
+            || row.signals.pending & row.signals.thread.wait_set.load(Ordering::Acquire) != 0;
+        if row.job.stopped.is_none() && eligible {
+            row.main_thread.as_ref().map(|t| t.id)
+        } else {
+            None
+        }
+    }
+
     /// The live, unterminated rows of thread group `group`, the leader's
     /// included. Walks the table in place, so it allocates nothing.
     pub fn group_rows(&self, group: u64) -> impl Iterator<Item = &Process> {
@@ -2185,16 +2251,21 @@ impl ProcessManager {
     /// of the process manager; with no reset recorded it costs one load.
     /// Walks the table in place and allocates nothing.
     pub(crate) fn finish_group_resets(&mut self) {
-        use core::sync::atomic::Ordering;
         use crate::signal::types::{SignalAction, GROUP_RESETS_PENDING};
+        use core::sync::atomic::Ordering;
         if !GROUP_RESETS_PENDING.swap(false, Ordering::Relaxed) {
             return;
         }
         loop {
             let Some((pid, group, resets)) = self.processes.values_mut().find_map(|row| {
                 let resets = row.signals.take_group_resets();
-                (resets != 0)
-                    .then(|| (row.id, row.thread_group_id.unwrap_or(row.id.as_u64()), resets))
+                (resets != 0).then(|| {
+                    (
+                        row.id,
+                        row.thread_group_id.unwrap_or(row.id.as_u64()),
+                        resets,
+                    )
+                })
             }) else {
                 return;
             };
@@ -3432,6 +3503,8 @@ impl ProcessManager {
                 cpu_ticks_total: 0,
                 resource_limits: None,
                 cpu_account: None,
+                signals: alloc::sync::Arc::new(crate::signal::ThreadSignals::with_mask(0)),
+                signal_timers: None,
                 owner_pid: Some(child_pid.as_u64()),
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
@@ -4269,8 +4342,9 @@ impl ProcessManager {
         let kst = thread.kernel_stack_top;
         let tls = thread.tls_block;
         let account = thread.cpu_account.clone();
+        let timers = thread.signal_timers.clone();
         let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
-            thread_id, ctx, st, sb, kst, tls, new_cr3, account,
+            thread_id, ctx, st, sb, kst, tls, new_cr3, account, timers,
         );
 
         // Handle page table switching
@@ -4644,8 +4718,9 @@ impl ProcessManager {
         let kst = thread.kernel_stack_top;
         let tls = thread.tls_block;
         let account = thread.cpu_account.clone();
+        let timers = thread.signal_timers.clone();
         let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
-            thread_id, ctx, st, sb, kst, tls, new_ttbr0, account,
+            thread_id, ctx, st, sb, kst, tls, new_ttbr0, account, timers,
         );
 
         if is_current_process {
@@ -5005,8 +5080,9 @@ impl ProcessManager {
         let kst = thread.kernel_stack_top;
         let tls = thread.tls_block;
         let account = thread.cpu_account.clone();
+        let timers = thread.signal_timers.clone();
         let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
-            thread_id, ctx, st, sb, kst, tls, new_ttbr0, account,
+            thread_id, ctx, st, sb, kst, tls, new_ttbr0, account, timers,
         );
 
         log::info!(

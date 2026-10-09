@@ -2,6 +2,8 @@
 
 use super::constants::*;
 use crate::memory::slab::{SlabBox, SIGNAL_HANDLERS_SLAB};
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Alternate signal stack configuration (matches Linux stack_t)
 ///
@@ -283,6 +285,41 @@ impl SignalTable {
     }
 }
 
+/// State owned by one thread, shared by its scheduler and process-table copies.
+/// Dispositions remain under the process manager; these words never take its lock.
+#[derive(Default)]
+pub struct ThreadSignals {
+    pub blocked: AtomicU64,
+    saved_mask: AtomicU64,
+    saved_mask_valid: AtomicBool,
+    pub wait_set: AtomicU64,
+    pub timer_pending: AtomicU64,
+    /// Packed monotonic microseconds and user-mode bit; zero while not dispatched.
+    pub cpu_clock: AtomicU64,
+    pub in_user: AtomicBool,
+}
+
+impl ThreadSignals {
+    pub fn with_mask(mask: u64) -> Self {
+        Self {
+            blocked: AtomicU64::new(mask),
+            in_user: AtomicBool::new(true),
+            ..Self::default()
+        }
+    }
+
+    pub fn save_wait_mask(&self, mask: u64) {
+        self.saved_mask.store(mask, Ordering::Relaxed);
+        self.saved_mask_valid.store(true, Ordering::Release);
+    }
+
+    pub fn take_wait_mask(&self) -> Option<u64> {
+        self.saved_mask_valid
+            .swap(false, Ordering::AcqRel)
+            .then(|| self.saved_mask.load(Ordering::Relaxed))
+    }
+}
+
 /// Per-process signal state
 ///
 /// Note: the dispositions and siginfo are boxed to avoid stack overflow. The
@@ -292,8 +329,10 @@ impl SignalTable {
 pub struct SignalState {
     /// Pending signals bitmap (signals waiting to be delivered)
     pub pending: u64,
-    /// Blocked signals bitmap (sigprocmask)
-    pub blocked: u64,
+    /// Which pending bits are process-directed and may move to another thread.
+    pub process_pending: u64,
+    /// The executing thread's masks and wait state, shared with its scheduler row.
+    pub thread: Arc<ThreadSignals>,
     /// Signal handlers and pending siginfo (one each per signal, indices 0-63
     /// for signals 1-64). Slab-allocated for O(1) alloc/free, falls back to heap.
     handlers: SlabBox<SignalTable>,
@@ -301,10 +340,6 @@ pub struct SignalState {
     ignored: u64,
     /// Alternate signal stack configuration
     pub alt_stack: AltStack,
-    /// Original mask for a temporary-mask wait. Delivery selects a signal
-    /// using the temporary mask, then consumes this before saving a handler
-    /// frame or applying a default action. Nested frames restore their own mask.
-    pub sigsuspend_saved_mask: Option<u64>,
     /// Signals whose SA_RESETHAND action delivery reset in this row and not
     /// yet in the other rows of its thread group (`mark_group_reset`).
     group_resets: u64,
@@ -329,17 +364,35 @@ impl Default for SignalState {
         };
         SignalState {
             pending: 0,
-            blocked: 0,
+            process_pending: 0,
+            thread: Arc::new(ThreadSignals::with_mask(0)),
             handlers,
             ignored: DEFAULT_IGNORED_SIGNALS,
             alt_stack: AltStack::default(),
-            sigsuspend_saved_mask: None,
             group_resets: 0,
         }
     }
 }
 
 impl SignalState {
+    pub fn blocked(&self) -> u64 {
+        self.thread.blocked.load(Ordering::Relaxed)
+    }
+
+    pub fn pending_set(&self) -> u64 {
+        self.pending | (self.thread.timer_pending.load(Ordering::Acquire) & !self.ignored)
+    }
+
+    pub fn collect_timer_signals(&mut self) {
+        let mut pending = self.thread.timer_pending.swap(0, Ordering::AcqRel);
+        while pending != 0 {
+            let sig = pending.trailing_zeros() + 1;
+            pending &= !sig_mask(sig);
+            self.set_pending(sig);
+            self.process_pending |= sig_mask(sig) & self.pending;
+        }
+    }
+
     /// Create a new signal state with default handlers
     #[allow(dead_code)] // Used by Default trait, part of public API
     pub fn new() -> Self {
@@ -350,7 +403,7 @@ impl SignalState {
     /// The cached mask makes this O(1), including on syscall/interrupt return.
     #[inline]
     pub fn has_deliverable_signals(&self) -> bool {
-        (self.pending & !self.blocked & !self.ignored) != 0
+        (self.pending_set() & !self.blocked() & !self.ignored) != 0
     }
 
     /// Interruptible waits use the same disposition decision as delivery.
@@ -377,7 +430,7 @@ impl SignalState {
     ///
     /// Returns None if no signals are pending and unblocked
     pub fn next_deliverable_signal(&self) -> Option<u32> {
-        let mut deliverable = self.pending & !self.blocked & !self.ignored;
+        let mut deliverable = self.pending_set() & !self.blocked() & !self.ignored;
         if deliverable == 0 {
             return None;
         }
@@ -414,10 +467,10 @@ impl SignalState {
     /// information.
     #[inline]
     pub fn set_pending_info(&mut self, sig: u32, info: SigInfo) {
-        // POSIX.1-2024 2.4.1/2.4.3: choose discard at generation for ignored
-        // signals, including blocked ignored signals (an unspecified choice).
-        // https://pubs.opengroup.org/onlinepubs/9799919799/functions/V2_chap02.html
-        if is_valid_signal(sig) && self.ignored & sig_mask(sig) == 0 {
+        // Keep blocked default-ignored signals for synchronous acceptance,
+        // as Linux does. Explicit SIG_IGN still discards at generation.
+        if is_valid_signal(sig) && (self.ignored & sig_mask(sig) == 0
+            || self.is_blocked(sig) && self.get_handler(sig).is_default()) {
             if self.pending & sig_mask(sig) == 0 {
                 self.handlers.info[(sig - 1) as usize] = info;
             }
@@ -438,6 +491,8 @@ impl SignalState {
     #[inline]
     pub fn discard_pending(&mut self, mask: u64) {
         self.pending &= !mask;
+        self.process_pending &= !mask;
+        self.thread.timer_pending.fetch_and(!mask, Ordering::AcqRel);
     }
 
     /// Clear a pending signal
@@ -445,6 +500,10 @@ impl SignalState {
     pub fn clear_pending(&mut self, sig: u32) {
         if is_valid_signal(sig) {
             self.pending &= !sig_mask(sig);
+            self.process_pending &= !sig_mask(sig);
+            self.thread
+                .timer_pending
+                .fetch_and(!sig_mask(sig), Ordering::AcqRel);
         }
     }
 
@@ -459,7 +518,7 @@ impl SignalState {
     #[inline]
     #[allow(dead_code)] // Part of complete signal API, will be used for debugging/diagnostics
     pub fn is_blocked(&self, sig: u32) -> bool {
-        (self.blocked & sig_mask(sig)) != 0
+        (self.blocked() & sig_mask(sig)) != 0
     }
 
     /// Get handler for a signal
@@ -492,6 +551,7 @@ impl SignalState {
                 // POSIX 2.4.3: installing ignore discards a pending signal,
                 // whether blocked or unblocked.
                 self.pending &= !bit;
+                self.process_pending &= !bit;
             } else {
                 self.ignored &= !bit;
             }
@@ -502,20 +562,24 @@ impl SignalState {
     #[inline]
     pub fn block_signals(&mut self, mask: u64) {
         // Cannot block SIGKILL or SIGSTOP
-        self.blocked |= mask & !UNCATCHABLE_SIGNALS;
+        self.thread
+            .blocked
+            .fetch_or(mask & !UNCATCHABLE_SIGNALS, Ordering::Relaxed);
     }
 
     /// Unblock signals
     #[inline]
     pub fn unblock_signals(&mut self, mask: u64) {
-        self.blocked &= !mask;
+        self.thread.blocked.fetch_and(!mask, Ordering::Relaxed);
     }
 
     /// Set the blocked signal mask
     #[inline]
     pub fn set_blocked(&mut self, mask: u64) {
         // Cannot block SIGKILL or SIGSTOP
-        self.blocked = mask & !UNCATCHABLE_SIGNALS;
+        self.thread
+            .blocked
+            .store(mask & !UNCATCHABLE_SIGNALS, Ordering::Relaxed);
     }
 
     /// Fork the signal state for a child process
@@ -524,12 +588,12 @@ impl SignalState {
     #[allow(dead_code)] // Will be used when fork() implementation is complete
     pub fn fork(&self) -> Self {
         SignalState {
-            pending: 0, // Child starts with no pending signals
-            blocked: self.blocked,
+            pending: 0,
+            process_pending: 0, // Child starts with no pending signals
+            thread: Arc::new(ThreadSignals::with_mask(self.blocked())),
             handlers: self.handlers.clone(),
             ignored: self.ignored,
-            alt_stack: self.alt_stack,   // Alt stack is inherited per POSIX
-            sigsuspend_saved_mask: None, // Child doesn't inherit sigsuspend state
+            alt_stack: self.alt_stack, // Alt stack is inherited per POSIX
             group_resets: 0,
         }
     }
@@ -854,106 +918,99 @@ impl Itimerval {
     }
 }
 
-/// Per-process interval timer state
-///
-/// This tracks a single interval timer with remaining time and repeat interval.
-/// The kernel decrements remaining time on timer ticks and fires the appropriate
-/// signal when it expires. If interval is non-zero, the timer automatically rearms.
-#[derive(Debug, Clone)]
+/// An absolute deadline in the timer's clock domain. Syscalls and scheduler
+/// expiry serialize on this small lock; the scheduler only ever tries it.
+#[derive(Default)]
 pub struct IntervalTimer {
-    /// Time remaining until expiration in microseconds
-    /// Zero means timer is disabled
-    remaining_usec: u64,
-    /// Repeat interval in microseconds
-    /// Zero means one-shot (timer stops after firing once)
-    interval_usec: u64,
-}
-
-impl Default for IntervalTimer {
-    fn default() -> Self {
-        IntervalTimer {
-            remaining_usec: 0,
-            interval_usec: 0,
-        }
-    }
+    value: spin::Mutex<(u64, u64)>,
+    active: AtomicBool,
 }
 
 impl IntervalTimer {
-    /// Create a new disabled timer
-    #[allow(dead_code)] // Part of IntervalTimer public API
-    pub fn new() -> Self {
-        Self::default()
+    fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::Release);
     }
 
-    /// Check if timer is active (has remaining time)
     pub fn is_active(&self) -> bool {
-        self.remaining_usec > 0
+        self.active.load(Ordering::Acquire)
     }
 
-    /// Get the current timer value as Itimerval
-    pub fn get_value(&self) -> Itimerval {
+    pub fn get_value(&self, now: u64) -> Itimerval {
+        let value = self.value.lock();
         Itimerval {
-            it_interval: Timeval::from_micros(self.interval_usec),
-            it_value: Timeval::from_micros(self.remaining_usec),
+            it_interval: Timeval::from_micros(value.1),
+            it_value: Timeval::from_micros(if value.0 == 0 { 0 } else { value.0.saturating_sub(now).max(1) }),
         }
     }
 
-    /// Set the timer from an Itimerval
-    ///
-    /// Returns the old value before setting
-    pub fn set_value(&mut self, new_value: &Itimerval) -> Itimerval {
-        let old = self.get_value();
-
-        self.interval_usec = new_value.it_interval.to_micros();
-        self.remaining_usec = new_value.it_value.to_micros();
-
+    pub fn set_value(&self, new: &Itimerval, now: u64) -> Itimerval {
+        let mut value = self.value.lock();
+        let old = Itimerval {
+            it_interval: Timeval::from_micros(value.1),
+            it_value: Timeval::from_micros(if value.0 == 0 { 0 } else { value.0.saturating_sub(now).max(1) }),
+        };
+        let delay = new.it_value.to_micros();
+        *value = (
+            if delay == 0 {
+                0
+            } else {
+                now.saturating_add(delay)
+            },
+            new.it_interval.to_micros(),
+        );
+        self.set_active(delay != 0);
         old
     }
 
-    /// Decrement the timer by elapsed microseconds
-    ///
-    /// Returns true if the timer expired (and should fire its signal).
-    /// If the timer has an interval, it automatically rearms.
-    pub fn tick(&mut self, elapsed_usec: u64) -> bool {
-        if self.remaining_usec == 0 {
+    pub fn expire(&self, now: u64) -> bool {
+        if !self.active.load(Ordering::Acquire) { return false; }
+        let Some(mut value) = self.value.try_lock() else {
+            return false;
+        };
+        if value.0 == 0 || now < value.0 {
             return false;
         }
-
-        if elapsed_usec >= self.remaining_usec {
-            // Timer expired
-            if self.interval_usec > 0 {
-                // Periodic timer - rearm with interval
-                // Account for any overrun by subtracting the elapsed time
-                // from the interval (but don't go negative)
-                let overrun = elapsed_usec - self.remaining_usec;
-                if overrun >= self.interval_usec {
-                    // Multiple intervals elapsed - just reset to interval
-                    self.remaining_usec = self.interval_usec;
-                } else {
-                    self.remaining_usec = self.interval_usec - overrun;
-                }
-            } else {
-                // One-shot timer - disable
-                self.remaining_usec = 0;
-            }
-            true
+        value.0 = if value.1 == 0 {
+            0
         } else {
-            // Timer still running
-            self.remaining_usec -= elapsed_usec;
-            false
+            // Preserve the periodic phase, coalescing missed expirations.
+            now.saturating_add(value.1 - (now - value.0) % value.1)
+        };
+        self.set_active(value.0 != 0);
+        true
+    }
+}
+
+/// Clocks: monotonic microseconds, process user microseconds, process total
+/// CPU microseconds. Thread-group rows share the same timers.
+#[derive(Default)]
+pub struct IntervalTimers {
+    pub real: IntervalTimer,
+    pub virtual_timer: IntervalTimer,
+    pub prof: IntervalTimer,
+}
+
+impl IntervalTimers {
+    pub fn is_active(&self) -> bool {
+        self.real.is_active() || self.virtual_timer.is_active() || self.prof.is_active()
+    }
+
+    pub fn timer(&self, which: i32) -> &IntervalTimer {
+        match which {
+            itimer::ITIMER_REAL => &self.real,
+            itimer::ITIMER_VIRTUAL => &self.virtual_timer,
+            _ => &self.prof,
         }
     }
 }
 
-/// Collection of per-process interval timers
-#[derive(Debug, Clone, Default)]
-pub struct IntervalTimers {
-    /// ITIMER_REAL - counts real (wall clock) time, fires SIGALRM
-    pub real: IntervalTimer,
-    /// ITIMER_VIRTUAL - counts user CPU time, fires SIGVTALRM
-    #[allow(dead_code)]
-    pub virtual_timer: IntervalTimer,
-    /// ITIMER_PROF - counts user + system CPU time, fires SIGPROF
-    #[allow(dead_code)]
-    pub prof: IntervalTimer,
+pub fn monotonic_micros() -> u64 {
+    let (sec, ns) = crate::time::get_monotonic_time_ns();
+    sec.saturating_mul(1_000_000).saturating_add(ns / 1000)
+}
+
+/// Nanosecond clock for relative waits, without rounding their start down.
+pub fn monotonic_nanos() -> u64 {
+    let (sec, ns) = crate::time::get_monotonic_time_ns();
+    sec.saturating_mul(1_000_000_000).saturating_add(ns)
 }

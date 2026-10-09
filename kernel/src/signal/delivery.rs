@@ -95,12 +95,6 @@ pub fn deliver_pending_signals(
             return SignalDeliveryResult::NoAction;
         }
 
-        // Select under the temporary wait mask, then restore before creating
-        // the handler frame or stopping. Each nested frame owns its own mask.
-        if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
-            process.signals.set_blocked(saved);
-        }
-
         // Clear pending flag for this signal
         process.signals.clear_pending(sig);
 
@@ -197,12 +191,6 @@ pub fn deliver_pending_signals(
         if is_default_stop(process, sig) {
             crate::task::scheduler::set_need_resched();
             return SignalDeliveryResult::NoAction;
-        }
-
-        // Select under the temporary wait mask, then restore before creating
-        // the handler frame or stopping. Each nested frame owns its own mask.
-        if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
-            process.signals.set_blocked(saved);
         }
 
         // Clear pending flag for this signal
@@ -521,10 +509,6 @@ pub fn deliver_caught_signal_on_syscall_return(
             }
             SIG_IGN => {}
             handler_addr => {
-                // The wait mask selects the signal; its frame saves the original mask.
-                if let Some(saved) = process.signals.sigsuspend_saved_mask.take() {
-                    process.signals.set_blocked(saved);
-                }
                 if install_user_handler_x86_64(
                     process,
                     &mut shared_table,
@@ -667,7 +651,11 @@ fn install_user_handler_x86_64(
     let thread_id = process.main_thread.as_ref().map(|thread| thread.id);
     let fp_state = thread_id.map_or_else(fpu::FpuState::initial, fpu::user_state);
     let info = process.signals.pending_info(sig);
-    let blocked = process.signals.blocked;
+    let blocked = process
+        .signals
+        .thread
+        .take_wait_mask()
+        .unwrap_or_else(|| process.signals.blocked());
 
     let signal_frame = SignalFrame {
         // When the handler does 'ret', it pops this and jumps there.
@@ -844,7 +832,11 @@ fn deliver_to_user_handler_aarch64(
     let return_addr = trampoline_addr.unwrap_or(action.restorer);
 
     let info = process.signals.pending_info(sig);
-    let blocked = process.signals.blocked;
+    let blocked = process
+        .signals
+        .thread
+        .take_wait_mask()
+        .unwrap_or_else(|| process.signals.blocked());
     let regs = [
         saved_regs.x0,
         saved_regs.x1,
@@ -1030,20 +1022,22 @@ pub fn notify_parent_of_job_change_locked(
         };
         Some(SigInfo::child(code, child.id.as_u64() as u32, child.cred.uid, status))
     });
-    let Some(parent) = manager.get_process_mut(notification.parent_pid) else {
-        return;
-    };
-    if parent.signals.get_handler(SIGCHLD).flags & SA_NOCLDSTOP == 0 {
-        parent
-            .signals
-            .set_pending_info(SIGCHLD, info.unwrap_or_else(SigInfo::kernel));
-    }
+    let notify = manager.get_process(notification.parent_pid)
+        .is_some_and(|p| p.signals.get_handler(SIGCHLD).flags & SA_NOCLDSTOP == 0);
+    let signal_wake = if notify {
+        manager.queue_process_signal(notification.parent_pid, SIGCHLD, info.unwrap_or_else(SigInfo::kernel))
+    } else { None };
+    let Some(parent) = manager.get_process_mut(notification.parent_pid) else { return; };
     let signal_eligible = parent.signals.has_deliverable_signals();
     let Some(parent_tid) = parent.main_thread.as_ref().map(|thread| thread.id) else {
         return;
     };
     crate::task::scheduler::with_scheduler(|scheduler| {
         scheduler.unblock_for_job_change(parent_tid, signal_eligible);
+        if let Some(tid) = signal_wake {
+            scheduler.unblock_for_signal(tid);
+            scheduler.unblock_for_child_exit(tid);
+        }
     });
 }
 
@@ -1587,7 +1581,7 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
 
     // Get process manager to find and update parent
     // This is safe because we're called after the caller released their lock
-    let (parent_thread_id, auto_reaped) = {
+    let (parent_thread_id, auto_reaped, signal_wake) = {
         let mut manager_guard = crate::process::manager();
         let Some(ref mut manager) = *manager_guard else {
             log::warn!("notify_parent_of_termination_deferred: no process manager");
@@ -1598,12 +1592,11 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
         // dropped once the guard is released (condition C8).
         let auto_reaped = manager.reap_if_parent_declines(child_pid);
 
-        // Find parent process and send SIGCHLD
+        let signal_wake = manager.queue_process_signal(parent_pid, SIGCHLD, child_info.unwrap_or_else(SigInfo::kernel));
+        // Find parent process and wake its child-status wait
         let parent_thread_id = if let Some(parent_process) = manager.get_process_mut(parent_pid) {
             // Send SIGCHLD to parent
-            parent_process
-                .signals
-                .set_pending_info(SIGCHLD, child_info.unwrap_or_else(SigInfo::kernel));
+
             log::debug!(
                 "notify_parent_of_termination_deferred: sent SIGCHLD to parent {} for child {} termination",
                 parent_pid.as_u64(),
@@ -1623,10 +1616,16 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
             );
             None
         };
-        (parent_thread_id, auto_reaped)
+        (parent_thread_id, auto_reaped, signal_wake)
         // manager_guard is dropped here
     };
     drop(auto_reaped);
+    if let Some(tid) = signal_wake {
+        crate::task::scheduler::with_scheduler(|s| {
+            s.unblock_for_signal(tid);
+            s.unblock_for_child_exit(tid);
+        });
+    }
 
     // Unblock parent thread if it's waiting on waitpid or sigsuspend
     if let Some((parent_tid, signal_eligible)) = parent_thread_id {
@@ -1675,52 +1674,18 @@ fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification>
 // Timer Functions (Architecture-Independent)
 // =============================================================================
 
-/// Check if a process has an expired ITIMER_REAL and queue SIGALRM if needed
-///
-/// This function is called before signal delivery to tick the process's
-/// interval timer. If the timer expires, it queues SIGALRM for delivery.
-/// The timer automatically rearms if it has an interval set.
-///
-/// Returns true if SIGALRM was queued.
+/// Collect process timers the scheduler expired, including while this thread
+/// was blocked. Expiry and recipient selection belong to the scheduler.
 #[inline]
-pub fn check_and_fire_itimer_real(process: &mut Process, elapsed_usec: u64) -> bool {
-    if process.itimers.real.is_active() {
-        if process.itimers.real.tick(elapsed_usec) {
-            // Timer expired - queue SIGALRM
-            process.signals.set_pending(SIGALRM);
-            log::debug!(
-                "ITIMER_REAL fired for process {} (elapsed {} usec)",
-                process.id.as_u64(),
-                elapsed_usec
-            );
-            return true;
-        }
-    }
-    false
+pub fn collect_itimer_signals(process: &mut Process) {
+    process.signals.collect_timer_signals();
 }
 
-/// Check if a process has an expired alarm and queue SIGALRM if needed
-///
-/// This function is called before signal delivery to check if the process's
-/// alarm timer has expired. If so, it queues SIGALRM for delivery.
-///
-/// Returns true if SIGALRM was queued.
+/// Consume resource-limit signals at a user-return boundary.
 #[inline]
-pub fn check_and_fire_alarm(process: &mut Process) -> bool {
+pub fn check_cpu_resource_limit(process: &mut Process) {
     process.check_cpu_limit();
-    if let Some(deadline) = process.alarm_deadline {
-        let current_ticks = crate::time::get_ticks();
-        if current_ticks >= deadline {
-            // Alarm expired - clear it and queue SIGALRM
-            process.alarm_deadline = None;
-            process.signals.set_pending(SIGALRM);
-            log::debug!(
-                "Alarm fired for process {} at tick {}",
-                process.id.as_u64(),
-                current_ticks
-            );
-            return true;
-        }
-    }
-    false
 }
+
+/// Compatibility entry name used by return paths; this checks CPU limits only.
+pub use check_cpu_resource_limit as check_and_fire_alarm;

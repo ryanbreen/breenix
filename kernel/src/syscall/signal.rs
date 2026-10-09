@@ -255,14 +255,45 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
             return SyscallResult::Ok(0);
         }
 
-        if let Some(process) = manager.get_process_mut(target_pid) {
+        let group = manager
+            .get_process(target_pid)
+            .unwrap()
+            .thread_group_id
+            .unwrap_or(target_pid.as_u64());
+        let recipient = manager
+            .iter_processes()
+            .find(|(pid, p)| {
+                !p.is_terminated()
+                    && p.thread_group_id.unwrap_or(pid.as_u64()) == group
+                    && (!p.signals.is_blocked(sig)
+                        || p.signals
+                            .thread
+                            .wait_set
+                            .load(core::sync::atomic::Ordering::Acquire)
+                            & sig_mask(sig)
+                            != 0)
+            })
+            .map(|(pid, _)| pid)
+            .unwrap_or(target_pid);
+
+        if let Some(process) = manager.get_process_mut(recipient) {
             // Ignored signals are discarded at generation.
             process.signals.set_pending_info(sig, info);
+            process.signals.process_pending |= sig_mask(sig) & process.signals.pending;
 
             // A stopped process runs nothing until SIGCONT; what is pending
             // waits for it. Every other wakeup below requires a pending,
             // unblocked, non-ignored disposition.
-            if process.job.stopped.is_some() || !process.signals.has_deliverable_signals() {
+            if process.job.stopped.is_some()
+                || (!process.signals.has_deliverable_signals()
+                    && process
+                        .signals
+                        .thread
+                        .wait_set
+                        .load(core::sync::atomic::Ordering::Acquire)
+                        & sig_mask(sig)
+                        == 0)
+            {
                 return SyscallResult::Ok(0);
             }
             log::debug!(
@@ -726,7 +757,7 @@ pub fn sys_sigprocmask(how: i32, new_set: u64, old_set: u64, sigsetsize: u64) ->
                 }
             };
 
-            process.signals.blocked
+            process.signals.blocked()
         };
 
         let ptr = old_set as *mut u64;
@@ -771,6 +802,7 @@ pub fn sys_sigprocmask(how: i32, new_set: u64, old_set: u64, sigsetsize: u64) ->
             }
             _ => unreachable!(), // Already validated above
         }
+        manager.route_pending_signals_to(current_thread_id);
     }
 
     SyscallResult::Ok(0)
@@ -815,7 +847,10 @@ pub fn sys_sigpending(set: u64, sigsetsize: u64) -> SyscallResult {
         if let Some(ref manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread(thread_id) {
                 // Return all pending signals
-                process.signals.pending
+                let group = process.thread_group_id.unwrap_or(process.id.as_u64());
+                let group_pending = manager.group_rows(group)
+                    .fold(0, |pending, p| pending | p.signals.process_pending);
+                (process.signals.pending_set() | group_pending) & process.signals.blocked()
             } else {
                 log::error!("sigpending: process not found for thread {}", thread_id);
                 return SyscallResult::Err(3); // ESRCH
@@ -849,202 +884,58 @@ pub fn sys_sigreturn() -> SyscallResult {
 /// Use sys_pause_with_frame() instead for proper signal delivery.
 #[allow(dead_code)]
 pub fn sys_pause() -> SyscallResult {
-    log::warn!("sys_pause called without frame access - signals may not work correctly");
-    // Fall through to basic pause implementation without signal handler support
-    let _thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
-
-    crate::task::scheduler::with_scheduler(|sched| {
-        sched.block_current_for_signal();
-    });
-
-    let mut _loop_count = 0u64;
-    loop {
-        crate::task::scheduler::yield_current();
-        Cpu::halt_with_interrupts();
-
-        _loop_count += 1;
-        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
-            } else {
-                false
-            }
-        })
-        .unwrap_or(false);
-
-        if !still_blocked {
-            break;
-        }
-    }
-
-    crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(thread) = sched.current_thread_mut() {
-            thread.blocked_in_syscall = false;
-        }
-    });
-
-    SyscallResult::Err(4) // EINTR
+    let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(3); };
+    wait_for_signal(tid);
+    SyscallResult::Err(4)
 }
 
-/// x86_64: publish the BlockedOnSignal wait, then test whether a signal is
-/// already deliverable, and if one is, take the wait back so the wait loop
-/// ends. `kill()` marks a signal pending before it looks for a sleeper to
-/// wake, so a signal sent before this wait was published is found by the
-/// test, and one sent after it finds the sleeper; without the test, a signal
-/// that arrived between the caller's last return to user mode and this wait
-/// left pause()/sigsuspend() asleep for good. The aarch64 waits follow the
-/// same order (`wait_for_deliverable_signal_aarch64`).
-///
-/// `manager()` holds off preemption while it is held, so no holder of the lock
-/// can be switched out on this CPU while this one waits for it.
-#[cfg(target_arch = "x86_64")]
-fn publish_signal_wait_x86(thread_id: u64, userspace_context: crate::task::thread::CpuContext) {
-    crate::task::scheduler::with_scheduler(|sched| {
-        sched.block_current_for_signal_with_context(Some(userspace_context));
-    });
-
-    let eligible = manager()
-        .as_ref()
-        .and_then(|m| m.find_process_by_thread(thread_id))
-        .is_some_and(|(_, process)| process.signals.has_deliverable_signals());
-    if eligible {
+/// Publish before checking pending, with preemption disabled until both are
+/// complete. Wakes may be stale or spurious; only signal eligibility ends a wait.
+/// Resume the syscall's kernel frame, then deliver on its normal user return.
+fn wait_for_signal(thread_id: u64) {
+    loop {
+        if super::check_signals_for_wait().is_some() {
+            break;
+        }
         crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                if thread.state == crate::task::thread::ThreadState::BlockedOnSignal {
-                    thread.set_ready();
-                }
-            }
+            sched.block_current_for_signal();
         });
-    }
-}
-
-/// pause() - Wait until a signal is delivered (with frame access) - x86_64 version
-///
-/// pause() causes the calling process (or thread) to sleep until a signal
-/// is delivered that either terminates the process or causes the invocation
-/// of a signal-catching function.
-///
-/// This version takes the syscall frame so we can save the userspace context
-/// for proper signal handler delivery when the thread is woken.
-///
-/// # Returns
-/// * Always returns -EINTR (4) - pause() only returns when interrupted by a signal
-#[cfg(target_arch = "x86_64")]
-pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResult {
-    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    log::info!(
-        "sys_pause_with_frame: Thread {} blocking until signal arrives",
-        thread_id
-    );
-
-    // CRITICAL: Save the userspace context BEFORE blocking.
-    // When a signal arrives, the context switch code will use this saved context
-    // to set up the signal handler frame (with RAX = -EINTR).
-    let userspace_context = crate::task::thread::CpuContext::from_syscall_frame(frame);
-
-    // CRITICAL FIX: Save the userspace context to the SCHEDULER's Thread ATOMICALLY
-    // with setting blocked_in_syscall=true. This prevents a race condition where:
-    // 1. Parent saves context to process.main_thread
-    // 2. Child sends signal (sees thread not in BlockedOnSignal state yet)
-    // 3. Parent sets blocked_in_syscall=true (too late - signal already lost)
-    //
-    // By using block_current_for_signal_with_context(), the context is saved to
-    // the SCHEDULER's Thread under the scheduler lock, and the state transition
-    // is atomic. The context_switch code reads from the scheduler's Thread, ensuring
-    // consistency.
-    //
-    // Also save to process.main_thread for backwards compatibility with code that
-    // reads from there (e.g., some signal delivery paths).
-    if let Some(mut manager_guard) = crate::process::try_manager() {
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
-                if let Some(ref mut thread) = process.main_thread {
-                    thread.saved_userspace_context = Some(userspace_context.clone());
-                    log::info!(
-                        "sys_pause_with_frame: Saved userspace context for thread {}: RIP={:#x}, RSP={:#x}",
-                        thread_id,
-                        frame.rip,
-                        frame.rsp
-                    );
-                }
-            }
-        }
-    }
-
-    // Block the current thread until a signal arrives
-    // CRITICAL: This MUST happen ATOMICALLY with saving the context to the scheduler's Thread
-    publish_signal_wait_x86(thread_id, userspace_context);
-
-    log::info!(
-        "sys_pause_with_frame: Thread {} marked BlockedOnSignal, entering HLT loop",
-        thread_id
-    );
-
-    // CRITICAL: Re-enable preemption before entering blocking loop!
-    // The syscall handler called preempt_disable() at entry, but we need to allow
-    // timer interrupts to schedule other threads while we're blocked.
-    // Without this, can_schedule() returns false and no context switches happen.
-    crate::per_cpu::preempt_enable();
-
-    // HLT loop - wait for timer interrupt which will switch to another thread
-    let mut loop_count = 0u64;
-    loop {
-        crate::task::scheduler::yield_current();
-        Cpu::halt_with_interrupts();
-
-        loop_count += 1;
-        if loop_count % 100 == 0 {
-            log::info!(
-                "sys_pause_with_frame: Thread {} HLT loop iteration {}",
-                thread_id,
-                loop_count
-            );
-        }
-
-        // Check if we were unblocked (thread state changed from BlockedOnSignal)
-        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
-            } else {
-                false
-            }
-        })
-        .unwrap_or(false);
-
-        if !still_blocked {
-            log::info!(
-                "sys_pause_with_frame: Thread {} unblocked after {} HLT iterations",
-                thread_id,
-                loop_count
-            );
+        let eligible = super::check_signals_for_wait().is_some();
+        if eligible {
             break;
         }
+        crate::per_cpu::preempt_enable();
+        crate::task::scheduler::yield_current();
+        Cpu::halt_with_interrupts();
+        crate::per_cpu::preempt_disable();
     }
+    finish_signal_wait(thread_id);
+}
 
-    // CRITICAL: Clear the blocked_in_syscall flag and saved context now that the syscall is completing.
+fn finish_signal_wait(thread_id: u64) {
     crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(thread) = sched.current_thread_mut() {
+        if let Some(thread) = sched.get_thread_mut(thread_id) {
             thread.blocked_in_syscall = false;
             thread.saved_userspace_context = None;
-            log::info!(
-                "sys_pause_with_frame: Thread {} cleared blocked_in_syscall flag",
-                thread_id
-            );
+            thread.wake_time_ns = None;
+            thread
+                .signals
+                .wait_set
+                .store(0, core::sync::atomic::Ordering::Release);
+            thread.set_running();
         }
     });
-
-    // Re-disable preemption before returning to balance syscall exit's preempt_enable()
-    crate::per_cpu::preempt_disable();
-
-    log::info!(
-        "sys_pause_with_frame: Thread {} returning -EINTR",
-        thread_id
-    );
-    SyscallResult::Err(4) // EINTR
 }
 
-/// RFLAGS bits that userspace is allowed to modify (x86_64)
-/// User can modify: CF, PF, AF, ZF, SF, DF, OF (arithmetic flags)
+#[cfg(target_arch = "x86_64")]
+pub fn sys_pause_with_frame(_frame: &super::handler::SyscallFrame) -> SyscallResult {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    wait_for_signal(tid);
+    SyscallResult::Err(4)
+}
+
 #[cfg(target_arch = "x86_64")]
 const USER_RFLAGS_MASK: u64 = 0x0000_0CD5;
 
@@ -1146,6 +1037,7 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
                 process.signals.set_blocked(sigmask);
                 restore_alt_stack(process, &uc_stack, handler_sp);
             }
+            manager.route_pending_signals_to(current_thread_id);
         }
     }
 
@@ -1390,198 +1282,37 @@ fn restore_alt_stack(process: &mut crate::process::Process, uc_stack: &StackT, s
 pub fn sys_sigsuspend_with_frame(
     mask_ptr: u64,
     sigsetsize: u64,
-    frame: &super::handler::SyscallFrame,
+    _frame: &super::handler::SyscallFrame,
 ) -> SyscallResult {
-    use super::userptr::copy_from_user;
-    use crate::signal::constants::UNCATCHABLE_SIGNALS;
-
-    // Validate sigsetsize (must be 8 for our 64-bit signal mask)
-    if sigsetsize != 8 {
-        log::warn!(
-            "sys_sigsuspend: invalid sigsetsize {} (expected 8)",
-            sigsetsize
-        );
-        return SyscallResult::Err(22); // EINVAL
-    }
-
-    // Copy the new mask from userspace
-    let new_mask: u64 = if mask_ptr != 0 {
-        let ptr = mask_ptr as *const u64;
-        match copy_from_user(ptr) {
-            Ok(mask) => mask,
-            Err(errno) => {
-                log::warn!("sys_sigsuspend: invalid mask pointer {:#x}", mask_ptr);
-                return SyscallResult::Err(errno);
-            }
-        }
-    } else {
-        log::warn!("sys_sigsuspend: NULL mask pointer");
-        return SyscallResult::Err(14); // EFAULT
-    };
-
-    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    log::info!(
-        "sys_sigsuspend: Thread {} suspending with temporary mask {:#x}",
-        thread_id,
-        new_mask
-    );
-
-    // CRITICAL: Save the current signal mask BEFORE setting the temporary one.
-    // We'll restore this when the syscall returns.
-    let saved_mask: u64;
-
-    // Create userspace context BEFORE the lock block so we can pass it to the scheduler
-    let userspace_context = crate::task::thread::CpuContext::from_syscall_frame(frame);
-
-    // Save userspace context and set temporary mask atomically (under lock)
-    {
-        // #796: this acquisition used to be `try_manager()`, whose failure arm
-        // returned ESRCH. POSIX gives `sigsuspend()` exactly one error, EINTR
-        // (Linux adds EFAULT); ESRCH is in neither list, and a momentarily
-        // contended process-manager lock is not a missing process.
-        //
-        // Safe for the reasons written out at `sys_fcntl`'s acquisition
-        // (`syscall/handlers.rs`), which are NOT "no asynchronous handler blocks
-        // on this lock" -- one does, the NetRx softirq's `deliver_to_socket`.
-        // They are: this body runs on a trap taken from userspace, so this CPU
-        // cannot already own PROCESS_MANAGER; no bottom half can run on this CPU
-        // across the wait or the hold (aarch64 `manager()` masks DAIF, x86 runs
-        // the syscall preempt-disabled and only dispatches softirqs at
-        // `preempt_count() == 0`); and the guard is dropped before the scheduler
-        // lock is taken below.
-        //
-        // Cost, disclosed: x86's `manager()` masks no interrupts, so this window
-        // is preempt-disabled but IRQ-enabled; the `log::info!` calls in the
-        // block below are inside it, and the wait's worst case is the tree's
-        // longest PM hold (exec's ELF load), not a short one.
-        // See docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
-        let mut manager_guard = crate::process::manager();
-        {
-            if let Some(ref mut manager) = *manager_guard {
-                if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
-                    // Save the original mask
-                    saved_mask = process.signals.blocked;
-
-                    // Set the temporary mask (SIGKILL and SIGSTOP cannot be blocked)
-                    let sanitized_mask = new_mask & !UNCATCHABLE_SIGNALS;
-                    process.signals.set_blocked(sanitized_mask);
-
-                    // Store the original mask for signal delivery before entering the wait.
-                    // When a signal is delivered, the handler runs and calls sigreturn.
-                    // Delivery restores this mask before creating the handler frame.
-                    // The code AFTER the HLT loop never runs because signal delivery
-                    // modifies the return path to go directly to userspace.
-                    process.signals.sigsuspend_saved_mask = Some(saved_mask);
-
-                    log::info!(
-                        "sys_sigsuspend: Thread {} saved mask {:#x}, set temporary mask {:#x}, stored for sigreturn",
-                        thread_id,
-                        saved_mask,
-                        sanitized_mask
-                    );
-
-                    // Save userspace context for signal delivery to process
-                    if let Some(ref mut thread) = process.main_thread {
-                        thread.saved_userspace_context = Some(userspace_context.clone());
-                        log::info!(
-                            "sys_sigsuspend: Saved userspace context for thread {}: RIP={:#x}, RSP={:#x}",
-                            thread_id,
-                            frame.rip,
-                            frame.rsp
-                        );
-                    }
-                } else {
-                    log::error!("sys_sigsuspend: process not found for thread {}", thread_id);
-                    return SyscallResult::Err(3); // ESRCH
-                }
-                // A stop signal the temporary mask unblocks is taken now: no
-                // handler runs for it, so the wait goes on, and the thread is
-                // held where it returns.
-                let _ = crate::signal::delivery::take_stop_locked(manager, thread_id);
-            } else {
-                log::error!("sys_sigsuspend: process manager not initialized");
-                return SyscallResult::Err(3); // ESRCH
-            }
-        }
-    }
-
-    // Block the current thread until a signal arrives
-    // CRITICAL: This MUST happen ATOMICALLY with saving the context to the scheduler's Thread
-    // (same pattern as pause())
-    publish_signal_wait_x86(thread_id, userspace_context);
-
-    log::info!(
-        "sys_sigsuspend: Thread {} marked BlockedOnSignal, entering HLT loop",
-        thread_id
-    );
-
-    // CRITICAL: Re-enable preemption before entering blocking loop!
-    // The syscall handler called preempt_disable() at entry, but we need to allow
-    // timer interrupts to schedule other threads while we're blocked.
-    crate::per_cpu::preempt_enable();
-
-    // HLT loop - wait for timer interrupt which will switch to another thread
-    let mut loop_count = 0u64;
-    loop {
-        crate::task::scheduler::yield_current();
-        Cpu::halt_with_interrupts();
-
-        loop_count += 1;
-        if loop_count % 100 == 0 {
-            log::info!(
-                "sys_sigsuspend: Thread {} HLT loop iteration {}",
-                thread_id,
-                loop_count
-            );
-        }
-
-        // Check if we were unblocked (thread state changed from BlockedOnSignal)
-        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
-            } else {
-                false
-            }
-        })
-        .unwrap_or(false);
-
-        if !still_blocked {
-            log::info!(
-                "sys_sigsuspend: Thread {} unblocked after {} HLT iterations",
-                thread_id,
-                loop_count
-            );
-            break;
-        }
-    }
-
-    // NOTE: When a signal is delivered, this point is never reached!
-    // The signal handler runs (via context_switch modifying the return path)
-    // and then calls sigreturn, which jumps directly to userspace.
-    // The sigsuspend_saved_mask was stored BEFORE the HLT loop for this reason.
-
-    // Clear the blocked_in_syscall flag and saved context (for the rare case
-    // where sigsuspend wakes up without signal delivery, e.g., spurious wakeup)
-    crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(thread) = sched.current_thread_mut() {
-            thread.blocked_in_syscall = false;
-            thread.saved_userspace_context = None;
-            log::info!(
-                "sys_sigsuspend: Thread {} cleared blocked_in_syscall flag",
-                thread_id
-            );
-        }
-    });
-
-    // Re-disable preemption before returning to balance syscall exit's preempt_enable()
-    crate::per_cpu::preempt_disable();
-
-    log::info!("sys_sigsuspend: Thread {} returning -EINTR", thread_id);
-    SyscallResult::Err(4) // EINTR - always returns this per POSIX
+    sigsuspend(mask_ptr, sigsetsize)
 }
 
-/// Timer ticks per second (1000 Hz timer configuration)
-const TICKS_PER_SECOND: u64 = 1000;
+fn sigsuspend(mask_ptr: u64, sigsetsize: u64) -> SyscallResult {
+    if sigsetsize != 8 {
+        return SyscallResult::Err(22);
+    }
+    let mask: u64 = match copy_from_user(mask_ptr as *const u64) {
+        Ok(mask) => mask,
+        Err(e) => return SyscallResult::Err(e),
+    };
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    {
+        let mut guard = manager();
+        let Some(m) = guard.as_mut() else {
+            return SyscallResult::Err(3);
+        };
+        let Some((_, p)) = m.find_process_by_thread_mut(tid) else {
+            return SyscallResult::Err(3);
+        };
+        p.signals.thread.save_wait_mask(p.signals.blocked());
+        p.signals.set_blocked(mask);
+        m.route_pending_signals_to(tid);
+    }
+    wait_for_signal(tid);
+    SyscallResult::Err(4)
+}
 
 /// alarm(seconds) - Schedule a SIGALRM signal to be delivered after the specified time
 ///
@@ -1599,72 +1330,43 @@ const TICKS_PER_SECOND: u64 = 1000;
 /// - SIGALRM's default action is to terminate the process
 /// - The alarm is delivered asynchronously via the signal delivery mechanism
 pub fn sys_alarm(seconds: u64) -> SyscallResult {
-    // Get current tick count for deadline calculation
-    let current_ticks = crate::time::get_ticks();
-
-    // Get current process
-    let current_thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("sys_alarm: no current thread");
-            return SyscallResult::Err(3); // ESRCH
-        }
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
     };
-
-    let mut manager_guard = manager();
-    let manager_ref = match manager_guard.as_mut() {
-        Some(m) => m,
-        None => {
-            log::error!("sys_alarm: process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
+    let mut guard = manager();
+    let Some(m) = guard.as_mut() else {
+        return SyscallResult::Err(3);
     };
-
-    let (pid, process) = match manager_ref.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_alarm: process not found for thread {}",
-                current_thread_id
-            );
-            return SyscallResult::Err(3); // ESRCH
-        }
+    let Some((_, p)) = m.find_process_by_thread_mut(tid) else {
+        return SyscallResult::Err(3);
     };
+    let value = crate::signal::Itimerval {
+        it_interval: crate::signal::Timeval::zero(),
+        it_value: crate::signal::Timeval::from_micros(seconds.saturating_mul(1_000_000)),
+    };
+    let old = p
+        .itimers
+        .real
+        .set_value(&value, crate::signal::monotonic_micros());
+    let timers = p.itimers.clone();
+    let cpu = p.cpu.clone();
+    drop(guard);
+    crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&timers, &cpu));
+    SyscallResult::Ok(old.it_value.to_micros().div_ceil(1_000_000))
+}
 
-    // Calculate remaining seconds from old alarm (if any)
-    let remaining = if let Some(old_deadline) = process.alarm_deadline {
-        if old_deadline > current_ticks {
-            // Convert remaining ticks to seconds (rounded up)
-            let remaining_ticks = old_deadline - current_ticks;
-            (remaining_ticks + TICKS_PER_SECOND - 1) / TICKS_PER_SECOND
-        } else {
-            // Alarm already expired but not yet delivered
-            0
-        }
+fn timer_clock(process: &crate::process::Process, which: i32) -> u64 {
+    use core::sync::atomic::Ordering;
+    if which == crate::signal::itimer::ITIMER_REAL {
+        return crate::signal::monotonic_micros();
+    }
+    let user = process.cpu.user_ns.load(Ordering::Relaxed);
+    let system = if which == crate::signal::itimer::ITIMER_PROF {
+        process.cpu.system_ns.load(Ordering::Relaxed)
     } else {
         0
     };
-
-    // Set new alarm or cancel existing one
-    if seconds == 0 {
-        // Cancel any pending alarm
-        if process.alarm_deadline.is_some() {
-            log::debug!("sys_alarm: canceled alarm for process {}", pid.as_u64());
-        }
-        process.alarm_deadline = None;
-    } else {
-        // Calculate new deadline in ticks
-        let deadline = current_ticks + (seconds * TICKS_PER_SECOND);
-        process.alarm_deadline = Some(deadline);
-        log::debug!(
-            "sys_alarm: set alarm for process {} to fire at tick {} (in {} seconds)",
-            pid.as_u64(),
-            deadline,
-            seconds
-        );
-    }
-
-    SyscallResult::Ok(remaining)
+    user.saturating_add(system) / 1000
 }
 
 /// getitimer(which, curr_value) - Get the current value of an interval timer
@@ -1685,27 +1387,6 @@ pub fn sys_getitimer(which: i32, curr_value: u64) -> SyscallResult {
     if which != ITIMER_REAL && which != ITIMER_VIRTUAL && which != ITIMER_PROF {
         log::warn!("sys_getitimer: invalid timer type {}", which);
         return SyscallResult::Err(22); // EINVAL
-    }
-
-    // ITIMER_VIRTUAL and ITIMER_PROF require CPU time tracking (not yet implemented)
-    if which == ITIMER_VIRTUAL || which == ITIMER_PROF {
-        log::debug!(
-            "sys_getitimer: ITIMER_{} not yet implemented, returning empty timer",
-            if which == ITIMER_VIRTUAL {
-                "VIRTUAL"
-            } else {
-                "PROF"
-            }
-        );
-        // Return empty timer instead of error for better compatibility
-        if curr_value != 0 {
-            let empty = Itimerval::empty();
-            let ptr = curr_value as *mut Itimerval;
-            if let Err(errno) = copy_to_user(ptr, &empty) {
-                return SyscallResult::Err(errno);
-            }
-        }
-        return SyscallResult::Ok(0);
     }
 
     // Get current process
@@ -1738,7 +1419,10 @@ pub fn sys_getitimer(which: i32, curr_value: u64) -> SyscallResult {
             }
         };
 
-        process.itimers.real.get_value()
+        process
+            .itimers
+            .timer(which)
+            .get_value(timer_clock(process, which))
     };
 
     // Write to userspace
@@ -1775,19 +1459,6 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
     if which != ITIMER_REAL && which != ITIMER_VIRTUAL && which != ITIMER_PROF {
         log::warn!("sys_setitimer: invalid timer type {}", which);
         return SyscallResult::Err(22); // EINVAL
-    }
-
-    // ITIMER_VIRTUAL and ITIMER_PROF require CPU time tracking (not yet implemented)
-    if which == ITIMER_VIRTUAL || which == ITIMER_PROF {
-        log::warn!(
-            "sys_setitimer: ITIMER_{} not implemented",
-            if which == ITIMER_VIRTUAL {
-                "VIRTUAL"
-            } else {
-                "PROF"
-            }
-        );
-        return SyscallResult::Err(38); // ENOSYS
     }
 
     // Get current process
@@ -1842,7 +1513,7 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
             }
         };
 
-        let (pid, process) = match manager_ref.find_process_by_thread_mut(current_thread_id) {
+        let (_, process) = match manager_ref.find_process_by_thread_mut(current_thread_id) {
             Some(p) => p,
             None => {
                 log::error!(
@@ -1853,30 +1524,15 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
             }
         };
 
-        // Get old value before modifying
-        let old_itimerval = process.itimers.real.get_value();
+        let now = timer_clock(process, which);
+        let timer = process.itimers.timer(which);
+        let old_itimerval = if let Some(new_val) = new_itimerval {
+            timer.set_value(&new_val, now)
+        } else {
+            timer.get_value(now)
+        };
 
-        // Set new value if provided
-        if let Some(new_val) = new_itimerval {
-            process.itimers.real.set_value(&new_val);
-
-            if new_val.it_value.is_zero() {
-                log::debug!(
-                    "sys_setitimer: disabled ITIMER_REAL for process {}",
-                    pid.as_u64()
-                );
-            } else {
-                log::debug!(
-                    "sys_setitimer: set ITIMER_REAL for process {}: value={}.{:06}s, interval={}.{:06}s",
-                    pid.as_u64(),
-                    new_val.it_value.tv_sec,
-                    new_val.it_value.tv_usec,
-                    new_val.it_interval.tv_sec,
-                    new_val.it_interval.tv_usec
-                );
-            }
-        }
-
+        crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&process.itimers, &process.cpu));
         old_itimerval
     };
 
@@ -1899,102 +1555,15 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
 #[cfg(target_arch = "aarch64")]
 const USER_SPACE_END: u64 = crate::memory::layout::USER_STACK_REGION_END;
 
-/// Sleep with the wait published before testing signal eligibility. A scheduler
-/// wakeup alone cannot complete pause/sigsuspend, and signals generated before
-/// publication are caught by the pending check. No manager lock crosses sleep.
-#[cfg(target_arch = "aarch64")]
-fn wait_for_deliverable_signal_aarch64(
-    thread_id: u64,
-    userspace_context: &crate::task::thread::CpuContext,
-) {
-    use crate::arch_impl::traits::CpuOps;
-
-    crate::task::scheduler::with_scheduler(|sched| {
-        sched.block_current_for_signal_with_context(Some(userspace_context.clone()));
-    });
-    crate::per_cpu::preempt_enable();
-
-    loop {
-        let eligible = {
-            // Contention must not masquerade as an absence of pending signals:
-            // a wakeup might already have happened before we publish this wait.
-            let manager_guard = manager();
-            manager_guard
-                .as_ref()
-                .and_then(|m| m.find_process_by_thread(thread_id))
-                .is_some_and(|(_, process)| process.signals.has_deliverable_signals())
-        };
-        if eligible {
-            crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    if thread.state == crate::task::thread::ThreadState::BlockedOnSignal {
-                        thread.set_ready();
-                    }
-                }
-            });
-            break;
-        }
-
-        crate::task::scheduler::yield_current();
-        Cpu::halt_with_interrupts();
-        // Re-publish after any spurious wakeup, then check before sleeping.
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_for_signal_with_context(Some(userspace_context.clone()));
-        });
-    }
-
-    crate::per_cpu::preempt_disable();
-    crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(thread) = sched.current_thread_mut() {
-            thread.blocked_in_syscall = false;
-            thread.saved_userspace_context = None;
-        }
-    });
-}
-
-/// pause() - Wait until a signal is delivered (with frame access) - ARM64 version
-///
-/// pause() causes the calling process (or thread) to sleep until a signal
-/// is delivered that either terminates the process or causes the invocation
-/// of a signal-catching function.
-///
-/// # Returns
-/// * Always returns -EINTR (4) - pause() only returns when interrupted by a signal
 #[cfg(target_arch = "aarch64")]
 pub fn sys_pause_with_frame_aarch64(
-    frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
+    _frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
 ) -> SyscallResult {
-    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    log::info!(
-        "sys_pause_with_frame_aarch64: Thread {} blocking until signal arrives",
-        thread_id
-    );
-
-    // Read SP_EL0 for the userspace context
-    let user_sp = crate::arch_impl::aarch64::context::read_sp_el0();
-
-    // Create userspace context from the exception frame
-    let userspace_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
-
-    // Save to process.main_thread for signal delivery
-    if let Some(mut manager_guard) = crate::process::try_manager() {
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
-                if let Some(ref mut thread) = process.main_thread {
-                    thread.saved_userspace_context = Some(userspace_context.clone());
-                    log::info!(
-                        "sys_pause_with_frame_aarch64: Saved userspace context for thread {}: ELR={:#x}, SP={:#x}",
-                        thread_id,
-                        frame.elr,
-                        user_sp
-                    );
-                }
-            }
-        }
-    }
-
-    wait_for_deliverable_signal_aarch64(thread_id, &userspace_context);
-    SyscallResult::Err(4) // EINTR
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    wait_for_signal(tid);
+    SyscallResult::Err(4)
 }
 
 /// rt_sigreturn() - Return from signal handler with frame access (ARM64)
@@ -2116,6 +1685,7 @@ pub fn sys_sigreturn_with_frame_aarch64(
                 process.signals.set_blocked(sigmask);
                 restore_alt_stack(process, &uc_stack, sp);
             }
+            manager.route_pending_signals_to(current_thread_id);
         }
     }
 
@@ -2134,118 +1704,105 @@ pub fn sys_sigreturn_with_frame_aarch64(
 pub fn sys_sigsuspend_with_frame_aarch64(
     mask_ptr: u64,
     sigsetsize: u64,
-    frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
+    _frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
 ) -> SyscallResult {
-    // Validate sigsetsize
-    if sigsetsize != 8 {
-        log::warn!(
-            "sys_sigsuspend_aarch64: invalid sigsetsize {} (expected 8)",
-            sigsetsize
-        );
-        return SyscallResult::Err(22); // EINVAL
-    }
+    sigsuspend(mask_ptr, sigsetsize)
+}
 
-    // Copy the new mask from userspace
-    let new_mask: u64 = if mask_ptr != 0 {
-        let ptr = mask_ptr as *const u64;
-        match copy_from_user(ptr) {
-            Ok(mask) => mask,
-            Err(errno) => {
-                log::warn!(
-                    "sys_sigsuspend_aarch64: invalid mask pointer {:#x}",
-                    mask_ptr
-                );
-                return SyscallResult::Err(errno);
-            }
-        }
-    } else {
-        log::warn!("sys_sigsuspend_aarch64: NULL mask pointer");
-        return SyscallResult::Err(14); // EFAULT
+/// Linux rt_sigtimedwait: accept one signal without invoking its handler.
+/// Register the set before publishing the sleep so generation wakes it even
+/// though the signal remains blocked for asynchronous delivery.
+pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64) -> SyscallResult {
+    use core::sync::atomic::Ordering;
+    if size != 8 {
+        return SyscallResult::Err(22);
+    }
+    let set: u64 = match copy_from_user(set_ptr as *const u64) {
+        Ok(mask) => mask & !UNCATCHABLE_SIGNALS,
+        Err(e) => return SyscallResult::Err(e),
     };
-
-    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    log::info!(
-        "sys_sigsuspend_aarch64: Thread {} suspending with temporary mask {:#x}",
-        thread_id,
-        new_mask
-    );
-
-    // Read SP_EL0 for the userspace context
-    let user_sp = crate::arch_impl::aarch64::context::read_sp_el0();
-
-    // Create userspace context from the exception frame
-    let userspace_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
-
-    // Save userspace context and set temporary mask atomically
-    {
-        // #796: this acquisition used to be `try_manager()`, whose failure arm
-        // returned ESRCH. POSIX gives `sigsuspend()` exactly one error, EINTR
-        // (Linux adds EFAULT); ESRCH is in neither list, and a momentarily
-        // contended process-manager lock is not a missing process.
-        //
-        // Safe for the reasons written out at `sys_fcntl`'s acquisition
-        // (`syscall/handlers.rs`), which are NOT "no asynchronous handler blocks
-        // on this lock" -- one does, the NetRx softirq's `deliver_to_socket`.
-        // They are: this body runs on a trap taken from userspace, so this CPU
-        // cannot already own PROCESS_MANAGER; no bottom half can run on this CPU
-        // across the wait or the hold (aarch64 `manager()` masks DAIF, x86 runs
-        // the syscall preempt-disabled and only dispatches softirqs at
-        // `preempt_count() == 0`); and the guard is dropped before the scheduler
-        // lock is taken below.
-        //
-        // Cost, disclosed: on aarch64 the DAIF-masked window covers the
-        // `log::info!` calls in the block below as well as the wait, and the
-        // wait's worst case is the tree's longest PM hold (exec's ELF load).
-        // See docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
-        let mut manager_guard = crate::process::manager();
-        {
-            if let Some(ref mut manager) = *manager_guard {
-                if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
-                    // Save the original mask
-                    let saved_mask = process.signals.blocked;
-
-                    // Set the temporary mask (SIGKILL and SIGSTOP cannot be blocked)
-                    let sanitized_mask = new_mask & !UNCATCHABLE_SIGNALS;
-                    process.signals.set_blocked(sanitized_mask);
-
-                    // Store the original mask for signal delivery
-                    process.signals.sigsuspend_saved_mask = Some(saved_mask);
-
-                    log::info!(
-                        "sys_sigsuspend_aarch64: Thread {} saved mask {:#x}, set temporary mask {:#x}",
-                        thread_id,
-                        saved_mask,
-                        sanitized_mask
-                    );
-
-                    // Save userspace context
-                    if let Some(ref mut thread) = process.main_thread {
-                        thread.saved_userspace_context = Some(userspace_context.clone());
-                        log::info!(
-                            "sys_sigsuspend_aarch64: Saved userspace context for thread {}: ELR={:#x}, SP={:#x}",
-                            thread_id,
-                            frame.elr,
-                            user_sp
-                        );
-                    }
-                } else {
-                    log::error!(
-                        "sys_sigsuspend_aarch64: process not found for thread {}",
-                        thread_id
-                    );
-                    return SyscallResult::Err(3); // ESRCH
-                }
-                // A stop signal the temporary mask unblocks is taken now: no
-                // handler runs for it, so the wait goes on, and the thread is
-                // held where it returns.
-                let _ = crate::signal::delivery::take_stop_locked(manager, thread_id);
-            } else {
-                log::error!("sys_sigsuspend_aarch64: process manager not initialized");
-                return SyscallResult::Err(3); // ESRCH
-            }
+    let deadline = if timeout_ptr == 0 {
+        None
+    } else {
+        let ts: super::time::Timespec =
+            match copy_from_user(timeout_ptr as *const super::time::Timespec) {
+                Ok(ts) => ts,
+                Err(e) => return SyscallResult::Err(e),
+            };
+        if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+            return SyscallResult::Err(22);
         }
+        Some(
+            crate::signal::monotonic_nanos()
+                .saturating_add((ts.tv_sec as u64).saturating_mul(1_000_000_000))
+                .saturating_add(ts.tv_nsec as u64),
+        )
+    };
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    {
+        let mut guard = manager();
+        let Some(m) = guard.as_mut() else {
+            return SyscallResult::Err(3);
+        };
+        let Some((_, p)) = m.find_process_by_thread_mut(tid) else {
+            return SyscallResult::Err(3);
+        };
+        p.signals.thread.wait_set.store(set, Ordering::Release);
+        m.route_pending_signals_to(tid);
     }
-
-    wait_for_deliverable_signal_aarch64(thread_id, &userspace_context);
-    SyscallResult::Err(4) // EINTR
+    let result = loop {
+        // Stops resume this wait rather than returning a spurious EINTR.
+        let interrupted = super::check_signals_for_wait().is_some();
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(deadline) = deadline {
+                sched.block_current_for_timer(deadline);
+            } else {
+                sched.block_current_for_signal();
+            }
+        });
+        let accepted = {
+            let mut guard = manager();
+            let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) else {
+                break SyscallResult::Err(3);
+            };
+            p.signals.collect_timer_signals();
+            let pending = p.signals.pending & set;
+            if pending == 0 {
+                None
+            } else {
+                let sig = pending.trailing_zeros() + 1;
+                let info = p.signals.pending_info(sig);
+                Some((sig, info))
+            }
+        };
+        if let Some((sig, info)) = accepted {
+            if info_ptr != 0 {
+                if let Err(e) = copy_to_user(info_ptr as *mut crate::signal::LinuxSigInfo, &info.to_linux(sig)) {
+                    break SyscallResult::Err(e);
+                }
+            }
+            // Keep it pending through the copy so EFAULT never consumes it.
+            // wait_set prevents another accepting thread from retargeting it.
+            let mut guard = manager();
+            if let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) {
+                p.signals.clear_pending(sig);
+            }
+            break SyscallResult::Ok(sig as u64);
+        }
+        if interrupted || super::check_signals_for_wait().is_some() {
+            break SyscallResult::Err(4);
+        }
+        if deadline.is_some_and(|end| crate::signal::monotonic_nanos() >= end)
+        {
+            break SyscallResult::Err(11);
+        }
+        crate::per_cpu::preempt_enable();
+        crate::task::scheduler::yield_current();
+        Cpu::halt_with_interrupts();
+        crate::per_cpu::preempt_disable();
+    };
+    finish_signal_wait(tid);
+    result
 }

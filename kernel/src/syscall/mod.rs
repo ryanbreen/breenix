@@ -14,6 +14,7 @@ pub mod memory;
 pub mod memory_common;
 pub mod mmap;
 pub mod time;
+pub mod sleep;
 pub mod userptr;
 // Syscall handler - the main dispatcher
 // x86_64: Full handler with signal delivery and process management
@@ -119,6 +120,8 @@ pub enum SyscallNumber {
     GetPgid,
     GetSid,
     Sigpending,
+    #[cfg(target_arch = "aarch64")]
+    Sigtimedwait,
     Sigsuspend,
     Sigaltstack,
     ArchPrctl, // x86_64 TLS setup (FS/GS base)
@@ -472,6 +475,7 @@ impl SyscallNumber {
             134 => Some(Self::Sigaction),
             135 => Some(Self::Sigprocmask),
             136 => Some(Self::Sigpending),
+            137 => Some(Self::Sigtimedwait),
             139 => Some(Self::Sigreturn),
             // Session/process group
             154 => Some(Self::SetPgid),
@@ -614,6 +618,29 @@ pub fn check_signals_for_eintr() -> Option<i32> {
         return Some(errno::EINTR);
     }
     None
+}
+
+/// Handle job-control stops without completing an interruptible wait. Only
+/// caught or fatal signals end the wait; SIGCONT resumes its existing deadline
+/// and temporary mask. Called with syscall preemption disabled and no PM guard.
+pub fn check_signals_for_wait() -> Option<i32> {
+    let tid = crate::task::scheduler::current_thread_id()?;
+    loop {
+        let mut guard = crate::process::manager();
+        let (_, p) = guard.as_mut()?.find_process_by_thread_mut(tid)?;
+        p.signals.collect_timer_signals();
+        if crate::signal::delivery::stop_pending_or_in_force(p) {
+            drop(guard);
+            crate::signal::delivery::hold_stopped_thread_on_syscall_return();
+            continue;
+        }
+        let sig = p.signals.next_deliverable_signal()?;
+        let action = p.signals.get_handler(sig);
+        if action.is_handler() || crate::signal::delivery::fatal_exit_code(sig).is_some() {
+            return Some(errno::EINTR);
+        }
+        p.signals.clear_pending(sig);
+    }
 }
 
 /// `check_signals_for_eintr` for a wait that SA_RESTART resumes: blocking

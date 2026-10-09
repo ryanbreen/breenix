@@ -49,6 +49,8 @@ mod nr {
     pub const SETSID: u64 = 112;
     pub const RT_SIGPENDING: u64 = 127;
     pub const RT_SIGTIMEDWAIT: u64 = 128;
+    pub const PPOLL: u64 = 271;
+    pub const PSELECT6: u64 = 270;
     pub const RT_SIGQUEUEINFO: u64 = 129;
     pub const RT_SIGSUSPEND: u64 = 130;
     pub const SIGALTSTACK: u64 = 131;
@@ -64,6 +66,7 @@ mod nr {
     pub const RT_SIGPROCMASK: u64 = 135;
     /// There is no pause here; a C library's pause calls ppoll with no descriptors.
     pub const PPOLL: u64 = 73;
+    pub const PSELECT6: u64 = 72;
     pub const NANOSLEEP: u64 = 101;
     pub const GETITIMER: u64 = 102;
     pub const SETITIMER: u64 = 103;
@@ -1857,6 +1860,7 @@ fn h_eintr_read() -> CaseResult {
 }
 
 fn h_nanosleep() -> CaseResult {
+    wait_survives_stop(3)?;
     catch_with(SIGUSR1, on_sig as usize as u64, SA_RESTART, 0)?;
     let mut kid = signal_when_parked(SIGUSR1)?;
     let mut rem = [0i64; 2];
@@ -2679,7 +2683,49 @@ fn w_sigsuspend() -> CaseResult {
     kid.expect_exit(0, "the signalling child")
 }
 
+/// Default stop/continue must leave a wait suspended, including its saved mask.
+fn wait_survives_stop(kind: u32) -> CaseResult {
+    let shared = Shared::new()?;
+    let s = &shared;
+    let mut kid = Child::start(move || {
+        if setpgid(0, 0) != 0 || catch(SIGUSR1).is_err()
+            || setmask(bit(SIGUSR1) | bit(SIGTSTP)).is_err() { return 10; }
+        if kind == 0 && raise(SIGTSTP) != 0 { return 11; }
+        let empty = 0u64;
+        let timeout = [3i64, 0];
+        let select_mask = [(&empty as *const u64) as u64, 8];
+        let got = match kind {
+            0 => sigsuspend(0),
+            1 => sc(nr::PPOLL, &[0, 0, timeout.as_ptr() as u64, &empty as *const u64 as u64, 8]),
+            2 => sc(nr::PSELECT6, &[0, 0, 0, 0, timeout.as_ptr() as u64, select_mask.as_ptr() as u64]),
+            3 => {
+                if setmask(0).is_err() { return 12; }
+                nanosleep(3000, &mut [0; 2])
+            }
+            _ => sigtimedwait(bit(SIGUSR1), &mut SigInfo::zero(), Some(3000)),
+        };
+        s.set(0, 1);
+        let wanted = if kind == 4 { SIGUSR1 as i64 } else { -EINTR };
+        if got != wanted || count(SIGUSR1) != u32::from(kind != 4) { return 13; }
+        if kind <= 2 && mask_now().ok() != Some(bit(SIGUSR1) | bit(SIGTSTP)) { return 14; }
+        if setmask(bit(SIGUSR2)).is_err() || raise(SIGUSR2) != 0 || raise(SIGUSR1) != 0
+            || mask_now().ok() != Some(bit(SIGUSR2)) { return 15; }
+        0
+    })?;
+    if kind != 0 {
+        check(parked(kid.pid, WAIT_MS), "stop regression child did not enter its wait")?;
+        want_eq("stop waiting child", kill(kid.pid, SIGSTOP), 0)?;
+    }
+    kid.expect_stop(if kind == 0 { SIGTSTP } else { SIGSTOP }, "the waiting child")?;
+    want_eq("continue waiting child", kill(kid.pid, SIGCONT), 0)?;
+    let _ = time::sleep_ms(QUIET_MS);
+    check(s.get(0) == 0, "default stop/continue completed a wait without a caught signal")?;
+    want_eq("interrupt resumed wait", kill(kid.pid, SIGUSR1), 0)?;
+    kid.expect_exit(0, "the resumed waiter with its original mask")
+}
+
 fn w_sigsuspend_pending() -> CaseResult {
+    for kind in 0..=2 { wait_survives_stop(kind)?; }
     catch(SIGUSR1)?;
     catch(DOG)?;
     setmask(bit(SIGUSR1))?;
@@ -2835,6 +2881,7 @@ fn w_race_loop() -> CaseResult {
 }
 
 fn w_timedwait_pending() -> CaseResult {
+    wait_survives_stop(4)?;
     catch(SIGUSR1)?;
     setmask(bit(SIGUSR1))?;
     want_eq("raise(SIGUSR1)", raise(SIGUSR1), 0)?;
@@ -2844,7 +2891,22 @@ fn w_timedwait_pending() -> CaseResult {
     check(info.signo == SIGUSR1 && info.code == SI_USER && info.pid() == pid(),
         &format!("sigtimedwait's siginfo has si_signo {}, si_code {}, si_pid {}", info.signo, info.code, info.pid()))?;
     check(pending()? & bit(SIGUSR1) == 0, "SIGUSR1 is still pending after sigtimedwait accepted it")?;
-    check(count(SIGUSR1) == 0, "the handler ran for a signal sigtimedwait accepted")
+    check(count(SIGUSR1) == 0, "the handler ran for a signal sigtimedwait accepted")?;
+    // An untouched anonymous page must fault in outside the PM critical section.
+    let page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
+    want_eq("raise for untouched siginfo", raise(SIGUSR1), 0)?;
+    let set = bit(SIGUSR1);
+    let got = sc(nr::RT_SIGTIMEDWAIT, &[&set as *const u64 as u64, page as u64, 0, 8]);
+    let unmap = memory::munmap(page, 4096);
+    want_eq("sigtimedwait writes untouched siginfo", got, SIGUSR1 as i64)?;
+    unmap?;
+    for sig in [SIGCHLD, SIGWINCH, SIGURG] {
+        default(sig)?;
+        block(bit(sig))?;
+        want_eq("raise blocked default-ignored signal", raise(sig), 0)?;
+        want_eq("accept blocked default-ignored signal", sigtimedwait(bit(sig), &mut info, Some(0)), sig as i64)?;
+    }
+    Ok(())
 }
 
 fn w_timedwait_timeout() -> CaseResult {
@@ -2888,7 +2950,37 @@ fn w_sigwaitinfo() -> CaseResult {
     let got = sigtimedwait(bit(SIGUSR1), &mut info, None);
     want_eq("sigwaitinfo for a SIGUSR1 sent by a child", got, SIGUSR1 as i64)?;
     check(info.pid() == kid.pid, &format!("sigwaitinfo's si_pid is {}, expected the sender {}", info.pid(), kid.pid))?;
-    kid.expect_exit(0, "the signalling child")
+    kid.expect_exit(0, "the signalling child")?;
+    default(SIGCHLD)?;
+    setmask(bit(SIGCHLD))?;
+    let me = pid();
+    for fatal in [false, true] {
+        let mut child = Child::start(move || {
+            if !parked(me, WAIT_MS) { return 10; }
+            if fatal { raise(SIGTERM); return 11; }
+            0
+        })?;
+        want_eq("sigwaitinfo wakes for blocked child exit", sigtimedwait(bit(SIGCHLD), &mut info, Some(3000)), SIGCHLD as i64)?;
+        check(info.pid() == child.pid && info.code == if fatal { CLD_KILLED } else { CLD_EXITED },
+            "blocked child exit has the wrong siginfo")?;
+        if fatal { child.expect_death(SIGTERM, "the signal-terminated child")?; }
+        else { child.expect_exit(0, "the normally exiting child")?; }
+    }
+    let shared = Shared::new()?;
+    let mut child = Child::start(|| {
+        if !parked(me, WAIT_MS) { return 10; }
+        raise(SIGSTOP);
+        while shared.get(0) == 0 { nap(); }
+        0
+    })?;
+    want_eq("sigwaitinfo wakes for blocked child stop", sigtimedwait(bit(SIGCHLD), &mut info, Some(3000)), SIGCHLD as i64)?;
+    check(info.code == CLD_STOPPED, "blocked child stop has the wrong siginfo")?;
+    child.expect_stop(SIGSTOP, "the stopped child")?;
+    want_eq("continue child", kill(child.pid, SIGCONT), 0)?;
+    want_eq("sigwaitinfo accepts blocked child continue", sigtimedwait(bit(SIGCHLD), &mut info, Some(3000)), SIGCHLD as i64)?;
+    check(info.code == CLD_CONTINUED, "blocked child continue has the wrong siginfo")?;
+    shared.set(0, 1);
+    child.expect_exit(0, "the continued child")
 }
 
 fn w_timedwait_eintr() -> CaseResult {
@@ -2965,7 +3057,28 @@ fn w_interval() -> CaseResult {
     want_eq("disarming ITIMER_REAL", setitimer(ITIMER_REAL, &itimer(0, 0), None), 0)?;
     check(reloaded, &format!("a 50 ms periodic ITIMER_REAL delivered {n} SIGALRMs in {took} ms, expected it to keep firing"))?;
     check(n as u64 <= took / 50 + 1, &format!("a 50 ms periodic ITIMER_REAL delivered {n} SIGALRMs in {took} ms, more than it can expire"))?;
-    check(us((cur[0], cur[1])) == 50_000, &format!("while it runs, getitimer reports an interval of {} us, expected 50000", us((cur[0], cur[1]))))
+    check(us((cur[0], cur[1])) == 50_000, &format!("while it runs, getitimer reports an interval of {} us, expected 50000", us((cur[0], cur[1]))))?;
+    block(bit(SIGALRM))?;
+    let start_waiting = std::sync::Arc::new(AtomicU32::new(0));
+    let start = start_waiting.clone();
+    let thread = std::thread::spawn(move || -> Result<(), String> {
+        while start.load(Ordering::SeqCst) == 0 { nap(); }
+        for _ in 0..3 {
+            let mut info = SigInfo::zero();
+            let got = sigtimedwait(bit(SIGALRM), &mut info, Some(1000));
+            if got != SIGALRM as i64 {
+                return Err(format!("sigwait between expiries returned {}", shown(got)));
+            }
+            let _ = time::sleep_ms(100);
+        }
+        Ok(())
+    });
+    want_eq("arm blocked periodic timer", setitimer(ITIMER_REAL, &itimer(50_000, 50_000), None), 0)?;
+    let _ = time::sleep_ms(100);
+    start_waiting.store(1, Ordering::SeqCst);
+    join(thread)?;
+    want_eq("disarm blocked periodic timer", setitimer(ITIMER_REAL, &itimer(0, 0), None), 0)
+
 }
 
 fn w_itimer_old() -> CaseResult {
