@@ -115,16 +115,22 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
     crate::task::scheduler::spawn(scheduler_thread);
     crate::serial_println!("create_user_process: scheduler::spawn completed");
 
-    // Set this process as the foreground process group for the console TTY
-    // This ensures Ctrl+C (SIGINT) and other TTY signals go to this process
-    // Note: TTY is only available on x86_64 currently
+    // Give the console TTY this process as its foreground process group when
+    // it has none, so Ctrl+C (SIGINT) and other TTY signals reach the first
+    // process. A console that has one keeps it: the kernel creating a process
+    // does not move a terminal's foreground group, which belongs to whoever
+    // set it with tcsetpgrp. With several CPUs online a process launched here
+    // used to take it from a running one between that one's tcsetpgrp and
+    // tcgetpgrp.
     #[cfg(target_arch = "x86_64")]
     if let Some(tty) = crate::tty::console() {
-        tty.set_foreground_pgrp(pid.as_u64());
-        log::debug!(
-            "create_user_process: Set PID {} as foreground pgrp for TTY",
-            pid.as_u64()
-        );
+        if tty.get_foreground_pgrp().is_none() {
+            tty.set_foreground_pgrp(pid.as_u64());
+            log::debug!(
+                "create_user_process: Set PID {} as foreground pgrp for TTY",
+                pid.as_u64()
+            );
+        }
     }
 
     // REMOVED: set_next_cr3() call - CR3 switching happens during scheduling,
@@ -255,14 +261,16 @@ pub fn create_user_process_before_run(
     crate::task::scheduler::spawn(scheduler_thread);
     crate::serial_println!("create_user_process: scheduler::spawn completed");
 
-    // Set this process as the foreground process group for the console TTY
-    // This ensures Ctrl+C (SIGINT) and other TTY signals go to this process
+    // Give the console TTY this process as its foreground process group when
+    // it has none; one it has belongs to whoever set it (see the x86_64 arm).
     if let Some(tty) = crate::tty::console() {
-        tty.set_foreground_pgrp(pid.as_u64());
-        log::debug!(
-            "create_user_process: Set PID {} as foreground pgrp for TTY (ARM64)",
-            pid.as_u64()
-        );
+        if tty.get_foreground_pgrp().is_none() {
+            tty.set_foreground_pgrp(pid.as_u64());
+            log::debug!(
+                "create_user_process: Set PID {} as foreground pgrp for TTY (ARM64)",
+                pid.as_u64()
+            );
+        }
     }
 
     log::info!(
