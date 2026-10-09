@@ -281,7 +281,7 @@
         },
         {
           "id": "invalid",
-          "title": "Read-only, unmapped, unreserved and over-limit frame destinations terminate with SIGSEGV"
+          "title": "Read-only, unmapped, unreserved and owner or CLONE_VM over-limit frame destinations terminate with SIGSEGV"
         }
       ]
     },

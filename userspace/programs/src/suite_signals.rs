@@ -3299,15 +3299,17 @@ fn signal_at_sp(sp: usize) -> i64 {
     result
 }
 
-fn demand_stack_sp() -> usize {
-    let sp: usize;
-    unsafe {
-        #[cfg(target_arch = "x86_64")]
-        core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack, preserves_flags));
-        #[cfg(target_arch = "aarch64")]
-        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
-    }
-    ((sp - (128 << 10)) & !4095) + 128
+/// Pick a fixed page well below the initial 64 KiB stack on each arch.
+/// Explicitly unmap both pages the signal frame will span, so runner stack
+/// depth cannot leave a resident destination behind before delivery.
+fn demand_stack_sp() -> Result<usize, CaseError> {
+    #[cfg(target_arch = "x86_64")]
+    const TOP: usize = 0x7fff_ff01_0000;
+    #[cfg(target_arch = "aarch64")]
+    const TOP: usize = 0x0000_ffff_ff00_0000;
+    let page = TOP - (1 << 20);
+    memory::munmap((page - 4096) as *mut u8, 8192)?;
+    Ok(page + 128)
 }
 
 fn check_demand_frame(sp: usize) -> Checked {
@@ -3325,7 +3327,7 @@ fn check_demand_frame(sp: usize) -> Checked {
 
 fn frame_main_stack() -> CaseResult {
     catch(SIGUSR1)?;
-    check_demand_frame(demand_stack_sp())?;
+    check_demand_frame(demand_stack_sp()?)?;
     Ok(())
 }
 
@@ -3333,7 +3335,7 @@ fn frame_clone_vm() -> CaseResult {
     catch(SIGUSR1)?;
     // Use the owner's main-stack reservation from the sibling: its pthread
     // stack is an mmap, and touching that would miss owner stack growth.
-    let sp = demand_stack_sp();
+    let sp = demand_stack_sp()?;
     let thread = std::thread::spawn(move || -> Checked {
         check_demand_frame(sp)?;
         // Both the VMA and file binding belong to the owner row too. Exercise
@@ -3399,14 +3401,23 @@ fn frame_unpopulated_file() -> CaseResult { fresh_file_frame(false) }
 fn frame_cache_hole() -> CaseResult { fresh_file_frame(true) }
 
 fn frame_invalid() -> CaseResult {
-    // Permission, mapping lifetime, reservation, and the main stack growth cap.
-    for destination in 0..4 {
+    // Permission, mapping lifetime, reservation, and owner/sibling growth limits.
+    for destination in 0..6 {
         let mut child = Child::start(|| {
-            if destination == 3 {
+            if destination >= 3 {
                 if catch(SIGUSR1).is_err() { return 20; }
                 let (_, hard) = match getrlimit(RLIMIT_STACK) { Ok(v) => v, Err(_) => return 21 };
-                if prlimit(RLIMIT_STACK, 65536, hard) != 0 { return 22; }
-                signal_at_sp(demand_stack_sp());
+                let sp = match demand_stack_sp() { Ok(v) => v, Err(_) => return 28 };
+                if destination != 5 && prlimit(RLIMIT_STACK, 65536, hard) != 0 { return 22; }
+                if destination == 3 {
+                    signal_at_sp(sp);
+                } else {
+                    // The sibling borrows the owner's bounds and RLIMIT_STACK.
+                    // Case 5 leaves that limit alone and exceeds the 2 MiB window.
+                    let invalid_sp = if destination == 5 { sp - (2 << 20) } else { sp };
+                    let thread = std::thread::spawn(move || signal_at_sp(invalid_sp));
+                    if thread.join().is_err() { return 29; }
+                }
             } else {
                 let base = match memory::mmap(core::ptr::null_mut(), ALT_SIZE,
                     PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) { Ok(v) => v, Err(_) => return 23 };
@@ -4085,7 +4096,7 @@ static SUITE: Suite = suite(
             case("unpopulated-file", "A private-file alternate stack is populated without a preceding user access and preserves backing bytes", frame_unpopulated_file),
             case("cache-hole", "A private-file alternate stack extended after mmap allocates zero cache pages for its frame", frame_cache_hole),
             case("clone-vm", "A CLONE_VM sibling installs its frame in the owner's demand-grown main stack", frame_clone_vm),
-            case("invalid", "Read-only, unmapped, unreserved and over-limit frame destinations terminate with SIGSEGV", frame_invalid),
+            case("invalid", "Read-only, unmapped, unreserved and owner or CLONE_VM over-limit frame destinations terminate with SIGSEGV", frame_invalid),
         ]),
         category("waits", "sigsuspend, pause & sigtimedwait", &[
             case("sigsuspend", "sigsuspend returns EINTR after the handler and restores the mask", w_sigsuspend),
