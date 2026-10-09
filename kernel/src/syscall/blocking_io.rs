@@ -30,7 +30,14 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
     // retain that identity through the wait and both cleanup operations.
     let tid =
         crate::task::scheduler::current_thread_id().expect("queued wait requires a current thread");
-    crate::per_cpu::preempt_enable();
+    // Preemption stays disabled from the publication through the signal check
+    // and is enabled for the halt only. A thread switched out in its published
+    // blocked state runs again only when something wakes it, and a signal that
+    // was already pending wakes nothing: its wake may have ended an earlier
+    // sleep of this wait. Preempted before the check, the thread would sleep
+    // with the signal pending (#1230). Once the check has run, a new signal
+    // finds the thread blocked and wakes it. Every syscall wait loop that
+    // publishes a blocked state follows this order.
     let interrupted = loop {
         if let Some(error) = crate::syscall::check_signals_for_restartable_wait() {
             break Some(error);
@@ -45,10 +52,11 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
         if !waiting {
             break None;
         }
+        crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
         crate::arch_halt_with_interrupts();
+        crate::per_cpu::preempt_disable();
     };
-    crate::per_cpu::preempt_disable();
 
     queue.take_waiter(tid);
     queue.finish_wait_for(tid);

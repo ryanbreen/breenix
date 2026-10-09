@@ -3277,10 +3277,8 @@ fn handle_fifo_open(
                     break buffer;
                 }
 
-                // CRITICAL: Re-enable preemption before entering blocking loop!
-                // The syscall handler called preempt_disable() at entry, but we need
-                // to allow timer interrupts to schedule other threads while we're blocked.
-                crate::per_cpu::preempt_enable();
+                // Preemption stays disabled until the signal check below has run (#1230):
+                // see `blocking_io::wait_prepared`.
 
                 // HLT loop - wait for timer interrupt which will switch to another thread
                 // When other end opens, add_reader/add_writer will call unblock(tid)
@@ -3294,7 +3292,6 @@ fn handle_fifo_open(
                                 thread.set_ready();
                             }
                         });
-                        crate::per_cpu::preempt_disable();
                         // Give the reference back unless the row's exit
                         // already has.
                         let pending = crate::process::with_process_manager(|manager| {
@@ -3315,8 +3312,10 @@ fn handle_fifo_open(
                         return SyscallResult::Err(e as u64);
                     }
 
+                    crate::per_cpu::preempt_enable();
                     crate::task::scheduler::yield_current();
                     Cpu::halt_with_interrupts();
+                    crate::per_cpu::preempt_disable();
 
                     // Check if we were unblocked (thread state changed from Blocked)
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -3329,8 +3328,6 @@ fn handle_fifo_open(
                     .unwrap_or(false);
 
                     if !still_blocked {
-                        // CRITICAL: Disable preemption BEFORE breaking from HLT loop!
-                        crate::per_cpu::preempt_disable();
                         log::debug!("FIFO: Thread {} woken from blocking", thread_id);
                         break;
                     }
