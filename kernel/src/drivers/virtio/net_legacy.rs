@@ -16,6 +16,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
+use x86_64::structures::paging::PhysFrame;
+use x86_64::PhysAddr;
 
 /// The device has a MAC address in its configuration space.
 const VIRTIO_NET_F_MAC: u32 = 1 << 5;
@@ -68,6 +70,12 @@ fn with_device<R>(f: impl FnOnce(&mut NetDevice) -> R) -> Option<R> {
     x86_64::instructions::interrupts::without_interrupts(|| DEVICE.lock().as_mut().map(f))
 }
 
+impl Buffer {
+    fn release(self) {
+        frame_allocator::deallocate_frame(PhysFrame::containing_address(PhysAddr::new(self.phys)));
+    }
+}
+
 fn alloc_buffer() -> Result<Buffer, &'static str> {
     let frame = frame_allocator::allocate_frame().ok_or("VirtIO net: no frame for a buffer")?;
     let phys = frame.start_address().as_u64();
@@ -83,6 +91,9 @@ fn setup_queue(device: &VirtioDevice, index: u16) -> Result<Virtqueue, &'static 
     let queue = Virtqueue::new(device.get_queue_size())?;
     device.set_queue_address(queue.phys_addr());
     if device.get_queue_address() != (queue.phys_addr() / 4096) as u32 {
+        // Address 0 tells a legacy device the queue is not in use.
+        device.set_queue_address(0);
+        queue.release();
         return Err("VirtIO net: queue address was not set");
     }
     Ok(queue)
@@ -98,6 +109,31 @@ impl NetDevice {
             .ok_or("VirtIO net: receive queue full")?;
         self.rx_by_desc[desc as usize] = index;
         Ok(())
+    }
+
+    /// Post the receive buffers and set up the transmit buffers.
+    fn fill_buffers(&mut self) -> Result<usize, &'static str> {
+        let rx_count = RX_BUFFERS.min(self.rx.queue_size() as usize);
+        for index in 0..rx_count {
+            self.rx_buffers.push(alloc_buffer()?);
+            self.post_rx(index as u16)?;
+        }
+        for index in 0..TX_BUFFERS.min(self.tx.queue_size() as usize) {
+            self.tx_buffers.push(alloc_buffer()?);
+            self.tx_free.push(index as u16);
+        }
+        Ok(rx_count)
+    }
+
+    /// Undo a failed `init`: reset the device, which stops it using the
+    /// queues and buffers, then free them.
+    fn release(self) {
+        self.device.reset();
+        self.rx.release();
+        self.tx.release();
+        for buffer in self.rx_buffers.into_iter().chain(self.tx_buffers) {
+            buffer.release();
+        }
     }
 
     /// Return every transmit buffer the device has finished with.
@@ -130,14 +166,21 @@ pub fn init() -> Result<(), &'static str> {
     if device.read_device_features() & VIRTIO_NET_F_MAC == 0 {
         return Err("VirtIO net: device has no MAC address");
     }
-    device.init(VIRTIO_NET_F_MAC)?;
+    device.init(VIRTIO_NET_F_MAC).inspect_err(|_| device.reset())?;
     let mut mac = [0u8; 6];
     for (offset, byte) in mac.iter_mut().enumerate() {
         *byte = device.read_config_u8(offset as u16);
     }
 
-    let rx = setup_queue(&device, RX_QUEUE)?;
-    let tx = setup_queue(&device, TX_QUEUE)?;
+    let rx = setup_queue(&device, RX_QUEUE).inspect_err(|_| device.reset())?;
+    let tx = match setup_queue(&device, TX_QUEUE) {
+        Ok(tx) => tx,
+        Err(error) => {
+            device.reset();
+            rx.release();
+            return Err(error);
+        }
+    };
     let mut net = NetDevice {
         device,
         rx,
@@ -148,15 +191,13 @@ pub fn init() -> Result<(), &'static str> {
         tx_by_desc: [NO_BUFFER; 256],
         tx_free: Vec::with_capacity(TX_BUFFERS),
     };
-    let rx_count = RX_BUFFERS.min(net.rx.queue_size() as usize);
-    for index in 0..rx_count {
-        net.rx_buffers.push(alloc_buffer()?);
-        net.post_rx(index as u16)?;
-    }
-    for index in 0..TX_BUFFERS.min(net.tx.queue_size() as usize) {
-        net.tx_buffers.push(alloc_buffer()?);
-        net.tx_free.push(index as u16);
-    }
+    let rx_count = match net.fill_buffers() {
+        Ok(count) => count,
+        Err(error) => {
+            net.release();
+            return Err(error);
+        }
+    };
     net.device.driver_ok();
     net.device.notify_queue(RX_QUEUE);
 
