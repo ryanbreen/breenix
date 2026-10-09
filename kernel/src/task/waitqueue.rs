@@ -322,6 +322,13 @@ fn in_interrupt_context() -> bool {
 /// waiter out, as a blocking `schedule()` would, and as the descriptor waits
 /// in `syscall::blocking_io` already do. A waiter with no other thread ready
 /// keeps the CPU and resumes the moment its wake arrives.
+///
+/// The wake can arrive before the halt: the waiter published its blocked
+/// state under the scheduler lock, and with interrupts enabled from there to
+/// the `hlt`, the reschedule interrupt that makes it runnable was taken on
+/// the way and the halt then lasted until the next tick. The state is checked
+/// again with interrupts masked, and `sti; hlt` takes a wake that lands after
+/// that check as the end of the halt.
 #[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn halt_blocked_current() {
     let others_ready =
@@ -330,7 +337,18 @@ pub(crate) fn halt_blocked_current() {
     if others_ready {
         crate::task::scheduler::yield_current();
     }
-    crate::arch_halt_with_interrupts();
+    x86_64::instructions::interrupts::disable();
+    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+        sched
+            .current_thread_mut()
+            .is_some_and(|thread| thread.state.is_blocked())
+    })
+    .unwrap_or(false);
+    if still_blocked {
+        crate::arch_halt_with_interrupts();
+    } else {
+        x86_64::instructions::interrupts::enable();
+    }
 }
 
 /// Sleep the current prepared waiter until the scheduler wake path makes it
