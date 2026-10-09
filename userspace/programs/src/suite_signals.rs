@@ -1777,33 +1777,244 @@ fn checksum(rounds: u64) -> u64 {
     a ^ b ^ c ^ d ^ e ^ f ^ g ^ h
 }
 
-/// A pure floating-point computation; its rounding is fully determined.
+/// Load a known value into every floating-point/SIMD register, then check them all
+/// `rounds` times without a system call, so a signal can only arrive through an
+/// interrupt between two checks. Returns 0, or the value the first wrong register
+/// should have held (0x100 + its number).
+#[cfg(target_arch = "aarch64")]
 #[inline(never)]
-fn fp_sum(rounds: u64, scale: f64) -> f64 {
-    let (mut x, mut y, mut z, mut w) = (0.5f64, 1.25f64, 2.0f64, 3.5f64);
-    for i in 0..rounds {
-        x = x * 1.000_001 + (i as f64) * scale;
-        y = y / 1.000_000_3 + x * 1e-9;
-        z = (z + y * 1e-6).sqrt() + 1.0;
-        w = w * 0.999_999 + z * 1e-7;
+fn fp_hold(rounds: u64) -> u64 {
+    let bad: u64;
+    // SAFETY: only registers declared as outputs or clobbered are written.
+    unsafe {
+        core::arch::asm!(
+            "mov x9, {rounds}",
+            "movz x11, #256", "fmov d0, x11",
+            "movz x11, #257", "fmov d1, x11",
+            "movz x11, #258", "fmov d2, x11",
+            "movz x11, #259", "fmov d3, x11",
+            "movz x11, #260", "fmov d4, x11",
+            "movz x11, #261", "fmov d5, x11",
+            "movz x11, #262", "fmov d6, x11",
+            "movz x11, #263", "fmov d7, x11",
+            "movz x11, #264", "fmov d8, x11",
+            "movz x11, #265", "fmov d9, x11",
+            "movz x11, #266", "fmov d10, x11",
+            "movz x11, #267", "fmov d11, x11",
+            "movz x11, #268", "fmov d12, x11",
+            "movz x11, #269", "fmov d13, x11",
+            "movz x11, #270", "fmov d14, x11",
+            "movz x11, #271", "fmov d15, x11",
+            "movz x11, #272", "fmov d16, x11",
+            "movz x11, #273", "fmov d17, x11",
+            "movz x11, #274", "fmov d18, x11",
+            "movz x11, #275", "fmov d19, x11",
+            "movz x11, #276", "fmov d20, x11",
+            "movz x11, #277", "fmov d21, x11",
+            "movz x11, #278", "fmov d22, x11",
+            "movz x11, #279", "fmov d23, x11",
+            "movz x11, #280", "fmov d24, x11",
+            "movz x11, #281", "fmov d25, x11",
+            "movz x11, #282", "fmov d26, x11",
+            "movz x11, #283", "fmov d27, x11",
+            "movz x11, #284", "fmov d28, x11",
+            "movz x11, #285", "fmov d29, x11",
+            "movz x11, #286", "fmov d30, x11",
+            "movz x11, #287", "fmov d31, x11",
+            "2:",
+            "movz x12, #256", "fmov x11, d0", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #257", "fmov x11, d1", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #258", "fmov x11, d2", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #259", "fmov x11, d3", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #260", "fmov x11, d4", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #261", "fmov x11, d5", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #262", "fmov x11, d6", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #263", "fmov x11, d7", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #264", "fmov x11, d8", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #265", "fmov x11, d9", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #266", "fmov x11, d10", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #267", "fmov x11, d11", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #268", "fmov x11, d12", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #269", "fmov x11, d13", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #270", "fmov x11, d14", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #271", "fmov x11, d15", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #272", "fmov x11, d16", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #273", "fmov x11, d17", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #274", "fmov x11, d18", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #275", "fmov x11, d19", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #276", "fmov x11, d20", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #277", "fmov x11, d21", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #278", "fmov x11, d22", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #279", "fmov x11, d23", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #280", "fmov x11, d24", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #281", "fmov x11, d25", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #282", "fmov x11, d26", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #283", "fmov x11, d27", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #284", "fmov x11, d28", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #285", "fmov x11, d29", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #286", "fmov x11, d30", "cmp x11, x12", "b.ne 3f",
+            "movz x12, #287", "fmov x11, d31", "cmp x11, x12", "b.ne 3f",
+            "subs x9, x9, #1",
+            "b.ne 2b",
+            "mov {bad}, #0",
+            "b 4f",
+            "3:",
+            "mov {bad}, x12",
+            "4:",
+            rounds = in(reg) rounds,
+            bad = out(reg) bad,
+            out("x9") _, out("x11") _, out("x12") _,
+            out("v0") _, out("v1") _, out("v2") _, out("v3") _, out("v4") _, out("v5") _, out("v6") _, out("v7") _, out("v8") _, out("v9") _, out("v10") _, out("v11") _, out("v12") _, out("v13") _, out("v14") _, out("v15") _, out("v16") _, out("v17") _, out("v18") _, out("v19") _, out("v20") _, out("v21") _, out("v22") _, out("v23") _, out("v24") _, out("v25") _, out("v26") _, out("v27") _, out("v28") _, out("v29") _, out("v30") _, out("v31") _,
+        );
     }
-    x + y + z + w
+    bad
 }
+
+/// As on ARM64, with xmm0-xmm15. The userspace target is built without SSE, so the
+/// compiler never uses these registers itself; the instructions run on the processor's
+/// SSE unit, as they do in any program built for the standard x86-64 ABI.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn fp_hold(rounds: u64) -> u64 {
+    let bad: u64;
+    // SAFETY: writes only the xmm registers, which compiled code here never uses, and
+    // the general registers declared below.
+    unsafe {
+        core::arch::asm!(
+            "mov r9, {rounds}",
+            "mov r11, 256", "movq xmm0, r11",
+            "mov r11, 257", "movq xmm1, r11",
+            "mov r11, 258", "movq xmm2, r11",
+            "mov r11, 259", "movq xmm3, r11",
+            "mov r11, 260", "movq xmm4, r11",
+            "mov r11, 261", "movq xmm5, r11",
+            "mov r11, 262", "movq xmm6, r11",
+            "mov r11, 263", "movq xmm7, r11",
+            "mov r11, 264", "movq xmm8, r11",
+            "mov r11, 265", "movq xmm9, r11",
+            "mov r11, 266", "movq xmm10, r11",
+            "mov r11, 267", "movq xmm11, r11",
+            "mov r11, 268", "movq xmm12, r11",
+            "mov r11, 269", "movq xmm13, r11",
+            "mov r11, 270", "movq xmm14, r11",
+            "mov r11, 271", "movq xmm15, r11",
+            "2:",
+            "mov r10, 256", "movq r11, xmm0", "cmp r11, r10", "jne 3f",
+            "mov r10, 257", "movq r11, xmm1", "cmp r11, r10", "jne 3f",
+            "mov r10, 258", "movq r11, xmm2", "cmp r11, r10", "jne 3f",
+            "mov r10, 259", "movq r11, xmm3", "cmp r11, r10", "jne 3f",
+            "mov r10, 260", "movq r11, xmm4", "cmp r11, r10", "jne 3f",
+            "mov r10, 261", "movq r11, xmm5", "cmp r11, r10", "jne 3f",
+            "mov r10, 262", "movq r11, xmm6", "cmp r11, r10", "jne 3f",
+            "mov r10, 263", "movq r11, xmm7", "cmp r11, r10", "jne 3f",
+            "mov r10, 264", "movq r11, xmm8", "cmp r11, r10", "jne 3f",
+            "mov r10, 265", "movq r11, xmm9", "cmp r11, r10", "jne 3f",
+            "mov r10, 266", "movq r11, xmm10", "cmp r11, r10", "jne 3f",
+            "mov r10, 267", "movq r11, xmm11", "cmp r11, r10", "jne 3f",
+            "mov r10, 268", "movq r11, xmm12", "cmp r11, r10", "jne 3f",
+            "mov r10, 269", "movq r11, xmm13", "cmp r11, r10", "jne 3f",
+            "mov r10, 270", "movq r11, xmm14", "cmp r11, r10", "jne 3f",
+            "mov r10, 271", "movq r11, xmm15", "cmp r11, r10", "jne 3f",
+            "dec r9",
+            "jnz 2b",
+            "xor {bad}, {bad}",
+            "jmp 4f",
+            "3:",
+            "mov {bad}, r10",
+            "4:",
+            rounds = in(reg) rounds,
+            bad = out(reg) bad,
+            out("r9") _, out("r10") _, out("r11") _,
+        );
+    }
+    bad
+}
+
+/// Overwrite every floating-point/SIMD register the calling convention lets a function
+/// change, as a handler doing floating-point work would.
+fn clobber_fp() {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: only the declared registers are written.
+    unsafe {
+        core::arch::asm!(
+            "movi v0.16b, #0xa5",
+            "movi v1.16b, #0xa5",
+            "movi v2.16b, #0xa5",
+            "movi v3.16b, #0xa5",
+            "movi v4.16b, #0xa5",
+            "movi v5.16b, #0xa5",
+            "movi v6.16b, #0xa5",
+            "movi v7.16b, #0xa5",
+            "movi v8.16b, #0xa5",
+            "movi v9.16b, #0xa5",
+            "movi v10.16b, #0xa5",
+            "movi v11.16b, #0xa5",
+            "movi v12.16b, #0xa5",
+            "movi v13.16b, #0xa5",
+            "movi v14.16b, #0xa5",
+            "movi v15.16b, #0xa5",
+            "movi v16.16b, #0xa5",
+            "movi v17.16b, #0xa5",
+            "movi v18.16b, #0xa5",
+            "movi v19.16b, #0xa5",
+            "movi v20.16b, #0xa5",
+            "movi v21.16b, #0xa5",
+            "movi v22.16b, #0xa5",
+            "movi v23.16b, #0xa5",
+            "movi v24.16b, #0xa5",
+            "movi v25.16b, #0xa5",
+            "movi v26.16b, #0xa5",
+            "movi v27.16b, #0xa5",
+            "movi v28.16b, #0xa5",
+            "movi v29.16b, #0xa5",
+            "movi v30.16b, #0xa5",
+            "movi v31.16b, #0xa5",
+            out("v0") _, out("v1") _, out("v2") _, out("v3") _, out("v4") _, out("v5") _, out("v6") _, out("v7") _, out("v8") _, out("v9") _, out("v10") _, out("v11") _, out("v12") _, out("v13") _, out("v14") _, out("v15") _, out("v16") _, out("v17") _, out("v18") _, out("v19") _, out("v20") _, out("v21") _, out("v22") _, out("v23") _, out("v24") _, out("v25") _, out("v26") _, out("v27") _, out("v28") _, out("v29") _, out("v30") _, out("v31") _,
+        );
+    }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: only xmm registers are written, which compiled code here never uses.
+    unsafe {
+        core::arch::asm!(
+            "pcmpeqd xmm0, xmm0",
+            "pcmpeqd xmm1, xmm1",
+            "pcmpeqd xmm2, xmm2",
+            "pcmpeqd xmm3, xmm3",
+            "pcmpeqd xmm4, xmm4",
+            "pcmpeqd xmm5, xmm5",
+            "pcmpeqd xmm6, xmm6",
+            "pcmpeqd xmm7, xmm7",
+            "pcmpeqd xmm8, xmm8",
+            "pcmpeqd xmm9, xmm9",
+            "pcmpeqd xmm10, xmm10",
+            "pcmpeqd xmm11, xmm11",
+            "pcmpeqd xmm12, xmm12",
+            "pcmpeqd xmm13, xmm13",
+            "pcmpeqd xmm14, xmm14",
+            "pcmpeqd xmm15, xmm15",
+        );
+    }
+}
+
+/// Set while the interrupted computation runs; a handler that sees it counts itself in MID.
+static IN_WORK: AtomicU32 = AtomicU32::new(0);
+static MID: AtomicU32 = AtomicU32::new(0);
 
 extern "C" fn on_clobber(sig: i32) {
+    if IN_WORK.load(Ordering::SeqCst) == 1 { MID.fetch_add(1, Ordering::SeqCst); }
     record(sig);
     core::hint::black_box(checksum(core::hint::black_box(64)));
-    core::hint::black_box(fp_sum(core::hint::black_box(64), 0.75));
+    clobber_fp();
 }
 
-/// Recompute `f` for `ms` while a child sends SIGUSR1 to this process every millisecond;
-/// returns the first result that differs from an undisturbed run, and the signals handled.
-fn under_signals<T: PartialEq + Copy + core::fmt::Debug>(ms: u64, f: impl Fn() -> T) -> Result<(Option<(T, T)>, u32), CaseError> {
+/// Run `f` again and again for `ms` while a child sends SIGUSR1 to this process every
+/// millisecond; returns the first result that differs from `expected`, and how many
+/// handlers ran in the middle of `f` rather than between two runs of it.
+fn under_signals<T: PartialEq + Copy>(ms: u64, expected: T, f: impl Fn() -> T) -> Result<(Option<T>, u32), CaseError> {
     catch_with(SIGUSR1, on_clobber as usize as u64, 0, 0)?;
-    let expected = f();
     let shared = Shared::new()?;
     let me = pid();
-    let sender = Child::start(|| {
+    let mut sender = Child::start(|| {
         while shared.get(0) == 0 {
             kill(me, SIGUSR1);
             let _ = time::sleep_ms(1);
@@ -1813,30 +2024,31 @@ fn under_signals<T: PartialEq + Copy + core::fmt::Debug>(ms: u64, f: impl Fn() -
     let start = now_ms();
     let mut wrong = None;
     while now_ms().saturating_sub(start) < ms {
+        IN_WORK.store(1, Ordering::SeqCst);
         let got = f();
-        if got != expected { wrong = Some((got, expected)); break; }
+        IN_WORK.store(0, Ordering::SeqCst);
+        if got != expected { wrong = Some(got); break; }
     }
     shared.set(0, 1);
-    let mut sender = sender;
     sender.expect_exit(0, "the signalling child")?;
-    Ok((wrong, count(SIGUSR1)))
+    Ok((wrong, MID.load(Ordering::SeqCst)))
 }
 
 fn h_registers() -> CaseResult {
-    let (wrong, handled) = under_signals(400, || checksum(core::hint::black_box(20_000)))?;
-    if let Some((got, expected)) = wrong {
+    let expected = checksum(core::hint::black_box(20_000));
+    let (wrong, mid) = under_signals(400, expected, || checksum(core::hint::black_box(20_000)))?;
+    if let Some(got) = wrong {
         return fail(format!("an integer computation interrupted by handlers gave {got:#x}, expected {expected:#x}"));
     }
-    check(handled >= 10, &format!("only {handled} signals were handled during 400 ms of computation; the case needs 10"))
+    check(mid >= 10, &format!("only {mid} handlers interrupted the computation itself in 400 ms; the case needs 10"))
 }
 
 fn h_fp_registers() -> CaseResult {
-    let (wrong, handled) = under_signals(400, || fp_sum(core::hint::black_box(20_000), 0.5e-3).to_bits())?;
-    if let Some((got, expected)) = wrong {
-        return fail(format!("a floating-point computation interrupted by handlers that use floating point gave {:e}, expected {:e}",
-            f64::from_bits(got), f64::from_bits(expected)));
+    let (wrong, mid) = under_signals(400, 0, || fp_hold(core::hint::black_box(20_000)))?;
+    if let Some(reg) = wrong {
+        return fail(format!("after handlers that overwrite the floating-point registers, register {} no longer held its value", reg - 0x100));
     }
-    check(handled >= 10, &format!("only {handled} signals were handled during 400 ms of computation; the case needs 10"))
+    check(mid >= 10, &format!("only {mid} handlers interrupted the register checks themselves in 400 ms; the case needs 10"))
 }
 
 static SHARED_AT: AtomicUsize = AtomicUsize::new(0);
@@ -2858,8 +3070,8 @@ static SUITE: Suite = suite(
             case("nanosleep", "A caught signal interrupts nanosleep with EINTR and the time left, even with SA_RESTART", h_nanosleep),
             case("restart-wait", "waitpid interrupted by an SA_RESTART handler is restarted", h_restart_wait),
             case("eintr-wait", "waitpid interrupted by a handler without SA_RESTART fails with EINTR", h_eintr_wait),
-            case("registers", "Integer registers survive hundreds of handlers interrupting a computation", h_registers),
-            case("fp-registers", "Floating-point registers survive hundreds of handlers that use floating point", h_fp_registers),
+            case("registers", "Integer registers survive handlers that interrupt a computation mid-way", h_registers),
+            case("fp-registers", "Floating-point and SIMD registers survive handlers that overwrite them mid-computation", h_fp_registers),
             case("spinning-target", "A process spinning in user mode on another processor runs its handler within 50 ms", h_spinning_target),
         ]),
         category("waits", "sigsuspend, pause & sigtimedwait", &[

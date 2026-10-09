@@ -243,11 +243,11 @@
         },
         {
           "id": "registers",
-          "title": "Integer registers survive hundreds of handlers interrupting a computation"
+          "title": "Integer registers survive handlers that interrupt a computation mid-way"
         },
         {
           "id": "fp-registers",
-          "title": "Floating-point registers survive hundreds of handlers that use floating point"
+          "title": "Floating-point and SIMD registers survive handlers that overwrite them mid-computation"
         },
         {
           "id": "spinning-target",
