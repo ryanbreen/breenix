@@ -176,8 +176,8 @@ pub fn get_cpu_ticks() -> u64 {
     {
         let cycles = TSC_CYCLES_PER_TICK.load(Ordering::Relaxed);
         if cycles != 0 {
-            let elapsed = super::tsc::read_tsc()
-                .saturating_sub(TICK_TSC_BASE.load(Ordering::Relaxed));
+            let elapsed =
+                super::tsc::read_tsc_serialized().saturating_sub(TICK_TSC_BASE.load(Ordering::Relaxed));
             return elapsed / cycles;
         }
     }

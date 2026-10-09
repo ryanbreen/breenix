@@ -1110,19 +1110,9 @@ fn generate_pid_status(pid: u64) -> String {
     use crate::process::ProcessState;
     use alloc::format;
 
-    // IMPORTANT: Collect CPU ticks BEFORE acquiring the process manager lock.
-    // get_process_cpu_ticks() acquires the SCHEDULER lock internally.
-    // Holding PROCESS_MANAGER while acquiring SCHEDULER violates lock ordering
-    // (SCHEDULER is Level 1, PROCESS_MANAGER is Level 2) and causes ABBA deadlock
-    // with the timer interrupt context switch path.
-    let cpu_ticks = {
-        let all_ticks = crate::task::scheduler::get_process_cpu_ticks();
-        all_ticks
-            .iter()
-            .filter(|&&(p, _)| p == pid)
-            .map(|&(_, t)| t)
-            .sum::<u64>()
-    };
+    // Charge in-flight time before acquiring PROCESS_MANAGER: scheduler is
+    // Level 1 and process manager Level 2. The shared account retains exits.
+    crate::task::scheduler::charge_process_cpu(pid);
     let (cpu_online, cpu_sample_ticks, cpu_capacity_ticks) = procfs_cpu_accounting_ticks();
     let scheduler_state = crate::task::scheduler::get_process_display_state(pid);
 
@@ -1210,7 +1200,7 @@ fn generate_pid_status(pid: u64) -> String {
         vm_heap_kb,
         vm_stack_kb,
         vm_rss_kb,
-        cpu_ticks,
+        process.cpu.ticks(),
         cpu_sample_ticks,
         cpu_capacity_ticks,
         cpu_online,

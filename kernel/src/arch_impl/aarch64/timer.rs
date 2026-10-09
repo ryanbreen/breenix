@@ -43,6 +43,8 @@ static COUNTER_FREQ: AtomicU64 = AtomicU64::new(0);
 static TIMER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Base timestamp for monotonic time calculations
 static BASE_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
+/// Fractional milliseconds per counter increment, with 64 fractional bits.
+static MS_SCALE: AtomicU64 = AtomicU64::new(0);
 
 pub struct Aarch64Timer;
 
@@ -140,6 +142,8 @@ pub fn rdtsc_serialized() -> u64 {
 /// provides the frequency directly. We just cache it for performance.
 pub fn calibrate() {
     let freq = read_cntfrq();
+    assert!(freq > 1000, "Generic timer frequency must exceed 1 kHz");
+    MS_SCALE.store(((1000u128 << 64) / u128::from(freq)) as u64, Ordering::Relaxed);
     COUNTER_FREQ.store(freq, Ordering::Relaxed);
     BASE_TIMESTAMP.store(read_cntvct(), Ordering::Relaxed);
     TIMER_INITIALIZED.store(true, Ordering::Release);
@@ -176,8 +180,10 @@ pub fn milliseconds_since_base() -> Option<u64> {
     if freq == 0 {
         return None;
     }
-    let ticks = read_cntvct().saturating_sub(BASE_TIMESTAMP.load(Ordering::Relaxed));
-    Some(((ticks as u128 * 1000) / freq as u128) as u64)
+    let ticks = rdtsc_serialized().saturating_sub(BASE_TIMESTAMP.load(Ordering::Relaxed));
+    // Flooring the scale can read at most one millisecond early over the
+    // counter's entire u64 range; no software 128-bit divide on this path.
+    Some(((u128::from(ticks) * u128::from(MS_SCALE.load(Ordering::Relaxed))) >> 64) as u64)
 }
 
 /// Get nanoseconds since base was established (calibrate() was called)

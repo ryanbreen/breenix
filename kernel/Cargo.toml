@@ -24,6 +24,7 @@ path = "src/lib.rs"
 test = false
 
 [features]
+force_cpu_accounting_delay = []  # Masked first-dispatch delay for times-reset regression
 testing = []
 boot_tests = []  # Parallel boot test framework
 force_eret_dispatch_596 = ["boot_tests"]  # #596 forced-repro knob

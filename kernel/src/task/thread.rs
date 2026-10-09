@@ -797,9 +797,10 @@ impl Thread {
     /// CPU account and its resource limits, and start the next interval at
     /// `now`. Called before blocking, switching away or exiting.
     pub fn charge_cpu(&mut self, now: u64) {
-        let ran = now.wrapping_sub(self.run_start_ticks);
+        // A remote CPU may read a counter behind this thread's last CPU.
+        let ran = now.saturating_sub(self.run_start_ticks);
         self.cpu_ticks_total = self.cpu_ticks_total.saturating_add(ran);
-        self.run_start_ticks = now;
+        self.run_start_ticks = self.run_start_ticks.max(now);
         if let Some(account) = &self.cpu_account {
             account.charge(ran);
         }

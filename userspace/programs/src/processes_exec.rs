@@ -20,6 +20,7 @@ use std::fmt::Write as _;
 
 #[cfg(target_arch = "x86_64")]
 mod nr {
+    pub const TIMES: u64 = 100;
     pub const FCNTL: u64 = 72;
     pub const LSEEK: u64 = 8;
     pub const GETPPID: u64 = 110;
@@ -42,6 +43,7 @@ mod nr {
 }
 #[cfg(target_arch = "aarch64")]
 mod nr {
+    pub const TIMES: u64 = 153;
     pub const FCNTL: u64 = 25;
     pub const LSEEK: u64 = 62;
     pub const GETPPID: u64 = 173;
@@ -224,9 +226,64 @@ fn switch(set: u64, get_real: u64, get_effective: u64, real: u32, saved: u32, ba
     process::exit(0)
 }
 
+// Run the same fresh-child accounting check in a named exec helper, so the
+// optional kernel delay affects only this case, never the handoff deadlines.
+fn times_reset() -> Result<(), String> {
+    use libbreenix::process::ForkResult;
+    fn times() -> Result<[i64; 4], String> {
+        let mut t = [0i64; 4];
+        let result = sys(nr::TIMES, [t.as_mut_ptr() as u64, 0, 0, 0]);
+        if result < 0 { Err(format!("times failed: {result}")) } else { Ok(t) }
+    }
+    fn burn(ms: u64) {
+        let now = || libbreenix::time::now_monotonic().expect("monotonic clock").as_nanos();
+        let start = now();
+        let mut x = 1u64;
+        while now().saturating_sub(start) < i128::from(ms) * 1_000_000 {
+            for i in 0..20_000u64 { x = x.wrapping_mul(6364136223846793005).wrapping_add(i); }
+            core::hint::black_box(x);
+        }
+    }
+    fn child(work: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+        match process::fork().map_err(|e| format!("fork: {e}"))? {
+            ForkResult::Child => {
+                let result = work();
+                if let Err(message) = &result { eprintln!("times-reset: {message}"); }
+                process::exit(if result.is_ok() { 0 } else { 1 });
+            }
+            ForkResult::Parent(pid) => {
+                let mut status = 0;
+                process::waitpid(pid.raw() as i32, &mut status, 0).map_err(|e| format!("waitpid: {e}"))?;
+                if status == 0 { Ok(()) } else { Err(format!("child wait status {status}")) }
+            }
+        }
+    }
+    const FRESH: i64 = 2;
+    burn(400);
+    child(|| { burn(150); Ok(()) })?;
+    let parent = times()?;
+    let own = parent[0] + parent[1];
+    if own <= 4 * FRESH || parent[2] + parent[3] <= 0 {
+        return Err(format!("parent times {parent:?} after 400 ms plus a waited 150 ms child"));
+    }
+    child(move || {
+        let t = times()?;
+        if t[2] != 0 || t[3] != 0 { return Err(format!("child times cutime/cstime {}/{}", t[2], t[3])); }
+        if t[0] + t[1] > FRESH {
+            return Err(format!("fresh child has {} ticks before computation (parent {own})", t[0] + t[1]));
+        }
+        Ok(())
+    })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
+        Some("times-reset") => {
+            let result = times_reset();
+            let message = result.err().unwrap_or_else(|| "OK".into());
+            write_all(fd_arg(args.get(2)), message.as_bytes());
+        }
         Some("report") => report(fd_arg(args.get(2)), &args),
         Some("stack") => stack(fd_arg(args.get(2)), &args),
         Some("script") => report(fd_arg(args.get(3)), &args),

@@ -1301,23 +1301,8 @@ fn fork_cwd_umask() -> CaseResult {
 }
 
 fn fork_times_reset() -> CaseResult {
-    // A child that has done nothing yet has used well under 2 ticks (20 ms at this ABI's
-    // 100 per second) of CPU, so a count above that was carried over from the parent.
-    const FRESH: i64 = 2;
-    burn(400);
-    task(|| { burn(150); Ok(()) })?.finish()?;
-    let (_, parent) = times()?;
-    let own = parent[0] + parent[1];
-    check(own > 4 * FRESH && parent[2] + parent[3] > 0,
-        &format!("times() in the parent reports {parent:?} after 400 ms of computation and a waited-for child that did 150 ms"))?;
-    task(move || {
-        let (_, t) = times()?;
-        if t[2] != 0 || t[3] != 0 { return Err(format!("tms_cutime/tms_cstime are {}/{}, not 0", t[2], t[3])); }
-        if t[0] + t[1] > FRESH {
-            return Err(format!("tms_utime+tms_stime is {} ticks before the child has computed anything (the parent's is {own}): not reset", t[0] + t[1]));
-        }
-        Ok(())
-    })?.finish()
+    let report = exec_output(HELPER, &["helper", "times-reset", FD_ARG], &[], || Ok(()))?;
+    check(report == b"OK", &String::from_utf8_lossy(&report))
 }
 
 fn fork_nproc() -> CaseResult {
@@ -2840,10 +2825,26 @@ fn limits_prlimit_errors() -> CaseResult {
 
 fn limits_rusage_self() -> CaseResult {
     let before = getrusage(0)?;
-    burn(200);
+    // The shared account must retain CPU time after this thread has exited.
+    std::thread::spawn(|| burn(200)).join().map_err(|_| "CPU worker panicked")?;
     let after = getrusage(0)?;
     check(cpu_us(&after) > cpu_us(&before) && cpu_us(&after) > 0,
-        &format!("RUSAGE_SELF CPU time went from {} us to {} us across 200 ms of computation", cpu_us(&before), cpu_us(&after)))
+        &format!("RUSAGE_SELF CPU time went from {} us to {} us across 200 ms of computation", cpu_us(&before), cpu_us(&after)))?;
+    let stat = std::fs::read_to_string("/proc/stat").map_err(|e| format!("/proc/stat: {e}"))?;
+    let ms_per_tick = stat.lines().find_map(|line| line.strip_prefix("ms_per_tick "))
+        .and_then(|value| value.trim().parse::<i64>().ok()).ok_or("no ms_per_tick")?;
+    let low = cpu_us(&getrusage(0)?);
+    let status = std::fs::read_to_string(format!("/proc/{}/status", pid())).map_err(|e| format!("status: {e}"))?;
+    let ticks = status.lines().find_map(|line| line.strip_prefix("CpuTicks:\t"))
+        .and_then(|value| value.parse::<i64>().ok()).ok_or("no CpuTicks")?;
+    let (_, t) = times()?;
+    let high = cpu_us(&getrusage(0)?);
+    let proc_us = ticks * ms_per_tick * 1000;
+    check(proc_us >= low && proc_us <= high,
+        &format!("procfs {proc_us} us is outside RUSAGE_SELF [{low}, {high}] after thread exit"))?;
+    let times_us = (t[0] + t[1]) * 10_000;
+    check(times_us + 10_000 > low && times_us <= high,
+        &format!("times {times_us} us is outside RUSAGE_SELF [{low}, {high}]"))
 }
 
 fn limits_rusage_children() -> CaseResult {

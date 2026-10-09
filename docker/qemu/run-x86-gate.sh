@@ -256,6 +256,11 @@ PYSPACE
   then exit 1; fi
 fi
 
+# Explicit regression/profile legs append features without changing normal gates.
+if [ -n "${BREENIX_GATE_KERNEL_FEATURES:-}" ]; then
+  [[ "$BREENIX_GATE_KERNEL_FEATURES" =~ ^[a-zA-Z0-9_-]+(,[a-zA-Z0-9_-]+)*$ ]] || { echo "GATE: FAIL (invalid kernel features)"; exit 1; }
+  FEATURES="${FEATURES:+$FEATURES,}$BREENIX_GATE_KERNEL_FEATURES"
+fi
 echo "[gate] === Building (release, features=${FEATURES:-none}) ==="
 BUILD_START=$SECONDS
 phase_start kernel-build
