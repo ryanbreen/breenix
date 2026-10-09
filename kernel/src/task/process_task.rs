@@ -954,11 +954,10 @@ impl ProcessScheduler {
                         .get_process(pid)
                         .map(crate::signal::delivery::child_exit_info);
                     let parent_tid = if let Some(parent_pid) = parent_pid {
+                        if let (true, Some(info)) = (sigchld_pending, child_info) {
+                            manager.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
+                        }
                         if let Some(parent_process) = manager.get_process_mut(parent_pid) {
-                            if let (true, Some(info)) = (sigchld_pending, child_info) {
-                                use crate::signal::constants::SIGCHLD;
-                                parent_process.signals.set_pending_info(SIGCHLD, info);
-                            }
                             parent_process.main_thread.as_ref().map(|t| t.id)
                         } else {
                             None

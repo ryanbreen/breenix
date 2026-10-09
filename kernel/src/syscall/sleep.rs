@@ -44,19 +44,21 @@ pub fn nanosleep(req_ptr: u64, rem_ptr: u64) -> SyscallResult {
     if duration == 0 {
         return SyscallResult::Ok(0);
     }
-    let deadline = crate::signal::monotonic_micros()
-        .saturating_mul(1000)
+    let deadline = crate::signal::monotonic_nanos()
         .saturating_add(duration);
     let interrupted = loop {
+        if super::check_signals_for_wait().is_some() {
+            break true;
+        }
         crate::task::scheduler::with_scheduler(|sched| {
             sched.block_current_for_timer(deadline);
         });
         // Keep preemption disabled until the pending check is complete. A
         // signal generated before publication has already spent its wake.
-        if super::check_signals_for_eintr().is_some() {
+        if super::check_signals_for_wait().is_some() {
             break true;
         }
-        if crate::signal::monotonic_micros().saturating_mul(1000) >= deadline {
+        if crate::signal::monotonic_nanos() >= deadline {
             break false;
         }
         crate::per_cpu::preempt_enable();
@@ -76,7 +78,7 @@ pub fn nanosleep(req_ptr: u64, rem_ptr: u64) -> SyscallResult {
     if interrupted {
         if rem_ptr != 0 {
             let left =
-                deadline.saturating_sub(crate::signal::monotonic_micros().saturating_mul(1000));
+                deadline.saturating_sub(crate::signal::monotonic_nanos());
             let rem = Timespec {
                 tv_sec: (left / 1_000_000_000) as i64,
                 tv_nsec: (left % 1_000_000_000) as i64,

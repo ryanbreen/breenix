@@ -1022,14 +1022,12 @@ pub fn notify_parent_of_job_change_locked(
         };
         Some(SigInfo::child(code, child.id.as_u64() as u32, child.cred.uid, status))
     });
-    let Some(parent) = manager.get_process_mut(notification.parent_pid) else {
-        return;
-    };
-    if parent.signals.get_handler(SIGCHLD).flags & SA_NOCLDSTOP == 0 {
-        parent
-            .signals
-            .set_pending_info(SIGCHLD, info.unwrap_or_else(SigInfo::kernel));
+    let notify = manager.get_process(notification.parent_pid)
+        .is_some_and(|p| p.signals.get_handler(SIGCHLD).flags & SA_NOCLDSTOP == 0);
+    if notify {
+        manager.queue_process_signal(notification.parent_pid, SIGCHLD, info.unwrap_or_else(SigInfo::kernel));
     }
+    let Some(parent) = manager.get_process_mut(notification.parent_pid) else { return; };
     let signal_eligible = parent.signals.has_deliverable_signals();
     let Some(parent_tid) = parent.main_thread.as_ref().map(|thread| thread.id) else {
         return;
@@ -1590,12 +1588,11 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
         // dropped once the guard is released (condition C8).
         let auto_reaped = manager.reap_if_parent_declines(child_pid);
 
-        // Find parent process and send SIGCHLD
+        manager.queue_process_signal(parent_pid, SIGCHLD, child_info.unwrap_or_else(SigInfo::kernel));
+        // Find parent process and wake its child-status wait
         let parent_thread_id = if let Some(parent_process) = manager.get_process_mut(parent_pid) {
             // Send SIGCHLD to parent
-            parent_process
-                .signals
-                .set_pending_info(SIGCHLD, child_info.unwrap_or_else(SigInfo::kernel));
+
             log::debug!(
                 "notify_parent_of_termination_deferred: sent SIGCHLD to parent {} for child {} termination",
                 parent_pid.as_u64(),
@@ -1676,12 +1673,9 @@ pub fn collect_itimer_signals(process: &mut Process) {
 
 /// Consume resource-limit signals at a user-return boundary.
 #[inline]
-pub fn check_and_fire_alarm(process: &mut Process) {
+pub fn check_cpu_resource_limit(process: &mut Process) {
     process.check_cpu_limit();
 }
 
-/// Preserve the dispatcher API until its separate architecture commit switches
-/// to clock-owned expiry. The elapsed argument has no timer role anymore.
-pub fn check_and_fire_itimer_real(process: &mut Process, _: u64) {
-    collect_itimer_signals(process);
-}
+/// Compatibility entry name used by return paths; this checks CPU limits only.
+pub use check_cpu_resource_limit as check_and_fire_alarm;

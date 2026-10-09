@@ -2071,6 +2071,9 @@ pub struct Scheduler {
     /// wake_expired_timers validates each entry before acting on it.
     timer_heap: BinaryHeap<Reverse<(u64, u64)>>,
 
+    /// Only groups with armed interval timers; registered outside scheduling.
+    signal_timer_groups: alloc::vec::Vec<(alloc::sync::Weak<crate::signal::IntervalTimers>, alloc::sync::Weak<super::thread::CpuAccount>)>,
+
     /// Per-thread all-CPU grace targets for kernel-stack reclamation.
     retirement_grace: alloc::vec::Vec<RetirementGrace>,
 
@@ -2189,6 +2192,7 @@ impl Scheduler {
             per_cpu_queues,
             cpu_state,
             timer_heap: BinaryHeap::new(),
+            signal_timer_groups: alloc::vec::Vec::new(),
             retirement_grace: alloc::vec::Vec::new(),
             #[cfg(target_arch = "aarch64")]
             drains_wake_inboxes: true,
@@ -4368,7 +4372,6 @@ impl Scheduler {
                 return;
             }
             if thread.state == ThreadState::BlockedOnTimer {
-                thread.wake_time_ns = None;
                 self.unblock(thread_id);
                 set_need_resched();
                 return;
@@ -4569,6 +4572,8 @@ impl Scheduler {
     /// Block current thread until a timer expires (nanosleep syscall)
     pub fn block_current_for_timer(&mut self, wake_time_ns: u64) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
+            let already_armed = self.get_thread(current_id).and_then(|t| t.timer_pop)
+                .is_some_and(|record| record.deadline_ns == wake_time_ns && record.own_entry == TimerPop::NotPopped);
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // A thread a SIGKILL is pending for does not sleep here:
                 // `Thread::must_not_sleep`.
@@ -4581,7 +4586,9 @@ impl Scheduler {
                 thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(wake_time_ns);
-                thread.timer_pop = Some(TimerPopRecord::armed(wake_time_ns));
+                if !already_armed {
+                    thread.timer_pop = Some(TimerPopRecord::armed(wake_time_ns));
+                }
                 // #775 round 4: `blocked_in_syscall` means "parked inside a
                 // syscall of an owning process", and the x86 context-switch
                 // path acts on exactly that reading: with the flag set and
@@ -4624,7 +4631,9 @@ impl Scheduler {
             #[cfg(target_arch = "aarch64")]
             set_cpu_idle(Self::current_cpu_id(), true);
             // Insert into timer heap for O(1) expiry detection
-            self.timer_heap.push(Reverse((wake_time_ns, current_id)));
+            if !already_armed {
+                self.timer_heap.push(Reverse((wake_time_ns, current_id)));
+            }
             for q in self.per_cpu_queues.iter_mut() {
                 q.retain(|&id| id != current_id);
             }
@@ -4916,48 +4925,40 @@ impl Scheduler {
         }
     }
 
-    /// Check the timer heap for expired timer-based sleep and wake them.
-    ///
-    /// Uses a BinaryHeap (min-heap via Reverse) so only expired entries at the
-    /// front are visited — O(1) peek + O(log N) pop per expired timer, vs the
-    /// old O(N) scan of ALL threads. Stale entries (threads already woken by
-    /// ISR, signal, or terminated) are detected by the validation step and
-    /// discarded without any side effects.
-    ///
-    /// Called from schedule() on every reschedule, and from the nanosleep
-    /// HLT loop to immediately detect timer expiry without waiting for
-    /// a scheduling decision on another CPU.
+    /// Register an armed group from a timer syscall or exec publication.
+    pub fn register_signal_timers(&mut self, timers: &alloc::sync::Arc<crate::signal::IntervalTimers>, cpu: &alloc::sync::Arc<super::thread::CpuAccount>) {
+        if timers.is_active() && !self.signal_timer_groups.iter().any(|(old, _)| old.ptr_eq(&alloc::sync::Arc::downgrade(timers))) {
+            self.signal_timer_groups.push((alloc::sync::Arc::downgrade(timers), alloc::sync::Arc::downgrade(cpu)));
+        }
+    }
+
+    /// Visit armed groups only; select an accepting thread only on expiry.
     fn wake_signal_timers(&mut self) {
-        if crate::signal::ACTIVE_SIGNAL_TIMERS.load(Ordering::Acquire) == 0 { return; }
+        if self.signal_timer_groups.is_empty() { return; }
         let wall = crate::signal::monotonic_micros();
-        // Charge dispatched threads before reading their shared CPU clocks.
         if let Some(thread) = self.current_thread_mut() {
             thread.charge_timer_cpu();
         }
-        for index in 0..self.threads.len() {
-            let thread = &self.threads[index];
-            if thread.state == ThreadState::Terminated { continue; }
-            let (Some(timers), Some(cpu)) = (&thread.signal_timers, &thread.cpu_account) else { continue; };
+        self.signal_timer_groups.retain(|(timers, cpu)| cpu.strong_count() != 0 && timers.upgrade().is_some_and(|t| t.is_active()));
+        for index in 0..self.signal_timer_groups.len() {
+            let (Some(group), Some(cpu)) = (self.signal_timer_groups[index].0.upgrade(), self.signal_timer_groups[index].1.upgrade()) else { continue; };
             let user = cpu.user_ns.load(Ordering::Relaxed) / 1000;
             let system = cpu.system_ns.load(Ordering::Relaxed) / 1000;
             let pending = [
-                (timers.real.expire(wall), crate::signal::constants::SIGALRM),
-                (timers.virtual_timer.expire(user), crate::signal::constants::SIGVTALRM),
-                (timers.prof.expire(user.saturating_add(system)), crate::signal::constants::SIGPROF),
+                (group.real.expire(wall), crate::signal::constants::SIGALRM),
+                (group.virtual_timer.expire(user), crate::signal::constants::SIGVTALRM),
+                (group.prof.expire(user.saturating_add(system)), crate::signal::constants::SIGPROF),
             ];
-            if !pending.iter().any(|(expired, _)| *expired) { continue; }
-            let group = timers.clone();
-            let fallback = thread.id;
             for (expired, sig) in pending {
                 if !expired { continue; }
                 let bit = crate::signal::constants::sig_mask(sig);
-                let recipient = self.threads.iter().find(|t| {
-                    t.state != ThreadState::Terminated
-                        && t.signal_timers.as_ref().is_some_and(|timers| alloc::sync::Arc::ptr_eq(timers, &group))
-                        && ((!t.signals.blocked.load(Ordering::Relaxed)
-                            | t.signals.wait_set.load(Ordering::Acquire)) & bit != 0)
-                }).map(|t| t.id).unwrap_or(fallback);
-                if let Some(target) = self.get_thread_mut(recipient) {
+                let member = |t: &&Box<Thread>| t.state != ThreadState::Terminated
+                    && t.signal_timers.as_ref().is_some_and(|timers| alloc::sync::Arc::ptr_eq(timers, &group));
+                let recipient = self.threads.iter().filter(member).find(|t| {
+                    (!t.signals.blocked.load(Ordering::Relaxed) | t.signals.wait_set.load(Ordering::Acquire)) & bit != 0
+                }).or_else(|| self.threads.iter().find(member)).map(|t| t.id);
+                if let Some(recipient) = recipient {
+                    let target = self.get_thread_mut(recipient).unwrap();
                     target.signals.timer_pending.fetch_or(bit, Ordering::Release);
                     let eligible = ((!target.signals.blocked.load(Ordering::Relaxed)
                         | target.signals.wait_set.load(Ordering::Acquire)) & bit) != 0;
@@ -4970,6 +4971,8 @@ impl Scheduler {
         }
     }
 
+    /// Wake expired sleep and I/O deadlines from the min-heap. Stale entries
+    /// are validated against the thread's current wait before they can wake it.
     pub fn wake_expired_timers(&mut self) {
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
@@ -7026,6 +7029,7 @@ pub struct ExecSchedCommit {
     tls_block: VirtAddr,
     new_page_table_root: u64,
     cpu_account: Option<alloc::sync::Arc<super::thread::CpuAccount>>,
+    signal_timers: Option<alloc::sync::Arc<crate::signal::IntervalTimers>>,
 }
 
 impl ExecSchedCommit {
@@ -7038,6 +7042,7 @@ impl ExecSchedCommit {
         tls_block: VirtAddr,
         new_page_table_root: u64,
         cpu_account: Option<alloc::sync::Arc<super::thread::CpuAccount>>,
+        signal_timers: Option<alloc::sync::Arc<crate::signal::IntervalTimers>>,
     ) -> Self {
         Self {
             thread_id,
@@ -7048,6 +7053,7 @@ impl ExecSchedCommit {
             tls_block,
             new_page_table_root,
             cpu_account,
+            signal_timers,
         }
     }
 
@@ -7066,10 +7072,14 @@ impl ExecSchedCommit {
             let mut applied = false;
             // The account the thread charged before, dropped once SCHEDULER is released.
             let mut replaced_account = None;
+            let mut replaced_timers = None;
             {
                 let mut scheduler_lock = lock_scheduler();
                 if let Some(sched) = scheduler_lock.as_mut() {
                     unpinned = sched.current_thread_id_inner() != Some(self.thread_id);
+                    if let (Some(timers), Some(cpu)) = (&self.signal_timers, &self.cpu_account) {
+                        sched.register_signal_timers(timers, cpu);
+                    }
                     if let Some(t) = sched.get_thread_mut(self.thread_id) {
                         #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
                         crate::task::ret_zero_pc_oracle::inject_exec_commit_if_armed(t);
@@ -7082,6 +7092,7 @@ impl ExecSchedCommit {
                         // The interval before exec belongs to the old thread group.
                         t.charge_cpu(crate::time::get_cpu_ticks());
                         replaced_account = core::mem::replace(&mut t.cpu_account, self.cpu_account);
+                        replaced_timers = core::mem::replace(&mut t.signal_timers, self.signal_timers);
                         t.state = crate::task::thread::ThreadState::Ready;
                         #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
                         crate::task::ret_zero_pc_oracle::record_exec_commit_inline_state(t);
@@ -7090,6 +7101,7 @@ impl ExecSchedCommit {
                 }
             }
             drop(replaced_account);
+            drop(replaced_timers);
 
             // Gate-pinned lines must take the serial lock so a concurrent writer cannot
             // tear their bytes. The scheduler guard above is already out of scope.

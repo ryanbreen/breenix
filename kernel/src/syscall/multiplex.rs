@@ -36,7 +36,7 @@ fn park(deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
     let already_ready = ready();
     let mut interrupted = false;
     while !already_ready {
-        if super::check_signals_for_eintr().is_some() {
+        if super::check_signals_for_wait().is_some() {
             interrupted = true;
             break;
         }
@@ -128,7 +128,7 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
             }
             return Ok(0);
         }
-        if super::check_signals_for_eintr().is_some() {
+        if super::check_signals_for_wait().is_some() {
             return Err(4);
         }
         // Register pipe readers before publishing the blocked state. The

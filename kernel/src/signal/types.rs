@@ -380,7 +380,7 @@ impl SignalState {
     }
 
     pub fn pending_set(&self) -> u64 {
-        self.pending | self.thread.timer_pending.load(Ordering::Acquire)
+        self.pending | (self.thread.timer_pending.load(Ordering::Acquire) & !self.ignored)
     }
 
     pub fn collect_timer_signals(&mut self) {
@@ -467,10 +467,10 @@ impl SignalState {
     /// information.
     #[inline]
     pub fn set_pending_info(&mut self, sig: u32, info: SigInfo) {
-        // POSIX.1-2024 2.4.1/2.4.3: choose discard at generation for ignored
-        // signals, including blocked ignored signals (an unspecified choice).
-        // https://pubs.opengroup.org/onlinepubs/9799919799/functions/V2_chap02.html
-        if is_valid_signal(sig) && self.ignored & sig_mask(sig) == 0 {
+        // Keep blocked default-ignored signals for synchronous acceptance,
+        // as Linux does. Explicit SIG_IGN still discards at generation.
+        if is_valid_signal(sig) && (self.ignored & sig_mask(sig) == 0
+            || self.is_blocked(sig) && self.get_handler(sig).is_default()) {
             if self.pending & sig_mask(sig) == 0 {
                 self.handlers.info[(sig - 1) as usize] = info;
             }
@@ -926,20 +926,20 @@ pub struct IntervalTimer {
     active: AtomicBool,
 }
 
-pub static ACTIVE_SIGNAL_TIMERS: AtomicU64 = AtomicU64::new(0);
-
 impl IntervalTimer {
     fn set_active(&self, active: bool) {
-        let old = self.active.swap(active, Ordering::AcqRel);
-        if active && !old { ACTIVE_SIGNAL_TIMERS.fetch_add(1, Ordering::Release); }
-        if !active && old { ACTIVE_SIGNAL_TIMERS.fetch_sub(1, Ordering::Release); }
+        self.active.store(active, Ordering::Release);
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
     }
 
     pub fn get_value(&self, now: u64) -> Itimerval {
         let value = self.value.lock();
         Itimerval {
             it_interval: Timeval::from_micros(value.1),
-            it_value: Timeval::from_micros(value.0.saturating_sub(now)),
+            it_value: Timeval::from_micros(if value.0 == 0 { 0 } else { value.0.saturating_sub(now).max(1) }),
         }
     }
 
@@ -947,7 +947,7 @@ impl IntervalTimer {
         let mut value = self.value.lock();
         let old = Itimerval {
             it_interval: Timeval::from_micros(value.1),
-            it_value: Timeval::from_micros(value.0.saturating_sub(now)),
+            it_value: Timeval::from_micros(if value.0 == 0 { 0 } else { value.0.saturating_sub(now).max(1) }),
         };
         let delay = new.it_value.to_micros();
         *value = (
@@ -981,10 +981,6 @@ impl IntervalTimer {
     }
 }
 
-impl Drop for IntervalTimer {
-    fn drop(&mut self) { self.set_active(false); }
-}
-
 /// Clocks: monotonic microseconds, process user microseconds, process total
 /// CPU microseconds. Thread-group rows share the same timers.
 #[derive(Default)]
@@ -995,6 +991,10 @@ pub struct IntervalTimers {
 }
 
 impl IntervalTimers {
+    pub fn is_active(&self) -> bool {
+        self.real.is_active() || self.virtual_timer.is_active() || self.prof.is_active()
+    }
+
     pub fn timer(&self, which: i32) -> &IntervalTimer {
         match which {
             itimer::ITIMER_REAL => &self.real,
@@ -1007,4 +1007,10 @@ impl IntervalTimers {
 pub fn monotonic_micros() -> u64 {
     let (sec, ns) = crate::time::get_monotonic_time_ns();
     sec.saturating_mul(1_000_000).saturating_add(ns / 1000)
+}
+
+/// Nanosecond clock for relative waits, without rounding their start down.
+pub fn monotonic_nanos() -> u64 {
+    let (sec, ns) = crate::time::get_monotonic_time_ns();
+    sec.saturating_mul(1_000_000_000).saturating_add(ns)
 }

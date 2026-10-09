@@ -620,6 +620,29 @@ pub fn check_signals_for_eintr() -> Option<i32> {
     None
 }
 
+/// Handle job-control stops without completing an interruptible wait. Only
+/// caught or fatal signals end the wait; SIGCONT resumes its existing deadline
+/// and temporary mask. Called with syscall preemption disabled and no PM guard.
+pub fn check_signals_for_wait() -> Option<i32> {
+    let tid = crate::task::scheduler::current_thread_id()?;
+    loop {
+        let mut guard = crate::process::manager();
+        let (_, p) = guard.as_mut()?.find_process_by_thread_mut(tid)?;
+        p.signals.collect_timer_signals();
+        if crate::signal::delivery::stop_pending_or_in_force(p) {
+            drop(guard);
+            crate::signal::delivery::hold_stopped_thread_on_syscall_return();
+            continue;
+        }
+        let sig = p.signals.next_deliverable_signal()?;
+        let action = p.signals.get_handler(sig);
+        if action.is_handler() || crate::signal::delivery::fatal_exit_code(sig).is_some() {
+            return Some(errno::EINTR);
+        }
+        p.signals.clear_pending(sig);
+    }
+}
+
 /// `check_signals_for_eintr` for a wait that SA_RESTART resumes: blocking
 /// read and write on pipes, FIFOs, sockets and terminals, wait4, accept, a
 /// blocking FIFO open and F_SETLKW. Returns Some(EINTR) when the interrupting

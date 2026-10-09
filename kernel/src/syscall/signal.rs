@@ -894,13 +894,13 @@ pub fn sys_pause() -> SyscallResult {
 /// Resume the syscall's kernel frame, then deliver on its normal user return.
 fn wait_for_signal(thread_id: u64) {
     loop {
+        if super::check_signals_for_wait().is_some() {
+            break;
+        }
         crate::task::scheduler::with_scheduler(|sched| {
             sched.block_current_for_signal();
         });
-        let eligible = manager()
-            .as_ref()
-            .and_then(|m| m.find_process_by_thread(thread_id))
-            .is_some_and(|(_, p)| p.signals.has_deliverable_signals());
+        let eligible = super::check_signals_for_wait().is_some();
         if eligible {
             break;
         }
@@ -1348,6 +1348,10 @@ pub fn sys_alarm(seconds: u64) -> SyscallResult {
         .itimers
         .real
         .set_value(&value, crate::signal::monotonic_micros());
+    let timers = p.itimers.clone();
+    let cpu = p.cpu.clone();
+    drop(guard);
+    crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&timers, &cpu));
     SyscallResult::Ok(old.it_value.to_micros().div_ceil(1_000_000))
 }
 
@@ -1528,6 +1532,7 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
             timer.get_value(now)
         };
 
+        crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&process.itimers, &process.cpu));
         old_itimerval
     };
 
@@ -1728,8 +1733,7 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
             return SyscallResult::Err(22);
         }
         Some(
-            crate::signal::monotonic_micros()
-                .saturating_mul(1000)
+            crate::signal::monotonic_nanos()
                 .saturating_add((ts.tv_sec as u64).saturating_mul(1_000_000_000))
                 .saturating_add(ts.tv_nsec as u64),
         )
@@ -1749,6 +1753,8 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
         m.route_pending_signals_to(tid);
     }
     let result = loop {
+        // Stops resume this wait rather than returning a spurious EINTR.
+        let interrupted = super::check_signals_for_wait().is_some();
         crate::task::scheduler::with_scheduler(|sched| {
             if let Some(deadline) = deadline {
                 sched.block_current_for_timer(deadline);
@@ -1756,35 +1762,39 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
                 sched.block_current_for_signal();
             }
         });
-        {
+        let accepted = {
             let mut guard = manager();
-            let Some((_, p)) = guard
-                .as_mut()
-                .and_then(|m| m.find_process_by_thread_mut(tid))
-            else {
+            let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) else {
                 break SyscallResult::Err(3);
             };
             p.signals.collect_timer_signals();
             let pending = p.signals.pending & set;
-            if pending != 0 {
+            if pending == 0 {
+                None
+            } else {
                 let sig = pending.trailing_zeros() + 1;
-                let info = p.signals.pending_info(sig).to_linux(sig);
-                // Do not consume a signal if the output buffer is invalid.
-                if info_ptr != 0 {
-                    if let Err(e) =
-                        copy_to_user(info_ptr as *mut crate::signal::LinuxSigInfo, &info)
-                    {
-                        break SyscallResult::Err(e);
-                    }
+                let info = p.signals.pending_info(sig);
+                Some((sig, info))
+            }
+        };
+        if let Some((sig, info)) = accepted {
+            if info_ptr != 0 {
+                if let Err(e) = copy_to_user(info_ptr as *mut crate::signal::LinuxSigInfo, &info.to_linux(sig)) {
+                    break SyscallResult::Err(e);
                 }
+            }
+            // Keep it pending through the copy so EFAULT never consumes it.
+            // wait_set prevents another accepting thread from retargeting it.
+            let mut guard = manager();
+            if let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) {
                 p.signals.clear_pending(sig);
-                break SyscallResult::Ok(sig as u64);
             }
-            if p.signals.has_deliverable_signals() {
-                break SyscallResult::Err(4);
-            }
+            break SyscallResult::Ok(sig as u64);
         }
-        if deadline.is_some_and(|end| crate::signal::monotonic_micros().saturating_mul(1000) >= end)
+        if interrupted || super::check_signals_for_wait().is_some() {
+            break SyscallResult::Err(4);
+        }
+        if deadline.is_some_and(|end| crate::signal::monotonic_nanos() >= end)
         {
             break SyscallResult::Err(11);
         }
