@@ -10,7 +10,6 @@
 use super::constants::*;
 use super::types::*;
 use crate::memory::anon_map::PrepareWriteError;
-use crate::memory::process_memory::ProcessPageTable;
 use crate::process::process::{JobReport, Process};
 use crate::process::{ProcessId, ProcessManager};
 
@@ -59,7 +58,7 @@ pub enum SignalDeliveryResult {
 ///
 /// # Arguments
 /// * `process` - The process to deliver signals to
-/// * `shared_table` - The owner's page table when `process` is a CLONE_VM thread
+/// * `shared_table` - The address-space owner when `process` is a CLONE_VM thread
 /// * `interrupt_frame` - The interrupt frame that will be used to return to userspace
 /// * `saved_regs` - The saved general-purpose registers
 ///
@@ -71,7 +70,7 @@ pub enum SignalDeliveryResult {
 #[cfg(target_arch = "x86_64")]
 pub fn deliver_pending_signals(
     process: &mut Process,
-    mut shared_table: Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
+    mut shared_table: Option<&mut Process>,
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
@@ -157,7 +156,7 @@ pub fn deliver_pending_signals(
 ///
 /// # Arguments
 /// * `process` - The process to deliver signals to
-/// * `shared_table` - The owner's page table when `process` is a CLONE_VM thread
+/// * `shared_table` - The address-space owner when `process` is a CLONE_VM thread
 /// * `exception_frame` - The exception frame that will be used to return to userspace
 /// * `saved_regs` - The saved general-purpose registers
 ///
@@ -169,7 +168,7 @@ pub fn deliver_pending_signals(
 #[cfg(target_arch = "aarch64")]
 pub fn deliver_pending_signals(
     process: &mut Process,
-    mut shared_table: Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
+    mut shared_table: Option<&mut Process>,
     exception_frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
@@ -313,22 +312,23 @@ fn defer_frame_fault_exit(process: &Process) -> SignalDeliveryResult {
 /// would.
 fn write_signal_stack(
     process: &mut Process,
-    shared_table: &mut Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
+    shared_table: &mut Option<&mut Process>,
     addr: u64,
     bytes: &[u8],
 ) -> Result<(), PrepareWriteError> {
-    if process.page_table.is_some() && addr < process.user_stack_bottom {
-        let _ = process.grow_user_stack(addr);
-    }
     let pid = process.id.as_u64();
-    let (table, vmas) = match process.page_table.as_deref_mut() {
-        Some(table) => (table, process.vmas.as_slice()),
-        None => match shared_table.as_mut() {
-            Some((table, vmas)) => (&mut **table, *vmas),
-            None => return Err(PrepareWriteError::Fault),
-        },
+    let owner = if process.page_table.is_some() {
+        process
+    } else {
+        shared_table
+            .as_deref_mut()
+            .ok_or(PrepareWriteError::Fault)?
     };
-    crate::memory::anon_map::prepare_write(table, vmas, addr, bytes.len())?;
+    crate::memory::anon_map::prepare_write(owner, addr, bytes.len())?;
+    let table = owner
+        .page_table
+        .as_deref_mut()
+        .ok_or(PrepareWriteError::Fault)?;
     if table.write_user_memory(addr, bytes, pid) {
         Ok(())
     } else {
@@ -448,7 +448,7 @@ pub struct X86UserReturn {
 #[cfg(target_arch = "x86_64")]
 fn deliver_to_user_handler_x86_64(
     process: &mut Process,
-    shared_table: &mut Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
+    shared_table: &mut Option<&mut Process>,
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
     sig: u32,
@@ -489,7 +489,7 @@ fn deliver_to_user_handler_x86_64(
 #[cfg(target_arch = "x86_64")]
 pub fn deliver_caught_signal_on_syscall_return(
     process: &mut Process,
-    mut shared_table: Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
+    mut shared_table: Option<&mut Process>,
     user_return: &mut X86UserReturn,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> SignalDeliveryResult {
@@ -575,7 +575,7 @@ fn fault_address(sig: u32, info: &SigInfo) -> u64 {
 #[cfg(target_arch = "x86_64")]
 fn install_user_handler_x86_64(
     process: &mut Process,
-    shared_table: &mut Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
+    shared_table: &mut Option<&mut Process>,
     user_return: &mut X86UserReturn,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
     sig: u32,
@@ -773,7 +773,7 @@ fn install_user_handler_x86_64(
 #[cfg(target_arch = "aarch64")]
 fn deliver_to_user_handler_aarch64(
     process: &mut Process,
-    shared_table: &mut Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
+    shared_table: &mut Option<&mut Process>,
     exception_frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
     sig: u32,

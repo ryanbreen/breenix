@@ -394,7 +394,7 @@
     {
       "id": "signals",
       "title": "Signals",
-      "outcome": "Signals are generated, blocked, delivered and handled as POSIX specifies on all four targets, including realtime signals, interval timers and frames on untouched anonymous alternate stacks and cached private-file alternate stacks, including resident copy-on-write pages.",
+      "outcome": "Signals are generated, blocked, delivered and handled as POSIX specifies on all four targets, including realtime signals, interval timers and frames on demand-grown main stacks and untouched anonymous and private-file alternate stacks, including cache holes, resident copy-on-write pages and CLONE_VM ownership.",
       "suite": "signals",
       "area": "Signals",
       "subsystems": [
@@ -440,7 +440,7 @@
         },
         {
           "id": "frames",
-          "title": "Anonymous and cached private-file signal frames",
+          "title": "Demand-backed signal frames",
           "measure": {
             "suite": "signals",
             "categories": [

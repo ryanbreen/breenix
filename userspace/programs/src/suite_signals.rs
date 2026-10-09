@@ -3334,7 +3334,14 @@ fn frame_clone_vm() -> CaseResult {
     // Use the owner's main-stack reservation from the sibling: its pthread
     // stack is an mmap, and touching that would miss owner stack growth.
     let sp = demand_stack_sp();
-    let thread = std::thread::spawn(move || check_demand_frame(sp));
+    let thread = std::thread::spawn(move || -> Checked {
+        check_demand_frame(sp)?;
+        // Both the VMA and file binding belong to the owner row too. Exercise
+        // cached private bytes and post-mmap cache holes through that row.
+        fresh_file_frame(false).map_err(msg)?;
+        fresh_file_frame(true).map_err(msg)?;
+        Ok(())
+    });
     join(thread)?;
     check(SEEN_TID.load(Ordering::SeqCst) != gettid(), "the CLONE_VM sibling did not run the handler")
 }
@@ -3391,7 +3398,7 @@ fn frame_unpopulated_file() -> CaseResult { fresh_file_frame(false) }
 fn frame_cache_hole() -> CaseResult { fresh_file_frame(true) }
 
 fn frame_invalid() -> CaseResult {
-    // Permission, mapping lifetime, EOF, and the main stack growth cap.
+    // Permission, mapping lifetime, reservation, and the main stack growth cap.
     for destination in 0..4 {
         let mut child = Child::start(|| {
             if destination == 3 {

@@ -93,6 +93,15 @@ impl Process {
         {
             return false;
         }
+        // Growth must not overwrite another live mapping on the way down.
+        if page_aligned < stack_bottom
+            && self
+                .vmas
+                .iter()
+                .any(|v| v.start.as_u64() < stack_bottom && v.end.as_u64() > page_aligned)
+        {
+            return false;
+        }
         let Some(page_table) = self.page_table.as_mut() else {
             return false;
         };
