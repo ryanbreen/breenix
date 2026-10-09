@@ -105,6 +105,12 @@ pub fn init_idt() {
             .set_handler_fn(general_protection_fault_handler);
         idt.stack_segment_fault
             .set_handler_fn(stack_segment_fault_handler);
+        // x87 and SSE floating-point exceptions (CR0.NE and CR4.OSXMMEXCPT
+        // are set, so they arrive here rather than as IRQ 13 or #UD) and
+        // alignment checks: from Ring 3, SIGFPE and SIGBUS.
+        idt.x87_floating_point.set_handler_fn(x87_floating_point_handler);
+        idt.simd_floating_point.set_handler_fn(simd_floating_point_handler);
+        idt.alignment_check.set_handler_fn(alignment_check_handler);
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault_handler)
@@ -587,55 +593,125 @@ fn dispatch_virtio_sound_interrupts() {
     crate::drivers::virtio::sound::handle_interrupt();
 }
 
-/// Raise fault signal `sig` (`code`, `addr`) for the thread this CPU was
-/// running in Ring 3, with the process manager held, as Linux's
-/// force_sig_fault. Returns whether a handler will run for it.
+/// Raise fault signal `sig` with `info` for the thread this CPU was running
+/// in Ring 3, with the process manager held, as Linux's force_sig_fault.
+/// Returns whether a handler will run for it, or None when the thread has no
+/// process.
 fn raise_user_fault_signal_locked(
     manager: &mut crate::process::ProcessManager,
     sig: u32,
-    code: i32,
-    addr: u64,
-) -> bool {
+    info: crate::signal::types::SigInfo,
+) -> Option<bool> {
     crate::per_cpu::current_thread_id_lock_free()
         .and_then(|tid| manager.find_process_by_thread_mut(tid))
-        .is_some_and(|(_, process)| {
-            crate::signal::delivery::raise_fault_signal(
-                process,
-                sig,
-                crate::signal::types::SigInfo::fault(code, addr),
-            )
-        })
+        .map(|(_, process)| crate::signal::delivery::raise_fault_signal(process, sig, info))
 }
 
-/// A Ring 3 fault whose signal is taken whatever its action: raise it and
-/// send this CPU the reschedule vector, whose return path delivers it, so
-/// the handler runs, or the default action ends the process, before the
-/// faulting instruction runs again. A busy process manager leaves the
-/// instruction to fault again. Runs with the kernel's GS.
-fn deliver_user_fault_signal(sig: u32, code: i32, addr: u64) {
-    if let Some(mut guard) = crate::process::try_manager() {
-        if let Some(manager) = guard.as_mut() {
-            raise_user_fault_signal_locked(manager, sig, code, addr);
+/// A Ring 3 fault the kernel does not resolve, other than #PF and #GP: raise
+/// `sig` with `info` for the thread. When a handler will run, this CPU is
+/// sent the reschedule vector, whose return path delivers the signal before
+/// the instruction runs again. Otherwise the default action ends the process
+/// (`end_faulting_user_thread`) and the exception returns to the idle loop.
+/// A busy process manager leaves the instruction to fault again.
+///
+/// Unlike an assembly interrupt entry, x86-interrupt does not switch GS: the
+/// kernel's is taken here, and the user's restored for a return to Ring 3.
+fn user_fault(stack_frame: &mut InterruptStackFrame, sig: u32, info: crate::signal::types::SigInfo) {
+    unsafe {
+        core::arch::asm!("swapgs", options(nostack, preserves_flags));
+    }
+    let caught = crate::process::try_manager().map(|mut guard| {
+        guard
+            .as_mut()
+            .and_then(|manager| raise_user_fault_signal_locked(manager, sig, info))
+    });
+    match caught {
+        Some(Some(false)) => {
+            crate::per_cpu::preempt_disable();
+            end_faulting_user_thread(
+                stack_frame,
+                crate::per_cpu::current_thread_id_lock_free(),
+                crate::signal::delivery::fault_death_exit_code(sig),
+                crate::tracing::providers::sched::DispatchAbandonSite::ExceptionUserFault,
+            );
+            // The frame returns to the idle loop, with the kernel's GS.
+            return;
         }
-        drop(guard);
-        crate::task::scheduler::retry_after_interrupts_x86();
+        Some(Some(true)) => crate::task::scheduler::retry_after_interrupts_x86(),
+        Some(None) | None => {}
+    }
+    unsafe {
+        core::arch::asm!("swapgs", options(nostack, preserves_flags));
     }
 }
 
-extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFrame) {
+/// End the thread this CPU was running in Ring 3 when its fault's signal
+/// takes its default action. The process exit, with status `exit_code`,
+/// runs in the fault-exit kernel thread, not here in exception
+/// context (#511): it closes descriptors and wakes threads that may be
+/// running on other CPUs, ends the rest of the thread group, and it can
+/// block. The thread is made non-runnable now so nothing dispatches it
+/// again, and the frame is rewritten to return to the idle loop.
+///
+/// Called with the kernel's GS and with the exception's preempt_disable() in
+/// force, which this releases.
+fn end_faulting_user_thread(
+    stack_frame: &mut InterruptStackFrame,
+    thread_id: Option<u64>,
+    exit_code: i32,
+    site: crate::tracing::providers::sched::DispatchAbandonSite,
+) {
+    if let Some(thread_id) = thread_id {
+        if !crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
+            log::error!("Fault exit of thread {} lost: no memory to queue it", thread_id);
+        }
+        crate::task::scheduler::terminate_thread(thread_id);
+    }
+
+    // Re-enable preemption before scheduling
+    crate::per_cpu::preempt_enable();
+
+    // Force a reschedule to pick up the next thread
+    crate::task::scheduler::set_need_resched();
+
+    // Switch CR3 back to kernel page table
+    unsafe {
+        use x86_64::registers::control::Cr3;
+        use x86_64::structures::paging::PhysFrame;
+        let kernel_cr3 = crate::per_cpu::get_kernel_cr3();
+        if kernel_cr3 != 0 {
+            Cr3::write(
+                PhysFrame::containing_address(x86_64::PhysAddr::new(kernel_cr3)),
+                Cr3::read().1,
+            );
+        }
+    }
+
+    // CRITICAL: Set exception cleanup context so can_schedule() returns true
+    // This allows scheduling from kernel mode after terminating a process
+    crate::per_cpu::set_exception_cleanup_context();
+
+    // CRITICAL: Update scheduler to point to idle thread BEFORE modifying exception frame.
+    // This ensures subsequent timer interrupts can properly schedule other threads.
+    crate::task::scheduler::switch_to_idle();
+    // #772 diagnostics: this vector ends a dispatch without saving a
+    // context and without touching the dispatch mark.
+    crate::tracing::providers::sched::trace_dispatch_abandon(site);
+
+    // CR3 is already the kernel table. Rewrite the frame last, using the
+    // scheduler-owned idle thread stack rather than the dying thread's stack.
+    context_switch::setup_idle_return(stack_frame);
+}
+
+extern "x86-interrupt" fn divide_by_zero_handler(mut stack_frame: InterruptStackFrame) {
     if stack_frame.code_segment.0 & 3 == 3 {
-        // As #UD below: SIGFPE, delivered before the instruction runs again.
-        unsafe {
-            core::arch::asm!("swapgs", options(nostack, preserves_flags));
-        }
-        deliver_user_fault_signal(
+        let rip = stack_frame.instruction_pointer.as_u64();
+        user_fault(
+            &mut stack_frame,
             crate::signal::constants::SIGFPE,
-            crate::signal::constants::FPE_INTDIV,
-            stack_frame.instruction_pointer.as_u64(),
+            crate::signal::types::SigInfo::fault(crate::signal::constants::FPE_INTDIV, rip)
+                .from_trap(0, 0),
         );
-        unsafe {
-            core::arch::asm!("swapgs", options(nostack, preserves_flags));
-        }
         return;
     }
     // Increment preempt count on exception entry
@@ -656,24 +732,15 @@ extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFram
     }
 }
 
-extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn invalid_opcode_handler(mut stack_frame: InterruptStackFrame) {
     if stack_frame.code_segment.0 & 3 == 3 {
-        // Unlike an assembly interrupt entry, x86-interrupt does not switch GS.
-        // Queue the synchronous fault with kernel GS, then retry the instruction.
-        // The reschedule vector's return path owns the full register frame and
-        // delivers SIGILL through the ordinary signal dispositions before the
-        // instruction runs again.
-        unsafe {
-            core::arch::asm!("swapgs", options(nostack, preserves_flags));
-        }
-        deliver_user_fault_signal(
+        let rip = stack_frame.instruction_pointer.as_u64();
+        user_fault(
+            &mut stack_frame,
             crate::signal::constants::SIGILL,
-            crate::signal::constants::ILL_ILLOPN,
-            stack_frame.instruction_pointer.as_u64(),
+            crate::signal::types::SigInfo::fault(crate::signal::constants::ILL_ILLOPN, rip)
+                .from_trap(6, 0),
         );
-        unsafe {
-            core::arch::asm!("swapgs", options(nostack, preserves_flags));
-        }
         return;
     }
     // Increment preempt count on exception entry
@@ -696,6 +763,54 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
     }
 
     // Note: preempt_enable() not called here since we enter infinite loop or exit
+}
+
+/// #MF: an unmasked x87 exception, reported at the next x87 instruction. From
+/// Ring 3, SIGFPE with the si_code of the flagged exception and si_addr at
+/// the reporting instruction, as Linux reports it. The faulting thread owns
+/// this CPU's x87 registers, which the kernel never uses (`fpu`).
+extern "x86-interrupt" fn x87_floating_point_handler(mut stack_frame: InterruptStackFrame) {
+    if stack_frame.code_segment.0 & 3 == 3 {
+        let rip = stack_frame.instruction_pointer.as_u64();
+        let code = crate::arch_impl::x86_64::fpu::FpuState::capture().x87_fault_code();
+        user_fault(
+            &mut stack_frame,
+            crate::signal::constants::SIGFPE,
+            crate::signal::types::SigInfo::fault(code, rip).from_trap(16, 0),
+        );
+        return;
+    }
+    panic!("x87 floating-point exception in the kernel at {:#x}", stack_frame.instruction_pointer.as_u64());
+}
+
+/// #XM: an unmasked SSE exception. From Ring 3, SIGFPE as for #MF, from MXCSR.
+extern "x86-interrupt" fn simd_floating_point_handler(mut stack_frame: InterruptStackFrame) {
+    if stack_frame.code_segment.0 & 3 == 3 {
+        let rip = stack_frame.instruction_pointer.as_u64();
+        let code = crate::arch_impl::x86_64::fpu::FpuState::capture().simd_fault_code();
+        user_fault(
+            &mut stack_frame,
+            crate::signal::constants::SIGFPE,
+            crate::signal::types::SigInfo::fault(code, rip).from_trap(19, 0),
+        );
+        return;
+    }
+    panic!("SIMD floating-point exception in the kernel at {:#x}", stack_frame.instruction_pointer.as_u64());
+}
+
+/// #AC: a misaligned access with alignment checking on, which only Ring 3 can
+/// enable. SIGBUS, BUS_ADRALN; the CPU does not report the address.
+extern "x86-interrupt" fn alignment_check_handler(mut stack_frame: InterruptStackFrame, error_code: u64) {
+    if stack_frame.code_segment.0 & 3 == 3 {
+        user_fault(
+            &mut stack_frame,
+            crate::signal::constants::SIGBUS,
+            crate::signal::types::SigInfo::fault(crate::signal::constants::BUS_ADRALN, 0)
+                .from_trap(17, error_code),
+        );
+        return;
+    }
+    panic!("alignment check in the kernel at {:#x}", stack_frame.instruction_pointer.as_u64());
 }
 
 /// Handle a Copy-on-Write page fault
@@ -1215,6 +1330,33 @@ extern "x86-interrupt" fn page_fault_handler(
         match outcome {
             crate::memory::file_map::FaultOutcome::NotFile => {}
             crate::memory::file_map::FaultOutcome::Signal(_) if !from_user => {}
+            crate::memory::file_map::FaultOutcome::Signal(sig) => {
+                // Raised for the thread. A handler runs on the reschedule
+                // vector's return; the default action ends the process here.
+                // A busy process manager leaves the access to fault again.
+                let caught = crate::process::try_manager().map(|guard| {
+                    let thread = crate::per_cpu::current_thread_id_lock_free();
+                    guard.as_ref().is_some_and(|manager| {
+                        thread
+                            .and_then(|tid| manager.find_process_by_thread(tid))
+                            .is_none_or(|(_, process)| process.signals.get_handler(sig).is_handler())
+                    })
+                });
+                match caught {
+                    Some(true) => crate::task::scheduler::retry_after_interrupts_x86(),
+                    Some(false) => {
+                        crate::per_cpu::preempt_disable();
+                        end_faulting_user_thread(
+                            &mut stack_frame,
+                            crate::per_cpu::current_thread_id_lock_free(),
+                            crate::signal::delivery::fault_death_exit_code(sig),
+                            crate::tracing::providers::sched::DispatchAbandonSite::ExceptionPageFault,
+                        );
+                    }
+                    None => {}
+                }
+                return;
+            }
             _ => return,
         }
     }
@@ -1362,9 +1504,9 @@ extern "x86-interrupt" fn page_fault_handler(
                 raise_user_fault_signal_locked(
                     manager,
                     crate::signal::constants::SIGSEGV,
-                    code,
-                    accessed_addr.as_u64(),
-                )
+                    crate::signal::types::SigInfo::fault(code, accessed_addr.as_u64())
+                        .from_trap(14, error_code.bits()),
+                ) == Some(true)
             });
         drop(guard);
         if caught {
@@ -1645,9 +1787,20 @@ extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn stack_segment_fault_handler(
-    stack_frame: InterruptStackFrame,
+    mut stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
+    // From Ring 3 (a non-canonical stack address, say): SIGBUS, SI_KERNEL,
+    // as Linux reports it.
+    if stack_frame.code_segment.0 & 3 == 3 {
+        user_fault(
+            &mut stack_frame,
+            crate::signal::constants::SIGBUS,
+            crate::signal::types::SigInfo::kernel().from_trap(12, error_code),
+        );
+        return;
+    }
+
     // Increment preempt count on exception entry
     crate::per_cpu::preempt_disable();
 
@@ -1876,9 +2029,8 @@ extern "x86-interrupt" fn general_protection_fault_handler(
                 raise_user_fault_signal_locked(
                     pm,
                     crate::signal::constants::SIGSEGV,
-                    crate::signal::constants::SI_KERNEL,
-                    0,
-                )
+                    crate::signal::types::SigInfo::kernel().from_trap(13, error_code),
+                ) == Some(true)
             });
             if caught {
                 drop(guard);

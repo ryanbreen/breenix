@@ -1104,6 +1104,20 @@ fn next_reclaim_pass_id(mut pass: u32) -> u32 {
 /// Returns false only when this CPU's ring is full and the heap could not
 /// grow the overflow list; the exit is then lost and the caller says so.
 pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
+    defer_fault_exit(thread_id, -(crate::signal::constants::SIGSEGV as i32))
+}
+
+/// A queued fault exit: the thread id, with the negated exit status in the
+/// top byte. Thread ids are allocated upward from 1 and never reach that
+/// byte, and the entry is never 0, the empty slot.
+const FAULT_EXIT_STATUS_SHIFT: u32 = 56;
+
+/// Defer the exit of the process of user thread `thread_id`, ended by a fault
+/// signal's default action with `exit_code` (-1 to -255: the signal, with
+/// 0x80 for a core dump). The rest of its thread group dies with it. Returns
+/// false as `defer_fault_sigsegv_exit`.
+pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
+    let thread_id = thread_id | (exit_code.unsigned_abs() as u8 as u64) << FAULT_EXIT_STATUS_SHIFT;
     #[cfg(target_arch = "aarch64")]
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     #[cfg(target_arch = "x86_64")]
@@ -1128,8 +1142,18 @@ pub fn drain_deferred_fault_sigsegv_exits() {
         buf.drain(&mut tids);
     }
     crate::arch_without_interrupts(|| tids.append(&mut DEFERRED_FAULT_EXIT_OVERFLOW.lock()));
-    for tid in tids {
-        ProcessScheduler::handle_thread_exit(tid, -11);
+    for entry in tids {
+        let tid = entry & ((1 << FAULT_EXIT_STATUS_SHIFT) - 1);
+        let exit_code = -((entry >> FAULT_EXIT_STATUS_SHIFT) as i32);
+        // A fatal signal ends the whole process, not one thread (POSIX).
+        let pid = crate::process::with_process_manager(|manager| {
+            manager.find_process_by_thread(tid).map(|(pid, _)| pid)
+        })
+        .flatten();
+        if let Some(pid) = pid {
+            crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
+        }
+        ProcessScheduler::handle_thread_exit(tid, exit_code);
     }
 }
 

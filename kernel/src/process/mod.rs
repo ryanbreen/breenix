@@ -103,6 +103,9 @@ pub struct TryProcessManagerGuard {
 
 impl Drop for TryProcessManagerGuard {
     fn drop(&mut self) {
+        if let Some(manager) = self.guard.as_mut() {
+            manager.finish_group_resets();
+        }
         note_process_manager_lock_released();
 
         // Same ordering rule as ProcessManagerGuard::drop: release the lock
@@ -146,6 +149,9 @@ impl core::ops::DerefMut for TryProcessManagerGuard {
 
 impl Drop for ProcessManagerGuard {
     fn drop(&mut self) {
+        if let Some(manager) = self._guard.as_mut() {
+            manager.finish_group_resets();
+        }
         // Clear owner metadata before the mutex becomes available to another CPU.
         note_process_manager_lock_released();
 
@@ -409,7 +415,11 @@ where
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut manager_lock = PROCESS_MANAGER.lock();
         note_process_manager_lock_acquired();
-        let result = manager_lock.as_mut().map(f);
+        let result = manager_lock.as_mut().map(|manager| {
+            let result = f(manager);
+            manager.finish_group_resets();
+            result
+        });
         note_process_manager_lock_released();
         drop(manager_lock);
         result
@@ -506,7 +516,11 @@ where
     crate::arch_impl::aarch64::cpu::without_interrupts(|| {
         let mut manager_lock = PROCESS_MANAGER.lock();
         note_process_manager_lock_acquired();
-        let result = manager_lock.as_mut().map(f);
+        let result = manager_lock.as_mut().map(|manager| {
+            let result = f(manager);
+            manager.finish_group_resets();
+            result
+        });
         note_process_manager_lock_released();
         drop(manager_lock);
         result

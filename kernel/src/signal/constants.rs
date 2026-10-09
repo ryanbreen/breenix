@@ -106,6 +106,14 @@ pub const SEGV_ACCERR: i32 = 2;
 pub const BUS_ADRALN: i32 = 1;
 /// SIGBUS: no backing for the address
 pub const BUS_ADRERR: i32 = 2;
+/// SIGBUS: a hardware error at the address (external abort, parity or ECC)
+pub const BUS_OBJERR: i32 = 3;
+/// SIGTRAP: a breakpoint instruction
+pub const TRAP_BRKPT: i32 = 1;
+/// SIGTRAP: a single step
+pub const TRAP_TRACE: i32 = 2;
+/// SIGTRAP: a hardware breakpoint or watchpoint
+pub const TRAP_HWBKPT: i32 = 4;
 /// SIGILL: illegal opcode
 pub const ILL_ILLOPC: i32 = 1;
 /// SIGILL: illegal operand

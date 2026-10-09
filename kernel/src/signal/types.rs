@@ -32,10 +32,10 @@ impl Default for StackT {
     }
 }
 
-/// Per-process alternate signal stack state
-///
-/// Stores the configured alternate stack and whether we're currently
-/// executing on it.
+/// Per-process alternate signal stack state: the configured stack. Whether a
+/// thread is running on it is a property of its stack pointer (`on_stack`),
+/// as on Linux, so a handler left by longjmp or a stack switch is not taken
+/// for one still running there.
 #[derive(Debug, Clone, Copy)]
 pub struct AltStack {
     /// Base address of the alternate stack
@@ -44,13 +44,36 @@ pub struct AltStack {
     pub size: usize,
     /// Flags (SS_DISABLE if disabled)
     pub flags: u32,
-    /// True if currently executing a signal handler on this stack
-    pub on_stack: bool,
 }
 
 impl Default for AltStack {
     fn default() -> Self {
-        Self { base: 0, size: 0, flags: SS_DISABLE, on_stack: false }
+        Self { base: 0, size: 0, flags: SS_DISABLE }
+    }
+}
+
+impl AltStack {
+    /// Whether user stack pointer `sp` is on this alternate stack. The stack
+    /// grows down, so its top, `base + size`, is on it and `base` is not.
+    pub fn on_stack(&self, sp: u64) -> bool {
+        self.flags & SS_DISABLE == 0 && sp > self.base && sp - self.base <= self.size as u64
+    }
+
+    /// The `stack_t` sigaltstack and a handler's `uc_stack` report for a
+    /// thread whose stack pointer is `sp`.
+    pub fn stack_t(&self, sp: u64) -> StackT {
+        StackT {
+            ss_sp: self.base,
+            ss_flags: if self.on_stack(sp) {
+                SS_ONSTACK as i32
+            } else if self.flags & SS_DISABLE != 0 {
+                SS_DISABLE as i32
+            } else {
+                0
+            },
+            _pad: 0,
+            ss_size: self.size,
+        }
     }
 }
 
@@ -154,29 +177,57 @@ pub struct SigInfo {
     pub code: i32,
     /// Bytes 16..32 of the Linux `siginfo_t`.
     pub fields: [u64; 2],
+    /// For a fault, what the handler's machine context reports about the
+    /// exception besides si_addr: on x86-64 the vector (`trapno`) and error
+    /// code (`err`), on ARM64 the ESR (its `esr_context` record). Zero for
+    /// any other signal.
+    pub trap: Trap,
+}
+
+/// The exception a fault signal came from, as its sigcontext reports it.
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct Trap {
+    /// x86-64 exception vector; unused on ARM64.
+    pub number: u64,
+    /// x86-64 error code, or the ARM64 ESR.
+    pub error: u64,
 }
 
 impl SigInfo {
     /// A signal the kernel generated with no sender (SI_KERNEL).
     pub const fn kernel() -> Self {
-        Self { code: SI_KERNEL, fields: [0, 0] }
+        Self { code: SI_KERNEL, fields: [0, 0], trap: Trap { number: 0, error: 0 } }
     }
 
     /// A signal sent by a process: `code` SI_USER or SI_TKILL, with the
     /// sender's PID and real user ID.
     pub const fn sender(code: i32, pid: u32, uid: u32) -> Self {
-        Self { code, fields: [pid as u64 | (uid as u64) << 32, 0] }
+        Self { fields: [pid as u64 | (uid as u64) << 32, 0], ..Self::with_code(code) }
     }
 
     /// A fault at `addr` (si_addr).
     pub const fn fault(code: i32, addr: u64) -> Self {
-        Self { code, fields: [addr, 0] }
+        Self { fields: [addr, 0], ..Self::with_code(code) }
+    }
+
+    /// This fault's siginfo, raised by exception `number` with error code
+    /// (or ESR) `error`.
+    pub const fn from_trap(self, number: u64, error: u64) -> Self {
+        Self { trap: Trap { number, error }, ..self }
     }
 
     /// SIGCHLD for child `pid` of real user `uid`: `code` is a CLD_* value
     /// and `status` the exit status or the signal.
     pub const fn child(code: i32, pid: u32, uid: u32, status: i32) -> Self {
-        Self { code, fields: [pid as u64 | (uid as u64) << 32, status as u32 as u64] }
+        Self {
+            fields: [pid as u64 | (uid as u64) << 32, status as u32 as u64],
+            ..Self::with_code(code)
+        }
+    }
+
+    const fn with_code(code: i32) -> Self {
+        Self { code, ..Self::kernel() }
     }
 
     /// The `siginfo_t` for signal `sig` in the Linux ABI's 128-byte layout.
@@ -254,7 +305,16 @@ pub struct SignalState {
     /// using the temporary mask, then consumes this before saving a handler
     /// frame or applying a default action. Nested frames restore their own mask.
     pub sigsuspend_saved_mask: Option<u64>,
+    /// Signals whose SA_RESETHAND action delivery reset in this row and not
+    /// yet in the other rows of its thread group (`mark_group_reset`).
+    group_resets: u64,
 }
+
+/// Set when a row has group resets the process manager has not yet copied
+/// to the rest of its thread group (`ProcessManager::finish_group_resets`).
+/// Set and cleared with the process manager held.
+pub static GROUP_RESETS_PENDING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 impl Default for SignalState {
     fn default() -> Self {
@@ -274,6 +334,7 @@ impl Default for SignalState {
             ignored: DEFAULT_IGNORED_SIGNALS,
             alt_stack: AltStack::default(),
             sigsuspend_saved_mask: None,
+            group_resets: 0,
         }
     }
 }
@@ -336,6 +397,7 @@ impl SignalState {
         if self.is_blocked(sig) || self.get_handler(sig).is_ignore() {
             self.unblock_signals(super::constants::sig_mask(sig));
             self.set_handler(sig, SignalAction::default());
+            self.mark_group_reset(sig);
         }
         self.clear_pending(sig);
         self.set_pending_info(sig, info);
@@ -468,7 +530,22 @@ impl SignalState {
             ignored: self.ignored,
             alt_stack: self.alt_stack,   // Alt stack is inherited per POSIX
             sigsuspend_saved_mask: None, // Child doesn't inherit sigsuspend state
+            group_resets: 0,
         }
+    }
+
+    /// Record that delivery reset `sig`'s action to SIG_DFL in this row for
+    /// SA_RESETHAND. Dispositions belong to the process, so the reset is
+    /// copied to the group's other rows before the process manager is
+    /// released (#1231). PM held.
+    pub fn mark_group_reset(&mut self, sig: u32) {
+        self.group_resets |= sig_mask(sig);
+        GROUP_RESETS_PENDING.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The signals `mark_group_reset` recorded, cleared.
+    pub fn take_group_resets(&mut self) -> u64 {
+        core::mem::take(&mut self.group_resets)
     }
 
     /// Signal state for a new thread of this one's thread group: the creating
@@ -588,6 +665,9 @@ pub struct SigContext {
     pub sp: u64,
     pub pc: u64,
     pub pstate: u64,
+    /// The alignment gap before the 16-byte-aligned `__reserved`, a field so
+    /// that every byte of a frame written to user memory is initialized.
+    pub _pad: u64,
     pub reserved: SigContextReserved,
 }
 
@@ -602,6 +682,9 @@ pub struct UContext {
     pub uc_stack: StackT,
     pub uc_sigmask: u64,
     pub unused: [u8; 120],
+    /// The alignment gap before `uc_mcontext`, a field for the same reason
+    /// as `SigContext::_pad`.
+    pub _pad: u64,
     pub uc_mcontext: SigContext,
 }
 
@@ -620,6 +703,23 @@ pub struct FpsimdContext {
 #[cfg(target_arch = "aarch64")]
 impl FpsimdContext {
     pub const MAGIC: u32 = 0x4650_8001;
+    pub const SIZE: u32 = core::mem::size_of::<Self>() as u32;
+}
+
+/// The ESR record in an ARM64 sigcontext's `__reserved` area, which a
+/// fault signal's frame carries after the FP/SIMD record.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct EsrContext {
+    pub magic: u32,
+    pub size: u32,
+    pub esr: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl EsrContext {
+    pub const MAGIC: u32 = 0x4553_5201;
     pub const SIZE: u32 = core::mem::size_of::<Self>() as u32;
 }
 
@@ -642,9 +742,15 @@ impl SignalFrame {
     pub const SIZE: usize = core::mem::size_of::<Self>();
 }
 
+// Each size is also the sum of its fields' sizes: no frame type has a gap
+// that would carry uninitialized kernel bytes to user memory.
 #[cfg(target_arch = "x86_64")]
 const _: () = {
     assert!(core::mem::size_of::<SigContext>() == 256);
+    assert!(core::mem::size_of::<SigContext>() == 18 * 8 + 4 * 2 + 5 * 8 + 8 * 8);
+    assert!(core::mem::size_of::<StackT>() == 8 + 4 + 4 + 8);
+    assert!(core::mem::size_of::<UContext>() == 8 + 8 + 24 + 256 + 8);
+    assert!(core::mem::size_of::<SignalFrame>() == 8 + 304 + 128);
     assert!(core::mem::size_of::<UContext>() == 304);
     assert!(core::mem::size_of::<SignalFrame>() == 440);
 };
@@ -652,7 +758,11 @@ const _: () = {
 #[cfg(target_arch = "aarch64")]
 const _: () = {
     assert!(core::mem::size_of::<SigContext>() == 4384);
+    assert!(core::mem::size_of::<SigContext>() == 8 + 31 * 8 + 3 * 8 + 8 + 4096);
     assert!(core::mem::offset_of!(UContext, uc_mcontext) == 176);
+    assert!(core::mem::size_of::<UContext>() == 8 + 8 + 24 + 8 + 120 + 8 + 4384);
+    assert!(core::mem::size_of::<SignalFrame>() == 128 + 4560 + 16);
+    assert!(core::mem::size_of::<EsrContext>() == 16);
     assert!(core::mem::size_of::<UContext>() == 4560);
     assert!(core::mem::offset_of!(SignalFrame, uc) == 128);
     assert!(core::mem::size_of::<FpsimdContext>() == 528);

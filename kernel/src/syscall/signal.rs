@@ -1083,6 +1083,7 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
         }
     };
 
+    let handler_sp = frame.rsp;
     let signal_frame_ptr = frame.rsp.wrapping_sub(8) as *const SignalFrame;
     let restored = copy_from_user(signal_frame_ptr).ok().and_then(|signal_frame| {
         let ctx = signal_frame.uc.uc_mcontext;
@@ -1093,9 +1094,9 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
             0 => FpuState::initial(),
             addr => FpuState::from_signal_frame(copy_from_user(addr as *const [u8; 512]).ok()?),
         };
-        Some((ctx, signal_frame.uc.uc_sigmask, fp_state))
+        Some((ctx, signal_frame.uc.uc_sigmask, signal_frame.uc.uc_stack, fp_state))
     });
-    let Some((ctx, sigmask, fp_state)) = restored else {
+    let Some((ctx, sigmask, uc_stack, fp_state)) = restored else {
         log::error!("sys_sigreturn: bad signal frame at {:#x}", frame.rsp);
         force_sigreturn_segv(current_thread_id);
         return SyscallResult::Err(14); // EFAULT
@@ -1143,13 +1144,7 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
                 process.signals.set_blocked(sigmask);
-
-                // Clear the on_stack flag - we're leaving the signal handler
-                // This allows the alternate stack to be used for future signals
-                if process.signals.alt_stack.on_stack {
-                    process.signals.alt_stack.on_stack = false;
-                    log::debug!("sigreturn: cleared alt_stack.on_stack flag");
-                }
+                restore_alt_stack(process, &uc_stack, handler_sp);
             }
         }
     }
@@ -1186,6 +1181,8 @@ fn force_sigreturn_segv(thread_id: u64) {
 /// # Arguments
 /// * `ss` - Pointer to new stack_t, or 0 to only query current
 /// * `old_ss` - Pointer to store current stack_t, or 0 to not store
+/// * `user_sp` - The caller's user stack pointer, which says whether it is
+///   running on the alternate stack
 ///
 /// # Returns
 /// * 0 on success
@@ -1196,13 +1193,14 @@ fn force_sigreturn_segv(thread_id: u64) {
 /// * -ESRCH (3) if current process not found
 ///
 /// # Behavior
-/// - If `old_ss` is non-NULL, copies current alt stack info to it
+/// - If `old_ss` is non-NULL, copies current alt stack info to it, with
+///   SS_ONSTACK when the caller is running on it
 /// - If `ss` is non-NULL:
 ///   - If SS_DISABLE flag is set, disables the alternate stack
 ///   - Otherwise, validates and sets the new alternate stack
 ///   - Size must be >= MINSIGSTKSZ
 /// - Cannot change the alternate stack while executing on it
-pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
+pub fn sys_sigaltstack(ss: u64, old_ss: u64, user_sp: u64) -> SyscallResult {
     // Get current thread/process
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
@@ -1244,21 +1242,7 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
         };
 
         let alt = &process.signals.alt_stack;
-        (
-            StackT {
-                ss_sp: alt.base,
-                ss_flags: if alt.on_stack {
-                    SS_ONSTACK as i32
-                } else if alt.flags & SS_DISABLE != 0 {
-                    SS_DISABLE as i32
-                } else {
-                    0
-                },
-                _pad: 0,
-                ss_size: alt.size,
-            },
-            alt.on_stack,
-        )
+        (alt.stack_t(user_sp), alt.on_stack(user_sp))
     };
 
     if old_ss != 0 {
@@ -1274,78 +1258,17 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
             return SyscallResult::Err(1); // EPERM
         }
 
-        // POSIX: EINVAL for any flag but SS_DISABLE. SS_ONSTACK is accepted
-        // and ignored, as Linux does. Linux's SS_AUTODISARM is not
-        // implemented, and is refused as kernels before it refused it.
-        let mode = new_stack.ss_flags as u32;
-        if mode != 0 && mode != SS_DISABLE && mode != SS_ONSTACK {
-            log::warn!("sys_sigaltstack: invalid ss_flags {:#x}", mode);
-            return SyscallResult::Err(22); // EINVAL
-        }
-
-        // Check if disabling the alternate stack
-        let next_alt_stack = if mode == SS_DISABLE {
-            log::debug!(
-                "sigaltstack: disabled alternate stack for thread {}",
-                current_thread_id
-            );
-            crate::signal::types::AltStack {
-                base: 0,
-                size: 0,
-                flags: SS_DISABLE,
-                on_stack: false,
-            }
-        } else {
-            // POSIX: ENOMEM for a stack smaller than MINSIGSTKSZ
-            if new_stack.ss_size < MINSIGSTKSZ {
-                log::warn!(
-                    "sys_sigaltstack: ss_size {} < MINSIGSTKSZ {}",
-                    new_stack.ss_size,
-                    MINSIGSTKSZ
-                );
-                return SyscallResult::Err(12); // ENOMEM
-            }
-
-            // Validate the new stack configuration
-            // ss_sp must not be NULL
-            if new_stack.ss_sp == 0 {
-                log::warn!("sys_sigaltstack: ss_sp is NULL");
-                return SyscallResult::Err(22); // EINVAL
-            }
-
-            // Validate that ss_sp is in userspace
-            if new_stack.ss_sp >= USER_SPACE_END {
-                log::warn!(
-                    "sys_sigaltstack: ss_sp {:#x} is not in userspace",
-                    new_stack.ss_sp
-                );
-                return SyscallResult::Err(14); // EFAULT
-            }
-
-            // Validate that the entire stack range is in userspace
-            let stack_end = new_stack.ss_sp.saturating_add(new_stack.ss_size as u64);
-            if stack_end > USER_SPACE_END {
-                log::warn!(
-                    "sys_sigaltstack: stack range {:#x}..{:#x} extends beyond userspace",
-                    new_stack.ss_sp,
-                    stack_end
-                );
-                return SyscallResult::Err(14); // EFAULT
-            }
-
-            log::debug!(
-                "sigaltstack: set alternate stack for thread {}: base={:#x}, size={}",
-                current_thread_id,
-                new_stack.ss_sp,
-                new_stack.ss_size
-            );
-            crate::signal::types::AltStack {
-                base: new_stack.ss_sp,
-                size: new_stack.ss_size,
-                flags: 0, // Enabled (not SS_DISABLE)
-                on_stack: false,
-            }
+        let next_alt_stack = match alt_stack_from(&new_stack) {
+            Ok(alt) => alt,
+            Err(errno) => return SyscallResult::Err(errno),
         };
+        log::debug!(
+            "sigaltstack: thread {}: base={:#x}, size={}, flags={:#x}",
+            current_thread_id,
+            next_alt_stack.base,
+            next_alt_stack.size,
+            next_alt_stack.flags
+        );
 
         let mut manager_guard = manager();
         let manager_ref = match manager_guard.as_mut() {
@@ -1371,6 +1294,69 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
     }
 
     SyscallResult::Ok(0)
+}
+
+/// The alternate stack `new_stack` asks for, or the errno sigaltstack
+/// refuses it with.
+fn alt_stack_from(new_stack: &StackT) -> Result<crate::signal::types::AltStack, u64> {
+    // POSIX: EINVAL for any flag but SS_DISABLE. SS_ONSTACK is accepted
+    // and ignored, as Linux does. Linux's SS_AUTODISARM is not
+    // implemented, and is refused as kernels before it refused it.
+    let mode = new_stack.ss_flags as u32;
+    if mode != 0 && mode != SS_DISABLE && mode != SS_ONSTACK {
+        log::warn!("sys_sigaltstack: invalid ss_flags {:#x}", mode);
+        return Err(22); // EINVAL
+    }
+
+    if mode == SS_DISABLE {
+        return Ok(crate::signal::types::AltStack::default());
+    }
+
+    // POSIX: ENOMEM for a stack smaller than MINSIGSTKSZ
+    if new_stack.ss_size < MINSIGSTKSZ {
+        log::warn!(
+            "sys_sigaltstack: ss_size {} < MINSIGSTKSZ {}",
+            new_stack.ss_size,
+            MINSIGSTKSZ
+        );
+        return Err(12); // ENOMEM
+    }
+
+    // ss_sp must not be NULL
+    if new_stack.ss_sp == 0 {
+        log::warn!("sys_sigaltstack: ss_sp is NULL");
+        return Err(22); // EINVAL
+    }
+
+    // The entire stack range must be in userspace
+    let stack_end = new_stack.ss_sp.saturating_add(new_stack.ss_size as u64);
+    if new_stack.ss_sp >= USER_SPACE_END || stack_end > USER_SPACE_END {
+        log::warn!(
+            "sys_sigaltstack: stack range {:#x}..{:#x} is not in userspace",
+            new_stack.ss_sp,
+            stack_end
+        );
+        return Err(14); // EFAULT
+    }
+
+    Ok(crate::signal::types::AltStack {
+        base: new_stack.ss_sp,
+        size: new_stack.ss_size,
+        flags: 0, // Enabled (not SS_DISABLE)
+    })
+}
+
+/// rt_sigreturn's half of sigaltstack, as Linux's restore_altstack: the
+/// alternate stack the frame's `uc_stack` names (which the handler may have
+/// changed) is installed, unless the thread, at `sp`, is running on the
+/// current one. A `uc_stack` sigaltstack would refuse leaves it unchanged.
+fn restore_alt_stack(process: &mut crate::process::Process, uc_stack: &StackT, sp: u64) {
+    if process.signals.alt_stack.on_stack(sp) {
+        return;
+    }
+    if let Ok(alt) = alt_stack_from(uc_stack) {
+        process.signals.alt_stack = alt;
+    }
 }
 
 /// rt_sigsuspend(mask, sigsetsize) - Atomically set signal mask and wait for signal (x86_64)
@@ -2059,9 +2045,9 @@ pub fn sys_sigreturn_with_frame_aarch64(
         if fpsimd.magic != FpsimdContext::MAGIC || fpsimd.size != FpsimdContext::SIZE {
             return None;
         }
-        Some((ctx, signal_frame.uc.uc_sigmask, fpsimd))
+        Some((ctx, signal_frame.uc.uc_sigmask, signal_frame.uc.uc_stack, fpsimd))
     });
-    let Some((ctx, sigmask, fpsimd)) = restored else {
+    let Some((ctx, sigmask, uc_stack, fpsimd)) = restored else {
         log::error!("sys_sigreturn_aarch64: bad signal frame at {:#x}", sp);
         force_sigreturn_segv(current_thread_id);
         return SyscallResult::Err(14); // EFAULT
@@ -2128,12 +2114,7 @@ pub fn sys_sigreturn_with_frame_aarch64(
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
                 process.signals.set_blocked(sigmask);
-
-                // Clear the on_stack flag
-                if process.signals.alt_stack.on_stack {
-                    process.signals.alt_stack.on_stack = false;
-                    log::debug!("sigreturn_aarch64: cleared alt_stack.on_stack flag");
-                }
+                restore_alt_stack(process, &uc_stack, sp);
             }
         }
     }

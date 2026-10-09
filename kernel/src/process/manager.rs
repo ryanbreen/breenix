@@ -2179,6 +2179,35 @@ impl ProcessManager {
         })
     }
 
+    /// Copy the dispositions delivery reset in one row (SA_RESETHAND, or a
+    /// forced fault signal) to the other rows of its thread group, so that the
+    /// process has one disposition again (#1231). Called before every release
+    /// of the process manager; with no reset recorded it costs one load.
+    /// Walks the table in place and allocates nothing.
+    pub(crate) fn finish_group_resets(&mut self) {
+        use core::sync::atomic::Ordering;
+        use crate::signal::types::{SignalAction, GROUP_RESETS_PENDING};
+        if !GROUP_RESETS_PENDING.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        loop {
+            let Some((pid, group, resets)) = self.processes.values_mut().find_map(|row| {
+                let resets = row.signals.take_group_resets();
+                (resets != 0)
+                    .then(|| (row.id, row.thread_group_id.unwrap_or(row.id.as_u64()), resets))
+            }) else {
+                return;
+            };
+            for row in self.group_rows_mut(group).filter(|row| row.id != pid) {
+                for bit in 0..64 {
+                    if resets & (1 << bit) != 0 {
+                        row.signals.set_handler(bit + 1, SignalAction::default());
+                    }
+                }
+            }
+        }
+    }
+
     /// The other live rows of `pid`'s thread group: rows created by `clone`
     /// with `CLONE_VM` share a group id (`thread_group_id`, or the leader's own
     /// pid), and together they are one POSIX process.

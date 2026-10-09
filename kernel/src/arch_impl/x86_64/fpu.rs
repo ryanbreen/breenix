@@ -79,6 +79,45 @@ impl FpuState {
         state
     }
 
+    /// The SIGFPE si_code of the x87 exception an #MF reports: the first of
+    /// the exceptions the status word flags that the control word leaves
+    /// unmasked (Intel SDM Vol. 1, 8.1.3 and 8.1.5).
+    pub fn x87_fault_code(&self) -> i32 {
+        let control = u16::from_le_bytes([self.0[0], self.0[1]]);
+        let status = u16::from_le_bytes([self.0[2], self.0[3]]);
+        Self::fault_code((status & !control) as u32)
+    }
+
+    /// The SIGFPE si_code of the SSE exception an #XM reports: the first of
+    /// the exceptions MXCSR flags (bits 0-5) that its masks (bits 7-12) leave
+    /// unmasked (Intel SDM Vol. 1, 10.2.3).
+    pub fn simd_fault_code(&self) -> i32 {
+        let mxcsr = u32::from_le_bytes([self.0[24], self.0[25], self.0[26], self.0[27]]);
+        Self::fault_code(mxcsr & !(mxcsr >> 7))
+    }
+
+    /// The si_code of unmasked exception flags `flags`, in the x87 status
+    /// word's and MXCSR's shared order: invalid operation, denormal operand,
+    /// divide by zero, overflow, underflow, precision.
+    fn fault_code(flags: u32) -> i32 {
+        use crate::signal::constants::*;
+        if flags & 0x01 != 0 {
+            FPE_FLTINV
+        } else if flags & 0x04 != 0 {
+            FPE_FLTDIV
+        } else if flags & 0x08 != 0 {
+            FPE_FLTOVF
+        } else if flags & 0x12 != 0 {
+            FPE_FLTUND
+        } else if flags & 0x20 != 0 {
+            FPE_FLTRES
+        } else {
+            // No unmasked exception is flagged: the fault is reported as an
+            // invalid operation rather than retried.
+            FPE_FLTINV
+        }
+    }
+
     /// Load the executing CPU's x87/SSE registers from here.
     pub fn restore(&self) {
         // SAFETY: the image is either `initial()` or an FXSAVE result, so

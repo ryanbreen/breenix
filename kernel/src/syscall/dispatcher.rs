@@ -66,7 +66,11 @@ pub fn dispatch_syscall(
             log::warn!("sigsuspend called without frame access - use handler.rs path");
             SyscallResult::Err(38) // ENOSYS
         }
-        SyscallNumber::Sigaltstack => super::signal::sys_sigaltstack(arg1, arg2),
+        SyscallNumber::Sigaltstack => {
+            // sigaltstack needs the caller's stack pointer - must use handler.rs path
+            log::warn!("sigaltstack called without frame access - use handler.rs path");
+            SyscallResult::Err(38) // ENOSYS
+        }
         SyscallNumber::Sigreturn => super::signal::sys_sigreturn(),
         SyscallNumber::Ioctl => super::ioctl::sys_ioctl(arg1, arg2, arg3),
         SyscallNumber::Socket => super::socket::sys_socket(arg1, arg2, arg3),

@@ -543,34 +543,18 @@ pub fn deliver_caught_signal_on_syscall_return(
     }
 }
 
-/// The `uc_stack` a handler's context reports: the alternate stack, and
-/// whether the interrupted code was running on it.
-fn saved_alt_stack(process: &Process) -> StackT {
-    let alt = &process.signals.alt_stack;
-    StackT {
-        ss_sp: alt.base,
-        ss_flags: if alt.on_stack {
-            SS_ONSTACK as i32
-        } else if alt.flags & SS_DISABLE != 0 {
-            SS_DISABLE as i32
-        } else {
-            0
-        },
-        _pad: 0,
-        ss_size: alt.size,
-    }
-}
-
 /// What delivering a caught `sig` does to the dispositions and mask once its
 /// frame is installed: SA_RESETHAND resets the action to SIG_DFL on entry to
 /// the handler, and the handler runs with the signal (unless SA_NODEFER) and
 /// its sa_mask blocked.
 ///
-/// Dispositions are per thread-group row here; the reset applies to the row
-/// whose thread takes the signal.
+/// Dispositions are per thread-group row here. The reset is made in the row
+/// whose thread takes the signal and copied to the group's other rows before
+/// the process manager is released (`mark_group_reset`).
 fn enter_handler(process: &mut Process, sig: u32, action: &SignalAction) {
     if action.flags & SA_RESETHAND != 0 {
         process.signals.set_handler(sig, SignalAction::default());
+        process.signals.mark_group_reset(sig);
     }
     if (action.flags & SA_NODEFER) == 0 {
         // Block this signal while handler runs (prevents recursive delivery)
@@ -616,10 +600,12 @@ fn install_user_handler_x86_64(
 
     // Check if we should use the alternate signal stack
     // SA_ONSTACK flag means use alt stack if one is configured and enabled
+    // A handler interrupting code already on the alternate stack nests below
+    // it there, as one without SA_ONSTACK does on any stack.
     let use_alt_stack = (action.flags & SA_ONSTACK) != 0
         && (process.signals.alt_stack.flags & super::constants::SS_DISABLE as u32) == 0
         && process.signals.alt_stack.size > 0
-        && !process.signals.alt_stack.on_stack; // Don't nest on alt stack
+        && !process.signals.alt_stack.on_stack(original_rsp);
 
     let top = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
@@ -666,7 +652,9 @@ fn install_user_handler_x86_64(
     else {
         return false;
     };
-    if use_alt_stack && frame_rsp < process.signals.alt_stack.base {
+    // A frame on the alternate stack, first or nested, must fit on it.
+    let alt = &process.signals.alt_stack;
+    if (use_alt_stack || alt.on_stack(original_rsp)) && !alt.on_stack(frame_rsp) {
         return false;
     }
     if x86_64::VirtAddr::try_new(handler_addr).is_err()
@@ -687,7 +675,7 @@ fn install_user_handler_x86_64(
         uc: UContext {
             uc_flags: 0,
             uc_link: 0,
-            uc_stack: saved_alt_stack(process),
+            uc_stack: process.signals.alt_stack.stack_t(original_rsp),
             uc_mcontext: SigContext {
                 r8: saved_regs.r8,
                 r9: saved_regs.r9,
@@ -709,6 +697,8 @@ fn install_user_handler_x86_64(
                 eflags: user_return.rflags,
                 cs: crate::gdt::user_code_selector().0,
                 ss: crate::gdt::user_data_selector().0,
+                err: info.trap.error,
+                trapno: info.trap.number,
                 oldmask: blocked,
                 cr2: fault_address(sig, &info),
                 fpstate: fp_addr,
@@ -728,7 +718,8 @@ fn install_user_handler_x86_64(
     if !write_signal_stack(process, shared_table, fp_addr, fp_state.as_bytes()) {
         return false;
     }
-    // SAFETY: SignalFrame is repr(C) plain data, fully initialized.
+    // SAFETY: SignalFrame is repr(C) plain data with no padding (types.rs
+    // checks each size against its fields), and every field is initialized.
     let bytes = unsafe {
         core::slice::from_raw_parts(
             core::ptr::addr_of!(signal_frame) as *const u8,
@@ -737,9 +728,6 @@ fn install_user_handler_x86_64(
     };
     if !write_signal_stack(process, shared_table, frame_rsp, bytes) {
         return false;
-    }
-    if use_alt_stack {
-        process.signals.alt_stack.on_stack = true;
     }
     enter_handler(process, sig, action);
     if let Some(thread_id) = thread_id {
@@ -806,10 +794,12 @@ fn deliver_to_user_handler_aarch64(
 
     // Check if we should use the alternate signal stack
     // SA_ONSTACK flag means use alt stack if one is configured and enabled
+    // A handler interrupting code already on the alternate stack nests below
+    // it there, as one without SA_ONSTACK does on any stack.
     let use_alt_stack = (action.flags & SA_ONSTACK) != 0
         && (process.signals.alt_stack.flags & super::constants::SS_DISABLE as u32) == 0
         && process.signals.alt_stack.size > 0
-        && !process.signals.alt_stack.on_stack; // Don't nest on alt stack
+        && !process.signals.alt_stack.on_stack(original_sp);
 
     let top = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
@@ -846,7 +836,9 @@ fn deliver_to_user_handler_aarch64(
     else {
         return false;
     };
-    if use_alt_stack && frame_sp < process.signals.alt_stack.base {
+    // A frame on the alternate stack, first or nested, must fit on it.
+    let alt = &process.signals.alt_stack;
+    if (use_alt_stack || alt.on_stack(original_sp)) && !alt.on_stack(frame_sp) {
         return false;
     }
     let return_addr = trampoline_addr.unwrap_or(action.restorer);
@@ -892,21 +884,24 @@ fn deliver_to_user_handler_aarch64(
         uc: UContext {
             uc_flags: 0,
             uc_link: 0,
-            uc_stack: saved_alt_stack(process),
+            uc_stack: process.signals.alt_stack.stack_t(original_sp),
             uc_sigmask: blocked,
             unused: [0; 120],
+            _pad: 0,
             uc_mcontext: SigContext {
                 fault_address: fault_address(sig, &info),
                 regs,
                 sp: original_sp,
                 pc: saved_regs.elr,
                 pstate: saved_regs.spsr,
+                _pad: 0,
                 reserved: SigContextReserved([0; 4096]),
             },
         },
         frame_record: [saved_regs.x29, saved_regs.x30],
     };
-    // The FP/SIMD record, then the empty record that ends the list.
+    // The FP/SIMD record, for a fault the ESR record, then the empty record
+    // (the zeroed bytes after them) that ends the list.
     let mut fpsimd = FpsimdContext {
         magic: FpsimdContext::MAGIC,
         size: FpsimdContext::SIZE,
@@ -915,13 +910,22 @@ fn deliver_to_user_handler_aarch64(
         vregs: [0; 32],
     };
     crate::arch_impl::aarch64::fpsimd::save(&mut fpsimd);
-    // SAFETY: the reserved area is 16-byte aligned and larger than the
-    // record, and FpsimdContext is repr(C) plain data.
+    let reserved = signal_frame.uc.uc_mcontext.reserved.0.as_mut_ptr();
+    // SAFETY: the reserved area is 16-byte aligned and larger than both
+    // records, which are repr(C) plain data with no padding, and the second
+    // starts at a multiple of 16 bytes.
     unsafe {
-        core::ptr::write(
-            signal_frame.uc.uc_mcontext.reserved.0.as_mut_ptr() as *mut FpsimdContext,
-            fpsimd,
-        );
+        core::ptr::write(reserved as *mut FpsimdContext, fpsimd);
+        if info.trap.error != 0 {
+            core::ptr::write(
+                reserved.add(FpsimdContext::SIZE as usize) as *mut EsrContext,
+                EsrContext {
+                    magic: EsrContext::MAGIC,
+                    size: EsrContext::SIZE,
+                    esr: info.trap.error,
+                },
+            );
+        }
     }
 
     if let Some(addr) = trampoline_addr {
@@ -933,9 +937,11 @@ fn deliver_to_user_handler_aarch64(
             return false;
         }
     }
-    // SignalFrame is repr(C) plain data, fully initialized. Read its bytes
-    // from the kernel buffer rather than faulting through a user VA while PM
-    // is held. The table copy validates permissions and resolves CoW first.
+    // SignalFrame is repr(C) plain data with no padding (types.rs checks each
+    // size against its fields), and every field is initialized. Read its
+    // bytes from the kernel buffer rather than faulting through a user VA
+    // while PM is held. The table copy validates permissions and resolves
+    // CoW first.
     let bytes = unsafe {
         core::slice::from_raw_parts(
             core::ptr::addr_of!(signal_frame) as *const u8,
@@ -946,9 +952,6 @@ fn deliver_to_user_handler_aarch64(
         return false;
     }
 
-    if use_alt_stack {
-        process.signals.alt_stack.on_stack = true;
-    }
     enter_handler(process, sig, action);
 
     let info_addr = frame_sp + core::mem::offset_of!(SignalFrame, info) as u64;
@@ -1388,6 +1391,13 @@ pub fn fatal_exit_code(sig: u32) -> Option<i32> {
     }
 }
 
+/// The exit status a fault signal's default action ends a process with, as
+/// signal delivery reports it (`fatal_exit_code`), for the fault paths that
+/// end the process themselves.
+pub fn fault_death_exit_code(sig: u32) -> i32 {
+    fatal_exit_code(sig).unwrap_or(-(sig as i32))
+}
+
 /// The exit status `process` reports when `sig`'s default action ends it. A
 /// SIGKILL that a thread-group death left pending reports the status the
 /// group died with (`Process::group_exit_code`), as Linux's group_exit_code.
@@ -1401,9 +1411,30 @@ pub fn signal_death_exit_code(process: &Process, sig: u32) -> i32 {
 /// A signal's default action ends the whole process, not one thread: kill the
 /// other live threads of `pid`'s thread group with the status `pid` died with.
 /// Must be called with no process-manager lock held, from process context.
+///
+/// A deferred fault exit can be drained by a thread of one of those peers on
+/// its own way back to user mode (ARM64). That peer is not torn down under the
+/// thread running this: it gets SIGKILL with the group's status, which its
+/// return to user mode acts on.
 pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i32) {
-    let peers = crate::process::with_process_manager(|manager| manager.thread_group_peers(pid))
-        .unwrap_or_default();
+    let current = crate::task::scheduler::current_thread_id();
+    let peers = crate::process::with_process_manager(|manager| {
+        let mut peers = manager.thread_group_peers(pid);
+        peers.retain(|&peer| {
+            let Some(row) = manager.get_process_mut(peer) else {
+                return false;
+            };
+            let runs_this = current.is_some()
+                && row.main_thread.as_ref().map(|thread| thread.id) == current;
+            if runs_this {
+                row.signals.set_pending(SIGKILL);
+                row.group_exit_code.get_or_insert(exit_code);
+            }
+            !runs_this
+        });
+        peers
+    })
+    .unwrap_or_default();
     for peer in peers {
         crate::syscall::signal::kill_process_now(peer, exit_code);
     }
