@@ -280,8 +280,22 @@ pub(crate) fn report_userspace_completion() {
             crate::task::exit_tally::FailureList::new(failures, nonzero),
             crate::task::exit_tally::started()
         );
-        #[cfg(target_arch = "x86_64")]
-        crate::arch_impl::x86_64::smp::report_user_dispatches();
+        report_line!(
+            info,
+            "[smp] user-thread dispatches per CPU:{}",
+            crate::task::user_dispatch::PerCpu
+        );
+        // The scheduler milestone's stage: more than one CPU online, and every
+        // one of them ran a user thread.
+        let (online, ran_user_work) = crate::task::user_dispatch::coverage();
+        if online > 1 && ran_user_work == online {
+            report_line!(
+                info,
+                "[smp] user work ran on every online CPU ({} of {})",
+                ran_user_work,
+                online
+            );
+        }
 
         if nonzero == 0 {
             report_line!(info, "=====================================");

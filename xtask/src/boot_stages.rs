@@ -319,6 +319,12 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "Read the `[smp] online=N reported=M` line from arch_impl::x86_64::smp::report_bring_up()",
         },
         BootStage {
+            name: "User work ran on every online CPU",
+            marker: "[smp] user work ran on every online CPU",
+            failure_meaning: "Once the testing kernel's userspace finished, at least one online CPU had never dispatched a user thread, or only one CPU was online",
+            check_hint: "Read the `[smp] user-thread dispatches per CPU:` line after TEST_TALLY; counts come from task::user_dispatch::note() in interrupts/context_switch.rs",
+        },
+        BootStage {
             name: "First userspace process scheduled",
             marker: "RING3_SMOKE: created userspace PID",
             failure_meaning: "Failed to schedule first userspace process",
@@ -553,6 +559,12 @@ fn arm64_kernel_stages() -> Vec<BootStage> {
             marker: "[smp] every reported CPU is online",
             failure_meaning: "Fewer CPUs came online than the firmware reports (PSCI on QEMU, the MADT on Parallels and VMware), or only one CPU is configured",
             check_hint: "Read the `[smp] online=N reported=M` line in main_aarch64.rs and the `[smp]` bring-up lines before it",
+        },
+        BootStage {
+            name: "User work ran on every online CPU",
+            marker: "[smp] user work ran on every online CPU",
+            failure_meaning: "Once the testing kernel's userspace finished, at least one online CPU had never dispatched a user thread, or only one CPU was online",
+            check_hint: "Read the `[smp] user-thread dispatches per CPU:` line after TEST_TALLY; counts come from task::user_dispatch::note() in dispatch_thread_locked (arch_impl/aarch64/context_switch.rs)",
         },
         BootStage {
             name: "ARM64 boot complete",

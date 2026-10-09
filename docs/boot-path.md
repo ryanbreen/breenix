@@ -89,6 +89,14 @@ notes the ignored request on its own line. A mode's stages for a milestone are `
 `stages["aarch64"]` when the milestone has `"kernel": true`; otherwise the mode does not
 exercise that milestone.
 
+The scheduler milestone's last stage, "User work ran on every online CPU", is the testing
+kernel's: once its userspace has finished, the kernel prints each online CPU's count of
+user-thread dispatches (`[smp] user-thread dispatches per CPU: cpu0=N ...`) and the stage
+marker only when more than one CPU is online and every one of them dispatched a user
+thread. The other modes therefore list the scheduler milestone's stages themselves, without
+it; the `suite` list names markers for both arches, since x86-64 suite boots are scored
+against it too.
+
 ## Shared host slots
 
 Use `docker/qemu/run-x86-gate.sh` for queued x86 builds and boots: the helper

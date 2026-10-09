@@ -21,6 +21,7 @@ pub fn start_dispatch_strand_census_kthread() {
 pub mod executor;
 pub mod exit_tally;
 pub mod userspace_completion;
+pub mod user_dispatch;
 pub mod thread;
 pub mod waitqueue;
 

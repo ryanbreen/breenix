@@ -145,7 +145,7 @@
     {
       "id": "scheduler",
       "title": "Scheduler, timer tick & SMP",
-      "summary": "Per-CPU state, the process manager and the scheduler come up, the timer tick drives scheduling, and every CPU the firmware reports comes online (more than one).",
+      "summary": "Per-CPU state, the process manager and the scheduler come up, the timer tick drives scheduling, every CPU the firmware reports comes online (more than one), and in the testing kernel every online CPU runs user work.",
       "kernel": true,
       "stages": {
         "aarch64": [
@@ -155,7 +155,8 @@
           "Timer interrupt initialized",
           "SMP CPUs online",
           "All reported CPUs online",
-          "ARM64 boot complete"
+          "ARM64 boot complete",
+          "User work ran on every online CPU"
         ],
         "x86_64": [
           "Syscall infrastructure ready",
@@ -201,7 +202,83 @@
           "Softirq nested interrupt rejection test passed",
           "Softirq iteration limit test passed",
           "Softirq ksoftirqd verification passed",
-          "Softirq all tests passed"
+          "Softirq all tests passed",
+          "User work ran on every online CPU"
+        ],
+        "probe": [
+          "Per-CPU data initialized",
+          "Process manager initialized",
+          "Scheduler initialized",
+          "Timer interrupt initialized",
+          "SMP CPUs online",
+          "All reported CPUs online",
+          "ARM64 boot complete"
+        ],
+        "shell": [
+          "Per-CPU data initialized",
+          "Process manager initialized",
+          "Scheduler initialized",
+          "Timer interrupt initialized",
+          "SMP CPUs online",
+          "All reported CPUs online",
+          "ARM64 boot complete"
+        ],
+        "desktop": [
+          "Per-CPU data initialized",
+          "Process manager initialized",
+          "Scheduler initialized",
+          "Timer interrupt initialized",
+          "SMP CPUs online",
+          "All reported CPUs online",
+          "ARM64 boot complete"
+        ],
+        "program": [
+          "Per-CPU data initialized",
+          "Process manager initialized",
+          "Scheduler initialized",
+          "Timer interrupt initialized",
+          "SMP CPUs online",
+          "All reported CPUs online",
+          "ARM64 boot complete"
+        ],
+        "default": [
+          "Per-CPU data initialized",
+          "Process manager initialized",
+          "Scheduler initialized",
+          "Timer interrupt initialized",
+          "SMP CPUs online",
+          "All reported CPUs online",
+          "ARM64 boot complete"
+        ],
+        "suite": [
+          {
+            "name": "Per-CPU data initialized",
+            "marker": "[boot] Per-CPU data initialized|kernel: Per-CPU data initialized"
+          },
+          {
+            "name": "Process manager initialized",
+            "marker": "[boot] Process manager initialized|kernel: Process management initialized"
+          },
+          {
+            "name": "Scheduler initialized",
+            "marker": "[boot] Scheduler initialized|Threading subsystem initialized with init_task"
+          },
+          {
+            "name": "Timer interrupt initialized",
+            "marker": "[boot] Timer interrupt initialized|kernel: Timer initialized"
+          },
+          {
+            "name": "SMP CPUs online",
+            "marker": "[smp] online="
+          },
+          {
+            "name": "All reported CPUs online",
+            "marker": "[smp] every reported CPU is online"
+          },
+          {
+            "name": "Kernel boot complete",
+            "marker": "Breenix ARM64 Boot Complete!|Kernel initialization complete!"
+          }
         ]
       }
     },

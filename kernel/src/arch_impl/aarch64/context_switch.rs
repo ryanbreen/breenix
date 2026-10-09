@@ -5210,6 +5210,9 @@ fn dispatch_thread_locked(
             unsafe {
                 Aarch64PerCpu::set_user_rsp_scratch(Aarch64PerCpu::kernel_stack_top());
             }
+            // The dispatch has committed: the EL0 frame, the address space and
+            // the kernel stack are in place, and nothing below redirects it.
+            crate::task::user_dispatch::note(cpu_id);
         } else {
             note_user_rsp_scratch_el(false);
         }
