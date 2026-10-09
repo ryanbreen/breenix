@@ -3251,11 +3251,13 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
 pub fn sys_getpid() -> SyscallResult {
     // Disable interrupts when accessing process manager
     crate::arch_without_interrupts(|| {
-        log::info!("sys_getpid called");
+        // Debug level, as below: a serial line per call serializes every CPU's
+        // getpid on the console.
+        log::debug!("sys_getpid called");
 
         // Get current thread ID from scheduler
         let scheduler_thread_id = crate::task::scheduler::current_thread_id();
-        log::info!(
+        log::debug!(
             "sys_getpid: scheduler_thread_id = {:?}",
             scheduler_thread_id
         );
