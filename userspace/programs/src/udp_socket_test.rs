@@ -77,9 +77,10 @@ fn main() {
     }
     println!("UDP: RX socket bound to port 54321");
 
-    // Step 5: Send a packet to ourselves to test RX
+    // Step 5: Send a packet to ourselves to test RX. 127.0.0.1 is ours on every
+    // platform; the DHCP address differs between QEMU, Parallels and VMware.
     println!("UDP Socket Test: Sending packet to ourselves (loopback test)...");
-    let loopback_addr = SockAddrIn::new([10, 0, 2, 15], 54321);
+    let loopback_addr = SockAddrIn::new([127, 0, 0, 1], 54321);
     let test_message = b"RX TEST";
 
     match socket::sendto(fd, test_message, &loopback_addr) {
@@ -282,7 +283,7 @@ fn main() {
     println!("UDP: Multi-packet TX socket bound to port 54327");
 
     // Destination address (loopback to receiver)
-    let multi_dest = SockAddrIn::new([10, 0, 2, 15], 54326);
+    let multi_dest = SockAddrIn::new([127, 0, 0, 1], 54326);
 
     // Send 3 different packets
     let packets: [&[u8]; 3] = [b"PKT1", b"PKT2", b"PKT3"];
