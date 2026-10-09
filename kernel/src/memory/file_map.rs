@@ -20,7 +20,9 @@
 //! reserved capacity, draining a range and truncating never allocate.
 //!
 //! Lock order: ext2 mount guard, PROCESS_MANAGER, live-inode table, `MapState`,
-//! frame ledger and allocator. The inode table may take `MapState` without PM.
+//! frame ledger and allocator. Signal-frame delivery also takes `MapState`
+//! under PROCESS_MANAGER with interrupts masked. The inode table may take
+//! `MapState` without PM.
 //! No disk I/O runs under PROCESS_MANAGER or `MapState`. No path
 //! takes an ext2 guard with PROCESS_MANAGER held: faults never touch the
 //! filesystem, and mmap releases PROCESS_MANAGER before taking the mount guard.
@@ -1633,7 +1635,11 @@ pub(crate) fn resolve_page(
         return FaultOutcome::NotFile;
     }
     let object = &binding.handle.object;
-    let mut inner = object.map.inner.lock();
+    let Some(mut inner) = object.map.inner.try_lock() else {
+        // Delivery runs with interrupts masked. A contended cache requests a
+        // retry, just like the in-progress size transition below.
+        return FaultOutcome::Resolved;
+    };
     let mapped_size = inner.mapped_size;
     let Some(rec) = inner.rec_mut(binding.id) else {
         return FaultOutcome::NotFile;

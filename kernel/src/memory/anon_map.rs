@@ -183,6 +183,13 @@ pub(crate) fn page_flags(prot: Protection) -> PageTableFlags {
     flags
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrepareWriteError {
+    Fault,
+    /// No leaf yet: defer until the cache/size transition can make progress.
+    Retry,
+}
+
 /// A signal frame is copied through the direct map and cannot take a user fault.
 /// Back missing anonymous or file pages before the permission-checked copy,
 /// which resolves resident CoW pages through the same owned table. Neither
@@ -192,28 +199,33 @@ pub(crate) fn prepare_write(
     vmas: &[super::vma::Vma],
     start: u64,
     length: usize,
-) -> bool {
+) -> Result<(), PrepareWriteError> {
     if !crate::memory::layout::is_valid_user_range(start, length) {
-        return false;
+        return Err(PrepareWriteError::Fault);
     }
     let Some(end) = start.checked_add(length as u64) else {
-        return false;
+        return Err(PrepareWriteError::Fault);
     };
     let mut address = start & !4095;
     while address < end {
-        if table.translate(VirtAddr::new(address)).is_none()
-            && !matches!(
-                resolve_page(table, vmas, address, Access::Write),
-                FaultOutcome::Resolved
-            )
-            && !matches!(
-                super::file_map::resolve_page(table, vmas, address, Access::Write),
-                FaultOutcome::Resolved
-            )
-        {
-            return false;
+        if table.translate(VirtAddr::new(address)).is_none() {
+            let outcome = match resolve_page(table, vmas, address, Access::Write) {
+                FaultOutcome::NotFile => {
+                    super::file_map::resolve_page(table, vmas, address, Access::Write)
+                }
+                outcome => outcome,
+            };
+            if !matches!(outcome, FaultOutcome::Resolved) {
+                return Err(PrepareWriteError::Fault);
+            }
+            // A file-size transition may request a retry without installing a
+            // leaf. Release PM by deferring delivery; do not copy or kill the
+            // process, and do not spin while the transition needs that lock.
+            if table.translate(VirtAddr::new(address)).is_none() {
+                return Err(PrepareWriteError::Retry);
+            }
         }
         address += 4096;
     }
-    true
+    Ok(())
 }

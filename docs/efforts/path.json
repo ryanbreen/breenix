@@ -394,7 +394,7 @@
     {
       "id": "signals",
       "title": "Signals",
-      "outcome": "Signals are generated, blocked, delivered and handled as POSIX specifies on all four targets, including realtime signals, interval timers and fault-safe frames on demand-backed and copy-on-write stacks.",
+      "outcome": "Signals are generated, blocked, delivered and handled as POSIX specifies on all four targets, including realtime signals, interval timers and frames on untouched anonymous alternate stacks and cached private-file alternate stacks, including resident copy-on-write pages.",
       "suite": "signals",
       "area": "Signals",
       "subsystems": [
@@ -440,12 +440,11 @@
         },
         {
           "id": "frames",
-          "title": "Demand-backed and copy-on-write signal frames",
+          "title": "Anonymous and cached private-file signal frames",
           "measure": {
             "suite": "signals",
             "categories": [
-              "dispositions",
-              "altstack"
+              "frames"
             ]
           }
         },
