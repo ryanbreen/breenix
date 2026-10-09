@@ -35,7 +35,7 @@ public enum X86HardwareProfile: String, CaseIterable, Sendable {
     case `default`, q35, e1000e, rtl8139
     case virtioNet = "virtio-net"
     case virtioModern = "virtio-modern"
-    case ahci, nvme, smp4
+    case ahci, nvme
 }
 
 public struct BeastLaunchOptions: Sendable {

@@ -35,6 +35,10 @@ fn main() {
         println!("{}", profile.pci_census_lines());
         return;
     }
+    if env::var("BREENIX_PRINT_QEMU_CPUS").ok().as_deref() == Some("1") {
+        println!("{}", profile.cpus());
+        return;
+    }
     // Allow overriding OVMF firmware paths via environment for CI/DEBUG builds
     let ovmf_code = if let Ok(path) = env::var("BREENIX_OVMF_CODE_PATH") {
         let p = PathBuf::from(path);

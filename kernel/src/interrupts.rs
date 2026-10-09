@@ -48,6 +48,16 @@ pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
 /// count from the TSC, so an extra entry changes neither.
 pub const RESCHEDULE_VECTOR: u8 = 0xf0;
 
+/// Self-IPI vector for retrying an interrupt-return step deferred because the
+/// process manager was held (`scheduler::retry_after_interrupts_x86`). It is
+/// the timer's own vector, 0x20, the lowest that can be delivered: every
+/// device vector, the keyboard's 0x21 included, ranks above it and is taken
+/// first, and it is taken as soon as the last of them returns, before the
+/// next instruction of the code they return to. An extra timer entry changes
+/// no accounting (see `RESCHEDULE_VECTOR`), and a self-IPI that coincides
+/// with a tick is one entry that does both.
+pub const RETRY_VECTOR: u8 = InterruptIndex::Timer as u8;
+
 // Assembly entry points
 extern "C" {
     #[allow(dead_code)]
@@ -536,6 +546,8 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
 
     // Dispatch to E1000 network if initialized
     crate::drivers::e1000::handle_interrupt();
+    crate::drivers::virtio::net_legacy::handle_interrupt(10);
+    crate::drivers::rtl8139::handle_interrupt(10);
 
     // Send EOI to both PICs (IRQ 10 is on PIC2)
     crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Irq10.as_u8());
@@ -561,6 +573,8 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
 
     // Also check E1000 on IRQ 11 - some QEMU configurations route E1000 here
     crate::drivers::e1000::handle_interrupt();
+    crate::drivers::virtio::net_legacy::handle_interrupt(11);
+    crate::drivers::rtl8139::handle_interrupt(11);
 
     // Send EOI to both PICs (IRQ 11 is on PIC2)
     crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Irq11.as_u8());
@@ -680,6 +694,7 @@ fn end_faulting_user_thread(
         use x86_64::structures::paging::PhysFrame;
         let kernel_cr3 = crate::per_cpu::get_kernel_cr3();
         if kernel_cr3 != 0 {
+            crate::memory::tlb::note_root_load(kernel_cr3);
             Cr3::write(
                 PhysFrame::containing_address(x86_64::PhysAddr::new(kernel_cr3)),
                 Cr3::read().1,
@@ -1727,6 +1742,7 @@ extern "x86-interrupt" fn page_fault_handler(
                 let kernel_cr3 = crate::per_cpu::get_kernel_cr3();
                 if kernel_cr3 != 0 {
                     log::info!("Switching to kernel CR3: {:#x}", kernel_cr3);
+                    crate::memory::tlb::note_root_load(kernel_cr3);
                     Cr3::write(
                         PhysFrame::containing_address(x86_64::PhysAddr::new(kernel_cr3)),
                         Cr3::read().1,
@@ -2067,6 +2083,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
             let kernel_cr3 = crate::per_cpu::get_kernel_cr3();
             if kernel_cr3 != 0 {
                 log::info!("Switching to kernel CR3: {:#x}", kernel_cr3);
+                crate::memory::tlb::note_root_load(kernel_cr3);
                 Cr3::write(
                     PhysFrame::containing_address(x86_64::PhysAddr::new(kernel_cr3)),
                     Cr3::read().1,

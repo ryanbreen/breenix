@@ -770,6 +770,8 @@ pub fn build_master_kernel_pml4() {
         "Switching CR3 to master kernel PML4: {:?}",
         master_pml4_frame
     );
+    #[cfg(target_arch = "x86_64")]
+    crate::memory::tlb::note_root_load(master_pml4_frame.start_address().as_u64());
     unsafe {
         Cr3::write(master_pml4_frame, Cr3Flags::empty());
         #[cfg(not(target_arch = "x86_64"))]

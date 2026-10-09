@@ -89,11 +89,9 @@ pub struct Virtqueue {
     last_used_idx: u16,
     /// Queue size (power of 2)
     queue_size: u16,
-    /// Allocated physical frames (stored for future deallocation)
-    #[allow(dead_code)] // Stored for eventual Drop implementation
+    /// Allocated physical frames, freed by `release`
     frames: [Option<PhysFrame>; 4],
     /// Number of allocated frames
-    #[allow(dead_code)] // Stored for eventual Drop implementation
     num_frames: usize,
 }
 
@@ -141,19 +139,17 @@ impl Virtqueue {
         let base_frame = frame_allocator::allocate_contiguous_frames(num_pages, &mut frames)
             .ok_or("Failed to allocate contiguous frames for virtqueue")?;
 
-        let mut previous_address = None;
-        for frame in frames[..num_pages].iter().copied() {
-            let frame = match frame {
-                Some(frame) => frame,
-                None => {
-                    return Err("VirtIO queue: allocator returned non-contiguous ring frames");
-                }
-            };
-            let address = frame.start_address().as_u64();
-            if previous_address.is_some_and(|previous| address != previous + 4096) {
-                return Err("VirtIO queue: allocator returned non-contiguous ring frames");
+        let base_address = base_frame.start_address().as_u64();
+        let contiguous = frames[..num_pages].iter().enumerate().all(|(index, frame)| {
+            frame.is_some_and(|frame| {
+                frame.start_address().as_u64() == base_address + 4096 * index as u64
+            })
+        });
+        if !contiguous {
+            for frame in frames[..num_pages].iter().flatten() {
+                frame_allocator::deallocate_frame(*frame);
             }
-            previous_address = Some(address);
+            return Err("VirtIO queue: allocator returned non-contiguous ring frames");
         }
 
         let phys_addr = base_frame.start_address().as_u64();
@@ -229,6 +225,14 @@ impl Virtqueue {
             frames,
             num_frames: num_pages,
         })
+    }
+
+    /// Free the queue's memory. The device must no longer use the queue: reset
+    /// it, or write 0 as the queue's address, first.
+    pub fn release(self) {
+        for frame in self.frames[..self.num_frames].iter().flatten() {
+            frame_allocator::deallocate_frame(*frame);
+        }
     }
 
     /// Get the physical address of the queue (for device configuration)

@@ -76,13 +76,14 @@ fn main() {
     let mut tests_passed = 0;
     let mut tests_failed = 0;
 
-    // Test 1: ls / should list root directory contents
-    println!("Test 1: ls / (root directory)");
+    // Test 1: ls -p / should list root directory contents, directories marked
+    println!("Test 1: ls -p / (root directory)");
     {
         let program = b"/bin/ls\0";
         let arg0 = b"ls\0".as_ptr();
-        let arg1 = b"/\0".as_ptr();
-        let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
+        let arg1 = b"-p\0".as_ptr();
+        let arg2 = b"/\0".as_ptr();
+        let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
 
@@ -212,32 +213,40 @@ fn main() {
         }
     }
 
-    // Test 7: ls /deep shows path/ subdirectory with directory marker
-    println!("Test 7: ls /deep (directory markers)");
+    // Test 7: ls -p /deep marks the path/ subdirectory; POSIX ls without -p
+    // or -F writes the bare name
+    println!("Test 7: ls -p /deep (directory markers)");
     {
         let program = b"/bin/ls\0";
         let arg0 = b"ls\0".as_ptr();
-        let arg1 = b"/deep\0".as_ptr();
-        let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
+        let arg1 = b"-p\0".as_ptr();
+        let arg2 = b"/deep\0".as_ptr();
+        let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
         let has_path_dir = contains_line(&output, b"path/");
 
-        if exit_code == 0 && has_path_dir {
+        let plain_argv: [*const u8; 3] = [arg0, arg2, std::ptr::null()];
+        let (plain_exit, plain_output) = run_and_capture(program, &plain_argv);
+        let has_plain_path = contains_line(&plain_output, b"path");
+
+        if exit_code == 0 && has_path_dir && plain_exit == 0 && has_plain_path {
             println!("LS_DIRMARK_OK");
             tests_passed += 1;
         } else {
-            println!("LS_DIRMARK_FAILED (exit={}, path/={})", exit_code, has_path_dir as i32);
+            println!("LS_DIRMARK_FAILED (exit={}, path/={}, plain exit={}, path={})",
+                exit_code, has_path_dir as i32, plain_exit, has_plain_path as i32);
             tests_failed += 1;
         }
     }
 
-    // Test 8: ls with no argument should default to current directory
-    println!("Test 8: ls (no argument, defaults to cwd)");
+    // Test 8: ls with no operand should default to current directory
+    println!("Test 8: ls -p (no operand, defaults to cwd)");
     {
         let program = b"/bin/ls\0";
         let arg0 = b"ls\0".as_ptr();
-        let argv: [*const u8; 2] = [arg0, std::ptr::null()];
+        let arg1 = b"-p\0".as_ptr();
+        let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
         let has_bin = contains_line(&output, b"bin/");

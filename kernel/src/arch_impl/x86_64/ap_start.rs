@@ -328,6 +328,7 @@ extern "C" fn ap_entry(cpu: u64) -> ! {
     // SAFETY: the master page table maps everything the trampoline table
     // does above its first entry, including this code and this stack, and the
     // boot processor's CR0/CR4 describe the same processor model.
+    crate::memory::tlb::note_root_load_on(cpu as usize, MASTER_CR3.load(Ordering::Acquire));
     unsafe {
         core::arch::asm!(
             "mov cr3, {cr3}",

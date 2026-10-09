@@ -294,6 +294,10 @@ read -r expected_virtio_block expected_network <<< "$expected_census"
 if ! expected_pci=$(BREENIX_PRINT_QEMU_PCI=1 ./target/release/qemu-uefi) || [ -z "$expected_pci" ]; then
   echo "GATE: FAIL (missing QEMU PCI requirements)"; exit 1
 fi
+if ! expected_cpus=$(BREENIX_PRINT_QEMU_CPUS=1 ./target/release/qemu-uefi) \
+    || [[ ! "$expected_cpus" =~ ^[1-9][0-9]*$ ]]; then
+  echo "GATE: FAIL (missing QEMU CPU count: $expected_cpus)"; exit 1
+fi
 while read -r pci_id pci_count; do
   if [[ ! "$pci_id" =~ ^[0-9a-f]{4}:[0-9a-f]{4}$ ]] || [[ ! "$pci_count" =~ ^[1-9][0-9]*$ ]]; then
     echo "GATE: FAIL (malformed QEMU PCI requirement: $pci_id $pci_count)"; exit 1
@@ -381,6 +385,15 @@ for i in $(seq 1 "$COUNT"); do
       census_ok=false
       census_reason="device-enumeration census reports $census_network network device(s); profile=$PROFILE requires >=$expected_network"
     fi
+  fi
+
+  # x86 is tested only as a multiprocessor: every CPU the profile configures
+  # must come online.
+  if ! grep -q -F "[smp] every reported CPU is online ($expected_cpus of $expected_cpus)" \
+      "$OUTDIR/serial_kernel.log" 2>/dev/null; then
+    smp_report=$(grep -h -o '\[smp\] online=[0-9]* reported=[0-9]*' "$OUTDIR/serial_kernel.log" 2>/dev/null | tail -1)
+    census_ok=false
+    census_reason="${census_reason:+$census_reason; }${smp_report:-[smp] bring-up report absent}; profile=$PROFILE configures $expected_cpus CPUs"
   fi
 
   # Require the profile's actual controllers and NIC, independently of drivers.

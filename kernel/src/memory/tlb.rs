@@ -12,13 +12,22 @@
 //! one has acknowledged before returning, so a caller that frees a frame after
 //! the flush knows no CPU can still reach it through a stale translation.
 //!
-//! The target set is every other online CPU. A CPU may hold a translation for
-//! any address space it has run since its last CR3 write, and x86 lets kernel
-//! threads run on whatever CR3 the previous thread left loaded, so the
-//! initiator cannot know which CPUs hold a given address space without
-//! tracking every CR3 write; it asks all of them. The receiver skips work that
-//! cannot apply to it: an address-space release is a no-op on a CPU that does
-//! not have that root loaded.
+//! Without PCIDs a CR3 write drops every non-global translation, so a CPU can
+//! hold translations only for the root it has loaded since its last CR3 write,
+//! which kernel threads keep using after a user thread leaves. Every CR3 load
+//! is announced first: Rust writes call `note_root_load`, `set_next_cr3` does
+//! it for the root the interrupt-return stubs load, and the stubs' other load
+//! restores `saved_process_cr3`, the root the CPU entered the kernel on. The
+//! syscall-return signal path reloads the running process's own root, already
+//! announced by whichever of these put this CPU on it.
+//!
+//! A flush of one user address space (`flush_user_page`) therefore goes only to
+//! the CPUs whose announced root, `next_cr3` or `saved_process_cr3` names that
+//! space; an unmap by a process running alone costs no NMI. A flush that names
+//! no address space (`flush_page`, `flush_all`: kernel mappings, or callers
+//! that do not say whose table they changed) asks every other online CPU. The
+//! receiver skips work that cannot apply to it: an address-space release is a
+//! no-op on a CPU that does not have that root loaded.
 //!
 //! Requests are delivered as NMIs. The kernel spins on many locks with
 //! interrupts masked; a fixed-vector IPI to a CPU spinning on a lock the
@@ -48,6 +57,41 @@ pub fn flush_page(addr: VirtAddr) {
     tlb::flush(addr);
     #[cfg(target_arch = "x86_64")]
     shootdown::request(shootdown::Request::Page(addr.as_u64()));
+}
+
+/// Flush one page of the user address space whose page-table root is `root`,
+/// on every CPU that may cache a translation of that space.
+///
+/// The caller has already changed the descriptor: a CPU that announces `root`
+/// after this looks finds the new one when it walks the table.
+#[inline]
+pub fn flush_user_page(root: u64, addr: VirtAddr) {
+    tlb::flush(addr);
+    #[cfg(target_arch = "x86_64")]
+    shootdown::request_for_root(shootdown::Request::Page(addr.as_u64()), root);
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = root;
+}
+
+/// Announce that this CPU is about to load page-table root `root` into CR3.
+/// Called before every CR3 write, so a flush of that address space reaches
+/// this CPU from the moment it can cache one of its translations.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn note_root_load(root: u64) {
+    let cpu = if crate::per_cpu::is_initialized() {
+        crate::per_cpu::cpu_id()
+    } else {
+        0
+    };
+    shootdown::note_root_load(cpu, root);
+}
+
+/// `note_root_load` for CPU `cpu`, before its per-CPU data is set up.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn note_root_load_on(cpu: usize, root: u64) {
+    shootdown::note_root_load(cpu, root);
 }
 
 /// Flush the entire TLB, on every CPU.
@@ -120,6 +164,48 @@ mod shootdown {
     const KIND_ALL: u8 = 2;
     const KIND_RELEASE_ROOT: u8 = 3;
 
+    /// A CPU that has announced no root yet: it may hold any.
+    const UNKNOWN_ROOT: u64 = u64::MAX;
+    const ROOT_MASK: u64 = !0xfff;
+
+    /// The page-table root each CPU last announced before a CR3 write.
+    static LOADED_ROOT: [AtomicU64; MAX_CPUS] =
+        [const { AtomicU64::new(UNKNOWN_ROOT) }; MAX_CPUS];
+
+    /// Record that `cpu` is about to load `root`. A full barrier, so the
+    /// announcement is visible before the CR3 write lets the CPU walk the
+    /// table: an initiator that changes a descriptor and then misses this
+    /// announcement is ordered before the walk, which sees the change.
+    pub(super) fn note_root_load(cpu: usize, root: u64) {
+        if cpu < MAX_CPUS {
+            LOADED_ROOT[cpu].swap(root & ROOT_MASK, Ordering::SeqCst);
+        }
+    }
+
+    /// Whether `cpu` may hold a translation of the address space `root`: it
+    /// announced that root (or none yet), the interrupt-return stub is about
+    /// to load it (`next_cr3`), or the stub restores it (`saved_process_cr3`).
+    fn may_hold(cpu: usize, root: u64) -> bool {
+        let loaded = LOADED_ROOT[cpu].load(Ordering::SeqCst);
+        if loaded == UNKNOWN_ROOT || loaded == root {
+            return true;
+        }
+        let names_root = |value: u64| value != 0 && (value & ROOT_MASK) == root;
+        let data = crate::per_cpu::cpu_data(cpu);
+        if data.is_null() {
+            return true;
+        }
+        // SAFETY: `data` is CPU `cpu`'s slot of the static per-CPU array; the
+        // two fields are word-sized and read without tearing.
+        let (next, saved) = unsafe {
+            (
+                (&raw const (*data).next_cr3).read_volatile(),
+                (&raw const (*data).saved_process_cr3).read_volatile(),
+            )
+        };
+        names_root(next) || names_root(saved)
+    }
+
     /// Held by the one CPU whose request is in flight.
     static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
     static REQUEST_KIND: AtomicU8 = AtomicU8::new(0);
@@ -139,6 +225,20 @@ mod shootdown {
     /// Deliver `request` to every other online CPU and wait for every
     /// acknowledgement. One atomic load when only this CPU is online.
     pub(super) fn request(request: Request) {
+        deliver(request, |_| true);
+    }
+
+    /// Deliver `request` to every other online CPU that may hold a translation
+    /// of the address space `root`, and wait for those acknowledgements.
+    pub(super) fn request_for_root(request: Request, root: u64) {
+        // The descriptor change is ordered before every announcement read.
+        fence(Ordering::SeqCst);
+        let root = root & ROOT_MASK;
+        deliver(request, |cpu| may_hold(cpu, root));
+    }
+
+    /// Deliver `request` to the other online CPUs `targeted` selects.
+    fn deliver(request: Request, targeted: impl Fn(usize) -> bool) {
         if smp::cpus_online() <= 1 {
             return;
         }
@@ -152,6 +252,13 @@ mod shootdown {
             use crate::arch_impl::PerCpuOps;
             let me = crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize;
 
+            let targets = (0..MAX_CPUS)
+                .filter(|&cpu| cpu != me && smp::is_cpu_online(cpu) && targeted(cpu))
+                .fold(0u64, |mask, cpu| mask | 1 << cpu);
+            if targets == 0 {
+                return;
+            }
+
             // Waiting here with interrupts masked is safe: the holder's NMI
             // still reaches this CPU and is answered.
             while IN_FLIGHT
@@ -164,12 +271,8 @@ mod shootdown {
             REQUEST_KIND.store(kind, Ordering::Relaxed);
             REQUEST_ARG.store(arg, Ordering::Relaxed);
 
-            let mut targets = 0u64;
-            for cpu in 0..MAX_CPUS {
-                if cpu != me && smp::is_cpu_online(cpu) {
-                    PENDING[cpu].store(true, Ordering::Relaxed);
-                    targets |= 1 << cpu;
-                }
+            for cpu in (0..MAX_CPUS).filter(|cpu| targets & (1 << cpu) != 0) {
+                PENDING[cpu].store(true, Ordering::Relaxed);
             }
             // The request words and every PENDING flag are visible before any
             // target can take its NMI; `send_ipi` also fences before the ICR
@@ -255,6 +358,7 @@ mod shootdown {
         let (loaded, flags) = Cr3::read();
         if names_root(loaded.start_address().as_u64()) {
             if let Some(kernel) = crate::memory::kernel_page_table::master_kernel_pml4() {
+                note_root_load(cpu, kernel.start_address().as_u64());
                 // SAFETY: the master kernel PML4 maps every kernel address the
                 // interrupted code can be using; a dead process's user half is
                 // what this CPU stops seeing.

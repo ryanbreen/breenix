@@ -198,23 +198,6 @@ pub enum Ipi {
     Startup(u8),
 }
 
-/// Whether this CPU's local APIC has an interrupt requested (in its IRR) at a
-/// vector below `vector`, which a self-IPI at `vector` would be taken ahead of.
-pub fn lower_vector_pending(vector: u8) -> bool {
-    if !active() {
-        return false;
-    }
-    let top = u32::from(vector) / 32;
-    (1..=top).any(|register| {
-        let mask = if register == top {
-            (1u32 << (u32::from(vector) % 32)) - 1
-        } else {
-            u32::MAX
-        };
-        read(0x200 + register * 0x10) & mask != 0
-    })
-}
-
 /// Send to an APIC id, with bounded xAPIC delivery waits. No AP is started by init.
 #[allow(dead_code)] // Stage 2/3 public startup and reschedule API.
 pub fn send_ipi(destination: u32, ipi: Ipi) -> Result<(), &'static str> {

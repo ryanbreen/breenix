@@ -78,6 +78,21 @@ pub fn flush_tlb(addr: VirtAddr) {
     crate::memory::arch_stub::tlb::flush(addr);
 }
 
+/// Flush after mapping a page whose entry was not present. x86 caches no
+/// translation for a non-present page, so no other CPU has one to drop and
+/// only this CPU's entry is invalidated.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn flush_new_mapping(addr: VirtAddr) {
+    x86_64::instructions::tlb::flush(addr);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn flush_new_mapping(addr: VirtAddr) {
+    flush_tlb(addr);
+}
+
 /// Helper function to clean up mapped pages on mmap failure
 ///
 /// This is used when a multi-page mapping fails partway through.

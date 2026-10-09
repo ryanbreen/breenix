@@ -62,7 +62,9 @@ pub(crate) fn handle_fault(
                                 FaultOutcome::Resolved
                             } else if let Some(frame) = frame {
                                 if table.map_page(page, frame, page_flags(prot)).is_ok() {
-                                    crate::syscall::memory_common::flush_tlb(page.start_address());
+                                    crate::syscall::memory_common::flush_new_mapping(
+                                        page.start_address(),
+                                    );
                                     return FaultOutcome::Resolved;
                                 }
                                 FaultOutcome::Signal(crate::signal::constants::SIGKILL)
@@ -167,7 +169,7 @@ fn resolve_page(
         let _ = super::frame_allocator::deallocate_leaf_frame(frame);
         return FaultOutcome::Signal(crate::signal::constants::SIGKILL);
     }
-    crate::syscall::memory_common::flush_tlb(page.start_address());
+    crate::syscall::memory_common::flush_new_mapping(page.start_address());
     FaultOutcome::Resolved
 }
 

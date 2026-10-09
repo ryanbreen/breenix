@@ -87,5 +87,5 @@ kernel's `USERSPACE TEST REPORT DONE` before scoring a missed deadline (#1068).
 1800 seconds and the scoring deadline). The manifest records both values.
 The Mac shell's `BREENIX_GATE_TIMEOUT` is ignored. The x86 gate requires the virtio
 storage setting so it can attach all three disks (AHCI/NVMe profiles select their
-own disk devices). SMP4 configures four CPUs but currently brings only one online
-(see issue #629).
+own disk devices). Every profile boots four CPUs, and the gate fails a boot that
+does not bring all of them online.

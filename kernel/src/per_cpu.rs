@@ -1244,6 +1244,12 @@ pub fn set_next_cr3(cr3: u64) {
         return;
     }
 
+    // The return stub loads this root: announce it first, so TLB shootdowns
+    // of its address space reach this CPU (`memory::tlb`).
+    if cr3 != 0 {
+        crate::memory::tlb::note_root_load(cr3);
+    }
+
     // Use HAL for GS-relative access
     unsafe {
         hal_percpu::X86PerCpu::set_next_cr3(cr3);

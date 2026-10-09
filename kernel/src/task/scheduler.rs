@@ -1741,29 +1741,26 @@ fn x86_stack_owner_elsewhere(thread_id: u64, cpu: usize) -> Option<usize> {
 }
 
 /// x86_64: bring this CPU back through `check_need_resched_and_switch` as
-/// soon as it next has interrupts enabled, by a reschedule IPI to itself.
+/// soon as it next has interrupts enabled, by a self-IPI.
 ///
 /// For a return to Ring 3 that found the process manager held on another CPU:
 /// waiting for it with interrupts masked can deadlock, since the holder may be
 /// waiting for an interrupt routed to this CPU. Retrying after the `iretq`
 /// lets pending interrupts in first.
 ///
-/// The reschedule vector outranks the timer and device vectors, so a retry
-/// that failed again and re-sent it at once would be taken ahead of them on
-/// every `iretq` for as long as the lock stayed held, and the holder may be
-/// waiting for one of them. While one is pending here no self-IPI is sent:
-/// they are taken first, and `RESCHED_REQUESTED` carries the retry to the next
-/// interrupt return through the scheduler, the tick's at the latest.
+/// The self-IPI is `RETRY_VECTOR`, below every device vector: interrupts the
+/// holder may be waiting for are taken ahead of a retry that keeps failing,
+/// and the retry is taken the moment the last of them returns, before the
+/// interrupted code runs another instruction. A return to Ring 3 cannot let
+/// user code run first, as it did when a device interrupt that was pending
+/// here returned straight to user mode and a signal the syscall had just sent
+/// to its own process waited for the next tick.
 #[cfg(target_arch = "x86_64")]
 pub fn retry_after_interrupts_x86() {
     let cpu = current_cpu_id_raw();
     if cpu < MAX_CPUS {
         RESCHED_REQUESTED[cpu].store(true, Ordering::Release);
-        if !crate::arch_impl::x86_64::apic::lower_vector_pending(
-            crate::interrupts::RESCHEDULE_VECTOR,
-        ) {
-            send_reschedule_vector_x86(cpu);
-        }
+        send_vector_x86(cpu, crate::interrupts::RETRY_VECTOR);
     }
 }
 
@@ -1807,6 +1804,12 @@ pub fn kick_cpu_x86(cpu: usize) {
 /// halt and returns through the scheduling point. Takes no lock.
 #[cfg(target_arch = "x86_64")]
 fn send_reschedule_vector_x86(cpu: usize) {
+    send_vector_x86(cpu, crate::interrupts::RESCHEDULE_VECTOR);
+}
+
+/// x86_64: send `vector`, whose gate is the timer entry, to `cpu`.
+#[cfg(target_arch = "x86_64")]
+fn send_vector_x86(cpu: usize, vector: u8) {
     use crate::arch_impl::x86_64::{apic, smp};
     if !smp::is_cpu_online(cpu) {
         return;
@@ -1819,10 +1822,7 @@ fn send_reschedule_vector_x86(cpu: usize) {
         0,
         (((cpu as u32) & 0xFFFF) << 16) | ((current_cpu_id_raw() as u32) & 0xFFFF),
     );
-    let _ = apic::send_ipi(
-        apic_id,
-        apic::Ipi::Fixed(crate::interrupts::RESCHEDULE_VECTOR),
-    );
+    let _ = apic::send_ipi(apic_id, apic::Ipi::Fixed(vector));
 }
 
 /// DIAGNOSTIC: Circular buffer tracking last N cpu_state changes per CPU.

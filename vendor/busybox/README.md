@@ -30,10 +30,10 @@ those outputs here, recompute the manifest digests, and commit the binaries,
 configuration and digests together. Disks always install the pinned version;
 an unpinned local build is not silently substituted.
 
-On x86 `/bin/ls` remains a BusyBox hardlink. ARM64 retains the existing native
-`bls` replacement for `/bin/ls` while #1074's runtime faults remain unresolved.
-Provisioning BusyBox on ARM64 prevents missing-binary failures in fresh clones;
-it does not claim to repair those runtime faults.
+`/bin/ls` is the BusyBox applet on both architectures; no native `bls` is
+built, so the disk script's ARM64 `bls` replacement does not apply. The
+configuration enables `FEATURE_LS_FILETYPES` so `ls -p` and `ls -F` mark
+directories, which `ls_test` checks.
 
 Verify an artifact without installing it with
 `scripts/install-busybox.py x86_64 --verify` (or `aarch64 --verify`).
