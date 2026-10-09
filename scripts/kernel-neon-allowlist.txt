@@ -20,4 +20,6 @@
 # build the whole kernel with the NEON target — that path stays banned.
 #
 # --- allowlisted symbols (regex, one per line) ---
-# (intentionally empty)
+# kernel::arch_impl::aarch64::fpsimd::{save,restore}: the signal frame's save and
+# rt_sigreturn's restore of the EL0 thread's v0-v31 (Linux fpsimd_context, #1219).
+^_ZN6kernel9arch_impl7aarch646fpsimd(4save|7restore)17h[0-9a-f]+E$

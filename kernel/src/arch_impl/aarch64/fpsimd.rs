@@ -14,6 +14,11 @@ const FPSR_MASK: u32 = 0xf800_009f;
 const FPCR_MASK: u32 = 0x07c8_9f07;
 
 /// Store this CPU's v0-v31, FPSR and FPCR in `ctx`.
+///
+/// Never inlined: these two functions are the only kernel code with FP/SIMD
+/// instructions, which the #528 guard admits by symbol
+/// (scripts/kernel-neon-allowlist.txt).
+#[inline(never)]
 pub fn save(ctx: &mut FpsimdContext) {
     let fpsr: u64;
     let fpcr: u64;
@@ -52,7 +57,8 @@ pub fn save(ctx: &mut FpsimdContext) {
 }
 
 /// Load this CPU's v0-v31, FPSR and FPCR from `ctx`. FPSR and FPCR bits
-/// with no defined meaning are cleared.
+/// with no defined meaning are cleared. Never inlined, as `save`.
+#[inline(never)]
 pub fn restore(ctx: &FpsimdContext) {
     let fpsr = (ctx.fpsr & FPSR_MASK) as u64;
     let fpcr = (ctx.fpcr & FPCR_MASK) as u64;
