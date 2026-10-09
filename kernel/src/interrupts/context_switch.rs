@@ -1148,6 +1148,7 @@ fn switch_to_thread(
                             use x86_64::registers::control::{Cr3, Cr3Flags};
                             use x86_64::structures::paging::PhysFrame;
                             use x86_64::PhysAddr;
+                            crate::memory::tlb::note_root_load(process_cr3);
                             Cr3::write(
                                 PhysFrame::containing_address(PhysAddr::new(process_cr3)),
                                 Cr3Flags::empty(),
@@ -1253,6 +1254,7 @@ fn switch_to_thread(
                             use x86_64::registers::control::{Cr3, Cr3Flags};
                             use x86_64::structures::paging::PhysFrame;
                             use x86_64::PhysAddr;
+                            crate::memory::tlb::note_root_load(process_cr3);
                             Cr3::write(
                                 PhysFrame::containing_address(PhysAddr::new(process_cr3)),
                                 Cr3Flags::empty(),
@@ -1605,6 +1607,7 @@ fn restore_userspace_thread_context(
                                         use x86_64::registers::control::{Cr3, Cr3Flags};
                                         use x86_64::structures::paging::PhysFrame;
                                         use x86_64::PhysAddr;
+                                        crate::memory::tlb::note_root_load(cr3_val);
                                         Cr3::write(
                                             PhysFrame::containing_address(PhysAddr::new(cr3_val)),
                                             Cr3Flags::empty(),
@@ -1850,6 +1853,7 @@ fn check_and_deliver_signals_for_current_thread(
                         use x86_64::registers::control::{Cr3, Cr3Flags};
                         use x86_64::structures::paging::PhysFrame;
                         use x86_64::PhysAddr;
+                        crate::memory::tlb::note_root_load(cr3_val);
                         Cr3::write(
                             PhysFrame::containing_address(PhysAddr::new(cr3_val)),
                             Cr3Flags::empty(),

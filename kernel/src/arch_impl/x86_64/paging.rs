@@ -106,6 +106,7 @@ impl PageTableOps for X86PageTableOps {
         use x86_64::PhysAddr;
 
         let frame = PhysFrame::containing_address(PhysAddr::new(addr));
+        crate::memory::tlb::note_root_load(addr);
         Cr3::write(frame, Cr3Flags::empty());
     }
 

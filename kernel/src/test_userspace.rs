@@ -312,6 +312,7 @@ pub fn test_minimal_userspace() {
                             options(nostack, nomem, preserves_flags)
                         );
 
+                        crate::memory::tlb::note_root_load(cr3_frame.start_address().as_u64());
                         Cr3::write(cr3_frame, Cr3Flags::empty());
 
                         crate::serial_println!("✓ Switched to process CR3");

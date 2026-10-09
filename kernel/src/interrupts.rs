@@ -680,6 +680,7 @@ fn end_faulting_user_thread(
         use x86_64::structures::paging::PhysFrame;
         let kernel_cr3 = crate::per_cpu::get_kernel_cr3();
         if kernel_cr3 != 0 {
+            crate::memory::tlb::note_root_load(kernel_cr3);
             Cr3::write(
                 PhysFrame::containing_address(x86_64::PhysAddr::new(kernel_cr3)),
                 Cr3::read().1,
@@ -1727,6 +1728,7 @@ extern "x86-interrupt" fn page_fault_handler(
                 let kernel_cr3 = crate::per_cpu::get_kernel_cr3();
                 if kernel_cr3 != 0 {
                     log::info!("Switching to kernel CR3: {:#x}", kernel_cr3);
+                    crate::memory::tlb::note_root_load(kernel_cr3);
                     Cr3::write(
                         PhysFrame::containing_address(x86_64::PhysAddr::new(kernel_cr3)),
                         Cr3::read().1,
@@ -2067,6 +2069,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
             let kernel_cr3 = crate::per_cpu::get_kernel_cr3();
             if kernel_cr3 != 0 {
                 log::info!("Switching to kernel CR3: {:#x}", kernel_cr3);
+                crate::memory::tlb::note_root_load(kernel_cr3);
                 Cr3::write(
                     PhysFrame::containing_address(x86_64::PhysAddr::new(kernel_cr3)),
                     Cr3::read().1,

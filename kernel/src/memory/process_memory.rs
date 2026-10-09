@@ -188,13 +188,16 @@ struct LeafRecord {
 pub struct ReleasedLeaf {
     record: LeafRecord,
     frame: PhysFrame,
+    /// The page-table root the leaf was removed from.
+    root: u64,
 }
 
 impl ReleasedLeaf {
-    /// Invalidate the page's TLB entry. The descriptor is already invalid, so
-    /// a replacement mapped after this call is break-before-make.
+    /// Invalidate the page's TLB entry on every CPU that may cache a
+    /// translation of its address space. The descriptor is already invalid,
+    /// so a replacement mapped after this call is break-before-make.
     pub fn flush(self) -> FlushedLeaf {
-        crate::memory::tlb::flush_page(VirtAddr::new(self.record.page));
+        crate::memory::tlb::flush_user_page(self.root, VirtAddr::new(self.record.page));
         FlushedLeaf {
             record: self.record,
             frame: self.frame,
@@ -1624,7 +1627,11 @@ impl ProcessPageTable {
         // The caller flushes, before releasing the leaf.
         let _ = flush;
         self.leaves.records.remove(record_index);
-        Ok(ReleasedLeaf { record, frame })
+        Ok(ReleasedLeaf {
+            record,
+            frame,
+            root: self.level_4_frame.start_address().as_u64(),
+        })
     }
 
     /// Remove one user page's mapping, telling an absent page apart from one
@@ -3116,6 +3123,7 @@ pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
             current_frame,
             new_frame
         );
+        crate::memory::tlb::note_root_load(new_frame.start_address().as_u64());
         Cr3::write(new_frame, flags);
         // Ensure TLB consistency after page table switch
         super::tlb::flush_after_page_table_switch();
@@ -3176,6 +3184,7 @@ pub unsafe fn switch_to_kernel_page_table() {
                 current_frame,
                 kernel_frame
             );
+            crate::memory::tlb::note_root_load(kernel_frame.start_address().as_u64());
             Cr3::write(kernel_frame, flags);
             // Ensure TLB consistency after page table switch
             super::tlb::flush_after_page_table_switch();
