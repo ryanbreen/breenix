@@ -289,7 +289,7 @@
         },
         {
           "id": "race-loop",
-          "title": "100 rounds of a child signalling while the parent enters sigsuspend lose no signal"
+          "title": "Rounds of a child signalling while the parent enters sigsuspend, up to 100 in 4.5 s, lose no signal"
         },
         {
           "id": "sigtimedwait-pending",

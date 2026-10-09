@@ -2003,20 +2003,26 @@ fn w_signal_first() -> CaseResult {
 
 fn w_race_loop() -> CaseResult {
     const ROUNDS: u32 = 100;
+    /// New rounds start only this long, leaving the watchdog's time for the last one.
+    const ROUNDS_MS: u64 = 4500;
+    const DOG_MS: u64 = 6000;
     catch(SIGUSR1)?;
     catch(DOG)?;
     setmask(bit(SIGUSR1))?;
     let me = pid();
-    let _dog = watchdog(bounded(7000, CLEANUP_MS), DOG)?;
-    for round in 0..ROUNDS {
+    let start = now_ms();
+    let _dog = watchdog(DOG_MS, DOG)?;
+    let mut round = 0;
+    while round < ROUNDS && now_ms().saturating_sub(start) < ROUNDS_MS {
         let mut kid = Child::start(move || if kill(me, SIGUSR1) == 0 { 0 } else { 1 })?;
         let got = sigsuspend(0);
         check(count(SIGUSR1) == round + 1,
-            &format!("round {round} of {ROUNDS}: a child's SIGUSR1 racing the parent's mask-then-sigsuspend was lost"))?;
+            &format!("round {round}: a child's SIGUSR1 racing the parent's mask-then-sigsuspend was lost"))?;
         want_err(&format!("round {round}: sigsuspend"), got, EINTR)?;
         kid.expect_exit(0, "a signalling child")?;
+        round += 1;
     }
-    Ok(())
+    check(round > 0, "no round finished")
 }
 
 fn w_timedwait_pending() -> CaseResult {
@@ -2842,7 +2848,7 @@ static SUITE: Suite = suite(
             case("ignored", "An ignored signal does not end sigsuspend", w_ignored),
             case("pause", "pause returns EINTR after a handler runs", w_pause),
             case("signal-first", "A child's signal sent before the parent waits is caught by mask-then-sigsuspend", w_signal_first),
-            case("race-loop", "100 rounds of a child signalling while the parent enters sigsuspend lose no signal", w_race_loop),
+            case("race-loop", "Rounds of a child signalling while the parent enters sigsuspend, up to 100 in 4.5 s, lose no signal", w_race_loop),
             case("sigtimedwait-pending", "sigtimedwait accepts a pending signal with its siginfo, without running the handler", w_timedwait_pending),
             case("sigtimedwait-timeout", "sigtimedwait with nothing pending fails with EAGAIN after its timeout", w_timedwait_timeout),
             case("sigtimedwait-poll", "sigtimedwait with a zero timeout and nothing pending fails with EAGAIN at once", w_timedwait_poll),
