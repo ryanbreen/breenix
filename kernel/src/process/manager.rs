@@ -4038,6 +4038,8 @@ impl ProcessManager {
         // exec deletes the caller's POSIX timers, and the signals they sent
         // that are still pending; interval timers survive.
         process.itimers.posix.clear();
+        // The thread's exit-notification word belonged to the old image.
+        process.clear_child_tid = None;
         process.signals.drop_timer_signals();
         process.has_exec = true;
         // Reset mmap state for the new address space
@@ -4491,6 +4493,8 @@ impl ProcessManager {
         // exec deletes the caller's POSIX timers, and the signals they sent
         // that are still pending; interval timers survive.
         process.itimers.posix.clear();
+        // The thread's exit-notification word belonged to the old image.
+        process.clear_child_tid = None;
         process.signals.drop_timer_signals();
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
@@ -4883,6 +4887,8 @@ impl ProcessManager {
         // exec deletes the caller's POSIX timers, and the signals they sent
         // that are still pending; interval timers survive.
         process.itimers.posix.clear();
+        // The thread's exit-notification word belonged to the old image.
+        process.clear_child_tid = None;
         process.signals.drop_timer_signals();
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
@@ -5233,6 +5239,8 @@ impl ProcessManager {
         // exec deletes the caller's POSIX timers, and the signals they sent
         // that are still pending; interval timers survive.
         process.itimers.posix.clear();
+        // The thread's exit-notification word belonged to the old image.
+        process.clear_child_tid = None;
         process.signals.drop_timer_signals();
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;

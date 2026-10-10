@@ -49,6 +49,7 @@ pub type rlim_t = u64;
 // We use sizes compatible with Linux glibc x86_64
 pub type pthread_t = c_ulong;
 pub type pthread_key_t = c_uint;
+pub type pthread_once_t = c_int;
 pub type sem_t = [u8; 32];
 
 // Directory entry type
@@ -987,6 +988,34 @@ pub const PTHREAD_MUTEX_ERRORCHECK: c_int = 2;
 pub const PTHREAD_MUTEX_DEFAULT: c_int = PTHREAD_MUTEX_NORMAL;
 pub const PTHREAD_STACK_MIN: size_t = 16384;
 
+pub const PTHREAD_MUTEX_STALLED: c_int = 0;
+pub const PTHREAD_MUTEX_ROBUST: c_int = 1;
+pub const PTHREAD_PRIO_NONE: c_int = 0;
+pub const PTHREAD_PRIO_INHERIT: c_int = 1;
+pub const PTHREAD_PRIO_PROTECT: c_int = 2;
+pub const PTHREAD_INHERIT_SCHED: c_int = 0;
+pub const PTHREAD_EXPLICIT_SCHED: c_int = 1;
+pub const PTHREAD_BARRIER_SERIAL_THREAD: c_int = -1;
+pub const PTHREAD_DESTRUCTOR_ITERATIONS: c_int = 4;
+pub const _POSIX_THREAD_KEYS_MAX: c_int = 128; // minimum; no fixed PTHREAD_KEYS_MAX
+pub const PTHREAD_ONCE_INIT: pthread_once_t = 0;
+pub const SCHED_OTHER: c_int = 0;
+pub const SCHED_FIFO: c_int = 1;
+pub const SCHED_RR: c_int = 2;
+pub const _SC_THREADS: c_int = 67;
+pub const _SC_THREAD_DESTRUCTOR_ITERATIONS: c_int = 73;
+pub const _SC_THREAD_KEYS_MAX: c_int = 74;
+pub const _SC_THREAD_STACK_MIN: c_int = 75;
+pub const _SC_THREAD_ATTR_STACKADDR: c_int = 77;
+pub const _SC_THREAD_ATTR_STACKSIZE: c_int = 78;
+pub const _SC_THREAD_PRIORITY_SCHEDULING: c_int = 79;
+pub const _SC_THREAD_PRIO_INHERIT: c_int = 80;
+pub const _SC_THREAD_PRIO_PROTECT: c_int = 81;
+pub const _SC_BARRIERS: c_int = 133;
+pub const _SC_READER_WRITER_LOCKS: c_int = 153;
+pub const _SC_TIMEOUTS: c_int = 164;
+pub const PTHREAD_RWLOCK_INITIALIZER: pthread_rwlock_t = pthread_rwlock_t { __size: [0; 56] };
+
 // pthread initializers (Linux x86_64 compatible - zero-initialized)
 pub const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = pthread_mutex_t {
     __size: [0; 40],
@@ -1249,4 +1278,47 @@ unsafe extern "C" {
         buflen: size_t,
         result: *mut *mut passwd,
     ) -> c_int;
+}
+
+// POSIX thread interfaces implemented by libbreenix-libc.
+unsafe extern "C" {
+    pub fn pthread_exit(value: *mut c_void) -> !;
+    pub fn pthread_equal(a: pthread_t, b: pthread_t) -> c_int;
+    pub fn pthread_attr_setdetachstate(a: *mut pthread_attr_t, state: c_int) -> c_int;
+    pub fn pthread_attr_getdetachstate(a: *const pthread_attr_t, state: *mut c_int) -> c_int;
+    pub fn pthread_attr_getstacksize(a: *const pthread_attr_t, size: *mut size_t) -> c_int;
+    pub fn pthread_attr_setstack(a: *mut pthread_attr_t, addr: *mut c_void, size: size_t) -> c_int;
+    pub fn pthread_attr_setinheritsched(a: *mut pthread_attr_t, inherit: c_int) -> c_int;
+    pub fn pthread_attr_getinheritsched(a: *const pthread_attr_t, inherit: *mut c_int) -> c_int;
+    pub fn pthread_attr_setschedpolicy(a: *mut pthread_attr_t, policy: c_int) -> c_int;
+    pub fn pthread_attr_getschedpolicy(a: *const pthread_attr_t, policy: *mut c_int) -> c_int;
+    pub fn pthread_attr_setschedparam(a: *mut pthread_attr_t, param: *const sched_param) -> c_int;
+    pub fn pthread_attr_getschedparam(a: *const pthread_attr_t, param: *mut sched_param) -> c_int;
+    pub fn pthread_mutex_timedlock(m: *mut pthread_mutex_t, deadline: *const crate::timespec) -> c_int;
+    pub fn pthread_mutex_consistent(m: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_mutexattr_gettype(a: *const pthread_mutexattr_t, kind: *mut c_int) -> c_int;
+    pub fn pthread_mutexattr_setrobust(a: *mut pthread_mutexattr_t, robust: c_int) -> c_int;
+    pub fn pthread_mutexattr_getrobust(a: *const pthread_mutexattr_t, robust: *mut c_int) -> c_int;
+    pub fn pthread_mutexattr_setprotocol(a: *mut pthread_mutexattr_t, protocol: c_int) -> c_int;
+    pub fn pthread_mutexattr_getprotocol(a: *const pthread_mutexattr_t, protocol: *mut c_int) -> c_int;
+    pub fn pthread_condattr_getclock(a: *const pthread_condattr_t, clock: *mut clockid_t) -> c_int;
+    pub fn pthread_rwlock_timedrdlock(rw: *mut pthread_rwlock_t, deadline: *const crate::timespec) -> c_int;
+    pub fn pthread_rwlock_timedwrlock(rw: *mut pthread_rwlock_t, deadline: *const crate::timespec) -> c_int;
+    pub fn pthread_barrier_init(b: *mut pthread_barrier_t, a: *const pthread_barrierattr_t, count: c_uint) -> c_int;
+    pub fn pthread_barrier_wait(b: *mut pthread_barrier_t) -> c_int;
+    pub fn pthread_barrier_destroy(b: *mut pthread_barrier_t) -> c_int;
+    pub fn pthread_once(once: *mut pthread_once_t, init: extern "C" fn()) -> c_int;
+    pub fn pthread_kill(t: pthread_t, sig: c_int) -> c_int;
+    pub fn pthread_sigmask(how: c_int, set: *const sigset_t, old: *mut sigset_t) -> c_int;
+    pub fn sigwait(set: *const sigset_t, sig: *mut c_int) -> c_int;
+    pub fn pthread_setschedparam(t: pthread_t, policy: c_int, param: *const sched_param) -> c_int;
+    pub fn pthread_getschedparam(t: pthread_t, policy: *mut c_int, param: *mut sched_param) -> c_int;
+    pub fn pthread_setschedprio(t: pthread_t, priority: c_int) -> c_int;
+    pub fn sched_setscheduler(pid: crate::pid_t, policy: c_int, param: *const sched_param) -> c_int;
+    pub fn sched_getscheduler(pid: crate::pid_t) -> c_int;
+    pub fn sched_setparam(pid: crate::pid_t, param: *const sched_param) -> c_int;
+    pub fn sched_getparam(pid: crate::pid_t, param: *mut sched_param) -> c_int;
+    pub fn sched_get_priority_min(policy: c_int) -> c_int;
+    pub fn sched_get_priority_max(policy: c_int) -> c_int;
+    pub fn sched_rr_get_interval(pid: crate::pid_t, interval: *mut crate::timespec) -> c_int;
 }

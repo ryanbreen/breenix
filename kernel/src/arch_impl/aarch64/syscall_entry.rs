@@ -671,7 +671,9 @@ fn dispatch_syscall_enum(
         SyscallNumber::GetPid => sys_getpid(),
         SyscallNumber::Getppid => sys_getppid(),
         SyscallNumber::GetTid => sys_gettid(),
-        SyscallNumber::SetTidAddress => crate::task::scheduler::current_thread_id().unwrap_or(0),
+        SyscallNumber::SetTidAddress => {
+            result_to_u64(crate::syscall::handlers::sys_set_tid_address(arg1))
+        }
         SyscallNumber::Wait4 => result_to_u64(crate::syscall::wait::sys_waitpid(
             arg1 as i64,
             arg2,

@@ -758,6 +758,8 @@ fn main() {
             fn pthread_attr_init(attr: *mut u8) -> i32;
             fn pthread_attr_destroy(attr: *mut u8) -> i32;
             fn pthread_attr_getstack(attr: *const u8, stackaddr: *mut *mut u8, stacksize: *mut usize) -> i32;
+            fn pthread_attr_setstacksize(attr: *mut u8, stacksize: usize) -> i32;
+            fn pthread_attr_getstacksize(attr: *const u8, stacksize: *mut usize) -> i32;
             fn signal(signum: i32, handler: usize) -> usize;
             fn sigaction(signum: i32, act: *const u8, oldact: *mut u8) -> i32;
             fn sigaltstack(ss: *const u8, old_ss: *mut u8) -> i32;
@@ -775,18 +777,36 @@ fn main() {
 
         let mut all_stubs_ok = true;
 
-        // Test pthread_self - should return non-zero (we return 1 for main thread)
+        // Test pthread_self - the calling thread's live handle is non-zero
         let thread_id = pthread_self();
         if thread_id == 0 {
             eprintln!("ERROR: pthread_self() returned 0, expected non-zero");
             all_stubs_ok = false;
         }
 
-        // Test pthread_key_create/delete cycle
+        // Test a key's lifecycle: a live key starts NULL, holds what
+        // pthread_setspecific stores, and can then be deleted.
         let mut key: u32 = 0;
         let result = pthread_key_create(&mut key, None);
         if result != 0 {
             eprintln!("ERROR: pthread_key_create() returned {}, expected 0", result);
+            all_stubs_ok = false;
+        }
+
+        let value = pthread_getspecific(key);
+        if !value.is_null() {
+            eprintln!("ERROR: pthread_getspecific() of a new key returned non-null, expected null");
+            all_stubs_ok = false;
+        }
+
+        static KEY_VALUE: u8 = 0;
+        let result = pthread_setspecific(key, &KEY_VALUE);
+        if result != 0 {
+            eprintln!("ERROR: pthread_setspecific() returned {}, expected 0", result);
+            all_stubs_ok = false;
+        }
+        if pthread_getspecific(key) != &KEY_VALUE as *const u8 as *mut u8 {
+            eprintln!("ERROR: pthread_getspecific() did not return the value pthread_setspecific stored");
             all_stubs_ok = false;
         }
 
@@ -796,21 +816,8 @@ fn main() {
             all_stubs_ok = false;
         }
 
-        // Test pthread_getspecific - should return NULL for unset key
-        let value = pthread_getspecific(0);
-        if !value.is_null() {
-            eprintln!("ERROR: pthread_getspecific() returned non-null, expected null");
-            all_stubs_ok = false;
-        }
-
-        // Test pthread_setspecific - should return 0 (success)
-        let result = pthread_setspecific(0, core::ptr::null());
-        if result != 0 {
-            eprintln!("ERROR: pthread_setspecific() returned {}, expected 0", result);
-            all_stubs_ok = false;
-        }
-
-        // Test pthread_attr_* functions
+        // Test pthread_attr_* functions: a configured stack size reads back,
+        // and pthread_getattr_np describes the calling thread.
         let mut attr = [0u8; 64]; // Dummy attribute buffer
         let result = pthread_attr_init(attr.as_mut_ptr());
         if result != 0 {
@@ -818,9 +825,21 @@ fn main() {
             all_stubs_ok = false;
         }
 
-        let result = pthread_getattr_np(1, attr.as_mut_ptr());
+        let result = pthread_attr_setstacksize(attr.as_mut_ptr(), 512 * 1024);
         if result != 0 {
-            eprintln!("ERROR: pthread_getattr_np() returned {}, expected 0", result);
+            eprintln!("ERROR: pthread_attr_setstacksize() returned {}, expected 0", result);
+            all_stubs_ok = false;
+        }
+        let mut stacksize: usize = 0;
+        let result = pthread_attr_getstacksize(attr.as_ptr(), &mut stacksize);
+        if result != 0 || stacksize != 512 * 1024 {
+            eprintln!("ERROR: pthread_attr_getstacksize() returned {} with {}, expected 0 with 512 KiB", result, stacksize);
+            all_stubs_ok = false;
+        }
+
+        let result = pthread_getattr_np(thread_id, attr.as_mut_ptr());
+        if result != 0 {
+            eprintln!("ERROR: pthread_getattr_np(pthread_self()) returned {}, expected 0", result);
             all_stubs_ok = false;
         }
 
@@ -831,9 +850,14 @@ fn main() {
             eprintln!("ERROR: pthread_attr_getstack() returned {}, expected 0", result);
             all_stubs_ok = false;
         }
-        // Stack size should be reasonable (8MB)
-        if stacksize != 8 * 1024 * 1024 {
-            eprintln!("ERROR: pthread_attr_getstack() stacksize={}, expected 8MB", stacksize);
+        // The calling thread's live stack lies within the bounds reported.
+        let live = core::hint::black_box(&stacksize) as *const usize as usize;
+        let low = stackaddr as usize;
+        if stackaddr.is_null() || live < low || live - low >= stacksize {
+            eprintln!(
+                "ERROR: pthread_attr_getstack() reported {:#x}+{:#x}, which does not hold the live stack address {:#x}",
+                low, stacksize, live
+            );
             all_stubs_ok = false;
         }
 

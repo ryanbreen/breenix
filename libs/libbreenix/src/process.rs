@@ -46,6 +46,11 @@ pub fn fork() -> Result<ForkResult, Error> {
     };
     let val = Error::from_syscall(ret as i64)?;
     if val == 0 {
+        #[cfg(feature = "std")]
+        unsafe {
+            extern "C" { fn __breenix_after_fork(); }
+            __breenix_after_fork();
+        }
         Ok(ForkResult::Child)
     } else {
         Ok(ForkResult::Parent(Pid::from_raw(val)))
