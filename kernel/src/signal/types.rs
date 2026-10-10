@@ -1418,6 +1418,12 @@ pub mod tmpdiag {
     pub static DQ_US: AtomicU64 = AtomicU64::new(0);
     pub static DQ_WATCH: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
     pub static RING_IDX: AtomicU64 = AtomicU64::new(0);
+    pub static HK_RECLAIM_MAX: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub static HK_THREADS_MAX: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub static HK_ITER: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub static HK_RECLAIM_LONGEST_START: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub static HK_THREADS_LONGEST_START: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub static UNPARK_STATE: AtomicU64 = AtomicU64::new(0);
     pub static RING: [AtomicU64; 96] = [const { AtomicU64::new(0) }; 96];
     pub fn ring_push(t: u64, next: u64, old: u64) {
         use core::sync::atomic::Ordering::Relaxed;

@@ -1947,7 +1947,11 @@ pub fn idle_loop() -> ! {
         // census line under the x86 gate's emulation. A thread queued on an
         // idle CPU writing that line waited for it, and `kstrandd`, a kernel
         // thread a busy CPU is seen running, emits the census instead.
+        let hk_cpu = { use crate::arch_impl::PerCpuOps; crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize }.min(3);
+        let hk_watch = crate::signal::types::tmpdiag::DQ_WATCH.load(core::sync::atomic::Ordering::Relaxed);
+        let hk_t0 = crate::signal::monotonic_micros();
         crate::task::process_task::reclaim_deferred_process_resources();
+        let hk_t1 = crate::signal::monotonic_micros();
         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
         // from a context that exists AFTER every userspace thread is gone and
         // after the drain above has had passes to run; the idle loop is the only
@@ -1960,6 +1964,14 @@ pub fn idle_loop() -> ! {
         #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
         crate::tracing::providers::teardown::x86_settled_tombstone_census();
         crate::task::scheduler::reclaim_terminated_threads();
+        let hk_t2 = crate::signal::monotonic_micros();
+        if hk_watch {
+            use core::sync::atomic::Ordering::Relaxed;
+            use crate::signal::types::tmpdiag::*;
+            HK_ITER[hk_cpu].fetch_add(1, Relaxed);
+            if hk_t1 - hk_t0 > HK_RECLAIM_MAX[hk_cpu].load(Relaxed) { HK_RECLAIM_MAX[hk_cpu].store(hk_t1 - hk_t0, Relaxed); HK_RECLAIM_LONGEST_START[hk_cpu].store(hk_t0, Relaxed); }
+            if hk_t2 - hk_t1 > HK_THREADS_MAX[hk_cpu].load(Relaxed) { HK_THREADS_MAX[hk_cpu].store(hk_t2 - hk_t1, Relaxed); HK_THREADS_LONGEST_START[hk_cpu].store(hk_t1, Relaxed); }
+        }
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
         // Reclamation can wake a waiter. Check with interrupts masked so a

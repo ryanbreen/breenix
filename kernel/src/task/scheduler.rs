@@ -3124,7 +3124,7 @@ impl Scheduler {
             .unwrap_or(self.cpu_state[current_cpu].idle_thread);
         self.cpu_state[current_cpu].current_thread = Some(next_thread_id);
         if crate::signal::types::tmpdiag::DQ_WATCH.load(Ordering::Relaxed) {
-            crate::signal::types::tmpdiag::ring_push(crate::signal::monotonic_micros(), next_thread_id, old_thread_id);
+            crate::signal::types::tmpdiag::ring_push(crate::signal::monotonic_micros(), next_thread_id, old_thread_id + 1000 * current_cpu as u64);
         }
         // x86_64: this CPU stays on the outgoing thread's kernel stack until its
         // `iretq`; no other CPU dispatches the thread before then.
@@ -5582,6 +5582,14 @@ impl Scheduler {
     /// for that CPU; it does not discard it.
     /// claim-lint:ok: the placement rule, and the three mutation legs that
     /// redden on it, are in tests/loopback_pump_structure.rs
+    pub fn tmpdiag_locate(&self, tid: u64) -> u64 {
+        let queued = self.per_cpu_queues.iter().position(|q| q.contains(&tid)).map_or(9, |c| c as u64);
+        let current = (0..MAX_CPUS).find(|&c| self.cpu_state[c].current_thread == Some(tid)).map_or(9, |c| c as u64);
+        let state = self.get_thread(tid).map_or(99, |t| t.state as u64);
+        let me = Self::current_cpu_id() as u64;
+        queued * 1000 + current * 100 + state + me * 10000
+    }
+
     fn find_target_cpu_for_wakeup(&self, tid: u64) -> Option<usize> {
         let current_cpu = Self::current_cpu_id();
         if let Some(pin) = self.get_thread(tid).and_then(|thread| thread.cpu_affinity) {
