@@ -253,6 +253,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             let user_timespec_ptr = args.1 as *mut super::time::Timespec;
             super::time::sys_clock_gettime(clock_id, user_timespec_ptr)
         }
+        Some(SyscallNumber::ClockGetRes) => super::clocks::sys_clock_getres(args.0 as u32, args.1),
+        Some(SyscallNumber::ClockNanosleep) => super::sleep::clock_nanosleep(args.0 as u32, args.1, args.2, args.3),
+        Some(SyscallNumber::Gettimeofday) => super::clocks::sys_gettimeofday(args.0, args.1),
+        Some(SyscallNumber::Time) => super::clocks::sys_time(args.0),
         Some(SyscallNumber::ClockSetTime) => {
             let clock_id = args.0 as u32;
             let user_timespec_ptr = args.1 as *const super::time::Timespec;
