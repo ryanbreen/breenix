@@ -41,19 +41,6 @@ pub fn refuses_init_group_clone(
     derived_tg_id == init_tg_id
 }
 
-/// x86-64's dispatcher still passes five arguments: clone without a TLS
-/// argument.
-#[cfg(target_arch = "x86_64")]
-pub fn sys_clone(
-    flags: u64,
-    child_stack: u64,
-    fn_ptr: u64,
-    fn_arg: u64,
-    child_tidptr: u64,
-) -> SyscallResult {
-    sys_clone_thread(flags & !CLONE_SETTLS, child_stack, fn_ptr, fn_arg, child_tidptr, 0)
-}
-
 /// sys_clone_thread - create a new thread sharing the parent's address space
 ///
 /// Breenix extension: instead of the standard Linux clone semantics where both
