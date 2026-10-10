@@ -225,8 +225,17 @@ fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64
             }
         }
         if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+            // A child exit between the scan above and this check commits the
+            // exit and queues its SIGCHLD together, so the signal can end a
+            // wait whose child is now reportable: wait/interrupted's second
+            // waitpid returned EINTR once on x86. Report the child instead;
+            // the signal stays pending for the return to user mode.
+            let found = scan(thread_id, selector, options);
             unblock_self();
-            return Err(e as u64);
+            return match found {
+                Ok(None) => Err(e as u64),
+                done => done,
+            };
         }
         crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
