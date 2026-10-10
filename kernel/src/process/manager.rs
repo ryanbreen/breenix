@@ -1103,15 +1103,22 @@ impl ProcessManager {
             return Err("Process page table not available for stack mapping");
         };
 
-        let initial_sp = VirtAddr::new(user_stack_top - 48);
-        Self::write_bytes_to_stack(
+        // No arguments or environment, but the runtime still needs the ELF
+        // auxiliary vector to discover program headers and initialize TLS.
+        let initial_sp = VirtAddr::new(Self::setup_argv_on_stack(
             process
                 .page_table
                 .as_ref()
                 .ok_or("Process page table unavailable")?,
-            initial_sp.as_u64(),
-            &[0; 48],
-        )?;
+            user_stack_top,
+            &[],
+            &[],
+            loaded_elf.phdr_vaddr,
+            loaded_elf.phnum,
+            loaded_elf.phentsize,
+            loaded_elf.entry_point,
+            &process.cred,
+        )?);
 
         // Create the main thread with USERSPACE stack top
         crate::serial_println!("manager.create_process [ARM64]: Creating main thread");
