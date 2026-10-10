@@ -1,0 +1,595 @@
+{
+  "id": "threads",
+  "title": "Threads",
+  "area": "Threads",
+  "summary": "Threads are created, joined and detached, and mutexes, condition variables, rwlocks, barriers, once, thread-specific data, per-thread signals and scheduling parameters behave as POSIX requires, through Breenix's own C library, on every target.",
+  "binary": "/sbin/suite-threads",
+  "categories": [
+    {
+      "id": "lifecycle",
+      "title": "pthread create, join & detach",
+      "cases": [
+        {
+          "id": "create-join",
+          "title": "pthread_create runs the start routine and pthread_join returns once it has returned"
+        },
+        {
+          "id": "join-value",
+          "title": "pthread_join stores the value the start routine returned"
+        },
+        {
+          "id": "exit-value",
+          "title": "pthread_exit from a nested call ends the thread with its value for pthread_join"
+        },
+        {
+          "id": "join-ended",
+          "title": "pthread_join of a thread that has already ended returns at once with its value"
+        },
+        {
+          "id": "self-equal",
+          "title": "pthread_self in a thread is pthread_equal to the ID pthread_create gave"
+        },
+        {
+          "id": "self-distinct",
+          "title": "pthread_equal tells two threads and the main thread apart"
+        },
+        {
+          "id": "join-self",
+          "title": "Linux policy: pthread_join of the calling thread returns EDEADLK"
+        },
+        {
+          "id": "join-detached",
+          "title": "Linux policy: pthread_join of a detached, running thread returns EINVAL"
+        },
+        {
+          "id": "detach-running",
+          "title": "pthread_detach of a running thread returns 0 and the thread runs to the end"
+        },
+        {
+          "id": "detach-ended",
+          "title": "pthread_detach of a thread that has ended returns 0"
+        },
+        {
+          "id": "detach-many",
+          "title": "Linux policy: 256 detached threads that ended leave the process's resident memory within 1 MiB"
+        },
+        {
+          "id": "attr-default",
+          "title": "A new thread attribute object is PTHREAD_CREATE_JOINABLE"
+        },
+        {
+          "id": "attr-detached",
+          "title": "PTHREAD_CREATE_DETACHED reads back and a thread created with it runs"
+        },
+        {
+          "id": "attr-stacksize",
+          "title": "An 8 MiB pthread_attr_setstacksize reads back and its thread can use 6 MiB of stack"
+        },
+        {
+          "id": "attr-stack",
+          "title": "A thread created with pthread_attr_setstack runs on the memory it was given"
+        },
+        {
+          "id": "attr-stacksize-min",
+          "title": "pthread_attr_setstacksize below PTHREAD_STACK_MIN returns EINVAL"
+        },
+        {
+          "id": "attr-guardsize",
+          "title": "pthread_attr_setguardsize's value is what pthread_attr_getguardsize returns"
+        },
+        {
+          "id": "guard-overflow",
+          "title": "Linux policy: a thread overflowing the 256 KiB stack it asked for faults with SIGSEGV within its 64 KiB guard"
+        },
+        {
+          "id": "many-threads",
+          "title": "64 threads (_POSIX_THREAD_THREADS_MAX) run at once, each returning its own result"
+        },
+        {
+          "id": "main-exit",
+          "title": "pthread_exit in the main thread leaves the others running and the process exits 0 after the last"
+        },
+        {
+          "id": "exit-from-thread",
+          "title": "exit in one thread ends the whole process, a thread blocked in pthread_join included"
+        },
+        {
+          "id": "exit-from-main",
+          "title": "exit in the main thread ends the process while other threads run"
+        },
+        {
+          "id": "exit-tid-word",
+          "title": "Linux ABI: the threads of a process killed and reaped write nothing into pages its parent maps afterwards"
+        },
+        {
+          "id": "getpid-shared",
+          "title": "Every thread sees the process's getpid, and gettid gives each its own thread ID"
+        },
+        {
+          "id": "shared-fds",
+          "title": "A descriptor one thread opens is usable in another"
+        }
+      ]
+    },
+    {
+      "id": "mutex",
+      "title": "mutexes",
+      "cases": [
+        {
+          "id": "lock-unlock",
+          "title": "A default mutex locks, unlocks, trylocks and is destroyed"
+        },
+        {
+          "id": "static-init",
+          "title": "Linux ABI: a zero-filled mutex (PTHREAD_MUTEX_INITIALIZER) excludes another thread"
+        },
+        {
+          "id": "exclusion",
+          "title": "pthread_mutex_lock waits while another thread holds the mutex and returns once it is unlocked"
+        },
+        {
+          "id": "trylock-ebusy",
+          "title": "pthread_mutex_trylock returns EBUSY while another thread holds the mutex"
+        },
+        {
+          "id": "trylock-owner",
+          "title": "pthread_mutex_trylock by the owner of a normal mutex returns EBUSY"
+        },
+        {
+          "id": "contention-cpus",
+          "title": "Threads on every processor increment a counter under one mutex without losing an update"
+        },
+        {
+          "id": "errorcheck-relock",
+          "title": "Relocking an error-checking mutex the thread holds returns EDEADLK"
+        },
+        {
+          "id": "errorcheck-unlock-other",
+          "title": "Unlocking an error-checking mutex another thread holds returns EPERM"
+        },
+        {
+          "id": "errorcheck-unlock-unlocked",
+          "title": "Unlocking an unlocked error-checking mutex returns EPERM"
+        },
+        {
+          "id": "recursive",
+          "title": "A recursive mutex locked three times is free to others only after three unlocks"
+        },
+        {
+          "id": "recursive-trylock",
+          "title": "pthread_mutex_trylock by the owner of a recursive mutex takes it again"
+        },
+        {
+          "id": "recursive-unlock-other",
+          "title": "Unlocking a recursive mutex another thread holds returns EPERM"
+        },
+        {
+          "id": "attr-type",
+          "title": "pthread_mutexattr_settype reads back each type and refuses an invalid one with EINVAL"
+        },
+        {
+          "id": "timedlock-free",
+          "title": "pthread_mutex_timedlock of a free mutex returns 0 at once"
+        },
+        {
+          "id": "timedlock-timeout",
+          "title": "pthread_mutex_timedlock of a held mutex returns ETIMEDOUT at its CLOCK_REALTIME deadline"
+        },
+        {
+          "id": "timedlock-acquire",
+          "title": "pthread_mutex_timedlock returns 0 when the mutex is released before the deadline"
+        },
+        {
+          "id": "timedlock-einval",
+          "title": "pthread_mutex_timedlock with tv_nsec of a billion returns EINVAL"
+        },
+        {
+          "id": "robust-ownerdead",
+          "title": "A robust mutex whose owner ended holding it returns EOWNERDEAD and recovers with pthread_mutex_consistent"
+        },
+        {
+          "id": "robust-notrecoverable",
+          "title": "A robust mutex unlocked without pthread_mutex_consistent returns ENOTRECOVERABLE"
+        },
+        {
+          "id": "robust-attr",
+          "title": "pthread_mutexattr_getrobust starts at PTHREAD_MUTEX_STALLED and reads back PTHREAD_MUTEX_ROBUST"
+        },
+        {
+          "id": "prio-inherit",
+          "title": "A PTHREAD_PRIO_INHERIT mutex's low-priority owner runs ahead of a middle-priority thread, where offered"
+        },
+        {
+          "id": "futex-eagain",
+          "title": "Linux ABI: FUTEX_WAIT on a word that does not hold the value returns EAGAIN"
+        },
+        {
+          "id": "futex-wake-count",
+          "title": "Linux ABI: FUTEX_WAKE wakes exactly as many waiters as asked"
+        },
+        {
+          "id": "futex-timeout",
+          "title": "Linux ABI: FUTEX_WAIT with a 100 ms timeout returns ETIMEDOUT on time"
+        },
+        {
+          "id": "futex-private",
+          "title": "Linux ABI: FUTEX_WAKE_PRIVATE wakes a FUTEX_WAIT_PRIVATE waiter"
+        }
+      ]
+    },
+    {
+      "id": "cond",
+      "title": "condition variables",
+      "cases": [
+        {
+          "id": "signal-wakes",
+          "title": "pthread_cond_signal wakes a waiting thread, which returns holding the mutex"
+        },
+        {
+          "id": "signal-one",
+          "title": "pthread_cond_signal unblocks a waiter and a broadcast the rest, with predicate loops"
+        },
+        {
+          "id": "broadcast-all",
+          "title": "pthread_cond_broadcast wakes all four waiting threads"
+        },
+        {
+          "id": "wait-releases",
+          "title": "pthread_cond_wait releases the mutex while it waits"
+        },
+        {
+          "id": "wait-reacquires",
+          "title": "pthread_cond_wait returns only once it has the mutex again"
+        },
+        {
+          "id": "wakes-waiting",
+          "title": "pthread_cond_signal wakes a thread that was waiting, not one that starts waiting afterwards"
+        },
+        {
+          "id": "timedwait-realtime",
+          "title": "pthread_cond_timedwait returns ETIMEDOUT at its CLOCK_REALTIME deadline holding the mutex"
+        },
+        {
+          "id": "timedwait-monotonic",
+          "title": "pthread_condattr_setclock(CLOCK_MONOTONIC) reads back and times the wait by that clock"
+        },
+        {
+          "id": "timedwait-realtime-set",
+          "title": "Setting CLOCK_REALTIME past the deadline ends a CLOCK_REALTIME timed wait"
+        },
+        {
+          "id": "timedwait-monotonic-set",
+          "title": "Setting CLOCK_REALTIME does not end a CLOCK_MONOTONIC timed wait early"
+        },
+        {
+          "id": "timedwait-signaled",
+          "title": "pthread_cond_timedwait signalled before its deadline returns 0"
+        },
+        {
+          "id": "timedwait-past",
+          "title": "pthread_cond_timedwait with a deadline already past returns ETIMEDOUT at once"
+        },
+        {
+          "id": "timedwait-einval",
+          "title": "pthread_cond_timedwait with tv_nsec of a billion returns EINVAL"
+        },
+        {
+          "id": "wait-eperm",
+          "title": "pthread_cond_wait with an error-checking mutex the caller does not hold returns EPERM"
+        },
+        {
+          "id": "pingpong-cpus",
+          "title": "A token passed round threads on every processor by signal loses no wakeup in 2000 passes"
+        },
+        {
+          "id": "queue-cpus",
+          "title": "A bounded queue between threads on every processor delivers 4000 items exactly once"
+        },
+        {
+          "id": "broadcast-cycles",
+          "title": "Four waiters see every one of 200 broadcasts"
+        },
+        {
+          "id": "static-init",
+          "title": "Linux ABI: a zero-filled condition (PTHREAD_COND_INITIALIZER) wakes its waiter"
+        },
+        {
+          "id": "futex-bitset-realtime",
+          "title": "Linux ABI: FUTEX_WAIT_BITSET with FUTEX_CLOCK_REALTIME times out at its absolute deadline"
+        },
+        {
+          "id": "futex-requeue",
+          "title": "Linux ABI: FUTEX_CMP_REQUEUE wakes one waiter and moves the rest to another word"
+        }
+      ]
+    },
+    {
+      "id": "rwlock-barrier",
+      "title": "rwlocks, barriers & once",
+      "cases": [
+        {
+          "id": "readers-share",
+          "title": "Three threads hold one read lock at once"
+        },
+        {
+          "id": "writer-excludes-readers",
+          "title": "While a thread holds the write lock, tryrdlock returns EBUSY and rdlock waits"
+        },
+        {
+          "id": "writer-excludes-writers",
+          "title": "While a thread holds the write lock, trywrlock returns EBUSY and wrlock waits"
+        },
+        {
+          "id": "reader-blocks-writer",
+          "title": "While a thread holds a read lock, trywrlock returns EBUSY and wrlock waits"
+        },
+        {
+          "id": "read-recursive",
+          "title": "A thread holding two read locks keeps writers out until it releases both"
+        },
+        {
+          "id": "try-free",
+          "title": "pthread_rwlock_tryrdlock and trywrlock take a free lock"
+        },
+        {
+          "id": "writer-preference",
+          "title": "With SCHED_FIFO threads, a reader cannot take the lock while a writer of equal priority waits"
+        },
+        {
+          "id": "timedwrlock",
+          "title": "pthread_rwlock_timedwrlock returns ETIMEDOUT at its deadline while a reader holds the lock"
+        },
+        {
+          "id": "timedrdlock",
+          "title": "pthread_rwlock_timedrdlock returns ETIMEDOUT at its deadline while a writer holds the lock"
+        },
+        {
+          "id": "contention-cpus",
+          "title": "Readers on every processor never see a writer's update half done"
+        },
+        {
+          "id": "barrier-serial",
+          "title": "pthread_barrier_wait gives PTHREAD_BARRIER_SERIAL_THREAD to exactly one of four threads in each of 100 cycles"
+        },
+        {
+          "id": "barrier-holds",
+          "title": "No thread passes a barrier of four until the fourth arrives"
+        },
+        {
+          "id": "barrier-cpus",
+          "title": "Threads on every processor keep in step through 2000 barrier cycles"
+        },
+        {
+          "id": "barrier-einval",
+          "title": "pthread_barrier_init with a count of 0 returns EINVAL"
+        },
+        {
+          "id": "barrier-one",
+          "title": "Every wait on a barrier of one returns PTHREAD_BARRIER_SERIAL_THREAD"
+        },
+        {
+          "id": "once-race",
+          "title": "Eight threads racing into pthread_once run the routine once, and none returns before it finishes"
+        },
+        {
+          "id": "once-again",
+          "title": "pthread_once on a used control runs no routine"
+        }
+      ]
+    },
+    {
+      "id": "tls",
+      "title": "thread-local storage",
+      "cases": [
+        {
+          "id": "key-distinct",
+          "title": "pthread_key_create gives distinct keys, each starting NULL and holding its own value"
+        },
+        {
+          "id": "set-get",
+          "title": "pthread_getspecific returns what pthread_setspecific set"
+        },
+        {
+          "id": "per-thread",
+          "title": "Each thread has its own value for a key, starting NULL"
+        },
+        {
+          "id": "destructor-runs",
+          "title": "A key's destructor runs once in the exiting thread with that thread's value"
+        },
+        {
+          "id": "destructor-null",
+          "title": "No destructor runs for a key whose value is NULL"
+        },
+        {
+          "id": "destructor-cleared",
+          "title": "Inside a destructor the key's value is already NULL"
+        },
+        {
+          "id": "destructor-rounds",
+          "title": "A value a destructor sets for another key is destroyed in a later round"
+        },
+        {
+          "id": "destructor-iterations",
+          "title": "A destructor that keeps setting its value runs at least PTHREAD_DESTRUCTOR_ITERATIONS times"
+        },
+        {
+          "id": "destructor-exit",
+          "title": "Destructors run for a thread that ends with pthread_exit"
+        },
+        {
+          "id": "key-delete",
+          "title": "A deleted key's destructor never runs, while another key's does"
+        },
+        {
+          "id": "keys-max",
+          "title": "PTHREAD_KEYS_MAX keys can be created and each keeps its own value"
+        },
+        {
+          "id": "errno-per-thread",
+          "title": "errno is per thread: a failing call in one thread leaves another's alone"
+        },
+        {
+          "id": "thread-pointer",
+          "title": "Linux ABI: every thread has a thread pointer (TPIDR_EL0, the FS base) of its own"
+        },
+        {
+          "id": "compiler-initial",
+          "title": "Compiler TLS starts at its initial values in the main thread and every new thread"
+        },
+        {
+          "id": "compiler-isolated",
+          "title": "Compiler TLS written by four threads stays each thread's own"
+        }
+      ]
+    },
+    {
+      "id": "signals",
+      "title": "per-thread signals",
+      "cases": [
+        {
+          "id": "pthread-kill",
+          "title": "pthread_kill runs the handler in the target thread and only there"
+        },
+        {
+          "id": "pthread-kill-zero",
+          "title": "pthread_kill with signal 0 of a live thread returns 0"
+        },
+        {
+          "id": "pthread-kill-einval",
+          "title": "pthread_kill with an invalid signal returns EINVAL"
+        },
+        {
+          "id": "sigmask-per-thread",
+          "title": "pthread_sigmask changes only the calling thread's mask"
+        },
+        {
+          "id": "sigmask-inherited",
+          "title": "A new thread starts with its creator's signal mask"
+        },
+        {
+          "id": "sigmask-einval",
+          "title": "pthread_sigmask with an invalid how returns EINVAL"
+        },
+        {
+          "id": "pending-per-thread",
+          "title": "A blocked signal sent to one thread is pending there alone and delivered there when unblocked"
+        },
+        {
+          "id": "process-to-unblocked",
+          "title": "A signal sent to the process runs in the one thread that does not block it"
+        },
+        {
+          "id": "process-pending",
+          "title": "A process signal every thread blocks waits until a thread unblocks it, and runs there"
+        },
+        {
+          "id": "sigwait-process",
+          "title": "sigwait in a dedicated thread takes a signal sent to the process, with no handler run"
+        },
+        {
+          "id": "sigwait-thread",
+          "title": "sigwait takes a signal pthread_kill sent to its thread"
+        },
+        {
+          "id": "sigwait-pending",
+          "title": "sigwait returns at once for a signal already pending and clears it"
+        },
+        {
+          "id": "raise-thread",
+          "title": "raise in a thread runs the handler in that thread"
+        },
+        {
+          "id": "default-whole-process",
+          "title": "A signal whose default action is to terminate ends the whole process even when sent to one thread"
+        },
+        {
+          "id": "sigkill-threads",
+          "title": "SIGKILL ends a process with four running threads"
+        },
+        {
+          "id": "tgkill",
+          "title": "Linux ABI: tgkill runs the handler in the named thread"
+        },
+        {
+          "id": "rt-sigprocmask",
+          "title": "Linux ABI: rt_sigprocmask in one thread leaves another thread's mask unchanged"
+        }
+      ]
+    },
+    {
+      "id": "scheduling",
+      "title": "thread scheduling parameters",
+      "cases": [
+        {
+          "id": "getschedparam-self",
+          "title": "Linux policy: a thread started normally reports SCHED_OTHER with priority 0"
+        },
+        {
+          "id": "priority-range",
+          "title": "SCHED_FIFO and SCHED_RR each have at least 32 priorities"
+        },
+        {
+          "id": "priority-einval",
+          "title": "sched_get_priority_max of an invalid policy fails with EINVAL"
+        },
+        {
+          "id": "setschedparam-fifo",
+          "title": "pthread_setschedparam to SCHED_FIFO reads back through pthread_getschedparam"
+        },
+        {
+          "id": "setschedparam-rr",
+          "title": "pthread_setschedparam to SCHED_RR reads back and sched_rr_get_interval gives a quantum"
+        },
+        {
+          "id": "setschedparam-thread",
+          "title": "pthread_setschedparam of another thread changes what that thread reports"
+        },
+        {
+          "id": "setschedparam-eperm",
+          "title": "Linux policy: an unprivileged thread's pthread_setschedparam to SCHED_FIFO returns EPERM when RLIMIT_RTPRIO is 0"
+        },
+        {
+          "id": "setschedprio",
+          "title": "pthread_setschedprio changes the thread's priority"
+        },
+        {
+          "id": "inherit-sched",
+          "title": "A thread created with PTHREAD_INHERIT_SCHED takes its creator's SCHED_FIFO priority"
+        },
+        {
+          "id": "explicit-sched",
+          "title": "A thread created with PTHREAD_EXPLICIT_SCHED runs with the attribute's SCHED_RR priority"
+        },
+        {
+          "id": "inheritsched-default",
+          "title": "Linux policy: a new thread attribute object is PTHREAD_INHERIT_SCHED"
+        },
+        {
+          "id": "yield-other",
+          "title": "Linux policy: two SCHED_OTHER threads on one processor hand it over 2000 times with sched_yield in 500 ms"
+        },
+        {
+          "id": "yield-fifo",
+          "title": "Two SCHED_FIFO threads of one priority on one processor hand it over 2000 times with sched_yield"
+        },
+        {
+          "id": "fifo-no-preempt",
+          "title": "A SCHED_FIFO thread waking does not preempt an equal-priority thread computing on its processor"
+        },
+        {
+          "id": "fifo-preempt",
+          "title": "A higher-priority SCHED_FIFO thread waking preempts a lower-priority one at once"
+        },
+        {
+          "id": "kernel-getscheduler",
+          "title": "Linux ABI: sched_getscheduler(0) reports SCHED_OTHER"
+        },
+        {
+          "id": "kernel-setscheduler",
+          "title": "Linux ABI: sched_setscheduler and sched_getparam set and read a thread's SCHED_FIFO priority"
+        }
+      ]
+    }
+  ]
+}
