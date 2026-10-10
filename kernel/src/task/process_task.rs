@@ -1211,6 +1211,7 @@ pub fn drain_deferred_fault_sigsegv_exits() {
                 let _ = write!(ring, " {}:{}<-{}", RING[(k*3) as usize].load(Relaxed) as i64 - dq_queued as i64, RING[(k*3+1) as usize].load(Relaxed), RING[(k*3+2) as usize].load(Relaxed));
             }
             if done - dq_queued > 5000 {
+                log::info!("[TMPDIAG-HALT]{}", halt_summary());
                 log::info!("[TMPDIAG-DEFER3] irqs={:?} irq_first_rel={:?}",
                     [IRQS[0].load(Relaxed), IRQS[1].load(Relaxed), IRQS[2].load(Relaxed), IRQS[3].load(Relaxed)],
                     [IRQ_FIRST[0].load(Relaxed) as i64 - dq_queued as i64, IRQ_FIRST[1].load(Relaxed) as i64 - dq_queued as i64, IRQ_FIRST[2].load(Relaxed) as i64 - dq_queued as i64, IRQ_FIRST[3].load(Relaxed) as i64 - dq_queued as i64]);

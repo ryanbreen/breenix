@@ -1989,7 +1989,23 @@ pub fn idle_loop() -> ! {
         // This atomically enables interrupts and halts, preventing race conditions
         // where interrupts might be disabled when we enter this loop.
         // Without this, if interrupts are disabled, HLT would hang forever.
+        let h0 = crate::signal::monotonic_micros();
         x86_64::instructions::interrupts::enable_and_hlt();
+        let h1 = crate::signal::monotonic_micros();
+        {
+            use core::sync::atomic::Ordering::Relaxed;
+            use crate::signal::types::tmpdiag::*;
+            use crate::arch_impl::x86_64::apic::tmpdiag_read as r;
+            let d = h1 - h0;
+            if d > 20_000 {
+                LONG_HALTS[hk_cpu].fetch_add(1, Relaxed);
+                if d > MAX_HALT[hk_cpu].load(Relaxed) {
+                    MAX_HALT[hk_cpu].store(d, Relaxed);
+                    let regs = [r(0x320), r(0x380), r(0x390), r(0x110), r(0x170), r(0x210), r(0x270), r(0x80)];
+                    for (k, v) in regs.iter().enumerate() { MAX_HALT_REGS[hk_cpu * 8 + k].store(*v as u64, Relaxed); }
+                }
+            }
+        }
     }
 }
 

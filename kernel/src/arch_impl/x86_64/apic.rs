@@ -32,6 +32,8 @@ fn read(register: u32) -> u32 {
     }
 }
 
+pub fn tmpdiag_read(register: u32) -> u32 { read(register) }
+
 #[inline]
 fn write(register: u32, value: u32) {
     unsafe {

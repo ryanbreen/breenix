@@ -122,6 +122,17 @@ pub fn init() {
 #[inline]
 pub fn timer_interrupt() {
     #[cfg(target_arch = "x86_64")]
+    {
+        use crate::signal::types::tmpdiag::*;
+        let cpu = { use crate::arch_impl::PerCpuOps; crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize }.min(3);
+        let now = crate::signal::monotonic_micros();
+        let last = IRQ_LAST[cpu].swap(now, Ordering::Relaxed);
+        IRQ_TOTAL[cpu].fetch_add(1, Ordering::Relaxed);
+        if last != 0 && now - last > IRQ_MAX_GAP[cpu].load(Ordering::Relaxed) && DEADLINE_US.load(Ordering::Relaxed) != 0 {
+            IRQ_MAX_GAP[cpu].store(now - last, Ordering::Relaxed);
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
     if crate::signal::types::tmpdiag::DQ_WATCH.load(Ordering::Relaxed) {
         let cpu = { use crate::arch_impl::PerCpuOps; crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize }.min(3);
         if crate::signal::types::tmpdiag::IRQS[cpu].fetch_add(1, Ordering::Relaxed) == 0 {

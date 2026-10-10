@@ -1424,6 +1424,25 @@ pub mod tmpdiag {
     pub static HK_RECLAIM_LONGEST_START: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
     pub static HK_THREADS_LONGEST_START: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
     pub static UNPARK_STATE: AtomicU64 = AtomicU64::new(0);
+    pub static LONG_HALTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub static MAX_HALT: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub static MAX_HALT_REGS: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
+    pub static IRQ_LAST: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub static IRQ_MAX_GAP: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub static IRQ_TOTAL: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub fn halt_summary() -> alloc::string::String {
+        use core::sync::atomic::Ordering::Relaxed;
+        use core::fmt::Write;
+        let mut s = alloc::string::String::new();
+        for c in 0..4 {
+            let _ = write!(s, " cpu{}: long_halts={} max_halt={} regs(lvt,init,cur,isr1,isr7,irr1,irr7,tpr)=[{:#x},{},{},{:#x},{:#x},{:#x},{:#x},{:#x}] irq_total={} irq_max_gap={};", c,
+                LONG_HALTS[c].load(Relaxed), MAX_HALT[c].load(Relaxed),
+                MAX_HALT_REGS[c*8].load(Relaxed), MAX_HALT_REGS[c*8+1].load(Relaxed), MAX_HALT_REGS[c*8+2].load(Relaxed), MAX_HALT_REGS[c*8+3].load(Relaxed),
+                MAX_HALT_REGS[c*8+4].load(Relaxed), MAX_HALT_REGS[c*8+5].load(Relaxed), MAX_HALT_REGS[c*8+6].load(Relaxed), MAX_HALT_REGS[c*8+7].load(Relaxed),
+                IRQ_TOTAL[c].load(Relaxed), IRQ_MAX_GAP[c].load(Relaxed));
+        }
+        s
+    }
     pub static IRQS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
     pub static IRQ_FIRST: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
     pub static RING: [AtomicU64; 96] = [const { AtomicU64::new(0) }; 96];
