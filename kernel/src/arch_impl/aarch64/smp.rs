@@ -565,6 +565,7 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
         core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack));
     }
     crate::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
+    super::cache::grant_el0_cache_maintenance();
     set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_KERNEL_PAGE_TABLE_RECORDED);
 
     // Set kernel stack top for this CPU.
