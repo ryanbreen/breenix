@@ -878,9 +878,10 @@ impl Drop for Child {
 /// Rounds of handoffs between the case's thread and all its workers at once, and the time
 /// all of them must fit in. A thread sharing a processor with another runs only when that
 /// one is preempted, at most once per timer tick (1 ms), so threads taking turns need at
-/// least HANDOFFS ms; HANDOFF_MS is a quarter of that.
+/// least HANDOFFS ms. HANDOFF_MS is three quarters of that, which leaves room for
+/// emulated processors: x86-64 under QEMU takes about 0.3 ms a round.
 const HANDOFFS: u64 = 1000;
-const HANDOFF_MS: u64 = 250;
+const HANDOFF_MS: u64 = 750;
 /// The most worker threads a case starts; it starts one fewer than the processors online.
 const MAX_WORKERS: usize = 3;
 
@@ -981,6 +982,7 @@ fn prove_parallel(n: usize, cpus: usize) -> CaseResult {
             return stop(format!("with {cpus} processors online, the case and its {n} workers made only {k} of {HANDOFFS} rounds of handoffs in {HANDOFF_MS} ms, so they did not all run at the same time"));
         }
     }
+    value("handoffs", now_ms().saturating_sub(start) as i64, "ms", Some((0, HANDOFF_MS as i64)));
     if this_cpu() != Some(0) { return stop(format!("pinned to processor 0, the case's thread ran on processor {:?}", this_cpu())); }
     GO.store(1, SeqCst);
     Ok(())

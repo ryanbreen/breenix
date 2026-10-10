@@ -459,9 +459,9 @@ the count from /proc/cpuinfo, fail when it cannot be read, skip below two and st
 worker thread per processor beyond the first, at most three; none assumes four. The case's
 thread pins itself to processor 0 and worker i to processor i + 1 with sched_setaffinity,
 and each confirms with getcpu that it runs there. Before measuring, the case and all its
-workers make a thousand rounds of handoffs within 250 ms, each worker checking its processor
+workers make a thousand rounds of handoffs within 750 ms, each worker checking its processor
 at every handoff: threads taking turns on one processor hand off at most once per 1 ms
-timer tick. Then, for 50 rounds, the workers read (or write) a page in a loop while the case
+timer tick, so they would need at least 1000 ms. Then, for 50 rounds, the workers read (or write) a page in a loop while the case
 unmaps it (or makes it read-only). Each worker has accessed the page at least 100 times
 that round before the call, so its processor has the translation in use; an access begun
 after the call returned must fault with SEGV_MAPERR (or SEGV_ACCERR) at the byte touched,
