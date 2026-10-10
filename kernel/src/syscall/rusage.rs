@@ -76,9 +76,17 @@ pub fn sys_times(buf: u64) -> SyscallResult {
         Ok(split) => split,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let clock = |ns: u64| (ns / (1_000_000_000 / CLK_TCK)) as i64;
+    // User time in whole ticks, and system time as what is left of the
+    // total in whole ticks: truncating each on its own could make the two
+    // add up to almost two ticks less than the CPU time getrusage reports.
+    let clock = |user: u64, system: u64| {
+        let tick = 1_000_000_000 / CLK_TCK;
+        let user_ticks = user / tick;
+        [user_ticks as i64, (user.saturating_add(system) / tick - user_ticks) as i64]
+    };
     if buf != 0 {
-        let tms = [clock(user), clock(system), clock(c_user), clock(c_system)];
+        let (own, children) = (clock(user, system), clock(c_user, c_system));
+        let tms = [own[0], own[1], children[0], children[1]];
         if let Err(errno) = super::userptr::copy_to_user(buf as *mut [i64; 4], &tms) {
             return SyscallResult::Err(errno);
         }
