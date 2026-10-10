@@ -501,7 +501,10 @@ unsafe fn start_reaper() -> i32 {
     }
     let r = raw::syscall6(
         nr::CLONE,
-        0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x80000 | 0x200000 | 0x1000000,
+        // The helper performs no I/O. Breenix clone gives it a fresh private
+        // FD table without CLONE_FILES, so it cannot retain application pipe
+        // ends or otherwise participate in application descriptor ownership.
+        0x100 | 0x200 | 0x800 | 0x10000 | 0x80000 | 0x200000 | 0x1000000,
         stack.add(32 * 1024) as u64,
         reaper_entry as *const () as u64,
         p as u64,
