@@ -38,6 +38,10 @@
           "title": "CLOCK_MONOTONIC advances at the rate of the processor's counter over 2 seconds (ARM64 CNTVCT_EL0, x86-64 the TSC at its CPUID frequency)"
         },
         {
+          "id": "counter-cpus",
+          "title": "Linux ABI: user mode reads the processor's counter (ARM64 CNTVCT_EL0, x86-64 the TSC) on every online processor at once"
+        },
+        {
           "id": "rate-rtc",
           "title": "Linux ABI: CLOCK_REALTIME advances at the rate of the RTC, read through /dev/rtc0 RTC_RD_TIME, over 3 seconds"
         },

@@ -411,6 +411,7 @@ fn draw_probe(screen: &mut Option<Screen>, states: &[Option<bool>; 16], details:
             if passed == IDS.len() { Verdict::Passed(&verdict) } else { Verdict::Failed(&verdict) }
         } else { Verdict::Running(&verdict) },
         scored: false,
+        live: None,
     });
     flush_screen(screen);
 }
@@ -471,7 +472,7 @@ fn draw_run(screen: &mut Option<Screen>, path: &str, elapsed: i128,
     if !partial.is_empty() { lines.push(&partial); }
     diagnostics::draw(&mut screen.fb, &Panel {
         title: "BREENIX / PROGRAM RUN", subtitle: &subtitle,
-        groups: &groups, output: &lines, verdict, scored: false,
+        groups: &groups, output: &lines, verdict, scored: false, live: None,
     });
     flush_screen(screen);
 }

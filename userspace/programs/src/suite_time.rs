@@ -816,22 +816,29 @@ fn clk_monotonic() -> CaseResult {
     check(t[0] >= 0, &format!("CLOCK_MONOTONIC reads a negative {} s", t[0]))
 }
 
-/// Reads of CLOCK_MONOTONIC in a row: how many went backwards and the largest step back.
-fn backwards(reads: u32) -> Result<(i64, i64), String> {
+/// Up to `reads` reads of CLOCK_MONOTONIC in a row, stopping when `ms` have passed: how
+/// many were made, how many went backwards and the largest step back.
+fn backwards(reads: u32, ms: u64) -> Result<(u32, i64, i64), String> {
     let mut last = clock_ns(CLOCK_MONOTONIC)?;
+    let end = last + ms as i64 * MS;
     let (mut back, mut worst) = (0i64, 0i64);
-    for _ in 0..reads {
+    for done in 0..reads {
         let now = clock_ns(CLOCK_MONOTONIC)?;
         if now < last { back += 1; worst = worst.max(last - now); }
         last = now;
+        if now >= end { return Ok((done + 1, back, worst)); }
     }
-    Ok((back, worst))
+    Ok((reads, back, worst))
 }
 
 fn clk_monotonic_steady() -> CaseResult {
-    let (back, worst) = backwards(100_000)?;
+    let start = mono();
+    let (reads, back, worst) = backwards(100_000, bounded(u64::MAX, CLEANUP_MS))?;
+    let took = mono() - start;
     value("backward", back, "", Some((0, 0)));
-    check(back == 0, &format!("{back} of 100000 reads went backwards, by up to {worst} ns"))
+    value("read-cost", took / reads as i64, "ns", None);
+    check(back == 0, &format!("{back} of {reads} reads went backwards, by up to {worst} ns"))?;
+    check(reads == 100_000, &format!("only {reads} of 100000 reads fit in {} ms: each clock_gettime took {} us", took / MS, took / reads as i64 / 1000))
 }
 
 /// The latest CLOCK_MONOTONIC reading either thread has published, and what they saw.
@@ -943,29 +950,42 @@ fn clk_rate_realtime() -> CaseResult {
     check(drift.abs() <= 100, &format!("over {} ms of CLOCK_MONOTONIC, CLOCK_REALTIME advanced {} ms: {drift} ppm apart", (m1 - m0) / MS, (r1 - r0) / MS))
 }
 
+/// The processor's own counter, read in user mode: CNTVCT_EL0 on ARM64.
+#[cfg(target_arch = "aarch64")]
+fn counter_now() -> u64 {
+    let count: u64;
+    // SAFETY: a read of the virtual counter, which Linux lets user mode make.
+    unsafe { core::arch::asm!("isb", "mrs {c}, cntvct_el0", c = out(reg) count, options(nostack)) };
+    count
+}
+
+/// The processor's own counter, read in user mode: the TSC on x86-64.
+#[cfg(target_arch = "x86_64")]
+fn counter_now() -> u64 {
+    // SAFETY: RDTSC is available in user mode on every x86-64 processor.
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
 /// The processor's own counter and its frequency in Hz, or why there is none.
 #[cfg(target_arch = "aarch64")]
 fn counter() -> Result<(u64, u64), String> {
-    let (count, freq): (u64, u64);
-    // SAFETY: reads of the virtual counter and its frequency, which Linux lets user mode make.
-    unsafe {
-        core::arch::asm!("isb", "mrs {c}, cntvct_el0", c = out(reg) count, options(nostack));
-        core::arch::asm!("mrs {f}, cntfrq_el0", f = out(reg) freq, options(nostack));
-    }
+    let count = counter_now();
+    let freq: u64;
+    // SAFETY: a read of the counter's frequency, which Linux lets user mode make.
+    unsafe { core::arch::asm!("mrs {f}, cntfrq_el0", f = out(reg) freq, options(nostack)) };
     if freq == 0 { return Err("CNTFRQ_EL0 reads 0".into()); }
     Ok((count, freq))
 }
 
 #[cfg(target_arch = "x86_64")]
 fn counter() -> Result<(u64, u64), String> {
-    // SAFETY: CPUID and RDTSC are available in user mode on every x86-64 processor.
+    // SAFETY: CPUID is available in user mode on every x86-64 processor.
     let (max, leaf) = unsafe { (core::arch::x86_64::__cpuid(0).eax, core::arch::x86_64::__cpuid(0x15)) };
     if max < 0x15 || leaf.eax == 0 || leaf.ebx == 0 || leaf.ecx == 0 {
         return Err("CPUID leaf 0x15 does not give the TSC frequency".into());
     }
     let freq = leaf.ecx as u64 * leaf.ebx as u64 / leaf.eax as u64;
-    // SAFETY: as above.
-    Ok((unsafe { core::arch::x86_64::_rdtsc() }, freq))
+    Ok((counter_now(), freq))
 }
 
 /// The counter read halfway across a CLOCK_MONOTONIC pair: (count, monotonic ns, Hz).
@@ -990,6 +1010,83 @@ fn clk_rate_counter() -> CaseResult {
     value("frequency", freq as i64, "hz", None);
     value("drift", drift, "ppm", Some((-1000, 1000)));
     check(drift.abs() <= 1000, &format!("over {} ms of the counter at {freq} Hz, CLOCK_MONOTONIC advanced {} ms: {drift} ppm apart", counted / MS, (m1 - m0) / MS))
+}
+
+/// The most processors the counter case follows.
+const MAX_CPUS: usize = 64;
+/// How close together, in microseconds, one round's two reads on every processor must be.
+const COUNTER_SPAN_US: u64 = 200;
+static CTR_ROUND: AtomicU32 = AtomicU32::new(0);
+static CTR_ARRIVED: AtomicU32 = AtomicU32::new(0);
+static CTR_DONE: AtomicU32 = AtomicU32::new(0);
+static CTR_STOP: AtomicU32 = AtomicU32::new(0);
+static CTR_FIRST: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static CTR_SECOND: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Thread `i`'s part in a round of `n` threads: read the counter, wait until every
+/// thread has, and read it again.
+fn counter_round(i: usize, n: u32) {
+    let first = counter_now();
+    CTR_ARRIVED.fetch_add(1, Ordering::SeqCst);
+    while CTR_ARRIVED.load(Ordering::SeqCst) < n {
+        if CTR_STOP.load(Ordering::SeqCst) != 0 { return; }
+        core::hint::spin_loop();
+    }
+    let second = counter_now();
+    CTR_FIRST[i].store(first, Ordering::SeqCst);
+    CTR_SECOND[i].store(second, Ordering::SeqCst);
+    CTR_DONE.fetch_add(1, Ordering::SeqCst);
+}
+
+/// The counter's frequency in Hz, measured against CLOCK_MONOTONIC over 100 ms.
+fn counter_hz() -> Result<u64, String> {
+    let (c0, m0) = (counter_now(), clock_ns(CLOCK_MONOTONIC)?);
+    burn(100);
+    let (c1, m1) = (counter_now(), clock_ns(CLOCK_MONOTONIC)?);
+    if m1 <= m0 || c1 <= c0 { return Err(format!("the counter moved {} ticks while CLOCK_MONOTONIC moved {} ns", c1.wrapping_sub(c0), m1 - m0)); }
+    Ok(((c1 - c0) as u128 * NS as u128 / (m1 - m0) as u128) as u64)
+}
+
+/// One thread per online processor reads the counter twice around a barrier. When every
+/// thread's two reads are under COUNTER_SPAN_US apart and all of them overlap, the
+/// threads ran at once, one on each processor: a thread that shared a processor would
+/// wait out a timer tick between its reads.
+fn clk_counter_cpus() -> CaseResult {
+    let cpus = processors()?;
+    let n = cpus.min(MAX_CPUS);
+    let hz = counter_hz()?;
+    let span_ticks = hz * COUNTER_SPAN_US / 1_000_000;
+    let threads: Vec<_> = (1..n).map(|i| std::thread::spawn(move || {
+        let mut seen = 0;
+        while CTR_STOP.load(Ordering::SeqCst) == 0 {
+            let round = CTR_ROUND.load(Ordering::SeqCst);
+            if round != seen { seen = round; counter_round(i, n as u32); } else { core::hint::spin_loop(); }
+        }
+    })).collect();
+    let end = now_ms() + bounded(3000, CLEANUP_MS);
+    let (mut rounds, mut best) = (0u32, u64::MAX);
+    while best > span_ticks && now_ms() < end {
+        rounds += 1;
+        CTR_ARRIVED.store(0, Ordering::SeqCst);
+        CTR_DONE.store(0, Ordering::SeqCst);
+        CTR_ROUND.store(rounds, Ordering::SeqCst);
+        counter_round(0, n as u32);
+        while CTR_DONE.load(Ordering::SeqCst) < n as u32 && now_ms() < end { core::hint::spin_loop(); }
+        if CTR_DONE.load(Ordering::SeqCst) < n as u32 { break; }
+        let first = (0..n).map(|i| CTR_FIRST[i].load(Ordering::SeqCst));
+        let second = (0..n).map(|i| CTR_SECOND[i].load(Ordering::SeqCst));
+        if first.clone().max() < second.clone().min() {
+            let span = first.zip(second).map(|(a, b)| b - a).max().unwrap_or(0);
+            best = best.min(span);
+        }
+    }
+    CTR_STOP.store(1, Ordering::SeqCst);
+    for thread in threads { let _ = thread.join(); }
+    let best_us = if best == u64::MAX { -1 } else { (best * 1_000_000 / hz.max(1)) as i64 };
+    value("processors", n as i64, "", Some((cpus as i64, cpus as i64)));
+    value("span", best_us, "us", Some((0, COUNTER_SPAN_US as i64)));
+    check(n == cpus, &format!("{cpus} processors are online, more than the {MAX_CPUS} the case follows"))?;
+    check(best <= span_ticks, &format!("in {rounds} rounds the {n} threads never all read the counter within {COUNTER_SPAN_US} us of each other, so they never ran at once"))
 }
 
 /// The RTC's time as Linux's RTC_RD_TIME reports it: seconds of the day and the seconds field.
@@ -1991,6 +2088,7 @@ static SUITE: Suite = suite(
             case("monotonic-fine", "Linux policy: CLOCK_MONOTONIC advances between consecutive reads rather than once per tick", clk_monotonic_fine),
             case("rate-realtime", "CLOCK_REALTIME and CLOCK_MONOTONIC advance at the same rate over 2 seconds", clk_rate_realtime),
             case("rate-counter", "CLOCK_MONOTONIC advances at the rate of the processor's counter over 2 seconds (ARM64 CNTVCT_EL0, x86-64 the TSC at its CPUID frequency)", clk_rate_counter),
+            case("counter-cpus", "Linux ABI: user mode reads the processor's counter (ARM64 CNTVCT_EL0, x86-64 the TSC) on every online processor at once", clk_counter_cpus),
             case("rate-rtc", "Linux ABI: CLOCK_REALTIME advances at the rate of the RTC, read through /dev/rtc0 RTC_RD_TIME, over 3 seconds", clk_rate_rtc),
             case("cputime-process", "CLOCK_PROCESS_CPUTIME_ID advances while the process computes and not while it sleeps", clk_cputime_process),
             case("cputime-thread", "CLOCK_THREAD_CPUTIME_ID counts only the calling thread's CPU time", clk_cputime_thread),

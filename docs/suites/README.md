@@ -85,6 +85,23 @@ past `RECORDS_PER_CASE` (12) in one case process. Readers that know only START, 
 DONE skip them; `scripts/suite-verdict.py` accepts them when they are well formed and name
 a manifest case, and does not count them.
 
+The suite's own panel shows them too. Under the category groups, a live strip shows the
+clocks as they tick (CLOCK_MONOTONIC to the millisecond, CLOCK_REALTIME as UTC wall time
+with a bar sweeping each second), the running case's latest WAIT as a countdown that drains
+in real time and then shows the first VALUE the case reports once the wait is over (how late
+it ended, say), and the case's latest VALUEs in large digits on gauges: the `expect` range
+as a band and the value as a needle, green inside and red outside, with an arrow when it is
+off the scale. A case that reports `expiries` and a `period` with a range is also drawn as a
+pulse train across its wait: its expiries at the observed period against ticks at the
+programmed one, taken as the middle of the period's range. The strip takes the height the
+groups leave, draws larger digits when there is room and leaves out what does not fit on a
+small framebuffer; the category bars and the score are unchanged. The case sends each
+record to the runner as well, down a close-on-exec, non-blocking pipe, and the runner draws
+the strip about 15 times a second while it polls for the case to exit, flushing only the
+strip. Nothing is drawn in the case's process, and no tolerance depends on the display. A
+disk whose `/etc/breenix/suite-live` reads `off` gets the panel without the strip and no
+pipe.
+
 A case can bound its own waits by `case_ms_left()`, the time left before it is killed. When
 a case ends, any process it left behind has been reparented to the suite, which runs as
 PID 1; the suite kills them all with `kill(-1, SIGKILL)` and reaps them before the next case,
@@ -355,6 +372,14 @@ command line, and can then stay alive a given time.
 Each case reports what it asserts on as VALUE records (how late a sleep or timer ended,
 drift in ppm, overruns, periods, CPU time) and each wait of 100 ms or more as a WAIT
 record.
+
+`clocks/counter-cpus` reads the processor's counter from user mode on every online
+processor: one thread per processor in /proc/cpuinfo reads it, waits at a barrier until all
+have, and reads it again. When every thread's two reads fall within 200 us and all of them
+overlap, the threads ran at once, one on each processor, since a thread sharing a
+processor would wait out a timer tick between its reads; the case tries rounds for up to
+3 seconds. `clocks/monotonic-steady` stops its 100000 reads when its time is nearly up and
+fails saying how long each read took, rather than being killed.
 
 ```bash
 scripts/boot-interactive.sh --mode suite --suite time
