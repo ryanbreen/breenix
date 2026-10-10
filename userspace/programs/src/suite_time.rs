@@ -2181,7 +2181,7 @@ fn it_alarm_default() -> CaseResult {
         let armed = mono();
         if alarm(1) != 0 { return 2; }
         let _ = io::write(w, &armed.to_le_bytes());
-        pause_ms(3000);
+        burn(3000);
         0
     });
     let _ = io::close(w);
