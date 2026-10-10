@@ -301,10 +301,10 @@ impl PendingProcessReclaim {
         })
     }
 
-    fn reclaim_bounded(&mut self) -> crate::memory::process_memory::RetireProgress {
-        use crate::memory::process_memory::{RetireProgress, RETIRE_FRAME_BUDGET};
+    fn reclaim_bounded(&mut self, frame_budget: u32) -> crate::memory::process_memory::RetireProgress {
+        use crate::memory::process_memory::RetireProgress;
 
-        let mut budget = RETIRE_FRAME_BUDGET;
+        let mut budget = frame_budget;
         #[cfg(target_arch = "aarch64")]
         while budget > 0 {
             let Some(old_page_table) = self.old_page_tables.last_mut() else {
@@ -417,14 +417,17 @@ pub fn reclaim_drain_claim_snapshot() -> (bool, u32) {
 /// selection is already bounded — `reclaim_bounded` retires at most
 /// `RETIRE_FRAME_BUDGET` frames per receipt — but the pass itself was not, so a
 /// pass could hold the CPU for every receipt that was queued when it started.
-/// Four keeps the window to four bounded retire steps while leaving every
+/// One keeps the window to one bounded retire step while leaving every
 /// production caller enough per-invocation throughput to stay ahead of its
 /// enqueue rate: the slowest re-entry cadence in the tree is x86's idle loop at
 /// roughly one call per timer tick, and process exits are orders of magnitude
 /// rarer than that. Boot-owned passes are deliberately uncapped — they feed
 /// `BOOT_RECLAIM_PASS_SELECTIONS` and the oracles' drain-to-quiesce loops, whose
 /// meaning is "this pass took everything it could".
-const PRODUCTION_PASS_SELECTION_CAP: u32 = 4;
+const PRODUCTION_PASS_SELECTION_CAP: u32 = 1;
+/// Bound leaf and table release work in the non-preemptible production step.
+/// Boot-owned drains retain RETIRE_FRAME_BUDGET and their verification contract.
+const PRODUCTION_RECLAIM_FRAME_BUDGET: u32 = 16;
 
 /// Injected nested refusals observed by `boot_prove_nested_drain_refusal`.
 #[cfg(feature = "boot_tests")]
@@ -1527,7 +1530,11 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     } else {
                         push_pending_or_abandon(reclaim);
                     }
-                } else if reclaim.reclaim_bounded()
+                } else if reclaim.reclaim_bounded(if boot_test_owned {
+                    crate::memory::process_memory::RETIRE_FRAME_BUDGET
+                } else {
+                    PRODUCTION_RECLAIM_FRAME_BUDGET
+                })
                     == crate::memory::process_memory::RetireProgress::Complete
                 {
                     crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
