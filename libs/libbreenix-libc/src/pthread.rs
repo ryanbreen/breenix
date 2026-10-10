@@ -325,6 +325,10 @@ unsafe fn registry_lock() {
             (*survivor).next = null_mut();
             (*survivor).id = id;
             (*survivor).clear.store(id, Relaxed);
+            raw::syscall1(
+                nr::SET_TID_ADDRESS,
+                &(*survivor).clear as *const AtomicU32 as u64,
+            );
             (*survivor).state = 0;
         }
         REGISTRY.0.store(0, Relaxed);
@@ -365,6 +369,9 @@ unsafe fn current() -> *mut Thread {
     if !p.is_null() {
         (*p).id = id;
         (*p).clear.store(id, Relaxed);
+        // clone registers this word for created threads. The initial thread,
+        // and the survivor after fork, need the same exit notification.
+        raw::syscall1(nr::SET_TID_ADDRESS, &(*p).clear as *const AtomicU32 as u64);
         (*p).next = HEAD;
         HEAD = p;
         LIVE.store(1, Release);
