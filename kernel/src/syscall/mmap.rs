@@ -157,6 +157,10 @@ pub fn sys_mmap(
             return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
         }
 
+        if super::memory_advice::prepare_future(process, length).is_err() {
+            return SyscallResult::Err(crate::syscall::errno::EAGAIN as u64);
+        }
+
         // Determine the start address
         let start_addr = if flags.contains(MmapFlags::FIXED) {
             // MAP_FIXED: use addr directly
@@ -284,7 +288,12 @@ pub fn sys_mmap(
             offset / PAGE_SIZE,
             may_write,
         ) {
-            Ok(start) => SyscallResult::Ok(start),
+            Ok((start, eager)) => {
+                if eager {
+                    let _ = super::memory_advice::populate(current_thread_id, start, end_addr);
+                }
+                SyscallResult::Ok(start)
+            }
             Err(errno) => give_back(errno),
         };
     }
@@ -310,7 +319,18 @@ pub fn sys_mmap(
             drop(guard);
             return give_back(ErrorCode::OutOfMemory as u64);
         }
+        let eager = match super::memory_advice::publish_future(process, start_addr, end_addr) {
+            Ok(eager) => eager,
+            Err(errno) => {
+                drop(guard);
+                return give_back(errno);
+            }
+        };
         process.vmas.push(vma);
+        drop(guard);
+        if eager {
+            let _ = super::memory_advice::populate(current_thread_id, start_addr, end_addr);
+        }
         return SyscallResult::Ok(start_addr);
     }
 
@@ -325,7 +345,7 @@ pub fn sys_mmap(
         prot,
         flags,
     );
-    if let Err(error) = map_prepared_frames(
+    let eager = match map_prepared_frames(
         current_thread_id,
         root,
         start_addr,
@@ -333,7 +353,11 @@ pub fn sys_mmap(
         crate::memory::anon_map::page_flags(prot),
         vma,
     ) {
-        return give_back(error as u64);
+        Ok(eager) => eager,
+        Err(error) => return give_back(error as u64),
+    };
+    if eager {
+        let _ = super::memory_advice::populate(current_thread_id, start_addr, end_addr);
     }
 
     SyscallResult::Ok(start_addr)
@@ -416,7 +440,7 @@ fn map_file(
     mut vma: Vma,
     pgoff: u64,
     may_write: bool,
-) -> Result<u64, u64> {
+) -> Result<(u64, bool), u64> {
     use crate::memory::file_map::{self, MapError};
     let guard =
         crate::fs::ext2::read_mount(handle.object.mount).map_err(|_| ErrorCode::IoError as u64)?;
@@ -452,6 +476,13 @@ fn map_file(
     if process.vmas.iter().any(|other| vma.overlaps(other)) {
         return Err(abandon(ErrorCode::OutOfMemory));
     }
+    super::memory_advice::prepare_future(
+        process,
+        process
+            .memory_locks
+            .additional(vma.start.as_u64(), vma.end.as_u64()),
+    )
+    .map_err(|_| crate::syscall::errno::EAGAIN as u64)?;
     let Some(page_table) = process
         .page_table
         .as_deref()
@@ -474,8 +505,13 @@ fn map_file(
         Err(_) => return Err(abandon(ErrorCode::OutOfMemory)),
     }
     let start = vma.start.as_u64();
+    let end = vma.end.as_u64();
     process.vmas.push(vma);
-    Ok(start)
+    super::memory_advice::record_future(process, start, end);
+    Ok((
+        start,
+        process.memory_locks.future && !process.memory_locks.onfault,
+    ))
 }
 
 /// errno for a failed munmap or mprotect of a file VMA: a range that does not
@@ -728,6 +764,10 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
         }
     };
 
+    if let Err(errno) = process.memory_locks.reserve_split() {
+        return SyscallResult::Err(errno);
+    }
+
     // A range within one file VMA is split out and unmapped on its own. If an
     // entry's custody disagrees, the VMA and its binding are kept.
     match crate::memory::file_map::isolate(&mut process.vmas, addr, end_addr, 0) {
@@ -736,7 +776,10 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
                 return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
             };
             return match crate::memory::file_map::unmap(&mut process.vmas, index, page_table) {
-                Ok(()) => SyscallResult::Ok(0),
+                Ok(()) => {
+                    process.memory_locks.remove(addr, end_addr);
+                    SyscallResult::Ok(0)
+                }
                 Err(error) => SyscallResult::Err(file_vma_errno(error)),
             };
         }
@@ -792,6 +835,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
         }
     }
 
+    process.memory_locks.remove(addr, end_addr);
     SyscallResult::Ok(0)
 }
 
@@ -799,7 +843,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
 /// work. Only covered shared file ranges enter the snapshot; no mount guard
 /// is acquired while PROCESS_MANAGER is held.
 pub fn sys_msync(addr: u64, length: u64, flags: u32) -> SyscallResult {
-    use super::errno::{EINVAL, EIO, ENOMEM};
+    use super::errno::{EBUSY, EINVAL, EIO, ENOMEM};
     const MS_ASYNC: u32 = 1;
     const MS_INVALIDATE: u32 = 2;
     const MS_SYNC: u32 = 4;
@@ -834,6 +878,9 @@ pub fn sys_msync(addr: u64, length: u64, flags: u32) -> SyscallResult {
         else {
             return SyscallResult::Err(ENOMEM as u64);
         };
+        if flags & MS_INVALIDATE != 0 && process.memory_locks.overlaps(addr, end) {
+            return SyscallResult::Err(EBUSY as u64);
+        }
         let mut cursor = addr;
         while cursor < end {
             let Some(vma) = process

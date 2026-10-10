@@ -1244,6 +1244,17 @@ pub(crate) fn fork_vmas(
 }
 
 impl Binding {
+    /// mincore includes cached file pages even before this VA faults them in.
+    pub(crate) fn resident(&self, address: u64) -> bool {
+        let inner = self.handle.object.map.inner.lock();
+        let Some(rec) = inner.bindings.iter().find(|rec| rec.id == self.id) else {
+            return false;
+        };
+        let index = rec.index(address);
+        inner.pages.get(index).is_some()
+            || rec.parked.binary_search_by_key(&index, |(index, _)| *index).is_ok()
+    }
+
     /// VMAs bound this virtual range before msync's filesystem work begins.
     pub(crate) fn sync_range(
         &self,

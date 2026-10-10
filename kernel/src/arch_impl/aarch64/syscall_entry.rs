@@ -886,7 +886,7 @@ fn dispatch_syscall_enum(
         SyscallNumber::Writev => result_to_u64(crate::syscall::iovec::sys_writev(arg1, arg2, arg3)),
         // Stubs for musl libc compatibility
         SyscallNumber::Mremap => (-(crate::syscall::errno::ENOMEM as i64)) as u64,
-        SyscallNumber::Madvise => 0,
+        SyscallNumber::Madvise => result_to_u64(crate::syscall::memory_advice::sys_madvise(arg1, arg2, arg3)),
         SyscallNumber::Ppoll => result_to_u64(crate::syscall::handlers::sys_ppoll(
             arg1, arg2, arg3, arg4, arg5,
         )),

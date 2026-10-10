@@ -214,6 +214,7 @@ impl ExitNotificationObligations {
 /// A process represents a running program with its own address space
 pub struct Process {
     pub limits: alloc::sync::Arc<super::limits::Limits>,
+    pub memory_locks: crate::memory::locked::MemoryLocks,
     pub image_size: u64,
     pub image_data_size: u64,
     /// Unique process identifier
@@ -401,6 +402,7 @@ impl Process {
     pub fn new(id: ProcessId, name: String, entry_point: VirtAddr) -> Self {
         Process {
             limits: super::limits::Limits::new(),
+            memory_locks: crate::memory::locked::MemoryLocks::default(),
             image_size: 0,
             image_data_size: 0,
             id,

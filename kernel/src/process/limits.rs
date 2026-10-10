@@ -10,6 +10,7 @@ pub const STACK: usize = 3;
 pub const CORE: usize = 4;
 pub const NPROC: usize = 6;
 pub const NOFILE: usize = 7;
+pub const MEMLOCK: usize = 8;
 pub const AS: usize = 9;
 pub const SIGPENDING: usize = 11;
 pub const COUNT: usize = 16;
@@ -71,13 +72,13 @@ impl Process {
     pub fn grow_user_stack(&mut self, addr: u64) -> bool {
         #[cfg(target_arch = "aarch64")]
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
+        use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
+        use crate::memory::layout::MAX_USER_STACK_SIZE;
         #[cfg(target_arch = "x86_64")]
         use x86_64::{
             structures::paging::{Page, PageTableFlags, Size4KiB},
             VirtAddr,
         };
-        use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
-        use crate::memory::layout::MAX_USER_STACK_SIZE;
 
         let stack_top = self.user_stack_top;
         let stack_bottom = self.user_stack_bottom;
@@ -100,6 +101,17 @@ impl Process {
                 .vmas
                 .iter()
                 .any(|v| v.start.as_u64() < stack_bottom && v.end.as_u64() > page_aligned)
+        {
+            return false;
+        }
+        if page_aligned < stack_bottom
+            && self.memory_locks.future
+            && (crate::syscall::memory_advice::check_limit(
+                self,
+                self.memory_locks.additional(page_aligned, stack_bottom),
+            )
+            .is_err()
+                || !self.memory_locks.can_insert(page_aligned, stack_bottom))
         {
             return false;
         }
@@ -156,6 +168,7 @@ impl Process {
         unsafe {
             core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
         }
+        crate::syscall::memory_advice::record_future(self, self.user_stack_bottom, stack_bottom);
         grown
     }
 

@@ -11,6 +11,7 @@
 pub mod errno;
 pub(crate) mod exec;
 pub mod memory;
+pub mod memory_advice;
 pub mod memory_common;
 pub mod mmap;
 pub mod time;
@@ -585,6 +586,8 @@ pub enum ErrorCode {
     NoSuchProcess = 3, // ESRCH
     /// I/O error
     IoError = 5, // EIO
+    /// Resource temporarily unavailable
+    TryAgain = 11, // EAGAIN
     /// Cannot allocate memory
     OutOfMemory = 12, // ENOMEM
     /// Bad address
@@ -788,10 +791,36 @@ pub const GETCPU_SYSCALL_NUMBER: u64 = 309;
 #[cfg(target_arch = "aarch64")]
 pub const GETCPU_SYSCALL_NUMBER: u64 = 168;
 
+#[cfg(target_arch = "x86_64")]
+pub const MLOCK_SYSCALL_NUMBER: u64 = 149;
+#[cfg(target_arch = "aarch64")]
+pub const MLOCK_SYSCALL_NUMBER: u64 = 228;
+#[cfg(target_arch = "x86_64")]
+pub const MUNLOCK_SYSCALL_NUMBER: u64 = 150;
+#[cfg(target_arch = "aarch64")]
+pub const MUNLOCK_SYSCALL_NUMBER: u64 = 229;
+#[cfg(target_arch = "x86_64")]
+pub const MLOCKALL_SYSCALL_NUMBER: u64 = 151;
+#[cfg(target_arch = "aarch64")]
+pub const MLOCKALL_SYSCALL_NUMBER: u64 = 230;
+#[cfg(target_arch = "x86_64")]
+pub const MUNLOCKALL_SYSCALL_NUMBER: u64 = 152;
+#[cfg(target_arch = "aarch64")]
+pub const MUNLOCKALL_SYSCALL_NUMBER: u64 = 231;
+#[cfg(target_arch = "x86_64")]
+pub const MINCORE_SYSCALL_NUMBER: u64 = 27;
+#[cfg(target_arch = "aarch64")]
+pub const MINCORE_SYSCALL_NUMBER: u64 = 232;
+
 /// The calls dispatched by number above that are not dispatched by enum, on
 /// both architectures: None for any other number.
 pub fn dispatch_numbered(number: u64, a: [u64; 4]) -> Option<SyscallResult> {
     Some(match number {
+        MLOCK_SYSCALL_NUMBER => memory_advice::sys_mlock(a[0], a[1]),
+        MUNLOCK_SYSCALL_NUMBER => memory_advice::sys_munlock(a[0], a[1]),
+        MLOCKALL_SYSCALL_NUMBER => memory_advice::sys_mlockall(a[0]),
+        MUNLOCKALL_SYSCALL_NUMBER => memory_advice::sys_munlockall(),
+        MINCORE_SYSCALL_NUMBER => memory_advice::sys_mincore(a[0], a[1], a[2]),
         TIMER_CREATE_SYSCALL_NUMBER => timers::sys_timer_create(a[0] as i32, a[1], a[2]),
         TIMER_SETTIME_SYSCALL_NUMBER => timers::sys_timer_settime(a[0] as i32, a[1], a[2], a[3]),
         TIMER_GETTIME_SYSCALL_NUMBER => timers::sys_timer_gettime(a[0] as i32, a[1]),

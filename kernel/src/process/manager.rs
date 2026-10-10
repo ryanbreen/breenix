@@ -1906,6 +1906,7 @@ impl ProcessManager {
                 // File bindings leave with the mappings, so a zombie row does
                 // not keep their files open.
                 process.vmas.clear();
+                process.memory_locks.clear();
                 if let Some(page_table) = process.page_table.take() {
                     page_table.abandon(AbandonReason::AlreadyTerminated);
                 }
@@ -3830,6 +3831,7 @@ impl ProcessManager {
         // Reset mmap state for the new address space
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+        process.memory_locks.clear();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
         closes.release_record_locks(process.lock_owner.id());
@@ -4277,6 +4279,7 @@ impl ProcessManager {
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+        process.memory_locks.clear();
 
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
@@ -4664,6 +4667,7 @@ impl ProcessManager {
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+        process.memory_locks.clear();
 
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
@@ -5009,6 +5013,7 @@ impl ProcessManager {
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+        process.memory_locks.clear();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
         closes.release_record_locks(process.lock_owner.id());
