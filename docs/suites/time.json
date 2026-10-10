@@ -43,7 +43,7 @@
         },
         {
           "id": "counter-trap-default",
-          "title": "Linux ABI: denied counter and timer register reads kill user mode with SIGILL on ARM64 (CNTPCT_EL0, CNTV_CTL_EL0, CNTP_CTL_EL0) and SIGSEGV on x86-64 (TSC, TSC-deadline, x2APIC initial-count MSRs)"
+          "title": "Linux ABI: denied counter and timer register reads kill user mode with SIGILL on ARM64 (CNTPCT_EL0, CNTV_CTL_EL0, CNTP_CTL_EL0) and SIGSEGV on x86-64 (RDMSR of IA32_TSC, IA32_TSC_DEADLINE, X2APIC_INITIAL_COUNT)"
         },
         {
           "id": "counter-trap-caught",

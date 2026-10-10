@@ -418,10 +418,9 @@ pub fn reclaim_drain_claim_snapshot() -> (bool, u32) {
 /// `RETIRE_FRAME_BUDGET` frames per receipt — but the pass itself was not, so a
 /// pass could hold the CPU for every receipt that was queued when it started.
 /// One keeps the window to one bounded retire step while leaving every
-/// production caller enough per-invocation throughput to stay ahead of its
-/// enqueue rate: the slowest re-entry cadence in the tree is x86's idle loop at
-/// roughly one call per timer tick, and process exits are orders of magnitude
-/// rarer than that. Boot-owned passes are deliberately uncapped — they feed
+/// caller a bounded preemption window. Reclamation throughput depends on
+/// idle dispatch and the queued address-space sizes; this cap is no guarantee
+/// that reclamation keeps up with allocation. Boot-owned passes are deliberately uncapped — they feed
 /// `BOOT_RECLAIM_PASS_SELECTIONS` and the oracles' drain-to-quiesce loops, whose
 /// meaning is "this pass took everything it could".
 const PRODUCTION_PASS_SELECTION_CAP: u32 = 1;
@@ -1123,17 +1122,19 @@ pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     defer_fault_exit(thread_id, -(crate::signal::constants::SIGSEGV as i32))
 }
 
-/// A queued fault exit: the thread id, with the negated exit status in the
-/// top byte. Thread ids are allocated upward from 1 and never reach that
-/// byte, and the entry is never 0, the empty slot.
-const FAULT_EXIT_STATUS_SHIFT: u32 = 56;
+/// A queued fault exit: a checked thread id in the low word and the full
+/// signed exit status in the high word. The thread id keeps the entry nonzero.
+const FAULT_EXIT_STATUS_SHIFT: u32 = 32;
 
 /// Defer the exit of the process of user thread `thread_id`, ended by a fault
-/// signal's default action with `exit_code` (-1 to -255: the signal, with
-/// 0x80 for a core dump). The rest of its thread group dies with it. Returns
+/// signal's default action with `exit_code`, including a group exit status
+/// propagated by SIGKILL. The rest of its thread group dies with it. Returns
 /// false as `defer_fault_sigsegv_exit`.
 pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
-    let thread_id = thread_id | (exit_code.unsigned_abs() as u8 as u64) << FAULT_EXIT_STATUS_SHIFT;
+    if thread_id == 0 || thread_id > u32::MAX as u64 {
+        return false;
+    }
+    let thread_id = thread_id | (exit_code as u32 as u64) << FAULT_EXIT_STATUS_SHIFT;
     #[cfg(target_arch = "aarch64")]
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     #[cfg(target_arch = "x86_64")]
@@ -1162,7 +1163,7 @@ pub fn drain_deferred_fault_sigsegv_exits() {
     crate::arch_without_interrupts(|| tids.append(&mut DEFERRED_FAULT_EXIT_OVERFLOW.lock()));
     for entry in tids {
         let tid = entry & ((1 << FAULT_EXIT_STATUS_SHIFT) - 1);
-        let exit_code = -((entry >> FAULT_EXIT_STATUS_SHIFT) as i32);
+        let exit_code = (entry >> FAULT_EXIT_STATUS_SHIFT) as u32 as i32;
         // A fatal signal ends the whole process, not one thread (POSIX).
         let pid = crate::process::with_process_manager(|manager| {
             manager.find_process_by_thread(tid).map(|(pid, _)| pid)
