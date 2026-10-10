@@ -5469,6 +5469,15 @@ impl Scheduler {
                         ((was_blocked_on_io as u32) << 31) | self.ready_queue_length() as u32,
                     );
                 }
+                // The state change alone cannot release a foreign CPU's
+                // syscall halt loop. Wake its hardware wait, as unblock does,
+                // while leaving the thread exclusively current on that CPU.
+                if let Some(cpu) = (0..MAX_CPUS).find(|&cpu| self.cpu_state[cpu].current_thread == Some(tid)) {
+                    #[cfg(target_arch = "aarch64")]
+                    self.send_resched_ipi_to_cpu(cpu);
+                    #[cfg(target_arch = "x86_64")]
+                    self.wake_cpu_for_current_thread(cpu);
+                }
                 continue;
             }
 
