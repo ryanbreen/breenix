@@ -1206,29 +1206,38 @@ pub unsafe fn copy_to_display(
     let Some(framebuffer) = LOG_FRAMEBUFFER.get() else {
         return false;
     };
-    crate::arch_without_interrupts(|| {
-        let Some(framebuffer) = framebuffer.try_lock() else {
-            return false;
-        };
-        let bpp = framebuffer.info.bytes_per_pixel;
-        let row_bytes = framebuffer.info.stride * bpp;
-        let columns = columns.start.min(framebuffer.width())..columns.end.min(framebuffer.width());
-        let len = columns.len() * bpp;
-        for y in rows.start..rows.end.min(framebuffer.height()) {
+    // Only one row is copied with IRQs masked. A whole-screen flush can
+    // otherwise defer a timer or wake IPI for the duration of an 8 MiB copy.
+    // Each guard is released before IRQs reopen, so no continuation can be
+    // switched out holding the framebuffer lock.
+    let height = crate::arch_without_interrupts(|| {
+        framebuffer.try_lock().map(|framebuffer| framebuffer.height())
+    });
+    let Some(height) = height else { return false; };
+    for y in rows.start..rows.end.min(height) {
+        let copied = crate::arch_without_interrupts(|| {
+            let Some(framebuffer) = framebuffer.try_lock() else {
+                return false;
+            };
+            let bpp = framebuffer.info.bytes_per_pixel;
+            let row_bytes = framebuffer.info.stride * bpp;
+            let columns = columns.start.min(framebuffer.width())..columns.end.min(framebuffer.width());
+            let len = columns.len() * bpp;
             let target = y * row_bytes + columns.start * bpp;
-            if len == 0 || target + len > framebuffer.buffer_len {
-                continue;
+            if len != 0 && target + len <= framebuffer.buffer_len {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        pane.add(y * pane_stride + columns.start * bpp),
+                        framebuffer.buffer_ptr.add(target),
+                        len,
+                    );
+                }
             }
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    pane.add(y * pane_stride + columns.start * bpp),
-                    framebuffer.buffer_ptr.add(target),
-                    len,
-                );
-            }
-        }
-        true
-    })
+            true
+        });
+        if !copied { return false; }
+    }
+    true
 }
 
 /// Write raw text to framebuffer console (for shell output in interactive mode)

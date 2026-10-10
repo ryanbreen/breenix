@@ -46,6 +46,9 @@ pub enum SignalDeliveryResult {
     /// thread is no longer runnable and its SIGSEGV exit is deferred; the
     /// caller must not return it to user mode.
     FrameFault,
+    /// A fatal default action queued its exit; the thread must not resume.
+    #[cfg(target_arch = "x86_64")]
+    DeferredExit,
 }
 
 // =============================================================================
@@ -112,6 +115,7 @@ pub fn deliver_pending_signals(
                 // Default action may terminate/stop the process
                 match deliver_default_action(process, sig) {
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
+                    DeliverResult::DeferredExit => return SignalDeliveryResult::DeferredExit,
                     DeliverResult::Terminated(notification) => {
                         return SignalDeliveryResult::Terminated(notification)
                     }
@@ -256,6 +260,8 @@ pub enum DeliverResult {
     Ignored,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
+    #[cfg(target_arch = "x86_64")]
+    DeferredExit,
 }
 
 /// A pending SIGKILL ends a stopped process: it is not held stopped.
@@ -339,15 +345,23 @@ fn write_signal_stack(
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+    #[cfg(target_arch = "x86_64")]
+    if fatal_exit_code(sig).is_some() {
+        let exit_code = signal_death_exit_code(process, sig);
+        if let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id) {
+            // Interrupt return holds PM: do not close descriptors, walk CoW
+            // mappings or print before the parent can observe this death.
+            // The normal exit worker publishes status and defers reclamation.
+            if crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
+                crate::task::scheduler::terminate_thread(thread_id);
+                return DeliverResult::DeferredExit;
+            }
+            // An exhausted queue retains the existing synchronous exit below;
+            // never lose a death merely because deferred storage is unavailable.
+        }
+    }
     match default_action(sig) {
         SignalDefaultAction::Terminate => {
-            crate::serial_println!(
-                "[signal] Process {} ({}) terminated by signal {} ({})",
-                process.id.as_u64(),
-                process.name,
-                sig,
-                signal_name(sig)
-            );
             // Exit code for signal termination is typically 128 + signal number
             // But we use negative signal number to indicate signal death
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
@@ -360,14 +374,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // Without this, the scheduler would keep scheduling the terminated thread!
             if let Some(ref thread) = process.main_thread {
                 let thread_id = thread.id();
-                let marked = crate::task::scheduler::terminate_thread(thread_id);
-                // Logged after the scheduler lock is released.
-                if marked.is_some() {
-                    log::info!(
-                        "Signal delivery: marked scheduler thread {} as Terminated",
-                        thread_id
-                    );
-                }
+                crate::task::scheduler::terminate_thread(thread_id);
                 // The action ends the whole process (#1033), and this may be an
                 // interrupt return, where nothing may be torn down: the rest of
                 // the thread group dies, and this row's exit hook runs, from
@@ -387,13 +394,6 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             }
         }
         SignalDefaultAction::CoreDump => {
-            crate::serial_println!(
-                "[signal] Process {} ({}) killed (core dump) by signal {} ({})",
-                process.id.as_u64(),
-                process.name,
-                sig,
-                signal_name(sig)
-            );
             // Core dump not implemented, just terminate
             // The 0x80 flag indicates core dump
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
@@ -403,14 +403,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
             if let Some(ref thread) = process.main_thread {
                 let thread_id = thread.id();
-                let marked = crate::task::scheduler::terminate_thread(thread_id);
-                // Logged after the scheduler lock is released.
-                if marked.is_some() {
-                    log::info!(
-                        "Signal delivery: marked scheduler thread {} as Terminated (core dump)",
-                        thread_id
-                    );
-                }
+                crate::task::scheduler::terminate_thread(thread_id);
                 // The action ends the whole process (#1033), and this may be an
                 // interrupt return, where nothing may be torn down: the rest of
                 // the thread group dies, and this row's exit hook runs, from
@@ -1082,6 +1075,7 @@ fn stop_thread_group(
     crate::task::scheduler::with_scheduler(|scheduler| {
         for row in manager.group_rows_mut(group) {
             row.job.stopped = Some(sig);
+            row.signals.thread.return_work.store(true, core::sync::atomic::Ordering::Release);
             row.signals.clear_pending(SIGCONT);
             let Some(thread_id) = row.main_thread.as_ref().map(|thread| thread.id) else {
                 continue;
@@ -1543,7 +1537,7 @@ pub fn exit_by_signal_on_syscall_return(sig: u32) -> ! {
             .flatten()
         })
         .unwrap_or_else(|| fatal_exit_code(sig).unwrap_or(-(sig as i32)));
-    exit_on_syscall_return(sig, exit_code)
+    exit_on_syscall_return(exit_code)
 }
 
 /// Finish an x86-64 syscall return whose caught signal's frame could not be
@@ -1552,29 +1546,19 @@ pub fn exit_by_signal_on_syscall_return(sig: u32) -> ! {
 /// same exit as `exit_by_signal_on_syscall_return`.
 #[cfg(target_arch = "x86_64")]
 pub fn exit_frame_fault_on_syscall_return() -> ! {
-    exit_on_syscall_return(SIGSEGV, -(SIGSEGV as i32))
+    exit_on_syscall_return(-(SIGSEGV as i32))
 }
 
 #[cfg(target_arch = "x86_64")]
-fn exit_on_syscall_return(sig: u32, exit_code: i32) -> ! {
+fn exit_on_syscall_return(exit_code: i32) -> ! {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         let row = crate::process::with_process_manager(|manager| {
             manager
                 .find_process_by_thread(thread_id)
-                .map(|(pid, process)| (pid, process.name.clone()))
+                .map(|(pid, _)| pid)
         })
         .flatten();
-        // This function never returns, so the name is dropped before the
-        // thread stops running rather than with the stack it is on.
-        if let Some((pid, name)) = row {
-            crate::serial_println!(
-                "[signal] Process {} ({}) terminated by signal {} ({})",
-                pid.as_u64(),
-                name,
-                sig,
-                signal_name(sig)
-            );
-            drop(name);
+        if let Some(pid) = row {
             terminate_thread_group_peers(pid, exit_code);
         }
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);

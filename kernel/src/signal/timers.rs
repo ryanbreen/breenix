@@ -446,6 +446,19 @@ impl PosixTimers {
             })
     }
 
+    /// Earliest wall deadline, or the next tick for a CPU clock whose future
+    /// advance depends on dispatch. A held table requests an immediate retry.
+    pub fn next_check_ns(&self, now: &Now) -> u64 {
+        let Some(table) = self.table.try_lock() else { return now.monotonic; };
+        table.timers.iter().filter(|t| t.deadline != 0).map(|timer| {
+            match timer.base {
+                Base::Monotonic => timer.deadline,
+                Base::Realtime => now.monotonic.saturating_add(timer.deadline.saturating_sub(now.realtime)),
+                Base::ProcessCpu | Base::ThreadCpu => now.monotonic.saturating_add(crate::time::timer::MS_PER_TICK * 1_000_000),
+            }
+        }).min().unwrap_or(u64::MAX)
+    }
+
     /// The scheduler's pass: expire every timer whose deadline `now` has
     /// reached. `pick` chooses the thread a newly generated signal goes to,
     /// given the thread SIGEV_THREAD_ID names and the signal. Returns true
