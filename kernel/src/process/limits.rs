@@ -220,6 +220,10 @@ pub struct Limits {
 }
 
 impl Limits {
+    pub fn has_pending_cpu_signals(&self) -> bool {
+        self.pending.load(Ordering::Acquire) != 0
+    }
+
     pub fn new() -> Arc<Self> {
         Self::from_values(defaults())
     }

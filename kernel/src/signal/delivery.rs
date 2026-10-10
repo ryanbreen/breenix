@@ -1064,6 +1064,7 @@ fn stop_thread_group(
     crate::task::scheduler::with_scheduler(|scheduler| {
         for row in manager.group_rows_mut(group) {
             row.job.stopped = Some(sig);
+            row.signals.thread.return_work.store(true, core::sync::atomic::Ordering::Release);
             row.signals.clear_pending(SIGCONT);
             let Some(thread_id) = row.main_thread.as_ref().map(|thread| thread.id) else {
                 continue;
@@ -1513,7 +1514,7 @@ pub fn exit_by_signal_on_syscall_return(sig: u32) -> ! {
             .flatten()
         })
         .unwrap_or_else(|| fatal_exit_code(sig).unwrap_or(-(sig as i32)));
-    exit_on_syscall_return(sig, exit_code)
+    exit_on_syscall_return(exit_code)
 }
 
 /// Finish an x86-64 syscall return whose caught signal's frame could not be
@@ -1522,29 +1523,19 @@ pub fn exit_by_signal_on_syscall_return(sig: u32) -> ! {
 /// same exit as `exit_by_signal_on_syscall_return`.
 #[cfg(target_arch = "x86_64")]
 pub fn exit_frame_fault_on_syscall_return() -> ! {
-    exit_on_syscall_return(SIGSEGV, -(SIGSEGV as i32))
+    exit_on_syscall_return(-(SIGSEGV as i32))
 }
 
 #[cfg(target_arch = "x86_64")]
-fn exit_on_syscall_return(sig: u32, exit_code: i32) -> ! {
+fn exit_on_syscall_return(exit_code: i32) -> ! {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         let row = crate::process::with_process_manager(|manager| {
             manager
                 .find_process_by_thread(thread_id)
-                .map(|(pid, process)| (pid, process.name.clone()))
+                .map(|(pid, _)| pid)
         })
         .flatten();
-        // This function never returns, so the name is dropped before the
-        // thread stops running rather than with the stack it is on.
-        if let Some((pid, name)) = row {
-            crate::serial_println!(
-                "[signal] Process {} ({}) terminated by signal {} ({})",
-                pid.as_u64(),
-                name,
-                sig,
-                signal_name(sig)
-            );
-            drop(name);
+        if let Some(pid) = row {
             terminate_thread_group_peers(pid, exit_code);
         }
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
