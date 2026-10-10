@@ -1324,18 +1324,8 @@ extern "x86-interrupt" fn page_fault_handler(
         frame.start_address().as_u64()
     };
 
-    // Check if this looks like a CoW fault (protection violation + write)
-    // If so, skip verbose diagnostics to avoid polluting output and slowing down
     let is_potential_cow = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
         && error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
-    // A user stack growing is resolved below without diagnostics too: printed
-    // for each page, they made a 1 MiB stack take seconds to grow. One that
-    // cannot grow is still reported as EXCEPTION: PAGE FAULT.
-    let is_potential_stack_growth = (stack_frame.code_segment.0 & 3) == 3
-        && !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
-        && !error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH)
-        && in_user_stack_growth_range(cr2);
-    let quiet = is_potential_cow || is_potential_stack_growth;
 
     // A kernel fault inside the user-copy routine on a user address is the
     // syscall's bad pointer, not a kernel bug: a copy-on-write write or a
@@ -1425,70 +1415,11 @@ extern "x86-interrupt" fn page_fault_handler(
         }
     }
 
-    // Only print verbose diagnostics for faults not resolved quietly
-    if !quiet {
-        crate::serial_println!("[DIAG:PAGEFAULT] ==============================");
-        crate::serial_println!("[DIAG:PAGEFAULT] Fault addr: {:#x}", cr2);
-        crate::serial_println!("[DIAG:PAGEFAULT] Error code: {:#x}", error_code.bits());
-        crate::serial_println!(
-            "[DIAG:PAGEFAULT] RIP: {:#x}",
-            stack_frame.instruction_pointer.as_u64()
-        );
-        crate::serial_println!("[DIAG:PAGEFAULT] CS: {:#x}", stack_frame.code_segment.0);
-        crate::serial_println!(
-            "[DIAG:PAGEFAULT] RFLAGS: {:#x}",
-            stack_frame.cpu_flags.bits()
-        );
-        crate::serial_println!(
-            "[DIAG:PAGEFAULT] RSP: {:#x}",
-            stack_frame.stack_pointer.as_u64()
-        );
-        crate::serial_println!("[DIAG:PAGEFAULT] SS: {:#x}", stack_frame.stack_segment.0);
-        crate::serial_println!("[DIAG:PAGEFAULT] CR3: {:#x}", cr3);
-        crate::serial_println!("[DIAG:PAGEFAULT] ==============================");
-    }
-
-    // Increment preempt count on exception entry FIRST to avoid recursion
+    // Resolve recoverable faults before reporting a fatal exception. Serial
+    // output here serializes faulting CPUs with interrupts masked, delaying
+    // concurrent handled faults before their signal handlers can run.
     crate::per_cpu::preempt_disable();
-
-    // Use the cr2 value we already read safely above (line 894)
     let accessed_addr = x86_64::VirtAddr::new(cr2);
-
-    // Only print verbose diagnostics for faults not resolved quietly, and
-    // only as whole lines under SERIAL1: with several CPUs online, bytes
-    // written straight to the port land inside another CPU's line.
-    if !quiet {
-        // Emergency output to confirm we're in page fault handler
-        crate::serial_println!("PF_ENTRY!");
-
-        // Output page fault error code details
-        let error_bits = error_code.bits();
-        crate::serial_println!(
-            "PF @ {:#x} Error: {:#x} (P={}, W={}, U={}, I={})",
-            accessed_addr.as_u64(),
-            error_bits,
-            if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
-                1
-            } else {
-                0
-            },
-            if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
-                1
-            } else {
-                0
-            },
-            if error_code.contains(PageFaultErrorCode::USER_MODE) {
-                1
-            } else {
-                0
-            },
-            if error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) {
-                1
-            } else {
-                0
-            }
-        );
-    }
 
     // Check if this came from userspace
     let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
