@@ -678,6 +678,10 @@ fn dispatch_syscall_enum(
         }
         SyscallNumber::GetTime => sys_get_time(),
         SyscallNumber::ClockGetTime => sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec),
+        SyscallNumber::ClockGetRes => result_to_u64(crate::syscall::clocks::sys_clock_getres(arg1 as u32, arg2)),
+        SyscallNumber::ClockNanosleep => result_to_u64(crate::syscall::sleep::clock_nanosleep(arg1 as u32, arg2, arg3, arg4)),
+        SyscallNumber::Gettimeofday => result_to_u64(crate::syscall::clocks::sys_gettimeofday(arg1, arg2)),
+        SyscallNumber::Time => result_to_u64(crate::syscall::clocks::sys_time(arg1)),
         SyscallNumber::ClockSetTime => result_to_u64(crate::syscall::time::sys_clock_settime(
             arg1 as u32,
             arg2 as *const crate::syscall::time::Timespec,

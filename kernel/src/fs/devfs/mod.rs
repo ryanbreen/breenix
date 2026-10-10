@@ -40,6 +40,8 @@ pub enum DeviceType {
     Console,
     /// /dev/tty - controlling terminal
     Tty,
+    /// /dev/rtc0 - read-only platform real-time clock
+    Rtc,
 }
 
 impl DeviceType {
@@ -50,6 +52,7 @@ impl DeviceType {
             DeviceType::Zero => "zero",
             DeviceType::Console => "console",
             DeviceType::Tty => "tty",
+            DeviceType::Rtc => "rtc0",
         }
     }
 
@@ -61,6 +64,7 @@ impl DeviceType {
             DeviceType::Zero => 2,
             DeviceType::Console => 3,
             DeviceType::Tty => 4,
+            DeviceType::Rtc => 5,
         }
     }
 
@@ -71,7 +75,7 @@ impl DeviceType {
 
     /// Check if this device is writable
     pub fn is_writable(&self) -> bool {
-        true // All devices are writable
+        *self != DeviceType::Rtc
     }
 }
 
@@ -140,6 +144,14 @@ pub fn init() {
         .push(DeviceNode::new(DeviceType::Console, 5, 1)); // /dev/console
     devfs.devices.push(DeviceNode::new(DeviceType::Tty, 5, 0)); // /dev/tty
 
+    #[cfg(target_arch = "aarch64")]
+    let has_rtc = crate::platform_config::is_qemu();
+    #[cfg(not(target_arch = "aarch64"))]
+    let has_rtc = true;
+    if has_rtc {
+        devfs.devices.push(DeviceNode::new(DeviceType::Rtc, 254, 0));
+    }
+
     devfs.initialized = true;
     log::info!("devfs: initialized with {} devices", devfs.devices.len());
 
@@ -187,6 +199,7 @@ pub fn is_initialized() -> bool {
 /// Device file operations - read from device
 pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
     match device_type {
+        DeviceType::Rtc => Err(-22), // RTC data is read through RTC_RD_TIME.
         DeviceType::Null => {
             // /dev/null always returns EOF (0 bytes read)
             Ok(0)
@@ -208,6 +221,7 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
 /// Device file operations - write to device
 pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
     match device_type {
+        DeviceType::Rtc => Err(13), // EACCES: no clock writes through this device.
         DeviceType::Null | DeviceType::Zero => {
             // /dev/null and /dev/zero discard all writes
             Ok(buf.len())

@@ -5,6 +5,8 @@
 //! - PIT: Millisecond precision (1000 Hz interrupt-driven)
 //! - RTC: Second precision (CMOS real-time clock)
 
+use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+
 pub mod rtc;
 pub mod time;
 pub mod timer;
@@ -45,10 +47,7 @@ pub fn init() {
 /// Get the current real (wall clock) time
 /// This is calculated as boot_wall_time + monotonic_time_since_boot
 pub fn get_real_time() -> DateTime {
-    let boot_time = rtc::get_boot_wall_time();
-    let (mono_secs, _mono_nanos) = get_monotonic_time_ns();
-    let current_timestamp = boot_time + mono_secs;
-    DateTime::from_unix_timestamp(current_timestamp)
+    DateTime::from_unix_timestamp(current_unix_time().max(0) as u64)
 }
 
 /// Get high-resolution real (wall clock) time as (seconds, nanoseconds).
@@ -56,10 +55,26 @@ pub fn get_real_time() -> DateTime {
 /// Returns the Unix timestamp with nanosecond precision by combining
 /// the RTC boot time with TSC-based elapsed time.
 pub fn get_real_time_ns() -> (i64, i64) {
-    let boot_time = rtc::get_boot_wall_time();
-    let (mono_secs, mono_nanos) = get_monotonic_time_ns();
-    let total_secs = boot_time + mono_secs;
-    (total_secs as i64, mono_nanos as i64)
+    loop {
+        let seq = WALL_SEQUENCE.load(Ordering::Acquire);
+        if seq & 1 != 0 {
+            core::hint::spin_loop();
+            continue;
+        }
+        let offset_secs = WALL_OFFSET_SECS.load(Ordering::Relaxed);
+        let offset_nanos = WALL_OFFSET_NANOS.load(Ordering::Relaxed);
+        let (mono_secs, mono_nanos) = get_monotonic_time_ns();
+        core::sync::atomic::fence(Ordering::Acquire);
+        if WALL_SEQUENCE.load(Ordering::Relaxed) != seq {
+            continue;
+        }
+        let nanos = mono_nanos + offset_nanos;
+        let secs = i128::from(rtc::get_boot_wall_time())
+            + i128::from(mono_secs)
+            + i128::from(offset_secs)
+            + i128::from(nanos / 1_000_000_000);
+        return (secs as i64, (nanos % 1_000_000_000) as i64);
+    }
 }
 
 /// Get the current Unix timestamp in seconds
@@ -67,9 +82,7 @@ pub fn get_real_time_ns() -> (i64, i64) {
 /// Returns the number of seconds since the Unix epoch (1970-01-01 00:00:00 UTC).
 /// This is useful for filesystem timestamps and other time-sensitive operations.
 pub fn current_unix_time() -> i64 {
-    let boot_time = rtc::get_boot_wall_time();
-    let (mono_secs, _mono_nanos) = get_monotonic_time_ns();
-    (boot_time + mono_secs) as i64
+    get_real_time_ns().0
 }
 
 /// Display comprehensive time debug information
@@ -143,4 +156,37 @@ pub fn debug_time_info() {
 
     log::info!("PIT frequency: 1000 Hz (1ms resolution)");
     log::info!("=============================");
+}
+
+// Readers include interrupt context. Writers mask local interrupts while the
+// sequence is odd, so an interrupt cannot wait on its own interrupted writer.
+static WALL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static WALL_OFFSET_SECS: AtomicI64 = AtomicI64::new(0);
+static WALL_OFFSET_NANOS: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_real_time_ns(secs: i64, nanos: i64) {
+    crate::arch_without_interrupts(|| {
+        let seq = loop {
+            let seq = WALL_SEQUENCE.load(Ordering::Acquire);
+            if seq & 1 == 0
+                && WALL_SEQUENCE
+                    .compare_exchange(seq, seq + 1, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+            {
+                break seq;
+            }
+            core::hint::spin_loop();
+        };
+        core::sync::atomic::fence(Ordering::Release);
+        let (mono_secs, mono_nanos) = get_monotonic_time_ns();
+        let borrow = u64::from((nanos as u64) < mono_nanos);
+        let offset_secs = i128::from(secs)
+            - i128::from(rtc::get_boot_wall_time())
+            - i128::from(mono_secs)
+            - i128::from(borrow);
+        let offset_nanos = nanos as u64 + borrow * 1_000_000_000 - mono_nanos;
+        WALL_OFFSET_SECS.store(offset_secs as i64, Ordering::Relaxed);
+        WALL_OFFSET_NANOS.store(offset_nanos, Ordering::Relaxed);
+        WALL_SEQUENCE.store(seq.wrapping_add(2), Ordering::Release);
+    });
 }

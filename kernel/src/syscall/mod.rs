@@ -14,6 +14,7 @@ pub mod memory;
 pub mod memory_common;
 pub mod mmap;
 pub mod time;
+pub mod clocks;
 pub mod sleep;
 pub mod userptr;
 // Syscall handler - the main dispatcher
@@ -130,6 +131,10 @@ pub enum SyscallNumber {
     SetTidAddress,
     ClockGetTime,
     ClockSetTime,
+    ClockGetRes,
+    ClockNanosleep,
+    Gettimeofday,
+    Time,
     ExitGroup,
     Ppoll,         // Stub: returns -ENOSYS
     SetRobustList, // Stub: returns 0
@@ -331,6 +336,10 @@ impl SyscallNumber {
             218 => Some(Self::SetTidAddress),
             227 => Some(Self::ClockSetTime),
             228 => Some(Self::ClockGetTime),
+            229 => Some(Self::ClockGetRes),
+            230 => Some(Self::ClockNanosleep),
+            96 => Some(Self::Gettimeofday),
+            201 => Some(Self::Time),
             231 => Some(Self::ExitGroup),
             257 => Some(Self::Openat), // Linux x86_64 openat (was Breenix Open)
             258 => Some(Self::Mkdirat),
@@ -466,6 +475,9 @@ impl SyscallNumber {
             103 => Some(Self::Setitimer),
             112 => Some(Self::ClockSetTime),
             113 => Some(Self::ClockGetTime),
+            114 => Some(Self::ClockGetRes),
+            115 => Some(Self::ClockNanosleep),
+            169 => Some(Self::Gettimeofday),
             // Scheduling
             124 => Some(Self::Yield),
             // Signals

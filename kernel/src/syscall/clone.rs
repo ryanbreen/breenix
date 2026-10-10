@@ -250,6 +250,7 @@ pub fn sys_clone(
         inline_schedule_saved_sp: 0,
         saved_userspace_context: None,
         wake_time_ns: None,
+        realtime_sleep: false,
         timer_pop: None,
         run_start_ticks: 0,
         cpu_ticks_total: 0,

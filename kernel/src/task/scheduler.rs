@@ -4938,6 +4938,15 @@ impl Scheduler {
         }
     }
 
+    pub fn wake_realtime_sleepers(&mut self) {
+        for index in 0..self.threads.len() {
+            if self.threads[index].realtime_sleep {
+                let tid = self.threads[index].id;
+                self.unblock(tid);
+            }
+        }
+    }
+
     /// Visit armed groups only; select an accepting thread only on expiry.
     fn wake_signal_timers(&mut self) {
         if self.signal_timer_groups.is_empty() { return; }
@@ -7165,6 +7174,22 @@ pub fn charge_current_cpu() -> u64 {
         })
     })
     .unwrap_or(0)
+}
+
+/// The calling process's CPU ticks, including running CLONE_THREAD members.
+/// Members have distinct owner PIDs and a shared account; exited members' time
+/// remains in that account. No process-manager lock is needed for this query.
+pub fn process_cpu_ticks() -> Option<u64> {
+    with_scheduler(|scheduler| {
+        let account = scheduler.current_thread()?.cpu_account.clone()?;
+        let now = crate::time::get_cpu_ticks();
+        for thread in scheduler.threads.iter_mut() {
+            if thread.cpu_account.as_ref().is_some_and(|other| alloc::sync::Arc::ptr_eq(other, &account)) {
+                thread.charge_cpu_if_running(now);
+            }
+        }
+        Some(account.ticks())
+    }).flatten()
 }
 
 /// Charge a process's running threads before reading its shared CPU account.

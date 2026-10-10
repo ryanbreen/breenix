@@ -2340,6 +2340,10 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
         }
     };
 
+    if !device.device_type.is_writable() && flags & 3 != 0 {
+        return SyscallResult::Err(13); // EACCES
+    }
+
     // Get current process and allocate fd
     let thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,

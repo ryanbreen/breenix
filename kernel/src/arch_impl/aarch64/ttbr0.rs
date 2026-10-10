@@ -333,8 +333,8 @@ pub fn adopt_process_ttbr0(ttbr0_value: u64) {
 /// reclaimed and re-issued underneath. That argument is about root REUSE. It
 /// is not an argument that a concurrent unmap under the same root is covered
 /// -- TLB maintenance for a mapping change belongs to the code that changes
-/// the mapping -- and the corridor's own unconditional invalidation on every
-/// syscall return is unaffected by this guard either way.
+/// the mapping. The syscall return corridor also skips reinstalling and
+/// invalidating when the installed tagged root matches its saved root.
 /// claim-lint:ok: 2 of 2 sibling guards are cited by path --
 /// `switch_ttbr0_if_needed` in
 /// `kernel/src/arch_impl/aarch64/context_switch.rs` and

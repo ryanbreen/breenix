@@ -56,14 +56,21 @@ struct RTCTime {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn read_rtc_register(reg: u8) -> u8 {
-    unsafe {
-        let mut addr_port = Port::new(RTC_ADDR_PORT);
-        let mut data_port = Port::new(RTC_DATA_PORT);
+static CMOS_LOCK: spin::Mutex<()> = spin::Mutex::new(());
 
-        addr_port.write(reg);
-        data_port.read()
-    }
+#[cfg(target_arch = "x86_64")]
+fn read_rtc_register(reg: u8) -> u8 {
+    crate::arch_without_interrupts(|| {
+        let guard = CMOS_LOCK.lock();
+        let value = unsafe {
+            let mut addr_port = Port::new(RTC_ADDR_PORT);
+            let mut data_port = Port::new(RTC_DATA_PORT);
+            addr_port.write(reg);
+            data_port.read()
+        };
+        drop(guard);
+        value
+    })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -220,10 +227,10 @@ impl DateTime {
 
         // Calculate month and day
         let mut month = 1;
-        let mut day = days_remaining as u8 + 1;
+        let mut day = days_remaining + 1;
 
         while month <= 12 {
-            let days_in_this_month = days_in_month(month, year);
+            let days_in_this_month = u64::from(days_in_month(month, year));
             if day <= days_in_this_month {
                 break;
             }
@@ -234,7 +241,7 @@ impl DateTime {
         DateTime {
             year,
             month,
-            day,
+            day: day as u8,
             hour: hours as u8,
             minute: minutes as u8,
             second: seconds as u8,
@@ -256,20 +263,22 @@ fn rtc_time_to_datetime(rtc: &RTCTime) -> DateTime {
 
 #[cfg(target_arch = "x86_64")]
 pub fn read_rtc_time() -> Result<u64, &'static str> {
-    let time1 = read_rtc_raw();
-    let time2 = read_rtc_raw();
-
-    if time1.second != time2.second
-        || time1.minute != time2.minute
-        || time1.hour != time2.hour
-        || time1.day != time2.day
-        || time1.month != time2.month
-        || time1.year != time2.year
-    {
-        return Err("RTC time changed during read");
+    // Retry a second-boundary update instead of rejecting a healthy RTC.
+    let mut previous = read_rtc_raw();
+    for _ in 0..100 {
+        let current = read_rtc_raw();
+        if previous.second == current.second
+            && previous.minute == current.minute
+            && previous.hour == current.hour
+            && previous.day == current.day
+            && previous.month == current.month
+            && previous.year == current.year
+        {
+            return Ok(rtc_to_unix_timestamp(&current));
+        }
+        previous = current;
     }
-
-    Ok(rtc_to_unix_timestamp(&time1))
+    Err("RTC did not stabilize")
 }
 
 /// Read the current date and time from the RTC
@@ -417,13 +426,4 @@ pub fn init() {
 /// Get the cached boot wall time
 pub fn get_boot_wall_time() -> u64 {
     BOOT_WALL_TIME.load(Ordering::Relaxed)
-}
-
-/// Adjust the boot wall time to correct for clock drift.
-///
-/// Called by clock_settime(CLOCK_REALTIME). The new boot_wall_time is
-/// calculated as: desired_realtime - monotonic_elapsed, so that
-/// get_real_time_ns() = new_boot_wall_time + monotonic = desired_realtime.
-pub fn set_boot_wall_time(new_boot_time: u64) {
-    BOOT_WALL_TIME.store(new_boot_time, Ordering::Relaxed);
 }

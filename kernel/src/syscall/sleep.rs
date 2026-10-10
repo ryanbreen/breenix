@@ -24,13 +24,21 @@ fn ensure_current_address_space() {
     }
 }
 
-/// Syscall #35 — nanosleep(req, rem)
-///
-/// Suspends the calling thread for the time specified in `req`.
-/// If interrupted by a signal, writes the remaining time to `rem` (if non-null)
-/// and returns -EINTR.
-///
+// The scheduler owns both wait publication and clock-change wakeups.
+pub fn realtime_changed() {
+    crate::task::scheduler::with_scheduler(|sched| sched.wake_realtime_sleepers());
+}
+
 pub fn nanosleep(req_ptr: u64, rem_ptr: u64) -> SyscallResult {
+    clock_nanosleep(1, 0, req_ptr, rem_ptr)
+}
+
+/// Relative sleeps use monotonic elapsed time even for CLOCK_REALTIME.
+/// Absolute realtime sleeps are re-evaluated when the wall clock is set.
+pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> SyscallResult {
+    if !matches!(clock, 0 | 1 | 7) {
+        return SyscallResult::Err(22);
+    }
     let req: Timespec = match userptr::copy_from_user(req_ptr as *const Timespec) {
         Ok(ts) => ts,
         Err(e) => return SyscallResult::Err(e),
@@ -38,28 +46,53 @@ pub fn nanosleep(req_ptr: u64, rem_ptr: u64) -> SyscallResult {
     if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
         return SyscallResult::Err(22);
     }
-    let duration = (req.tv_sec as u64)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(req.tv_nsec as u64);
-    if duration == 0 {
+    let requested = i128::from(req.tv_sec) * 1_000_000_000 + i128::from(req.tv_nsec);
+    let absolute = flags as u32 & 1 != 0;
+    let realtime = absolute && clock == 0;
+    let deadline = if absolute {
+        requested
+    } else {
+        i128::from(crate::signal::monotonic_nanos()) + requested
+    };
+    let now = if realtime {
+        let (secs, nanos) = crate::time::get_real_time_ns();
+        i128::from(secs) * 1_000_000_000 + i128::from(nanos)
+    } else {
+        i128::from(crate::signal::monotonic_nanos())
+    };
+    if now >= deadline {
         return SyscallResult::Ok(0);
     }
-    let deadline = crate::signal::monotonic_nanos()
-        .saturating_add(duration);
     let interrupted = loop {
         if super::check_signals_for_wait().is_some() {
             break true;
         }
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_for_timer(deadline);
-        });
-        // Keep preemption disabled until the pending check is complete. A
-        // signal generated before publication has already spent its wake.
+        let expired = crate::task::scheduler::with_scheduler(|sched| {
+            // Sample realtime first, rounding toward the later monotonic sample.
+            let real_now = if realtime {
+                let (secs, nanos) = crate::time::get_real_time_ns();
+                i128::from(secs) * 1_000_000_000 + i128::from(nanos)
+            } else {
+                0
+            };
+            let mono = crate::signal::monotonic_nanos();
+            let now = if realtime { real_now } else { i128::from(mono) };
+            if now >= deadline {
+                return true;
+            }
+            let wake = (i128::from(mono) + deadline - now).min(i128::from(u64::MAX)) as u64;
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.realtime_sleep = realtime;
+            }
+            sched.block_current_for_timer(wake);
+            false
+        }).unwrap_or(true);
+        if expired {
+            break false;
+        }
+        // A signal generated before publication has already spent its wake.
         if super::check_signals_for_wait().is_some() {
             break true;
-        }
-        if crate::signal::monotonic_nanos() >= deadline {
-            break false;
         }
         crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
@@ -68,6 +101,7 @@ pub fn nanosleep(req_ptr: u64, rem_ptr: u64) -> SyscallResult {
     };
     crate::task::scheduler::with_scheduler(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
+            thread.realtime_sleep = false;
             thread.blocked_in_syscall = false;
             thread.wake_time_ns = None;
             thread.set_running();
@@ -76,9 +110,8 @@ pub fn nanosleep(req_ptr: u64, rem_ptr: u64) -> SyscallResult {
     #[cfg(target_arch = "aarch64")]
     ensure_current_address_space();
     if interrupted {
-        if rem_ptr != 0 {
-            let left =
-                deadline.saturating_sub(crate::signal::monotonic_nanos());
+        if !absolute && rem_ptr != 0 {
+            let left = (deadline - i128::from(crate::signal::monotonic_nanos())).max(0);
             let rem = Timespec {
                 tv_sec: (left / 1_000_000_000) as i64,
                 tv_nsec: (left % 1_000_000_000) as i64,

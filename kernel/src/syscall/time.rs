@@ -46,6 +46,17 @@ pub fn clock_gettime(clock_id: u32) -> Result<Timespec, ErrorCode> {
                 tv_nsec: nanos as i64,
             })
         }
+        2 | 3 => super::clocks::cpu_time(clock_id),
+        4 | 7 => clock_gettime(CLOCK_MONOTONIC),
+        5 => {
+            let (secs, nanos) = get_real_time_ns();
+            let tick = crate::time::timer::MS_PER_TICK as i64 * 1_000_000;
+            Ok(Timespec { tv_sec: secs, tv_nsec: nanos / tick * tick })
+        }
+        6 => {
+            let ms = crate::time::get_monotonic_time();
+            Ok(Timespec { tv_sec: (ms / 1000) as i64, tv_nsec: ((ms % 1000) * 1_000_000) as i64 })
+        }
         _ => Err(ErrorCode::InvalidArgument),
     }
 }
@@ -80,9 +91,9 @@ pub fn sys_clock_gettime(clock_id: u32, user_ptr: *mut Timespec) -> SyscallResul
 /// Syscall #227 (x86_64) / #112 (ARM64) — clock_settime(clock_id, *timespec)
 ///
 /// Sets the system clock. Only CLOCK_REALTIME is supported.
-/// Adjusts BOOT_WALL_TIME so that future clock_gettime calls return the new time.
+/// Adjusts the realtime offset without changing the monotonic clock.
 ///
-/// This is NOT a hot path (called once per NTP sync), so logging is acceptable.
+/// The wall-clock offset is published atomically, with no hot-path logging.
 pub fn sys_clock_settime(clock_id: u32, user_ptr: *const Timespec) -> SyscallResult {
     if clock_id != CLOCK_REALTIME {
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
@@ -93,22 +104,15 @@ pub fn sys_clock_settime(clock_id: u32, user_ptr: *const Timespec) -> SyscallRes
         Err(_) => return SyscallResult::Err(ErrorCode::Fault as u64),
     };
 
-    if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+    if ts.tv_sec < 0 || ts.tv_sec > i64::MAX / 1_000_000_000 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
     }
 
-    // new_boot_wall_time = desired_realtime - monotonic_elapsed
-    let (mono_secs, _mono_nanos) = get_monotonic_time_ns();
-    let desired_secs = ts.tv_sec as u64;
-    let new_boot = desired_secs.saturating_sub(mono_secs);
-
-    crate::time::rtc::set_boot_wall_time(new_boot);
-
-    log::info!(
-        "clock_settime: wall clock adjusted to {} (boot_wall_time={})",
-        desired_secs,
-        new_boot
-    );
+    if !matches!(super::handlers::sys_geteuid(), SyscallResult::Ok(0)) {
+        return SyscallResult::Err(1); // EPERM
+    }
+    crate::time::set_real_time_ns(ts.tv_sec, ts.tv_nsec);
+    super::sleep::realtime_changed();
 
     SyscallResult::Ok(0)
 }
