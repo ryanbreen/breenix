@@ -4955,10 +4955,25 @@ impl Scheduler {
             thread.charge_timer_cpu();
         }
         self.signal_timer_groups.retain(|(timers, cpu)| cpu.strong_count() != 0 && timers.upgrade().is_some_and(|t| t.is_active()));
+        // A timer counting CPU time reads the account its threads are charged
+        // to, so the threads running on the other CPUs are charged too.
+        let counts_cpu = self.signal_timer_groups.iter().any(|(timers, _)| {
+            timers.upgrade().is_some_and(|t| t.virtual_timer.is_active() || t.prof.is_active())
+        });
+        if counts_cpu {
+            for cpu in 0..MAX_CPUS {
+                if let Some(tid) = self.cpu_state[cpu].current_thread {
+                    if let Some(thread) = self.get_thread(tid) {
+                        thread.charge_timer_cpu();
+                    }
+                }
+            }
+        }
         for index in 0..self.signal_timer_groups.len() {
             let (Some(group), Some(cpu)) = (self.signal_timer_groups[index].0.upgrade(), self.signal_timer_groups[index].1.upgrade()) else { continue; };
-            let user = cpu.user_ns.load(Ordering::Relaxed) / 1000;
-            let system = cpu.system_ns.load(Ordering::Relaxed) / 1000;
+            let (user_ns, system_ns) = cpu.split_ns();
+            let user = user_ns / 1000;
+            let system = system_ns / 1000;
             let pending = [
                 (group.real.expire(wall), crate::signal::constants::SIGALRM),
                 (group.virtual_timer.expire(user), crate::signal::constants::SIGVTALRM),
@@ -7190,6 +7205,20 @@ pub fn process_cpu_ticks() -> Option<u64> {
         }
         Some(account.ticks())
     }).flatten()
+}
+
+/// Charge the open run interval of every thread that shares `account` to its
+/// user and system time, so a read of the account that follows includes the
+/// time its threads running on other CPUs have used. Called without the
+/// process-manager lock held.
+pub fn charge_account_cpu(account: &alloc::sync::Arc<super::thread::CpuAccount>) {
+    with_scheduler(|scheduler| {
+        for thread in scheduler.threads.iter() {
+            if thread.cpu_account.as_ref().is_some_and(|a| alloc::sync::Arc::ptr_eq(a, account)) {
+                thread.charge_timer_cpu();
+            }
+        }
+    });
 }
 
 /// Charge a process's running threads before reading its shared CPU account.

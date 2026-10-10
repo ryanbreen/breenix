@@ -202,7 +202,9 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
         frame.elr -= 4;
     }
 
-    // Check for pending signals before returning to userspace
+    // Check for pending signals before returning to userspace. User CPU time
+    // starts only at the reschedule check that follows, the last work before
+    // the ERET (`check_need_resched_and_switch_arm64`).
     check_and_deliver_signals_aarch64(frame);
 
     // Trace: about to return from syscall handler to assembly (will ERET)

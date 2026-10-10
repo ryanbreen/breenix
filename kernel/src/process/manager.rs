@@ -1737,8 +1737,15 @@ impl ProcessManager {
         // account, so only a group leader's reap carries the account.
         let leader = row.thread_group_id.map_or(true, |group| group == pid.as_u64());
         let child_ticks = if leader { row.cpu.ticks() + row.cpu.children_ticks() } else { 0 };
+        let (child_user, child_system) = if leader {
+            let ((user, system), (c_user, c_system)) = (row.cpu.split_ns(), row.cpu.children_split_ns());
+            (user.saturating_add(c_user), system.saturating_add(c_system))
+        } else {
+            (0, 0)
+        };
         if let Some(reaper_row) = self.processes.live_row(&reaper) {
             reaper_row.cpu.add_children(child_ticks);
+            reaper_row.cpu.add_children_ns(child_user, child_system);
         }
         crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_RESIDENT);
         let evicted = self.remove_row_joined(pid);

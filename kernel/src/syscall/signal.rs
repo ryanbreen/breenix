@@ -1364,6 +1364,8 @@ fn timer_clock(process: &crate::process::Process, which: i32) -> u64 {
     if which == crate::signal::itimer::ITIMER_REAL {
         return crate::signal::monotonic_micros();
     }
+    // The caller's system time in this call so far counts for ITIMER_PROF.
+    crate::task::thread::charge_current_cpu_time();
     let user = process.cpu.user_ns.load(Ordering::Relaxed);
     let system = if which == crate::signal::itimer::ITIMER_PROF {
         process.cpu.system_ns.load(Ordering::Relaxed)

@@ -301,6 +301,10 @@ pub struct ThreadSignals {
     /// Packed monotonic microseconds and user-mode bit; zero while not dispatched.
     pub cpu_clock: AtomicU64,
     pub in_user: AtomicBool,
+    /// This thread's CPU time in user and in system mode, in nanoseconds:
+    /// CLOCK_THREAD_CPUTIME_ID and getrusage(RUSAGE_THREAD).
+    pub user_ns: AtomicU64,
+    pub system_ns: AtomicU64,
 }
 
 impl ThreadSignals {
@@ -310,6 +314,11 @@ impl ThreadSignals {
             in_user: AtomicBool::new(true),
             ..Self::default()
         }
+    }
+
+    /// User and system nanoseconds charged to this thread so far.
+    pub fn cpu_split_ns(&self) -> (u64, u64) {
+        (self.user_ns.load(Ordering::Relaxed), self.system_ns.load(Ordering::Relaxed))
     }
 
     pub fn save_wait_mask(&self, mask: u64) {

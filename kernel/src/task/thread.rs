@@ -496,19 +496,46 @@ pub enum TimerPop {
     WakeTimeCleared,
 }
 
-/// CPU time of one process, in timer ticks: what every copy of every thread it
-/// has had was charged, and what the children it has waited for used. Shared
-/// by the rows of a thread group, so each thread reads the same totals.
-/// Atomic so the scheduler charges it without the process manager lock.
+/// CPU time of one process: what every copy of every thread it has had was
+/// charged, and what the children it has waited for used. Shared by the rows
+/// of a thread group, so each thread reads the same totals. Atomic so the
+/// scheduler charges it without the process manager lock.
+///
+/// Two clocks are kept. Timer ticks (`own`, `children`) feed /proc and the CPU
+/// resource limit. Nanoseconds split between user and system mode, stamped at
+/// kernel entry and exit (`Thread::switch_timer_mode`), feed getrusage, times,
+/// the CPU-time clocks and timers, and ITIMER_VIRTUAL and ITIMER_PROF.
 #[derive(Default)]
 pub struct CpuAccount {
     own: AtomicU64,
     children: AtomicU64,
     pub user_ns: AtomicU64,
     pub system_ns: AtomicU64,
+    children_user_ns: AtomicU64,
+    children_system_ns: AtomicU64,
 }
 
 impl CpuAccount {
+    /// User and system nanoseconds charged so far.
+    pub fn split_ns(&self) -> (u64, u64) {
+        (self.user_ns.load(Ordering::Relaxed), self.system_ns.load(Ordering::Relaxed))
+    }
+
+    /// User and system nanoseconds of the children waited for.
+    pub fn children_split_ns(&self) -> (u64, u64) {
+        (
+            self.children_user_ns.load(Ordering::Relaxed),
+            self.children_system_ns.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Add a waited-for child's user and system time, its own and its
+    /// children's, in nanoseconds.
+    pub fn add_children_ns(&self, user_ns: u64, system_ns: u64) {
+        self.children_user_ns.fetch_add(user_ns, Ordering::Relaxed);
+        self.children_system_ns.fetch_add(system_ns, Ordering::Relaxed);
+    }
+
     pub fn charge(&self, ticks: u64) {
         self.own.fetch_add(ticks, Ordering::Relaxed);
     }
@@ -842,9 +869,13 @@ impl Thread {
             }
         }
         if old != 0 {
+            let ran = now.saturating_sub(old >> 1).saturating_mul(1000);
+            let user = old & 1 != 0;
+            let own = if user { &self.signals.user_ns } else { &self.signals.system_ns };
+            own.fetch_add(ran, Ordering::Relaxed);
             if let Some(account) = &self.cpu_account {
-                let counter = if old & 1 != 0 { &account.user_ns } else { &account.system_ns };
-                counter.fetch_add(now.saturating_sub(old >> 1).saturating_mul(1000), Ordering::Relaxed);
+                let counter = if user { &account.user_ns } else { &account.system_ns };
+                counter.fetch_add(ran, Ordering::Relaxed);
             }
         }
     }
@@ -924,7 +955,7 @@ impl Thread {
 /// terminating the thread, and the thread dies at its return to user mode
 /// with the lock released. A thread already claimed by a kill enters no
 /// section, and must not take the lock either: see `try_enter`.
-pub struct KillCustody(Option<&'static AtomicU64>, bool);
+pub struct KillCustody(Option<&'static AtomicU64>);
 
 impl KillCustody {
     /// Open a section for the running thread. `None` means a kill has claimed
@@ -938,7 +969,7 @@ impl KillCustody {
         #[cfg(target_arch = "aarch64")]
         let thread = crate::per_cpu_aarch64::current_thread();
         let Some(thread) = thread else {
-            return Some(KillCustody(None, false));
+            return Some(KillCustody(None));
         };
         let thread: &'static Thread = thread;
         let word = &thread.kill_custody;
@@ -946,7 +977,7 @@ impl KillCustody {
             (count & KILL_CLAIMED == 0).then_some(count + 1)
         })
         .ok()
-        .map(|_| KillCustody(Some(word), false))
+        .map(|_| KillCustody(Some(word)))
     }
 
     /// Open the section a syscall runs in, from syscall entry to the start of
@@ -960,11 +991,10 @@ impl KillCustody {
     /// be withdrawn. Called with the syscall's preempt_disable() in force.
     pub fn enter_syscall() -> Self {
         loop {
-            if let Some(mut custody) = Self::try_enter() {
+            if let Some(custody) = Self::try_enter() {
                 if let Some(thread) = current_cpu_thread() {
                     thread.switch_timer_mode(false);
                 }
-                custody.1 = true;
                 return custody;
             }
             crate::per_cpu::preempt_enable();
@@ -974,13 +1004,61 @@ impl KillCustody {
     }
 }
 
+/// Charge the calling thread's CPU time to user mode from here on, if it was
+/// being charged to system mode. The return to user mode calls this last,
+/// after the signal check and delivery, so the work of returning is system
+/// time; `KillCustody::enter_syscall` started charging system time.
+pub fn resume_user_time() {
+    if let Some(thread) = current_cpu_thread() {
+        if !thread.signals.in_user.load(Ordering::Relaxed) {
+            thread.switch_timer_mode(true);
+        }
+    }
+}
+
+/// Charge the calling thread's CPU time to system mode from here on, if it was
+/// being charged to user mode: an exception taken from user mode.
+pub fn enter_kernel_time() {
+    if let Some(thread) = current_cpu_thread() {
+        if thread.signals.in_user.load(Ordering::Relaxed) {
+            thread.switch_timer_mode(false);
+        }
+    }
+}
+
+/// The calling thread's CPU time in nanoseconds, its own or, with `process`,
+/// its process's, charged up to now first. Lock-free, for the CPU-time
+/// clocks: other threads of the process add their open run intervals at their
+/// next kernel entry, exit or scheduler tick. None from a kernel thread.
+pub fn current_cpu_time_ns(process: bool) -> Option<u64> {
+    let thread = current_cpu_thread()?;
+    thread.charge_timer_cpu();
+    let (user, system) = if process {
+        thread.cpu_account.as_ref()?.split_ns()
+    } else {
+        thread.signals.cpu_split_ns()
+    };
+    Some(user.saturating_add(system))
+}
+
+/// Charge the calling thread's open run interval, so its own and its
+/// process's CPU time read next include it.
+pub fn charge_current_cpu_time() {
+    if let Some(thread) = current_cpu_thread() {
+        thread.charge_timer_cpu();
+    }
+}
+
+/// The calling thread's own user and system nanoseconds, charged up to now
+/// first. None from a kernel thread.
+pub fn current_thread_cpu_split_ns() -> Option<(u64, u64)> {
+    let thread = current_cpu_thread()?;
+    thread.charge_timer_cpu();
+    Some(thread.signals.cpu_split_ns())
+}
+
 impl Drop for KillCustody {
     fn drop(&mut self) {
-        if self.1 {
-            if let Some(thread) = current_cpu_thread() {
-                thread.switch_timer_mode(true);
-            }
-        }
         if let Some(word) = self.0 {
             word.fetch_sub(1, Ordering::Release);
         }

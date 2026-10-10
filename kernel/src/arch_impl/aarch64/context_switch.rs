@@ -5240,11 +5240,23 @@ fn dispatch_thread_locked(
 /// This is called from the exception return path. The ENTIRE scheduling decision,
 /// context save, and context restore happen under a SINGLE scheduler lock hold,
 /// eliminating TOCTOU races from the previous 15-22 separate lock acquisitions.
+///
+/// It is the last work before an ERET, so when the frame then returns to EL0
+/// the thread that runs there starts charging user CPU time here: everything
+/// a system call's return did before this point, this function's own signal
+/// check included, was system time (`crate::task::thread::resume_user_time`).
 #[no_mangle]
 pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
+    check_need_resched_and_switch(frame, from_el0);
+    if (frame.spsr & 0xF) == 0 {
+        crate::task::thread::resume_user_time();
+    }
+}
+
+fn check_need_resched_and_switch(frame: &mut Aarch64ExceptionFrame, from_el0: bool) {
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
 
     // ── Lock-free pre-checks ──────────────────────────────────────

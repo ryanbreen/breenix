@@ -829,6 +829,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
     if cpu_id < 8 {
         SYNC_EXCEPTION_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
     }
+    // A fault taken from EL0, a page fault say, is system time until the
+    // exception returns to EL0.
+    let _user_time = KernelTime::enter(frame);
     // CPU 0: capture last ESR, FAR, and ELR for post-mortem diagnosis.
     if cpu_id == 0 {
         CPU0_LAST_SYNC_ESR.store(esr, Ordering::Relaxed);
@@ -2540,6 +2543,29 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
     }
 }
 
+/// Charges the current thread's CPU time to system mode while an exception
+/// taken from EL0 is handled, and to user mode again when it returns there.
+struct KernelTime(*const Aarch64ExceptionFrame);
+
+impl KernelTime {
+    fn enter(frame: *const Aarch64ExceptionFrame) -> Self {
+        // SAFETY: the assembly entry passes the frame it just saved.
+        if crate::per_cpu_aarch64::is_initialized() && unsafe { (*frame).spsr } & 0xF == 0 {
+            crate::task::thread::enter_kernel_time();
+        }
+        KernelTime(frame)
+    }
+}
+
+impl Drop for KernelTime {
+    fn drop(&mut self) {
+        // SAFETY: the frame outlives the handler; a redirect rewrote it in place.
+        if crate::per_cpu_aarch64::is_initialized() && unsafe { (*self.0).spsr } & 0xF == 0 {
+            crate::task::thread::resume_user_time();
+        }
+    }
+}
+
 /// Handle IRQ interrupts
 ///
 /// Called from assembly after saving registers.
@@ -2548,6 +2574,13 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
 pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
     crate::tracing::providers::counters::count_irq();
     let have_percpu = crate::per_cpu_aarch64::is_initialized();
+
+    // An interrupt taken from EL0 is system time until the return to EL0
+    // (`check_need_resched_and_switch_arm64`) resumes user time.
+    // SAFETY: the assembly entry passes the frame it just saved.
+    if have_percpu && unsafe { (*frame).spsr } & 0xF == 0 {
+        crate::task::thread::enter_kernel_time();
+    }
 
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
