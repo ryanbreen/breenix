@@ -1790,7 +1790,10 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
         prot,
         MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
     );
-    if let Err(error) = map_prepared_frames(
+    // The registry records every frame's address, so a buffer part of which
+    // another thread unmapped or filled while it was mapped, freeing those
+    // frames, is refused.
+    match map_prepared_frames(
         current_thread_id,
         root,
         new_addr,
@@ -1798,7 +1801,9 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
         prot_to_page_flags(prot),
         vma,
     ) {
-        return SyscallResult::Err(error);
+        Ok(mapping) if mapping.complete => {}
+        Ok(_) => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+        Err(error) => return SyscallResult::Err(error),
     }
 
     // Register in window buffer table

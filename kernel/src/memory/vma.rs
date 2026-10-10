@@ -106,6 +106,10 @@ pub struct Vma {
     pub flags: MmapFlags,
     /// The file side of a file-backed mapping.
     pub backing: Option<super::file_map::Binding>,
+    /// Nonzero while `map_prepared_frames` is still installing this VMA's
+    /// pages: the token of that call. Faults and kernel copies into a page it
+    /// has not installed yet retry, and the pieces a split leaves keep it.
+    pub reservation: u64,
 }
 
 impl Vma {
@@ -117,6 +121,15 @@ impl Vma {
             prot,
             flags,
             backing: None,
+            reservation: 0,
+        }
+    }
+
+    /// `[start, end)` of this anonymous VMA, as a split leaves it.
+    pub fn piece(&self, start: VirtAddr, end: VirtAddr) -> Self {
+        Self {
+            reservation: self.reservation,
+            ..Self::new(start, end, self.prot, self.flags)
         }
     }
 

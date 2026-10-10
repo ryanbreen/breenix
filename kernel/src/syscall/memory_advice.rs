@@ -168,6 +168,10 @@ fn populate_page(
         }
         return Ok(Population::Resident);
     }
+    // A page mmap is still installing is left to it.
+    if crate::memory::anon_map::reserved_and_absent(table, &process.vmas, address) {
+        return Ok(Population::Retry);
+    }
     let vma = vma.ok_or(ENOMEM as u64)?;
     if vma.backing.is_some() {
         use crate::memory::file_map::{Access, FaultOutcome};
