@@ -7689,6 +7689,7 @@ fn validate_process_page_table_exit_paths_are_minimal(
         function_body(&process_memory[unpublished_drop..], "drop"),
         function_body(process_memory, "release_leaf_record"),
         function_body(process_memory, "release_mapped_leaves"),
+        function_body(process_memory, "release_mapped_leaves_bounded"),
         function_body(process_memory, "retire_bounded"),
         function_body(task, "reclaim_bounded"),
     ] {
@@ -7748,14 +7749,19 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     let release_leaf = function_body(&process_memory[flushed_leaf..], "release");
     let release = function_body(process_memory, "release_leaf_record");
     let drain = function_body(process_memory, "release_mapped_leaves");
+    // Ordinary reclaim and exec cleanup release leaves through the bounded
+    // walker, so it carries the same custody contract as the full drain: a
+    // record found by page authorizes a 4 KiB release, anything else is a
+    // counted refusal, and completion clears the records exactly once.
+    let bounded_drain = function_body(process_memory, "release_mapped_leaves_bounded");
     if !process_memory.contains("struct LeafRecord")
         || !process_memory.contains("page: u64")
         || !process_memory.contains("binary_search_by_key(&page")
         || !unmap.contains("self.unmap_page_deferred(page)?")
         || !unmap.contains("Self::release_leaf_record(leaf.record, leaf.frame);")
         || !unmap_deferred.contains("self.leaves.search(page_addr)")
-        || !unmap_deferred.contains("Ok(ReleasedLeaf { record, frame })")
-        || !flush_leaf.contains("tlb::flush_page(")
+        || !unmap_deferred.contains("Ok(ReleasedLeaf {\n            record,\n            frame,\n            root: self.level_4_frame.start_address().as_u64(),\n        })")
+        || !flush_leaf.contains("tlb::flush_user_page(self.root, VirtAddr::new(self.record.page));")
         || !release_leaf.contains("ProcessPageTable::release_leaf_record(self.record, self.frame)")
         || !release.contains("frame_decref(frame)")
         || !release.contains("deallocate_leaf_frame(frame) == ReturnOutcome::Returned")
@@ -7763,6 +7769,15 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
         || !drain.contains("records.binary_search_by_key(&page")
         || !drain.contains("self.leaves.records.clear();")
         || !drain.contains("self.leaves.released = true;")
+        || !bounded_drain.contains("if self.leaves.released {\n            return RetireProgress::Complete;\n        }")
+        || !bounded_drain.contains("match self.leaves.search(address) {")
+        || !bounded_drain.contains("Ok(index) if shift == 12 => Self::release_leaf_record(")
+        || !bounded_drain.contains("LEAF_CUSTODY_REFUSED")
+        || bounded_drain.matches("Self::release_leaf_record(").count() != 1
+        || bounded_drain.contains("frame_decref(")
+        || bounded_drain.contains("deallocate_leaf_frame(")
+        || !bounded_drain.contains("self.leaves.records.clear();")
+        || !bounded_drain.contains("self.leaves.released = true;")
     {
         return Err(());
     }
@@ -7902,7 +7917,7 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
         }
     }
 
-    for body in [release, drain, decref, function_body(allocator, "deallocate_leaf_frame")] {
+    for body in [release, drain, bounded_drain, decref, function_body(allocator, "deallocate_leaf_frame")] {
         for forbidden in [
             "log::",
             "serial_println!",
@@ -11920,6 +11935,37 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         logged_leaf_release,
     );
     assert!(validate_leaf_custody(&logged_leaf_release).is_err());
+    let bounded_head = "pub(crate) fn release_mapped_leaves_bounded(&mut self, budget: &mut u32) -> RetireProgress {";
+    let logged_bounded_release = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        process_memory.replacen(bounded_head, &format!("{bounded_head} log::info!(\"leaves\");"), 1),
+    );
+    assert!(validate_leaf_custody(&logged_bounded_release).is_err());
+    assert!(validate_process_page_table_exit_paths_are_minimal(&logged_bounded_release).is_err());
+    let allocating_bounded_release = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        process_memory.replacen(bounded_head, &format!("{bounded_head} let _unexpected = Vec::<u8>::new();"), 1),
+    );
+    assert!(validate_leaf_custody(&allocating_bounded_release).is_err());
+    assert!(validate_process_page_table_exit_paths_are_minimal(&allocating_bounded_release).is_err());
+    let bypassed_bounded_custody = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        process_memory.replacen("Ok(index) if shift == 12 => Self::release_leaf_record(", "Ok(index) => Self::release_leaf_record(", 1),
+    );
+    assert!(validate_leaf_custody(&bypassed_bounded_custody).is_err());
+    let unrecorded_bounded_free = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        process_memory.replacen(
+            "                            _ => {\n                                crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);\n                            },",
+            "                            _ => { frame_decref(PhysFrame::containing_address(entry.addr())); },",
+            1,
+        ),
+    );
+    assert!(validate_leaf_custody(&unrecorded_bounded_free).is_err());
     let restored_fork_incref = with_replaced_source(
         &sources,
         "kernel/src/process/fork.rs",
