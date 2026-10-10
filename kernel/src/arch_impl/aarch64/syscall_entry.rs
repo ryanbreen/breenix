@@ -96,6 +96,7 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     }
 
     let syscall_num = frame.syscall_number();
+    let tmp_t0 = crate::signal::types::tmpring::now();
     trace_entry(syscall_num);
 
     let arg1 = frame.arg1();
@@ -195,6 +196,10 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
 
     // Set return value in X0
     trace_exit(result as i64);
+    {
+        let t1 = crate::signal::types::tmpring::now();
+        if t1 - tmp_t0 > 500 { crate::signal::types::tmpring::rec(crate::signal::types::tmpring::K_SYSCALL, t1, ((t1 - tmp_t0) << 16) | (syscall_num & 0xffff)); }
+    }
     frame.set_return_value(result);
 
     // A wait a signal interrupted, to be resumed (SA_RESTART): return to the

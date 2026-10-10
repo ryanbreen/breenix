@@ -1396,6 +1396,73 @@ impl IntervalTimers {
     }
 }
 
+pub mod tmpring {
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+    pub const N: u64 = 8192;
+    pub static RING: [AtomicU64; 16384] = [const { AtomicU64::new(0) }; 16384];
+    pub static IDX: AtomicU64 = AtomicU64::new(0);
+    pub static FROZEN: AtomicBool = AtomicBool::new(false);
+    pub static DUMP: AtomicBool = AtomicBool::new(false);
+    pub static LAST_TICK: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+    pub const K_TICKGAP: u64 = 1;
+    pub const K_SYSCALL: u64 = 2;
+    pub const K_SERIAL: u64 = 3;
+    pub const K_SCHEDHOLD: u64 = 4;
+    pub const K_LATE: u64 = 5;
+    pub const K_REALPASS_GAP: u64 = 6;
+    pub const K_PMHOLD: u64 = 7;
+    pub static LAST_REALPASS: AtomicU64 = AtomicU64::new(0);
+    pub fn cpu() -> u64 {
+        #[cfg(target_arch = "aarch64")]
+        { crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64 }
+        #[cfg(target_arch = "x86_64")]
+        { use crate::arch_impl::PerCpuOps; crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as u64 }
+    }
+    pub fn now() -> u64 { super::monotonic_micros() }
+    pub fn rec(kind: u64, t: u64, payload: u64) {
+        if FROZEN.load(Relaxed) { return; }
+        let i = IDX.fetch_add(1, Relaxed) % N;
+        RING[(i * 2) as usize].store((t << 16) | (cpu() << 8) | kind, Relaxed);
+        RING[(i * 2 + 1) as usize].store(payload, Relaxed);
+    }
+    pub fn tick() {
+        let c = (cpu() as usize).min(7);
+        let t = now();
+        let last = LAST_TICK[c].swap(t, Relaxed);
+        #[cfg(target_arch = "aarch64")]
+        const GAP: u64 = 3000;
+        #[cfg(target_arch = "x86_64")]
+        const GAP: u64 = 8000;
+        if last != 0 && t - last > GAP { rec(K_TICKGAP, t, t - last); }
+    }
+    pub fn dump() {
+        if !DUMP.swap(false, Relaxed) { return; }
+        let end = IDX.load(Relaxed);
+        let start = end.saturating_sub(N);
+        let mut late_t = 0u64;
+        for i in start..end {
+            let w = RING[((i % N) * 2) as usize].load(Relaxed);
+            if w & 0xff == K_LATE { late_t = w >> 16; }
+        }
+        let mut line = alloc::string::String::new();
+        let mut n = 0;
+        for i in start..end {
+            use core::fmt::Write;
+            let w = RING[((i % N) * 2) as usize].load(Relaxed);
+            let p = RING[((i % N) * 2 + 1) as usize].load(Relaxed);
+            let t = w >> 16;
+            if late_t != 0 && t + 400_000 < late_t { continue; }
+            let _ = write!(line, " {}:c{}:k{}:{}", t as i64 - late_t as i64, (w >> 8) & 0xff, w & 0xff, p);
+            n += 1;
+            if n % 12 == 0 { log::info!("[TMPRING]{}", line); line.clear(); }
+        }
+        if !line.is_empty() { log::info!("[TMPRING]{}", line); }
+        log::info!("[TMPRING] end events={}", n);
+        IDX.store(0, Relaxed);
+        FROZEN.store(false, Relaxed);
+    }
+}
+
 pub fn monotonic_micros() -> u64 {
     let (sec, ns) = crate::time::get_monotonic_time_ns();
     sec.saturating_mul(1_000_000).saturating_add(ns / 1000)

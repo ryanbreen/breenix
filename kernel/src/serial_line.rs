@@ -302,8 +302,13 @@ fn emit<const TEE: bool>(bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
+    let tmp_t0 = crate::signal::types::tmpring::now();
     let mut ownership = Ownership::acquire();
     write::<TEE>(bytes, &mut ownership);
+    {
+        let t1 = crate::signal::types::tmpring::now();
+        if t1 - tmp_t0 > 200 { crate::signal::types::tmpring::rec(crate::signal::types::tmpring::K_SERIAL, t1, ((t1 - tmp_t0) << 16) | (bytes.len() as u64 & 0xffff)); }
+    }
 }
 
 /// Write `bytes` as one record if the UART can be owned without waiting, for

@@ -170,6 +170,7 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
 
 /// sys_exit - Terminate the current process
 pub fn sys_exit(exit_code: i32) -> SyscallResult {
+    crate::signal::types::tmpring::dump();
     log::debug!("USERSPACE: sys_exit called with code: {}", exit_code);
 
     // Get current thread ID from scheduler

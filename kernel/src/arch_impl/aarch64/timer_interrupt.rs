@@ -560,6 +560,7 @@ fn trace_kernel_resume_timer_irq(frame: &Aarch64ExceptionFrame, kind: u16) {
 /// 5. CPU 0 only: sets need_resched if quantum expired (Phase 2: only CPU 0 schedules)
 #[no_mangle]
 pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
+    crate::signal::types::tmpring::tick();
     let resume_irq_kind = if frame.is_null() {
         None
     } else {
