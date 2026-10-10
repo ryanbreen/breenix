@@ -288,6 +288,12 @@ pub(crate) fn force_snapshot() {
 
 /// Emit at most one census snapshot per second from existing housekeeping.
 pub(crate) fn report_heartbeat_if_due() {
+    // Automatic diagnostic output is opt-in. COM2 formatting masks IRQs
+    // through the synchronous UART write, delaying expiry on other CPUs too.
+    // Keep the atomic ledger available to GDB in production.
+    if !cfg!(any(feature = "testing", feature = "boot_tests")) {
+        return;
+    }
     // loopback_pump_fn and census_thread_fn both call from ordinary thread
     // context after a halt returns. Keep this check at the emission boundary
     // so serial locking cannot silently move into an interrupts-disabled
@@ -409,9 +415,12 @@ fn sleep_one_interval() {
 }
 
 /// Start `kstrandd`. Called from `main.rs` immediately after
-/// `net::init_loopback_pump()`, on the unconditional init path, so the thread
-/// exists in the zero-feature production profile and not only under `testing`.
+/// `net::init_loopback_pump()`. Automatic output runs only in diagnostic
+/// builds; production keeps the ledger without a periodic UART writer.
 pub(crate) fn start_census_kthread() {
+    if !cfg!(any(feature = "testing", feature = "boot_tests")) {
+        return;
+    }
     let outcome = super::kthread::kthread_run(census_thread_fn, "kstrandd");
     if outcome.is_err() {
         log::error!("kstrandd did not start: the strand census has no timer emitter");
