@@ -1039,9 +1039,11 @@ impl KillCustody {
 /// being charged to system mode. The return to user mode calls this last,
 /// after the signal check and delivery, so the work of returning is system
 /// time; `KillCustody::enter_syscall` started charging system time.
+/// A thread that has exited is left alone: its clock was stopped when it was
+/// terminated, and a fault that killed it may still return through here.
 pub fn resume_user_time() {
     if let Some(thread) = current_cpu_thread() {
-        if !thread.signals.in_user.load(Ordering::Relaxed) {
+        if thread.state != ThreadState::Terminated && !thread.signals.in_user.load(Ordering::Relaxed) {
             thread.switch_timer_mode(true);
         }
     }
@@ -1051,32 +1053,33 @@ pub fn resume_user_time() {
 /// being charged to user mode: an exception taken from user mode.
 pub fn enter_kernel_time() {
     if let Some(thread) = current_cpu_thread() {
-        if thread.signals.in_user.load(Ordering::Relaxed) {
+        if thread.state != ThreadState::Terminated && thread.signals.in_user.load(Ordering::Relaxed) {
             thread.switch_timer_mode(false);
         }
     }
 }
 
-/// The calling thread's CPU time in nanoseconds, its own or, with `process`,
-/// its process's, charged up to now first. Lock-free, for the CPU-time
-/// clocks: other threads of the process add their open run intervals at their
-/// next kernel entry, exit or scheduler tick. None from a kernel thread.
-pub fn current_cpu_time_ns(process: bool) -> Option<u64> {
-    let thread = current_cpu_thread()?;
-    thread.charge_timer_cpu();
-    let (user, system) = if process {
-        thread.cpu_account.as_ref()?.split_ns()
-    } else {
-        thread.signals.cpu_split_ns()
-    };
-    Some(user.saturating_add(system))
+/// Charges an interrupt or fault taken from user mode to system time while
+/// its handler runs, and resumes user time when the handler returns there.
+/// For handlers that return straight to the interrupted context; a return
+/// path that may dispatch another thread resumes user time itself.
+pub struct TrapTime(bool);
+
+impl TrapTime {
+    /// `from_user`: the trap interrupted user mode.
+    pub fn enter(from_user: bool) -> Self {
+        if from_user {
+            enter_kernel_time();
+        }
+        TrapTime(from_user)
+    }
 }
 
-/// Charge the calling thread's open run interval, so its own and its
-/// process's CPU time read next include it.
-pub fn charge_current_cpu_time() {
-    if let Some(thread) = current_cpu_thread() {
-        thread.charge_timer_cpu();
+impl Drop for TrapTime {
+    fn drop(&mut self) {
+        if self.0 {
+            resume_user_time();
+        }
     }
 }
 

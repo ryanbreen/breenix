@@ -455,7 +455,9 @@ extern "x86-interrupt" fn double_fault_handler(
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 
-extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn keyboard_interrupt_handler(stack_frame: InterruptStackFrame) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     use x86_64::instructions::port::Port;
 
     // Read scancode from keyboard controller
@@ -504,7 +506,9 @@ fn scancode_to_fkey_escape(scancode: u8) -> Option<&'static [u8]> {
     }
 }
 
-extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn serial_interrupt_handler(stack_frame: InterruptStackFrame) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     use x86_64::instructions::port::Port;
 
     // Enter hardware IRQ context
@@ -533,7 +537,9 @@ extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackF
 ///
 /// CRITICAL: This handler must be extremely fast. No logging, no allocations.
 /// Target: <1000 cycles total.
-extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn irq10_handler(stack_frame: InterruptStackFrame) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
@@ -560,7 +566,9 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
 ///
 /// CRITICAL: This handler must be extremely fast. No logging, no allocations.
 /// Target: <1000 cycles total.
-extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn irq11_handler(stack_frame: InterruptStackFrame) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
@@ -719,6 +727,8 @@ fn end_faulting_user_thread(
 }
 
 extern "x86-interrupt" fn divide_by_zero_handler(mut stack_frame: InterruptStackFrame) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     if stack_frame.code_segment.0 & 3 == 3 {
         let rip = stack_frame.instruction_pointer.as_u64();
         user_fault(
@@ -748,6 +758,8 @@ extern "x86-interrupt" fn divide_by_zero_handler(mut stack_frame: InterruptStack
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(mut stack_frame: InterruptStackFrame) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     if stack_frame.code_segment.0 & 3 == 3 {
         let rip = stack_frame.instruction_pointer.as_u64();
         user_fault(
@@ -785,6 +797,8 @@ extern "x86-interrupt" fn invalid_opcode_handler(mut stack_frame: InterruptStack
 /// the reporting instruction, as Linux reports it. The faulting thread owns
 /// this CPU's x87 registers, which the kernel never uses (`fpu`).
 extern "x86-interrupt" fn x87_floating_point_handler(mut stack_frame: InterruptStackFrame) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     if stack_frame.code_segment.0 & 3 == 3 {
         let rip = stack_frame.instruction_pointer.as_u64();
         let code = crate::arch_impl::x86_64::fpu::FpuState::capture().x87_fault_code();
@@ -800,6 +814,8 @@ extern "x86-interrupt" fn x87_floating_point_handler(mut stack_frame: InterruptS
 
 /// #XM: an unmasked SSE exception. From Ring 3, SIGFPE as for #MF, from MXCSR.
 extern "x86-interrupt" fn simd_floating_point_handler(mut stack_frame: InterruptStackFrame) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     if stack_frame.code_segment.0 & 3 == 3 {
         let rip = stack_frame.instruction_pointer.as_u64();
         let code = crate::arch_impl::x86_64::fpu::FpuState::capture().simd_fault_code();
@@ -816,6 +832,8 @@ extern "x86-interrupt" fn simd_floating_point_handler(mut stack_frame: Interrupt
 /// #AC: a misaligned access with alignment checking on, which only Ring 3 can
 /// enable. SIGBUS, BUS_ADRALN; the CPU does not report the address.
 extern "x86-interrupt" fn alignment_check_handler(mut stack_frame: InterruptStackFrame, error_code: u64) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     if stack_frame.code_segment.0 & 3 == 3 {
         user_fault(
             &mut stack_frame,
@@ -1261,6 +1279,8 @@ extern "x86-interrupt" fn page_fault_handler(
     mut stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     use x86_64::registers::control::Cr2;
 
     // Read CR2 and CR3 first
@@ -1783,6 +1803,8 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     // Enter hardware IRQ context for unknown interrupts
     crate::per_cpu::irq_enter();
 
@@ -1806,6 +1828,8 @@ extern "x86-interrupt" fn stack_segment_fault_handler(
     mut stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     // From Ring 3 (a non-canonical stack address, say): SIGBUS, SI_KERNEL,
     // as Linux reports it.
     if stack_frame.code_segment.0 & 3 == 3 {
@@ -1849,6 +1873,8 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     mut stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
+    // A trap from Ring 3 is system time until it returns there.
+    let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     // IRETQ can reject a user return frame while CS still names Ring 0.
     // Treat that as a fault of the returning user, not a kernel exception.
     // Both syscall entries share this IRETQ fallback after restoring user GS.
