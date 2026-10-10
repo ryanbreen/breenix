@@ -321,11 +321,13 @@ fn main() {
         // guest's PIT calibration. QEMU sets that virtual TSC rate and makes
         // it available through its CPUID frequency leaf even when an outer
         // hypervisor masks invariant TSC. No invented CPU capability is needed.
-        let hz = kvm_tsc_frequency_hz().unwrap_or_else(|error| {
-            eprintln!("[qemu-uefi] Cannot query KVM TSC frequency: {error}");
-            process::exit(2);
-        });
-        format!("host,tsc-frequency={hz}")
+        match kvm_tsc_frequency_hz() {
+            Ok(hz) => format!("host,tsc-frequency={hz}"),
+            Err(error) => {
+                eprintln!("[qemu-uefi] Cannot query KVM TSC frequency; using host CPU: {error}");
+                qemu_cpu
+            }
+        }
     } else {
         qemu_cpu
     };
