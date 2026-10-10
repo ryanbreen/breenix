@@ -1002,6 +1002,8 @@ static T_CHANGED: AtomicU32 = AtomicU32::new(0);
 static T_OK: [AtomicU64; MAX_WORKERS] = [const { AtomicU64::new(0) }; MAX_WORKERS];
 /// The last round in which each worker's access faulted as the change requires.
 static T_FAULTED: [AtomicU32; MAX_WORKERS] = [const { AtomicU32::new(0) }; MAX_WORKERS];
+/// The round in which a worker exhausted its eight-second lifetime.
+static T_TIMEOUT: [AtomicU32; MAX_WORKERS] = [const { AtomicU32::new(0) }; MAX_WORKERS];
 /// Accesses that succeeded although they began after the change had returned.
 static T_STALE: AtomicU64 = AtomicU64::new(0);
 /// Loads that read a byte other than the round's own before the change.
@@ -1025,7 +1027,11 @@ fn page_worker(i: usize, write: bool, code: i32) {
     let start = now_ms();
     let mut done = 0u32;
     loop {
-        if GO.load(SeqCst) == 2 || now_ms().saturating_sub(start) > 8000 { return; }
+        if GO.load(SeqCst) == 2 { return; }
+        if now_ms().saturating_sub(start) > 8000 {
+            T_TIMEOUT[i].store(T_ROUND.load(SeqCst), SeqCst);
+            return;
+        }
         let round = T_ROUND.load(SeqCst);
         if round == done { core::hint::spin_loop(); continue; }
         let changed = T_CHANGED.load(SeqCst) == round;
@@ -1068,7 +1074,10 @@ fn page_rounds(n: usize, mut prepare: impl FnMut(u32) -> Result<*mut u8, CaseErr
         for ok in T_OK.iter().take(n) { ok.store(0, SeqCst); }
         T_PAGE.store(page as u64, SeqCst);
         T_ROUND.store(round, SeqCst);
-        let warm = spin_until(1000, || T_BAD.load(SeqCst) != 0 || T_OK.iter().take(n).all(|ok| ok.load(SeqCst) >= WARM));
+        let warm = spin_until(1000, || T_BAD.load(SeqCst) != 0 || T_TIMEOUT.iter().take(n).any(|t| t.load(SeqCst) != 0) || T_OK.iter().take(n).all(|ok| ok.load(SeqCst) >= WARM));
+        if let Some(i) = (0..n).find(|&i| T_TIMEOUT[i].load(SeqCst) != 0) {
+            return err(format!("round {round}: worker {i} exhausted its 8000 ms lifetime in round {}", T_TIMEOUT[i].load(SeqCst)));
+        }
         if T_BAD.load(SeqCst) != 0 { return err(format!("round {round}, before {what}: {}", bad_fault_text())); }
         if !warm {
             return err(format!("round {round}: the workers did not each make {WARM} accesses to the page within a second"));
@@ -1080,7 +1089,10 @@ fn page_rounds(n: usize, mut prepare: impl FnMut(u32) -> Result<*mut u8, CaseErr
         T_CHANGED.store(round, SeqCst);
         zero(what, r)?;
         longest = longest.max(took);
-        let faulted = spin_until(1000, || T_BAD.load(SeqCst) != 0 || T_FAULTED.iter().take(n).all(|f| f.load(SeqCst) == round));
+        let faulted = spin_until(1000, || T_BAD.load(SeqCst) != 0 || T_TIMEOUT.iter().take(n).any(|t| t.load(SeqCst) != 0) || T_FAULTED.iter().take(n).all(|f| f.load(SeqCst) == round));
+        if let Some(i) = (0..n).find(|&i| T_TIMEOUT[i].load(SeqCst) != 0) {
+            return err(format!("round {round}: worker {i} exhausted its 8000 ms lifetime in round {}", T_TIMEOUT[i].load(SeqCst)));
+        }
         if T_BAD.load(SeqCst) != 0 { return err(format!("round {round}: {}", bad_fault_text())); }
         if !faulted {
             let late: Vec<usize> = (0..n).filter(|&i| T_FAULTED[i].load(SeqCst) != round).collect();
@@ -1096,6 +1108,7 @@ fn with_page_workers(write: bool, code: i32, body: impl FnOnce(usize) -> Result<
     catch_faults()?;
     let n = workers_for()?;
     let cpus = processors()?;
+    for timeout in T_TIMEOUT.iter().take(n) { timeout.store(0, SeqCst); }
     let threads: Vec<_> = (0..n).map(|i| std::thread::spawn(move || page_worker(i, write, code))).collect();
     let result = prove_parallel(n, cpus).and_then(|_| body(n));
     GO.store(2, SeqCst);

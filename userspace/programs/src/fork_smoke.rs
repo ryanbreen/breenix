@@ -83,8 +83,8 @@
 //! (#745 precheck C3), and a broken refcount/isolation check would silently
 //! corrupt parent/child memory rather than crash -- a child that only
 //! yields and exits proves nothing about that. The gate pins the fault's
-//! OCCURRENCE separately, on the kernel's own `[COW FAULT #0] addr=` line
-//! (C3(2)); this program answers the other half, what the fault handler DID.
+//! OCCURRENCE separately through /proc/stat's cow_faults counter, backed by
+//! COW_FAULT_TOTAL; this program answers the other half, what the fault handler DID.
 //! claim-lint:ok: "had never executed in a zero-feature x86 build" is precheck
 //! C3's own census, docs/planning/745-x86-fork/precheck.md; the receipt's
 //! ability to fail is the mutation run cited above.
@@ -207,6 +207,17 @@ fn main() {
                             "[FORK_SMOKE:COW_ISOLATION_CORRUPTED probe={:#x} child_only={:#x}]",
                             shared, child_only
                         );
+                    }
+
+                    let faults = std::fs::read_to_string("/proc/stat").ok().and_then(|stat| {
+                        stat.lines().find_map(|line| {
+                            line.strip_prefix("cow_faults ")?.parse::<u64>().ok()
+                        })
+                    });
+                    match faults {
+                        Some(count) if count > 0 => println!("[FORK_SMOKE:COW_FAULT_OBSERVED count={count}]"),
+                        Some(_) => println!("[FORK_SMOKE:COW_FAULT_MISSING]"),
+                        None => println!("[FORK_SMOKE:COW_COUNTER_UNAVAILABLE]"),
                     }
 
                     println!(

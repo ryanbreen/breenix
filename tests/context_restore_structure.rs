@@ -1788,17 +1788,11 @@ fn validate_fault_idle_return_source(source: &str) -> Result<(), String> {
         outputs
     }
 
-    for handler in ["page_fault_handler", "general_protection_fault_handler"] {
-        let body = function_body(source, handler).ok_or_else(|| format!("missing fn {handler}"))?;
+    fn reject_private_idle_stack(name: &str, body: &str) -> Result<(), String> {
         let mask = code_mask(body);
-        if identifier_offsets(body, &mask, "setup_idle_return").len() != 1 {
-            return Err(format!(
-                "{handler} does not use the shared idle-return helper"
-            ));
-        }
         if !identifier_offsets(body, &mask, "kernel_stack_top").is_empty() {
             return Err(format!(
-                "{handler} computes an idle stack from kernel_stack_top"
+                "{name} computes an idle stack from kernel_stack_top"
             ));
         }
         for output in inline_rsp_outputs(body) {
@@ -1812,10 +1806,38 @@ fn validate_fault_idle_return_source(source: &str) -> Result<(), String> {
                     && !identifier_offsets(statement, &statement_mask, &output).is_empty()
                 {
                     return Err(format!(
-                        "{handler} derives its idle stack from the exception RSP"
+                        "{name} derives its idle stack from the exception RSP"
                     ));
                 }
             }
+        }
+        Ok(())
+    }
+
+    // A handler returns to idle either itself, through one setup_idle_return,
+    // or through the fault-termination helper, which must then do so once.
+    const TERMINATION_HELPER: &str = "end_faulting_user_thread";
+    for handler in ["page_fault_handler", "general_protection_fault_handler"] {
+        let body = function_body(source, handler).ok_or_else(|| format!("missing fn {handler}"))?;
+        let mask = code_mask(body);
+        let direct = identifier_offsets(body, &mask, "setup_idle_return").len();
+        let via_helper = !identifier_offsets(body, &mask, TERMINATION_HELPER).is_empty();
+        if direct > 1 || (direct == 0 && !via_helper) {
+            return Err(format!(
+                "{handler} does not use the shared idle-return helper"
+            ));
+        }
+        reject_private_idle_stack(handler, body)?;
+        if via_helper {
+            let helper = function_body(source, TERMINATION_HELPER)
+                .ok_or_else(|| format!("missing fn {TERMINATION_HELPER}"))?;
+            let helper_mask = code_mask(helper);
+            if identifier_offsets(helper, &helper_mask, "setup_idle_return").len() != 1 {
+                return Err(format!(
+                    "{TERMINATION_HELPER} does not use the shared idle-return helper"
+                ));
+            }
+            reject_private_idle_stack(TERMINATION_HELPER, helper)?;
         }
     }
     Ok(())
@@ -4962,6 +4984,77 @@ fn userspace_fault_idle_return_validator_rejects_private_stack_derivation() {
         }
     "#;
     assert!(validate_fault_idle_return_source(ist_stack_mutant).is_err());
+
+    let helper_kernel_stack_mutant = r#"
+        fn end_faulting_user_thread(stack_frame: &mut InterruptStackFrame) {
+            switch_to_idle();
+            setup_idle_return(stack_frame);
+            let idle_stack = crate::per_cpu::kernel_stack_top();
+            stack_frame.as_mut().update(|frame| {
+                frame.stack_pointer = VirtAddr::new(idle_stack);
+            });
+        }
+
+        fn page_fault_handler(mut stack_frame: InterruptStackFrame) {
+            end_faulting_user_thread(&mut stack_frame);
+        }
+
+        fn general_protection_fault_handler(mut stack_frame: InterruptStackFrame) {
+            switch_to_idle();
+            setup_idle_return(&mut stack_frame);
+        }
+    "#;
+    assert!(validate_fault_idle_return_source(helper_kernel_stack_mutant).is_err());
+
+    let helper_ist_stack_mutant = r#"
+        fn end_faulting_user_thread(stack_frame: &mut InterruptStackFrame) {
+            switch_to_idle();
+            let current_rsp: u64;
+            core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+            stack_frame.as_mut().update(|frame| {
+                frame.stack_pointer = VirtAddr::new(current_rsp + 256);
+            });
+        }
+
+        fn page_fault_handler(mut stack_frame: InterruptStackFrame) {
+            end_faulting_user_thread(&mut stack_frame);
+        }
+
+        fn general_protection_fault_handler(mut stack_frame: InterruptStackFrame) {
+            switch_to_idle();
+            setup_idle_return(&mut stack_frame);
+        }
+    "#;
+    assert!(validate_fault_idle_return_source(helper_ist_stack_mutant).is_err());
+
+    let no_idle_return_mutant = r#"
+        fn page_fault_handler(mut stack_frame: InterruptStackFrame) {
+            switch_to_idle();
+        }
+
+        fn general_protection_fault_handler(mut stack_frame: InterruptStackFrame) {
+            switch_to_idle();
+            setup_idle_return(&mut stack_frame);
+        }
+    "#;
+    assert!(validate_fault_idle_return_source(no_idle_return_mutant).is_err());
+
+    let helper_shape = r#"
+        fn end_faulting_user_thread(stack_frame: &mut InterruptStackFrame) {
+            switch_to_idle();
+            setup_idle_return(stack_frame);
+        }
+
+        fn page_fault_handler(mut stack_frame: InterruptStackFrame) {
+            end_faulting_user_thread(&mut stack_frame);
+        }
+
+        fn general_protection_fault_handler(mut stack_frame: InterruptStackFrame) {
+            switch_to_idle();
+            setup_idle_return(&mut stack_frame);
+        }
+    "#;
+    assert_eq!(validate_fault_idle_return_source(helper_shape), Ok(()));
 }
 
 fn validate_coherent_rsp0_publishers(source: &str) -> Result<(), String> {

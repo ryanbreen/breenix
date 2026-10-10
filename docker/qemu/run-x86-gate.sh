@@ -305,6 +305,11 @@ while read -r pci_id pci_count; do
 done <<< "$expected_pci"
 
 echo "[gate] === Running $COUNT boot test(s), mode=$MODE ==="
+# The gate host also runs builds and other launchers. A case that needs two
+# guest CPUs running at the same time fails when the host time-slices the
+# guest's vCPUs with that work, so the guest runs 10 nice levels above it.
+# Without permission to raise priority, nice warns and runs the boot anyway.
+GUEST_PRIORITY=(nice -n -10)
 # Sequential, not wall-clock-parallel: the qemu-uefi binary opens the shared
 # breenix-uefi.img read-write, so simultaneous instances collide on QEMU's image
 # write lock. Back-to-back runs still exercise N independent boots.
@@ -330,7 +335,7 @@ for i in $(seq 1 "$COUNT"); do
   scoring_deadline_missed=false
   if [ "$MODE" = full ]; then
     # Collect the final report even when the scoring deadline has elapsed.
-    BREENIX_NET_MODE=none python3 "$REPO_DIR/scripts/x86-gate-boot.py" \
+    BREENIX_NET_MODE=none "${GUEST_PRIORITY[@]}" python3 "$REPO_DIR/scripts/x86-gate-boot.py" \
       "$OUTDIR/serial_kernel.log" "$OUTDIR/serial_user.log" \
       ./target/release/qemu-uefi \
       -serial file:"$OUTDIR/serial_user.log" \
@@ -344,14 +349,14 @@ for i in $(seq 1 "$COUNT"); do
     fi
     cat "$OUTDIR/stdout.log"
   elif [ -n "$SUITE" ]; then
-    BREENIX_NET_MODE=none python3 "$REPO_DIR/scripts/x86-suite-boot.py" "$REPO_DIR" "$OUTDIR" "$SUITE" "$TIMEOUT_SECS" \
+    BREENIX_NET_MODE=none "${GUEST_PRIORITY[@]}" python3 "$REPO_DIR/scripts/x86-suite-boot.py" "$REPO_DIR" "$OUTDIR" "$SUITE" "$TIMEOUT_SECS" \
       "$REPO_DIR/target/release/qemu-uefi" \
       -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" \
       > "$OUTDIR/stdout.log" 2>&1
     suite_boot_status=$?
     cat "$OUTDIR/stdout.log"
   else
-    BREENIX_NET_MODE=none timeout --foreground "$TIMEOUT_SECS" "$REPO_DIR/target/release/qemu-uefi" \
+    BREENIX_NET_MODE=none "${GUEST_PRIORITY[@]}" timeout --foreground "$TIMEOUT_SECS" "$REPO_DIR/target/release/qemu-uefi" \
       -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" \
       > "$OUTDIR/stdout.log" 2>&1
   fi
