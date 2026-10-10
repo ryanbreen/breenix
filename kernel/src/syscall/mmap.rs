@@ -584,7 +584,11 @@ fn file_vma_errno(error: &'static str) -> u64 {
 ///
 /// Returns: 0 on success, negative errno on error
 pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
-    let new_prot = Protection::from_bits_truncate(prot);
+    // A protection bit other than PROT_READ, PROT_WRITE and PROT_EXEC is
+    // refused, as Linux refuses it.
+    let Some(new_prot) = Protection::from_bits(prot) else {
+        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+    };
 
     log::trace!(
         "sys_mprotect: addr={:#x} length={:#x} prot={:?}",

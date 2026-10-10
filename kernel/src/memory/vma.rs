@@ -50,6 +50,12 @@ impl Protection {
     pub fn from_bits_truncate(bits: u32) -> Self {
         Self(bits)
     }
+
+    /// The protection `bits` name, or None if they include a bit that is not
+    /// PROT_READ, PROT_WRITE or PROT_EXEC.
+    pub fn from_bits(bits: u32) -> Option<Self> {
+        (bits & !(Self::READ.0 | Self::WRITE.0 | Self::EXEC.0) == 0).then_some(Self(bits))
+    }
 }
 
 /// Memory mapping flags (MAP_* constants from mmap)
