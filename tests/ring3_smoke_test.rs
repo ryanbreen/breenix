@@ -6,7 +6,6 @@ use shared_qemu::get_kernel_output;
 /// This test validates that Ring 3 execution works correctly by checking for:
 /// 1. Two breakpoints from userspace with CS=0x33 (RPL=3)  
 /// 2. Correct RIP progression showing userspace instruction execution
-/// 3. Expected page fault with U=1, P=1 when userspace accesses kernel memory
 /// 4. Clean IRETQ returns between kernel and userspace
 ///
 /// This serves as a regression test to ensure Ring 3 execution doesn't break
@@ -41,12 +40,6 @@ fn test_ring3_smoke() {
 
     // Check for clean IRETQ returns
     let found_iretq_returns = output.contains("RETIQ");
-
-    // Check for expected page fault from userspace accessing kernel memory
-    let found_userspace_pagefault = output.contains("PAGE FAULT from USERSPACE") &&
-                                   output.contains("U=1") &&  // From userspace
-                                   output.contains("P=1") &&  // Protection violation
-                                   output.contains("CS: 0x33"); // Ring 3 context
 
     // Check for proper swapgs handling (no double-swap issues)
     let no_swapgs_issues = !output.contains("Invalid GS")
@@ -100,10 +93,6 @@ fn test_ring3_smoke() {
 
         if found_iretq_returns {
             println!("   ✓ Clean IRETQ returns confirmed");
-        }
-
-        if found_userspace_pagefault {
-            println!("   ✓ Expected userspace page fault (U=1, P=1)");
         }
 
         if no_swapgs_issues {

@@ -685,7 +685,7 @@ fn end_faulting_user_thread(
 ) {
     if let Some(thread_id) = thread_id {
         if !crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
-            log::error!("Fault exit of thread {} lost: no memory to queue it", thread_id);
+            panic!("No memory to queue fault exit");
         }
         crate::task::scheduler::terminate_thread(thread_id);
     }
@@ -951,10 +951,13 @@ fn file_mapping_fault(
     cr3: u64,
     user_thread: Option<u64>,
     may_retry: bool,
-) -> crate::memory::file_map::FaultOutcome {
+) -> (
+    crate::memory::file_map::FaultOutcome,
+    Option<crate::process::TryProcessManagerGuard>,
+) {
     use crate::memory::file_map::{handle_fault, Access, FaultOutcome};
     if error_code.contains(PageFaultErrorCode::MALFORMED_TABLE) {
-        return FaultOutcome::NotFile;
+        return (FaultOutcome::NotFile, None);
     }
     let access = if error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) {
         Access::Execute
@@ -967,16 +970,21 @@ fn file_mapping_fault(
         fault_manager(may_retry).ok()
     }) {
         FaultOutcome::NotFile => {}
-        outcome => return outcome,
+        outcome => return (outcome, None),
     }
     match fault_manager(may_retry) {
-        Ok(mut guard) => match guard.as_mut() {
-            Some(manager) => handle_fault(manager, cr3, address, access, user_thread),
-            None => FaultOutcome::NotFile,
-        },
-        Err(FaultManagerUnavailable::HeldHere(_)) => FaultOutcome::NotFile,
+        Ok(mut guard) => {
+            let outcome = match guard.as_mut() {
+                Some(manager) => handle_fault(manager, cr3, address, access, user_thread),
+                None => FaultOutcome::NotFile,
+            };
+            // Keep the guard for signal disposition or the generic user fault;
+            // no second poll is needed after the mapping check.
+            (outcome, Some(guard))
+        }
+        Err(FaultManagerUnavailable::HeldHere(_)) => (FaultOutcome::NotFile, None),
         // Retried as for a copy-on-write fault.
-        Err(FaultManagerUnavailable::Busy) => FaultOutcome::Resolved,
+        Err(FaultManagerUnavailable::Busy) => (FaultOutcome::Resolved, None),
     }
 }
 
@@ -1065,6 +1073,8 @@ fn handle_cow_with_manager(
     if !is_cow_page(old_flags) {
         return false;
     }
+
+    crate::tracing::providers::counters::count_cow_fault();
 
     // Check if we're the only reference - can just make it writable
     if !frame_is_shared(old_frame) {
@@ -1201,6 +1211,8 @@ fn handle_cow_direct(
         if !is_cow_page(old_flags) {
             return false;
         }
+
+        crate::tracing::providers::counters::count_cow_fault();
 
         // Check if we're the only reference
         if !frame_is_shared(old_frame) {
@@ -1342,7 +1354,7 @@ extern "x86-interrupt" fn page_fault_handler(
             } else {
                 (!error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
                     && handle_stack_growth(addr, cr3, may_retry))
-                    || file_mapping_fault(cr2, error_code, cr3, None, may_retry)
+                    || file_mapping_fault(cr2, error_code, cr3, None, may_retry).0
                         == crate::memory::file_map::FaultOutcome::Resolved
             };
             crate::per_cpu::preempt_enable();
@@ -1365,10 +1377,11 @@ extern "x86-interrupt" fn page_fault_handler(
     // complete raises SIGSEGV/SIGBUS through the process's signal
     // dispositions and is retried until the signal is taken; a kernel one
     // continues below as before.
+    let mut mapping_guard = None;
     if cr2 < crate::memory::layout::USER_STACK_REGION_END {
         let from_user = (stack_frame.code_segment.0 & 3) == 3;
         crate::per_cpu::preempt_disable();
-        let outcome = file_mapping_fault(
+        let (outcome, guard) = file_mapping_fault(
             cr2,
             error_code,
             cr3,
@@ -1381,14 +1394,16 @@ extern "x86-interrupt" fn page_fault_handler(
         );
         crate::per_cpu::preempt_enable();
         match outcome {
-            crate::memory::file_map::FaultOutcome::NotFile => {}
+            crate::memory::file_map::FaultOutcome::NotFile => {
+                if from_user { mapping_guard = guard; }
+            }
             crate::memory::file_map::FaultOutcome::Signal(_) if !from_user => {}
             crate::memory::file_map::FaultOutcome::Signal(sig) => {
                 // Raised for the thread. A handler runs on the reschedule
                 // vector's return; the default action ends the process here.
                 // A process manager busy on another CPU past `fault_manager`'s
                 // poll leaves the access to fault again.
-                let caught = fault_manager(may_retry).ok().map(|guard| {
+                let caught = guard.or_else(|| fault_manager(may_retry).ok()).map(|guard| {
                     let thread = crate::per_cpu::current_thread_id_lock_free();
                     guard.as_ref().is_some_and(|manager| {
                         thread
@@ -1425,7 +1440,10 @@ extern "x86-interrupt" fn page_fault_handler(
     let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
 
     // Check if this is a guard page access
-    if let Some(stack) = crate::memory::stack::is_guard_page_fault(accessed_addr) {
+    if let Some(stack) = (!from_userspace)
+        .then(|| crate::memory::stack::is_guard_page_fault(accessed_addr))
+        .flatten()
+    {
         log::error!("STACK OVERFLOW DETECTED!");
         log::error!("Attempted to access guard page at: {:?}", accessed_addr);
         log::error!("Stack bottom (guard page): {:?}", stack.guard_page());
@@ -1434,6 +1452,10 @@ extern "x86-interrupt" fn page_fault_handler(
         log::error!("Stack frame: {:#?}", stack_frame);
 
         panic!("Stack overflow - guard page accessed");
+    }
+
+    if !from_userspace || is_potential_cow || in_user_stack_growth_range(cr2) {
+        drop(mapping_guard.take());
     }
 
     // Try to handle as Copy-on-Write fault
@@ -1477,7 +1499,7 @@ extern "x86-interrupt" fn page_fault_handler(
     // run, the reschedule vector's return path delivers it before the
     // instruction runs again; the default action ends the process below.
     if from_userspace {
-        let Ok(mut guard) = fault_manager(may_retry) else {
+        let Some(mut guard) = mapping_guard.take().or_else(|| fault_manager(may_retry).ok()) else {
             crate::per_cpu::preempt_enable();
             return;
         };
@@ -1511,6 +1533,13 @@ extern "x86-interrupt" fn page_fault_handler(
             crate::per_cpu::preempt_enable();
             return;
         }
+        end_faulting_user_thread(
+            &mut stack_frame,
+            crate::per_cpu::current_thread_id_lock_free(),
+            crate::signal::delivery::fault_death_exit_code(crate::signal::constants::SIGSEGV),
+            crate::tracing::providers::sched::DispatchAbandonSite::ExceptionPageFault,
+        );
+        return;
     }
 
     crate::serial_println!("EXCEPTION: PAGE FAULT");
@@ -1599,54 +1628,10 @@ extern "x86-interrupt" fn page_fault_handler(
         }
     }
 
-    // Enhanced logging for userspace faults (Ring 3 privilege violation tests)
-    if from_userspace {
-        log::error!("✓ PAGE FAULT from USERSPACE (Ring 3 privilege test detected)");
-        log::error!("  CR2 (accessed address): {:#x}", accessed_addr.as_u64());
-        log::error!("  Error code: {:#x}", error_code.bits());
-        log::error!(
-            "    U={} ({})",
-            if error_code.contains(PageFaultErrorCode::USER_MODE) {
-                1
-            } else {
-                0
-            },
-            if error_code.contains(PageFaultErrorCode::USER_MODE) {
-                "from userspace"
-            } else {
-                "from kernel"
-            }
-        );
-        log::error!(
-            "    P={} ({})",
-            if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
-                1
-            } else {
-                0
-            },
-            if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
-                "protection violation"
-            } else {
-                "not present"
-            }
-        );
-        log::error!(
-            "  CS: {:#x} (RPL={})",
-            stack_frame.code_segment.0,
-            stack_frame.code_segment.0 & 3
-        );
-        log::error!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
-
-        // Check if this is an expected test fault
-        if accessed_addr.as_u64() == 0x50000000 {
-            log::info!("  ✓ This is the expected unmapped memory test (0x50000000)");
-        }
-    } else {
-        log::error!("Accessed Address: {:?}", accessed_addr);
-        log::error!("Error Code: {:?}", error_code);
-        log::error!("RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
-        log::error!("CS: {:#x}", stack_frame.code_segment.0);
-    }
+    log::error!("Accessed Address: {:?}", accessed_addr);
+    log::error!("Error Code: {:?}", error_code);
+    log::error!("RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    log::error!("CS: {:#x}", stack_frame.code_segment.0);
 
     log::error!("{:#?}", stack_frame);
 
@@ -1657,102 +1642,6 @@ extern "x86-interrupt" fn page_fault_handler(
     }
     #[cfg(not(feature = "test_page_fault"))]
     {
-        // For userspace faults, terminate the process and schedule another
-        if from_userspace {
-            log::error!("Terminating faulting userspace process and scheduling next...");
-
-            // The thread this CPU was running in Ring 3 took the fault. CR3
-            // names only the address space, which a CLONE_VM child shares with
-            // its parent, so it does not say whose thread faulted.
-            let interrupted = crate::per_cpu::current_thread_id_lock_free();
-            let mut faulting_thread_id: Option<u64> = None;
-
-            // Ring 3 interrupted no holder, so a busy process manager is held
-            // on another CPU. Past `fault_manager`'s poll the fault is taken
-            // again once pending interrupts have run.
-            let Ok(mut guard) = fault_manager(may_retry) else {
-                crate::per_cpu::preempt_enable();
-                return;
-            };
-            if let Some(pm) = guard.as_mut() {
-                if let Some((pid, process)) =
-                    interrupted.and_then(|tid| pm.find_process_by_thread_mut(tid))
-                {
-                    faulting_thread_id = interrupted;
-                    log::error!(
-                        "Killing process {} (PID {}) due to page fault (thread {:?}, CR3={:#x})",
-                        process.name,
-                        pid.as_u64(),
-                        interrupted,
-                        cr3
-                    );
-                } else {
-                    log::error!(
-                        "Could not find the process of thread {:?} (CR3={:#x}) - cannot terminate",
-                        interrupted,
-                        cr3
-                    );
-                }
-            }
-            drop(guard);
-
-            // The process exit runs in the fault-exit kernel thread, not here
-            // in exception context (#511): it closes descriptors and wakes
-            // threads that may be running on other CPUs, and it can block. The
-            // thread is made non-runnable now so nothing dispatches it again.
-            if let Some(thread_id) = faulting_thread_id {
-                if !crate::task::process_task::defer_fault_sigsegv_exit(thread_id) {
-                    log::error!("Fault exit of thread {} lost: no memory to queue it", thread_id);
-                }
-                crate::task::scheduler::terminate_thread(thread_id);
-            }
-
-            // Re-enable preemption before scheduling
-            crate::per_cpu::preempt_enable();
-
-            // Force a reschedule to pick up the next thread
-            crate::task::scheduler::set_need_resched();
-
-            log::info!("About to schedule next thread after killing faulting process...");
-
-            // Switch CR3 back to kernel page table
-            unsafe {
-                use x86_64::registers::control::Cr3;
-                use x86_64::structures::paging::PhysFrame;
-                let kernel_cr3 = crate::per_cpu::get_kernel_cr3();
-                if kernel_cr3 != 0 {
-                    log::info!("Switching to kernel CR3: {:#x}", kernel_cr3);
-                    crate::memory::tlb::note_root_load(kernel_cr3);
-                    Cr3::write(
-                        PhysFrame::containing_address(x86_64::PhysAddr::new(kernel_cr3)),
-                        Cr3::read().1,
-                    );
-                }
-            }
-
-            // CRITICAL: Set exception cleanup context so can_schedule() returns true
-            // This allows scheduling from kernel mode after terminating a process
-            crate::per_cpu::set_exception_cleanup_context();
-
-            // CRITICAL: Update scheduler to point to idle thread BEFORE modifying exception frame.
-            // This ensures subsequent timer interrupts can properly schedule other threads.
-            crate::task::scheduler::switch_to_idle();
-            // #772 diagnostics: this vector ends a dispatch without saving a
-            // context and without touching the dispatch mark.
-            crate::tracing::providers::sched::trace_dispatch_abandon(
-                crate::tracing::providers::sched::DispatchAbandonSite::ExceptionPageFault,
-            );
-
-            // CR3 is already the kernel table. Rewrite the frame last, using the
-            // scheduler-owned idle thread stack rather than the dying thread's stack.
-            context_switch::setup_idle_return(&mut stack_frame);
-
-            log::info!("Page fault handler: Modified exception frame to return to idle loop");
-
-            // Return from handler - IRET will jump to idle_loop
-            return;
-        }
-
         // Kernel page fault - this is a bug, panic
         panic!(
             "Kernel page fault at {:#x} (error: {:?})",
