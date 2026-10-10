@@ -345,6 +345,9 @@ fn write_signal_stack(
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+    if process.id.as_u64() == 1 || fatal_exit_code(sig).is_some() {
+        crate::serial_println!("[TC2DIAG] default action pid={} sig={}", process.id.as_u64(), sig);
+    }
     #[cfg(target_arch = "x86_64")]
     if fatal_exit_code(sig).is_some() {
         let exit_code = signal_death_exit_code(process, sig);

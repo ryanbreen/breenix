@@ -683,6 +683,13 @@ fn end_faulting_user_thread(
     exit_code: i32,
     site: crate::tracing::providers::sched::DispatchAbandonSite,
 ) {
+    crate::serial_println!(
+        "[TC2DIAG] end_faulting_user_thread tid={:?} code={} rip={:#x} cr2={:#x}",
+        thread_id,
+        exit_code,
+        stack_frame.instruction_pointer.as_u64(),
+        x86_64::registers::control::Cr2::read_raw()
+    );
     if let Some(thread_id) = thread_id {
         if !crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
             panic!("No memory to queue fault exit");
@@ -1533,6 +1540,15 @@ extern "x86-interrupt" fn page_fault_handler(
             crate::per_cpu::preempt_enable();
             return;
         }
+        crate::serial_println!(
+            "[TC2DIAG] user page fault kills tid={:?} cr2={:#x} err={:#x} rip={:#x} cr3={:#x} cow={}",
+            crate::per_cpu::current_thread_id_lock_free(),
+            cr2,
+            error_code.bits(),
+            stack_frame.instruction_pointer.as_u64(),
+            cr3,
+            is_potential_cow
+        );
         end_faulting_user_thread(
             &mut stack_frame,
             crate::per_cpu::current_thread_id_lock_free(),
