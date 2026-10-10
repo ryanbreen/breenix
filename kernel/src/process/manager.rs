@@ -2333,6 +2333,35 @@ impl ProcessManager {
     /// Tombstone-blind like every other live-process query: a reaped row is a
     /// stale handle and must not answer a thread lookup.
     pub fn find_process_by_thread(&self, thread_id: u64) -> Option<(ProcessId, &Process)> {
+        // The running thread already carries its owning row. Repeated syscall
+        // lookups must not scan every process (including retained tombstones).
+        // Read only immutable identity while this CPU cannot switch threads;
+        // validate the row, since non-current and construction-time lookups
+        // still use the general search below.
+        let owner = crate::arch_without_interrupts(|| {
+            #[cfg(target_arch = "x86_64")]
+            let ptr = {
+                use crate::arch_impl::PerCpuOps;
+                crate::arch_impl::x86_64::percpu::X86PerCpu::current_thread_ptr()
+            };
+            #[cfg(target_arch = "aarch64")]
+            let ptr = crate::per_cpu_aarch64::current_thread_ptr();
+            let ptr = ptr as *const crate::task::thread::Thread;
+            if ptr.is_null() {
+                None
+            } else {
+                // SAFETY: the current thread remains owned by this CPU until
+                // interrupts are restored; id and owner_pid do not change.
+                unsafe { ((*ptr).id == thread_id).then_some((*ptr).owner_pid).flatten() }
+            }
+        });
+        if let Some(pid) = owner.map(ProcessId::new) {
+            if let Some(process) = self.get_process(pid) {
+                if process.main_thread.as_ref().map(|t| t.id) == Some(thread_id) {
+                    return Some((pid, process));
+                }
+            }
+        }
         self.processes
             .iter()
             .find(|(_, process)| {
@@ -2347,13 +2376,8 @@ impl ProcessManager {
         &mut self,
         thread_id: u64,
     ) -> Option<(ProcessId, &mut Process)> {
-        self.processes
-            .iter_mut()
-            .find(|(_, process)| {
-                !process.is_tombstone()
-                    && process.main_thread.as_ref().map(|t| t.id) == Some(thread_id)
-            })
-            .map(|(pid, process)| (*pid, process))
+        let pid = self.find_process_by_thread(thread_id).map(|(pid, _)| pid)?;
+        self.get_process_mut(pid).map(|process| (pid, process))
     }
 
     /// Resolve CLONE_VM callers to the row owning their address space.
