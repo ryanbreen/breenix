@@ -1188,10 +1188,11 @@ fn switch_to_thread(
 
                         // Handle signal result
                         match signal_result {
-                            // A frame fault's thread is no longer runnable either;
-                            // idle drains its deferred exit.
+                            // A queued fatal or frame-fault exit cannot resume;
+                            // the exit worker publishes its status.
                             crate::signal::delivery::SignalDeliveryResult::Terminated(_)
-                            | crate::signal::delivery::SignalDeliveryResult::FrameFault => {
+                            | crate::signal::delivery::SignalDeliveryResult::FrameFault
+                            | crate::signal::delivery::SignalDeliveryResult::DeferredExit => {
                                 // Process was terminated - notify parent after releasing locks
                                 // We need to return from this function and let the locks drop naturally
                                 // but first save the notification data
@@ -1661,8 +1662,9 @@ fn restore_userspace_thread_context(
                                         trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedUser);
                                         // Don't return here - fall through to handle notification
                                     }
-                                    crate::signal::delivery::SignalDeliveryResult::FrameFault => {
-                                        // The thread is no longer runnable; idle drains its exit.
+                                    crate::signal::delivery::SignalDeliveryResult::FrameFault
+                                    | crate::signal::delivery::SignalDeliveryResult::DeferredExit => {
+                                        // The thread is no longer runnable; the exit worker drains its exit.
                                         crate::task::scheduler::set_need_resched();
                                         setup_idle_return(interrupt_frame);
                                         crate::task::scheduler::switch_to_idle();
@@ -1903,8 +1905,9 @@ fn check_and_deliver_signals_for_current_thread(
                         trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedOnReturn);
                         // Don't return here - fall through to handle notification
                     }
-                    crate::signal::delivery::SignalDeliveryResult::FrameFault => {
-                        // The thread is no longer runnable; idle drains its exit.
+                    crate::signal::delivery::SignalDeliveryResult::FrameFault
+                    | crate::signal::delivery::SignalDeliveryResult::DeferredExit => {
+                        // The thread is no longer runnable; the exit worker drains its exit.
                         crate::task::scheduler::set_need_resched();
                         setup_idle_return(interrupt_frame);
                         crate::task::scheduler::switch_to_idle();
