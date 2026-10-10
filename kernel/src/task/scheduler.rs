@@ -4095,7 +4095,12 @@ impl Scheduler {
                         crate::proof_point!(UnblockAfterEnqueue);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
 
-                        // Send IPI to wake an idle CPU so it can pick up the unblocked thread
+                        // A wake queued on a busy x86 CPU must reach that CPU
+                        // too, rather than wait out its 50 ms quantum. Signal
+                        // interruption uses this path for timer-blocked tasks.
+                        #[cfg(target_arch = "x86_64")]
+                        self.send_resched_ipi_to_cpu(target);
+                        #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
                         self.hold_pinned_wake_for_home(thread_id);
