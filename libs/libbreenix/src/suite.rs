@@ -30,21 +30,29 @@
 //!
 //! While it runs, a case may also report what it measures, for a reader to show live:
 //! [`value`] prints `SUITE <id> VALUE <category>/<case> <name>=<number><unit>` with an
-//! optional ` expect=<low>..<high><unit>`, and [`wait_for`] prints
-//! `SUITE <id> WAIT <category>/<case> until=<ms> for=<ms>` as it starts a wait, `until`
-//! in CLOCK_MONOTONIC milliseconds (the time since boot). They are written, like the
-//! runner's own lines, with one write that starts with a newline, through a copy of the
-//! suite's stdout the case keeps (close-on-exec) when its own output goes to /dev/null.
-//! A case process prints at most [`RECORDS_PER_CASE`] of them; the rest are dropped.
+//! optional ` expect=<low>..<high><unit>`; [`wait_for`] prints
+//! `SUITE <id> WAIT <category>/<case> until=<ms> for=<ms> result=<name>` as it starts a
+//! wait, `until` in CLOCK_MONOTONIC milliseconds (the time since boot) and `result` the
+//! VALUE that will say how the wait ended; and [`pulses`] prints
+//! `SUITE <id> PULSES <category>/<case> every=<us> limit=<us> at=<us>,...`, the times a
+//! periodic timer fired after it was armed. They are written, like the runner's own
+//! lines, with one write that starts with a newline, through a copy of the suite's
+//! stdout the case keeps (close-on-exec) when its own output goes to /dev/null. A case
+//! process prints at most [`RECORDS_PER_CASE`] of them; the rest are dropped.
 //!
 //! The panel shows those records live: under the groups, a strip with the clocks
 //! (CLOCK_MONOTONIC to the millisecond and CLOCK_REALTIME as wall time), a countdown
-//! for the case's latest WAIT that snaps to the value it reports when the wait is over,
-//! and its latest VALUEs on gauges against the ranges they accept (libgfx's
-//! `diagnostics::draw_live`). The case sends each record to the runner as well, down a
+//! for the case's latest WAIT that snaps to the VALUE it names once the case reports
+//! it, the case's latest VALUEs on gauges against the ranges they accept, and its
+//! PULSES as a pulse train (libgfx's `diagnostics::draw_live`). The case sends each record to the runner as well, down a
 //! pipe; the runner, not the case, redraws the strip about 15 times a second while it
 //! waits for the case, so drawing never runs in the case's process or inside anything
 //! it times. `/etc/breenix/suite-live` reading `off` turns the strip, and the pipe, off.
+//!
+//! A case that sets CLOCK_REALTIME must put it back. After every case the runner
+//! checks: when CLOCK_REALTIME has moved more than [`REALTIME_SLACK_MS`] against
+//! CLOCK_MONOTONIC since the case started, the runner sets it back and the case fails
+//! saying so, whether it passed, failed or was killed.
 //!
 //! A suite runs as PID 1, so any process a case leaves behind is reparented to the
 //! runner once the case ends. Before the next case starts, the runner kills every such
@@ -79,7 +87,7 @@ use std::fmt::Write as _;
 use std::string::String;
 use std::vec::Vec;
 
-use libgfx::diagnostics::{self, Check, CheckState, Group, Live, LiveArea, Panel, Reading, Verdict};
+use libgfx::diagnostics::{self, Check, CheckState, Group, Live, LiveArea, Panel, Pulses, Reading, Verdict};
 use libgfx::framebuf::FrameBuf;
 
 use crate::error::Error;
@@ -87,7 +95,7 @@ use crate::fs;
 use crate::io::{self, poll_events, status_flags, PollFd};
 use crate::process::{self, ForkResult, WNOHANG};
 use crate::signal::{self, SIGKILL};
-use crate::types::Fd;
+use crate::types::{clock, Fd, Timespec};
 use crate::{graphics, time};
 
 /// Why a case did not pass.
@@ -221,11 +229,31 @@ pub fn value(name: &str, number: i64, unit: &str, expect: Option<(i64, i64)>) {
 }
 
 /// Report that the running case starts waiting `ms` milliseconds on a sleep or timer:
-/// `SUITE <id> WAIT <category>/<case> until=<ms> for=<ms>`, `until` being when the wait
-/// should end in CLOCK_MONOTONIC milliseconds.
-pub fn wait_for(ms: u64) {
+/// `SUITE <id> WAIT <category>/<case> until=<ms> for=<ms> result=<name>`, `until` being
+/// when the wait should end in CLOCK_MONOTONIC milliseconds and `result` the name of
+/// the VALUE the case reports to say how the wait ended. `result` is a record word, as
+/// a VALUE's name is; a record with any other is not printed.
+pub fn wait_for(ms: u64, result: &str) {
+    if !is_word(result) {
+        return;
+    }
     let now = monotonic_ns().map_or(0, |ns| (ns / 1_000_000) as u64);
-    record("WAIT", &std::format!("until={} for={}", now + ms, ms));
+    record("WAIT", &std::format!("until={} for={} result={result}", now + ms, ms));
+}
+
+/// The most expiry times one PULSES record carries.
+pub const PULSES_MAX: usize = 32;
+
+/// Report when a periodic timer of `every_us` fired, each in microseconds after it was
+/// armed, and how late an expiry may be, `limit_us`: `SUITE <id> PULSES
+/// <category>/<case> every=<us> limit=<us> at=<us>,<us>,...`. The first [`PULSES_MAX`]
+/// times are printed.
+pub fn pulses(every_us: i64, limit_us: i64, at_us: &[i64]) {
+    let mut rest = std::format!("every={every_us} limit={limit_us} at=");
+    for (i, at) in at_us.iter().take(PULSES_MAX).enumerate() {
+        let _ = write!(rest, "{}{at}", if i == 0 { "" } else { "," });
+    }
+    record("PULSES", &rest);
 }
 
 /// A suite: its id, title and categories, run in order.
@@ -551,6 +579,37 @@ fn sweep() -> Option<&'static str> {
     }
 }
 
+/// How far CLOCK_REALTIME may move against CLOCK_MONOTONIC across a case before the
+/// runner sets it back.
+pub const REALTIME_SLACK_MS: i128 = 100;
+
+/// CLOCK_REALTIME less CLOCK_MONOTONIC, in nanoseconds.
+fn realtime_offset() -> Option<i128> {
+    let real = time::now_realtime().ok()?.as_nanos();
+    Some(real - monotonic_ns()?)
+}
+
+/// After a case: when CLOCK_REALTIME has moved more than REALTIME_SLACK_MS against
+/// CLOCK_MONOTONIC since `before`, set it back and say so, and whether that took.
+fn restore_realtime(before: Option<i128>) -> Option<String> {
+    let before = before?;
+    let moved = realtime_offset()? - before;
+    if moved.abs() <= REALTIME_SLACK_MS * 1_000_000 {
+        return None;
+    }
+    let target = monotonic_ns()? + before;
+    let set = time::clock_settime(clock::REALTIME, &Timespec {
+        tv_sec: target.div_euclid(1_000_000_000) as i64,
+        tv_nsec: target.rem_euclid(1_000_000_000) as i64,
+    });
+    let after = realtime_offset().map(|offset| offset - before);
+    let put_back = match (set, after) {
+        (Ok(()), Some(after)) if after.abs() <= REALTIME_SLACK_MS * 1_000_000 => "the runner set it back",
+        _ => "the runner could not set it back",
+    };
+    Some(std::format!("it left CLOCK_REALTIME {} ms off; {put_back}", moved / 1_000_000))
+}
+
 /// `outcome`, failed with `note` added.
 fn with_note(outcome: Outcome, note: &str) -> Outcome {
     match outcome {
@@ -590,6 +649,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     } else {
         None
     };
+    let realtime = realtime_offset();
     // Close-on-exec so a case that execs never leaves the report pipe open.
     let (reader, writer) = match io::pipe2(status_flags::O_CLOEXEC) {
         Ok(ends) => ends,
@@ -654,8 +714,12 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 feed.drain(fd);
                 let _ = io::close(fd);
             }
-            match sweep() {
+            let outcome = match sweep() {
                 Some(note) => with_note(outcome, note),
+                None => outcome,
+            };
+            match restore_realtime(realtime) {
+                Some(note) => with_note(outcome, &note),
                 None => outcome,
             }
         }
@@ -715,7 +779,12 @@ struct Feed {
     /// The case `wait` and `values` came from.
     from: String,
     wait: Option<diagnostics::Wait>,
+    /// The VALUE that ends `wait`.
+    wait_result: String,
     values: Vec<Value>,
+    /// The case's PULSES: the programmed period, the lateness allowed and the expiry
+    /// times, in microseconds.
+    pulses: Option<(i64, i64, Vec<i64>)>,
     /// Shown when no case runs.
     idle: String,
     /// The start of a record not yet ended by its newline.
@@ -759,6 +828,7 @@ impl Feed {
             self.from = self.case.clone();
             self.wait = None;
             self.values.clear();
+            self.pulses = None;
         }
     }
 
@@ -775,8 +845,9 @@ impl Feed {
         }
     }
 
-    /// Take one record: `SUITE <id> VALUE <name> <n>=<number><unit> [expect=<low>..<high><unit>]`
-    /// or `SUITE <id> WAIT <name> until=<ms> for=<ms>`.
+    /// Take one record: `SUITE <id> VALUE <name> <n>=<number><unit> [expect=<low>..<high><unit>]`,
+    /// `SUITE <id> WAIT <name> until=<ms> for=<ms> result=<n>` or
+    /// `SUITE <id> PULSES <name> every=<us> limit=<us> at=<us>,...`.
     fn take(&mut self, line: &str) {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words.as_slice() {
@@ -789,16 +860,30 @@ impl Feed {
                     .and_then(|(low, high)| Some((low.parse().ok()?, number_unit(high)?.0)));
                 if self.values.len() == FEED_VALUES { return; }
                 self.values.push(Value { name: String::from(name), number, unit: String::from(unit), expect });
-                if let Some(wait) = self.wait.as_mut().filter(|wait| wait.result.is_none()) {
-                    wait.result = Some(self.values.len() - 1);
+                if name == self.wait_result {
+                    if let Some(wait) = self.wait.as_mut().filter(|wait| wait.result.is_none()) {
+                        wait.result = Some(self.values.len() - 1);
+                    }
                 }
             }
-            ["SUITE", _, "WAIT", _, until, length] => {
+            ["SUITE", _, "WAIT", _, until, length, result] => {
                 let until = until.strip_prefix("until=").and_then(|ms| ms.parse().ok());
                 let length = length.strip_prefix("for=").and_then(|ms| ms.parse().ok());
-                if let (Some(until_ms), Some(for_ms)) = (until, length) {
+                if let (Some(until_ms), Some(for_ms), Some(result)) = (until, length, result.strip_prefix("result=")) {
                     self.own();
                     self.wait = Some(diagnostics::Wait { until_ms, for_ms, result: None });
+                    self.wait_result = String::from(result);
+                }
+            }
+            ["SUITE", _, "PULSES", _, every, limit, at] => {
+                let every = every.strip_prefix("every=").and_then(|us| us.parse().ok());
+                let limit = limit.strip_prefix("limit=").and_then(|us| us.parse().ok());
+                let at: Option<Vec<i64>> = at.strip_prefix("at=")
+                    .map(|list| list.split(',').filter(|us| !us.is_empty()).map(|us| us.parse().ok()).collect())
+                    .unwrap_or(None);
+                if let (Some(every), Some(limit), Some(at)) = (every, limit, at) {
+                    self.own();
+                    self.pulses = Some((every, limit, at));
                 }
             }
             _ => {}
@@ -852,6 +937,7 @@ impl Screen {
             check_ms: feed.started.map_or(0, |start| ((now - start) / 1_000_000) as i64),
             wait: feed.wait,
             values: &values,
+            pulses: feed.pulses.as_ref().map(|(every_us, limit_us, at_us)| Pulses { every_us: *every_us, limit_us: *limit_us, at_us }),
             values_from: &feed.from,
             idle: &feed.idle,
         })

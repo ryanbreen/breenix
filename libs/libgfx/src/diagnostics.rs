@@ -61,8 +61,10 @@ pub struct Live<'a> {
     pub wait: Option<Wait>,
     /// The check's measured values, oldest first; the latest that fit are shown.
     pub values: &'a [Reading<'a>],
-    /// The check `wait` and `values` came from: `check`, or the one before it, kept on
-    /// screen until the running check reports something of its own.
+    /// The times a periodic timer of the check fired, when it reported them.
+    pub pulses: Option<Pulses<'a>>,
+    /// The check `wait`, `values` and `pulses` came from: `check`, or the one before it,
+    /// kept on screen until the running check reports something of its own.
     pub values_from: &'a str,
     /// Shown in place of the wait when no check is running, such as the suite's total time.
     pub idle: &'a str,
@@ -77,6 +79,16 @@ pub struct Wait {
     /// The first value the check reported once the wait was over, as an index into
     /// [`Live::values`]: shown in place of the countdown.
     pub result: Option<usize>,
+}
+
+/// When a periodic timer fired, as the check observed it, in microseconds.
+#[derive(Clone, Copy)]
+pub struct Pulses<'a> {
+    /// The programmed period, and how late an expiry may come.
+    pub every_us: i64,
+    pub limit_us: i64,
+    /// Each expiry's time after the timer was armed.
+    pub at_us: &'a [i64],
 }
 
 /// A measured value and, when the check states one, the range it accepts.
@@ -510,10 +522,10 @@ fn text_height(scale: i32) -> i32 { 7 * scale }
 /// wait (a countdown draining in real time, then the value the check reported when it
 /// ended, or how long the check has run); and the check's latest values, each with
 /// the range it accepts as a band on a gauge and the value as a needle, green inside
-/// and red outside. A check that reports `expiries` and a `period` with a range is
-/// drawn as a pulse train: its expiries at the observed period against ticks at the
-/// programmed one, the middle of the period's range, across the wait. A taller strip
-/// draws larger digits and more values.
+/// and red outside. A check that reports [`Pulses`] is drawn as a pulse train: each
+/// expiry at the time it was observed, against ticks at the programmed period, green
+/// when it came no earlier than its tick and no later than the limit after it, red
+/// otherwise. A taller strip draws larger digits and more values.
 pub fn draw_live(fb: &mut FrameBuf, area: LiveArea, live: &Live<'_>) {
     let s = area.s;
     let (x, y, w) = (area.x, area.y, area.w);
@@ -709,11 +721,6 @@ fn draw_wait(fb: &mut FrameBuf, live: &Live<'_>, x: i32, y: i32, width: i32, s: 
     line(fb, caption.as_str(), x, bar_y + bar_h + 7 * s, width, LIVE_LABEL, su);
 }
 
-/// The latest reading named `name`.
-fn named<'a>(values: &'a [Reading<'a>], name: &str) -> Option<&'a Reading<'a>> {
-    values.iter().rev().find(|reading| reading.name == name)
-}
-
 fn draw_values(fb: &mut FrameBuf, live: &Live<'_>, x: i32, y: i32, width: i32, height: i32, s: i32) {
     let mut heading = Text::new();
     let _ = write!(heading, "MEASURED ({})", live.values.len());
@@ -724,20 +731,16 @@ fn draw_values(fb: &mut FrameBuf, live: &Live<'_>, x: i32, y: i32, width: i32, h
     let row = 44 * s;
     let mut rows = ((height - 12 * s) / row).max(0) as usize;
     let mut row_y = y + 13 * s;
-    let pulses = match (named(live.values, "expiries"), named(live.values, "period"), live.wait) {
-        (Some(expiries), Some(period), Some(wait)) if rows > 0 && period.expect.is_some() => {
-            Some((expiries.number, period, wait.for_ms))
-        }
-        _ => None,
-    };
+    let pulses = live.pulses.filter(|_| rows > 0);
     if pulses.is_some() { rows -= 1; }
     let first = live.values.len().saturating_sub(rows);
     for reading in &live.values[first..] {
         draw_gauge(fb, reading, x, row_y, width, s);
         row_y += row;
     }
-    if let Some((expiries, period, window_ms)) = pulses {
-        draw_pulses(fb, expiries, period, window_ms, (x, row_y, width), s);
+    if let Some(pulses) = pulses {
+        let window_ms = live.wait.map_or(0, |wait| wait.for_ms);
+        draw_pulses(fb, &pulses, window_ms, (x, row_y, width), s);
     }
 }
 
@@ -784,30 +787,31 @@ fn draw_gauge(fb: &mut FrameBuf, reading: &Reading<'_>, x: i32, y: i32, width: i
     }
 }
 
-fn draw_pulses(fb: &mut FrameBuf, expiries: i64, period: &Reading<'_>, window_ms: i64, (x, y, width): (i32, i32, i32),
-    s: i32) {
-    let Some((low, high)) = period.expect else { return };
-    let programmed = (low + high) / 2;
-    let unit_ns = match period.unit { "ns" => 1, "us" => 1_000, "ms" => 1_000_000, "s" => 1_000_000_000, _ => return };
-    let window = window_ms * 1_000_000;
-    if programmed <= 0 || period.number <= 0 || window <= 0 { return; }
+fn draw_pulses(fb: &mut FrameBuf, pulses: &Pulses<'_>, window_ms: i64, (x, y, width): (i32, i32, i32), s: i32) {
+    let every = pulses.every_us;
+    let last = pulses.at_us.iter().copied().max().unwrap_or(0);
+    let window = (window_ms * 1000).max(last + every / 2);
+    if every <= 0 || window <= 0 { return; }
+    // Each expiry against its own tick, the k-th period after arming.
+    let late = |k: usize, at: i64| at - (k as i64 + 1) * every;
+    let on_time = |k: usize, at: i64| (0..=pulses.limit_us).contains(&late(k, at));
+    let worst = pulses.at_us.iter().enumerate().map(|(k, &at)| late(k, at)).max_by_key(|late| late.abs()).unwrap_or(0);
     let mut label = Text::new();
-    let _ = write!(label, "{expiries} EXPIRIES  every ");
-    quantity(&mut label, period.number, period.unit);
-    let _ = write!(label, ", programmed ");
-    quantity(&mut label, programmed, period.unit);
+    let _ = write!(label, "{} EXPIRIES  programmed every ", pulses.at_us.len());
+    quantity(&mut label, every, "us");
+    let _ = write!(label, ", worst ");
+    quantity(&mut label, worst, "us");
+    let _ = write!(label, " off");
     line(fb, label.as_str(), x, y, width, LIVE_LABEL, s as usize);
     let train_y = y + 11 * s;
     let train_h = 24 * s;
     shapes::fill_rect(fb, x, train_y + train_h - s, width, s, LIVE_TICK);
-    let at = |ns: i64| x + ((width - 3 * s) as i128 * ns as i128 / window as i128) as i32;
-    for k in 1..=(window / (programmed * unit_ns)).min(1000) {
-        shapes::fill_rect(fb, at(k * programmed * unit_ns), train_y, s, train_h, LIVE_TICK);
+    let at = |us: i64| x + ((width - 3 * s) as i128 * us.clamp(0, window) as i128 / window as i128) as i32;
+    for k in 1..=(window / every).min(1000) {
+        shapes::fill_rect(fb, at(k * every), train_y, s, train_h, LIVE_TICK);
     }
-    let color = reading_color(period);
-    for k in 1..=expiries.clamp(0, 1000) {
-        let ns = k * period.number * unit_ns;
-        if ns > window { break; }
-        shapes::fill_rect(fb, at(ns), train_y + 7 * s, 3 * s, train_h - 7 * s, color);
+    for (k, &us) in pulses.at_us.iter().enumerate() {
+        let color = if on_time(k, us) { LIVE_INSIDE } else { LIVE_OUTSIDE };
+        shapes::fill_rect(fb, at(us), train_y + 7 * s, 3 * s, train_h - 7 * s, color);
     }
 }

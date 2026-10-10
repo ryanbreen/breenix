@@ -21,7 +21,7 @@
 use libbreenix::io;
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::Sigaction;
-use libbreenix::suite::{case, case_ms_left, category, check, fail, skip, suite, value, wait_for, CaseError, CaseResult, Suite};
+use libbreenix::suite::{case, case_ms_left, category, check, fail, pulses, skip, suite, value, wait_for, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use libbreenix::types::Fd;
@@ -43,10 +43,12 @@ mod nr {
     pub const WAIT4: u64 = 61;
     pub const KILL: u64 = 62;
     pub const GETTIMEOFDAY: u64 = 96;
+    pub const GETRUSAGE: u64 = 98;
     pub const SETUID: u64 = 105;
     pub const RT_SIGPENDING: u64 = 127;
     pub const RT_SIGTIMEDWAIT: u64 = 128;
     pub const TIME: u64 = 201;
+    pub const SCHED_SETAFFINITY: u64 = 203;
     pub const TIMER_CREATE: u64 = 222;
     pub const TIMER_SETTIME: u64 = 223;
     pub const TIMER_GETTIME: u64 = 224;
@@ -56,6 +58,7 @@ mod nr {
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
     pub const CLOCK_NANOSLEEP: u64 = 230;
+    pub const GETCPU: u64 = 309;
 }
 #[cfg(target_arch = "aarch64")]
 mod nr {
@@ -71,6 +74,9 @@ mod nr {
     pub const WAIT4: u64 = 260;
     pub const KILL: u64 = 129;
     pub const GETTIMEOFDAY: u64 = 169;
+    pub const GETRUSAGE: u64 = 165;
+    pub const SCHED_SETAFFINITY: u64 = 122;
+    pub const GETCPU: u64 = 168;
     pub const SETUID: u64 = 146;
     pub const RT_SIGPENDING: u64 = 136;
     pub const RT_SIGTIMEDWAIT: u64 = 137;
@@ -219,9 +225,18 @@ fn shown(ret: i64) -> String { if ret < 0 { errname(-ret) } else { ret.to_string
 
 fn err<T>(msg: impl Into<String>) -> Result<T, CaseError> { Err(CaseError::Fail(msg.into())) }
 
-/// The raw return, or a failure naming the call.
+/// The raw return of a call that returns a value, or a failure naming the call.
 fn want(what: &str, ret: i64) -> Result<i64, CaseError> {
     if ret < 0 { err(format!("{what} failed with {}", errname(-ret))) } else { Ok(ret) }
+}
+
+/// A call that returns 0 when it succeeds: any other return fails, naming the call.
+fn zero(what: &str, ret: i64) -> Checked {
+    match ret {
+        0 => Ok(()),
+        r if r < 0 => Err(format!("{what} failed with {}", errname(-r))),
+        r => Err(format!("{what} returned {r}, not 0")),
+    }
 }
 
 fn want_eq(what: &str, got: i64, expected: i64) -> CaseResult {
@@ -230,11 +245,6 @@ fn want_eq(what: &str, got: i64, expected: i64) -> CaseResult {
 
 fn want_err(what: &str, got: i64, errno: i64) -> CaseResult {
     check(got == -errno, &format!("{what}: expected {}, got {}", errname(errno), shown(got)))
-}
-
-/// `want` for code running in a forked child or a thread, which reports a message.
-fn ok(what: &str, ret: i64) -> Result<i64, String> {
-    if ret < 0 { Err(format!("{what} failed with {}", errname(-ret))) } else { Ok(ret) }
 }
 
 fn clock_name(clock: i32) -> String {
@@ -265,7 +275,7 @@ fn gettime_raw(clock: i32, t: &mut Ts) -> i64 {
 /// A clock's reading in nanoseconds.
 fn clock_ns(clock: i32) -> Result<i64, String> {
     let mut t = [0i64; 2];
-    ok(&format!("clock_gettime({})", clock_name(clock)), gettime_raw(clock, &mut t))?;
+    zero(&format!("clock_gettime({})", clock_name(clock)), gettime_raw(clock, &mut t))?;
     Ok(ns_of(&t))
 }
 
@@ -343,17 +353,28 @@ fn on_time(what: &str, elapsed_ns: i64, want_ms: i64) -> CaseResult {
 // Signals.
 
 static COUNT: [AtomicU32; 65] = [const { AtomicU32::new(0) }; 65];
-/// CLOCK_MONOTONIC when the first and the last handled signal arrived.
+/// CLOCK_MONOTONIC when the first handled signal arrived.
 static FIRST_NS: AtomicI64 = AtomicI64::new(0);
-static LAST_NS: AtomicI64 = AtomicI64::new(0);
+/// The most handled signals whose arrival is kept.
+const STAMPS: usize = 32;
+/// CLOCK_MONOTONIC when each of the first STAMPS handled signals arrived.
+static STAMP_NS: [AtomicI64; STAMPS] = [const { AtomicI64::new(0) }; STAMPS];
+static STAMPED: AtomicU32 = AtomicU32::new(0);
 
 fn stamp() {
     let mut t = [0i64; 2];
     if gettime_raw(CLOCK_MONOTONIC, &mut t) == 0 {
         let now = ns_of(&t);
         let _ = FIRST_NS.compare_exchange(0, now, Ordering::SeqCst, Ordering::SeqCst);
-        LAST_NS.store(now, Ordering::SeqCst);
+        let i = STAMPED.fetch_add(1, Ordering::SeqCst) as usize;
+        if i < STAMPS { STAMP_NS[i].store(now, Ordering::SeqCst); }
     }
+}
+
+/// When the kept handled signals arrived, in nanoseconds after `start`.
+fn stamps(start: i64) -> Vec<i64> {
+    let n = (STAMPED.load(Ordering::SeqCst) as usize).min(STAMPS);
+    (0..n).map(|i| STAMP_NS[i].load(Ordering::SeqCst) - start).collect()
 }
 
 extern "C" fn on_sig(sig: i32) {
@@ -367,7 +388,7 @@ fn bit(sig: i32) -> u64 { 1u64 << (sig - 1) }
 
 fn set_action(sig: i32, handler: u64, flags: u64) -> Checked {
     let act = Sigaction { handler, mask: 0, flags: flags | SA_RESTORER, restorer: restore_rt as usize as u64 };
-    ok(&format!("sigaction({sig})"), sc(nr::RT_SIGACTION, &[sig as u64, &act as *const Sigaction as u64, 0, 8])).map(|_| ())
+    zero(&format!("sigaction({sig})"), sc(nr::RT_SIGACTION, &[sig as u64, &act as *const Sigaction as u64, 0, 8]))
 }
 
 /// Catch `sig` with a handler that counts it, without SA_RESTART.
@@ -376,14 +397,14 @@ fn catch(sig: i32) -> Checked { set_action(sig, on_sig as usize as u64, 0) }
 fn procmask(how: i32, set: u64) -> Result<u64, String> {
     let set = [set];
     let mut old = [0u64];
-    ok("sigprocmask", sc(nr::RT_SIGPROCMASK, &[how as u64, set.as_ptr() as u64, old.as_mut_ptr() as u64, 8]))?;
+    zero("sigprocmask", sc(nr::RT_SIGPROCMASK, &[how as u64, set.as_ptr() as u64, old.as_mut_ptr() as u64, 8]))?;
     Ok(old[0])
 }
 fn block(set: u64) -> Checked { procmask(SIG_BLOCK, set).map(|_| ()) }
 
 fn pending() -> Result<u64, String> {
     let mut set = [0u64];
-    ok("sigpending", sc(nr::RT_SIGPENDING, &[set.as_mut_ptr() as u64, 8]))?;
+    zero("sigpending", sc(nr::RT_SIGPENDING, &[set.as_mut_ptr() as u64, 8]))?;
     Ok(set[0])
 }
 
@@ -444,7 +465,7 @@ struct Timer { id: i32 }
 impl Timer {
     fn create(clock: i32, ev: Option<&SigEvent>) -> Result<Timer, CaseError> {
         let mut id = -1;
-        want(&format!("timer_create({})", clock_name(clock)), timer_create_raw(clock, ev, &mut id))?;
+        zero(&format!("timer_create({})", clock_name(clock)), timer_create_raw(clock, ev, &mut id))?;
         Ok(Timer { id })
     }
 
@@ -458,12 +479,12 @@ impl Timer {
     }
 
     fn arm(&self, interval_ns: i64, value_ns: i64) -> CaseResult {
-        want("timer_settime", self.settime(0, &its(interval_ns, value_ns), None)).map(|_| ())
+        Ok(zero("timer_settime", self.settime(0, &its(interval_ns, value_ns), None))?)
     }
 
     fn get(&self) -> Result<Its, CaseError> {
         let mut cur = [0i64; 4];
-        want("timer_gettime", timer_gettime_raw(self.id, &mut cur))?;
+        zero("timer_gettime", timer_gettime_raw(self.id, &mut cur))?;
         Ok(cur)
     }
 
@@ -500,12 +521,12 @@ fn setitimer(which: i32, new: &Itv, old: Option<&mut Itv>) -> i64 {
 
 fn getitimer(which: i32) -> Result<Itv, String> {
     let mut cur = [0i64; 4];
-    ok("getitimer", sc(nr::GETITIMER, &[which as u64, cur.as_mut_ptr() as u64]))?;
+    zero("getitimer", sc(nr::GETITIMER, &[which as u64, cur.as_mut_ptr() as u64]))?;
     Ok(cur)
 }
 
 fn arm_itimer(which: i32, interval_us: i64, value_us: i64) -> Checked {
-    ok("setitimer", setitimer(which, &itv(interval_us, value_us), None)).map(|_| ())
+    zero("setitimer", setitimer(which, &itv(interval_us, value_us), None))
 }
 
 /// alarm as a C library makes it: the alarm call, or setitimer(ITIMER_REAL) with the
@@ -598,9 +619,15 @@ impl Drop for Child {
 
 /// A child that sends `sig` to this process after `ms`; dropping it stops it.
 fn send_after(ms: u64, sig: i32) -> Result<Child, CaseError> {
+    send_at(mono() + ms as i64 * MS, sig)
+}
+
+/// A child that sends `sig` to this process once CLOCK_MONOTONIC reaches `at` ns.
+fn send_at(at: i64, sig: i32) -> Result<Child, CaseError> {
     let target = pid();
     Child::start(move || {
-        pause_ms(ms);
+        pause_ms(((at - mono()).max(0) / MS) as u64);
+        while mono() < at { nap(); }
         kill(target, sig);
         0
     })
@@ -700,20 +727,31 @@ impl Drop for Probe {
     fn drop(&mut self) { let _ = io::close(self.out); }
 }
 
-/// The realtime clock as it was when the guard was made; dropping the guard sets it back,
-/// advanced by the CLOCK_MONOTONIC time that has passed since.
-struct RealtimeGuard { real: i64, mono: i64 }
+/// The realtime clock as it was when the guard was made. `restore` sets it back,
+/// advanced by the CLOCK_MONOTONIC time that has passed since, and checks that it took;
+/// a guard dropped without `restore`, on an early return, sets it back unchecked. A
+/// case killed before either is put right by the runner, which checks CLOCK_REALTIME
+/// after every case.
+struct RealtimeGuard { real: i64, mono: i64, restored: bool }
 
 impl RealtimeGuard {
     fn new() -> Result<RealtimeGuard, CaseError> {
-        Ok(RealtimeGuard { mono: clock_ns(CLOCK_MONOTONIC)?, real: clock_ns(CLOCK_REALTIME)? })
+        Ok(RealtimeGuard { mono: clock_ns(CLOCK_MONOTONIC)?, real: clock_ns(CLOCK_REALTIME)?, restored: false })
+    }
+
+    fn now(&self) -> i64 { self.real + (mono() - self.mono) }
+
+    fn restore(mut self) -> CaseResult {
+        self.restored = true;
+        zero("clock_settime putting CLOCK_REALTIME back", settime_raw(CLOCK_REALTIME, &ts(self.now())))?;
+        let off = clock_ns(CLOCK_REALTIME)? - self.now();
+        check(off.abs() <= 50 * MS, &format!("CLOCK_REALTIME read {} ms off after it was put back", off / MS))
     }
 }
 
 impl Drop for RealtimeGuard {
     fn drop(&mut self) {
-        let now = self.real + (mono() - self.mono);
-        let _ = settime_raw(CLOCK_REALTIME, &ts(now));
+        if !self.restored { let _ = settime_raw(CLOCK_REALTIME, &ts(self.now())); }
     }
 }
 
@@ -802,7 +840,7 @@ fn reported_itimer(words: &std::collections::HashMap<String, String>, key: &str)
 
 fn clk_realtime() -> CaseResult {
     let mut t = [0i64; 2];
-    want("clock_gettime(CLOCK_REALTIME)", gettime_raw(CLOCK_REALTIME, &mut t))?;
+    zero("clock_gettime(CLOCK_REALTIME)", gettime_raw(CLOCK_REALTIME, &mut t))?;
     value("realtime", t[0], "s", Some((1_577_836_800, 4_102_444_800)));
     check((0..NS).contains(&t[1]), &format!("tv_nsec is {}, outside 0..999999999", t[1]))?;
     check((1_577_836_800..4_102_444_800).contains(&t[0]), &format!("CLOCK_REALTIME reads {} s, not a date between 2020 and 2100", t[0]))
@@ -810,7 +848,7 @@ fn clk_realtime() -> CaseResult {
 
 fn clk_monotonic() -> CaseResult {
     let mut t = [0i64; 2];
-    want("clock_gettime(CLOCK_MONOTONIC)", gettime_raw(CLOCK_MONOTONIC, &mut t))?;
+    zero("clock_gettime(CLOCK_MONOTONIC)", gettime_raw(CLOCK_MONOTONIC, &mut t))?;
     value("monotonic", ns_of(&t) / MS, "ms", None);
     check((0..NS).contains(&t[1]), &format!("tv_nsec is {}, outside 0..999999999", t[1]))?;
     check(t[0] >= 0, &format!("CLOCK_MONOTONIC reads a negative {} s", t[0]))
@@ -942,7 +980,7 @@ fn ppm(measured: i64, reference: i64) -> i64 {
 
 fn clk_rate_realtime() -> CaseResult {
     let (r0, m0) = paired(CLOCK_REALTIME)?;
-    wait_for(2000);
+    wait_for(2000, "drift");
     pause_ms(2000);
     let (r1, m1) = paired(CLOCK_REALTIME)?;
     let drift = ppm(r1 - r0, m1 - m0);
@@ -1002,7 +1040,7 @@ fn clk_rate_counter() -> CaseResult {
         Err(why) if cfg!(target_arch = "x86_64") && why.starts_with("CPUID") => return skip(why),
         Err(why) => return fail(why),
     };
-    wait_for(2000);
+    wait_for(2000, "drift");
     pause_ms(2000);
     let (c1, m1, _) = counter_pair()?;
     let counted = ((c1.wrapping_sub(c0)) as u128 * NS as u128 / freq as u128) as i64;
@@ -1014,85 +1052,194 @@ fn clk_rate_counter() -> CaseResult {
 
 /// The most processors the counter case follows.
 const MAX_CPUS: usize = 64;
-/// How close together, in microseconds, one round's two reads on every processor must be.
-const COUNTER_SPAN_US: u64 = 200;
-static CTR_ROUND: AtomicU32 = AtomicU32::new(0);
-static CTR_ARRIVED: AtomicU32 = AtomicU32::new(0);
-static CTR_DONE: AtomicU32 = AtomicU32::new(0);
-static CTR_STOP: AtomicU32 = AtomicU32::new(0);
-static CTR_FIRST: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
-static CTR_SECOND: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// Threads of the counter case that have finished, and those that read on their processor.
+static CPU_DONE: AtomicU32 = AtomicU32::new(0);
+static CPU_READ: AtomicU32 = AtomicU32::new(0);
+/// Why the counter case's threads that failed did.
+static CPU_FAILURES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// Thread `i`'s part in a round of `n` threads: read the counter, wait until every
-/// thread has, and read it again.
-fn counter_round(i: usize, n: u32) {
+/// The processor the calling thread runs on, from getcpu.
+fn getcpu() -> Result<u32, String> {
+    let mut cpu = [u32::MAX];
+    zero("getcpu", sc(nr::GETCPU, &[cpu.as_mut_ptr() as u64, 0, 0]))?;
+    Ok(cpu[0])
+}
+
+/// Pin the calling thread to processor `cpu` with sched_setaffinity, check with getcpu
+/// that it runs there, read the counter twice and check again that it ran there.
+fn read_counter_on(cpu: usize) -> Result<(), String> {
+    let mask = [1u64 << cpu];
+    zero(&format!("sched_setaffinity(processor {cpu})"), sc(nr::SCHED_SETAFFINITY, &[0, 8, mask.as_ptr() as u64]))?;
+    let before = getcpu()?;
     let first = counter_now();
-    CTR_ARRIVED.fetch_add(1, Ordering::SeqCst);
-    while CTR_ARRIVED.load(Ordering::SeqCst) < n {
-        if CTR_STOP.load(Ordering::SeqCst) != 0 { return; }
-        core::hint::spin_loop();
-    }
     let second = counter_now();
-    CTR_FIRST[i].store(first, Ordering::SeqCst);
-    CTR_SECOND[i].store(second, Ordering::SeqCst);
-    CTR_DONE.fetch_add(1, Ordering::SeqCst);
+    let after = getcpu()?;
+    if before != cpu as u32 || after != cpu as u32 {
+        return Err(format!("the thread pinned to processor {cpu} ran on processor {before}, then {after}"));
+    }
+    if second < first { return Err(format!("on processor {cpu} the counter went back from {first} to {second}")); }
+    Ok(())
 }
 
-/// The counter's frequency in Hz, measured against CLOCK_MONOTONIC over 100 ms.
-fn counter_hz() -> Result<u64, String> {
-    let (c0, m0) = (counter_now(), clock_ns(CLOCK_MONOTONIC)?);
-    burn(100);
-    let (c1, m1) = (counter_now(), clock_ns(CLOCK_MONOTONIC)?);
-    if m1 <= m0 || c1 <= c0 { return Err(format!("the counter moved {} ticks while CLOCK_MONOTONIC moved {} ns", c1.wrapping_sub(c0), m1 - m0)); }
-    Ok(((c1 - c0) as u128 * NS as u128 / (m1 - m0) as u128) as u64)
-}
-
-/// One thread per online processor reads the counter twice around a barrier. When every
-/// thread's two reads are under COUNTER_SPAN_US apart and all of them overlap, the
-/// threads ran at once, one on each processor: a thread that shared a processor would
-/// wait out a timer tick between its reads.
+/// One thread per online processor, each pinned to its processor with sched_setaffinity
+/// and confirmed there by getcpu, reads the counter from user mode.
 fn clk_counter_cpus() -> CaseResult {
     let cpus = processors()?;
-    let n = cpus.min(MAX_CPUS);
-    let hz = counter_hz()?;
-    let span_ticks = hz * COUNTER_SPAN_US / 1_000_000;
-    let threads: Vec<_> = (1..n).map(|i| std::thread::spawn(move || {
-        let mut seen = 0;
-        while CTR_STOP.load(Ordering::SeqCst) == 0 {
-            let round = CTR_ROUND.load(Ordering::SeqCst);
-            if round != seen { seen = round; counter_round(i, n as u32); } else { core::hint::spin_loop(); }
-        }
-    })).collect();
-    let end = now_ms() + bounded(3000, CLEANUP_MS);
-    let (mut rounds, mut best) = (0u32, u64::MAX);
-    while best > span_ticks && now_ms() < end {
-        rounds += 1;
-        CTR_ARRIVED.store(0, Ordering::SeqCst);
-        CTR_DONE.store(0, Ordering::SeqCst);
-        CTR_ROUND.store(rounds, Ordering::SeqCst);
-        counter_round(0, n as u32);
-        while CTR_DONE.load(Ordering::SeqCst) < n as u32 && now_ms() < end { core::hint::spin_loop(); }
-        if CTR_DONE.load(Ordering::SeqCst) < n as u32 { break; }
-        let first = (0..n).map(|i| CTR_FIRST[i].load(Ordering::SeqCst));
-        let second = (0..n).map(|i| CTR_SECOND[i].load(Ordering::SeqCst));
-        if first.clone().max() < second.clone().min() {
-            let span = first.zip(second).map(|(a, b)| b - a).max().unwrap_or(0);
-            best = best.min(span);
-        }
+    check(cpus <= MAX_CPUS, &format!("{cpus} processors are online, more than the {MAX_CPUS} the case follows"))?;
+    for cpu in 0..cpus {
+        std::thread::spawn(move || {
+            match read_counter_on(cpu) {
+                Ok(()) => { CPU_READ.fetch_add(1, Ordering::SeqCst); }
+                Err(why) => CPU_FAILURES.lock().unwrap_or_else(|e| e.into_inner()).push(why),
+            }
+            CPU_DONE.fetch_add(1, Ordering::SeqCst);
+        });
     }
-    CTR_STOP.store(1, Ordering::SeqCst);
-    for thread in threads { let _ = thread.join(); }
-    let best_us = if best == u64::MAX { -1 } else { (best * 1_000_000 / hz.max(1)) as i64 };
-    value("processors", n as i64, "", Some((cpus as i64, cpus as i64)));
-    value("span", best_us, "us", Some((0, COUNTER_SPAN_US as i64)));
-    check(n == cpus, &format!("{cpus} processors are online, more than the {MAX_CPUS} the case follows"))?;
-    check(best <= span_ticks, &format!("in {rounds} rounds the {n} threads never all read the counter within {COUNTER_SPAN_US} us of each other, so they never ran at once"))
+    let finished = until(WAIT_MS, || CPU_DONE.load(Ordering::SeqCst) as usize == cpus);
+    let read = CPU_READ.load(Ordering::SeqCst) as i64;
+    value("processors", read, "", Some((cpus as i64, cpus as i64)));
+    let failures = CPU_FAILURES.lock().unwrap_or_else(|e| e.into_inner()).join("; ");
+    check(failures.is_empty(), &failures)?;
+    check(finished, &format!("only {} of the {cpus} threads finished within {WAIT_MS} ms", CPU_DONE.load(Ordering::SeqCst)))
+}
+
+/// What user mode may and may not read of the ARM64 generic timer, as Linux grants it:
+/// the virtual counter and its frequency, and neither the physical counter nor either
+/// timer's registers.
+#[cfg(target_arch = "aarch64")]
+mod el0_timer {
+    use super::*;
+
+    const SIGILL: i32 = 4;
+    const ILL_ILLOPC: i32 = 1;
+    const SA_SIGINFO: u64 = 4;
+    /// What a trapped read leaves in its destination register.
+    const UNREAD: u64 = 0x5e5e;
+    /// The ESR record in an ARM64 signal frame's __reserved area.
+    const ESR_MAGIC: u32 = 0x4553_5201;
+    /// Offsets in the Linux ARM64 ucontext_t: uc_mcontext.pc and uc_mcontext.__reserved.
+    const UC_PC: usize = 440;
+    const UC_RESERVED: usize = 464;
+    const RESERVED_BYTES: usize = 4096;
+
+    /// Read a system register from user mode, starting from UNREAD: the address of the
+    /// mrs and the register it read into.
+    macro_rules! el0_read {
+        ($name:ident, $reg:literal) => {
+            fn $name() -> (u64, u64) {
+                let (at, got): (u64, u64);
+                // SAFETY: a read of a system register into a general register; when the
+                // kernel traps it, the case's SIGILL handler resumes after it.
+                unsafe {
+                    core::arch::asm!(
+                        "adr {at}, 2f",
+                        "mov {got}, #0x5e5e",
+                        "2:",
+                        concat!("mrs {got}, ", $reg),
+                        at = out(reg) at, got = out(reg) got, options(nostack),
+                    );
+                }
+                (at, got)
+            }
+        };
+    }
+    el0_read!(cntpct, "cntpct_el0");
+    el0_read!(cntv_ctl, "cntv_ctl_el0");
+    el0_read!(cntp_ctl, "cntp_ctl_el0");
+    el0_read!(cntvct, "cntvct_el0");
+    el0_read!(cntfrq, "cntfrq_el0");
+
+    const DENIED: [(&str, fn() -> (u64, u64)); 3] = [("CNTPCT_EL0", cntpct), ("CNTV_CTL_EL0", cntv_ctl), ("CNTP_CTL_EL0", cntp_ctl)];
+    const GRANTED: [(&str, fn() -> (u64, u64)); 2] = [("CNTVCT_EL0", cntvct), ("CNTFRQ_EL0", cntfrq)];
+
+    /// SIGILLs handled, and the last one's si_code, si_addr and ESR exception class (-1
+    /// when its frame carried no ESR record).
+    static ILLS: AtomicU32 = AtomicU32::new(0);
+    static ILL_CODE: AtomicI64 = AtomicI64::new(0);
+    static ILL_ADDR: AtomicU64 = AtomicU64::new(0);
+    static ILL_CLASS: AtomicI64 = AtomicI64::new(-1);
+
+    /// Note the SIGILL and resume at the instruction after the one that trapped.
+    extern "C" fn on_ill(_sig: i32, info: *const SigInfo, uc: *mut u8) {
+        // SAFETY: the kernel passes the siginfo and the ucontext_t it wrote for this
+        // delivery, laid out as Linux's: uc_mcontext.pc at UC_PC, then the records of
+        // __reserved from UC_RESERVED, each a magic and a size, ending in a zero magic.
+        unsafe {
+            ILL_CODE.store((*info).code as i64, Ordering::SeqCst);
+            ILL_ADDR.store((*info).fields[0], Ordering::SeqCst);
+            let mut class = -1;
+            let mut at = UC_RESERVED;
+            while at + 8 <= UC_RESERVED + RESERVED_BYTES {
+                let magic = (uc.add(at) as *const u32).read_unaligned();
+                let size = (uc.add(at + 4) as *const u32).read_unaligned() as usize;
+                if magic == 0 || size < 8 { break; }
+                if magic == ESR_MAGIC && size >= 16 { class = ((uc.add(at + 8) as *const u64).read_unaligned() >> 26) as i64; }
+                at += size;
+            }
+            ILL_CLASS.store(class, Ordering::SeqCst);
+            let pc = uc.add(UC_PC) as *mut u64;
+            pc.write_unaligned(pc.read_unaligned() + 4);
+        }
+        ILLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn trap_default() -> CaseResult {
+        let mut killed = 0;
+        for (name, read) in DENIED {
+            let mut kid = Child::start(|| { let _ = read(); 0 })?;
+            let status = kid.wait_for(&format!("the child reading {name}"), WAIT_MS)?;
+            check(signaled(status) && term_sig(status) == SIGILL,
+                &format!("a child that read {name} ended with {}, not death by SIGILL", status_text(status)))?;
+            killed += 1;
+        }
+        value("killed", killed, "", Some((3, 3)));
+        Ok(())
+    }
+
+    pub fn trap_caught() -> CaseResult {
+        set_action(SIGILL, on_ill as usize as u64, SA_SIGINFO)?;
+        for (name, read) in GRANTED {
+            let _ = read();
+            check(ILLS.load(Ordering::SeqCst) == 0, &format!("reading {name} raised SIGILL"))?;
+        }
+        let mut handled = 0;
+        for (name, read) in DENIED {
+            let before = ILLS.load(Ordering::SeqCst);
+            let (at, got) = read();
+            let n = ILLS.load(Ordering::SeqCst) - before;
+            check(n == 1, &format!("reading {name} raised SIGILL {n} times, not once"))?;
+            check(got == UNREAD, &format!("the trapped read of {name} put {got:#x} in its register"))?;
+            let code = ILL_CODE.load(Ordering::SeqCst);
+            check(code == ILL_ILLOPC as i64, &format!("the SIGILL for {name} has si_code {code}, not ILL_ILLOPC"))?;
+            let addr = ILL_ADDR.load(Ordering::SeqCst);
+            check(addr == at, &format!("the SIGILL for {name} has si_addr {addr:#x}, not the mrs at {at:#x}"))?;
+            let class = ILL_CLASS.load(Ordering::SeqCst);
+            check(class == -1 || class == 0x18, &format!("the SIGILL for {name} carries ESR class {class:#x}, not 0x18"))?;
+            handled += 1;
+        }
+        value("handled", handled, "", Some((3, 3)));
+        Ok(())
+    }
+}
+
+fn clk_counter_trap_default() -> CaseResult {
+    #[cfg(target_arch = "aarch64")]
+    { el0_timer::trap_default() }
+    #[cfg(target_arch = "x86_64")]
+    { skip("x86-64 user mode reads the TSC and has no counter or timer register to be denied; the case is ARM64's") }
+}
+
+fn clk_counter_trap_caught() -> CaseResult {
+    #[cfg(target_arch = "aarch64")]
+    { el0_timer::trap_caught() }
+    #[cfg(target_arch = "x86_64")]
+    { skip("x86-64 user mode reads the TSC and has no counter or timer register to be denied; the case is ARM64's") }
 }
 
 /// The RTC's time as Linux's RTC_RD_TIME reports it: seconds of the day and the seconds field.
 fn rtc_read(fd: Fd) -> Result<i32, String> {
     let mut tm = [0i32; 9];
-    ok("ioctl(RTC_RD_TIME)", sc(nr::IOCTL, &[fd.raw(), RTC_RD_TIME, tm.as_mut_ptr() as u64]))?;
+    zero("ioctl(RTC_RD_TIME)", sc(nr::IOCTL, &[fd.raw(), RTC_RD_TIME, tm.as_mut_ptr() as u64]))?;
     Ok(tm[0])
 }
 
@@ -1112,7 +1259,7 @@ fn clk_rate_rtc() -> CaseResult {
     let fd = libbreenix::fs::open("/dev/rtc0", libbreenix::fs::O_RDONLY).map_err(|e| format!("open(/dev/rtc0) failed: {e}"))?;
     let result = (|| -> CaseResult {
         let (r0, _) = rtc_edge(fd, 1500)?;
-        wait_for(3000);
+        wait_for(3000, "drift");
         let mut r1 = r0;
         for _ in 0..3 { r1 = rtc_edge(fd, 1500)?.0; }
         let drift = ppm(r1 - r0, 3 * NS);
@@ -1125,7 +1272,7 @@ fn clk_rate_rtc() -> CaseResult {
 
 fn clk_cputime_process() -> CaseResult {
     let c0 = clock_ns(CLOCK_PROCESS_CPUTIME_ID)?;
-    wait_for(300);
+    wait_for(300, "asleep");
     pause_ms(300);
     let c1 = clock_ns(CLOCK_PROCESS_CPUTIME_ID)?;
     burn(300);
@@ -1133,7 +1280,7 @@ fn clk_cputime_process() -> CaseResult {
     let (asleep, busy) = ((c1 - c0) / 1000, (c2 - c1) / 1000);
     value("asleep", asleep, "us", Some((0, 20_000)));
     value("busy", busy, "us", Some((100_000, (300 + LATE_MS) * 1000)));
-    check(asleep <= 20_000, &format!("the clock advanced {asleep} us while the process slept 300 ms"))?;
+    check((0..=20_000).contains(&asleep), &format!("the clock advanced {asleep} us while the process slept 300 ms"))?;
     check((100_000..=(300 + LATE_MS) * 1000).contains(&busy), &format!("the clock advanced {busy} us while the process computed for 300 ms"))
 }
 
@@ -1141,7 +1288,7 @@ fn clk_cputime_thread() -> CaseResult {
     let t0 = clock_ns(CLOCK_THREAD_CPUTIME_ID)?;
     let p0 = clock_ns(CLOCK_PROCESS_CPUTIME_ID)?;
     let other = std::thread::spawn(|| burn(300));
-    wait_for(300);
+    wait_for(300, "waiting");
     let _ = other.join();
     let t1 = clock_ns(CLOCK_THREAD_CPUTIME_ID)?;
     let p1 = clock_ns(CLOCK_PROCESS_CPUTIME_ID)?;
@@ -1150,7 +1297,7 @@ fn clk_cputime_thread() -> CaseResult {
     let (idle, process, own) = ((t1 - t0) / 1000, (p1 - p0) / 1000, (t2 - t1) / 1000);
     value("waiting", idle, "us", Some((0, 20_000)));
     value("own", own, "us", Some((60_000, (200 + LATE_MS) * 1000)));
-    check(idle <= 20_000, &format!("the thread's clock advanced {idle} us while another thread computed and it waited"))?;
+    check((0..=20_000).contains(&idle), &format!("the thread's clock advanced {idle} us while another thread computed and it waited"))?;
     check(process >= 100_000, &format!("the process's clock advanced only {process} us while another of its threads computed for 300 ms"))?;
     check((60_000..=(200 + LATE_MS) * 1000).contains(&own), &format!("the thread's clock advanced {own} us while it computed for 200 ms"))
 }
@@ -1170,7 +1317,7 @@ fn clk_efault() -> CaseResult {
 fn clk_getres() -> CaseResult {
     for clock in [CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID] {
         let mut t = [0i64; 2];
-        want(&format!("clock_getres({})", clock_name(clock)), getres_raw(clock, Some(&mut t)))?;
+        zero(&format!("clock_getres({})", clock_name(clock)), getres_raw(clock, Some(&mut t)))?;
         let res = ns_of(&t);
         if clock == CLOCK_REALTIME { value("realtime", res, "ns", Some((1, 20 * MS))); }
         if clock == CLOCK_MONOTONIC { value("monotonic", res, "ns", Some((1, 20 * MS))); }
@@ -1190,7 +1337,7 @@ fn clk_getres_einval() -> CaseResult {
 
 fn clk_coarse_tick() -> CaseResult {
     let mut t = [0i64; 2];
-    want("clock_getres(CLOCK_MONOTONIC_COARSE)", getres_raw(CLOCK_MONOTONIC_COARSE, Some(&mut t)))?;
+    zero("clock_getres(CLOCK_MONOTONIC_COARSE)", getres_raw(CLOCK_MONOTONIC_COARSE, Some(&mut t)))?;
     let res = ns_of(&t);
     value("resolution", res / 1000, "us", Some((TICK_MS * 1000, TICK_MS * 1000)));
     let mut steps = Vec::new();
@@ -1208,46 +1355,55 @@ fn clk_coarse_tick() -> CaseResult {
 }
 
 fn clk_settime() -> CaseResult {
-    let _guard = RealtimeGuard::new()?;
-    let target = (clock_ns(CLOCK_REALTIME)? / NS + 1000) * NS + 500 * MS;
-    let m0 = clock_ns(CLOCK_MONOTONIC)?;
-    want_eq("clock_settime(CLOCK_REALTIME)", settime_raw(CLOCK_REALTIME, &ts(target)), 0)?;
-    let real = clock_ns(CLOCK_REALTIME)?;
-    let m1 = clock_ns(CLOCK_MONOTONIC)?;
-    let error = (real - target) / 1000;
-    value("error", error, "us", Some((0, 50_000)));
-    value("monotonic-step", (m1 - m0) / 1000, "us", Some((0, 50_000)));
-    check((0..=50_000).contains(&error), &format!("after setting {} s {} ns, CLOCK_REALTIME read {} s {} ns", target / NS, target % NS, real / NS, real % NS))?;
-    check(m1 - m0 <= 50 * MS, &format!("CLOCK_MONOTONIC jumped {} ms when CLOCK_REALTIME was set", (m1 - m0) / MS))
+    let guard = RealtimeGuard::new()?;
+    let result = (|| -> CaseResult {
+        let target = (clock_ns(CLOCK_REALTIME)? / NS + 1000) * NS + 500 * MS;
+        let m0 = clock_ns(CLOCK_MONOTONIC)?;
+        want_eq("clock_settime(CLOCK_REALTIME)", settime_raw(CLOCK_REALTIME, &ts(target)), 0)?;
+        let real = clock_ns(CLOCK_REALTIME)?;
+        let m1 = clock_ns(CLOCK_MONOTONIC)?;
+        let error = (real - target) / 1000;
+        value("error", error, "us", Some((0, 50_000)));
+        value("monotonic-step", (m1 - m0) / 1000, "us", Some((0, 50_000)));
+        check((0..=50_000).contains(&error), &format!("after setting {} s {} ns, CLOCK_REALTIME read {} s {} ns", target / NS, target % NS, real / NS, real % NS))?;
+        check((0..=50 * MS).contains(&(m1 - m0)), &format!("CLOCK_MONOTONIC moved {} us when CLOCK_REALTIME was set", (m1 - m0) / 1000))
+    })();
+    result.and(guard.restore())
 }
 
 fn clk_settime_eperm() -> CaseResult {
-    let _guard = RealtimeGuard::new()?;
-    in_child(|| {
-        ok("setuid", setuid(USER_A))?;
+    let guard = RealtimeGuard::new()?;
+    let result = in_child(|| {
+        zero("setuid", setuid(USER_A))?;
         let before = clock_ns(CLOCK_REALTIME)?;
         let ret = settime_raw(CLOCK_REALTIME, &ts(before + 1000 * NS));
         let after = clock_ns(CLOCK_REALTIME)?;
         if ret != -EPERM { return Err(format!("clock_settime as user {USER_A}: expected EPERM, got {}", shown(ret))); }
-        if after - before > NS { return Err(format!("the refused clock_settime moved CLOCK_REALTIME by {} s", (after - before) / NS)); }
+        if !(0..=50 * MS).contains(&(after - before)) {
+            return Err(format!("CLOCK_REALTIME moved {} us across the refused clock_settime", (after - before) / 1000));
+        }
         Ok(())
-    })
+    });
+    result.and(guard.restore())
 }
 
 fn clk_settime_einval() -> CaseResult {
-    let _guard = RealtimeGuard::new()?;
-    let now = clock_ns(CLOCK_REALTIME)?;
-    let secs = now / NS;
-    want_err("clock_settime with tv_nsec 1000000000", settime_raw(CLOCK_REALTIME, &[secs, NS]), EINVAL)?;
-    want_err("clock_settime with tv_nsec -1", settime_raw(CLOCK_REALTIME, &[secs, -1]), EINVAL)?;
-    want_err("clock_settime(CLOCK_MONOTONIC)", settime_raw(CLOCK_MONOTONIC, &ts(mono())), EINVAL)?;
-    want_err(&format!("clock_settime({CLOCK_UNKNOWN})"), settime_raw(CLOCK_UNKNOWN, &ts(now)), EINVAL)
+    let guard = RealtimeGuard::new()?;
+    let result = (|| -> CaseResult {
+        let now = clock_ns(CLOCK_REALTIME)?;
+        let secs = now / NS;
+        want_err("clock_settime with tv_nsec 1000000000", settime_raw(CLOCK_REALTIME, &[secs, NS]), EINVAL)?;
+        want_err("clock_settime with tv_nsec -1", settime_raw(CLOCK_REALTIME, &[secs, -1]), EINVAL)?;
+        want_err("clock_settime(CLOCK_MONOTONIC)", settime_raw(CLOCK_MONOTONIC, &ts(mono())), EINVAL)?;
+        want_err(&format!("clock_settime({CLOCK_UNKNOWN})"), settime_raw(CLOCK_UNKNOWN, &ts(now)), EINVAL)
+    })();
+    result.and(guard.restore())
 }
 
 fn clk_gettimeofday() -> CaseResult {
     let before = clock_ns(CLOCK_REALTIME)? / 1000;
     let mut tv = [0i64; 2];
-    want("gettimeofday", sc(nr::GETTIMEOFDAY, &[tv.as_mut_ptr() as u64, 0]))?;
+    zero("gettimeofday", sc(nr::GETTIMEOFDAY, &[tv.as_mut_ptr() as u64, 0]))?;
     let after = clock_ns(CLOCK_REALTIME)? / 1000;
     let got = tv[0] * 1_000_000 + tv[1];
     value("behind-realtime", after - got, "us", None);
@@ -1283,7 +1439,7 @@ fn clk_time() -> CaseResult {
 
 /// Sleep with `sleep` and check it took `ms`, neither early nor too late.
 fn timed_sleep(what: &str, ms: i64, sleep: impl FnOnce() -> i64) -> CaseResult {
-    wait_for(ms as u64);
+    wait_for(ms as u64, "late");
     let start = mono();
     let ret = sleep();
     let elapsed = mono() - start;
@@ -1301,7 +1457,7 @@ fn sl_nanosleep_seconds() -> CaseResult {
 
 fn sl_nanosleep_short() -> CaseResult {
     let mut lates = Vec::new();
-    wait_for(20 * (1 + TICK_MS as u64));
+    wait_for(20 * (1 + TICK_MS as u64), "median-late");
     for _ in 0..20 {
         let start = mono();
         want_eq("nanosleep(1 ms)", nanosleep_raw(&ts(MS), None), 0)?;
@@ -1337,16 +1493,30 @@ fn sl_nanosleep_efault() -> CaseResult {
     want_err("nanosleep from address 16", sc(nr::NANOSLEEP, &[16, 0]), EFAULT)
 }
 
-/// A 2 s `sleep` interrupted by SIGUSR1 from a child after 300 ms: the return, the time
-/// it took and the remaining time it wrote.
-fn interrupted(flags: u64, sleep: impl FnOnce(&mut Ts) -> i64) -> Result<(i64, i64, Ts), CaseError> {
+/// A 2 s `sleep` interrupted by SIGUSR1, which a child sends 300 ms after the sleep
+/// starts: the return, the time it took, the remaining time it wrote, and when the
+/// signal was sent, in nanoseconds after the sleep began.
+fn interrupted(flags: u64, sleep: impl FnOnce(&mut Ts) -> i64) -> Result<(i64, i64, Ts, i64), CaseError> {
     set_action(SIGUSR1, on_sig as usize as u64, flags)?;
-    let _sender = send_after(300, SIGUSR1)?;
+    let at = mono() + 300 * MS;
+    let _sender = send_at(at, SIGUSR1)?;
     let mut rem = [-7i64, -7];
-    wait_for(2000);
+    wait_for(2000, "interrupted-after");
     let start = mono();
     let ret = sleep(&mut rem);
-    Ok((ret, mono() - start, rem))
+    let elapsed = mono() - start;
+    let due = at - start;
+    value("interrupted-after", (elapsed - due) / 1000, "us", Some((0, LATE_MS * 1000)));
+    Ok((ret, elapsed, rem, due))
+}
+
+/// The sleep ended by the signal: its handler ran, once, and the sleep ended no sooner
+/// than the signal was sent, `due` ns after it began, and late by at most LATE_MS.
+fn ended_by_signal(elapsed: i64, due: i64) -> CaseResult {
+    let after = (elapsed - due) / 1000;
+    check(count(SIGUSR1) == 1, &format!("the SIGUSR1 handler ran {} times during the sleep, not once", count(SIGUSR1)))?;
+    check(elapsed >= due, &format!("the sleep ended {} us after it began, before SIGUSR1 was sent at {} us", elapsed / 1000, due / 1000))?;
+    check(after <= LATE_MS * 1000, &format!("the sleep ended {after} us after SIGUSR1 was sent"))
 }
 
 fn check_rem(elapsed: i64, rem: &Ts) -> CaseResult {
@@ -1359,16 +1529,16 @@ fn check_rem(elapsed: i64, rem: &Ts) -> CaseResult {
 }
 
 fn sl_nanosleep_eintr() -> CaseResult {
-    let (ret, elapsed, rem) = interrupted(0, |rem| nanosleep_raw(&ts(2 * NS), Some(rem)))?;
-    value("interrupted-after", elapsed / MS, "ms", Some((300, 300 + LATE_MS)));
+    let (ret, elapsed, rem, due) = interrupted(0, |rem| nanosleep_raw(&ts(2 * NS), Some(rem)))?;
     want_err("nanosleep interrupted by a caught signal", ret, EINTR)?;
+    ended_by_signal(elapsed, due)?;
     check_rem(elapsed, &rem)
 }
 
 fn sl_nanosleep_resume() -> CaseResult {
     catch(SIGUSR1)?;
     let _sender = send_after(300, SIGUSR1)?;
-    wait_for(1000);
+    wait_for(1000, "late");
     let start = mono();
     let mut req = ts(NS);
     let mut interruptions = 0;
@@ -1386,9 +1556,9 @@ fn sl_nanosleep_resume() -> CaseResult {
 }
 
 fn sl_nanosleep_sa_restart() -> CaseResult {
-    let (ret, elapsed, _) = interrupted(SA_RESTART, |rem| nanosleep_raw(&ts(2 * NS), Some(rem)))?;
-    value("interrupted-after", elapsed / MS, "ms", Some((300, 300 + LATE_MS)));
-    want_err("nanosleep interrupted by a handler with SA_RESTART", ret, EINTR)
+    let (ret, elapsed, _, due) = interrupted(SA_RESTART, |rem| nanosleep_raw(&ts(2 * NS), Some(rem)))?;
+    want_err("nanosleep interrupted by a handler with SA_RESTART", ret, EINTR)?;
+    ended_by_signal(elapsed, due)
 }
 
 /// A 800 ms nanosleep while a child sends SIGUSR1 after 200 ms, which `setup` has made
@@ -1424,7 +1594,7 @@ fn sl_nanosleep_stop() -> CaseResult {
     want_eq("kill(SIGCONT)", kill(kid, SIGCONT), 0)?;
     let status = wait_within(kid, WCONTINUED, WAIT_MS)?;
     check(continued(status), &format!("waitpid(WCONTINUED) reported {}", status_text(status)))?;
-    wait_for(1500);
+    wait_for(1500, "slept");
     let (ret, elapsed) = sleeper.result(3000)?;
     value("slept", elapsed / MS, "ms", Some((1500, 1500 + LATE_MS)));
     want_eq("nanosleep(1500 ms) stopped and continued", ret, 0)?;
@@ -1432,7 +1602,7 @@ fn sl_nanosleep_stop() -> CaseResult {
 }
 
 fn sl_threads() -> CaseResult {
-    wait_for(500);
+    wait_for(500, "worst-late");
     let threads: Vec<_> = [200i64, 300, 400, 500].into_iter().map(|ms| std::thread::spawn(move || {
         let start = mono();
         let ret = nanosleep_raw(&ts(ms * MS), None);
@@ -1461,7 +1631,7 @@ fn sl_clock_realtime() -> CaseResult {
 /// An absolute sleep on `clock` to 150 ms from now: it must not wake before the deadline.
 fn absolute(clock: i32) -> CaseResult {
     let deadline = clock_ns(clock)? + 150 * MS;
-    wait_for(150);
+    wait_for(150, "late");
     let ret = clock_nanosleep_raw(clock, TIMER_ABSTIME, &ts(deadline), None);
     let woke = clock_ns(clock)?;
     want_eq(&format!("clock_nanosleep({}, TIMER_ABSTIME)", clock_name(clock)), ret, 0)?;
@@ -1484,15 +1654,17 @@ fn sl_abstime_past() -> CaseResult {
 }
 
 fn sl_clock_eintr() -> CaseResult {
-    let (ret, elapsed, rem) = interrupted(0, |rem| clock_nanosleep_raw(CLOCK_MONOTONIC, 0, &ts(2 * NS), Some(rem)))?;
+    let (ret, elapsed, rem, due) = interrupted(0, |rem| clock_nanosleep_raw(CLOCK_MONOTONIC, 0, &ts(2 * NS), Some(rem)))?;
     want_err("clock_nanosleep interrupted by a caught signal", ret, EINTR)?;
+    ended_by_signal(elapsed, due)?;
     check_rem(elapsed, &rem)
 }
 
 fn sl_abstime_eintr() -> CaseResult {
     let deadline = clock_ns(CLOCK_MONOTONIC)? + 2 * NS;
-    let (ret, _, rem) = interrupted(0, |rem| clock_nanosleep_raw(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts(deadline), Some(rem)))?;
+    let (ret, elapsed, rem, due) = interrupted(0, |rem| clock_nanosleep_raw(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts(deadline), Some(rem)))?;
     want_err("an absolute clock_nanosleep interrupted by a caught signal", ret, EINTR)?;
+    ended_by_signal(elapsed, due)?;
     check(rem == [-7, -7], &format!("the absolute sleep wrote rem as {} s {} ns", rem[0], rem[1]))
 }
 
@@ -1515,10 +1687,12 @@ fn realtime_jump(sleep: impl FnOnce() -> i64 + 'static, ms: u64) -> Result<(i64,
     let kid = sleeper.child.pid;
     check(until(1000, || is_parked(kid)), "the child never blocked in its sleep")?;
     want_eq("clock_settime(CLOCK_REALTIME) forward 10 s", settime_raw(CLOCK_REALTIME, &ts(clock_ns(CLOCK_REALTIME)? + 10 * NS)), 0)?;
-    wait_for(ms);
+    wait_for(ms, "slept");
     let result = sleeper.result(ms + 1000);
-    drop(guard);
-    result
+    let restored = guard.restore();
+    let result = result?;
+    restored?;
+    Ok(result)
 }
 
 fn sl_realtime_set_abstime() -> CaseResult {
@@ -1548,7 +1722,7 @@ fn sl_realtime_set_relative() -> CaseResult {
 
 /// Arm `timer` one-shot for `ms` and wait for blocked `sig`; its siginfo, checked on time.
 fn fires_on_time(timer: &Timer, sig: i32, ms: i64) -> Result<SigInfo, CaseError> {
-    wait_for(ms as u64);
+    wait_for(ms as u64, "late");
     let start = mono();
     timer.arm(0, ms * MS)?;
     let info = await_signal(sig, (ms + 1000) as u64, "the timer")?;
@@ -1577,13 +1751,14 @@ fn tm_create_none() -> CaseResult {
     block(bit(SIGUSR1))?;
     let timer = Timer::create(CLOCK_MONOTONIC, Some(&sigevent(SIGEV_NONE, SIGUSR1, 0)))?;
     timer.arm(0, 200 * MS)?;
-    wait_for(300);
+    wait_for(300, "after-expiry");
     pause_ms(50);
     let left = its_value(&timer.get()?);
-    value("left", left / 1000, "us", Some((1, 200_000)));
+    value("left", left / 1000, "us", Some((1, 150_000)));
     check(left > 0 && left <= 150 * MS, &format!("50 ms into a 200 ms timer, timer_gettime reports {} us left", left / 1000))?;
     pause_ms(250);
     let after = timer.get()?;
+    value("after-expiry", its_value(&after) / 1000, "us", Some((0, 0)));
     check(after == [0; 4], &format!("after expiry timer_gettime reports {after:?}"))?;
     check(pending()? & bit(SIGUSR1) == 0 && count(SIGALRM) == 0, "a SIGEV_NONE timer sent a signal")
 }
@@ -1619,23 +1794,32 @@ fn tm_oneshot() -> CaseResult {
     check(after == [0; 4], &format!("the expired one-shot timer reads {after:?}"))
 }
 
-/// Count `sig` handled over `ms` while a periodic timer of `period_ms` runs, with the
-/// average period between the first and the last; checked against the period.
+/// Handle `sig` for `ms` while a periodic timer of `period_ms` runs. Each expiry is
+/// checked against its own programmed time, k periods after arming: never early, and
+/// late by at most LATE_MS. The count must be what that allows in the time the timer ran.
 fn periodic(sig: i32, period_ms: i64, ms: i64, arm: impl FnOnce() -> CaseResult, disarm: impl FnOnce()) -> CaseResult {
     catch(sig)?;
-    wait_for(ms as u64);
+    wait_for(ms as u64, "expiries");
+    let start = mono();
     arm()?;
     pause_ms(ms as u64);
+    let ran = mono() - start;
     disarm();
     let n = count(sig) as i64;
-    let expected = ms / period_ms;
-    value("expiries", n, "", Some((expected - 2, expected + 1)));
-    check(n >= 2, &format!("{n} expiries in {ms} ms of a {period_ms} ms periodic timer"))?;
-    let period = (LAST_NS.load(Ordering::SeqCst) - FIRST_NS.load(Ordering::SeqCst)) / (n - 1) / 1000;
-    let (low, high) = (period_ms * 960, period_ms * 1040);
-    value("period", period, "us", Some((low, high)));
-    check((expected - 2..=expected + 1).contains(&n), &format!("{n} expiries in {ms} ms of a {period_ms} ms periodic timer"))?;
-    check((low..=high).contains(&period), &format!("the expiries came {period} us apart, not {period_ms} ms"))
+    let at = stamps(start);
+    let period = period_ms * MS;
+    let (low, high) = ((ran - LATE_MS * MS) / period, ran / period);
+    value("expiries", n, "", Some((low, high)));
+    let lates: Vec<i64> = at.iter().enumerate().map(|(k, at)| at - (k as i64 + 1) * period).collect();
+    let earliest = lates.iter().copied().min().unwrap_or(0);
+    let latest = lates.iter().copied().max().unwrap_or(0);
+    value("worst-late", latest / 1000, "us", Some((0, LATE_MS * 1000)));
+    let at_us: Vec<i64> = at.iter().map(|ns| ns / 1000).collect();
+    pulses(period / 1000, LATE_MS * 1000, &at_us);
+    check((low..=high).contains(&n), &format!("{n} expiries in {} ms of a {period_ms} ms periodic timer, not {low} to {high}", ran / MS))?;
+    let first_early = lates.iter().position(|&late| late < 0).map_or(0, |k| k + 1);
+    check(earliest >= 0, &format!("expiry {first_early} came {} us before its programmed time", -earliest / 1000))?;
+    check(latest <= LATE_MS * MS, &format!("an expiry came {} us after its programmed time", latest / 1000))
 }
 
 fn tm_periodic() -> CaseResult {
@@ -1663,7 +1847,7 @@ fn tm_settime_old() -> CaseResult {
     timer.arm(500 * MS, 2 * NS)?;
     pause_ms(100);
     let mut old = [-1i64; 4];
-    want("timer_settime", timer.settime(0, &its(0, NS), Some(&mut old)))?;
+    zero("timer_settime", timer.settime(0, &its(0, NS), Some(&mut old)))?;
     check(its_interval(&old) == 500 * MS, &format!("old_value's interval is {} ns, not 500 ms", its_interval(&old)))?;
     let left = its_value(&old);
     check(left <= 2 * NS && left > 1500 * MS, &format!("old_value's value is {} us, not what was left of 2 s", left / 1000))
@@ -1683,8 +1867,8 @@ fn tm_abstime() -> CaseResult {
     block(bit(SIGUSR1))?;
     let timer = Timer::signal(CLOCK_MONOTONIC, SIGUSR1, 1)?;
     let deadline = clock_ns(CLOCK_MONOTONIC)? + 150 * MS;
-    wait_for(150);
-    want("timer_settime(TIMER_ABSTIME)", timer.settime(TIMER_ABSTIME, &its(0, deadline), None))?;
+    wait_for(150, "late");
+    zero("timer_settime(TIMER_ABSTIME)", timer.settime(TIMER_ABSTIME, &its(0, deadline), None))?;
     await_signal(SIGUSR1, 1500, "the absolute timer")?;
     let late = (mono() - deadline) / 1000;
     value("late", late, "us", Some((0, LATE_MS * 1000)));
@@ -1697,7 +1881,7 @@ fn tm_abstime_past() -> CaseResult {
     let timer = Timer::signal(CLOCK_MONOTONIC, SIGUSR1, 1)?;
     let past = (clock_ns(CLOCK_MONOTONIC)? - 100 * MS).max(1);
     let start = mono();
-    want("timer_settime(TIMER_ABSTIME) to a past time", timer.settime(TIMER_ABSTIME, &its(0, past), None))?;
+    zero("timer_settime(TIMER_ABSTIME) to a past time", timer.settime(TIMER_ABSTIME, &its(0, past), None))?;
     await_signal(SIGUSR1, 1000, "the timer armed for a past time")?;
     let took = (mono() - start) / 1000;
     value("took", took, "us", Some((0, LATE_MS * 1000)));
@@ -1720,7 +1904,7 @@ fn tm_overrun() -> CaseResult {
     let timer = Timer::signal(CLOCK_MONOTONIC, SIGUSR1, 1)?;
     let start = mono();
     timer.arm(20 * MS, 20 * MS)?;
-    wait_for(300);
+    wait_for(300, "overruns");
     pause_ms(300);
     let info = await_signal(SIGUSR1, 500, "the periodic timer")?;
     let elapsed = mono() - start;
@@ -1773,30 +1957,52 @@ fn tm_many() -> CaseResult {
     for (i, timer) in timers.iter().enumerate() {
         timer.arm(0, (8 - i as i64) * 40 * MS)?;
     }
-    wait_for(320);
+    wait_for(320, "in-order");
     let mut order = Vec::new();
     for _ in 0..8 {
         order.push(await_signal(sig, 1000, "eight timers")?.value());
     }
+    let in_order = order.iter().enumerate().filter(|&(i, &v)| v == 7 - i as u64).count();
+    value("in-order", in_order as i64, "", Some((8, 8)));
     check(order == [7, 6, 5, 4, 3, 2, 1, 0], &format!("the timers' values arrived as {order:?}, not in expiry order 7 to 0"))
 }
 
+/// Whether the thread-timer case's second thread should keep computing.
+static BURNING: AtomicU32 = AtomicU32::new(0);
+
 /// A CPU-time timer of 100 ms on `clock`: no signal during a 300 ms sleep, then one while
-/// the caller computes, no sooner than the CPU time timer_gettime said was left when the
-/// computing began (the sleep's own system calls may have used some).
+/// the caller computes, once `clock` has advanced by what timer_gettime said was left
+/// when the computing began (the sleep's own system calls may have used some), and late
+/// by at most LATE_MS of it. For the thread clock a second thread computes all along, so
+/// the process's CPU time runs ahead of the caller's: a timer counting the process's
+/// would fire during the sleep, or early.
 fn cpu_timer(clock: i32) -> CaseResult {
     block(bit(SIGUSR1))?;
+    let sibling = (clock == CLOCK_THREAD_CPUTIME_ID).then(|| {
+        BURNING.store(1, Ordering::SeqCst);
+        std::thread::spawn(|| { burn_until(bounded(u64::MAX, CLEANUP_MS), || BURNING.load(Ordering::SeqCst) == 0); })
+    });
+    let result = cpu_timer_fires(clock);
+    BURNING.store(0, Ordering::SeqCst);
+    if let Some(sibling) = sibling { let _ = sibling.join(); }
+    result
+}
+
+fn cpu_timer_fires(clock: i32) -> CaseResult {
+    let name = clock_name(clock);
     let timer = Timer::signal(clock, SIGUSR1, 1)?;
     timer.arm(0, 100 * MS)?;
-    no_signal(SIGUSR1, 300, &format!("a 100 ms {} timer while the process slept 300 ms", clock_name(clock)))?;
-    let left = its_value(&timer.get()?) / MS;
-    let start = mono();
+    no_signal(SIGUSR1, 300, &format!("a 100 ms {name} timer while the caller slept 300 ms"))?;
+    let left = its_value(&timer.get()?);
+    let c0 = clock_ns(clock)?;
     let fired = burn_until(2000, || pending().is_ok_and(|p| p & bit(SIGUSR1) != 0));
-    let took = (mono() - start) / MS;
-    value("fired-after", took, "ms", Some((left, 2000)));
-    check(left > 0, &format!("after the sleep, timer_gettime reports {left} ms left of a 100 ms {} timer that has not fired", clock_name(clock)))?;
-    check(fired, &format!("a 100 ms {} timer did not fire in 2 s of computing", clock_name(clock)))?;
-    check(took >= left, &format!("a {} timer with {left} ms of CPU time left fired after {took} ms of computing", clock_name(clock)))
+    let used = clock_ns(clock)? - c0;
+    value("left", left / MS, "ms", Some((1, 100)));
+    value("cpu-at-expiry", used / MS, "ms", Some((left / MS, left / MS + LATE_MS)));
+    check(left > 0 && left <= 100 * MS, &format!("after the sleep, timer_gettime reports {} us left of a 100 ms {name} timer that has not fired", left / 1000))?;
+    check(fired, &format!("a 100 ms {name} timer did not fire in 2 s of computing"))?;
+    check(used >= left, &format!("a {name} timer with {} us left fired after {} us of {name}", left / 1000, used / 1000))?;
+    check(used <= left + LATE_MS * MS, &format!("a {name} timer with {} us left fired only after {} us of {name}", left / 1000, used / 1000))
 }
 
 fn tm_cputime_process() -> CaseResult { cpu_timer(CLOCK_PROCESS_CPUTIME_ID) }
@@ -1813,33 +2019,37 @@ fn tm_fork() -> CaseResult {
         pause_ms(600);
         Ok((ret, (pending()? & bit(SIGUSR1) != 0) as i64))
     })?;
-    wait_for(600);
+    wait_for(600, "child-pending");
     await_signal(SIGUSR1, 1000, "the parent's timer")?;
     let (ret, got) = child.result(1500)?;
+    value("child-pending", got, "", Some((0, 0)));
     want_err("timer_gettime of the parent's timer in the child", ret, EINVAL)?;
     check(got == 0, "the parent's timer sent its signal to the child")
 }
 
 fn tm_exec() -> CaseResult {
     // The timer sends SIGUSR1, whose default action ends the process, after 500 ms; the
-    // new program lingers 1200 ms.
-    let (mut child, out, _) = exec_helper(|| {
+    // new program sleeps 1200 ms and says `alive` only if the whole sleep completed.
+    let (mut child, out, start) = exec_helper(|| {
         let mut id = -1;
-        ok("timer_create", timer_create_raw(CLOCK_MONOTONIC, Some(&sigevent(SIGEV_SIGNAL, SIGUSR1, 0)), &mut id))?;
+        zero("timer_create", timer_create_raw(CLOCK_MONOTONIC, Some(&sigevent(SIGEV_SIGNAL, SIGUSR1, 0)), &mut id))?;
         let t = its(0, 500 * MS);
-        ok("timer_settime", sc(nr::TIMER_SETTIME, &[id as i64 as u64, 0, t.as_ptr() as u64, 0]))?;
+        zero("timer_settime", sc(nr::TIMER_SETTIME, &[id as i64 as u64, 0, t.as_ptr() as u64, 0]))?;
         Ok(vec![id.to_string(), "1200".to_string()])
     })?;
-    wait_for(1200);
+    wait_for(1200, "ended-after");
     let said = read_up_to(out, 4096, 3000).map(|s| String::from_utf8_lossy(&s).to_string());
     let _ = io::close(out);
     let said = said?;
     let status = child.wait_for("the exec'd helper", WAIT_MS)?;
+    let ended = (mono() - start) / MS;
+    value("ended-after", ended, "ms", Some((1200, 1200 + EXEC_MS as i64)));
     let words = report_words(said.lines().next().unwrap_or(""));
     let ret = words.get("timer").and_then(|t| t.parse::<i64>().ok()).ok_or_else(|| format!("the helper reported {said:?}"))?;
     want_err("timer_gettime of the pre-exec timer in the new program", ret, EINVAL)?;
-    check(exited(status) && exit_code(status) == 0 && said.contains("alive"),
-        &format!("the new program ended with {} after its pre-exec timer's time", status_text(status)))
+    check(exited(status) && exit_code(status) == 0 && said.lines().any(|line| line == "alive"),
+        &format!("the new program ended with {} and did not finish its 1200 ms sleep", status_text(status)))?;
+    check((1200..=1200 + EXEC_MS as i64).contains(&ended), &format!("the new program ended {ended} ms after the fork, not after its 1200 ms sleep"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1847,26 +2057,44 @@ fn tm_exec() -> CaseResult {
 
 fn it_alarm() -> CaseResult {
     catch(SIGALRM)?;
-    wait_for(1000);
+    wait_for(1000, "late");
     let start = mono();
     want_eq("alarm(1)", alarm(1), 0)?;
     let took = handled(SIGALRM, 1, start, 2500).ok_or("no SIGALRM within 2.5 s of alarm(1)")?;
     on_time("alarm(1)", took, 1000)
 }
 
+/// CLOCK_MONOTONIC as a child read it just before arming its alarm, which it writes
+/// down a pipe whose read end is `r`.
+fn armed_at(r: Fd) -> Result<i64, CaseError> {
+    let said = read_up_to(r, 8, WAIT_MS)?;
+    let bytes: [u8; 8] = said.as_slice().try_into().map_err(|_| CaseError::Fail("the child never reported arming its alarm".into()))?;
+    Ok(i64::from_le_bytes(bytes))
+}
+
 fn it_alarm_default() -> CaseResult {
-    let mut kid = Child::start(|| {
-        if alarm(1) < 0 { return 2; }
+    let (r, w) = io::pipe2(O_CLOEXEC)?;
+    let kid = Child::start(|| {
+        let _ = io::close(r);
+        let armed = mono();
+        if alarm(1) != 0 { return 2; }
+        let _ = io::write(w, &armed.to_le_bytes());
         pause_ms(3000);
         0
-    })?;
-    let start = mono();
-    wait_for(1000);
+    });
+    let _ = io::close(w);
+    let mut kid = match kid {
+        Ok(kid) => kid,
+        Err(e) => { let _ = io::close(r); return Err(e); }
+    };
+    wait_for(1000, "late");
+    let armed = armed_at(r);
+    let _ = io::close(r);
+    let armed = armed?;
     let status = kid.wait_for("the child with an alarm", 4000)?;
-    let took = (mono() - start) / MS;
-    value("ended-after", took, "ms", Some((1000, 1000 + LATE_MS + 100)));
+    let took = mono() - armed;
     check(signaled(status) && term_sig(status) == SIGALRM, &format!("the child ended with {}, not death by SIGALRM", status_text(status)))?;
-    check(took >= 1000 - LATE_MS, &format!("the child died {took} ms after alarm(1)"))
+    on_time("the child's death by alarm(1)", took, 1000)
 }
 
 fn it_alarm_remaining() -> CaseResult {
@@ -1884,8 +2112,9 @@ fn it_alarm_zero() -> CaseResult {
     want_eq("alarm(1)", alarm(1), 0)?;
     pause_ms(300);
     want_eq("alarm(0) 300 ms after alarm(1)", alarm(0), 1)?;
-    wait_for(1200);
+    wait_for(1200, "alarms");
     pause_ms(1200);
+    value("alarms", count(SIGALRM) as i64, "", Some((0, 0)));
     check(count(SIGALRM) == 0, "SIGALRM arrived after alarm(0) cancelled the alarm")
 }
 
@@ -1895,19 +2124,24 @@ fn it_alarm_replace() -> CaseResult {
     let start = mono();
     let left = alarm(1);
     check(left == 5 || left == 4, &format!("alarm(1) after alarm(5) returned {}", shown(left)))?;
-    wait_for(1500);
-    pause_ms(1500);
+    // Watch past the time the replaced alarm(5) would have fired.
+    let watch = 5000 + LATE_MS as u64 + 100;
+    wait_for(watch, "alarms");
+    pause_ms(bounded(watch, CLEANUP_MS));
+    let watched = mono() - start;
     let n = count(SIGALRM);
     let first = FIRST_NS.load(Ordering::SeqCst) - start;
+    value("alarms", n as i64, "", Some((1, 1)));
     want_eq("alarm(0) after the replacement fired", alarm(0), 0)?;
-    check(n == 1, &format!("{n} SIGALRMs in 1.5 s after alarm(5) was replaced by alarm(1)"))?;
+    check(watched >= (5000 + LATE_MS) * MS, &format!("the case could watch only {} ms, not past the replaced alarm's 5 s", watched / MS))?;
+    check(n == 1, &format!("{n} SIGALRMs in {} ms after alarm(5) was replaced by alarm(1)", watched / MS))?;
     on_time("the replacing alarm(1)", first, 1000)
 }
 
 fn it_alarm_read() -> CaseResult {
     catch(SIGALRM)?;
     let (r, w) = io::pipe()?;
-    wait_for(1000);
+    wait_for(1000, "interrupted-after");
     let start = mono();
     want_eq("alarm(1)", alarm(1), 0)?;
     let mut buf = [0u8; 8];
@@ -1921,11 +2155,12 @@ fn it_alarm_read() -> CaseResult {
 
 fn it_real() -> CaseResult {
     catch(SIGALRM)?;
-    wait_for(600);
+    wait_for(600, "alarms");
     let start = mono();
     arm_itimer(ITIMER_REAL, 0, 200_000)?;
     pause_ms(600);
     let n = count(SIGALRM);
+    value("alarms", n as i64, "", Some((1, 1)));
     check(n == 1, &format!("{n} SIGALRMs in 600 ms of a 200 ms one-shot ITIMER_REAL"))?;
     on_time("ITIMER_REAL", FIRST_NS.load(Ordering::SeqCst) - start, 200)
 }
@@ -1953,7 +2188,7 @@ fn it_old_value() -> CaseResult {
     arm_itimer(ITIMER_REAL, 500_000, 2_000_000)?;
     pause_ms(100);
     let mut old = [-1i64; 4];
-    want("setitimer", setitimer(ITIMER_REAL, &itv(0, 1_000_000), Some(&mut old)))?;
+    zero("setitimer", setitimer(ITIMER_REAL, &itv(0, 1_000_000), Some(&mut old)))?;
     arm_itimer(ITIMER_REAL, 0, 0)?;
     check(itv_interval(&old) == 500_000, &format!("old_value's interval is {} us, not 500 ms", itv_interval(&old)))?;
     let left = itv_value(&old);
@@ -1994,9 +2229,26 @@ fn it_alarm_shares_real() -> CaseResult {
     check(left == 2, &format!("alarm(0) after setitimer(ITIMER_REAL, 2 s) returned {}", shown(left)))
 }
 
+/// The process's CPU time as getrusage(RUSAGE_SELF) reports it, in microseconds: user
+/// time, and user and system time together.
+fn rusage_us() -> Result<(i64, i64), String> {
+    let mut usage = [0i64; 18];
+    zero("getrusage(RUSAGE_SELF)", sc(nr::GETRUSAGE, &[0, usage.as_mut_ptr() as u64]))?;
+    let user = usage[0] * 1_000_000 + usage[1];
+    Ok((user, user + usage[2] * 1_000_000 + usage[3]))
+}
+
+/// The CPU time interval timer `which` counts, from getrusage, in microseconds:
+/// ITIMER_VIRTUAL user time, ITIMER_PROF user and system time.
+fn itimer_cpu_us(which: i32) -> Result<i64, String> {
+    let (user, all) = rusage_us()?;
+    Ok(if which == ITIMER_VIRTUAL { user } else { all })
+}
+
 /// A 100 ms CPU-time interval timer `which` sending `sig`: none while the process sleeps
 /// 300 ms, at least `min_left` ms of it left after the sleep, then one while it computes,
-/// no sooner than the CPU time getitimer said was left when the computing began.
+/// once the CPU time the timer counts, measured by getrusage, has grown by what getitimer
+/// said was left when the computing began, and late by at most LATE_MS of it.
 /// ITIMER_PROF counts the sleep's own system calls; ITIMER_VIRTUAL counts only the few
 /// instructions the sleep runs in user mode.
 fn cpu_itimer(which: i32, sig: i32, min_left: i64) -> CaseResult {
@@ -2004,29 +2256,38 @@ fn cpu_itimer(which: i32, sig: i32, min_left: i64) -> CaseResult {
     arm_itimer(which, 0, 100_000)?;
     pause_ms(300);
     check(count(sig) == 0, &format!("signal {sig} arrived while the process slept"))?;
-    let left = itv_value(&getitimer(which)?) / 1000;
-    let start = mono();
+    let left = itv_value(&getitimer(which)?);
+    let c0 = itimer_cpu_us(which)?;
     let fired = burn_until(2000, || count(sig) > 0);
-    let took = (mono() - start) / MS;
-    value("left", left, "ms", Some((min_left, 100)));
-    value("fired-after", took, "ms", Some((left, 2000)));
-    check(left >= min_left && left <= 100, &format!("after a 300 ms sleep, getitimer reports {left} ms left of the 100 ms timer, not {min_left} ms or more"))?;
+    let used = itimer_cpu_us(which)? - c0;
+    value("left", left / 1000, "ms", Some((min_left, 100)));
+    value("cpu-at-expiry", used / 1000, "ms", Some((left / 1000, left / 1000 + LATE_MS)));
+    check(left >= min_left * 1000 && left <= 100_000, &format!("after a 300 ms sleep, getitimer reports {left} us left of the 100 ms timer, not {min_left} ms or more"))?;
     check(fired, &format!("a 100 ms timer did not send signal {sig} in 2 s of computing"))?;
-    check(took >= left, &format!("a timer with {left} ms of CPU time left fired after {took} ms of computing"))
+    check(used >= left, &format!("a timer with {left} us of CPU time left fired after {used} us of it"))?;
+    check(used <= left + LATE_MS * 1000, &format!("a timer with {left} us of CPU time left fired only after {used} us of it"))
 }
 
 /// What a sleep may take of ITIMER_VIRTUAL's 100 ms: two ticks charged to user mode, and 2 ms.
 fn it_virtual() -> CaseResult { cpu_itimer(ITIMER_VIRTUAL, SIGVTALRM, 100 - 2 * TICK_MS - 2) }
 fn it_prof() -> CaseResult { cpu_itimer(ITIMER_PROF, SIGPROF, 1) }
 
+/// A 20 ms ITIMER_VIRTUAL reloading while the process computes for 500 ms fires once per
+/// 20 ms of the user CPU time getrusage counts across it: never sooner, and with the
+/// last expiry late by at most LATE_MS of it.
 fn it_virtual_interval() -> CaseResult {
     catch(SIGVTALRM)?;
+    let u0 = itimer_cpu_us(ITIMER_VIRTUAL)?;
     arm_itimer(ITIMER_VIRTUAL, 20_000, 20_000)?;
     burn(500);
     arm_itimer(ITIMER_VIRTUAL, 0, 0)?;
+    let user = itimer_cpu_us(ITIMER_VIRTUAL)? - u0;
     let n = count(SIGVTALRM) as i64;
-    value("expiries", n, "", Some((5, 25)));
-    check(n >= 5, &format!("a 20 ms ITIMER_VIRTUAL fired {n} times in 500 ms of computing"))
+    let (low, high) = ((user - LATE_MS * 1000).max(0) / 20_000, user / 20_000);
+    value("user-cpu", user / 1000, "ms", None);
+    value("expiries", n, "", Some((low, high)));
+    check(user >= 100_000, &format!("getrusage counted {} ms of user CPU time in 500 ms of computing", user / 1000))?;
+    check((low..=high).contains(&n), &format!("a 20 ms ITIMER_VIRTUAL fired {n} times in {} ms of user CPU time, not {low} to {high}", user / 1000))
 }
 
 fn it_fork() -> CaseResult {
@@ -2043,31 +2304,49 @@ fn it_fork() -> CaseResult {
         if left != 0 { return Err(format!("the child's alarm(0) returned {}", shown(left))); }
         Ok(())
     });
-    let parent = itv_value(&getitimer(ITIMER_REAL)?);
-    for which in [ITIMER_REAL, ITIMER_VIRTUAL, ITIMER_PROF] { let _ = arm_itimer(which, 0, 0); }
+    let timers = [(ITIMER_REAL, "ITIMER_REAL"), (ITIMER_VIRTUAL, "ITIMER_VIRTUAL"), (ITIMER_PROF, "ITIMER_PROF")];
+    let parent: Result<Vec<i64>, String> = timers.iter().map(|&(which, _)| getitimer(which).map(|t| itv_value(&t))).collect();
+    for (which, _) in timers { let _ = arm_itimer(which, 0, 0); }
     result?;
-    check(parent > 0, "the parent's ITIMER_REAL was disarmed by the fork")
+    for ((_, name), left) in timers.iter().zip(parent?) {
+        check(left > 0 && left <= 5_000_000, &format!("after the fork, the parent's {name} reads {left} us of 5 s"))?;
+    }
+    Ok(())
 }
 
 fn it_exec_alarm() -> CaseResult {
-    let (mut child, out, start) = exec_helper(|| {
-        ok("alarm(2)", alarm(2))?;
+    let (ar, aw) = io::pipe2(O_CLOEXEC)?;
+    let helper = exec_helper(|| {
+        let _ = io::close(ar);
+        let armed = mono();
+        zero("alarm(2)", alarm(2))?;
+        let _ = io::write(aw, &armed.to_le_bytes());
         Ok(vec!["-1".to_string(), "4000".to_string()])
-    })?;
-    wait_for(2000);
+    });
+    let _ = io::close(aw);
+    let (mut child, out, _) = match helper {
+        Ok(helper) => helper,
+        Err(e) => { let _ = io::close(ar); return Err(e); }
+    };
+    let armed = armed_at(ar);
+    let _ = io::close(ar);
+    let armed = match armed {
+        Ok(armed) => armed,
+        Err(e) => { let _ = io::close(out); return Err(e); }
+    };
+    wait_for(2000, "late");
     let said = read_up_to(out, 4096, 4000).map(|s| String::from_utf8_lossy(&s).to_string());
     let _ = io::close(out);
     let said = said?;
     let status = child.wait_for("the exec'd helper", WAIT_MS)?;
-    let ended = (mono() - start) / MS;
+    let ended = mono() - armed;
     let words = report_words(said.lines().next().unwrap_or(""));
     let (left, _) = reported_itimer(&words, "real")?;
     value("left-after-exec", left / 1000, "ms", Some((1, 2000)));
-    value("ended-after", ended, "ms", Some((2000, 2000 + LATE_MS + 200)));
     check(left > 0 && left <= 2_000_000, &format!("after exec, ITIMER_REAL reads {left} us of the 2 s alarm"))?;
     check(signaled(status) && term_sig(status) == SIGALRM,
         &format!("the new program ended with {}, not death by the alarm's SIGALRM", status_text(status)))?;
-    check(ended >= 2000 - LATE_MS && ended <= 2000 + LATE_MS + 200, &format!("the new program died {ended} ms after alarm(2)"))
+    on_time("the new program's death by alarm(2)", ended, 2000)
 }
 
 fn it_exec_cpu() -> CaseResult {
@@ -2098,7 +2377,9 @@ static SUITE: Suite = suite(
             case("monotonic-fine", "Linux policy: CLOCK_MONOTONIC advances between consecutive reads rather than once per tick", clk_monotonic_fine),
             case("rate-realtime", "CLOCK_REALTIME and CLOCK_MONOTONIC advance at the same rate over 2 seconds", clk_rate_realtime),
             case("rate-counter", "CLOCK_MONOTONIC advances at the rate of the processor's counter over 2 seconds (ARM64 CNTVCT_EL0, x86-64 the TSC at its CPUID frequency)", clk_rate_counter),
-            case("counter-cpus", "Linux ABI: user mode reads the processor's counter (ARM64 CNTVCT_EL0, x86-64 the TSC) on every online processor at once", clk_counter_cpus),
+            case("counter-cpus", "Linux ABI: user mode reads the processor's counter (ARM64 CNTVCT_EL0, x86-64 the TSC) on every online processor, from a thread pinned there by sched_setaffinity and found there by getcpu", clk_counter_cpus),
+            case("counter-trap-default", "Linux ABI: ARM64 user mode that reads the physical counter CNTPCT_EL0 or the timer registers CNTV_CTL_EL0 and CNTP_CTL_EL0 is killed by SIGILL", clk_counter_trap_default),
+            case("counter-trap-caught", "Linux ABI: a caught SIGILL for each of those ARM64 reads carries ILL_ILLOPC and the instruction's address, and the program resumes past it; CNTVCT_EL0 and CNTFRQ_EL0 do not trap", clk_counter_trap_caught),
             case("rate-rtc", "Linux ABI: CLOCK_REALTIME advances at the rate of the RTC, read through /dev/rtc0 RTC_RD_TIME, over 3 seconds", clk_rate_rtc),
             case("cputime-process", "CLOCK_PROCESS_CPUTIME_ID advances while the process computes and not while it sleeps", clk_cputime_process),
             case("cputime-thread", "CLOCK_THREAD_CPUTIME_ID counts only the calling thread's CPU time", clk_cputime_thread),

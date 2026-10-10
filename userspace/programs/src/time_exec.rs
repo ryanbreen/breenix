@@ -6,7 +6,8 @@
 //! (or `error` if getitimer failed), followed by ` timer=R`, the raw return of
 //! timer_gettime(TIMER) (0, or a negative errno) when TIMER is given. With LINGER_MS it
 //! then sleeps that long, resuming after any interruption, writes `alive` and exits 0;
-//! a signal whose default action ends the process ends it first.
+//! a signal whose default action ends the process ends it first, and a nanosleep that
+//! fails otherwise exits 4 without writing `alive`.
 use libbreenix::syscall::raw;
 use libbreenix::{io, process, types::Fd};
 
@@ -69,10 +70,11 @@ fn main() {
         loop {
             let mut rem = [0i64; 2];
             let ret = sys(nr::NANOSLEEP, [req.as_ptr() as u64, rem.as_mut_ptr() as u64]);
-            if ret != -EINTR {
-                break;
+            match ret {
+                0 => break,
+                r if r == -EINTR => req = rem,
+                _ => process::exit(4),
             }
-            req = rem;
         }
         write_all(fd, b"alive\n");
     }

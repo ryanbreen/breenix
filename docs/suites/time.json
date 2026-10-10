@@ -39,7 +39,15 @@
         },
         {
           "id": "counter-cpus",
-          "title": "Linux ABI: user mode reads the processor's counter (ARM64 CNTVCT_EL0, x86-64 the TSC) on every online processor at once"
+          "title": "Linux ABI: user mode reads the processor's counter (ARM64 CNTVCT_EL0, x86-64 the TSC) on every online processor, from a thread pinned there by sched_setaffinity and found there by getcpu"
+        },
+        {
+          "id": "counter-trap-default",
+          "title": "Linux ABI: ARM64 user mode that reads the physical counter CNTPCT_EL0 or the timer registers CNTV_CTL_EL0 and CNTP_CTL_EL0 is killed by SIGILL"
+        },
+        {
+          "id": "counter-trap-caught",
+          "title": "Linux ABI: a caught SIGILL for each of those ARM64 reads carries ILL_ILLOPC and the instruction's address, and the program resumes past it; CNTVCT_EL0 and CNTFRQ_EL0 do not trap"
         },
         {
           "id": "rate-rtc",
