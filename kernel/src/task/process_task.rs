@@ -444,6 +444,24 @@ const PRODUCTION_PASS_SELECTION_CAP: u32 = 1;
 /// Bound leaf and table release work in the non-preemptible production step.
 /// Boot-owned drains retain RETIRE_FRAME_BUDGET and their verification contract.
 const PRODUCTION_RECLAIM_FRAME_BUDGET: u32 = 16;
+/// Selections a production pass takes while memory is short. The bounded step
+/// above returns about 16 frames per idle pass, slower than a suite of forking
+/// processes frees them, and an allocation that finds no frame kills its
+/// process: a copy-on-write fault after fork ended PID 1 that way. Below the
+/// watermark a pass completes whole receipts again, trading the short step's
+/// dispatch latency for memory, as the uncapped drain did.
+const PRESSURED_PASS_SELECTION_CAP: u32 = 4;
+
+/// Whether fewer than half of the usable frames are free: unallocated at the
+/// frontier or on the free list.
+fn memory_pressure() -> bool {
+    let stats = crate::memory::frame_allocator::memory_stats();
+    let total = (stats.total_bytes / 4096) as usize;
+    let available = total
+        .saturating_sub(stats.allocated_frames)
+        .saturating_add(stats.free_list_frames);
+    available < total / 2
+}
 
 /// Injected nested refusals observed by `boot_prove_nested_drain_refusal`.
 #[cfg(feature = "boot_tests")]
@@ -1561,6 +1579,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
     // the number of receipts one invocation may take is bounded. Boot-owned
     // passes are uncapped and keep their drain-to-quiesce meaning.
     let mut production_selections: u32 = 0;
+    let pressured = !boot_test_owned && memory_pressure();
 
     loop {
         #[cfg(feature = "boot_tests")]
@@ -1622,6 +1641,8 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     }
                 } else if reclaim.reclaim_bounded(if boot_test_owned {
                     crate::memory::process_memory::RETIRE_FRAME_BUDGET
+                } else if pressured {
+                    u32::MAX
                 } else {
                     PRODUCTION_RECLAIM_FRAME_BUDGET
                 })
@@ -1664,8 +1685,14 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     // and leave the rest queued instead of consuming the whole
                     // batch before the recipient can run. Always completing one
                     // selection preserves reclamation progress under load.
-                    if production_selections >= PRODUCTION_PASS_SELECTION_CAP
-                        || scheduler::is_need_resched()
+                    // Short of memory, frames come first.
+                    let cap = if pressured {
+                        PRESSURED_PASS_SELECTION_CAP
+                    } else {
+                        PRODUCTION_PASS_SELECTION_CAP
+                    };
+                    if production_selections >= cap
+                        || (!pressured && scheduler::is_need_resched())
                     {
                         crate::trace_count!(
                             crate::tracing::providers::teardown::RECLAIM_PASS_SELECTION_CAPPED
