@@ -1051,17 +1051,21 @@ fn handle_cow_with_manager(
 
     let pm = match guard.as_mut() {
         Some(pm) => pm,
-        None => return false,
+        None => { crate::serial_println!("[TC2DIAG] cow refuse: no manager"); return false; }
     };
+    let cur_tid = crate::per_cpu::current_thread_id_lock_free();
+    let cur_pid = cur_tid.and_then(|t| pm.find_process_by_thread(t)).map(|(pid, _)| pid.as_u64());
+    let matches = pm.all_processes().into_iter().filter(|p| p.page_table.as_ref().is_some_and(|pt| pt.level_4_frame().start_address().as_u64() == cr3)).map(|p| (p.id.as_u64(), p.is_terminated())).collect::<alloc::vec::Vec<_>>();
 
     let (_pid, process) = match pm.find_process_by_cr3_mut(cr3) {
         Some(p) => p,
-        None => return false,
+        None => { crate::serial_println!("[TC2DIAG] cow refuse: no process for cr3 {:#x} cur={:?}/{:?}", cr3, cur_tid, cur_pid); return false; }
     };
+    let found_pid = _pid.as_u64();
 
     let page_table = match &mut process.page_table {
         Some(pt) => pt,
-        None => return false,
+        None => { crate::serial_println!("[TC2DIAG] cow refuse: no page table pid={}", found_pid); return false; }
     };
 
     let page = Page::<Size4KiB>::containing_address(faulting_addr);
@@ -1069,7 +1073,7 @@ fn handle_cow_with_manager(
     // Get the current page info
     let (old_frame, old_flags) = match page_table.get_page_info(page) {
         Some(info) => info,
-        None => return false,
+        None => { crate::serial_println!("[TC2DIAG] cow refuse: no page info pid={} cur={:?}/{:?} matches={:?} addr={:#x}", found_pid, cur_tid, cur_pid, matches, faulting_addr.as_u64()); return false; }
     };
 
     if resolve_stale_write_translation(cr3, faulting_addr) {
@@ -1078,6 +1082,7 @@ fn handle_cow_with_manager(
 
     // Check if this is actually a CoW page
     if !is_cow_page(old_flags) {
+        crate::serial_println!("[TC2DIAG] cow refuse: not cow pid={} cur={:?}/{:?} matches={:?} addr={:#x} flags={:#x} frame={:#x}", found_pid, cur_tid, cur_pid, matches, faulting_addr.as_u64(), old_flags.bits(), old_frame.start_address().as_u64());
         return false;
     }
 
@@ -1102,7 +1107,7 @@ fn handle_cow_with_manager(
     // Multiple references - need to copy
     let new_frame = match allocate_frame() {
         Some(frame) => frame,
-        None => return false,
+        None => { crate::serial_println!("[TC2DIAG] cow refuse: no frame"); return false; }
     };
 
     // Copy page contents
