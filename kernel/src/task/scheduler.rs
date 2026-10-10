@@ -5114,9 +5114,8 @@ impl Scheduler {
                         // later than `now`, so a thread enqueued here is one
                         // whose deadline has ALREADY passed -- the question
                         // left is how long it waits on top of that. A tail
-                        // enqueue answers "one full round robin": on x86
-                        // only the boot CPU is online, so this is the single ready queue
-                        // the runnable threads share, and the woken thread
+                        // enqueue answers "one full round robin" on the selected
+                        // CPU: the woken thread shares that CPU's ready queue and
                         // waits for the threads ahead of it to exhaust their
                         // own quanta before it is selected. #766 measured that
                         // as a wake-to-dispatch overrun of p90 2592 ms and max
@@ -5161,8 +5160,12 @@ impl Scheduler {
                         } else {
                             self.per_cpu_queues[target].push_back(tid);
                         }
-                        // Placement prefers an idle CPU, which may not be this
-                        // one: wake it, or the thread waits for its next tick.
+                        // Both architectures kick idle destinations only. This
+                        // preserves round-robin policy for busy destinations;
+                        // expiry detection still waits for a scheduling pass,
+                        // potentially most of a 50 ms quantum when CPUs are busy.
+                        // Placement prefers this CPU on equal load, so a kick
+                        // alone cannot bound deadline-to-dispatch latency.
                         if self.cpu_is_idle(target) {
                             self.send_resched_ipi_to_cpu(target);
                         }
@@ -7558,9 +7561,7 @@ pub fn requeue_refused_dispatch(thread_id: u64) {
         // Slice 3e: this CPU refused the dispatch, so the thread goes back onto
         // this CPU's queue -- unless its pin names another, in which case the
         // dispatch that was refused was already on the wrong CPU and the guard
-        // returns it to the right one. On x86_64 only the boot CPU is online,
-        // so the guard has one queue to choose from and cannot answer anything
-        // but "no constraint" here.
+        // returns it to the right one among the online CPUs.
         if !sched.retain_cpu_affine_thread(thread_id, cpu) {
             sched.per_cpu_queues[cpu].push_back(thread_id);
         }
@@ -7602,7 +7603,7 @@ pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) 
             .any(|queue| queue.contains(&aborted_thread_id));
         if should_queue && !in_queue {
             // Slice 3e: same disposition as `requeue_refused_dispatch`, and
-            // inert for the same reason -- one queue on this architecture.
+            // respects the same CPU-affinity constraint on SMP.
             if !sched.retain_cpu_affine_thread(aborted_thread_id, cpu_id) {
                 sched.per_cpu_queues[cpu_id].push_back(aborted_thread_id);
             }
