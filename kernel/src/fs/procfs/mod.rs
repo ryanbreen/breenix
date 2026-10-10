@@ -1174,6 +1174,8 @@ fn generate_pid_status(pid: u64) -> String {
         });
         resident * 4
     });
+    let (user_ns, system_ns) = process.cpu.split_ns();
+    let cpu_time_us = user_ns / 1_000 + system_ns / 1_000;
 
     format!(
         "Name:\t{}\n\
@@ -1188,6 +1190,7 @@ fn generate_pid_status(pid: u64) -> String {
          VmLck:\t{} kB\n\
          VmRSS:\t{} kB\n\
          CpuTicks:\t{}\n\
+         CpuTimeUs:\t{}\n\
          CpuSampleTicks:\t{}\n\
          CpuCapacityTicks:\t{}\n\
          CpuOnline:\t{}\n",
@@ -1205,6 +1208,7 @@ fn generate_pid_status(pid: u64) -> String {
         })).map_or(0, |(_, owner)| owner.memory_locks.bytes() / 1024),
         vm_rss_kb,
         process.cpu.ticks(),
+        cpu_time_us,
         cpu_sample_ticks,
         cpu_capacity_ticks,
         cpu_online,

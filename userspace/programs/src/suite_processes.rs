@@ -2878,16 +2878,12 @@ fn limits_rusage_self() -> CaseResult {
     let after = getrusage(0)?;
     check(cpu_us(&after) > cpu_us(&before) && cpu_us(&after) > 0,
         &format!("RUSAGE_SELF CPU time went from {} us to {} us across 200 ms of computation", cpu_us(&before), cpu_us(&after)))?;
-    let stat = std::fs::read_to_string("/proc/stat").map_err(|e| format!("/proc/stat: {e}"))?;
-    let ms_per_tick = stat.lines().find_map(|line| line.strip_prefix("ms_per_tick "))
-        .and_then(|value| value.trim().parse::<i64>().ok()).ok_or("no ms_per_tick")?;
     let low = cpu_us(&getrusage(0)?);
     let status = std::fs::read_to_string(format!("/proc/{}/status", pid())).map_err(|e| format!("status: {e}"))?;
-    let ticks = status.lines().find_map(|line| line.strip_prefix("CpuTicks:\t"))
-        .and_then(|value| value.parse::<i64>().ok()).ok_or("no CpuTicks")?;
+    let proc_us = status.lines().find_map(|line| line.strip_prefix("CpuTimeUs:\t"))
+        .and_then(|value| value.parse::<i64>().ok()).ok_or("no CpuTimeUs")?;
     let (_, t) = times()?;
     let high = cpu_us(&getrusage(0)?);
-    let proc_us = ticks * ms_per_tick * 1000;
     check(proc_us >= low && proc_us <= high,
         &format!("procfs {proc_us} us is outside RUSAGE_SELF [{low}, {high}] after thread exit"))?;
     let times_us = (t[0] + t[1]) * 10_000;
