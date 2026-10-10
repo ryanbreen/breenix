@@ -862,10 +862,53 @@ extern "x86-interrupt" fn alignment_check_handler(mut stack_frame: InterruptStac
 /// holding section itself (a kernel write to user memory under PM, such as
 /// signal-frame setup during a dispatch), and the edit runs on that section's
 /// behalf through `handle_cow_direct`. Otherwise the holder is running on
-/// another CPU: a fault taken with interrupts enabled is retried, and one
-/// taken with them masked waits for it.
+/// another CPU and the fault polls for it (`fault_manager`).
 /// Copy-on-Write statistics - re-export from architecture-independent module
 pub use crate::memory::cow_stats;
+
+/// Why `fault_manager` returned without the process manager.
+enum FaultManagerUnavailable {
+    /// This CPU holds it: the fault interrupted the holding section, which
+    /// cannot be waited for.
+    HeldHere(crate::process::PmHeldOnThisCpu),
+    /// Another CPU held it for the whole poll. The faulting code had
+    /// interrupts enabled, so the fault returns and the instruction runs again
+    /// once pending interrupts have been taken.
+    Busy,
+}
+
+/// The process manager for resolving a page fault.
+///
+/// A holder on another CPU is polled for with `poll_manager`, the bounded
+/// wait an interrupt return uses: the lock is taken at the holder's next
+/// release, and the bound keeps an interrupt that holder may need from this
+/// CPU from waiting longer than that. When the poll runs out, code that
+/// faulted with interrupts enabled returns and faults again
+/// (`FaultManagerUnavailable::Busy`), dropping the handler's preempt count, so
+/// a busy lock never keeps the thread from being switched out. Code that
+/// faulted with interrupts masked could not take an interrupt or be switched
+/// out anyway, and keeps polling.
+///
+/// Trying the lock once per fault, as the handler used to, lost almost every
+/// time against CPUs that take it for every switch: a process of a ring
+/// passing a token with sched_yield faulted on its first copy-on-write write
+/// after fork for whole quanta, keeping its CPU and the token, and the ring
+/// stopped (#1265).
+fn fault_manager(
+    may_retry: bool,
+) -> Result<crate::process::TryProcessManagerGuard, FaultManagerUnavailable> {
+    loop {
+        if let Some(held) = crate::process::pm_held_on_this_cpu() {
+            return Err(FaultManagerUnavailable::HeldHere(held));
+        }
+        if let Some(guard) = crate::process::poll_manager() {
+            return Ok(guard);
+        }
+        if may_retry {
+            return Err(FaultManagerUnavailable::Busy);
+        }
+    }
+}
 
 fn handle_cow_fault(
     faulting_addr: VirtAddr,
@@ -885,25 +928,16 @@ fn handle_cow_fault(
 
     cow_stats::TOTAL_FAULTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    loop {
-        if let Some(mut guard) = crate::process::try_manager() {
+    match fault_manager(may_retry) {
+        Ok(mut guard) => {
             cow_stats::MANAGER_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            return handle_cow_with_manager(&mut guard, faulting_addr, cr3);
+            handle_cow_with_manager(&mut guard, faulting_addr, cr3)
         }
-        // The lock is held. If it is held on this CPU, the fault interrupted
-        // the holding section, which cannot be waited for.
-        if let Some(held) = crate::process::pm_held_on_this_cpu() {
+        Err(FaultManagerUnavailable::HeldHere(held)) => {
             cow_stats::DIRECT_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            return handle_cow_direct(&held, faulting_addr, cr3);
+            handle_cow_direct(&held, faulting_addr, cr3)
         }
-        // Held on another CPU, whose holder may be waiting for an interrupt
-        // routed here. Code that faulted with interrupts enabled runs the
-        // write again once they have been taken, and faults again until the
-        // lock is free; only code that faulted with them masked waits here.
-        if may_retry {
-            return true;
-        }
-        core::hint::spin_loop();
+        Err(FaultManagerUnavailable::Busy) => true,
     }
 }
 
@@ -929,25 +963,20 @@ fn file_mapping_fault(
     } else {
         Access::Read
     };
-    match crate::memory::anon_map::handle_fault(cr3, address, access, user_thread) {
+    match crate::memory::anon_map::handle_fault(cr3, address, access, user_thread, || {
+        fault_manager(may_retry).ok()
+    }) {
         FaultOutcome::NotFile => {}
         outcome => return outcome,
     }
-    loop {
-        if let Some(mut guard) = crate::process::try_manager() {
-            return match guard.as_mut() {
-                Some(manager) => handle_fault(manager, cr3, address, access, user_thread),
-                None => FaultOutcome::NotFile,
-            };
-        }
-        if crate::process::pm_held_on_this_cpu().is_some() {
-            return FaultOutcome::NotFile;
-        }
-        // Held on another CPU: retried as for a copy-on-write fault.
-        if may_retry {
-            return FaultOutcome::Resolved;
-        }
-        core::hint::spin_loop();
+    match fault_manager(may_retry) {
+        Ok(mut guard) => match guard.as_mut() {
+            Some(manager) => handle_fault(manager, cr3, address, access, user_thread),
+            None => FaultOutcome::NotFile,
+        },
+        Err(FaultManagerUnavailable::HeldHere(_)) => FaultOutcome::NotFile,
+        // Retried as for a copy-on-write fault.
+        Err(FaultManagerUnavailable::Busy) => FaultOutcome::Resolved,
     }
 }
 
@@ -1237,12 +1266,9 @@ fn in_user_stack_growth_range(fault_addr: u64) -> bool {
 ///
 /// Returns true if the fault was handled (stack was grown), false otherwise.
 ///
-/// With `may_retry` (the faulting code had interrupts enabled), a process
-/// manager busy on another CPU returns true without growing anything: the
-/// faulting instruction runs again once pending interrupts have been taken,
-/// and faults again until the lock is free. Waiting for it here, with
-/// interrupts masked, could deadlock against a holder waiting for an interrupt
-/// routed to this CPU.
+/// A process manager busy on another CPU is polled for (`fault_manager`);
+/// past the poll, with `may_retry`, this returns true without growing
+/// anything, and the faulting instruction runs again and faults again.
 fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bool {
     let fault_addr = faulting_addr.as_u64();
 
@@ -1252,9 +1278,10 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bo
 
     // A holder on this CPU is the section this fault interrupted, which
     // cannot be waited for; no stack is grown on its behalf.
-    let mut guard = match crate::process::try_manager() {
-        Some(guard) => guard,
-        None => return may_retry && crate::process::pm_held_on_this_cpu().is_none(),
+    let mut guard = match fault_manager(may_retry) {
+        Ok(guard) => guard,
+        Err(FaultManagerUnavailable::HeldHere(_)) => return false,
+        Err(FaultManagerUnavailable::Busy) => return true,
     };
 
     let pm = match guard.as_mut() {
@@ -1286,7 +1313,8 @@ extern "x86-interrupt" fn page_fault_handler(
     // Read CR2 and CR3 first
     let cr2 = Cr2::read().unwrap_or(x86_64::VirtAddr::zero()).as_u64();
     // Whether the faulting code had interrupts enabled, so that a fault that
-    // finds the process manager busy on another CPU can return and run again.
+    // finds the process manager busy on another CPU past `fault_manager`'s
+    // poll can return and run again.
     let may_retry = stack_frame
         .cpu_flags
         .contains(x86_64::registers::rflags::RFlags::INTERRUPT_FLAG);
@@ -1368,8 +1396,9 @@ extern "x86-interrupt" fn page_fault_handler(
             crate::memory::file_map::FaultOutcome::Signal(sig) => {
                 // Raised for the thread. A handler runs on the reschedule
                 // vector's return; the default action ends the process here.
-                // A busy process manager leaves the access to fault again.
-                let caught = crate::process::try_manager().map(|guard| {
+                // A process manager busy on another CPU past `fault_manager`'s
+                // poll leaves the access to fault again.
+                let caught = fault_manager(may_retry).ok().map(|guard| {
                     let thread = crate::per_cpu::current_thread_id_lock_free();
                     guard.as_ref().is_some_and(|manager| {
                         thread
@@ -1500,10 +1529,10 @@ extern "x86-interrupt" fn page_fault_handler(
         return;
     }
 
-    // A fatal user fault needs the process manager to name its process. Held
-    // on another CPU, the fault is taken again once pending interrupts have
-    // run (see the kill path below); probing here keeps a retry from printing
-    // the diagnostics below each time.
+    // A fatal user fault needs the process manager to name its process. One
+    // held on another CPU past `fault_manager`'s poll leaves the fault to be
+    // taken again once pending interrupts have run; probing here keeps a retry
+    // from printing the diagnostics below each time.
     //
     // Holding it, the page may turn out to be mapped after all: a
     // copy-on-write break on another CPU clears the entry, flushes every CPU
@@ -1517,7 +1546,7 @@ extern "x86-interrupt" fn page_fault_handler(
     // run, the reschedule vector's return path delivers it before the
     // instruction runs again; the default action ends the process below.
     if from_userspace {
-        let Some(mut guard) = crate::process::try_manager() else {
+        let Ok(mut guard) = fault_manager(may_retry) else {
             crate::per_cpu::preempt_enable();
             return;
         };
@@ -1708,9 +1737,9 @@ extern "x86-interrupt" fn page_fault_handler(
             let mut faulting_thread_id: Option<u64> = None;
 
             // Ring 3 interrupted no holder, so a busy process manager is held
-            // on another CPU. The fault is taken again once pending interrupts
-            // have run, instead of waiting for it with them masked.
-            let Some(mut guard) = crate::process::try_manager() else {
+            // on another CPU. Past `fault_manager`'s poll the fault is taken
+            // again once pending interrupts have run.
+            let Ok(mut guard) = fault_manager(may_retry) else {
                 crate::per_cpu::preempt_enable();
                 return;
             };

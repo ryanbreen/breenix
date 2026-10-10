@@ -598,9 +598,9 @@ pub fn try_manager() -> Option<TryProcessManagerGuard> {
 #[cfg(target_arch = "x86_64")]
 const INTERRUPT_RETURN_PM_POLL_US: u64 = 200;
 
-/// x86_64: `try_manager` for an interrupt return to Ring 3 or an idle CPU's
-/// dispatch, polling the lock for up to `INTERRUPT_RETURN_PM_POLL_US` while
-/// another CPU holds it.
+/// x86_64: `try_manager` for an interrupt return to Ring 3, an idle CPU's
+/// dispatch or a page fault (`interrupts::fault_manager`), polling the lock
+/// for up to `INTERRUPT_RETURN_PM_POLL_US` while another CPU holds it.
 ///
 /// Those paths cannot wait indefinitely: the holder may be waiting for an
 /// interrupt routed to this CPU, which is why a failure is retried after a
