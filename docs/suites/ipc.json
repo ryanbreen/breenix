@@ -95,7 +95,7 @@
         },
         {
           "id": "atomic-writes",
-          "title": "Writes of 512 bytes from four writers at once are never interleaved"
+          "title": "Writes of 512 bytes from four writers contending for a full FIFO are never interleaved"
         },
         {
           "id": "poll-in",
@@ -185,7 +185,7 @@
         },
         {
           "id": "setattr",
-          "title": "mq_setattr changes only O_NONBLOCK and returns the old attributes"
+          "title": "mq_setattr changes only O_NONBLOCK, leaves the depth alone and returns the old attributes"
         },
         {
           "id": "emsgsize-receive",
@@ -355,11 +355,11 @@
         },
         {
           "id": "getvalue-waiters",
-          "title": "sem_getvalue with a waiter reports zero or a negative count"
+          "title": "sem_getvalue with one waiter reports 0 or -1"
         },
         {
           "id": "contention-cpus",
-          "title": "Processes on several processors posting and waiting lose no wakeups"
+          "title": "Processes on several processors posting to waiters already blocked lose no wakeups"
         },
         {
           "id": "mutex-cpus",
@@ -435,11 +435,11 @@
       "cases": [
         {
           "id": "ftok",
-          "title": "ftok gives the same key for one file and id and different keys for different ids"
+          "title": "ftok gives the same key for one file and id, and (policy) different keys for different ids"
         },
         {
           "id": "ftok-enoent",
-          "title": "ftok of a missing file returns -1"
+          "title": "ftok of a missing file returns -1 with ENOENT"
         },
         {
           "id": "key-private",
@@ -539,7 +539,7 @@
         },
         {
           "id": "sem-undo",
-          "title": "SEM_UNDO adjustments are undone when the process exits"
+          "title": "SEM_UNDO adjustments of a +3 and a -2 operation are undone when the process exits"
         },
         {
           "id": "sem-rmid",

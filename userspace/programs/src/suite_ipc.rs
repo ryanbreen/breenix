@@ -31,7 +31,7 @@ use libbreenix::suite::{case, case_ms_left, category, check, fail, skip, suite, 
 use libbreenix::syscall::raw;
 use std::cell::UnsafeCell;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU8, Ordering::Relaxed, Ordering::SeqCst};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicU8, Ordering::Relaxed, Ordering::SeqCst};
 
 #[cfg(target_arch = "x86_64")]
 mod nr {
@@ -122,6 +122,7 @@ const EFBIG: i64 = 27;
 const ESPIPE: i64 = 29;
 const EPIPE: i64 = 32;
 const ERANGE: i64 = 34;
+const ENOSYS: i64 = 38;
 const ENOMSG: i64 = 42;
 const EIDRM: i64 = 43;
 const EMSGSIZE: i64 = 90;
@@ -174,6 +175,8 @@ const GETZCNT: i32 = 15;
 const SETVAL: i32 = 16;
 const SETALL: i32 = 17;
 const SHM_RDONLY: i32 = 0o10000;
+/// The mode bit a removed segment that is still attached carries.
+const SHM_DEST: u32 = 0o1000;
 
 const SC_MQ_PRIO_MAX: i32 = 28;
 const SC_SEM_VALUE_MAX: i32 = 33;
@@ -347,7 +350,6 @@ c_fn! {
     "sem_getvalue" fn sem_getvalue(sem: *mut u8, value: *mut i32) -> i32;
     "shm_open" fn shm_open(name: *const u8, oflag: i32, mode: u32) -> i32;
     "shm_unlink" fn shm_unlink(name: *const u8) -> i32;
-    "ftok" fn ftok(path: *const u8, id: i32) -> i32;
 }
 
 c_or_sys! {
@@ -427,6 +429,24 @@ fn sem_open(name: &[u8], oflag: i32, mode: u32, value: u32) -> Result<i64, CaseE
 fn sem_open(name: &[u8], oflag: i32, mode: u32, value: u32) -> Result<i64, CaseError> {
     let _ = (name, oflag, mode, value);
     Err(CaseError::Fail("the C library has no sem_open".into()))
+}
+
+/// ftok: the key, or the errno of a -1 return. A key_t is a signed int, so a valid key
+/// may be negative; only -1 means failure.
+#[cfg(libc_has = "ftok")]
+fn ftok(path: *const u8, id: i32) -> Result<Result<i32, i64>, CaseError> {
+    extern "C" {
+        #[link_name = "ftok"]
+        fn f(path: *const u8, id: i32) -> i32;
+    }
+    // SAFETY: path is NUL-terminated.
+    let r = unsafe { f(path, id) };
+    Ok(if r == -1 { Err(errno()) } else { Ok(r) })
+}
+#[cfg(not(libc_has = "ftok"))]
+fn ftok(path: *const u8, id: i32) -> Result<Result<i32, i64>, CaseError> {
+    let _ = (path, id);
+    Err(CaseError::Fail("the C library has no ftok".into()))
 }
 
 /// sysconf, which returns -1 without setting errno for a value it does not report.
@@ -596,23 +616,59 @@ fn fstat_of(fd: i64) -> Result<StatBuf, CaseError> {
 // ---------------------------------------------------------------------------
 // Names and keys a case makes, removed when the case ends.
 
+#[derive(Clone, Copy)]
 enum Kind { File, Mq, Sem, Shm, MsgQueue, SemSet, Segment }
 
+impl Kind {
+    const ALL: [Kind; 7] = [Kind::File, Kind::Mq, Kind::Sem, Kind::Shm, Kind::MsgQueue, Kind::SemSet, Kind::Segment];
+    fn letter(self) -> char {
+        match self { Kind::File => 'f', Kind::Mq => 'q', Kind::Sem => 's', Kind::Shm => 'h', Kind::MsgQueue => 'm', Kind::SemSet => 'e', Kind::Segment => 'g' }
+    }
+    fn noun(self) -> &'static str {
+        match self {
+            Kind::File => "file", Kind::Mq => "message queue", Kind::Sem => "named semaphore", Kind::Shm => "shared memory object",
+            Kind::MsgQueue => "System V message queue", Kind::SemSet => "System V semaphore set", Kind::Segment => "System V segment",
+        }
+    }
+}
+
+/// Every name and identifier a case makes is written here, one per line, before the case
+/// uses it. A case the runner kills never runs its destructors, so the next case removes
+/// whatever this lists before it starts; a case whose removals all succeed deletes it.
+const JOURNAL: &str = "/tmp/ipc-made";
+
+/// Removals that failed in this process, reported by the case wrapper.
+static CLEANUP: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn cleanup_failed(msg: String) {
+    if let Ok(mut list) = CLEANUP.lock() { list.push(msg); }
+}
+
 /// A name or System V identifier the case created. Dropping it removes it, in the process
-/// that made it only: a child that inherited a copy never removes it.
+/// that made it only: a child that inherited a copy never removes it. The object must be
+/// gone afterwards, or the case fails.
 struct Made { kind: Kind, name: Vec<u8>, id: i32, owner: i32 }
 
 impl Made {
-    fn name(kind: Kind, name: &str) -> Made { Made { kind, name: c(name), id: -1, owner: pid() } }
-    fn id(kind: Kind, id: i64) -> Made { Made { kind, name: Vec::new(), id: id as i32, owner: pid() } }
+    fn name(kind: Kind, name: &str) -> Made { Made::journaled(Made { kind, name: c(name), id: -1, owner: pid() }) }
+    fn id(kind: Kind, id: i64) -> Made { Made::journaled(Made { kind, name: Vec::new(), id: id as i32, owner: pid() }) }
     fn path(&self) -> *const u8 { self.name.as_ptr() }
     fn text(&self) -> String { String::from_utf8_lossy(&self.name[..self.name.len() - 1]).into_owned() }
-}
+    fn what(&self) -> String {
+        if self.name.is_empty() { format!("{} {}", self.kind.noun(), self.id) } else { format!("{} {}", self.kind.noun(), self.text()) }
+    }
 
-impl Drop for Made {
-    fn drop(&mut self) {
-        if pid() != self.owner { return; }
-        let _ = match self.kind {
+    fn journaled(made: Made) -> Made {
+        use std::io::Write;
+        let line = if made.name.is_empty() { format!("{} {}\n", made.kind.letter(), made.id) } else { format!("{} {}\n", made.kind.letter(), made.text()) };
+        let wrote = std::fs::OpenOptions::new().create(true).append(true).open(JOURNAL).and_then(|mut f| f.write_all(line.as_bytes()));
+        if let Err(e) = wrote { cleanup_failed(format!("recording the {} in {JOURNAL} failed: {e}", made.what())); }
+        made
+    }
+
+    /// Remove the object, as the case's end does: the result of the removal call.
+    fn remove(&self) -> Result<i64, CaseError> {
+        match self.kind {
             Kind::File => unlink(self.path()),
             Kind::Mq => mq_unlink(&self.name),
             Kind::Sem => sem_unlink(self.path()),
@@ -620,8 +676,96 @@ impl Drop for Made {
             Kind::MsgQueue => msgctl(self.id, IPC_RMID, null_mut()),
             Kind::SemSet => semctl(self.id, 0, IPC_RMID, 0),
             Kind::Segment => shmctl(self.id, IPC_RMID, null_mut()),
-        };
+        }
     }
+
+    /// Whether the object is gone: None when it is, or what shows it is still there. An
+    /// object the system cannot make (its call is missing) was never made. A segment still
+    /// attached is gone once IPC_RMID has marked it for destruction (SHM_DEST).
+    fn still_there(&self) -> Option<String> {
+        let found = |ret: Result<i64, CaseError>, gone: &[i64]| -> Option<i64> {
+            match ret {
+                Err(_) => None,
+                Ok(r) if r == -ENOSYS || gone.iter().any(|&e| r == -e) => None,
+                Ok(r) => Some(r),
+            }
+        };
+        let r = match self.kind {
+            Kind::File => {
+                let mut st: StatBuf = [0; 32];
+                found(stat(self.path(), st.as_mut_ptr() as *mut u8), &[ENOENT])
+            }
+            Kind::Mq => found(mq_open(&self.name, O_RDONLY, 0, null()), &[ENOENT]).inspect(|&fd| if fd >= 0 { let _ = mq_close(fd as i32); }),
+            Kind::Sem => found(sem_open(&self.name, 0, 0, 0), &[ENOENT]).inspect(|&s| if s > 0 { let _ = sem_close(s as *mut u8); }),
+            Kind::Shm => found(shm_open(self.path(), O_RDONLY, 0), &[ENOENT]).inspect(|&fd| if fd >= 0 { let _ = close(fd as i32); }),
+            Kind::MsgQueue => {
+                let mut ds = MsqidDs::default();
+                found(msgctl(self.id, IPC_STAT, &mut ds as *mut MsqidDs as *mut u8), &[EINVAL, EIDRM])
+            }
+            Kind::SemSet => {
+                let mut ds = SemidDs::default();
+                found(semctl(self.id, 0, IPC_STAT, &mut ds as *mut SemidDs as u64), &[EINVAL, EIDRM])
+            }
+            Kind::Segment => {
+                let mut ds = ShmidDs::default();
+                let r = found(shmctl(self.id, IPC_STAT, &mut ds as *mut ShmidDs as *mut u8), &[EINVAL, EIDRM]);
+                if r == Some(0) && ds.perm.mode & SHM_DEST != 0 { None } else { r }
+            }
+        }?;
+        Some(if r < 0 { format!("looking it up returned {}", shown(r)) } else { "it can still be looked up".to_string() })
+    }
+}
+
+impl Drop for Made {
+    fn drop(&mut self) {
+        if pid() != self.owner { return; }
+        let removed = match self.remove() {
+            Ok(r) => shown(r),
+            Err(CaseError::Fail(m)) | Err(CaseError::Skip(m)) => m,
+        };
+        if let Some(why) = self.still_there() {
+            cleanup_failed(format!("the case's {} was not removed (the removal returned {removed}; {why})", self.what()));
+        }
+    }
+}
+
+/// Remove everything the journal lists, left by a case the runner killed before its
+/// destructors ran, and start a new journal.
+fn sweep_journal() {
+    if let Ok(text) = std::fs::read_to_string(JOURNAL) {
+        for line in text.lines() {
+            let Some((letter, rest)) = line.split_once(' ') else { continue };
+            let Some(kind) = Kind::ALL.into_iter().find(|k| k.letter().to_string() == letter) else { continue };
+            let by_id = matches!(kind, Kind::MsgQueue | Kind::SemSet | Kind::Segment);
+            let name = if by_id { Vec::new() } else { c(rest) };
+            let made = std::mem::ManuallyDrop::new(Made { kind, name, id: rest.parse().unwrap_or(-1), owner: pid() });
+            let _ = made.remove();
+        }
+    }
+    let _ = unlink(c(JOURNAL).as_ptr());
+}
+
+/// The case's failures to remove what it made, taken from this process's list.
+fn take_cleanup() -> Vec<String> { CLEANUP.lock().map(|mut list| std::mem::take(&mut *list)).unwrap_or_default() }
+
+/// Fold this process's failed removals into `result`.
+fn with_cleanup(result: CaseResult) -> CaseResult {
+    let failed = take_cleanup();
+    if failed.is_empty() { return result; }
+    let failed = failed.join("; ");
+    match result {
+        Ok(()) | Err(CaseError::Skip(_)) => fail(failed),
+        Err(CaseError::Fail(m)) => fail(format!("{m}; and {failed}")),
+    }
+}
+
+/// Run a case: first remove what a killed earlier case left, then run it, and fail it if
+/// anything it made is still there afterwards.
+fn cleaned(run: fn() -> CaseResult) -> CaseResult {
+    sweep_journal();
+    let result = with_cleanup(run());
+    if result.is_ok() { let _ = unlink(c(JOURNAL).as_ptr()); }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -678,7 +822,8 @@ fn spawn(body: impl FnOnce() -> CaseResult) -> Result<Child, CaseError> {
     let note = page()?;
     match process::fork() {
         Ok(ForkResult::Child) => {
-            let code = match body() {
+            let _ = take_cleanup();
+            let code = match with_cleanup(body()) {
                 Ok(()) => 0,
                 Err(CaseError::Fail(m)) | Err(CaseError::Skip(m)) => { note.say(&m); 1 }
             };
@@ -1155,7 +1300,17 @@ fn fifo_write_eagain_full() -> CaseResult {
 
 fn fifo_atomic_writes() -> CaseResult {
     const WRITERS: usize = 4;
-    const RECORDS: usize = 64;
+    // Words of the shared page: writers open and the release gate.
+    const READY: usize = 0;
+    const GO: usize = 1;
+    // Each writer writes as many records as fill the FIFO, so once the FIFO is full at
+    // least two of them are blocked in a write and contend for the room the reader makes.
+    let cap = {
+        let (_g, _gr, gw) = fifo_pair("gauge")?;
+        fill(gw, POSIX_PIPE_BUF, b'a')?
+    };
+    value("capacity", cap as i64, "", None);
+    let records = (cap / POSIX_PIPE_BUF).clamp(16, 4096);
     let f = new_fifo("fifo")?;
     let r = open_fifo(&f, O_RDONLY | O_NONBLOCK, "O_RDONLY|O_NONBLOCK")?;
     let pg = page()?;
@@ -1164,18 +1319,27 @@ fn fifo_atomic_writes() -> CaseResult {
         writers.push(spawn(|| {
             let _ = close(r as i32)?;
             let w = open_fifo(&f, O_WRONLY, "O_WRONLY in a writer")?;
-            pg.w[0].fetch_add(1, SeqCst);
-            for seq in 0..RECORDS {
+            pg.w[READY].fetch_add(1, SeqCst);
+            while pg.get(GO) == 0 { core::hint::spin_loop(); }
+            for seq in 0..records {
                 let mut record = vec![id as u8; POSIX_PIPE_BUF];
-                record[1] = seq as u8;
+                record[1..3].copy_from_slice(&(seq as u16).to_le_bytes());
                 let n = put(w, &record)?;
                 if n != POSIX_PIPE_BUF as i64 { return err(format!("writer {id}'s write {seq} returned {}", shown(n))); }
             }
             Ok(())
         })?);
     }
-    check(until(3000, || pg.get(0) == WRITERS as i64), "the writers did not all open the FIFO within 3 s")?;
-    let total = WRITERS * RECORDS * POSIX_PIPE_BUF;
+    check(until(3000, || pg.get(READY) == WRITERS as i64), "the writers did not all open the FIFO within 3 s")?;
+    pg.set(GO, 1);
+    let blocked = |ws: &[Child]| ws.iter().filter(|w| is_parked(w.pid)).count();
+    let contended = until(3000, || blocked(&writers) >= 2);
+    value("blocked", blocked(&writers) as i64, "", Some((2, WRITERS as i64)));
+    for (i, wr) in writers.iter_mut().enumerate() {
+        if let Some(status) = wr.reap() { wr.outcome(status, &format!("writer {}", i + 1))?; }
+    }
+    check(contended, "fewer than two writers were ever blocked on the full FIFO at once: the writes did not contend")?;
+    let total = WRITERS * records * POSIX_PIPE_BUF;
     let got = read_all(r, total + 1, 6000)?;
     for (i, wr) in writers.iter_mut().enumerate() { wr.finish(2000, &format!("writer {}", i + 1))?; }
     check(got.len() == total, &format!("the reader got {} bytes, expected {total}", got.len()))?;
@@ -1183,11 +1347,12 @@ fn fifo_atomic_writes() -> CaseResult {
     let mut torn = 0;
     for rec in got.chunks(POSIX_PIPE_BUF) {
         let id = rec[0] as usize;
-        let whole = (1..=WRITERS).contains(&id) && rec[1] as usize == next[id] && rec[2..].iter().all(|&b| b as usize == id);
+        let seq = usize::from(u16::from_le_bytes([rec[1], rec[2]]));
+        let whole = (1..=WRITERS).contains(&id) && seq == next[id] && rec[3..].iter().all(|&b| b as usize == id);
         if whole { next[id] += 1; } else { torn += 1; }
     }
-    value("records", (WRITERS * RECORDS - torn) as i64, "", Some(((WRITERS * RECORDS) as i64, (WRITERS * RECORDS) as i64)));
-    check(torn == 0, &format!("{torn} of {} records of {POSIX_PIPE_BUF} bytes were interleaved or out of order", WRITERS * RECORDS))
+    value("records", (WRITERS * records - torn) as i64, "", Some(((WRITERS * records) as i64, (WRITERS * records) as i64)));
+    check(torn == 0, &format!("{torn} of {} records of {POSIX_PIPE_BUF} bytes were interleaved or out of order", WRITERS * records))
 }
 
 fn fifo_poll_in() -> CaseResult {
@@ -1416,14 +1581,17 @@ fn mq_curmsgs() -> CaseResult {
 
 fn mq_setattr_case() -> CaseResult {
     let (_q, mqd) = new_mq("mq", 0, 4)?;
+    send(mqd, b"x", 0)?;
     let new = MqAttr { flags: O_NONBLOCK as i64, maxmsg: 99, msgsize: 99, curmsgs: 99, ..MqAttr::default() };
     let mut old = MqAttr::default();
     zero("mq_setattr(O_NONBLOCK)", mq_setattr(mqd, &new, &mut old)?)?;
-    check(old.flags == 0 && old.maxmsg == 4 && old.msgsize == MQ_MSGSIZE as i64, &format!(
-        "mq_setattr returned old flags {:#x}, maxmsg {}, msgsize {}", old.flags, old.maxmsg, old.msgsize))?;
+    check(old.flags == 0 && old.maxmsg == 4 && old.msgsize == MQ_MSGSIZE as i64 && old.curmsgs == 1, &format!(
+        "mq_setattr returned old flags {:#x}, maxmsg {}, msgsize {}, curmsgs {}", old.flags, old.maxmsg, old.msgsize, old.curmsgs))?;
     let a = getattr(mqd)?;
-    check(a.flags == O_NONBLOCK as i64 && a.maxmsg == 4 && a.msgsize == MQ_MSGSIZE as i64, &format!(
-        "after mq_setattr the queue has flags {:#x}, maxmsg {}, msgsize {}; only O_NONBLOCK may change", a.flags, a.maxmsg, a.msgsize))?;
+    value("depth", a.curmsgs, "", Some((1, 1)));
+    check(a.flags == O_NONBLOCK as i64 && a.maxmsg == 4 && a.msgsize == MQ_MSGSIZE as i64 && a.curmsgs == 1, &format!(
+        "after mq_setattr the queue has flags {:#x}, maxmsg {}, msgsize {}, curmsgs {}; only O_NONBLOCK may change", a.flags, a.maxmsg, a.msgsize, a.curmsgs))?;
+    ok("mq_receive of the one message", receive(mqd)?.0)?;
     want("mq_receive of the empty queue once O_NONBLOCK is set", receive(mqd)?.0, EAGAIN)
 }
 
@@ -1808,6 +1976,7 @@ fn sem_pshared_fork() -> CaseResult {
         for _ in 0..POSTS { zero("sem_post in the child", sem_post(s)?)?; }
         Ok(())
     })?;
+    wait_for(3000, "count");
     let deadline = ts(rt() + 3 * NS);
     let mut taken = 0;
     while taken < POSTS {
@@ -1859,6 +2028,7 @@ fn sem_named_processes() -> CaseResult {
         pg.set(0, mono());
         zero("sem_post in the other process", sem_post(other)?)
     })?;
+    wait_for(3000, "wait");
     let deadline = ts(rt() + 3 * NS);
     let r = sem_timedwait(s, &deadline)?;
     let woke = mono();
@@ -1896,8 +2066,8 @@ fn sem_getvalue_waiters() -> CaseResult {
     let mut waiter = spawn(|| zero("the blocked sem_wait", sem_wait(s)?))?;
     waiter.blocks("the sem_wait at zero")?;
     let v = sem_value(s)?;
-    value("value", i64::from(v), "", Some((i64::from(i32::MIN), 0)));
-    check(v <= 0, &format!("sem_getvalue with a waiter reports {v}, expected 0 or a negative count"))?;
+    value("value", i64::from(v), "", Some((-1, 0)));
+    check(v == 0 || v == -1, &format!("sem_getvalue with one waiter reports {v}, expected 0 or -1"))?;
     zero("sem_post", sem_post(s)?)?;
     waiter.finish(3000, "the waiter")
 }
@@ -1927,29 +2097,46 @@ fn start_workers(pg: &'static Page, n: usize, work: impl Fn(usize) -> CaseResult
 
 fn sem_contention_cpus() -> CaseResult {
     const POSTS: i64 = 20_000;
+    // Words of the shared page: posts taken, posts begun and the release gate.
+    const TAKEN: usize = 0;
+    const POSTED: usize = 1;
+    const GO: usize = 2;
     let n = cpu_workers()?;
+    // Posts not yet taken never exceed SEM_VALUE_MAX: the POSIX minimum, or the reported
+    // limit when sysconf reports a smaller one.
+    let bound = match sysconf(SC_SEM_VALUE_MAX) {
+        Ok(max) if max > 0 => max.min(POSIX_SEM_VALUE_MAX),
+        _ => POSIX_SEM_VALUE_MAX,
+    };
     let pg = page()?;
     let s = shared_sem(pg, 1, 0)?;
     let producers = n / 2;
     let consumers = n - producers;
     let total = producers as i64 * POSTS;
-    let start = mono();
     let mut workers = start_workers(pg, n, |i| {
         if i < producers {
-            for _ in 0..POSTS { zero("sem_post", sem_post(s)?)?; }
+            while pg.get(GO) == 0 { nap(); }
+            for _ in 0..POSTS {
+                let k = pg.w[POSTED].fetch_add(1, SeqCst);
+                while k - pg.get(TAKEN) >= bound { core::hint::spin_loop(); }
+                zero("sem_post", sem_post(s)?)?;
+            }
             return Ok(());
         }
         let c = (i - producers) as i64;
         let share = total / consumers as i64 + if c == 0 { total % consumers as i64 } else { 0 };
         for _ in 0..share {
             zero("sem_wait", sem_wait(s)?)?;
-            pg.w[0].fetch_add(1, SeqCst);
+            pg.w[TAKEN].fetch_add(1, SeqCst);
         }
         Ok(())
     })?;
+    for (i, w) in workers[producers..].iter_mut().enumerate() { w.blocks(&format!("consumer {i}'s sem_wait at zero"))?; }
+    let start = mono();
+    pg.set(GO, 1);
     let done = until(6000, || workers.iter_mut().all(|w| w.reap().is_some()));
     let ms = (mono() - start) / MS;
-    let taken = pg.get(0);
+    let taken = pg.get(TAKEN);
     value("posts", total, "", None);
     value("taken", taken, "", Some((total, total)));
     value("elapsed", ms, "ms", None);
@@ -2168,9 +2355,20 @@ struct IpcPerm { key: i32, uid: u32, gid: u32, cuid: u32, cgid: u32, mode: u32, 
 #[derive(Clone, Copy, Default)]
 struct MsqidDs { perm: IpcPerm, _stime: i64, _rtime: i64, _ctime: i64, cbytes: u64, qnum: u64, qbytes: u64, lspid: i32, lrpid: i32, _unused: [u64; 2] }
 
+/// The Linux ABI's struct semid64_ds. x86-64 pads each time with a word, so sem_nsems is at
+/// offset 80 of 104 bytes there and at offset 64 of 88 on ARM64.
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct SemidDs { perm: IpcPerm, _otime: i64, _unused1: u64, _ctime: i64, _unused2: u64, nsems: u64, _unused: [u64; 2] }
+#[cfg(target_arch = "aarch64")]
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct SemidDs { perm: IpcPerm, _otime: i64, _ctime: i64, nsems: u64, _unused: [u64; 2] }
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(core::mem::size_of::<SemidDs>() == 104 && core::mem::offset_of!(SemidDs, nsems) == 80);
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(core::mem::size_of::<SemidDs>() == 88 && core::mem::offset_of!(SemidDs, nsems) == 64);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -2244,20 +2442,76 @@ fn attach(id: i32, flags: i32) -> Result<*mut u8, CaseError> {
     Ok(p as *mut u8)
 }
 
+const SA_SIGINFO: u64 = 4;
+/// The exit status of a child whose store faulted.
+const FAULTED: i32 = 3;
+/// Where the SIGSEGV handler reports: the page of the child that expects the fault.
+static FAULT_PAGE: AtomicU64 = AtomicU64::new(0);
+/// The words of that page: the address about to be stored to, a mark that the store
+/// completed, and the signal and si_addr the handler saw.
+const STORE_AT: usize = 0;
+const STORED: usize = 1;
+const FAULT_SIG: usize = 2;
+const FAULT_ADDR: usize = 3;
+
+extern "C" fn on_store_fault(sig: i32, info: *const u8, _uc: *mut u8) {
+    let pg = FAULT_PAGE.load(SeqCst) as *const Page;
+    if !pg.is_null() {
+        // SAFETY: FAULT_PAGE is a live shared page, and info is the kernel's siginfo, whose
+        // si_addr is at offset 16 in the Linux ABI.
+        unsafe {
+            (*pg).set(FAULT_SIG, i64::from(sig));
+            (*pg).set(FAULT_ADDR, core::ptr::read_unaligned(info.add(16) as *const u64) as i64);
+        }
+    }
+    exit_group(FAULTED)
+}
+
+/// In a child, run `setup` for the address to store to, then store a word there, which
+/// must raise SIGSEGV with si_addr that address. A child that fails or faults during
+/// setup, or whose store does not fault, fails the case.
+fn store_faults(what: &str, setup: impl FnOnce() -> Result<*mut u8, CaseError>) -> CaseResult {
+    let pg = page()?;
+    let mut child = spawn(|| {
+        let p = setup()?;
+        FAULT_PAGE.store(pg as *const Page as u64, SeqCst);
+        set_action(SIGSEGV, &Sigaction { handler: on_store_fault as usize as u64, flags: SA_SIGINFO, restorer: 0, mask: 0 })?;
+        pg.set(STORE_AT, p as i64);
+        poke(p, 0, 1);
+        pg.set(STORED, 1);
+        fail(format!("{what} did not fault"))
+    })?;
+    let status = child.wait(3000, "the child")?;
+    if status != FAULTED << 8 {
+        child.outcome(status, "the child")?;
+        return fail(format!("the child storing {what} {}, expected SIGSEGV", status_text(status)));
+    }
+    let at = pg.get(STORE_AT);
+    check(at != 0 && pg.get(STORED) == 0, &format!("the child faulted before its store {what}: its setup did not finish"))?;
+    let (sig, addr) = (pg.get(FAULT_SIG), pg.get(FAULT_ADDR));
+    check(sig == i64::from(SIGSEGV), &format!("the store {what} raised signal {sig}, expected SIGSEGV"))?;
+    check(addr == at, &format!("the store {what} faulted with si_addr {addr:#x}, not the address stored to {at:#x}"))
+}
+
 fn sysv_ftok() -> CaseResult {
     let f = Made::name(Kind::File, &tmp_path("key"));
     ok("creating the key file", open(f.path(), O_RDWR | O_CREAT | O_EXCL, 0o600)?)?;
-    let a = ok("ftok(path, 'A')", ftok(f.path(), b'A' as i32)?)?;
-    let again = ok("ftok(path, 'A') again", ftok(f.path(), b'A' as i32)?)?;
-    let b = ok("ftok(path, 'B')", ftok(f.path(), b'B' as i32)?)?;
+    let key = |what: &str, id: u8| -> Result<i32, CaseError> {
+        ftok(f.path(), i32::from(id))?.or_else(|e| err(format!("{what} failed with {}", errname(e))))
+    };
+    let a = key("ftok(path, 'A')", b'A')?;
+    let again = key("ftok(path, 'A') again", b'A')?;
+    let b = key("ftok(path, 'B')", b'B')?;
     check(a == again, &format!("ftok gave {a:#x} and then {again:#x} for the same file and id"))?;
-    check(a != b, &format!("ftok gave {a:#x} for ids 'A' and 'B' alike"))
+    check(a != b, &format!("policy: ftok gave {a:#x} for ids 'A' and 'B' alike; POSIX says different ids should give different keys"))
 }
 
 fn sysv_ftok_enoent() -> CaseResult {
     let path = c(&tmp_path("missing"));
-    let r = ftok(path.as_ptr(), b'A' as i32)?;
-    check(r < 0, &format!("ftok of a missing file returned {r:#x}, expected -1"))
+    match ftok(path.as_ptr(), b'A' as i32)? {
+        Ok(key) => fail(format!("ftok of a missing file returned key {key:#x}, expected -1 with ENOENT")),
+        Err(e) => check(e == ENOENT, &format!("ftok of a missing file failed with {}, expected ENOENT", errname(e))),
+    }
 }
 
 fn sysv_key_private() -> CaseResult {
@@ -2522,7 +2776,20 @@ fn sysv_sem_undo() -> CaseResult {
     child.finish(3000, "the child")?;
     check(during == 3, &format!("the value is {during} while the child lives, expected 3"))?;
     let after = get_val(id, 0)?;
-    check(after == 0, &format!("the value is {after} after the child exited, expected its SEM_UNDO adjustment undone to 0"))
+    check(after == 0, &format!("the value is {after} after the child exited, expected its SEM_UNDO adjustment undone to 0"))?;
+    set_val(id, 0, 5)?;
+    let mut taker = spawn(|| {
+        zero("semop(-2, SEM_UNDO)", sem_ops(id, &[op(0, -2, SEM_UNDO)])?)?;
+        pg.set(2, 1);
+        check(until(3000, || pg.get(3) == 1), "the case did not read the value within 3 s")
+    })?;
+    check(until(3000, || pg.get(2) == 1 || taker.reap().is_some()), "the child taking 2 did not make its semop within 3 s")?;
+    let during = get_val(id, 0)?;
+    pg.set(3, 1);
+    taker.finish(3000, "the child taking 2")?;
+    check(during == 3, &format!("the value is {during} while the child that took 2 of 5 lives, expected 3"))?;
+    let after = get_val(id, 0)?;
+    check(after == 5, &format!("the value is {after} after the child that took 2 with SEM_UNDO exited, expected 5"))
 }
 
 fn sysv_sem_rmid() -> CaseResult {
@@ -2616,15 +2883,11 @@ fn sysv_shmdt() -> CaseResult {
     zero("shmdt", shmdt(p)?)?;
     let n = shm_stat(id)?.nattch;
     check(n == 0, &format!("shm_nattch is {n} after shmdt"))?;
-    let mut toucher = spawn(|| {
+    store_faults("to a detached address", || {
         let q = attach(id, 0)?;
         zero("shmdt in the child", shmdt(q)?)?;
-        poke(q, 0, 1);
-        fail("a store to the detached address did not fault")
-    })?;
-    let status = toucher.wait(3000, "the child")?;
-    check(status & 0x7f == SIGSEGV, &format!("the child storing to a detached address {}, expected SIGSEGV", status_text(status)))
-        .or_else(|e| toucher.outcome(status, "the child").and(Err(e)))
+        Ok(q)
+    })
 }
 
 fn sysv_shm_rmid() -> CaseResult {
@@ -2642,15 +2905,11 @@ fn sysv_shm_rmid() -> CaseResult {
 
 fn sysv_shm_rdonly() -> CaseResult {
     let (_m, id) = new_segment(IPC_PRIVATE, 4096, 0o600)?;
-    let mut toucher = spawn(|| {
+    store_faults("through a SHM_RDONLY attachment", || {
         let q = attach(id, SHM_RDONLY)?;
         check(peek(q, 0) == 0, "the read-only attachment read a nonzero word")?;
-        poke(q, 0, 1);
-        fail("a store through a SHM_RDONLY attachment did not fault")
-    })?;
-    let status = toucher.wait(3000, "the child")?;
-    check(status & 0x7f == SIGSEGV, &format!("the child storing through SHM_RDONLY {}, expected SIGSEGV", status_text(status)))
-        .or_else(|e| toucher.outcome(status, "the child").and(Err(e)))
+        Ok(q)
+    })
 }
 
 fn sysv_shmget_einval() -> CaseResult {
@@ -2668,154 +2927,154 @@ fn sysv_shm_perm() -> CaseResult {
 
 static SUITE: Suite = suite("ipc", "IPC", &[
     category("fifos", "Named pipes (FIFOs)", &[
-        case("mkfifo", "mkfifo creates a FIFO that stat reports as S_IFIFO with the mode less the umask", fifo_mkfifo),
-        case("mkfifo-eexist", "mkfifo of an existing path fails with EEXIST", fifo_mkfifo_eexist),
-        case("mkfifo-enoent", "mkfifo in a missing directory fails with ENOENT", fifo_mkfifo_enoent),
-        case("open-read-blocks", "A blocking O_RDONLY open waits until a writer opens the FIFO", fifo_open_read_blocks),
-        case("open-write-blocks", "A blocking O_WRONLY open waits until a reader opens the FIFO", fifo_open_write_blocks),
-        case("open-read-nonblock", "O_RDONLY|O_NONBLOCK opens at once with no writer", fifo_open_read_nonblock),
-        case("open-write-enxio", "O_WRONLY|O_NONBLOCK with no reader fails with ENXIO", fifo_open_write_enxio),
-        case("open-write-nonblock", "O_WRONLY|O_NONBLOCK opens at once when a reader has the FIFO open", fifo_open_write_nonblock),
-        case("fstat", "fstat of either end of an open FIFO reports S_IFIFO", fifo_fstat),
-        case("lseek-espipe", "lseek on either end of a FIFO fails with ESPIPE", fifo_lseek_espipe),
-        case("transfer", "256 KiB written in one process are read in order in another, then end of file", fifo_transfer),
-        case("partial-read", "A read asking for more than is buffered returns what is there", fifo_partial_read),
-        case("read-blocks", "A blocking read of an empty FIFO waits for a writer's data", fifo_read_blocks),
-        case("read-eagain", "An O_NONBLOCK read of an empty FIFO with a writer fails with EAGAIN", fifo_read_eagain),
-        case("eof-last-writer", "Read returns end of file only once the last writer has closed", fifo_eof_last_writer),
-        case("eof-blocked-reader", "A reader blocked on an empty FIFO returns end of file when the last writer closes", fifo_eof_blocked_reader),
-        case("eof-no-writer", "A read of a FIFO no process has open for writing returns end of file", fifo_eof_no_writer),
-        case("sigpipe", "A write with no reader raises SIGPIPE", fifo_sigpipe),
-        case("epipe", "With SIGPIPE ignored, a write with no reader fails with EPIPE", fifo_epipe),
-        case("write-blocks-full", "A blocking write to a full FIFO waits until the reader makes room", fifo_write_blocks_full),
-        case("write-eagain-full", "An O_NONBLOCK write of 512 bytes to a full FIFO fails with EAGAIN and writes nothing", fifo_write_eagain_full),
-        case("atomic-writes", "Writes of 512 bytes from four writers at once are never interleaved", fifo_atomic_writes),
-        case("poll-in", "poll reports POLLIN on a reader once data is buffered and not before", fifo_poll_in),
-        case("poll-out", "poll reports POLLOUT on a writer with room", fifo_poll_out),
-        case("poll-hup", "poll reports POLLHUP on a reader once the last writer has closed", fifo_poll_hup),
-        case("poll-wakes", "A poll blocked on a reader wakes when another process writes", fifo_poll_wakes),
-        case("select-read", "select reports a reader ready once data is buffered and not before", fifo_select_read),
-        case("select-write", "select reports a writer with room ready", fifo_select_write),
-        case("select-wakes", "A select blocked on a reader wakes when another process writes", fifo_select_wakes),
-        case("unlink-open", "Unlinking a FIFO leaves its open ends working", fifo_unlink_open),
-        case("reopen", "Data left when every end closed is discarded; the FIFO opens again empty", fifo_reopen),
+        case("mkfifo", "mkfifo creates a FIFO that stat reports as S_IFIFO with the mode less the umask", || cleaned(fifo_mkfifo)),
+        case("mkfifo-eexist", "mkfifo of an existing path fails with EEXIST", || cleaned(fifo_mkfifo_eexist)),
+        case("mkfifo-enoent", "mkfifo in a missing directory fails with ENOENT", || cleaned(fifo_mkfifo_enoent)),
+        case("open-read-blocks", "A blocking O_RDONLY open waits until a writer opens the FIFO", || cleaned(fifo_open_read_blocks)),
+        case("open-write-blocks", "A blocking O_WRONLY open waits until a reader opens the FIFO", || cleaned(fifo_open_write_blocks)),
+        case("open-read-nonblock", "O_RDONLY|O_NONBLOCK opens at once with no writer", || cleaned(fifo_open_read_nonblock)),
+        case("open-write-enxio", "O_WRONLY|O_NONBLOCK with no reader fails with ENXIO", || cleaned(fifo_open_write_enxio)),
+        case("open-write-nonblock", "O_WRONLY|O_NONBLOCK opens at once when a reader has the FIFO open", || cleaned(fifo_open_write_nonblock)),
+        case("fstat", "fstat of either end of an open FIFO reports S_IFIFO", || cleaned(fifo_fstat)),
+        case("lseek-espipe", "lseek on either end of a FIFO fails with ESPIPE", || cleaned(fifo_lseek_espipe)),
+        case("transfer", "256 KiB written in one process are read in order in another, then end of file", || cleaned(fifo_transfer)),
+        case("partial-read", "A read asking for more than is buffered returns what is there", || cleaned(fifo_partial_read)),
+        case("read-blocks", "A blocking read of an empty FIFO waits for a writer's data", || cleaned(fifo_read_blocks)),
+        case("read-eagain", "An O_NONBLOCK read of an empty FIFO with a writer fails with EAGAIN", || cleaned(fifo_read_eagain)),
+        case("eof-last-writer", "Read returns end of file only once the last writer has closed", || cleaned(fifo_eof_last_writer)),
+        case("eof-blocked-reader", "A reader blocked on an empty FIFO returns end of file when the last writer closes", || cleaned(fifo_eof_blocked_reader)),
+        case("eof-no-writer", "A read of a FIFO no process has open for writing returns end of file", || cleaned(fifo_eof_no_writer)),
+        case("sigpipe", "A write with no reader raises SIGPIPE", || cleaned(fifo_sigpipe)),
+        case("epipe", "With SIGPIPE ignored, a write with no reader fails with EPIPE", || cleaned(fifo_epipe)),
+        case("write-blocks-full", "A blocking write to a full FIFO waits until the reader makes room", || cleaned(fifo_write_blocks_full)),
+        case("write-eagain-full", "An O_NONBLOCK write of 512 bytes to a full FIFO fails with EAGAIN and writes nothing", || cleaned(fifo_write_eagain_full)),
+        case("atomic-writes", "Writes of 512 bytes from four writers contending for a full FIFO are never interleaved", || cleaned(fifo_atomic_writes)),
+        case("poll-in", "poll reports POLLIN on a reader once data is buffered and not before", || cleaned(fifo_poll_in)),
+        case("poll-out", "poll reports POLLOUT on a writer with room", || cleaned(fifo_poll_out)),
+        case("poll-hup", "poll reports POLLHUP on a reader once the last writer has closed", || cleaned(fifo_poll_hup)),
+        case("poll-wakes", "A poll blocked on a reader wakes when another process writes", || cleaned(fifo_poll_wakes)),
+        case("select-read", "select reports a reader ready once data is buffered and not before", || cleaned(fifo_select_read)),
+        case("select-write", "select reports a writer with room ready", || cleaned(fifo_select_write)),
+        case("select-wakes", "A select blocked on a reader wakes when another process writes", || cleaned(fifo_select_wakes)),
+        case("unlink-open", "Unlinking a FIFO leaves its open ends working", || cleaned(fifo_unlink_open)),
+        case("reopen", "Data left when every end closed is discarded; the FIFO opens again empty", || cleaned(fifo_reopen)),
     ]),
     category("mq", "POSIX message queues", &[
-        case("open-create", "mq_open with O_CREAT|O_EXCL creates a queue with the attributes given", mq_open_create),
-        case("open-eexist", "mq_open with O_CREAT|O_EXCL of an existing name fails with EEXIST", mq_open_eexist),
-        case("open-enoent", "mq_open of a missing name without O_CREAT fails with ENOENT", mq_open_enoent),
-        case("open-attr-einval", "mq_open with mq_maxmsg or mq_msgsize of 0 fails with EINVAL", mq_open_attr_einval),
-        case("open-default-attr", "mq_open with no attributes creates a queue with positive limits", mq_open_default_attr),
-        case("close", "mq_close ends the descriptor and later use fails with EBADF", mq_close_case),
-        case("unlink", "mq_unlink removes the name, and a second mq_unlink fails with ENOENT", mq_unlink_case),
-        case("unlink-open", "A queue unlinked while open keeps working through its descriptor", mq_unlink_open),
-        case("send-receive", "mq_receive returns a sent message's bytes, length and priority", mq_send_receive),
-        case("priority-order", "Messages are received highest priority first, oldest first within a priority", mq_priority_order),
-        case("curmsgs", "mq_getattr counts the messages queued", mq_curmsgs),
-        case("setattr", "mq_setattr changes only O_NONBLOCK and returns the old attributes", mq_setattr_case),
-        case("emsgsize-receive", "mq_receive with a buffer smaller than mq_msgsize fails with EMSGSIZE and leaves the message", mq_emsgsize_receive),
-        case("emsgsize-send", "mq_send of more than mq_msgsize bytes fails with EMSGSIZE", mq_emsgsize_send),
-        case("prio-max", "Priority 31 is accepted, sysconf reports MQ_PRIO_MAX, and mq_send at MQ_PRIO_MAX fails with EINVAL", mq_prio_max),
-        case("eagain-full", "In O_NONBLOCK mode mq_send to a full queue fails with EAGAIN", mq_eagain_full),
-        case("eagain-empty", "In O_NONBLOCK mode mq_receive of an empty queue fails with EAGAIN", mq_eagain_empty),
-        case("ebadf-mode", "mq_send on a read-only descriptor and mq_receive on a write-only one fail with EBADF", mq_ebadf_mode),
-        case("timedreceive-timeout", "mq_timedreceive of an empty queue fails with ETIMEDOUT at its deadline", mq_timedreceive_timeout),
-        case("timedsend-timeout", "mq_timedsend to a full queue fails with ETIMEDOUT at its deadline", mq_timedsend_timeout),
-        case("timed-einval", "mq_timedreceive that would block with tv_nsec out of range fails with EINVAL", mq_timed_einval),
-        case("timed-ready", "mq_timedreceive returns a queued message even when its deadline has passed", mq_timed_ready),
-        case("receive-blocks", "A receiver blocked on an empty queue wakes when another process sends", mq_receive_blocks),
-        case("send-blocks", "A sender blocked on a full queue wakes when another process receives", mq_send_blocks),
-        case("notify-signal", "mq_notify with SIGEV_SIGNAL sends the signal with SI_MESGQ and the value when a message arrives", mq_notify_signal),
-        case("notify-once", "A notification is removed once sent and can be registered again", mq_notify_once),
-        case("notify-ebusy", "mq_notify from a second process while one is registered fails with EBUSY", mq_notify_ebusy),
-        case("notify-receiver-waiting", "No notification is sent while a receiver waits, and the registration stays", mq_notify_receiver_waiting),
-        case("notify-remove", "mq_notify with no sigevent removes the registration", mq_notify_remove),
-        case("fork-shared", "A queue descriptor inherited across fork reaches the same queue", mq_fork_shared),
-        case("name-shared", "A process that opens the queue by name exchanges messages with its creator", mq_name_shared),
-        case("permissions", "Another user's mq_open of a 0600 queue fails with EACCES, and of a 0644 queue opens it read-only only", mq_permissions),
+        case("open-create", "mq_open with O_CREAT|O_EXCL creates a queue with the attributes given", || cleaned(mq_open_create)),
+        case("open-eexist", "mq_open with O_CREAT|O_EXCL of an existing name fails with EEXIST", || cleaned(mq_open_eexist)),
+        case("open-enoent", "mq_open of a missing name without O_CREAT fails with ENOENT", || cleaned(mq_open_enoent)),
+        case("open-attr-einval", "mq_open with mq_maxmsg or mq_msgsize of 0 fails with EINVAL", || cleaned(mq_open_attr_einval)),
+        case("open-default-attr", "mq_open with no attributes creates a queue with positive limits", || cleaned(mq_open_default_attr)),
+        case("close", "mq_close ends the descriptor and later use fails with EBADF", || cleaned(mq_close_case)),
+        case("unlink", "mq_unlink removes the name, and a second mq_unlink fails with ENOENT", || cleaned(mq_unlink_case)),
+        case("unlink-open", "A queue unlinked while open keeps working through its descriptor", || cleaned(mq_unlink_open)),
+        case("send-receive", "mq_receive returns a sent message's bytes, length and priority", || cleaned(mq_send_receive)),
+        case("priority-order", "Messages are received highest priority first, oldest first within a priority", || cleaned(mq_priority_order)),
+        case("curmsgs", "mq_getattr counts the messages queued", || cleaned(mq_curmsgs)),
+        case("setattr", "mq_setattr changes only O_NONBLOCK, leaves the depth alone and returns the old attributes", || cleaned(mq_setattr_case)),
+        case("emsgsize-receive", "mq_receive with a buffer smaller than mq_msgsize fails with EMSGSIZE and leaves the message", || cleaned(mq_emsgsize_receive)),
+        case("emsgsize-send", "mq_send of more than mq_msgsize bytes fails with EMSGSIZE", || cleaned(mq_emsgsize_send)),
+        case("prio-max", "Priority 31 is accepted, sysconf reports MQ_PRIO_MAX, and mq_send at MQ_PRIO_MAX fails with EINVAL", || cleaned(mq_prio_max)),
+        case("eagain-full", "In O_NONBLOCK mode mq_send to a full queue fails with EAGAIN", || cleaned(mq_eagain_full)),
+        case("eagain-empty", "In O_NONBLOCK mode mq_receive of an empty queue fails with EAGAIN", || cleaned(mq_eagain_empty)),
+        case("ebadf-mode", "mq_send on a read-only descriptor and mq_receive on a write-only one fail with EBADF", || cleaned(mq_ebadf_mode)),
+        case("timedreceive-timeout", "mq_timedreceive of an empty queue fails with ETIMEDOUT at its deadline", || cleaned(mq_timedreceive_timeout)),
+        case("timedsend-timeout", "mq_timedsend to a full queue fails with ETIMEDOUT at its deadline", || cleaned(mq_timedsend_timeout)),
+        case("timed-einval", "mq_timedreceive that would block with tv_nsec out of range fails with EINVAL", || cleaned(mq_timed_einval)),
+        case("timed-ready", "mq_timedreceive returns a queued message even when its deadline has passed", || cleaned(mq_timed_ready)),
+        case("receive-blocks", "A receiver blocked on an empty queue wakes when another process sends", || cleaned(mq_receive_blocks)),
+        case("send-blocks", "A sender blocked on a full queue wakes when another process receives", || cleaned(mq_send_blocks)),
+        case("notify-signal", "mq_notify with SIGEV_SIGNAL sends the signal with SI_MESGQ and the value when a message arrives", || cleaned(mq_notify_signal)),
+        case("notify-once", "A notification is removed once sent and can be registered again", || cleaned(mq_notify_once)),
+        case("notify-ebusy", "mq_notify from a second process while one is registered fails with EBUSY", || cleaned(mq_notify_ebusy)),
+        case("notify-receiver-waiting", "No notification is sent while a receiver waits, and the registration stays", || cleaned(mq_notify_receiver_waiting)),
+        case("notify-remove", "mq_notify with no sigevent removes the registration", || cleaned(mq_notify_remove)),
+        case("fork-shared", "A queue descriptor inherited across fork reaches the same queue", || cleaned(mq_fork_shared)),
+        case("name-shared", "A process that opens the queue by name exchanges messages with its creator", || cleaned(mq_name_shared)),
+        case("permissions", "Another user's mq_open of a 0600 queue fails with EACCES, and of a 0644 queue opens it read-only only", || cleaned(mq_permissions)),
     ]),
     category("semaphores", "POSIX semaphores", &[
-        case("init", "sem_init sets the value sem_getvalue reports", sem_init_case),
-        case("init-einval", "sem_init with a value above SEM_VALUE_MAX fails with EINVAL", sem_init_einval),
-        case("post-wait", "sem_post adds one and sem_wait takes one", sem_post_wait),
-        case("trywait", "sem_trywait at zero fails with EAGAIN and leaves the value", sem_trywait_case),
-        case("wait-blocks", "sem_wait at zero waits for a sem_post from another process", sem_wait_blocks),
-        case("timedwait-timeout", "sem_timedwait at zero fails with ETIMEDOUT at its deadline", sem_timedwait_timeout),
-        case("timedwait-einval", "sem_timedwait at zero with tv_nsec out of range fails with EINVAL", sem_timedwait_einval),
-        case("timedwait-ready", "sem_timedwait takes an available semaphore even when its deadline has passed", sem_timedwait_ready),
-        case("eintr", "A caught signal interrupts sem_wait with EINTR", sem_eintr),
-        case("destroy", "sem_destroy of a semaphore no one waits on returns 0", sem_destroy_case),
-        case("pshared-fork", "An unnamed semaphore with pshared set in shared memory carries 100 posts across fork", sem_pshared_fork),
-        case("open-create", "sem_open with O_CREAT|O_EXCL creates a named semaphore with the value given", sem_open_create),
-        case("open-eexist", "sem_open with O_CREAT|O_EXCL of an existing name fails with EEXIST", sem_open_eexist),
-        case("open-enoent", "sem_open of a missing name without O_CREAT fails with ENOENT", sem_open_enoent),
-        case("open-same", "Opening one name twice in a process returns the same address", sem_open_same),
-        case("open-einval", "sem_open with O_CREAT and a value above SEM_VALUE_MAX fails with EINVAL", sem_open_einval_value),
-        case("named-processes", "A named semaphore opened by name in another process is the same semaphore", sem_named_processes),
-        case("close", "sem_close returns 0 and the name still opens", sem_close_case),
-        case("unlink", "sem_unlink removes the name, open handles keep working, and a second sem_unlink fails with ENOENT", sem_unlink_case),
-        case("permissions", "Another user's sem_open of a 0600 semaphore fails with EACCES", sem_permissions),
-        case("getvalue-waiters", "sem_getvalue with a waiter reports zero or a negative count", sem_getvalue_waiters),
-        case("contention-cpus", "Processes on several processors posting and waiting lose no wakeups", sem_contention_cpus),
-        case("mutex-cpus", "A semaphore of value 1 keeps processes on several processors out of each other's critical section", sem_mutex_cpus),
+        case("init", "sem_init sets the value sem_getvalue reports", || cleaned(sem_init_case)),
+        case("init-einval", "sem_init with a value above SEM_VALUE_MAX fails with EINVAL", || cleaned(sem_init_einval)),
+        case("post-wait", "sem_post adds one and sem_wait takes one", || cleaned(sem_post_wait)),
+        case("trywait", "sem_trywait at zero fails with EAGAIN and leaves the value", || cleaned(sem_trywait_case)),
+        case("wait-blocks", "sem_wait at zero waits for a sem_post from another process", || cleaned(sem_wait_blocks)),
+        case("timedwait-timeout", "sem_timedwait at zero fails with ETIMEDOUT at its deadline", || cleaned(sem_timedwait_timeout)),
+        case("timedwait-einval", "sem_timedwait at zero with tv_nsec out of range fails with EINVAL", || cleaned(sem_timedwait_einval)),
+        case("timedwait-ready", "sem_timedwait takes an available semaphore even when its deadline has passed", || cleaned(sem_timedwait_ready)),
+        case("eintr", "A caught signal interrupts sem_wait with EINTR", || cleaned(sem_eintr)),
+        case("destroy", "sem_destroy of a semaphore no one waits on returns 0", || cleaned(sem_destroy_case)),
+        case("pshared-fork", "An unnamed semaphore with pshared set in shared memory carries 100 posts across fork", || cleaned(sem_pshared_fork)),
+        case("open-create", "sem_open with O_CREAT|O_EXCL creates a named semaphore with the value given", || cleaned(sem_open_create)),
+        case("open-eexist", "sem_open with O_CREAT|O_EXCL of an existing name fails with EEXIST", || cleaned(sem_open_eexist)),
+        case("open-enoent", "sem_open of a missing name without O_CREAT fails with ENOENT", || cleaned(sem_open_enoent)),
+        case("open-same", "Opening one name twice in a process returns the same address", || cleaned(sem_open_same)),
+        case("open-einval", "sem_open with O_CREAT and a value above SEM_VALUE_MAX fails with EINVAL", || cleaned(sem_open_einval_value)),
+        case("named-processes", "A named semaphore opened by name in another process is the same semaphore", || cleaned(sem_named_processes)),
+        case("close", "sem_close returns 0 and the name still opens", || cleaned(sem_close_case)),
+        case("unlink", "sem_unlink removes the name, open handles keep working, and a second sem_unlink fails with ENOENT", || cleaned(sem_unlink_case)),
+        case("permissions", "Another user's sem_open of a 0600 semaphore fails with EACCES", || cleaned(sem_permissions)),
+        case("getvalue-waiters", "sem_getvalue with one waiter reports 0 or -1", || cleaned(sem_getvalue_waiters)),
+        case("contention-cpus", "Processes on several processors posting to waiters already blocked lose no wakeups", || cleaned(sem_contention_cpus)),
+        case("mutex-cpus", "A semaphore of value 1 keeps processes on several processors out of each other's critical section", || cleaned(sem_mutex_cpus)),
     ]),
     category("shm", "POSIX shared memory", &[
-        case("open-create", "shm_open with O_CREAT|O_EXCL creates an empty object with the mode less the umask", shm_open_create),
-        case("open-eexist", "shm_open with O_CREAT|O_EXCL of an existing name fails with EEXIST", shm_open_eexist),
-        case("open-enoent", "shm_open of a missing name without O_CREAT fails with ENOENT", shm_open_enoent),
-        case("ftruncate", "ftruncate sizes the object and the new bytes read as zero", shm_ftruncate),
-        case("map-fork", "Stores through a MAP_SHARED mapping are seen across fork both ways", shm_map_fork),
-        case("map-name", "A process that opens the object by name sees its creator's stores, and the creator sees its", shm_map_name),
-        case("persist", "An object keeps its size and contents with no descriptor or mapping until it is unlinked", shm_persist),
-        case("close-keeps-mapping", "A mapping stays usable after its descriptor is closed", shm_close_keeps_mapping),
-        case("unlink", "shm_unlink removes the name, mappings keep working, and a second shm_unlink fails with ENOENT", shm_unlink_case),
-        case("unlink-recreate", "After shm_unlink, shm_open with O_CREAT|O_EXCL makes a new empty object", shm_unlink_recreate),
-        case("rdonly-map", "A writable MAP_SHARED mapping of an O_RDONLY descriptor fails with EACCES", shm_rdonly_map),
-        case("rdonly-ftruncate", "ftruncate of an O_RDONLY descriptor fails with EINVAL or EBADF", shm_rdonly_ftruncate),
-        case("permissions", "Another user's shm_open of a 0600 object fails with EACCES, and of a 0644 object opens it read-only only", shm_permissions),
-        case("trunc", "shm_open with O_TRUNC sets an existing object's size to 0", shm_trunc),
+        case("open-create", "shm_open with O_CREAT|O_EXCL creates an empty object with the mode less the umask", || cleaned(shm_open_create)),
+        case("open-eexist", "shm_open with O_CREAT|O_EXCL of an existing name fails with EEXIST", || cleaned(shm_open_eexist)),
+        case("open-enoent", "shm_open of a missing name without O_CREAT fails with ENOENT", || cleaned(shm_open_enoent)),
+        case("ftruncate", "ftruncate sizes the object and the new bytes read as zero", || cleaned(shm_ftruncate)),
+        case("map-fork", "Stores through a MAP_SHARED mapping are seen across fork both ways", || cleaned(shm_map_fork)),
+        case("map-name", "A process that opens the object by name sees its creator's stores, and the creator sees its", || cleaned(shm_map_name)),
+        case("persist", "An object keeps its size and contents with no descriptor or mapping until it is unlinked", || cleaned(shm_persist)),
+        case("close-keeps-mapping", "A mapping stays usable after its descriptor is closed", || cleaned(shm_close_keeps_mapping)),
+        case("unlink", "shm_unlink removes the name, mappings keep working, and a second shm_unlink fails with ENOENT", || cleaned(shm_unlink_case)),
+        case("unlink-recreate", "After shm_unlink, shm_open with O_CREAT|O_EXCL makes a new empty object", || cleaned(shm_unlink_recreate)),
+        case("rdonly-map", "A writable MAP_SHARED mapping of an O_RDONLY descriptor fails with EACCES", || cleaned(shm_rdonly_map)),
+        case("rdonly-ftruncate", "ftruncate of an O_RDONLY descriptor fails with EINVAL or EBADF", || cleaned(shm_rdonly_ftruncate)),
+        case("permissions", "Another user's shm_open of a 0600 object fails with EACCES, and of a 0644 object opens it read-only only", || cleaned(shm_permissions)),
+        case("trunc", "shm_open with O_TRUNC sets an existing object's size to 0", || cleaned(shm_trunc)),
     ]),
     category("sysv", "System V IPC", &[
-        case("ftok", "ftok gives the same key for one file and id and different keys for different ids", sysv_ftok),
-        case("ftok-enoent", "ftok of a missing file returns -1", sysv_ftok_enoent),
-        case("key-private", "msgget of IPC_PRIVATE makes a new queue every time", sysv_key_private),
-        case("msgget", "msgget with IPC_CREAT makes a queue IPC_STAT reports with its key, mode, owner and no messages", sysv_msgget),
-        case("msgget-excl", "msgget with IPC_CREAT|IPC_EXCL of a used key fails with EEXIST, and without it returns the queue", sysv_msgget_excl),
-        case("msgget-enoent", "msgget of an unused key without IPC_CREAT fails with ENOENT", sysv_msgget_enoent),
-        case("msg-send-receive", "msgrcv returns a message's type, bytes and length", sysv_msg_send_receive),
-        case("msg-types", "msgrcv with msgtyp 0, positive and negative takes the message POSIX names", sysv_msg_types),
-        case("msg-nowait", "msgrcv with IPC_NOWAIT of an empty queue fails with ENOMSG", sysv_msg_nowait),
-        case("msg-full", "msgsnd with IPC_NOWAIT to a queue at msg_qbytes fails with EAGAIN", sysv_msg_full),
-        case("msg-e2big", "msgrcv into a short buffer fails with E2BIG, and MSG_NOERROR truncates", sysv_msg_e2big),
-        case("msg-blocks", "msgrcv blocked on an empty queue wakes when another process sends", sysv_msg_blocks),
-        case("msg-stat", "IPC_STAT reports msg_qnum, msg_lspid and msg_lrpid", sysv_msg_stat),
-        case("msg-set", "IPC_SET changes the mode and msg_qbytes IPC_STAT then reports", sysv_msg_set),
-        case("msg-rmid", "IPC_RMID wakes a blocked msgrcv with EIDRM and the id stops working", sysv_msg_rmid),
-        case("msg-perm", "Another user's msgsnd to a 0600 queue fails with EACCES", sysv_msg_perm),
-        case("semget", "semget makes a set IPC_STAT reports with its number of semaphores and mode", sysv_semget),
-        case("semget-einval", "semget of an existing key asking for more semaphores than the set has fails with EINVAL", sysv_semget_einval),
-        case("semctl-val", "SETVAL and GETVAL, SETALL and GETALL set and read the values", sysv_semctl_val),
-        case("semctl-erange", "semctl SETVAL above the largest semaphore value fails with ERANGE", sysv_semctl_erange),
-        case("semop", "semop adds to, takes from and waits for zero on a semaphore", sysv_semop),
-        case("semop-nowait", "A semop that would wait fails with EAGAIN under IPC_NOWAIT", sysv_semop_nowait),
-        case("semop-atomic", "A semop of several operations applies all of them or none", sysv_semop_atomic),
-        case("semop-blocks", "A semop waiting to take from a semaphore wakes when another process adds", sysv_semop_blocks),
-        case("semop-zero-blocks", "A semop waiting for zero wakes when the value reaches zero", sysv_semop_zero_blocks),
-        case("semctl-counts", "GETNCNT and GETZCNT count waiting processes, and GETPID names the last semop's process", sysv_semctl_counts),
-        case("sem-undo", "SEM_UNDO adjustments are undone when the process exits", sysv_sem_undo),
-        case("sem-rmid", "IPC_RMID wakes a blocked semop with EIDRM and the id stops working", sysv_sem_rmid),
-        case("sem-perm", "Another user's semop on a 0600 set fails with EACCES", sysv_sem_perm),
-        case("semop-efbig", "semop on a semaphore number past the set's size fails with EFBIG", sysv_semop_efbig),
-        case("semtimedop", "Linux ABI: semtimedop that would wait fails with EAGAIN when its timeout passes", sysv_semtimedop),
-        case("shmget", "shmget makes a segment IPC_STAT reports with its size, mode, creator and no attachments", sysv_shmget),
-        case("shm-zero", "A new segment reads as zero", sysv_shm_zero),
-        case("shmat-fork", "A segment attached before fork is attached in the child, and stores are seen both ways", sysv_shmat_fork),
-        case("shmat-other", "A process that attaches the segment by id sees another's stores, and shm_nattch counts both", sysv_shmat_other),
-        case("shmdt", "shmdt detaches: shm_nattch drops and a store to the address faults", sysv_shmdt),
-        case("shm-rmid", "IPC_RMID removes an attached segment's key at once and leaves its memory usable until the last detach", sysv_shm_rmid),
-        case("shm-rdonly", "A store through a SHM_RDONLY attachment faults", sysv_shm_rdonly),
-        case("shmget-einval", "shmget of an existing key asking for more than the segment's size fails with EINVAL", sysv_shmget_einval),
-        case("shm-perm", "Another user's shmat of a 0600 segment fails with EACCES", sysv_shm_perm),
+        case("ftok", "ftok gives the same key for one file and id, and (policy) different keys for different ids", || cleaned(sysv_ftok)),
+        case("ftok-enoent", "ftok of a missing file returns -1 with ENOENT", || cleaned(sysv_ftok_enoent)),
+        case("key-private", "msgget of IPC_PRIVATE makes a new queue every time", || cleaned(sysv_key_private)),
+        case("msgget", "msgget with IPC_CREAT makes a queue IPC_STAT reports with its key, mode, owner and no messages", || cleaned(sysv_msgget)),
+        case("msgget-excl", "msgget with IPC_CREAT|IPC_EXCL of a used key fails with EEXIST, and without it returns the queue", || cleaned(sysv_msgget_excl)),
+        case("msgget-enoent", "msgget of an unused key without IPC_CREAT fails with ENOENT", || cleaned(sysv_msgget_enoent)),
+        case("msg-send-receive", "msgrcv returns a message's type, bytes and length", || cleaned(sysv_msg_send_receive)),
+        case("msg-types", "msgrcv with msgtyp 0, positive and negative takes the message POSIX names", || cleaned(sysv_msg_types)),
+        case("msg-nowait", "msgrcv with IPC_NOWAIT of an empty queue fails with ENOMSG", || cleaned(sysv_msg_nowait)),
+        case("msg-full", "msgsnd with IPC_NOWAIT to a queue at msg_qbytes fails with EAGAIN", || cleaned(sysv_msg_full)),
+        case("msg-e2big", "msgrcv into a short buffer fails with E2BIG, and MSG_NOERROR truncates", || cleaned(sysv_msg_e2big)),
+        case("msg-blocks", "msgrcv blocked on an empty queue wakes when another process sends", || cleaned(sysv_msg_blocks)),
+        case("msg-stat", "IPC_STAT reports msg_qnum, msg_lspid and msg_lrpid", || cleaned(sysv_msg_stat)),
+        case("msg-set", "IPC_SET changes the mode and msg_qbytes IPC_STAT then reports", || cleaned(sysv_msg_set)),
+        case("msg-rmid", "IPC_RMID wakes a blocked msgrcv with EIDRM and the id stops working", || cleaned(sysv_msg_rmid)),
+        case("msg-perm", "Another user's msgsnd to a 0600 queue fails with EACCES", || cleaned(sysv_msg_perm)),
+        case("semget", "semget makes a set IPC_STAT reports with its number of semaphores and mode", || cleaned(sysv_semget)),
+        case("semget-einval", "semget of an existing key asking for more semaphores than the set has fails with EINVAL", || cleaned(sysv_semget_einval)),
+        case("semctl-val", "SETVAL and GETVAL, SETALL and GETALL set and read the values", || cleaned(sysv_semctl_val)),
+        case("semctl-erange", "semctl SETVAL above the largest semaphore value fails with ERANGE", || cleaned(sysv_semctl_erange)),
+        case("semop", "semop adds to, takes from and waits for zero on a semaphore", || cleaned(sysv_semop)),
+        case("semop-nowait", "A semop that would wait fails with EAGAIN under IPC_NOWAIT", || cleaned(sysv_semop_nowait)),
+        case("semop-atomic", "A semop of several operations applies all of them or none", || cleaned(sysv_semop_atomic)),
+        case("semop-blocks", "A semop waiting to take from a semaphore wakes when another process adds", || cleaned(sysv_semop_blocks)),
+        case("semop-zero-blocks", "A semop waiting for zero wakes when the value reaches zero", || cleaned(sysv_semop_zero_blocks)),
+        case("semctl-counts", "GETNCNT and GETZCNT count waiting processes, and GETPID names the last semop's process", || cleaned(sysv_semctl_counts)),
+        case("sem-undo", "SEM_UNDO adjustments of a +3 and a -2 operation are undone when the process exits", || cleaned(sysv_sem_undo)),
+        case("sem-rmid", "IPC_RMID wakes a blocked semop with EIDRM and the id stops working", || cleaned(sysv_sem_rmid)),
+        case("sem-perm", "Another user's semop on a 0600 set fails with EACCES", || cleaned(sysv_sem_perm)),
+        case("semop-efbig", "semop on a semaphore number past the set's size fails with EFBIG", || cleaned(sysv_semop_efbig)),
+        case("semtimedop", "Linux ABI: semtimedop that would wait fails with EAGAIN when its timeout passes", || cleaned(sysv_semtimedop)),
+        case("shmget", "shmget makes a segment IPC_STAT reports with its size, mode, creator and no attachments", || cleaned(sysv_shmget)),
+        case("shm-zero", "A new segment reads as zero", || cleaned(sysv_shm_zero)),
+        case("shmat-fork", "A segment attached before fork is attached in the child, and stores are seen both ways", || cleaned(sysv_shmat_fork)),
+        case("shmat-other", "A process that attaches the segment by id sees another's stores, and shm_nattch counts both", || cleaned(sysv_shmat_other)),
+        case("shmdt", "shmdt detaches: shm_nattch drops and a store to the address faults", || cleaned(sysv_shmdt)),
+        case("shm-rmid", "IPC_RMID removes an attached segment's key at once and leaves its memory usable until the last detach", || cleaned(sysv_shm_rmid)),
+        case("shm-rdonly", "A store through a SHM_RDONLY attachment faults", || cleaned(sysv_shm_rdonly)),
+        case("shmget-einval", "shmget of an existing key asking for more than the segment's size fails with EINVAL", || cleaned(sysv_shmget_einval)),
+        case("shm-perm", "Another user's shmat of a 0600 segment fails with EACCES", || cleaned(sysv_shm_perm)),
     ]),
 ]);
 
