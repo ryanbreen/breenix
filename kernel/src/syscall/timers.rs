@@ -2,7 +2,7 @@
 //! timer_getoverrun and timer_delete. The timers themselves, and how they
 //! expire and signal, are in `crate::signal::timers`.
 
-use super::errno::{EFAULT, EINVAL, EOPNOTSUPP, ESRCH};
+use super::errno::{EAGAIN, EFAULT, EINVAL, EOPNOTSUPP, ESRCH};
 use super::userptr::{copy_from_user, copy_to_user};
 use super::SyscallResult;
 use crate::signal::timers::{clock, Notify, Now, SIGEV_NONE, SIGEV_SIGNAL, SIGEV_THREAD, SIGEV_THREAD_ID};
@@ -97,7 +97,7 @@ fn timer_create(clock_id: i32, sevp: u64, timerid: u64) -> Result<u64, u64> {
     };
 
     let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)?;
-    let (timers, thread_clock, limit) = {
+    let (timers, id) = {
         let guard = crate::process::manager();
         let manager = guard.as_ref().ok_or(ESRCH as u64)?;
         let (pid, process) = manager.find_process_by_thread(tid).ok_or(ESRCH as u64)?;
@@ -111,11 +111,18 @@ fn timer_create(clock_id: i32, sevp: u64, timerid: u64) -> Result<u64, u64> {
                 return Err(EINVAL as u64);
             }
         }
-        let thread_clock = (clock_id == clock::THREAD_CPUTIME).then(|| process.signals.thread.clone());
+        // A timer is charged to its creator's real user, against
+        // RLIMIT_SIGPENDING, for as long as it exists. The process manager is
+        // held from the count to the creation, so that two creations cannot
+        // both pass a limit only one of them fits under.
         let limit = process.limits.get(crate::process::limits::SIGPENDING).soft;
-        (process.itimers.clone(), thread_clock, usize::try_from(limit).unwrap_or(usize::MAX))
+        if super::signal::sigpending_charged(manager, process.cred.uid) >= limit {
+            return Err(EAGAIN as u64);
+        }
+        let thread_clock = (clock_id == clock::THREAD_CPUTIME).then(|| process.signals.thread.clone());
+        let id = process.itimers.posix.create(clock_id, notify, signo, value, thread_clock)?;
+        (process.itimers.clone(), id)
     };
-    let id = timers.posix.create(clock_id, notify, signo, value, thread_clock, limit)?;
     if copy_to_user(timerid as *mut i32, &id).is_err() {
         let _ = timers.posix.delete(id);
         return Err(EFAULT as u64);

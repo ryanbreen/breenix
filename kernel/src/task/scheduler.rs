@@ -4971,6 +4971,20 @@ impl Scheduler {
         if let Some(thread) = self.current_thread_mut() {
             thread.charge_timer_cpu();
         }
+        crate::signal::timers::retry_job_control();
+        // A process whose every thread has exited keeps its row until it is
+        // reaped, but its timers stop: none of them may expire or keep the
+        // CPU-time pass below running for a process that no longer runs.
+        for index in 0..self.signal_timer_groups.len() {
+            let Some(group) = self.signal_timer_groups[index].0.upgrade() else { continue; };
+            let alive = self.threads.iter().any(|t| {
+                t.state != ThreadState::Terminated
+                    && t.signal_timers.as_ref().is_some_and(|timers| alloc::sync::Arc::ptr_eq(timers, &group))
+            });
+            if !alive {
+                group.disarm_all();
+            }
+        }
         self.signal_timer_groups.retain(|(timers, cpu)| cpu.strong_count() != 0 && timers.upgrade().is_some_and(|t| t.is_active()));
         // A timer counting CPU time reads the account its threads are charged
         // to, so the threads running on the other CPUs are charged too.

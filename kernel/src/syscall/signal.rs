@@ -277,6 +277,23 @@ enum Recipient {
 }
 
 /// Send a signal to a specific process
+/// What RLIMIT_SIGPENDING bounds for real user `uid`: the realtime signal
+/// instances queued for its processes, and the POSIX timers they hold, each
+/// of which stands for the one signal it may have pending, as Linux charges a
+/// timer's preallocated signal to its creator. Every row is counted, exited
+/// ones included, and a thread group's timers once, at its leader.
+pub(crate) fn sigpending_charged(manager: &crate::process::ProcessManager, uid: u32) -> u64 {
+    manager
+        .iter_processes()
+        .filter(|(_, p)| p.cred.uid == uid)
+        .map(|(pid, p)| {
+            let leader = p.thread_group_id.map_or(true, |group| group == pid.as_u64());
+            let timers = if leader { p.itimers.posix.count() } else { 0 };
+            (p.signals.queued_count() + timers) as u64
+        })
+        .sum()
+}
+
 fn send_signal_to_process(target_pid: ProcessId, sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
     send_signal(target_pid, sig, sender, info, Recipient::Process)
 }
@@ -365,14 +382,8 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
         let at_limit = crate::signal::types::is_realtime(sig)
             && !process.signals.discards(sig)
             && {
-            let uid = process.cred.uid;
             let limit = process.limits.get(crate::process::limits::SIGPENDING).soft;
-            let queued: u64 = manager
-                .iter_processes()
-                .filter(|(_, p)| p.cred.uid == uid)
-                .map(|(_, p)| p.signals.queued_count() as u64)
-                .sum();
-            queued >= limit
+            sigpending_charged(manager, process.cred.uid) >= limit
         };
 
         if let Some(process) = manager.get_process_mut(recipient) {

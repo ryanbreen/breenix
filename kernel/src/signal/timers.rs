@@ -12,6 +12,12 @@
 //! carries SI_TIMER, the timer's ID and its sigev_value, and that holds the
 //! timer's `TimerSignal`; taking the instance for delivery reads the overrun
 //! count off it and starts the count again from zero.
+//!
+//! A recipient that exits before its check gives the due signal back for the
+//! scheduler's next pass to bind to another thread (`release_due`). SIGCONT
+//! and the stop signals act on the whole process, which takes the process
+//! manager, so their due signals are generated from the timer softirq rather
+//! than at a recipient's check (`JOB_DUE`).
 
 use super::types::ThreadSignals;
 use alloc::sync::Arc;
@@ -41,6 +47,27 @@ const QUEUED: u64 = 1 << 63;
 /// order their timers expired.
 static NEXT_DUE: AtomicU64 = AtomicU64::new(1);
 
+/// `TimerSignal::due_for` of a due signal whose recipient exited before its
+/// signal check: the scheduler's next pass binds it to another thread.
+const REBIND: usize = usize::MAX;
+
+/// `TimerSignal::due_for` of a due SIGCONT or stop signal, which the timer
+/// softirq generates (`generate_job_control`).
+const JOB: usize = usize::MAX - 1;
+
+/// How many timers have a due SIGCONT or stop signal waiting for the softirq.
+static JOB_DUE: AtomicUsize = AtomicUsize::new(0);
+
+/// `TimerSignal::shown` while no siginfo has been read off the pending signal.
+const NOT_SHOWN: u64 = u64::MAX;
+
+/// Whether `sig` acts on the whole process when generated: SIGCONT continues
+/// it and a stop signal may stop it, which `kill` does under the process
+/// manager.
+fn is_job_control(sig: u32) -> bool {
+    sig == super::constants::SIGCONT || super::constants::sig_mask(sig) & super::constants::STOP_SIGNALS != 0
+}
+
 /// What a timer and the signal it has pending share.
 pub struct TimerSignal {
     /// The timer's ID, as timer_create returned it.
@@ -51,10 +78,13 @@ pub struct TimerSignal {
     /// The overrun count of the signal delivered last (timer_getoverrun).
     last_overrun: AtomicI32,
     /// The `ThreadSignals` address of the thread whose next signal check
-    /// queues the due signal; 0 while none is due.
+    /// queues the due signal, `REBIND` or `JOB`; 0 while none is due.
     due_for: AtomicUsize,
     /// When it became due, in `NEXT_DUE` order.
     due_seq: AtomicU64,
+    /// The overrun count the pending signal's siginfo was last read with
+    /// (`overrun`), which delivery then reports, or `NOT_SHOWN`.
+    shown: AtomicU64,
 }
 
 impl TimerSignal {
@@ -65,6 +95,14 @@ impl TimerSignal {
             last_overrun: AtomicI32::new(0),
             due_for: AtomicUsize::new(0),
             due_seq: AtomicU64::new(0),
+            shown: AtomicU64::new(NOT_SHOWN),
+        }
+    }
+
+    /// Clear the due mark, accounting for a due job-control signal.
+    fn clear_due(&self) {
+        if self.due_for.swap(0, Ordering::AcqRel) == JOB {
+            JOB_DUE.fetch_sub(1, Ordering::AcqRel);
         }
     }
 
@@ -84,16 +122,25 @@ impl TimerSignal {
         old & QUEUED == 0
     }
 
-    /// The overrun count the pending signal would carry if delivered now.
+    /// The overrun count the pending signal carries if delivered now, for a
+    /// siginfo copied out before the signal is taken. Delivery then reports
+    /// this same count, so si_overrun and timer_getoverrun agree even when
+    /// the timer expires again in between.
     pub fn overrun(&self) -> i32 {
-        (self.state.load(Ordering::Acquire) & 0xffff_ffff) as i32
+        let overrun = self.state.load(Ordering::Acquire) & 0xffff_ffff;
+        self.shown.store(overrun, Ordering::Release);
+        overrun as i32
     }
 
     /// The pending signal is being delivered: its overrun count, which
     /// timer_getoverrun reports from here on. A later expiry generates a new
-    /// signal.
+    /// signal. When its siginfo was already read (`overrun`), the count read
+    /// is the one delivered; expiries counted after that read are not
+    /// reported.
     pub fn deliver(&self) -> i32 {
-        let overrun = (self.state.swap(0, Ordering::AcqRel) & 0xffff_ffff) as i32;
+        let counted = self.state.swap(0, Ordering::AcqRel) & 0xffff_ffff;
+        let shown = self.shown.swap(NOT_SHOWN, Ordering::AcqRel);
+        let overrun = if shown == NOT_SHOWN { counted } else { shown.min(counted) } as i32;
         self.last_overrun.store(overrun, Ordering::Release);
         overrun
     }
@@ -101,7 +148,8 @@ impl TimerSignal {
     /// The pending signal was discarded undelivered (ignored, or no thread
     /// could take it): a later expiry generates a new one.
     pub fn discard(&self) {
-        self.due_for.store(0, Ordering::Release);
+        self.clear_due();
+        self.shown.store(NOT_SHOWN, Ordering::Release);
         self.state.store(0, Ordering::Release);
     }
 }
@@ -217,8 +265,20 @@ pub mod clock {
 
 
 impl PosixTimers {
+    /// Whether the scheduler visits this table: a timer is armed, or one has
+    /// a due signal not yet queued, which the scheduler may have to bind to
+    /// another thread. A table a syscall holds counts as active.
     pub fn is_active(&self) -> bool {
         self.armed.load(Ordering::Acquire) != 0
+            || self.table.try_lock().map_or(true, |table| {
+                table.timers.iter().any(|t| t.signal.due_for.load(Ordering::Acquire) != 0)
+            })
+    }
+
+    /// How many timers the process holds: each counts against its user's
+    /// RLIMIT_SIGPENDING, as the signal it may have queued.
+    pub fn count(&self) -> usize {
+        self.table.lock().timers.len()
     }
 
     fn recount(&self, table: &Table) {
@@ -227,8 +287,8 @@ impl PosixTimers {
     }
 
     /// Create a timer on `clock`, telling of its expiry as `notify` with
-    /// signal `signo` and `value`; its ID, or EAGAIN when the process already
-    /// holds `limit` timers.
+    /// signal `signo` and `value`; its ID, or EAGAIN when there is no memory
+    /// for it. The caller checks RLIMIT_SIGPENDING.
     pub fn create(
         &self,
         clock: i32,
@@ -236,23 +296,23 @@ impl PosixTimers {
         signo: u32,
         value: Option<u64>,
         thread_clock: Option<Arc<ThreadSignals>>,
-        limit: usize,
     ) -> Result<i32, u64> {
         let mut table = self.table.lock();
-        if table.timers.len() >= limit {
-            return Err(crate::syscall::errno::EAGAIN as u64);
-        }
         let mut id = table.next_id;
         while table.timers.iter().any(|t| t.signal.id == id) {
             id = id.wrapping_add(1).max(0);
         }
-        table.next_id = id.wrapping_add(1).max(0);
         table
             .timers
             .try_reserve(1)
             .map_err(|_| crate::syscall::errno::EAGAIN as u64)?;
+        let signal = Arc::try_new(TimerSignal::new(id)).map_err(|_| crate::syscall::errno::EAGAIN as u64)?;
+        if notify != Notify::Nothing && is_job_control(signo) {
+            register_job_control_softirq();
+        }
+        table.next_id = id.wrapping_add(1).max(0);
         table.timers.push(PosixTimer {
-            signal: Arc::new(TimerSignal::new(id)),
+            signal,
             clock,
             thread_clock,
             notify,
@@ -330,9 +390,40 @@ impl PosixTimers {
             .position(|t| t.signal.id == id)
             .ok_or(crate::syscall::errno::EINVAL as u64)?;
         let timer = table.timers.remove(at);
-        timer.signal.due_for.store(0, Ordering::Release);
+        // A signal already queued stays; one due and not yet queued is gone.
+        if timer.signal.due_for.load(Ordering::Acquire) != 0 {
+            timer.signal.discard();
+        }
         self.recount(&table);
         Ok(())
+    }
+
+    /// The thread whose signal state is `signals` has exited. A signal due
+    /// for it and not yet queued is bound to another thread of the process at
+    /// the scheduler's next pass, which discards it if there is none, so the
+    /// timer is not left counting overruns of a signal no thread will take.
+    pub fn release_due(&self, signals: &ThreadSignals) {
+        let me = signals as *const ThreadSignals as usize;
+        let table = self.table.lock();
+        for timer in table.timers.iter() {
+            let _ = timer.signal.due_for.compare_exchange(me, REBIND, Ordering::AcqRel, Ordering::Acquire);
+        }
+    }
+
+    /// The process has exited: disarm every timer and discard what is due
+    /// and not yet queued. Skipped while a syscall holds the table; the
+    /// scheduler tries again on its next pass.
+    pub fn try_disarm_all(&self) {
+        let Some(mut table) = self.table.try_lock() else {
+            return;
+        };
+        for timer in table.timers.iter_mut() {
+            timer.deadline = 0;
+            if timer.signal.due_for.load(Ordering::Acquire) != 0 {
+                timer.signal.discard();
+            }
+        }
+        self.recount(&table);
     }
 
     /// Delete every timer: exec.
@@ -369,6 +460,22 @@ impl PosixTimers {
         };
         let mut due = false;
         for timer in table.timers.iter_mut() {
+            if timer.signal.due_for.load(Ordering::Acquire) == REBIND {
+                let thread = match timer.notify {
+                    Notify::Thread(tid) => Some(tid),
+                    _ => None,
+                };
+                match pick(thread, timer.signo) {
+                    Some(recipient) => {
+                        timer.signal.due_for.store(recipient as *const ThreadSignals as usize, Ordering::Release);
+                        recipient
+                            .posix_pending
+                            .fetch_or(super::constants::sig_mask(timer.signo), Ordering::Release);
+                        due = true;
+                    }
+                    None => timer.signal.discard(),
+                }
+            }
             if timer.deadline == 0 {
                 continue;
             }
@@ -394,9 +501,15 @@ impl PosixTimers {
             if !timer.signal.expire(expiries) {
                 continue;
             }
+            timer.signal.due_seq.store(NEXT_DUE.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+            if is_job_control(timer.signo) {
+                timer.signal.due_for.store(JOB, Ordering::Release);
+                JOB_DUE.fetch_add(1, Ordering::AcqRel);
+                crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::Timer);
+                continue;
+            }
             match pick(thread, timer.signo) {
                 Some(recipient) => {
-                    timer.signal.due_seq.store(NEXT_DUE.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
                     timer.signal.due_for.store(recipient as *const ThreadSignals as usize, Ordering::Release);
                     recipient
                         .posix_pending
@@ -410,25 +523,122 @@ impl PosixTimers {
         due
     }
 
-    /// The signals of this process's timers due for the thread whose signal
-    /// state is `signals`, oldest first, each as (signal, siginfo, whether
-    /// process-directed, timer). Their due marks are cleared.
-    pub fn take_due(&self, signals: &ThreadSignals) -> Vec<(u32, super::types::SigInfo, bool, Arc<TimerSignal>)> {
+    /// The oldest signal of this process's timers due for the thread whose
+    /// signal state is `signals`, as (signal, siginfo, whether
+    /// process-directed, timer), its due mark cleared. Allocates nothing.
+    pub fn take_next_due(&self, signals: &ThreadSignals) -> Option<(u32, super::types::SigInfo, bool, Arc<TimerSignal>)> {
         let me = signals as *const ThreadSignals as usize;
         let table = self.table.lock();
-        let mut due: Vec<_> = table
+        let timer = table
             .timers
             .iter()
             .filter(|t| t.signal.due_for.load(Ordering::Acquire) == me)
-            .map(|t| {
-                t.signal.due_for.store(0, Ordering::Release);
-                let info = super::types::SigInfo::timer(t.signal.id, t.value);
-                let process = !matches!(t.notify, Notify::Thread(_));
-                (t.signal.due_seq.load(Ordering::Relaxed), t.signo, info, process, t.signal.clone())
-            })
-            .collect();
-        drop(table);
-        due.sort_unstable_by_key(|entry| entry.0);
-        due.into_iter().map(|(_, sig, info, process, timer)| (sig, info, process, timer)).collect()
+            .min_by_key(|t| t.signal.due_seq.load(Ordering::Relaxed))?;
+        timer.signal.due_for.store(0, Ordering::Release);
+        let process = !matches!(timer.notify, Notify::Thread(_));
+        Some((timer.signo, super::types::SigInfo::timer(timer.signal.id, timer.value), process, timer.signal.clone()))
+    }
+
+    /// The oldest due SIGCONT or stop signal of this process's timers, as
+    /// (signal, siginfo, the thread SIGEV_THREAD_ID names, timer), its due
+    /// mark cleared. None too when a syscall holds the table.
+    fn take_job_due(&self) -> Option<(u32, super::types::SigInfo, Option<u64>, Arc<TimerSignal>)> {
+        let table = self.table.try_lock()?;
+        let timer = table
+            .timers
+            .iter()
+            .filter(|t| t.signal.due_for.load(Ordering::Acquire) == JOB)
+            .min_by_key(|t| t.signal.due_seq.load(Ordering::Relaxed))?;
+        timer.signal.clear_due();
+        let thread = match timer.notify {
+            Notify::Thread(tid) => Some(tid),
+            _ => None,
+        };
+        Some((timer.signo, super::types::SigInfo::timer(timer.signal.id, timer.value), thread, timer.signal.clone()))
+    }
+
+    /// Mark `timer`'s signal due for the timer softirq again: there was no
+    /// memory to queue it.
+    fn redo_job_due(&self, timer: &TimerSignal) {
+        timer.due_for.store(JOB, Ordering::Release);
+        JOB_DUE.fetch_add(1, Ordering::AcqRel);
     }
 }
+
+/// Register the timer softirq that generates due SIGCONT and stop signals,
+/// once, before the first timer that sends one can expire.
+fn register_job_control_softirq() {
+    static REGISTERED: spin::Once<()> = spin::Once::new();
+    REGISTERED.call_once(|| {
+        crate::task::softirqd::register_softirq_handler(
+            crate::task::softirqd::SoftirqType::Timer,
+            generate_job_control,
+        );
+    });
+}
+
+/// Ask for the timer softirq again while job-control signals are due: the
+/// last run could not take the process manager. Called on the scheduler's
+/// timer pass.
+pub fn retry_job_control() {
+    if JOB_DUE.load(Ordering::Acquire) != 0 {
+        crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::Timer);
+    }
+}
+
+/// The timer softirq: generate every due SIGCONT and stop signal of a POSIX
+/// timer as `kill` generates them, with the process manager held. SIGCONT
+/// continues the process and is then queued; a stop signal whose action is
+/// the default stops the process now and is consumed, else it is queued.
+/// Never waits for the process manager: when it is busy the scheduler's next
+/// pass raises the softirq again.
+fn generate_job_control(_: crate::task::softirqd::SoftirqType) {
+    if JOB_DUE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let Some(mut guard) = crate::process::try_manager() else {
+        return;
+    };
+    let Some(manager) = guard.as_mut() else {
+        return;
+    };
+    loop {
+        let found = manager.iter_processes().find_map(|(pid, p)| {
+            let leader = p.thread_group_id.map_or(true, |group| group == pid.as_u64());
+            if !leader {
+                return None;
+            }
+            p.itimers.posix.take_job_due().map(|due| (pid, p.itimers.clone(), due))
+        });
+        let Some((pid, timers, (sig, info, thread, timer))) = found else {
+            break;
+        };
+        if sig == super::constants::SIGCONT {
+            super::delivery::continue_thread_group_locked(manager, pid);
+        } else if super::delivery::generate_stop_locked(manager, pid, sig, None) {
+            timer.deliver();
+            continue;
+        }
+        let recipient = match thread {
+            Some(tid) => manager.find_process_by_thread(tid).map(|(row, _)| row),
+            None => Some(manager.signal_recipient(pid, sig)),
+        };
+        let Some(row) = recipient.and_then(|row| manager.get_process_mut(row)) else {
+            timer.discard();
+            continue;
+        };
+        if !row.signals.reserve_timer_signal() {
+            timers.posix.redo_job_due(&timer);
+            break;
+        }
+        row.signals.queue_timer_signal(sig, info, thread.is_none(), timer);
+        let wake = row.main_thread.as_ref().filter(|_| row.job.stopped.is_none()).map(|t| t.id);
+        if let Some(tid) = wake {
+            crate::task::scheduler::with_scheduler(|scheduler| {
+                scheduler.unblock_for_signal(tid);
+                scheduler.unblock_for_child_exit(tid);
+            });
+        }
+    }
+}
+

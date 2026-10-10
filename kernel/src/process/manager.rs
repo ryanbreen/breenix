@@ -2198,9 +2198,7 @@ impl ProcessManager {
             };
             // Make room on the target first, so that an instance taken off
             // the source is never lost; without memory it stays where it is.
-            if crate::signal::types::is_realtime(sig)
-                && !self.get_process_mut(pid).unwrap().signals.reserve_instance()
-            {
+            if !self.get_process_mut(pid).unwrap().signals.reserve_instance() {
                 break;
             }
             let row = self.get_process_mut(source).unwrap();
@@ -3824,8 +3822,10 @@ impl ProcessManager {
         // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
         // SIG_IGN handlers are preserved
         process.signals.exec_reset();
-        // exec deletes the caller's POSIX timers; interval timers survive.
+        // exec deletes the caller's POSIX timers, and the signals they sent
+        // that are still pending; interval timers survive.
         process.itimers.posix.clear();
+        process.signals.drop_timer_signals();
         process.has_exec = true;
         // Reset mmap state for the new address space
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
@@ -4270,8 +4270,10 @@ impl ProcessManager {
 
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
-        // exec deletes the caller's POSIX timers; interval timers survive.
+        // exec deletes the caller's POSIX timers, and the signals they sent
+        // that are still pending; interval timers survive.
         process.itimers.posix.clear();
+        process.signals.drop_timer_signals();
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
@@ -4655,8 +4657,10 @@ impl ProcessManager {
         process.heap_end = heap_base;
 
         process.signals.exec_reset();
-        // exec deletes the caller's POSIX timers; interval timers survive.
+        // exec deletes the caller's POSIX timers, and the signals they sent
+        // that are still pending; interval timers survive.
         process.itimers.posix.clear();
+        process.signals.drop_timer_signals();
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
@@ -4998,8 +5002,10 @@ impl ProcessManager {
 
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
-        // exec deletes the caller's POSIX timers; interval timers survive.
+        // exec deletes the caller's POSIX timers, and the signals they sent
+        // that are still pending; interval timers survive.
         process.itimers.posix.clear();
+        process.signals.drop_timer_signals();
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();

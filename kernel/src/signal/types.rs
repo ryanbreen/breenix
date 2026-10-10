@@ -319,6 +319,9 @@ pub struct ThreadSignals {
     /// Signals of POSIX timers the scheduler expired with this thread as the
     /// recipient, not yet queued (`SignalState::collect_timer_signals`).
     pub posix_pending: AtomicU64,
+    /// A POSIX timer signal is due here that the last signal check had no
+    /// memory to queue; the next check tries again.
+    pub posix_retry: AtomicBool,
 }
 
 impl ThreadSignals {
@@ -464,33 +467,89 @@ impl SignalState {
             pending &= !sig_mask(sig);
             self.set_process_pending(sig);
         }
-        if self.thread.posix_pending.swap(0, Ordering::AcqRel) != 0 {
-            for (sig, info, process, timer) in timers.posix.take_due(&self.thread) {
-                self.generate_timer(sig, info, process, timer);
+        let due = self.thread.posix_pending.swap(0, Ordering::AcqRel) != 0;
+        if due || self.thread.posix_retry.swap(false, Ordering::AcqRel) {
+            loop {
+                // Room first, so that a signal taken off its timer is always
+                // queued; without memory it stays due for the next check.
+                if !self.reserve_timer_signal() {
+                    self.thread.posix_retry.store(true, Ordering::Release);
+                    break;
+                }
+                let Some((sig, info, process, timer)) = timers.posix.take_next_due(&self.thread) else {
+                    break;
+                };
+                self.queue_timer_signal(sig, info, process, timer);
             }
         }
     }
 
+    /// Make room for the instances `queue_timer_signal` queues, so that it
+    /// allocates nothing. False when there is no memory for them.
+    pub fn reserve_timer_signal(&mut self) -> bool {
+        self.queued.try_reserve(2).is_ok()
+    }
+
     /// Queue a POSIX timer's signal, as an instance that holds the timer
-    /// whatever the signal's number, so delivery can read its overrun count.
-    /// A signal discarded here, or one there is no memory to queue, is given
-    /// back to the timer, whose next expiry generates another.
-    fn generate_timer(&mut self, sig: u32, info: SigInfo, process: bool, timer: Arc<super::timers::TimerSignal>) {
+    /// whatever the signal's number, so delivery can read its overrun count;
+    /// `reserve_timer_signal` must have made room first. A signal discarded
+    /// here is given back to the timer, whose next expiry generates another.
+    /// An ordinary standard signal of the same number already pending keeps
+    /// its place ahead of it, as an instance of its own, so taking the
+    /// timer's does not take it too.
+    pub fn queue_timer_signal(&mut self, sig: u32, info: SigInfo, process: bool, timer: Arc<super::timers::TimerSignal>) {
         if self.discards(sig) {
             timer.discard();
             return;
         }
-        if self.queued.try_reserve(1).is_err() {
-            timer.discard();
-            self.generate_unqueued(sig, info, process);
-            return;
-        }
+        let bit = sig_mask(sig);
+        self.queue_ordinary_pending(sig);
         let seq = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
         self.queued.push(Instance { sig, info, seq, process, timer: Some(timer) });
-        let bit = sig_mask(sig);
         self.pending |= bit;
         if process {
             self.process_pending |= bit;
+        }
+    }
+
+    /// Before an instance of standard signal `sig` is queued: an ordinary
+    /// `sig` already pending, which has no instance, gets one, older than the
+    /// one about to be queued, so each is taken in turn and the pending bit
+    /// stays until both are. Room for it must have been reserved.
+    fn queue_ordinary_pending(&mut self, sig: u32) {
+        let bit = sig_mask(sig);
+        if is_realtime(sig) || self.pending & bit == 0 || self.queued.iter().any(|i| i.sig == sig) {
+            return;
+        }
+        let seq = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+        let info = self.handlers.info[(sig - 1) as usize];
+        let process = self.process_pending & bit != 0;
+        self.queued.push(Instance { sig, info, seq, process, timer: None });
+    }
+
+    /// Drop every queued signal a POSIX timer sent and every one due here:
+    /// exec, which deletes the timers.
+    pub fn drop_timer_signals(&mut self) {
+        self.thread.posix_pending.store(0, Ordering::Release);
+        self.thread.posix_retry.store(false, Ordering::Release);
+        let senders = self.queued.iter().filter(|i| i.timer.is_some()).fold(0u64, |mask, i| mask | sig_mask(i.sig));
+        self.drop_instances(|i| i.timer.is_some());
+        let mut senders = senders;
+        while senders != 0 {
+            let sig = senders.trailing_zeros() + 1;
+            let bit = sig_mask(sig);
+            senders &= !bit;
+            let (left, process) = self
+                .queued
+                .iter()
+                .filter(|i| i.sig == sig)
+                .fold((false, false), |(_, process), i| (true, process || i.process));
+            if !left {
+                self.pending &= !bit;
+            }
+            if !process {
+                self.process_pending &= !bit;
+            }
         }
     }
 
@@ -695,16 +754,19 @@ impl SignalState {
         Some((info, 0, None))
     }
 
-    /// Make room for one realtime instance `accept_moved` will queue, so that
-    /// it allocates nothing. False when there is no memory for it.
+    /// Make room for what `accept_moved` will queue: an instance, and an
+    /// ordinary pending standard signal it keeps ahead of it
+    /// (`queue_ordinary_pending`), so that it allocates nothing. False when
+    /// there is no memory for them.
     pub fn reserve_instance(&mut self) -> bool {
-        self.queued.try_reserve(1).is_ok()
+        self.queued.try_reserve(2).is_ok()
     }
 
     /// Accept process-directed `sig`, which `take_process_directed` took from
     /// another thread of this process, in its generation order `seq` among
-    /// the instances queued here. For a realtime `sig`, `reserve_instance`
-    /// must have made room first.
+    /// the instances queued here. `reserve_instance` must have made room
+    /// first, so a realtime instance, or one a POSIX timer sent, is queued
+    /// with its timer and never lost.
     pub fn accept_moved(&mut self, (info, seq, timer): MovedSignal, sig: u32) {
         if self.discards(sig) {
             if let Some(timer) = timer {
@@ -716,13 +778,7 @@ impl SignalState {
             self.generate(sig, info, true);
             return;
         }
-        if timer.is_some() && self.queued.try_reserve(1).is_err() {
-            if let Some(timer) = timer {
-                timer.discard();
-            }
-            self.generate_unqueued(sig, info, true);
-            return;
-        }
+        self.queue_ordinary_pending(sig);
         let at = self.queued.iter().position(|i| i.seq > seq).unwrap_or(self.queued.len());
         self.queued.insert(at, Instance { sig, info, seq, process: true, timer });
         self.pending |= sig_mask(sig);
@@ -744,9 +800,11 @@ impl SignalState {
         }
     }
 
-    /// How many realtime signal instances are queued.
+    /// How many realtime signal instances are queued, other than those a
+    /// POSIX timer sent, which count against RLIMIT_SIGPENDING as the timer
+    /// itself (`PosixTimers::count`).
     pub fn queued_count(&self) -> usize {
-        self.queued.len()
+        self.queued.iter().filter(|i| i.timer.is_none() && is_realtime(i.sig)).count()
     }
 
     /// Discard every pending realtime signal and free the queue, for a row
@@ -1214,6 +1272,14 @@ impl IntervalTimer {
         self.active.store(active, Ordering::Release);
     }
 
+    /// Disarm the timer, unless a syscall holds it.
+    fn try_disarm(&self) {
+        if let Some(mut value) = self.value.try_lock() {
+            *value = (0, 0);
+            self.set_active(false);
+        }
+    }
+
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
     }
@@ -1276,6 +1342,18 @@ pub struct IntervalTimers {
 }
 
 impl IntervalTimers {
+    /// Disarm every timer of a process whose threads have all exited. A timer
+    /// a syscall holds is left for the scheduler's next pass.
+    pub fn disarm_all(&self) {
+        if !self.is_active() {
+            return;
+        }
+        self.real.try_disarm();
+        self.virtual_timer.try_disarm();
+        self.prof.try_disarm();
+        self.posix.try_disarm_all();
+    }
+
     pub fn is_active(&self) -> bool {
         self.real.is_active() || self.virtual_timer.is_active() || self.prof.is_active() || self.posix.is_active()
     }
