@@ -2350,11 +2350,16 @@ pub fn sys_exec_with_frame(
                         );
                         crate::tls::install_exec_fs_base(current_thread_id);
 
-                        // CRITICAL FIX: Get the new stack pointer from the process
-                        // The exec_process function set up a new stack at USER_STACK_TOP
-                        // NOTE: Must match the value used in exec_process() in manager.rs
-                        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
-                        let new_rsp = USER_STACK_TOP;
+                        // exec prepared argc/envp/auxv below the stack top.
+                        // Return to that initial stack, as kernel-started exec does.
+                        let new_rsp = manager
+                            .get_process(current_pid)
+                            .expect("exec process missing after commit")
+                            .main_thread
+                            .as_ref()
+                            .expect("exec main thread missing after commit")
+                            .context
+                            .rsp;
 
                         // Modify the syscall frame so that when we return from syscall,
                         // we jump to the NEW program instead of returning to the old one
