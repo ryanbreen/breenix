@@ -1164,11 +1164,11 @@ fn an_munmap_unmapped() -> CaseResult {
 
 fn an_munmap_span() -> CaseResult {
     catch_faults()?;
-    let r = map(0, 5 * PAGE, PROT_NONE, PRIVATE, -1)?;
+    // Two mappings placed with MAP_FIXED in a free range, a page apart.
+    let r = free_range(5 * PAGE)? as *mut u8;
     let a = mmap_raw(r as u64, 2 * PAGE as u64, RW, PRIVATE | MAP_FIXED, -1, 0);
     let b = mmap_raw(r as u64 + 3 * PAGE as u64, 2 * PAGE as u64, RW, PRIVATE | MAP_FIXED, -1, 0);
-    check(a == r as i64 && b == r as i64 + 3 * PAGE as i64, "placing two mappings with MAP_FIXED failed")?;
-    unmap(at(r, 2 * PAGE), PAGE)?;
+    check(a == r as i64 && b == r as i64 + 3 * PAGE as i64, &format!("placing two mappings with MAP_FIXED in a free range at {:#x} returned {} and {}", r as u64, shown(a), shown(b)))?;
     poke(r, 1);
     poke(at(r, 3 * PAGE), 2);
     zero("munmap across both mappings and the gap between them", munmap(r, 5 * PAGE))?;
@@ -1986,7 +1986,7 @@ fn br_heap_large() -> CaseResult {
     for i in 0..pages { poke(at(p, i * PAGE), i as u8); }
     let took = mono() - t0;
     let grew = resident()? - before;
-    value("fault", took / pages as i64, "ns", None);
+    value("first-touch", took / pages as i64, "ns", None);
     value("resident-pages", grew, "", Some((pages as i64, pages as i64 + 64)));
     for i in 0..pages {
         check(peek(at(p, i * PAGE)) == i as u8, &format!("heap page {i} of 2048 did not keep its byte"))?;
@@ -2034,8 +2034,15 @@ fn lk_munlock_enomem() -> CaseResult {
     want_err("munlock of a mapped page and the unmapped one after it", munlock(p, 2 * PAGE), ENOMEM)
 }
 
+/// mlock must exist for a child's refusal to mean anything: lock and unlock one page.
+fn mlock_works(p: *mut u8) -> CaseResult {
+    zero("mlock in the privileged parent", mlock(p, PAGE))?;
+    zero("munlock in the privileged parent", munlock(p, PAGE))
+}
+
 fn lk_mlock_eperm() -> CaseResult {
     let p = anon(PAGE)?;
+    mlock_works(p)?;
     let mut child = Child::start(|| {
         if set_limit(RLIMIT_MEMLOCK, 0, 0) != 0 { return 1; }
         if sc(nr::SETUID, &[USER_A as u64]) != 0 { return 2; }
@@ -2051,6 +2058,7 @@ fn lk_mlock_eperm() -> CaseResult {
 
 fn lk_mlock_limit() -> CaseResult {
     let p = anon(32 * PAGE)?;
+    mlock_works(p)?;
     let mut child = Child::start(|| {
         if set_limit(RLIMIT_MEMLOCK, 64 * 1024, 64 * 1024) != 0 { return 1; }
         if sc(nr::SETUID, &[USER_A as u64]) != 0 { return 2; }
@@ -2073,7 +2081,7 @@ fn lk_mlockall_current() -> CaseResult {
     zero("mlockall(MCL_CURRENT)", mlockall(MCL_CURRENT))?;
     let grew = resident()? - before;
     let _ = munlockall();
-    value("resident-pages", grew, "", Some((pages as i64, i64::MAX / 2)));
+    value("resident-pages", grew, "", None);
     check(grew >= pages as i64, &format!("after mlockall(MCL_CURRENT) an untouched 16-page mapping made only {grew} pages resident"))?;
     unmap(p, pages * PAGE)
 }
