@@ -888,17 +888,6 @@ pub fn sys_sigreturn() -> SyscallResult {
     SyscallResult::Err(38) // ENOSYS
 }
 
-/// pause() - Wait until a signal is delivered (legacy version without frame access)
-///
-/// This version is kept for backward compatibility but should not be used.
-/// Use sys_pause_with_frame() instead for proper signal delivery.
-#[allow(dead_code)]
-pub fn sys_pause() -> SyscallResult {
-    let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(3); };
-    wait_for_signal(tid);
-    SyscallResult::Err(4)
-}
-
 /// Publish before checking pending, with preemption disabled until both are
 /// complete. Wakes may be stale or spurious; only signal eligibility ends a wait.
 /// Resume the syscall's kernel frame, then deliver on its normal user return.
