@@ -610,8 +610,14 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     }
     #[cfg(target_arch = "aarch64")]
     process.cleanup_cow_frames();
+    // The superseded roots are cleared below, so their bounded leaf release
+    // must finish here: a partial walk would keep the rest of their frames
+    // referenced, and shared with the parent, for the life of the system.
     #[cfg(target_arch = "aarch64")]
-    process.drain_old_page_tables();
+    {
+        let mut budget = u32::MAX;
+        let _ = process.drain_old_page_tables_bounded(&mut budget);
+    }
     #[cfg(target_arch = "x86_64")]
     {
         let mut budget = u32::MAX;
