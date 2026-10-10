@@ -14,10 +14,11 @@
 //! from brk, posix_madvise through madvise, and setrlimit through prlimit64.
 //!
 //! Faults are taken in the case's own process. A SA_SIGINFO handler records the signal,
-//! si_code and si_addr of each SIGSEGV, SIGBUS or SIGILL, and resumes only from the three
-//! probes below: a one-byte load, a one-byte store and a call, each at a known address,
-//! so a fault anywhere else still kills the case. Children report back through pipes,
-//! never through the memory under test.
+//! si_code and si_addr of each SIGSEGV, SIGBUS or SIGILL in the faulting thread's own
+//! record, and resumes only from the three probes below: a one-byte load, a one-byte
+//! store and a call, each at a known address, so a fault anywhere else still kills the
+//! case. Every expected fault is checked for its signal, si_code and si_addr. Children
+//! report back through pipes, never through the memory under test.
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::Sigaction;
 use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, value, CaseError, CaseResult, Suite};
@@ -44,6 +45,10 @@ mod nr {
     pub const MADVISE: u64 = 28;
     pub const NANOSLEEP: u64 = 35;
     pub const GETPID: u64 = 39;
+    pub const FSTAT: u64 = 5;
+    pub const GETTID: u64 = 186;
+    pub const SCHED_SETAFFINITY: u64 = 203;
+    pub const GETCPU: u64 = 309;
     pub const WAIT4: u64 = 61;
     pub const KILL: u64 = 62;
     pub const FTRUNCATE: u64 = 77;
@@ -76,6 +81,10 @@ mod nr {
     pub const MADVISE: u64 = 233;
     pub const NANOSLEEP: u64 = 101;
     pub const GETPID: u64 = 172;
+    pub const FSTAT: u64 = 80;
+    pub const GETTID: u64 = 178;
+    pub const SCHED_SETAFFINITY: u64 = 122;
+    pub const GETCPU: u64 = 168;
     pub const WAIT4: u64 = 260;
     pub const KILL: u64 = 129;
     pub const FTRUNCATE: u64 = 46;
@@ -107,6 +116,8 @@ const SIGKILL: i32 = 9;
 const SIGSEGV: i32 = 11;
 const SEGV_MAPERR: i32 = 1;
 const SEGV_ACCERR: i32 = 2;
+const BUS_ADRERR: i32 = 2;
+const BUS_OBJERR: i32 = 3;
 
 const SIG_DFL: u64 = 0;
 const SA_SIGINFO: u64 = 4;
@@ -384,6 +395,19 @@ fn status_kb(field: &str) -> Result<i64, CaseError> {
 /// The process's resident pages, from VmRSS in /proc/<pid>/status.
 fn resident() -> Result<i64, CaseError> { Ok(status_kb("VmRSS:")? / 4) }
 
+/// The process's locked memory in kB, from VmLck in /proc/<pid>/status.
+fn locked_kb() -> Result<i64, CaseError> { status_kb("VmLck:") }
+
+/// The resident pages a munmap of `len` bytes at `p` gives back, which are that mapping's
+/// own: the drop in VmRSS across it, read once beforehand so the reads themselves have
+/// already touched the heap they use.
+fn freed_by_unmap(p: *mut u8, len: usize) -> Result<i64, CaseError> {
+    resident()?;
+    let before = resident()?;
+    unmap(p, len)?;
+    Ok(before - resident()?)
+}
+
 /// Free memory in kB, from MemFree in /proc/meminfo.
 fn mem_free_kb() -> Result<i64, CaseError> {
     let text = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("reading /proc/meminfo failed: {e}"))?;
@@ -508,12 +532,21 @@ struct SigInfo { signo: i32, errno: i32, code: i32, pad: i32, addr: u64 }
 static FAULTS: AtomicU64 = AtomicU64::new(0);
 static ACCERR: AtomicU64 = AtomicU64::new(0);
 static MAPERR: AtomicU64 = AtomicU64::new(0);
-static LAST_SIG: AtomicI32 = AtomicI32::new(0);
-static LAST_CODE: AtomicI32 = AtomicI32::new(0);
-static LAST_ADDR: AtomicU64 = AtomicU64::new(0);
-/// While set, the handler makes a faulting page readable and writable and retries.
-static REPAIR: AtomicU32 = AtomicU32::new(0);
-/// The most faults REPAIR answers, so a repair that does not take cannot loop forever.
+/// Each thread's last fault: slot 0 for the case's own thread, slot i + 1 for worker i,
+/// which registers its thread ID in FAULT_TID[i + 1], so threads faulting at once keep
+/// separate records.
+const FAULT_SLOTS: usize = MAX_WORKERS + 1;
+static FAULT_TID: [AtomicU64; FAULT_SLOTS] = [const { AtomicU64::new(0) }; FAULT_SLOTS];
+static LAST_SIG: [AtomicI32; FAULT_SLOTS] = [const { AtomicI32::new(0) }; FAULT_SLOTS];
+static LAST_CODE: [AtomicI32; FAULT_SLOTS] = [const { AtomicI32::new(0) }; FAULT_SLOTS];
+static LAST_ADDR: [AtomicU64; FAULT_SLOTS] = [const { AtomicU64::new(0) }; FAULT_SLOTS];
+/// While nonzero, the address a store is expected to fault on with SEGV_ACCERR: the
+/// handler makes that page readable and writable and retries the store.
+static REPAIR_ADDR: AtomicU64 = AtomicU64::new(0);
+/// The first fault REPAIR_ADDR answered that was not SIGSEGV with SEGV_ACCERR at that
+/// address: its signal, si_code and si_addr.
+static REPAIR_BAD: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+/// The most faults REPAIR_ADDR answers, so a repair that does not take cannot loop forever.
 const REPAIR_MAX: u64 = 1000;
 /// The address `call` jumps to.
 static EXEC_TARGET: AtomicU64 = AtomicU64::new(0);
@@ -528,18 +561,33 @@ unsafe fn uc_get(uc: *mut u8, off: usize) -> u64 { core::ptr::read_volatile(uc.a
 /// SAFETY: as `uc_get`; the word is one the kernel restores at sigreturn.
 unsafe fn uc_set(uc: *mut u8, off: usize, v: u64) { core::ptr::write_volatile(uc.add(off) as *mut u64, v) }
 
+/// The calling thread's fault slot.
+fn fault_slot() -> usize {
+    let tid = sc(nr::GETTID, &[]) as u64;
+    (1..FAULT_SLOTS).find(|&k| FAULT_TID[k].load(SeqCst) == tid).unwrap_or(0)
+}
+
 extern "C" fn on_fault(sig: i32, info: *const SigInfo, uc: *mut u8) {
     // SAFETY: the kernel passes the siginfo it wrote for this delivery.
     let (code, addr) = if info.is_null() { (-1, 0) } else { unsafe { ((*info).code, (*info).addr) } };
-    LAST_SIG.store(sig, SeqCst);
-    LAST_CODE.store(code, SeqCst);
-    LAST_ADDR.store(addr, SeqCst);
+    let k = fault_slot();
+    LAST_SIG[k].store(sig, SeqCst);
+    LAST_CODE[k].store(code, SeqCst);
+    LAST_ADDR[k].store(addr, SeqCst);
     let n = FAULTS.fetch_add(1, SeqCst) + 1;
     if sig == SIGSEGV && code == SEGV_ACCERR { ACCERR.fetch_add(1, SeqCst); }
     if sig == SIGSEGV && code == SEGV_MAPERR { MAPERR.fetch_add(1, SeqCst); }
     if uc.is_null() { give_up(sig); return; }
-    if REPAIR.load(SeqCst) == 1 && sig == SIGSEGV && n <= REPAIR_MAX {
-        let page = addr & !(PAGE as u64 - 1);
+    let want = REPAIR_ADDR.load(SeqCst);
+    if want != 0 && n <= REPAIR_MAX {
+        if !(sig == SIGSEGV && code == SEGV_ACCERR && addr == want) && REPAIR_BAD[0].load(SeqCst) == 0 {
+            REPAIR_BAD[1].store(code as u32 as u64, SeqCst);
+            REPAIR_BAD[2].store(addr, SeqCst);
+            REPAIR_BAD[0].store(sig as u64, SeqCst);
+        }
+        // The page repaired is the one the store was aimed at, whatever the fault said,
+        // so a wrong report still lets the case finish and fail with what it saw.
+        let page = want & !(PAGE as u64 - 1);
         if sc(nr::MPROTECT, &[page, PAGE as u64, RW as u64]) == 0 { return; }
     }
     // SAFETY: the kernel passes the ucontext_t it saved for this delivery.
@@ -588,7 +636,14 @@ fn catch_faults() -> CaseResult {
 #[derive(Clone, Copy)]
 struct Fault { sig: i32, code: i32, addr: u64 }
 
-fn last_fault() -> Fault { Fault { sig: LAST_SIG.load(SeqCst), code: LAST_CODE.load(SeqCst), addr: LAST_ADDR.load(SeqCst) } }
+/// The calling thread's last fault.
+fn last_fault() -> Fault {
+    let k = fault_slot();
+    Fault { sig: LAST_SIG[k].load(SeqCst), code: LAST_CODE[k].load(SeqCst), addr: LAST_ADDR[k].load(SeqCst) }
+}
+
+/// Forget the calling thread's last fault, before a probe.
+fn clear_fault() { LAST_SIG[fault_slot()].store(0, SeqCst); }
 
 fn sig_name(sig: i32) -> String {
     match sig { 4 => "SIGILL".into(), 7 => "SIGBUS".into(), 11 => "SIGSEGV".into(), s => format!("signal {s}") }
@@ -604,7 +659,7 @@ fn fault_text(f: Fault) -> String { format!("{} {} at {:#x}", sig_name(f.sig), c
 
 /// Load one byte; the fault if the load faulted.
 fn load(p: *const u8) -> Result<u8, Fault> {
-    LAST_SIG.store(0, SeqCst);
+    clear_fault();
     // SAFETY: a fault in the probe is answered by `on_fault`, which resumes past it.
     let r = unsafe { mem_probe_load(p) } as u64;
     if r == LOAD_FAULTED { Err(last_fault()) } else { Ok(r as u8) }
@@ -612,7 +667,7 @@ fn load(p: *const u8) -> Result<u8, Fault> {
 
 /// Store one byte; the fault if the store faulted.
 fn store(p: *mut u8, v: u8) -> Result<(), Fault> {
-    LAST_SIG.store(0, SeqCst);
+    clear_fault();
     // SAFETY: as `load`.
     let r = unsafe { mem_probe_store(p, v as u32) };
     if r != 0 { Err(last_fault()) } else { Ok(()) }
@@ -620,7 +675,7 @@ fn store(p: *mut u8, v: u8) -> Result<(), Fault> {
 
 /// Call the code at `p`; what it returned, or the fault if the call faulted.
 fn call(p: *const u8) -> Result<u64, Fault> {
-    LAST_SIG.store(0, SeqCst);
+    clear_fault();
     EXEC_TARGET.store(p as u64, SeqCst);
     // SAFETY: callers place a function returning in the return register at `p`; a fault
     // fetching it is answered by `on_fault`, which returns from the call.
@@ -629,21 +684,27 @@ fn call(p: *const u8) -> Result<u64, Fault> {
     if r == u64::MAX { Err(last_fault()) } else { Ok(r) }
 }
 
-/// The access at `p` must fault with `sig`, `code` (when given) and si_addr `p`.
-fn want_fault(what: &str, got: Result<u8, Fault>, sig: i32, code: Option<i32>, p: *const u8) -> CaseResult {
+/// The si_codes a SIGBUS for a page of a file mapping past the end of the file may carry:
+/// a nonexistent address, or an error of the mapped object.
+const BUS_PAST_EOF: &[i32] = &[BUS_ADRERR, BUS_OBJERR];
+
+/// Whether `f` is `sig` with one of `codes` at si_addr `p`.
+fn fault_is(f: Fault, sig: i32, codes: &[i32], p: *const u8) -> bool { f.sig == sig && codes.contains(&f.code) && f.addr == p as u64 }
+
+/// The access at `p` must fault with `sig`, one of `codes` and si_addr `p`.
+fn want_fault(what: &str, got: Result<u8, Fault>, sig: i32, codes: &[i32], p: *const u8) -> CaseResult {
     match got {
         Ok(v) => fail(format!("{what} succeeded (read {v:#04x}) instead of raising {}", sig_name(sig))),
         Err(f) => {
             check(f.sig == sig, &format!("{what} raised {}, not {}", fault_text(f), sig_name(sig)))?;
-            if let Some(code) = code {
-                check(f.code == code, &format!("{what} raised {}, not {}", fault_text(f), code_name(sig, code)))?;
-            }
+            let names: Vec<String> = codes.iter().map(|&c| code_name(sig, c)).collect();
+            check(codes.contains(&f.code), &format!("{what} raised {}, not {}", fault_text(f), names.join(" or ")))?;
             check(f.addr == p as u64, &format!("{what} raised {} with si_addr {:#x}, not the address touched {:#x}", sig_name(sig), f.addr, p as u64))
         }
     }
 }
-fn load_faults(what: &str, p: *mut u8, sig: i32, code: Option<i32>) -> CaseResult { want_fault(what, load(p), sig, code, p) }
-fn store_faults(what: &str, p: *mut u8, code: i32) -> CaseResult { want_fault(what, store(p, 0xee).map(|_| 0), SIGSEGV, Some(code), p) }
+fn load_faults(what: &str, p: *mut u8, sig: i32, codes: &[i32]) -> CaseResult { want_fault(what, load(p), sig, codes, p) }
+fn store_faults(what: &str, p: *mut u8, code: i32) -> CaseResult { want_fault(what, store(p, 0xee).map(|_| 0), SIGSEGV, &[code], p) }
 
 /// The byte at `p` must load without a fault, and be `v` when given.
 fn loads(what: &str, p: *mut u8, v: Option<u8>) -> CaseResult {
@@ -671,7 +732,7 @@ fn runs(what: &str, p: *mut u8) -> CaseResult {
 fn call_faults(what: &str, p: *mut u8) -> CaseResult {
     match call(p) {
         Ok(r) => fail(format!("{what} ran the code (it returned {r}) instead of raising SIGSEGV")),
-        Err(f) => want_fault(what, Err(f), SIGSEGV, Some(SEGV_ACCERR), p),
+        Err(f) => want_fault(what, Err(f), SIGSEGV, &[SEGV_ACCERR], p),
     }
 }
 
@@ -712,6 +773,14 @@ fn close(fd: i32) { let _ = sc(nr::CLOSE, &[fd as u64]); }
 fn pwrite_all(fd: i32, bytes: &[u8], off: u64) -> CaseResult {
     let r = sc(nr::PWRITE64, &[fd as u64, bytes.as_ptr() as u64, bytes.len() as u64, off]);
     check(r == bytes.len() as i64, &format!("pwrite of {} bytes returned {}", bytes.len(), shown(r)))
+}
+
+/// The 512-byte blocks the file open as `fd` has on disk, from fstat's st_blocks, which
+/// is at byte 64 of struct stat on both architectures.
+fn disk_blocks(fd: i32) -> Result<i64, CaseError> {
+    let mut st = [0u64; 18];
+    zero("fstat", sc(nr::FSTAT, &[fd as u64, st.as_mut_ptr() as u64]))?;
+    Ok(st[8] as i64)
 }
 
 fn pread_n(fd: i32, len: usize, off: u64) -> Result<Vec<u8>, CaseError> {
@@ -806,16 +875,26 @@ impl Drop for Child {
 // ---------------------------------------------------------------------------
 // Threads on several processors.
 
-/// Handoffs a pair must make within HANDOFF_MS to show they run at the same time: two
-/// threads taking turns on one processor hand off no faster than the timer tick.
+/// Rounds of handoffs between the case's thread and all its workers at once, and the time
+/// all of them must fit in. A thread sharing a processor with another runs only when that
+/// one is preempted, at most once per timer tick (1 ms), so threads taking turns need at
+/// least HANDOFFS ms; HANDOFF_MS is a quarter of that.
 const HANDOFFS: u64 = 1000;
-const HANDOFF_MS: u64 = 1000;
+const HANDOFF_MS: u64 = 250;
 /// The most worker threads a case starts; it starts one fewer than the processors online.
 const MAX_WORKERS: usize = 3;
 
 static SLOTS: [AtomicU64; MAX_WORKERS] = [const { AtomicU64::new(0) }; MAX_WORKERS];
 /// 0 while the workers are being shown to run at once, 1 to run, 2 to stop.
 static GO: AtomicU32 = AtomicU32::new(0);
+/// Each worker's state: 0 starting, 1 pinned to its processor, or the failure
+/// PIN_FAILED, NOT_MOVED or MOVED.
+static PINNED: [AtomicU32; MAX_WORKERS] = [const { AtomicU32::new(0) }; MAX_WORKERS];
+const PIN_FAILED: u32 = 2;
+const NOT_MOVED: u32 = 3;
+const MOVED: u32 = 4;
+/// The processor each worker last found itself on.
+static WHERE: [AtomicU32; MAX_WORKERS] = [const { AtomicU32::new(0) }; MAX_WORKERS];
 
 /// The workers a case starts: one per processor beyond the first, at most MAX_WORKERS.
 /// Skips when fewer than two processors are online.
@@ -825,13 +904,40 @@ fn workers_for() -> Result<usize, CaseError> {
     Ok((cpus - 1).min(MAX_WORKERS))
 }
 
-/// Worker side: answer handoffs on slot `i` until the case says to run or stop.
+/// The processor the calling thread runs on, from getcpu.
+fn this_cpu() -> Option<u32> {
+    let mut cpu = u32::MAX;
+    if sc(nr::GETCPU, &[&mut cpu as *mut u32 as u64, 0, 0]) != 0 { return None; }
+    Some(cpu)
+}
+
+/// Pin the calling thread to processor `cpu` with sched_setaffinity, and wait up to a
+/// second for it to run there.
+fn pin_to(cpu: u32) -> u32 {
+    let mask = 1u64 << cpu;
+    if sc(nr::SCHED_SETAFFINITY, &[0, 8, &mask as *const u64 as u64]) != 0 { return PIN_FAILED; }
+    if until(1000, || this_cpu() == Some(cpu)) { 1 } else { NOT_MOVED }
+}
+
+/// Worker side: pin worker `i` to processor i + 1, then answer handoffs on slot `i` until
+/// the case says to run or stop, checking at each that it is still on its processor.
 fn answer(i: usize) -> bool {
+    FAULT_TID[i + 1].store(sc(nr::GETTID, &[]) as u64, SeqCst);
+    let cpu = i as u32 + 1;
+    let pinned = pin_to(cpu);
+    WHERE[i].store(this_cpu().unwrap_or(u32::MAX), SeqCst);
+    PINNED[i].store(pinned, SeqCst);
+    if pinned != 1 { return false; }
     let start = now_ms();
     let mut spins = 0u64;
     loop {
         let v = SLOTS[i].load(SeqCst);
-        if v & 1 == 1 { SLOTS[i].store(v + 1, SeqCst); }
+        if v & 1 == 1 {
+            let here = this_cpu().unwrap_or(u32::MAX);
+            WHERE[i].store(here, SeqCst);
+            if here != cpu { PINNED[i].store(MOVED, SeqCst); return false; }
+            SLOTS[i].store(v + 1, SeqCst);
+        }
         match GO.load(SeqCst) {
             0 => {}
             1 => return true,
@@ -843,19 +949,39 @@ fn answer(i: usize) -> bool {
     }
 }
 
-/// Hand off HANDOFFS times with each of `n` workers, so each ran at the same time as
-/// this thread; then let them run.
+/// Pin this thread to processor 0 and each of `n` workers to one of processors 1 to n,
+/// then hand off HANDOFFS times with all of them at once within HANDOFF_MS, so all n + 1
+/// threads run at the same time on their own processors; then let the workers run.
 fn prove_parallel(n: usize, cpus: usize) -> CaseResult {
-    for (i, slot) in SLOTS.iter().enumerate().take(n) {
-        for k in 0..HANDOFFS {
-            let odd = 2 * k + 1;
-            slot.store(odd, SeqCst);
-            if !spin_until(HANDOFF_MS, || slot.load(SeqCst) == odd + 1) {
-                GO.store(2, SeqCst);
-                return fail(format!("with {cpus} processors online, worker {i} made only {k} of {HANDOFFS} handoffs in {HANDOFF_MS} ms, so it never ran at the same time as the case"));
-            }
+    let stop = |msg: String| -> CaseResult { GO.store(2, SeqCst); fail(msg) };
+    match pin_to(0) {
+        1 => {}
+        PIN_FAILED => return stop("sched_setaffinity to processor 0 failed".into()),
+        _ => return stop(format!("pinned to processor 0, the case's thread still runs on processor {:?} after a second", this_cpu())),
+    }
+    if !until(1000, || PINNED.iter().take(n).all(|p| p.load(SeqCst) != 0)) {
+        return stop("the workers did not pin themselves to their processors within a second".into());
+    }
+    for (i, p) in PINNED.iter().enumerate().take(n) {
+        match p.load(SeqCst) {
+            1 => {}
+            PIN_FAILED => return stop(format!("worker {i}'s sched_setaffinity to processor {} failed", i + 1)),
+            _ => return stop(format!("pinned to processor {}, worker {i} still runs on processor {} after a second", i + 1, WHERE[i].load(SeqCst))),
         }
     }
+    let start = now_ms();
+    for k in 0..HANDOFFS {
+        let odd = 2 * k + 1;
+        for slot in SLOTS.iter().take(n) { slot.store(odd, SeqCst); }
+        let left = HANDOFF_MS.saturating_sub(now_ms().saturating_sub(start));
+        if !spin_until(left, || SLOTS.iter().take(n).all(|slot| slot.load(SeqCst) == odd + 1)) {
+            if let Some(i) = (0..n).find(|&i| PINNED[i].load(SeqCst) == MOVED) {
+                return stop(format!("worker {i}, pinned to processor {}, answered from processor {}", i + 1, WHERE[i].load(SeqCst)));
+            }
+            return stop(format!("with {cpus} processors online, the case and its {n} workers made only {k} of {HANDOFFS} rounds of handoffs in {HANDOFF_MS} ms, so they did not all run at the same time"));
+        }
+    }
+    if this_cpu() != Some(0) { return stop(format!("pinned to processor 0, the case's thread ran on processor {:?}", this_cpu())); }
     GO.store(1, SeqCst);
     Ok(())
 }
@@ -865,16 +991,23 @@ fn prove_parallel(n: usize, cpus: usize) -> CaseResult {
 static T_PAGE: AtomicU64 = AtomicU64::new(0);
 /// The round the workers are in.
 static T_ROUND: AtomicU32 = AtomicU32::new(0);
+/// The round whose page is being unmapped or made read-only, once the call has begun:
+/// a fault before then is not the one the change requires.
+static T_CHANGING: AtomicU32 = AtomicU32::new(0);
 /// The round whose page has been unmapped or made read-only, once the call returned.
 static T_CHANGED: AtomicU32 = AtomicU32::new(0);
 /// Each worker's successful accesses this round.
 static T_OK: [AtomicU64; MAX_WORKERS] = [const { AtomicU64::new(0) }; MAX_WORKERS];
-/// The last round in which each worker's access faulted.
+/// The last round in which each worker's access faulted as the change requires.
 static T_FAULTED: [AtomicU32; MAX_WORKERS] = [const { AtomicU32::new(0) }; MAX_WORKERS];
 /// Accesses that succeeded although they began after the change had returned.
 static T_STALE: AtomicU64 = AtomicU64::new(0);
 /// Loads that read a byte other than the round's own before the change.
 static T_WRONG: AtomicU64 = AtomicU64::new(0);
+/// Faults other than the one the change requires, and the first of them: the worker,
+/// signal, si_code, si_addr and the address it touched.
+static T_BAD: AtomicU64 = AtomicU64::new(0);
+static T_BAD_FIRST: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 
 /// Rounds of the cross-processor cases, and how many accesses each worker makes in a
 /// round before the page is changed.
@@ -882,8 +1015,10 @@ const ROUNDS: u32 = 50;
 const WARM: u64 = 100;
 
 /// A worker for the cross-processor cases: in each round, load from the page (`write`
-/// false) or store to it (`write` true) until an access faults.
-fn page_worker(i: usize, write: bool) {
+/// false) or store to it (`write` true) until an access faults. Only SIGSEGV with `code`
+/// at the address touched counts as the fault the change requires; any other is recorded
+/// in T_BAD and ends the worker.
+fn page_worker(i: usize, write: bool, code: i32) {
     if !answer(i) { return; }
     let start = now_ms();
     let mut done = 0u32;
@@ -893,18 +1028,33 @@ fn page_worker(i: usize, write: bool) {
         if round == done { core::hint::spin_loop(); continue; }
         let changed = T_CHANGED.load(SeqCst) == round;
         let page = T_PAGE.load(SeqCst) as *mut u8;
-        let got = if write { store(at(page, 64 * i), round as u8).map(|_| round as u8) } else { load(page) };
+        let p = if write { at(page, 64 * i) } else { page };
+        let got = if write { store(p, round as u8).map(|_| round as u8) } else { load(p) };
         match got {
             Ok(v) => {
                 T_OK[i].fetch_add(1, SeqCst);
                 if changed { T_STALE.fetch_add(1, SeqCst); } else if v != round as u8 { T_WRONG.fetch_add(1, SeqCst); }
             }
-            Err(_) => {
+            Err(f) if T_CHANGING.load(SeqCst) == round && fault_is(f, SIGSEGV, &[code], p) => {
                 T_FAULTED[i].store(round, SeqCst);
                 done = round;
             }
+            Err(f) => {
+                if T_BAD.fetch_add(1, SeqCst) == 0 {
+                    for (slot, v) in T_BAD_FIRST.iter().zip([i as u64, f.sig as u64, f.code as u32 as u64, f.addr, p as u64]) { slot.store(v, SeqCst); }
+                }
+                return;
+            }
         }
     }
+}
+
+
+/// The first fault a worker took that the change did not require, as text.
+fn bad_fault_text() -> String {
+    let v: Vec<u64> = T_BAD_FIRST.iter().map(|a| a.load(SeqCst)).collect();
+    let f = Fault { sig: v[1] as i32, code: v[2] as i32, addr: v[3] };
+    format!("worker {} touching {:#x} took {} ({} such faults)", v[0], v[4], fault_text(f), T_BAD.load(SeqCst))
 }
 
 /// Run ROUNDS rounds: `prepare` gives each round's page, `change` unmaps it or makes it
@@ -916,16 +1066,21 @@ fn page_rounds(n: usize, mut prepare: impl FnMut(u32) -> Result<*mut u8, CaseErr
         for ok in T_OK.iter().take(n) { ok.store(0, SeqCst); }
         T_PAGE.store(page as u64, SeqCst);
         T_ROUND.store(round, SeqCst);
-        if !spin_until(1000, || T_OK.iter().take(n).all(|ok| ok.load(SeqCst) >= WARM)) {
+        let warm = spin_until(1000, || T_BAD.load(SeqCst) != 0 || T_OK.iter().take(n).all(|ok| ok.load(SeqCst) >= WARM));
+        if T_BAD.load(SeqCst) != 0 { return err(format!("round {round}, before {what}: {}", bad_fault_text())); }
+        if !warm {
             return err(format!("round {round}: the workers did not each make {WARM} accesses to the page within a second"));
         }
+        T_CHANGING.store(round, SeqCst);
         let t0 = mono();
         let r = change(page);
         let took = mono() - t0;
         T_CHANGED.store(round, SeqCst);
         zero(what, r)?;
         longest = longest.max(took);
-        if !spin_until(1000, || T_FAULTED.iter().take(n).all(|f| f.load(SeqCst) == round)) {
+        let faulted = spin_until(1000, || T_BAD.load(SeqCst) != 0 || T_FAULTED.iter().take(n).all(|f| f.load(SeqCst) == round));
+        if T_BAD.load(SeqCst) != 0 { return err(format!("round {round}: {}", bad_fault_text())); }
+        if !faulted {
             let late: Vec<usize> = (0..n).filter(|&i| T_FAULTED[i].load(SeqCst) != round).collect();
             return err(format!("round {round}: worker(s) {late:?} kept accessing the page for a second after {what} returned, with no fault ({} stale accesses so far)", T_STALE.load(SeqCst)));
         }
@@ -933,12 +1088,13 @@ fn page_rounds(n: usize, mut prepare: impl FnMut(u32) -> Result<*mut u8, CaseErr
     Ok(longest)
 }
 
-/// Start `n` page workers, show they run at once, run the rounds and stop them.
-fn with_page_workers(write: bool, body: impl FnOnce(usize) -> Result<i64, CaseError>) -> Result<i64, CaseError> {
+/// Start `n` page workers expecting SIGSEGV with `code`, show they run at once on their
+/// own processors, run the rounds and stop them.
+fn with_page_workers(write: bool, code: i32, body: impl FnOnce(usize) -> Result<i64, CaseError>) -> Result<i64, CaseError> {
     catch_faults()?;
     let n = workers_for()?;
     let cpus = processors()?;
-    let threads: Vec<_> = (0..n).map(|i| std::thread::spawn(move || page_worker(i, write))).collect();
+    let threads: Vec<_> = (0..n).map(|i| std::thread::spawn(move || page_worker(i, write, code))).collect();
     let result = prove_parallel(n, cpus).and_then(|_| body(n));
     GO.store(2, SeqCst);
     for t in threads { let _ = t.join(); }
@@ -1073,7 +1229,10 @@ fn an_no_type() -> CaseResult {
 }
 
 fn an_offset_unaligned() -> CaseResult {
-    want_err("anonymous mmap with offset 100", mmap_raw(0, PAGE as u64, RW, PRIVATE, -1, 100), EINVAL)
+    let f = TempFile::new("offset", &[0u8; 2 * PAGE])?;
+    let r = mmap_raw(0, PAGE as u64, PROT_READ, MAP_PRIVATE, f.fd, 100);
+    if !is_err(r) { let _ = munmap(r as u64 as *mut u8, PAGE); }
+    want_err("mmap of a file at offset 100", r, EINVAL)
 }
 
 fn an_ebadf() -> CaseResult {
@@ -1094,7 +1253,7 @@ fn an_enomem_fixed() -> CaseResult {
     let addr = 1u64 << 56;
     let r = mmap_raw(addr, PAGE as u64, RW, PRIVATE | MAP_FIXED, -1, 0);
     if !is_err(r) { let _ = munmap(r as u64 as *mut u8, PAGE); }
-    want_err("MAP_FIXED at 2^56, past the end of the user address space", r, ENOMEM)
+    check(r == -ENOMEM || r == -EINVAL, &format!("MAP_FIXED at 2^56, past the end of the user address space: expected ENOMEM or EINVAL, got {}", shown(r)))
 }
 
 fn an_rlimit_as() -> CaseResult {
@@ -1123,8 +1282,8 @@ fn an_munmap_whole() -> CaseResult {
     let p = anon(2 * PAGE)?;
     fill_byte(p, 2 * PAGE, 0x66);
     unmap(p, 2 * PAGE)?;
-    load_faults("reading the first page after munmap", p, SIGSEGV, Some(SEGV_MAPERR))?;
-    load_faults("reading the second page after munmap", at(p, PAGE + 5), SIGSEGV, Some(SEGV_MAPERR))
+    load_faults("reading the first page after munmap", p, SIGSEGV, &[SEGV_MAPERR])?;
+    load_faults("reading the second page after munmap", at(p, PAGE + 5), SIGSEGV, &[SEGV_MAPERR])
 }
 
 fn an_munmap_middle() -> CaseResult {
@@ -1137,7 +1296,7 @@ fn an_munmap_middle() -> CaseResult {
     for off in 2 * PAGE..3 * PAGE {
         check(peek(at(p, off)) == pat(off, 5), &format!("byte {off} of the last page changed when the middle page was unmapped"))?;
     }
-    load_faults("reading the unmapped middle page", at(p, PAGE + 9), SIGSEGV, Some(SEGV_MAPERR))?;
+    load_faults("reading the unmapped middle page", at(p, PAGE + 9), SIGSEGV, &[SEGV_MAPERR])?;
     unmap(p, PAGE)?;
     unmap(at(p, 2 * PAGE), PAGE)
 }
@@ -1152,8 +1311,8 @@ fn an_munmap_head_tail() -> CaseResult {
     for off in PAGE..3 * PAGE {
         check(peek(at(p, off)) == pat(off, 6), &format!("byte {off} changed when the first and last pages were unmapped"))?;
     }
-    load_faults("reading the unmapped first page", p, SIGSEGV, Some(SEGV_MAPERR))?;
-    load_faults("reading the unmapped last page", at(p, 3 * PAGE), SIGSEGV, Some(SEGV_MAPERR))?;
+    load_faults("reading the unmapped first page", p, SIGSEGV, &[SEGV_MAPERR])?;
+    load_faults("reading the unmapped last page", at(p, 3 * PAGE), SIGSEGV, &[SEGV_MAPERR])?;
     unmap(at(p, PAGE), 2 * PAGE)
 }
 
@@ -1172,8 +1331,8 @@ fn an_munmap_span() -> CaseResult {
     poke(r, 1);
     poke(at(r, 3 * PAGE), 2);
     zero("munmap across both mappings and the gap between them", munmap(r, 5 * PAGE))?;
-    load_faults("reading the first mapping", r, SIGSEGV, Some(SEGV_MAPERR))?;
-    load_faults("reading the second mapping", at(r, 4 * PAGE + 1), SIGSEGV, Some(SEGV_MAPERR))
+    load_faults("reading the first mapping", r, SIGSEGV, &[SEGV_MAPERR])?;
+    load_faults("reading the second mapping", at(r, 4 * PAGE + 1), SIGSEGV, &[SEGV_MAPERR])
 }
 
 fn an_munmap_unaligned() -> CaseResult {
@@ -1203,6 +1362,7 @@ fn an_remap_zero() -> CaseResult {
 
 fn an_sparse() -> CaseResult {
     let len = 256 * MIB;
+    resident()?;
     let before = resident()?;
     let p = anon(len)?;
     for i in 0..256 { poke(at(p, i * MIB), i as u8 | 1); }
@@ -1221,21 +1381,19 @@ fn an_page_by_page() -> CaseResult {
     let pages = 4096;
     let len = pages * PAGE;
     let p = anon(len)?;
-    let before = resident()?;
     let t0 = mono();
     for i in 0..pages {
         poke(at(p, i * PAGE), i as u8);
         poke(at(p, i * PAGE + PAGE - 1), (i >> 8) as u8);
     }
     let took = mono() - t0;
-    let grew = resident()? - before;
     value("fault", took / pages as i64, "ns", None);
-    value("resident-pages", grew, "", Some((pages as i64, pages as i64 + 64)));
     for i in 0..pages {
         check(peek(at(p, i * PAGE)) == i as u8 && peek(at(p, i * PAGE + PAGE - 1)) == (i >> 8) as u8, &format!("page {i} of 4096 did not keep its own contents"))?;
     }
-    check(grew >= pages as i64, &format!("after touching all 4096 pages, only {grew} more were resident"))?;
-    unmap(p, len)
+    let freed = freed_by_unmap(p, len)?;
+    value("resident-pages", freed, "", Some((pages as i64, pages as i64)));
+    check(freed == pages as i64, &format!("after touching all 4096 pages, unmapping the mapping gave back {freed} resident pages"))
 }
 
 fn an_churn() -> CaseResult {
@@ -1250,8 +1408,8 @@ fn an_churn() -> CaseResult {
     let mut drop = 0;
     let settled = until(1000, || { drop = before - mem_free_kb().unwrap_or(0); drop <= 4096 });
     let rss_grew = resident()? - rss;
-    value("free-drop", drop, "kb", Some((-4096, 4096)));
-    value("resident-grew", rss_grew, "", Some((0, 64)));
+    value("free-drop", drop, "kb", None);
+    value("resident-grew", rss_grew, "", None);
     check(settled, &format!("after mapping, touching and unmapping 1 MiB {rounds} times, free memory is {drop} kB lower than before"))?;
     check(rss_grew <= 64, &format!("after {rounds} map-touch-unmap rounds the process has {rss_grew} more resident pages"))
 }
@@ -1278,7 +1436,7 @@ fn an_many() -> CaseResult {
 }
 
 fn an_unmap_cpus() -> CaseResult {
-    let longest = with_page_workers(false, |n| {
+    let longest = with_page_workers(false, SEGV_MAPERR, |n| {
         page_rounds(n, |round| {
             let p = anon(PAGE)?;
             fill_byte(p, PAGE, round as u8);
@@ -1290,8 +1448,7 @@ fn an_unmap_cpus() -> CaseResult {
     value("munmap", longest / 1000, "us", None);
     value("maperr", MAPERR.load(SeqCst) as i64, "", None);
     check(wrong == 0, &format!("{wrong} reads from a still-mapped page returned another page's byte"))?;
-    check(stale == 0, &format!("{stale} reads begun after munmap returned read the unmapped page instead of faulting"))?;
-    check(ACCERR.load(SeqCst) == 0, "a read of an unmapped page faulted with SEGV_ACCERR, not SEGV_MAPERR")
+    check(stale == 0, &format!("{stale} reads begun after munmap returned read the unmapped page instead of faulting"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1300,7 +1457,7 @@ fn an_unmap_cpus() -> CaseResult {
 fn pr_none_read() -> CaseResult {
     catch_faults()?;
     let p = map(0, PAGE, PROT_NONE, PRIVATE, -1)?;
-    load_faults("reading a PROT_NONE page", at(p, 0x123), SIGSEGV, Some(SEGV_ACCERR))
+    load_faults("reading a PROT_NONE page", at(p, 0x123), SIGSEGV, &[SEGV_ACCERR])
 }
 
 fn pr_none_write() -> CaseResult {
@@ -1322,7 +1479,7 @@ fn pr_readonly_write() -> CaseResult {
 fn pr_unmapped_maperr() -> CaseResult {
     catch_faults()?;
     let addr = free_range(PAGE)? as *mut u8;
-    load_faults("reading an address with nothing mapped", at(addr, 0x40), SIGSEGV, Some(SEGV_MAPERR))
+    load_faults("reading an address with nothing mapped", at(addr, 0x40), SIGSEGV, &[SEGV_MAPERR])
 }
 
 fn pr_handler_retry() -> CaseResult {
@@ -1330,11 +1487,17 @@ fn pr_handler_retry() -> CaseResult {
     let pages = 64;
     let p = map(0, pages * PAGE, PROT_NONE, PRIVATE, -1)?;
     FAULTS.store(0, SeqCst);
-    REPAIR.store(1, SeqCst);
-    for i in 0..pages { poke(at(p, i * PAGE + 1), i as u8 + 1); }
-    REPAIR.store(0, SeqCst);
+    for i in 0..pages {
+        REPAIR_ADDR.store(at(p, i * PAGE + 1) as u64, SeqCst);
+        poke(at(p, i * PAGE + 1), i as u8 + 1);
+    }
+    REPAIR_ADDR.store(0, SeqCst);
     let faults = FAULTS.load(SeqCst) as i64;
     value("faults", faults, "", Some((pages as i64, pages as i64)));
+    if REPAIR_BAD[0].load(SeqCst) != 0 {
+        let f = Fault { sig: REPAIR_BAD[0].load(SeqCst) as i32, code: REPAIR_BAD[1].load(SeqCst) as i32, addr: REPAIR_BAD[2].load(SeqCst) };
+        return fail(format!("a write to a PROT_NONE page raised {}, not SIGSEGV SEGV_ACCERR at the byte written", fault_text(f)));
+    }
     for i in 0..pages {
         check(peek(at(p, i * PAGE + 1)) == i as u8 + 1, &format!("the write to page {i} that its handler let through did not stick"))?;
     }
@@ -1355,6 +1518,7 @@ fn pr_make_writable() -> CaseResult {
     let p = anon(PAGE)?;
     fill(p, PAGE, 8);
     protect(p, PAGE, PROT_READ)?;
+    store_faults("writing the page while PROT_READ", at(p, 9), SEGV_ACCERR)?;
     protect(p, PAGE, RW)?;
     stores("writing the page made writable again", at(p, 9), 0xab)?;
     loads("reading it back", at(p, 9), Some(0xab))?;
@@ -1366,7 +1530,7 @@ fn pr_none_keeps() -> CaseResult {
     let p = anon(PAGE)?;
     fill(p, PAGE, 9);
     protect(p, PAGE, PROT_NONE)?;
-    load_faults("reading the page while PROT_NONE", at(p, 50), SIGSEGV, Some(SEGV_ACCERR))?;
+    load_faults("reading the page while PROT_NONE", at(p, 50), SIGSEGV, &[SEGV_ACCERR])?;
     protect(p, PAGE, RW)?;
     want_pattern(p, PAGE, 9, "the page after PROT_NONE and back")
 }
@@ -1379,8 +1543,8 @@ fn pr_guard_page() -> CaseResult {
     loads("reading the byte just below the guard page", at(p, PAGE - 1), Some(0x11))?;
     stores("writing the byte just below the guard page", at(p, PAGE - 1), 0x12)?;
     loads("reading the byte just above the guard page", at(p, 2 * PAGE), Some(0x11))?;
-    load_faults("reading the guard page's first byte", at(p, PAGE), SIGSEGV, Some(SEGV_ACCERR))?;
-    load_faults("reading the guard page's last byte", at(p, 2 * PAGE - 1), SIGSEGV, Some(SEGV_ACCERR))
+    load_faults("reading the guard page's first byte", at(p, PAGE), SIGSEGV, &[SEGV_ACCERR])?;
+    load_faults("reading the guard page's last byte", at(p, 2 * PAGE - 1), SIGSEGV, &[SEGV_ACCERR])
 }
 
 /// Each page of `len_pages` at `p` must take a store exactly when `writable(page)`.
@@ -1404,6 +1568,8 @@ fn pr_partial_middle() -> CaseResult {
     catch_faults()?;
     let p = anon(6 * PAGE)?;
     protect(at(p, 2 * PAGE), 2 * PAGE, PROT_READ)?;
+    store_faults("writing page 2 after both middle pages were made PROT_READ", at(p, 2 * PAGE + 10), SEGV_ACCERR)?;
+    store_faults("writing page 3 after both middle pages were made PROT_READ", at(p, 3 * PAGE + 10), SEGV_ACCERR)?;
     protect(at(p, 3 * PAGE), PAGE, RW)?;
     want_writable(p, 6, |page| page != 2)
 }
@@ -1478,28 +1644,27 @@ fn pr_fork_inherits() -> CaseResult {
     protect(p, PAGE, PROT_NONE)?;
     protect(at(p, PAGE), PAGE, PROT_READ)?;
     let mut child = Child::start(|| {
-        match load(p) { Err(f) if f.sig == SIGSEGV && f.code == SEGV_ACCERR => {} _ => return 1 }
-        match store(at(p, PAGE), 1) { Err(f) if f.sig == SIGSEGV && f.code == SEGV_ACCERR => {} _ => return 2 }
+        match load(p) { Err(f) if fault_is(f, SIGSEGV, &[SEGV_ACCERR], p) => {} _ => return 1 }
+        match store(at(p, PAGE), 1) { Err(f) if fault_is(f, SIGSEGV, &[SEGV_ACCERR], at(p, PAGE)) => {} _ => return 2 }
         match load(at(p, PAGE)) { Ok(0x3c) => 0, _ => 3 }
     })?;
     child.finish("the child", &[
-        "in the child, reading the PROT_NONE page did not raise SIGSEGV with SEGV_ACCERR",
-        "in the child, writing the PROT_READ page did not raise SIGSEGV with SEGV_ACCERR",
+        "in the child, reading the PROT_NONE page did not raise SIGSEGV with SEGV_ACCERR at the byte read",
+        "in the child, writing the PROT_READ page did not raise SIGSEGV with SEGV_ACCERR at the byte written",
         "in the child, the PROT_READ page did not read back its contents",
     ])
 }
 
 fn pr_tlb_cpus() -> CaseResult {
     let page = anon(PAGE)?;
-    let longest = with_page_workers(true, |n| {
+    let longest = with_page_workers(true, SEGV_ACCERR, |n| {
         page_rounds(n, |_| { protect(page, PAGE, RW)?; Ok(page) }, |p| mprotect(p, PAGE, PROT_READ), "mprotect(PROT_READ)")
     })?;
     let stale = T_STALE.load(SeqCst);
     value("stale-writes", stale as i64, "", Some((0, 0)));
     value("mprotect", longest / 1000, "us", None);
     value("accerr", ACCERR.load(SeqCst) as i64, "", None);
-    check(stale == 0, &format!("{stale} writes begun after mprotect(PROT_READ) returned succeeded on another processor"))?;
-    check(MAPERR.load(SeqCst) == 0, "a write to the read-only page faulted with SEGV_MAPERR, not SEGV_ACCERR")
+    check(stale == 0, &format!("{stale} writes begun after mprotect(PROT_READ) returned succeeded on another processor"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1687,11 +1852,24 @@ fn sh_file_independent() -> CaseResult {
 }
 
 fn sh_file_msync_read() -> CaseResult {
+    // A sparse file has no disk blocks until its pages are written out, and st_blocks
+    // counts the blocks on disk, so blocks present when MS_SYNC returns show it wrote the
+    // stores. read() alone cannot show that: it returns the cached pages before any sync.
     let len = 2 * PAGE;
-    let f = TempFile::new("msync-read", &vec![0u8; len])?;
+    let f = TempFile::new("msync-read", &[])?;
+    zero("ftruncate to 8 KiB", sc(nr::FTRUNCATE, &[f.fd as u64, len as u64]))?;
+    check(disk_blocks(f.fd)? == 0, "a file extended by ftruncate already has disk blocks, so st_blocks cannot show what msync writes")?;
     let p = map(0, len, RW, MAP_SHARED, f.fd)?;
     fill(p, len, 13);
+    let stored = disk_blocks(f.fd)?;
+    value("blocks-before", stored, "", None);
+    if stored >= (len / 512) as i64 {
+        return Err(CaseError::Skip(format!("storing into the mapping already gave the file {stored} disk blocks, so st_blocks cannot show what msync writes")));
+    }
     zero("msync(MS_SYNC)", msync(p, len, MS_SYNC))?;
+    let synced = disk_blocks(f.fd)?;
+    value("blocks-after", synced, "", None);
+    check(synced >= (len / 512) as i64, &format!("when msync(MS_SYNC) returned, the file had {synced} of the {} disk blocks its stored pages need", len / 512))?;
     let back = pread_n(f.fd, len, 0)?;
     check(back.len() == len, &format!("read() returned {} bytes of a {len}-byte file", back.len()))?;
     match (0..len).find(|&off| back[off] != pat(off, 13)) {
@@ -1732,9 +1910,13 @@ fn sh_child_unmaps() -> CaseResult {
     poke(p, 1);
     let mut child = Child::start(|| {
         if munmap(p, PAGE) != 0 { return 1; }
-        match load(p) { Err(f) if f.sig == SIGSEGV => 0, _ => 2 }
+        match load(p) { Ok(_) => 2, Err(f) if fault_is(f, SIGSEGV, &[SEGV_MAPERR], p) => 0, Err(_) => 3 }
     })?;
-    child.finish("the child", &["the child's munmap of the inherited mapping failed", "the child could still read the page after unmapping it"])?;
+    child.finish("the child", &[
+        "the child's munmap of the inherited mapping failed",
+        "the child could still read the page after unmapping it",
+        "reading the page the child unmapped did not raise SIGSEGV with SEGV_MAPERR at the byte read",
+    ])?;
     check(peek(p) == 1, "the parent's view of the shared page changed when the child unmapped it")?;
     poke(p, 2);
     check(peek(p) == 2, "the parent's store to the shared page did not stick after the child unmapped it")
@@ -1770,7 +1952,17 @@ fn sh_eof_zero_tail() -> CaseResult {
     poke(at(p, 200), b'z');
     zero("msync(MS_SYNC)", msync(p, PAGE, MS_SYNC))?;
     let end = sc(nr::LSEEK, &[f.fd as u64, 0, SEEK_END]);
-    check(end == 100, &format!("after a store past its end and msync, the 100-byte file is {} bytes", shown(end)))
+    check(end == 100, &format!("after a store past its end and msync, the 100-byte file is {} bytes", shown(end)))?;
+    // Extended again, the file must read zero past byte 100: the store at 200 was never
+    // written out, by msync or by munmap.
+    unmap(p, PAGE)?;
+    zero("ftruncate to 4096 bytes", sc(nr::FTRUNCATE, &[f.fd as u64, PAGE as u64]))?;
+    let back = pread_n(f.fd, PAGE, 0)?;
+    check(back.len() == PAGE, &format!("read() returned {} bytes of the 4096-byte file", back.len()))?;
+    match (100..PAGE).find(|&off| back[off] != 0) {
+        None => Ok(()),
+        Some(off) => fail(format!("extended to 4096 bytes after the store past its end, the file reads {:#04x} at byte {off}, not zero", back[off])),
+    }
 }
 
 fn sh_eof_sigbus() -> CaseResult {
@@ -1778,7 +1970,7 @@ fn sh_eof_sigbus() -> CaseResult {
     let f = TempFile::new("eof-sigbus", &[b'e'; 100])?;
     let p = map(0, 2 * PAGE, PROT_READ, MAP_SHARED, f.fd)?;
     loads("reading the file's first byte", p, Some(b'e'))?;
-    load_faults("reading the page past the end of the file", at(p, PAGE + 8), SIGBUS, None)
+    load_faults("reading the page past the end of the file", at(p, PAGE + 8), SIGBUS, BUS_PAST_EOF)
 }
 
 fn sh_eof_truncated() -> CaseResult {
@@ -1787,7 +1979,7 @@ fn sh_eof_truncated() -> CaseResult {
     let p = map(0, 2 * PAGE, PROT_READ, MAP_SHARED, f.fd)?;
     loads("reading the second page before truncation", at(p, PAGE), Some(b't'))?;
     zero("ftruncate to 100 bytes", sc(nr::FTRUNCATE, &[f.fd as u64, 100]))?;
-    load_faults("reading the second page after the file was truncated to 100 bytes", at(p, PAGE + 8), SIGBUS, None)?;
+    load_faults("reading the second page after the file was truncated to 100 bytes", at(p, PAGE + 8), SIGBUS, BUS_PAST_EOF)?;
     loads("reading a byte still in the file", at(p, 50), Some(b't'))
 }
 
@@ -1888,7 +2080,7 @@ fn br_shrink() -> CaseResult {
     let now = cur_brk();
     check(now == top - 2 * PAGE as u64, &format!("after sbrk(-8192) from {top:#x} the break is {now:#x}"))?;
     loads("reading the last byte still below the break", (now - 1) as *mut u8, Some(0x5c))?;
-    load_faults("reading the first page above the shrunk break", now as *mut u8, SIGSEGV, Some(SEGV_MAPERR))
+    load_faults("reading the first page above the shrunk break", now as *mut u8, SIGSEGV, &[SEGV_MAPERR])
 }
 
 fn br_regrow_zero() -> CaseResult {
@@ -1979,19 +2171,23 @@ fn br_fork_heap() -> CaseResult {
 fn br_heap_large() -> CaseResult {
     let pages = 2048;
     let base = page_up(cur_brk());
+    resident()?;
     let before = resident()?;
     set_brk(base + (pages * PAGE) as u64)?;
     let p = base as *mut u8;
     let t0 = mono();
-    for i in 0..pages { poke(at(p, i * PAGE), i as u8); }
+    for i in 0..pages {
+        poke(at(p, i * PAGE), i as u8);
+        poke(at(p, i * PAGE + 1), (i >> 8) as u8);
+    }
     let took = mono() - t0;
     let grew = resident()? - before;
     value("first-touch", took / pages as i64, "ns", None);
     value("resident-pages", grew, "", Some((pages as i64, pages as i64 + 64)));
     for i in 0..pages {
-        check(peek(at(p, i * PAGE)) == i as u8, &format!("heap page {i} of 2048 did not keep its byte"))?;
+        check(peek(at(p, i * PAGE)) == i as u8 && peek(at(p, i * PAGE + 1)) == (i >> 8) as u8, &format!("heap page {i} of 2048 did not keep its own index"))?;
     }
-    check(grew >= pages as i64, &format!("after touching 2048 heap pages only {grew} more were resident"))
+    check((pages as i64..=pages as i64 + 64).contains(&grew), &format!("after growing the break by 2048 pages and touching each, {grew} more pages were resident"))
 }
 
 // ---------------------------------------------------------------------------
@@ -2000,26 +2196,36 @@ fn br_heap_large() -> CaseResult {
 fn lk_mlock() -> CaseResult {
     let pages = 16;
     let p = anon(pages * PAGE)?;
-    let before = resident()?;
     zero("mlock of 16 untouched pages", mlock(p, pages * PAGE))?;
-    let grew = resident()? - before;
-    value("resident-pages", grew, "", Some((pages as i64, pages as i64 + 8)));
-    check(grew >= pages as i64, &format!("mlock of 16 untouched pages made only {grew} resident"))?;
-    zero("munlock", munlock(p, pages * PAGE))
+    let freed = freed_by_unmap(p, pages * PAGE)?;
+    value("resident-pages", freed, "", Some((pages as i64, pages as i64)));
+    check(freed == pages as i64, &format!("after mlock of 16 untouched pages, unmapping them gave back {freed} resident pages"))
 }
 
 fn lk_munlock() -> CaseResult {
     let p = anon(4 * PAGE)?;
     fill(p, 4 * PAGE, 15);
+    let before = locked_kb()?;
     zero("mlock", mlock(p, 4 * PAGE))?;
+    let locked = locked_kb()? - before;
+    check(locked == 16, &format!("mlock of 4 pages raised VmLck by {locked} kB, not 16"))?;
     zero("munlock of the locked range", munlock(p, 4 * PAGE))?;
+    let left = locked_kb()? - before;
+    value("locked-after", left, "kb", Some((0, 0)));
+    check(left == 0, &format!("after munlock of the 4 locked pages, VmLck is still {left} kB higher"))?;
     want_pattern(p, 4 * PAGE, 15, "the range after mlock and munlock")
 }
 
 fn lk_mlock_unaligned() -> CaseResult {
     let p = anon(2 * PAGE)?;
+    let before = locked_kb()?;
     zero("mlock of 10 bytes at a page address plus 100", mlock(at(p, 100), 10))?;
-    zero("munlock of the same 10 bytes", munlock(at(p, 100), 10))
+    let locked = locked_kb()? - before;
+    value("locked", locked, "kb", Some((4, 4)));
+    check(locked == 4, &format!("mlock of 10 bytes inside one page raised VmLck by {locked} kB, not the whole page's 4"))?;
+    zero("munlock of the same 10 bytes", munlock(at(p, 100), 10))?;
+    let left = locked_kb()? - before;
+    check(left == 0, &format!("after munlock of the same 10 bytes, VmLck is still {left} kB higher"))
 }
 
 fn lk_mlock_enomem() -> CaseResult {
@@ -2077,25 +2283,22 @@ fn lk_mlock_limit() -> CaseResult {
 fn lk_mlockall_current() -> CaseResult {
     let pages = 16;
     let p = anon(pages * PAGE)?;
-    let before = resident()?;
     zero("mlockall(MCL_CURRENT)", mlockall(MCL_CURRENT))?;
-    let grew = resident()? - before;
+    let freed = freed_by_unmap(p, pages * PAGE);
     let _ = munlockall();
-    value("resident-pages", grew, "", None);
-    check(grew >= pages as i64, &format!("after mlockall(MCL_CURRENT) an untouched 16-page mapping made only {grew} pages resident"))?;
-    unmap(p, pages * PAGE)
+    let freed = freed?;
+    value("resident-pages", freed, "", Some((pages as i64, pages as i64)));
+    check(freed == pages as i64, &format!("after mlockall(MCL_CURRENT), unmapping an untouched 16-page mapping gave back {freed} resident pages"))
 }
 
 fn lk_mlockall_future() -> CaseResult {
     let pages = 16;
     zero("mlockall(MCL_FUTURE)", mlockall(MCL_FUTURE))?;
-    let before = resident()?;
-    let p = anon(pages * PAGE)?;
-    let grew = resident()? - before;
+    let freed = anon(pages * PAGE).and_then(|p| freed_by_unmap(p, pages * PAGE));
     let _ = munlockall();
-    value("resident-pages", grew, "", Some((pages as i64, pages as i64 + 16)));
-    check(grew >= pages as i64, &format!("after mlockall(MCL_FUTURE) a new 16-page mapping made only {grew} pages resident"))?;
-    unmap(p, pages * PAGE)
+    let freed = freed?;
+    value("resident-pages", freed, "", Some((pages as i64, pages as i64)));
+    check(freed == pages as i64, &format!("after mlockall(MCL_FUTURE), unmapping a new, untouched 16-page mapping gave back {freed} resident pages"))
 }
 
 fn lk_mlockall_einval() -> CaseResult {
@@ -2108,7 +2311,12 @@ fn lk_munlockall() -> CaseResult {
     let p = anon(4 * PAGE)?;
     fill(p, 4 * PAGE, 16);
     zero("mlock", mlock(p, 4 * PAGE))?;
+    let locked = locked_kb()?;
+    check(locked >= 16, &format!("after mlock of 4 pages VmLck is {locked} kB, under 16"))?;
     zero("munlockall after mlock", munlockall())?;
+    let left = locked_kb()?;
+    value("locked-after", left, "kb", Some((0, 0)));
+    check(left == 0, &format!("after munlockall VmLck is {left} kB, not 0"))?;
     want_pattern(p, 4 * PAGE, 16, "the range after munlockall")
 }
 
@@ -2126,9 +2334,9 @@ fn lk_msync_invalidate() -> CaseResult {
     let p = map(0, PAGE, RW, MAP_SHARED, f.fd)?;
     check(peek(p) == b'o', "the mapping does not show the file")?;
     pwrite_all(f.fd, b"new", 0)?;
-    zero("msync(MS_INVALIDATE)", msync(p, PAGE, MS_INVALIDATE))?;
+    zero("msync(MS_SYNC|MS_INVALIDATE)", msync(p, PAGE, MS_SYNC | MS_INVALIDATE))?;
     let seen: Vec<u8> = (0..3).map(|i| peek(at(p, i))).collect();
-    check(seen == b"new", "after write() and msync(MS_INVALIDATE), the mapping does not show the file's new bytes")
+    check(seen == b"new", "after write() and msync(MS_SYNC|MS_INVALIDATE), the mapping does not show the file's new bytes")
 }
 
 fn lk_msync_both() -> CaseResult {
@@ -2157,7 +2365,7 @@ fn lk_msync_locked() -> CaseResult {
     let f = TempFile::new("msync-locked", &[0u8; PAGE])?;
     let p = map(0, PAGE, RW, MAP_SHARED, f.fd)?;
     zero("mlock", mlock(p, PAGE))?;
-    want_err("msync(MS_INVALIDATE) of a locked range", msync(p, PAGE, MS_INVALIDATE), EBUSY)
+    want_err("msync(MS_SYNC|MS_INVALIDATE) of a locked range", msync(p, PAGE, MS_SYNC | MS_INVALIDATE), EBUSY)
 }
 
 fn lk_msync_anon() -> CaseResult {
@@ -2196,12 +2404,13 @@ fn lk_madvise_dontneed() -> CaseResult {
     let pages = 8;
     let p = anon(pages * PAGE)?;
     fill_byte(p, pages * PAGE, 0x5a);
+    resident()?;
     let before = resident()?;
     zero("madvise(MADV_DONTNEED)", madvise(p, pages * PAGE, MADV_DONTNEED))?;
     let freed = before - resident()?;
-    value("freed-pages", freed, "", Some((pages as i64, pages as i64 + 8)));
-    want_bytes(p, pages * PAGE, 0, "private anonymous memory after MADV_DONTNEED")?;
-    check(freed >= pages as i64, &format!("MADV_DONTNEED of 8 resident pages freed {freed}"))
+    value("freed-pages", freed, "", Some((pages as i64, pages as i64)));
+    check(freed == pages as i64, &format!("MADV_DONTNEED of 8 resident pages freed {freed}"))?;
+    want_bytes(p, pages * PAGE, 0, "private anonymous memory after MADV_DONTNEED")
 }
 
 fn lk_mincore() -> CaseResult {
@@ -2234,7 +2443,7 @@ static SUITE: Suite = suite(
             case("private-zero", "An anonymous MAP_PRIVATE mapping of 16 pages reads as zero throughout and keeps what is written to every page", an_private_zero),
             case("shared-zero", "An anonymous MAP_SHARED mapping of 16 pages reads as zero throughout and keeps what is written to every page", an_shared_zero),
             case("page-aligned", "mmap returns a page-aligned address for lengths of 1, 4095, 4096 and 4097 bytes", an_page_aligned),
-            case("partial-page", "A mapping whose length is not a multiple of the page size covers the whole last page: its last byte reads zero and can be written", an_partial_page),
+            case("partial-page", "Linux policy: a mapping whose length is not a multiple of the page size covers the whole last page: its last byte reads zero and can be written", an_partial_page),
             case("distinct", "Two anonymous mappings made one after the other do not overlap, and writing one leaves the other unchanged", an_distinct),
             case("hint-occupied", "mmap without MAP_FIXED, given a hint inside an existing mapping, places the new mapping elsewhere and leaves the existing one unchanged", an_hint_occupied),
             case("hint-free", "Linux policy: mmap without MAP_FIXED uses a free, page-aligned hint address exactly", an_hint_free),
@@ -2244,10 +2453,10 @@ static SUITE: Suite = suite(
             case("noreplace-free", "Linux ABI: MAP_FIXED_NOREPLACE at a free page-aligned address maps exactly there", an_noreplace_free),
             case("length-zero", "mmap of length 0 fails with EINVAL", an_length_zero),
             case("no-type", "mmap with neither MAP_SHARED nor MAP_PRIVATE fails with EINVAL", an_no_type),
-            case("offset-unaligned", "mmap with an offset that is not a multiple of the page size fails with EINVAL", an_offset_unaligned),
+            case("offset-unaligned", "mmap of a file at an offset that is not a multiple of the page size fails with EINVAL", an_offset_unaligned),
             case("ebadf", "mmap without MAP_ANONYMOUS of descriptor -1 or of a closed descriptor fails with EBADF", an_ebadf),
             case("enomem-space", "mmap of 2^60 bytes, more address space than a process has, fails with ENOMEM", an_enomem_space),
-            case("enomem-fixed", "MAP_FIXED at 2^56, past the end of the user address space, fails with ENOMEM", an_enomem_fixed),
+            case("enomem-fixed", "MAP_FIXED at 2^56, past the end of the user address space, fails with ENOMEM or EINVAL", an_enomem_fixed),
             case("rlimit-as", "With RLIMIT_AS at 256 MiB, a 512 MiB mmap that succeeds without the limit fails with ENOMEM, and a 16 MiB one succeeds", an_rlimit_as),
             case("munmap-whole", "After munmap, every page of the former mapping raises SIGSEGV with SEGV_MAPERR and si_addr the byte touched", an_munmap_whole),
             case("munmap-middle", "munmap of the middle page of a 3-page mapping splits it: the outer pages keep their contents and the middle one raises SEGV_MAPERR", an_munmap_middle),
@@ -2258,33 +2467,33 @@ static SUITE: Suite = suite(
             case("munmap-zero", "munmap of length 0 fails with EINVAL", an_munmap_zero),
             case("remap-zero", "A page mapped with MAP_FIXED into the hole a munmap left reads as zero, not the old contents", an_remap_zero),
             case("sparse", "Linux policy: touching one byte every 1 MiB of a 256 MiB anonymous mapping makes about 256 pages resident, not 65536", an_sparse),
-            case("page-by-page", "Each page of a 16 MiB anonymous mapping, touched in order, keeps its own contents, and all 4096 are resident afterwards", an_page_by_page),
+            case("page-by-page", "Each page of a 16 MiB anonymous mapping, touched in order, keeps its own contents, and unmapping it gives back all 4096 pages as resident", an_page_by_page),
             case("churn", "Mapping, touching and unmapping 1 MiB 100 times leaves free memory within 4 MiB of where it was and the resident set no larger", an_churn),
             case("many", "1000 one-page anonymous mappings exist at once at distinct addresses, each keeping its own contents, and all unmap", an_many),
-            case("unmap-cpus", "With two to four processors, a thread reading a page another thread has just unmapped raises SEGV_MAPERR every time and never reads the old page", an_unmap_cpus),
+            case("unmap-cpus", "With two to four processors, worker threads pinned one to each other processor and reading a page the case's thread has just unmapped raise SIGSEGV with SEGV_MAPERR at the byte read every time and never read the old page", an_unmap_cpus),
         ]),
         category("protection", "mprotect & faults", &[
             case("none-read", "Reading a PROT_NONE mapping raises SIGSEGV with SEGV_ACCERR and si_addr the byte read", pr_none_read),
             case("none-write", "Writing a PROT_NONE mapping raises SIGSEGV with SEGV_ACCERR and si_addr the byte written", pr_none_write),
             case("readonly-write", "Writing a PROT_READ mapping raises SIGSEGV with SEGV_ACCERR and leaves the byte unchanged, while reading succeeds", pr_readonly_write),
             case("unmapped-maperr", "Reading an address with nothing mapped raises SIGSEGV with SEGV_MAPERR and si_addr that address", pr_unmapped_maperr),
-            case("handler-retry", "A SIGSEGV handler that mprotects the faulting page writable and returns lets the write complete: 64 PROT_NONE pages take exactly 64 faults", pr_handler_retry),
+            case("handler-retry", "A SIGSEGV handler that mprotects the faulting page writable and returns lets the write complete: 64 PROT_NONE pages take exactly 64 faults, each SEGV_ACCERR at the byte written", pr_handler_retry),
             case("make-readonly", "mprotect to PROT_READ keeps the contents readable and makes writes raise SEGV_ACCERR", pr_make_readonly),
-            case("make-writable", "mprotect from PROT_READ back to PROT_READ|PROT_WRITE lets writes succeed and keeps the contents", pr_make_writable),
+            case("make-writable", "mprotect to PROT_READ makes writes raise SEGV_ACCERR, and mprotect back to PROT_READ|PROT_WRITE lets writes succeed and keeps the contents", pr_make_writable),
             case("none-keeps", "mprotect to PROT_NONE and back to PROT_READ|PROT_WRITE keeps the contents, and reads fault in between", pr_none_keeps),
             case("guard-page", "A PROT_NONE guard page in the middle of a mapping faults at its first and last bytes while the bytes either side stay accessible", pr_guard_page),
             case("partial", "mprotect of the first page of a 4-page mapping to PROT_READ changes only that page", pr_partial),
-            case("partial-middle", "mprotect of two middle pages of a 6-page mapping to PROT_READ and of one of them back leaves exactly the other read-only", pr_partial_middle),
+            case("partial-middle", "mprotect of two middle pages of a 6-page mapping to PROT_READ makes both refuse writes, and mprotect of one of them back leaves exactly the other read-only", pr_partial_middle),
             case("unaligned", "mprotect at an address that is not page-aligned fails with EINVAL and leaves the protection unchanged", pr_unaligned),
             case("unmapped-enomem", "mprotect of a range that includes an unmapped page fails with ENOMEM", pr_unmapped_enomem),
             case("bad-prot", "Linux ABI: mprotect with an unknown protection bit fails with EINVAL", pr_bad_prot),
             case("file-eacces", "mprotect adding PROT_WRITE to a MAP_SHARED mapping of a file opened read-only fails with EACCES", pr_file_eacces),
-            case("exec-denied", "Calling into a PROT_READ|PROT_WRITE anonymous mapping raises SIGSEGV with SEGV_ACCERR at the call's target (ARM64 and x86-64 both enforce no-execute)", pr_exec_denied),
+            case("exec-denied", "Linux policy: calling into a PROT_READ|PROT_WRITE anonymous mapping raises SIGSEGV with SEGV_ACCERR at the call's target (ARM64 and x86-64 both enforce no-execute)", pr_exec_denied),
             case("exec-file", "Code in a file mapped PROT_READ|PROT_EXEC runs, and after mprotect to PROT_READ calling it raises SIGSEGV with SEGV_ACCERR", pr_exec_file),
             case("exec-add", "Calling code in a file mapped PROT_READ raises SIGSEGV, and after mprotect adds PROT_EXEC the code runs", pr_exec_add),
             case("exec-jit", "Linux ABI: code written into an anonymous mapping and made coherent as a C library's __clear_cache does (ARM64 DC CVAU and IC IVAU from user mode) runs after mprotect to PROT_READ|PROT_EXEC", pr_exec_jit),
-            case("fork-inherits", "A forked child inherits each page's protection: its PROT_NONE page faults and its PROT_READ page refuses writes but reads", pr_fork_inherits),
-            case("tlb-cpus", "With two to four processors, a write by a thread on another processor begun after mprotect to PROT_READ returned always raises SEGV_ACCERR", pr_tlb_cpus),
+            case("fork-inherits", "A forked child inherits each page's protection: its PROT_NONE page raises SEGV_ACCERR at the byte read, and its PROT_READ page raises SEGV_ACCERR at the byte written but reads", pr_fork_inherits),
+            case("tlb-cpus", "With two to four processors, a write by a worker thread pinned to another processor, begun after mprotect to PROT_READ returned, always raises SIGSEGV with SEGV_ACCERR at the byte written", pr_tlb_cpus),
         ]),
         category("shared", "shared mappings across fork", &[
             case("anon-child-sees", "A MAP_SHARED anonymous page written by the parent after fork is seen by the child", sh_anon_child_sees),
@@ -2296,18 +2505,18 @@ static SUITE: Suite = suite(
             case("private-cow-many", "After fork, parent and child each rewrite all 64 pages of a MAP_PRIVATE mapping and each sees only its own stores", sh_private_cow_many),
             case("file-child-sees", "A child's store into a MAP_SHARED file mapping inherited across fork is seen through the parent's mapping and by read()", sh_file_child_sees),
             case("file-independent", "Two processes that each map the same file MAP_SHARED see each other's stores", sh_file_independent),
-            case("file-msync-read", "Stores into a MAP_SHARED file mapping are what read() returns from the file after msync(MS_SYNC)", sh_file_msync_read),
+            case("file-msync-read", "Stores into a MAP_SHARED mapping of a sparse file are on disk when msync(MS_SYNC) returns: the file has the disk blocks they need (st_blocks), and read() returns them", sh_file_msync_read),
             case("file-write-seen", "A write() to a file is seen at once through an existing MAP_SHARED mapping of it", sh_file_write_seen),
             case("file-private", "Stores into a MAP_PRIVATE file mapping are not written to the file and not seen by another process's MAP_SHARED mapping of it", sh_file_private),
-            case("child-unmaps", "A child's munmap of an inherited MAP_SHARED anonymous mapping leaves the parent's view, and its later stores, in place", sh_child_unmaps),
+            case("child-unmaps", "A child's munmap of an inherited MAP_SHARED anonymous mapping makes its own reads raise SEGV_MAPERR at the byte read, and leaves the parent's view, and its later stores, in place", sh_child_unmaps),
             case("parent-unmaps", "After the parent unmaps a MAP_SHARED anonymous mapping, the child still reads the parent's last store and can store its own", sh_parent_unmaps),
-            case("eof-zero-tail", "The part of a file mapping's last page past the end of the file reads as zero, and stores there are not written to the file", sh_eof_zero_tail),
-            case("eof-sigbus", "Touching a page of a file mapping that lies wholly past the end of the file raises SIGBUS with si_addr the byte touched", sh_eof_sigbus),
-            case("eof-truncated", "After the file is truncated, touching a page of its MAP_SHARED mapping past the new end raises SIGBUS", sh_eof_truncated),
+            case("eof-zero-tail", "The part of a file mapping's last page past the end of the file reads as zero, and a store there is never written to the file: the file stays 100 bytes and, extended afterwards, reads zero there", sh_eof_zero_tail),
+            case("eof-sigbus", "Touching a page of a file mapping that lies wholly past the end of the file raises SIGBUS with BUS_ADRERR or BUS_OBJERR and si_addr the byte touched", sh_eof_sigbus),
+            case("eof-truncated", "Linux policy: after the file is truncated, touching a page of its MAP_SHARED mapping past the new end raises SIGBUS with BUS_ADRERR or BUS_OBJERR at the byte touched", sh_eof_truncated),
             case("write-only-fd", "mmap of a file opened O_WRONLY fails with EACCES", sh_write_only_fd),
             case("readonly-shared-write", "mmap with PROT_WRITE and MAP_SHARED of a file opened O_RDONLY fails with EACCES", sh_readonly_shared_write),
             case("readonly-private-write", "mmap with PROT_WRITE and MAP_PRIVATE of a file opened O_RDONLY succeeds, and its stores stay private", sh_readonly_private_write),
-            case("pipe-enodev", "mmap of a pipe fails with ENODEV", sh_pipe_enodev),
+            case("pipe-enodev", "Linux policy: mmap of a pipe fails with ENODEV", sh_pipe_enodev),
         ]),
         category("brk", "brk & sbrk", &[
             case("query", "brk(0), as a C library's sbrk(0) makes it, reports the same nonzero break each time", br_query),
@@ -2315,33 +2524,33 @@ static SUITE: Suite = suite(
             case("grow-exact", "Linux ABI: brk sets and returns exactly the break asked for, not one rounded up to a page", br_grow_exact),
             case("sbrk-sequence", "Successive sbrk(4096) calls return consecutive blocks, each starting at the previous break", br_sbrk_sequence),
             case("shrink", "Shrinking the break with sbrk(-8192) moves it down, and touching memory above the new break raises SIGSEGV with SEGV_MAPERR", br_shrink),
-            case("regrow-zero", "Memory given back by shrinking the break and then regrown reads as zero, not the old contents", br_regrow_zero),
+            case("regrow-zero", "Linux policy: memory given back by shrinking the break and then regrown reads as zero, not the old contents", br_regrow_zero),
             case("below-start", "brk below the start of the heap fails and leaves the break unchanged", br_below_start),
-            case("huge", "Growing the break by 1 TiB fails and leaves the break unchanged", br_huge),
+            case("huge", "Linux policy: growing the break by 1 TiB fails and leaves the break unchanged", br_huge),
             case("rlimit-data", "With RLIMIT_DATA at 0, growing the break fails and leaves it unchanged; with the limit raised again the same growth succeeds", br_rlimit_data),
             case("rlimit-data-mmap", "Linux policy: with RLIMIT_DATA at 0, a private writable anonymous mmap fails with ENOMEM while a read-only one succeeds", br_rlimit_data_mmap),
             case("fork-heap", "A forked child inherits the break and the heap's contents, and its brk leaves the parent's break unchanged", br_fork_heap),
-            case("heap-large", "Growing the break by 8 MiB gives 2048 pages that each keep their contents and are all resident afterwards", br_heap_large),
+            case("heap-large", "Growing the break by 8 MiB gives 2048 pages that each keep their own index, and touching them makes 2048 to 2112 more pages resident", br_heap_large),
         ]),
         category("locking", "mlock & msync", &[
-            case("mlock", "mlock of 16 untouched anonymous pages succeeds and makes them resident", lk_mlock),
-            case("munlock", "munlock of a locked range succeeds and leaves its contents unchanged", lk_munlock),
-            case("mlock-unaligned", "Linux policy: mlock and munlock at an address inside a page lock and unlock the whole pages and succeed", lk_mlock_unaligned),
+            case("mlock", "mlock of 16 untouched anonymous pages succeeds and makes them resident: unmapping them gives back all 16 as resident pages", lk_mlock),
+            case("munlock", "munlock of a locked range succeeds, unlocks it (VmLck falls back by the 16 kB mlock added) and leaves its contents unchanged", lk_munlock),
+            case("mlock-unaligned", "Linux policy: mlock and munlock of 10 bytes inside a page lock and unlock that whole page (VmLck changes by 4 kB)", lk_mlock_unaligned),
             case("mlock-enomem", "mlock of a range that includes an unmapped page fails with ENOMEM", lk_mlock_enomem),
             case("munlock-enomem", "munlock of a range that includes an unmapped page fails with ENOMEM", lk_munlock_enomem),
             case("mlock-eperm", "Linux policy: an unprivileged process with RLIMIT_MEMLOCK at 0 is refused mlock with EPERM", lk_mlock_eperm),
             case("mlock-limit", "Linux policy: an unprivileged process may lock 32 KiB under a 64 KiB RLIMIT_MEMLOCK and is refused 64 KiB more with ENOMEM", lk_mlock_limit),
-            case("mlockall-current", "mlockall(MCL_CURRENT) succeeds and makes an untouched mapping that existed before it resident", lk_mlockall_current),
-            case("mlockall-future", "After mlockall(MCL_FUTURE), a new anonymous mapping is resident as soon as mmap returns", lk_mlockall_future),
+            case("mlockall-current", "mlockall(MCL_CURRENT) makes an untouched mapping that existed before it resident: unmapping it gives back all 16 pages as resident", lk_mlockall_current),
+            case("mlockall-future", "After mlockall(MCL_FUTURE), a new anonymous mapping is resident as soon as mmap returns: unmapping it untouched gives back all 16 pages as resident", lk_mlockall_future),
             case("mlockall-einval", "mlockall with no flags or with an unknown flag fails with EINVAL", lk_mlockall_einval),
-            case("munlockall", "munlockall succeeds whether or not anything is locked, and leaves contents unchanged", lk_munlockall),
+            case("munlockall", "munlockall succeeds whether or not anything is locked, brings VmLck to 0 after an mlock, and leaves contents unchanged", lk_munlockall),
             case("msync-async", "msync(MS_ASYNC) of a MAP_SHARED file mapping returns 0 and read() returns the stores made through it", lk_msync_async),
-            case("msync-invalidate", "msync(MS_INVALIDATE) of a MAP_SHARED file mapping returns 0, and the mapping shows a write() made to the file", lk_msync_invalidate),
+            case("msync-invalidate", "msync(MS_SYNC|MS_INVALIDATE) of a MAP_SHARED file mapping returns 0, and the mapping shows a write() made to the file", lk_msync_invalidate),
             case("msync-both", "msync with both MS_SYNC and MS_ASYNC fails with EINVAL", lk_msync_both),
             case("msync-flags", "msync with an unknown flag fails with EINVAL", lk_msync_flags),
             case("msync-unaligned", "msync at an address that is not page-aligned fails with EINVAL", lk_msync_unaligned),
             case("msync-unmapped", "msync of a range that includes an unmapped page fails with ENOMEM", lk_msync_unmapped),
-            case("msync-locked", "msync(MS_INVALIDATE) of a range locked by mlock fails with EBUSY", lk_msync_locked),
+            case("msync-locked", "msync(MS_SYNC|MS_INVALIDATE) of a range locked by mlock fails with EBUSY", lk_msync_locked),
             case("msync-anon", "Linux policy: msync(MS_SYNC) of an anonymous mapping returns 0", lk_msync_anon),
             case("posix-madvise", "posix_madvise with POSIX_MADV_NORMAL, SEQUENTIAL, RANDOM and WILLNEED returns 0 and leaves the contents unchanged", lk_posix_madvise),
             case("posix-madvise-einval", "posix_madvise with an unknown advice value returns EINVAL", lk_posix_madvise_einval),

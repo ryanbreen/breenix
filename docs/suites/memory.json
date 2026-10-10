@@ -23,7 +23,7 @@
         },
         {
           "id": "partial-page",
-          "title": "A mapping whose length is not a multiple of the page size covers the whole last page: its last byte reads zero and can be written"
+          "title": "Linux policy: a mapping whose length is not a multiple of the page size covers the whole last page: its last byte reads zero and can be written"
         },
         {
           "id": "distinct",
@@ -63,7 +63,7 @@
         },
         {
           "id": "offset-unaligned",
-          "title": "mmap with an offset that is not a multiple of the page size fails with EINVAL"
+          "title": "mmap of a file at an offset that is not a multiple of the page size fails with EINVAL"
         },
         {
           "id": "ebadf",
@@ -75,7 +75,7 @@
         },
         {
           "id": "enomem-fixed",
-          "title": "MAP_FIXED at 2^56, past the end of the user address space, fails with ENOMEM"
+          "title": "MAP_FIXED at 2^56, past the end of the user address space, fails with ENOMEM or EINVAL"
         },
         {
           "id": "rlimit-as",
@@ -119,7 +119,7 @@
         },
         {
           "id": "page-by-page",
-          "title": "Each page of a 16 MiB anonymous mapping, touched in order, keeps its own contents, and all 4096 are resident afterwards"
+          "title": "Each page of a 16 MiB anonymous mapping, touched in order, keeps its own contents, and unmapping it gives back all 4096 pages as resident"
         },
         {
           "id": "churn",
@@ -131,7 +131,7 @@
         },
         {
           "id": "unmap-cpus",
-          "title": "With two to four processors, a thread reading a page another thread has just unmapped raises SEGV_MAPERR every time and never reads the old page"
+          "title": "With two to four processors, worker threads pinned one to each other processor and reading a page the case's thread has just unmapped raise SIGSEGV with SEGV_MAPERR at the byte read every time and never read the old page"
         }
       ]
     },
@@ -157,7 +157,7 @@
         },
         {
           "id": "handler-retry",
-          "title": "A SIGSEGV handler that mprotects the faulting page writable and returns lets the write complete: 64 PROT_NONE pages take exactly 64 faults"
+          "title": "A SIGSEGV handler that mprotects the faulting page writable and returns lets the write complete: 64 PROT_NONE pages take exactly 64 faults, each SEGV_ACCERR at the byte written"
         },
         {
           "id": "make-readonly",
@@ -165,7 +165,7 @@
         },
         {
           "id": "make-writable",
-          "title": "mprotect from PROT_READ back to PROT_READ|PROT_WRITE lets writes succeed and keeps the contents"
+          "title": "mprotect to PROT_READ makes writes raise SEGV_ACCERR, and mprotect back to PROT_READ|PROT_WRITE lets writes succeed and keeps the contents"
         },
         {
           "id": "none-keeps",
@@ -181,7 +181,7 @@
         },
         {
           "id": "partial-middle",
-          "title": "mprotect of two middle pages of a 6-page mapping to PROT_READ and of one of them back leaves exactly the other read-only"
+          "title": "mprotect of two middle pages of a 6-page mapping to PROT_READ makes both refuse writes, and mprotect of one of them back leaves exactly the other read-only"
         },
         {
           "id": "unaligned",
@@ -201,7 +201,7 @@
         },
         {
           "id": "exec-denied",
-          "title": "Calling into a PROT_READ|PROT_WRITE anonymous mapping raises SIGSEGV with SEGV_ACCERR at the call's target (ARM64 and x86-64 both enforce no-execute)"
+          "title": "Linux policy: calling into a PROT_READ|PROT_WRITE anonymous mapping raises SIGSEGV with SEGV_ACCERR at the call's target (ARM64 and x86-64 both enforce no-execute)"
         },
         {
           "id": "exec-file",
@@ -217,11 +217,11 @@
         },
         {
           "id": "fork-inherits",
-          "title": "A forked child inherits each page's protection: its PROT_NONE page faults and its PROT_READ page refuses writes but reads"
+          "title": "A forked child inherits each page's protection: its PROT_NONE page raises SEGV_ACCERR at the byte read, and its PROT_READ page raises SEGV_ACCERR at the byte written but reads"
         },
         {
           "id": "tlb-cpus",
-          "title": "With two to four processors, a write by a thread on another processor begun after mprotect to PROT_READ returned always raises SEGV_ACCERR"
+          "title": "With two to four processors, a write by a worker thread pinned to another processor, begun after mprotect to PROT_READ returned, always raises SIGSEGV with SEGV_ACCERR at the byte written"
         }
       ]
     },
@@ -267,7 +267,7 @@
         },
         {
           "id": "file-msync-read",
-          "title": "Stores into a MAP_SHARED file mapping are what read() returns from the file after msync(MS_SYNC)"
+          "title": "Stores into a MAP_SHARED mapping of a sparse file are on disk when msync(MS_SYNC) returns: the file has the disk blocks they need (st_blocks), and read() returns them"
         },
         {
           "id": "file-write-seen",
@@ -279,7 +279,7 @@
         },
         {
           "id": "child-unmaps",
-          "title": "A child's munmap of an inherited MAP_SHARED anonymous mapping leaves the parent's view, and its later stores, in place"
+          "title": "A child's munmap of an inherited MAP_SHARED anonymous mapping makes its own reads raise SEGV_MAPERR at the byte read, and leaves the parent's view, and its later stores, in place"
         },
         {
           "id": "parent-unmaps",
@@ -287,15 +287,15 @@
         },
         {
           "id": "eof-zero-tail",
-          "title": "The part of a file mapping's last page past the end of the file reads as zero, and stores there are not written to the file"
+          "title": "The part of a file mapping's last page past the end of the file reads as zero, and a store there is never written to the file: the file stays 100 bytes and, extended afterwards, reads zero there"
         },
         {
           "id": "eof-sigbus",
-          "title": "Touching a page of a file mapping that lies wholly past the end of the file raises SIGBUS with si_addr the byte touched"
+          "title": "Touching a page of a file mapping that lies wholly past the end of the file raises SIGBUS with BUS_ADRERR or BUS_OBJERR and si_addr the byte touched"
         },
         {
           "id": "eof-truncated",
-          "title": "After the file is truncated, touching a page of its MAP_SHARED mapping past the new end raises SIGBUS"
+          "title": "Linux policy: after the file is truncated, touching a page of its MAP_SHARED mapping past the new end raises SIGBUS with BUS_ADRERR or BUS_OBJERR at the byte touched"
         },
         {
           "id": "write-only-fd",
@@ -311,7 +311,7 @@
         },
         {
           "id": "pipe-enodev",
-          "title": "mmap of a pipe fails with ENODEV"
+          "title": "Linux policy: mmap of a pipe fails with ENODEV"
         }
       ]
     },
@@ -341,7 +341,7 @@
         },
         {
           "id": "regrow-zero",
-          "title": "Memory given back by shrinking the break and then regrown reads as zero, not the old contents"
+          "title": "Linux policy: memory given back by shrinking the break and then regrown reads as zero, not the old contents"
         },
         {
           "id": "below-start",
@@ -349,7 +349,7 @@
         },
         {
           "id": "huge",
-          "title": "Growing the break by 1 TiB fails and leaves the break unchanged"
+          "title": "Linux policy: growing the break by 1 TiB fails and leaves the break unchanged"
         },
         {
           "id": "rlimit-data",
@@ -365,7 +365,7 @@
         },
         {
           "id": "heap-large",
-          "title": "Growing the break by 8 MiB gives 2048 pages that each keep their contents and are all resident afterwards"
+          "title": "Growing the break by 8 MiB gives 2048 pages that each keep their own index, and touching them makes 2048 to 2112 more pages resident"
         }
       ]
     },
@@ -375,15 +375,15 @@
       "cases": [
         {
           "id": "mlock",
-          "title": "mlock of 16 untouched anonymous pages succeeds and makes them resident"
+          "title": "mlock of 16 untouched anonymous pages succeeds and makes them resident: unmapping them gives back all 16 as resident pages"
         },
         {
           "id": "munlock",
-          "title": "munlock of a locked range succeeds and leaves its contents unchanged"
+          "title": "munlock of a locked range succeeds, unlocks it (VmLck falls back by the 16 kB mlock added) and leaves its contents unchanged"
         },
         {
           "id": "mlock-unaligned",
-          "title": "Linux policy: mlock and munlock at an address inside a page lock and unlock the whole pages and succeed"
+          "title": "Linux policy: mlock and munlock of 10 bytes inside a page lock and unlock that whole page (VmLck changes by 4 kB)"
         },
         {
           "id": "mlock-enomem",
@@ -403,11 +403,11 @@
         },
         {
           "id": "mlockall-current",
-          "title": "mlockall(MCL_CURRENT) succeeds and makes an untouched mapping that existed before it resident"
+          "title": "mlockall(MCL_CURRENT) makes an untouched mapping that existed before it resident: unmapping it gives back all 16 pages as resident"
         },
         {
           "id": "mlockall-future",
-          "title": "After mlockall(MCL_FUTURE), a new anonymous mapping is resident as soon as mmap returns"
+          "title": "After mlockall(MCL_FUTURE), a new anonymous mapping is resident as soon as mmap returns: unmapping it untouched gives back all 16 pages as resident"
         },
         {
           "id": "mlockall-einval",
@@ -415,7 +415,7 @@
         },
         {
           "id": "munlockall",
-          "title": "munlockall succeeds whether or not anything is locked, and leaves contents unchanged"
+          "title": "munlockall succeeds whether or not anything is locked, brings VmLck to 0 after an mlock, and leaves contents unchanged"
         },
         {
           "id": "msync-async",
@@ -423,7 +423,7 @@
         },
         {
           "id": "msync-invalidate",
-          "title": "msync(MS_INVALIDATE) of a MAP_SHARED file mapping returns 0, and the mapping shows a write() made to the file"
+          "title": "msync(MS_SYNC|MS_INVALIDATE) of a MAP_SHARED file mapping returns 0, and the mapping shows a write() made to the file"
         },
         {
           "id": "msync-both",
@@ -443,7 +443,7 @@
         },
         {
           "id": "msync-locked",
-          "title": "msync(MS_INVALIDATE) of a range locked by mlock fails with EBUSY"
+          "title": "msync(MS_SYNC|MS_INVALIDATE) of a range locked by mlock fails with EBUSY"
         },
         {
           "id": "msync-anon",
