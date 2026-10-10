@@ -448,7 +448,6 @@ impl PosixTimers {
 
     /// Earliest wall deadline, or the next tick for a CPU clock whose future
     /// advance depends on dispatch. A held table requests an immediate retry.
-    #[cfg(target_arch = "x86_64")]
     pub fn next_check_ns(&self, now: &Now) -> u64 {
         let Some(table) = self.table.try_lock() else { return now.monotonic; };
         table.timers.iter().filter(|t| t.deadline != 0).map(|timer| {
