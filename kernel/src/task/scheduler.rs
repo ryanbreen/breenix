@@ -2510,6 +2510,15 @@ impl Scheduler {
         let mut retained_threads = alloc::vec::Vec::with_capacity(self.threads.len());
         let mut reclaimed_threads = alloc::vec::Vec::new();
         for thread in self.threads.drain(..) {
+            // x86 idle cannot be preempted while detached stacks are freed:
+            // dispatch restarts idle instead of resuming its destructor. Keep
+            // that non-preemptible work to one stack per pass; the scheduler
+            // retains ownership and the same grace proof for every other row.
+            #[cfg(target_arch = "x86_64")]
+            if !reclaimed_threads.is_empty() {
+                retained_threads.push(thread);
+                continue;
+            }
             if thread.state != ThreadState::Terminated || idle_ids.contains(&thread.id()) {
                 retained_threads.push(thread);
                 continue;
