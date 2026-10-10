@@ -28,6 +28,15 @@
 //! A case can read how much of its limit is left with [`case_ms_left`], to bound its
 //! own waits and fail with its own reason before it is killed.
 //!
+//! While it runs, a case may also report what it measures, for a reader to show live:
+//! [`value`] prints `SUITE <id> VALUE <category>/<case> <name>=<number><unit>` with an
+//! optional ` expect=<low>..<high><unit>`, and [`wait_for`] prints
+//! `SUITE <id> WAIT <category>/<case> until=<ms> for=<ms>` as it starts a wait, `until`
+//! in CLOCK_MONOTONIC milliseconds (the time since boot). They are written, like the
+//! runner's own lines, with one write that starts with a newline, through a copy of the
+//! suite's stdout the case keeps (close-on-exec) when its own output goes to /dev/null.
+//! A case process prints at most [`RECORDS_PER_CASE`] of them; the rest are dropped.
+//!
 //! A suite runs as PID 1, so any process a case leaves behind is reparented to the
 //! runner once the case ends. Before the next case starts, the runner kills every such
 //! process with kill(-1, SIGKILL) and reaps it, whatever process group or session it
@@ -55,7 +64,8 @@
 //! fn main() { SUITE.run() }
 //! ```
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::fmt::Write as _;
 use std::string::String;
 use std::vec::Vec;
@@ -149,6 +159,57 @@ pub fn case_ms_left() -> u64 {
     }
 }
 
+/// In a case's process, a close-on-exec copy of the suite's stdout for its VALUE and
+/// WAIT records; -1 elsewhere.
+static RECORD_FD: AtomicI32 = AtomicI32::new(-1);
+/// In a case's process, `SUITE <id> ` and the case's `<category>/<case>`.
+static RECORD_NAMES: OnceLock<(String, String)> = OnceLock::new();
+/// Records this process has printed.
+static RECORDS: AtomicU32 = AtomicU32::new(0);
+
+/// The most VALUE and WAIT records one case process prints.
+pub const RECORDS_PER_CASE: u32 = 12;
+
+/// Print one record for the running case; nothing outside a case or past the cap.
+fn record(kind: &str, rest: &str) {
+    let fd = RECORD_FD.load(Ordering::Relaxed);
+    let Some((prefix, name)) = RECORD_NAMES.get() else { return };
+    if fd < 0 || RECORDS.fetch_add(1, Ordering::Relaxed) >= RECORDS_PER_CASE {
+        return;
+    }
+    emit_to(Fd::from_raw(fd as u64), &std::format!("{prefix}{kind} {name} {rest}"));
+}
+
+/// Whether `text` is a record word: lowercase words of a-z and 0-9 joined by '-'.
+fn is_word(text: &str) -> bool {
+    !text.is_empty()
+        && text.split('-').all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+}
+
+/// Report a measured quantity of the running case: `SUITE <id> VALUE <category>/<case>
+/// <name>=<number><unit>`, with ` expect=<low>..<high><unit>` when `expect` gives the
+/// range the case accepts. `name` is lowercase words joined by '-' and `unit` lowercase
+/// letters (or empty); a record with any other name or unit is not printed. Report the
+/// quantities a case asserts on, a few per case, never one per loop iteration.
+pub fn value(name: &str, number: i64, unit: &str, expect: Option<(i64, i64)>) {
+    if !is_word(name) || !unit.bytes().all(|b| b.is_ascii_lowercase()) {
+        return;
+    }
+    let mut rest = std::format!("{name}={number}{unit}");
+    if let Some((low, high)) = expect {
+        let _ = write!(rest, " expect={low}..{high}{unit}");
+    }
+    record("VALUE", &rest);
+}
+
+/// Report that the running case starts waiting `ms` milliseconds on a sleep or timer:
+/// `SUITE <id> WAIT <category>/<case> until=<ms> for=<ms>`, `until` being when the wait
+/// should end in CLOCK_MONOTONIC milliseconds.
+pub fn wait_for(ms: u64) {
+    let now = monotonic_ns().map_or(0, |ns| (ns / 1_000_000) as u64);
+    record("WAIT", &std::format!("until={} for={}", now + ms, ms));
+}
+
 /// A suite: its id, title and categories, run in order.
 pub struct Suite {
     pub id: &'static str,
@@ -189,8 +250,8 @@ impl Suite {
                 let progress = std::format!("Running {}/{} ({} of {})", category.id, case.id, done + 1, total);
                 screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress));
 
-                let outcome = run_case(case, self.case_limit_ms);
                 let name = std::format!("{}/{}", category.id, case.id);
+                let outcome = run_case(case, self.case_limit_ms, self.id, &name);
                 match &outcome {
                     Outcome::Pass { ms } => {
                         counts.passed += 1;
@@ -270,14 +331,16 @@ enum State {
 
 /// Write one serial line with a single write, so it is never split, starting with
 /// a newline so it always begins a line of its own.
-fn emit(line: &str) {
+fn emit(line: &str) { emit_to(Fd::STDOUT, line) }
+
+fn emit_to(fd: Fd, line: &str) {
     let mut bytes = Vec::with_capacity(line.len() + 2);
     bytes.push(b'\n');
     bytes.extend_from_slice(line.as_bytes());
     bytes.push(b'\n');
     let mut rest = &bytes[..];
     while !rest.is_empty() {
-        match io::write(Fd::STDOUT, rest) {
+        match io::write(fd, rest) {
             Ok(n) if n > 0 => rest = &rest[n..],
             _ => return,
         }
@@ -475,8 +538,17 @@ fn silence_output() -> Result<(), Error> {
     Ok(())
 }
 
+/// In the child: keep a close-on-exec copy of stdout for the case's VALUE and WAIT
+/// records, named for the suite and the case.
+fn keep_record_output(suite: &str, name: &str) {
+    if let Ok(fd) = io::fcntl(Fd::STDOUT, io::fcntl_cmd::F_DUPFD_CLOEXEC, 3) {
+        RECORD_FD.store(fd as i32, Ordering::Relaxed);
+        let _ = RECORD_NAMES.set((std::format!("SUITE {suite} "), String::from(name)));
+    }
+}
+
 /// Run a case in a forked child, giving it `limit_ms`.
-fn run_case(case: &Case, limit_ms: u64) -> Outcome {
+fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str) -> Outcome {
     // Close-on-exec so a case that execs never leaves the report pipe open.
     let (reader, writer) = match io::pipe2(status_flags::O_CLOEXEC) {
         Ok(ends) => ends,
@@ -490,6 +562,7 @@ fn run_case(case: &Case, limit_ms: u64) -> Outcome {
             let _ = io::close(reader);
             let deadline = start.map_or(0, |start| (start + limit_ms as i128 * 1_000_000) as u64);
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
+            keep_record_output(suite, name);
             let outcome = match silence_output() {
                 Ok(()) => run_inline(case),
                 Err(error) => Outcome::Fail {

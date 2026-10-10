@@ -1,0 +1,377 @@
+{
+  "id": "time",
+  "title": "Time & timers",
+  "area": "Time & timers",
+  "summary": "Clocks, sleeps, POSIX timers, alarm and the interval timers keep and measure time as POSIX requires, on every target.",
+  "binary": "/sbin/suite-time",
+  "categories": [
+    {
+      "id": "clocks",
+      "title": "clocks & resolution",
+      "cases": [
+        {
+          "id": "realtime",
+          "title": "clock_gettime(CLOCK_REALTIME) succeeds with tv_nsec below one second and a date between 2020 and 2100"
+        },
+        {
+          "id": "monotonic",
+          "title": "clock_gettime(CLOCK_MONOTONIC) succeeds with a nonnegative time and tv_nsec below one second"
+        },
+        {
+          "id": "monotonic-steady",
+          "title": "CLOCK_MONOTONIC never goes backwards over 100000 reads in one thread"
+        },
+        {
+          "id": "monotonic-cpus",
+          "title": "CLOCK_MONOTONIC never goes backwards between threads running on two processors"
+        },
+        {
+          "id": "monotonic-fine",
+          "title": "Linux policy: CLOCK_MONOTONIC advances between consecutive reads rather than once per tick"
+        },
+        {
+          "id": "rate-realtime",
+          "title": "CLOCK_REALTIME and CLOCK_MONOTONIC advance at the same rate over 2 seconds"
+        },
+        {
+          "id": "rate-counter",
+          "title": "CLOCK_MONOTONIC advances at the rate of the processor's counter over 2 seconds (ARM64 CNTVCT_EL0, x86-64 the TSC at its CPUID frequency)"
+        },
+        {
+          "id": "rate-rtc",
+          "title": "Linux ABI: CLOCK_REALTIME advances at the rate of the RTC, read through /dev/rtc0 RTC_RD_TIME, over 3 seconds"
+        },
+        {
+          "id": "cputime-process",
+          "title": "CLOCK_PROCESS_CPUTIME_ID advances while the process computes and not while it sleeps"
+        },
+        {
+          "id": "cputime-thread",
+          "title": "CLOCK_THREAD_CPUTIME_ID counts only the calling thread's CPU time"
+        },
+        {
+          "id": "invalid",
+          "title": "clock_gettime of an unknown clock fails with EINVAL"
+        },
+        {
+          "id": "efault",
+          "title": "Linux policy: clock_gettime into an unmapped buffer fails with EFAULT"
+        },
+        {
+          "id": "getres",
+          "title": "clock_getres reports a resolution above zero and no coarser than 20 ms for the realtime, monotonic and CPU-time clocks"
+        },
+        {
+          "id": "getres-null",
+          "title": "clock_getres with a null resolution pointer succeeds"
+        },
+        {
+          "id": "getres-einval",
+          "title": "clock_getres of an unknown clock fails with EINVAL"
+        },
+        {
+          "id": "coarse-tick",
+          "title": "Linux policy: CLOCK_MONOTONIC_COARSE reports the kernel tick as its resolution and advances in steps of it (5 ms on x86-64, 1 ms on ARM64)"
+        },
+        {
+          "id": "settime",
+          "title": "clock_settime(CLOCK_REALTIME) sets the clock to the nanosecond value given and CLOCK_MONOTONIC does not jump"
+        },
+        {
+          "id": "settime-eperm",
+          "title": "clock_settime by an unprivileged process fails with EPERM and leaves CLOCK_REALTIME unchanged"
+        },
+        {
+          "id": "settime-einval",
+          "title": "clock_settime with tv_nsec out of range, on CLOCK_MONOTONIC or on an unknown clock fails with EINVAL"
+        },
+        {
+          "id": "gettimeofday",
+          "title": "gettimeofday succeeds and agrees with CLOCK_REALTIME to the microsecond"
+        },
+        {
+          "id": "time",
+          "title": "time() returns CLOCK_REALTIME's seconds and stores them through its argument"
+        }
+      ]
+    },
+    {
+      "id": "sleep",
+      "title": "nanosleep & clock_nanosleep",
+      "cases": [
+        {
+          "id": "nanosleep",
+          "title": "nanosleep of 100 ms returns 0 no earlier than 100 ms later, late by at most two ticks and 20 ms"
+        },
+        {
+          "id": "nanosleep-seconds",
+          "title": "nanosleep of 1 s and 250000000 ns sleeps the whole of both"
+        },
+        {
+          "id": "nanosleep-short",
+          "title": "Twenty 1 ms nanosleeps each end no earlier than 1 ms, with a median late by at most one tick and 1 ms"
+        },
+        {
+          "id": "nanosleep-zero",
+          "title": "nanosleep of zero returns 0 at once"
+        },
+        {
+          "id": "nanosleep-einval",
+          "title": "nanosleep with tv_nsec below 0 or at least 1000000000, or a negative tv_sec, fails with EINVAL at once"
+        },
+        {
+          "id": "nanosleep-efault",
+          "title": "Linux policy: nanosleep with an unmapped request fails with EFAULT"
+        },
+        {
+          "id": "nanosleep-eintr",
+          "title": "A caught signal ends nanosleep early with EINTR and writes the time left to rem"
+        },
+        {
+          "id": "nanosleep-resume",
+          "title": "Calling nanosleep again with rem after EINTR completes the sleep first asked for"
+        },
+        {
+          "id": "nanosleep-sa-restart",
+          "title": "Linux policy: nanosleep fails with EINTR after a handler even with SA_RESTART"
+        },
+        {
+          "id": "nanosleep-ignored",
+          "title": "A signal that is ignored does not end nanosleep"
+        },
+        {
+          "id": "nanosleep-blocked",
+          "title": "A blocked signal does not end nanosleep and stays pending"
+        },
+        {
+          "id": "nanosleep-stop",
+          "title": "A sleeper stopped and continued by SIGSTOP and SIGCONT finishes its nanosleep, neither early nor with EINTR"
+        },
+        {
+          "id": "threads",
+          "title": "Four threads sleeping 200 to 500 ms at once each wake on time"
+        },
+        {
+          "id": "clock-monotonic",
+          "title": "clock_nanosleep on CLOCK_MONOTONIC for 100 ms sleeps no less, late by at most two ticks and 20 ms"
+        },
+        {
+          "id": "clock-realtime",
+          "title": "clock_nanosleep on CLOCK_REALTIME for 100 ms sleeps no less, late by at most two ticks and 20 ms"
+        },
+        {
+          "id": "abstime",
+          "title": "clock_nanosleep with TIMER_ABSTIME on CLOCK_MONOTONIC wakes no earlier than the deadline and late by at most two ticks and 20 ms"
+        },
+        {
+          "id": "abstime-realtime",
+          "title": "clock_nanosleep with TIMER_ABSTIME on CLOCK_REALTIME wakes no earlier than the deadline and late by at most two ticks and 20 ms"
+        },
+        {
+          "id": "abstime-past",
+          "title": "clock_nanosleep with TIMER_ABSTIME and a deadline already past returns 0 at once"
+        },
+        {
+          "id": "clock-eintr",
+          "title": "A caught signal ends a relative clock_nanosleep with EINTR and the time left in rem"
+        },
+        {
+          "id": "abstime-eintr",
+          "title": "A caught signal ends an absolute clock_nanosleep with EINTR and leaves rem untouched"
+        },
+        {
+          "id": "clock-einval",
+          "title": "clock_nanosleep with tv_nsec out of range, an unknown clock or the caller's thread CPU-time clock fails with EINVAL"
+        },
+        {
+          "id": "realtime-set-abstime",
+          "title": "Setting CLOCK_REALTIME past an absolute CLOCK_REALTIME sleep's deadline wakes it"
+        },
+        {
+          "id": "realtime-set-nanosleep",
+          "title": "Setting CLOCK_REALTIME forward does not shorten a nanosleep"
+        },
+        {
+          "id": "realtime-set-relative",
+          "title": "Setting CLOCK_REALTIME forward does not shorten a relative clock_nanosleep on CLOCK_REALTIME"
+        }
+      ]
+    },
+    {
+      "id": "timers",
+      "title": "POSIX timers",
+      "cases": [
+        {
+          "id": "create-signal",
+          "title": "A CLOCK_MONOTONIC timer with SIGEV_SIGNAL delivers its signal on time with si_code SI_TIMER and its sigev_value"
+        },
+        {
+          "id": "create-default",
+          "title": "A timer created with no sigevent delivers SIGALRM with the timer ID as its value"
+        },
+        {
+          "id": "create-none",
+          "title": "A SIGEV_NONE timer sends no signal, and timer_gettime shows it count down and expire"
+        },
+        {
+          "id": "realtime",
+          "title": "A CLOCK_REALTIME timer fires on time"
+        },
+        {
+          "id": "create-einval",
+          "title": "timer_create with an unknown clock, signal 0 or 65, or an unknown sigev_notify fails with EINVAL"
+        },
+        {
+          "id": "oneshot",
+          "title": "A one-shot timer fires once, on time, and then reads as disarmed"
+        },
+        {
+          "id": "periodic",
+          "title": "A periodic 50 ms timer fires twenty times a second, 50 ms apart"
+        },
+        {
+          "id": "gettime",
+          "title": "timer_gettime reports the time left, decreasing and never above the value set, and the interval"
+        },
+        {
+          "id": "settime-old",
+          "title": "timer_settime returns the previous setting in old_value"
+        },
+        {
+          "id": "disarm",
+          "title": "timer_settime with a zero it_value disarms the timer"
+        },
+        {
+          "id": "abstime",
+          "title": "A timer armed with TIMER_ABSTIME fires no earlier than that time and late by at most two ticks and 20 ms"
+        },
+        {
+          "id": "abstime-past",
+          "title": "A timer armed with TIMER_ABSTIME for a time already past fires at once"
+        },
+        {
+          "id": "settime-einval",
+          "title": "timer_settime with tv_nsec out of range or on an unknown timer fails with EINVAL"
+        },
+        {
+          "id": "overrun",
+          "title": "timer_getoverrun and si_overrun count the expiries a pending timer signal stood for"
+        },
+        {
+          "id": "overrun-restarts",
+          "title": "The overrun count starts again from zero once the timer's signal is delivered"
+        },
+        {
+          "id": "delete",
+          "title": "timer_delete disarms the timer, and its ID then fails with EINVAL"
+        },
+        {
+          "id": "many",
+          "title": "Eight timers get distinct IDs and each delivers its own value, in expiry order"
+        },
+        {
+          "id": "cputime-process",
+          "title": "A CLOCK_PROCESS_CPUTIME_ID timer counts the process's CPU time, not time asleep"
+        },
+        {
+          "id": "cputime-thread",
+          "title": "A CLOCK_THREAD_CPUTIME_ID timer counts the calling thread's CPU time, not time asleep"
+        },
+        {
+          "id": "fork",
+          "title": "A child created by fork inherits none of its parent's timers"
+        },
+        {
+          "id": "exec",
+          "title": "exec deletes the caller's timers: their IDs are invalid in the new program and they never fire"
+        }
+      ]
+    },
+    {
+      "id": "itimers",
+      "title": "alarm & interval timers",
+      "cases": [
+        {
+          "id": "alarm",
+          "title": "alarm(1) delivers SIGALRM no earlier than one second later, late by at most two ticks and 20 ms"
+        },
+        {
+          "id": "alarm-default",
+          "title": "SIGALRM from alarm terminates a process that has not caught it"
+        },
+        {
+          "id": "alarm-remaining",
+          "title": "alarm returns the seconds left of the previous alarm"
+        },
+        {
+          "id": "alarm-zero",
+          "title": "alarm(0) cancels a pending alarm and returns the seconds it had left"
+        },
+        {
+          "id": "alarm-replace",
+          "title": "A new alarm replaces the old one: only the new one fires"
+        },
+        {
+          "id": "alarm-read",
+          "title": "An alarm interrupts a blocking read of an empty pipe with EINTR"
+        },
+        {
+          "id": "real",
+          "title": "setitimer ITIMER_REAL with no interval fires SIGALRM once, on time"
+        },
+        {
+          "id": "real-interval",
+          "title": "ITIMER_REAL reloads its interval: a 50 ms timer fires twenty times a second, 50 ms apart"
+        },
+        {
+          "id": "getitimer",
+          "title": "getitimer reports the time left, decreasing and never above the value set, and the interval"
+        },
+        {
+          "id": "old-value",
+          "title": "setitimer returns the previous setting in old_value"
+        },
+        {
+          "id": "disarm",
+          "title": "setitimer with a zero it_value disarms the timer"
+        },
+        {
+          "id": "small",
+          "title": "An ITIMER_REAL value of one microsecond still fires"
+        },
+        {
+          "id": "einval",
+          "title": "setitimer and getitimer of an unknown timer, and setitimer with tv_usec out of range, fail with EINVAL"
+        },
+        {
+          "id": "alarm-shares-real",
+          "title": "Linux policy: alarm and setitimer ITIMER_REAL are one timer"
+        },
+        {
+          "id": "virtual",
+          "title": "ITIMER_VIRTUAL counts user CPU time: no SIGVTALRM while the process sleeps, one while it computes"
+        },
+        {
+          "id": "virtual-interval",
+          "title": "ITIMER_VIRTUAL reloads its interval while the process computes"
+        },
+        {
+          "id": "prof",
+          "title": "ITIMER_PROF counts CPU time: no SIGPROF while the process sleeps, one while it computes"
+        },
+        {
+          "id": "fork",
+          "title": "fork clears the child's alarm and interval timers and leaves the parent's armed"
+        },
+        {
+          "id": "exec-alarm",
+          "title": "exec keeps the time left until an alarm, and the alarm fires in the new program"
+        },
+        {
+          "id": "exec-cpu",
+          "title": "Linux policy: exec keeps ITIMER_VIRTUAL and ITIMER_PROF"
+        }
+      ]
+    }
+  ]
+}

@@ -8,7 +8,9 @@ searched for fatal kernel output. The boot passes when the suite's records, each
 a whole line, are exactly: one START with the manifest's case count, one CASE line
 per manifest case in manifest order, and one DONE whose counts match those CASE
 lines with failed=0; and no log shows a kernel panic, soft lockup or EL1 abort
-(`fatal` in docs/boot-path.json, plus x86-64's "KERNEL PANIC:").
+(`fatal` in docs/boot-path.json, plus x86-64's "KERNEL PANIC:"). VALUE and WAIT
+records, which a case may print while it runs, are accepted between START and DONE
+when they are well formed and name a manifest case; they do not count.
 
 A manifest with diskChecks also requires --disk: debugfs reads the stopped
 VM image directly and compares the persisted bytes, bypassing the guest cache.
@@ -51,6 +53,9 @@ def verdict(manifest, records_log, logs):
         "FAIL": re.compile(rf"^SUITE {suite} CASE {name} FAIL ms=\d+ msg=\S.*$"),
         "SKIP": re.compile(rf"^SUITE {suite} CASE {name} SKIP msg=\S.*$"),
         "DONE": re.compile(rf"^SUITE {suite} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)$"),
+        "VALUE": re.compile(rf"^SUITE {suite} VALUE {name} [a-z0-9]+(?:-[a-z0-9]+)*=(-?\d+(?:\.\d+)?)([a-z]*)"
+                            r"(?: expect=(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)([a-z]*))?$"),
+        "WAIT": re.compile(rf"^SUITE {suite} WAIT {name} until=\d+ for=\d+$"),
     }
     records = []
     for line in read_lines(records_log):
@@ -64,10 +69,20 @@ def verdict(manifest, records_log, logs):
                 records.append((kind, match, line))
                 break
         else:
-            return False, f"a SUITE line has none of the five shapes: {line[:200]}"
+            return False, f"a SUITE line has none of the seven shapes: {line[:200]}"
 
     if not records:
         return False, f"no 'SUITE {suite}' lines in {records_log}"
+    for index, (kind, match, line) in enumerate(records):
+        if kind not in ("VALUE", "WAIT"):
+            continue
+        if match.group(1) not in cases:
+            return False, f"a {kind} record names no manifest case: {line[:200]}"
+        if kind == "VALUE" and match.group(6) is not None and match.group(6) != match.group(3):
+            return False, f"a VALUE record's expected range is in another unit: {line[:200]}"
+        if not any(k == "START" for k, _, _ in records[:index]) or any(k == "DONE" for k, _, _ in records[:index]):
+            return False, f"a {kind} record is outside START..DONE: {line[:200]}"
+    records = [record for record in records if record[0] not in ("VALUE", "WAIT")]
     kind, match, line = records[0]
     if kind != "START" or [r[0] for r in records].count("START") != 1:
         return False, "the records do not begin with exactly one START line"
