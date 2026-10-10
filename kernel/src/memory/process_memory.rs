@@ -1748,6 +1748,29 @@ impl ProcessPageTable {
         self.leaves.released = true;
     }
 
+    /// Release recorded user leaves within the same budget as table retirement.
+    /// The dead root has already passed the caller's liveness proof. Records
+    /// remain owned until consumed, and no table is freed while any remain.
+    pub(crate) fn release_mapped_leaves_bounded(&mut self, budget: &mut u32) -> RetireProgress {
+        if self.leaves.released {
+            return RetireProgress::Complete;
+        }
+        while *budget > 0 {
+            let Some(record) = self.leaves.records.pop() else {
+                self.leaves.released = true;
+                return RetireProgress::Complete;
+            };
+            *budget -= 1;
+            let page = Page::containing_address(VirtAddr::new(record.page));
+            if let Some((frame, flags)) = self.get_page_info(page) {
+                if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                    Self::release_leaf_record(record, frame);
+                }
+            }
+        }
+        RetireProgress::Budgeted
+    }
+
     /// Update the flags of an already-mapped page
     ///
     /// This is used by mprotect to change page protections without remapping.
@@ -2334,7 +2357,9 @@ impl ProcessPageTable {
     /// custody. The caller supplies the shared retirement budget, and old exec
     /// roots remain resumable through the ordinary exit pipeline.
     pub(crate) fn cleanup_for_exec(&mut self, pid: u64, budget: &mut u32) -> RetireProgress {
-        self.release_mapped_leaves();
+        if self.release_mapped_leaves_bounded(budget) != RetireProgress::Complete {
+            return RetireProgress::Budgeted;
+        }
         self.retire_bounded(pid, budget)
     }
 }
