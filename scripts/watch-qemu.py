@@ -26,6 +26,15 @@ def stop(process):
     process.wait()
 
 
+# Modes that print a completion record. Their kernels keep logging after it (the
+# periodic census), so the idle timer alone would leave a finished VM running.
+COMPLETING_MODES = ("suite", "probe", "tests")
+
+
+def label(mode, suite):
+    return f"Suite {suite}" if mode == "suite" else "Boot probe" if mode == "probe" else "Testing boot"
+
+
 def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold):
     last_size = 0
     started = last_output = time.monotonic()
@@ -48,7 +57,7 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold):
                 data = source.read()
             last_size += len(data)
             last_output = now
-            if mode == "suite":
+            if mode in COMPLETING_MODES:
                 text += decoder.decode(data)
                 result = DONE["completion"](text, mode, suite)
                 if result is not None:
@@ -57,12 +66,12 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold):
                         return "fatal"
                     if done_at is None:
                         done_at = now
-                        print(f"==> Suite {suite} DONE observed; watching scored panel", flush=True)
+                        print(f"==> {label(mode, suite)} DONE observed; holding the final screen", flush=True)
         # Match the x86 gate's render delay and configurable panel hold, while
         # continuing to observe fatal output and additional completion records.
         if done_at is not None:
             if now - done_at >= 2 + suite_hold:
-                print(f"==> Suite {suite} completed; stopping the VM", flush=True)
+                print(f"==> {label(mode, suite)} completed; stopping the VM", flush=True)
                 return "done"
         elif mode == "suite" and gate_timeout > 0 and now - started >= gate_timeout:
             print(f"==> No suite DONE within {gate_timeout:g}s; stopping the VM", flush=True)
@@ -105,6 +114,11 @@ def main():
         stop(process)
     if reason == "fatal":
         return 1
+    if args.mode in ("probe", "tests") and reason == "done":
+        serial = args.serial.read_bytes().decode("utf-8", errors="replace")
+        result = DONE["completion"](serial, args.mode, args.suite)
+        print(f"{'PASS' if result and result[0] else 'FAIL'}: {result[1] if result else 'no completion record'}", flush=True)
+        return 0 if result and result[0] else 1
     if args.mode == "suite":
         serial = args.serial.read_bytes().decode("utf-8", errors="replace") if args.serial.exists() else ""
         result = DONE["completion"](serial, args.mode, args.suite)
