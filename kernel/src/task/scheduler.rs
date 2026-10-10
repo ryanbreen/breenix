@@ -2768,7 +2768,11 @@ impl Scheduler {
 
                 if will_add {
                     let cpu = Self::current_cpu_id();
-                    self.per_cpu_queues[cpu].push_back(current_id);
+                    // A thread pinned to another CPU (sched_setaffinity) is
+                    // queued there instead, by the migration guard.
+                    if !self.retain_cpu_affine_thread(current_id, cpu) {
+                        self.per_cpu_queues[cpu].push_back(current_id);
+                    }
                     if published_ready {
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     }
