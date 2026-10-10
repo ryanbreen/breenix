@@ -628,6 +628,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         WriteOperation::Device { device_type } => {
             use crate::fs::devfs::DeviceType;
             match device_type {
+                DeviceType::Rtc => SyscallResult::Err(13),
                 DeviceType::Null | DeviceType::Zero => {
                     // /dev/null, /dev/zero - discard all data
                     SyscallResult::Ok(buffer.len() as u64)

@@ -145,6 +145,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             // Device files have different poll behavior based on type
             use crate::fs::devfs::DeviceType;
             match device_type {
+                DeviceType::Rtc => {} // Only RTC_RD_TIME is implemented.
                 DeviceType::Null => {
                     // /dev/null: always readable (returns EOF), always writable
                     if (events & events::POLLIN) != 0 {

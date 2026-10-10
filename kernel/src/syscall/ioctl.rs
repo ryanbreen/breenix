@@ -79,6 +79,22 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
                     Err(errno) => return SyscallResult::Err(errno as u64),
                 }
             }
+            FdKind::Device(crate::fs::devfs::DeviceType::Rtc) => {
+                if request != 0x8024_7009 { return SyscallResult::Err(ENOTTY); }
+                let stamp = match crate::time::rtc::read_rtc_time() {
+                    Ok(stamp) => stamp,
+                    Err(_) => return SyscallResult::Err(5),
+                };
+                let dt = crate::time::DateTime::from_unix_timestamp(stamp);
+                let jan1 = crate::time::DateTime { year: dt.year, month: 1, day: 1, hour: 0, minute: 0, second: 0 }.to_unix_timestamp();
+                // Linux struct rtc_time, with struct tm's month/year origins.
+                let tm = [i32::from(dt.second), i32::from(dt.minute), i32::from(dt.hour),
+                    i32::from(dt.day), i32::from(dt.month) - 1, i32::from(dt.year) - 1900,
+                    ((stamp / 86400 + 4) % 7) as i32, ((stamp - jan1) / 86400) as i32, 0];
+                return match super::userptr::copy_to_user(arg as *mut [i32; 9], &tm) {
+                    Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e),
+                };
+            }
             FdKind::StdIo(_) => {
                 // Fall through to console TTY handling
             }

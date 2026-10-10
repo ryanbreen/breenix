@@ -77,11 +77,17 @@ impl TimerOps for Aarch64Timer {
         if freq == 0 {
             return 0;
         }
-        // ticks * 1_000_000_000 / freq, but avoid overflow
-        // Use 128-bit arithmetic: (ticks * 1e9) / freq
-        let nanos_per_sec = 1_000_000_000u128;
-        ((ticks as u128 * nanos_per_sec) / freq as u128) as u64
+        counter_nanos(ticks, freq)
     }
+}
+
+/// Exact conversion without a software u128 division on every clock read.
+/// CNTFRQ_EL0 has a 32-bit frequency field, so a remainder times 1e9 fits u64.
+#[inline(always)]
+fn counter_nanos(ticks: u64, frequency: u64) -> u64 {
+    let seconds = ticks / frequency;
+    let remainder = ticks % frequency;
+    seconds * 1_000_000_000 + remainder * 1_000_000_000 / frequency
 }
 
 /// Read the virtual counter (CNTVCT_EL0)
@@ -223,9 +229,7 @@ pub fn nanoseconds_since_base() -> Option<u64> {
     let now = read_cntvct();
     let ticks = now.saturating_sub(base);
 
-    // Convert ticks to nanoseconds using 128-bit arithmetic to avoid overflow
-    let nanos_per_sec = 1_000_000_000u128;
-    Some(((ticks as u128 * nanos_per_sec) / freq as u128) as u64)
+    Some(counter_nanos(ticks, freq))
 }
 
 /// Get monotonic time as (seconds, nanoseconds) tuple

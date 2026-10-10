@@ -220,10 +220,10 @@ impl DateTime {
 
         // Calculate month and day
         let mut month = 1;
-        let mut day = days_remaining as u8 + 1;
+        let mut day = days_remaining + 1;
 
         while month <= 12 {
-            let days_in_this_month = days_in_month(month, year);
+            let days_in_this_month = u64::from(days_in_month(month, year));
             if day <= days_in_this_month {
                 break;
             }
@@ -234,7 +234,7 @@ impl DateTime {
         DateTime {
             year,
             month,
-            day,
+            day: day as u8,
             hour: hours as u8,
             minute: minutes as u8,
             second: seconds as u8,
@@ -417,13 +417,4 @@ pub fn init() {
 /// Get the cached boot wall time
 pub fn get_boot_wall_time() -> u64 {
     BOOT_WALL_TIME.load(Ordering::Relaxed)
-}
-
-/// Adjust the boot wall time to correct for clock drift.
-///
-/// Called by clock_settime(CLOCK_REALTIME). The new boot_wall_time is
-/// calculated as: desired_realtime - monotonic_elapsed, so that
-/// get_real_time_ns() = new_boot_wall_time + monotonic = desired_realtime.
-pub fn set_boot_wall_time(new_boot_time: u64) {
-    BOOT_WALL_TIME.store(new_boot_time, Ordering::Relaxed);
 }

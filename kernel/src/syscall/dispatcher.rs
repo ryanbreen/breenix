@@ -46,6 +46,10 @@ pub fn dispatch_syscall(
             let user_timespec_ptr = arg2 as *mut super::time::Timespec;
             super::time::sys_clock_gettime(clock_id, user_timespec_ptr)
         }
+        SyscallNumber::ClockGetRes => super::clocks::sys_clock_getres(arg1 as u32, arg2),
+        SyscallNumber::ClockNanosleep => super::sleep::clock_nanosleep(arg1 as u32, arg2, arg3, arg4),
+        SyscallNumber::Gettimeofday => super::clocks::sys_gettimeofday(arg1, arg2),
+        SyscallNumber::Time => super::clocks::sys_time(arg1),
         SyscallNumber::ClockSetTime => {
             let clock_id = arg1 as u32;
             let user_timespec_ptr = arg2 as *const super::time::Timespec;
