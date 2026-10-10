@@ -2510,9 +2510,9 @@ impl Scheduler {
         let mut retained_threads = alloc::vec::Vec::with_capacity(self.threads.len());
         let mut reclaimed_threads = alloc::vec::Vec::new();
         for thread in self.threads.drain(..) {
-            // x86 idle cannot be preempted while detached stacks are freed:
-            // dispatch restarts idle instead of resuming its destructor. Keep
-            // that non-preemptible work to one stack per pass; the scheduler
+            // All x86 scheduling passes release at most one retired stack.
+            // Idle dispatch restarts instead of resuming its destructor, so
+            // its non-preemptible release work must stay bounded; the scheduler
             // retains ownership and the same grace proof for every other row.
             #[cfg(target_arch = "x86_64")]
             if !reclaimed_threads.is_empty() {
@@ -4461,7 +4461,7 @@ impl Scheduler {
             return;
         }
         if let Some(cpu) = self.per_cpu_queues.iter().position(|q| q.contains(&thread_id)) {
-            if self.timer_wake_promotion_open(cpu) {
+            if !self.retain_cpu_affine_thread(thread_id, cpu) && self.timer_wake_promotion_open(cpu) {
                 self.per_cpu_queues[cpu].retain(|&id| id != thread_id);
                 self.per_cpu_queues[cpu].push_front(thread_id);
                 self.cpu_state[cpu].promoted_wake = Some(thread_id);
@@ -7342,22 +7342,6 @@ pub fn charge_current_cpu() -> u64 {
         })
     })
     .unwrap_or(0)
-}
-
-/// The calling process's CPU ticks, including running CLONE_THREAD members.
-/// Members have distinct owner PIDs and a shared account; exited members' time
-/// remains in that account. No process-manager lock is needed for this query.
-pub fn process_cpu_ticks() -> Option<u64> {
-    with_scheduler(|scheduler| {
-        let account = scheduler.current_thread()?.cpu_account.clone()?;
-        let now = crate::time::get_cpu_ticks();
-        for thread in scheduler.threads.iter_mut() {
-            if thread.cpu_account.as_ref().is_some_and(|other| alloc::sync::Arc::ptr_eq(other, &account)) {
-                thread.charge_cpu_if_running(now);
-            }
-        }
-        Some(account.ticks())
-    }).flatten()
 }
 
 /// The calling process's CPU time in nanoseconds, user and system together,

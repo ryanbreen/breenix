@@ -116,12 +116,31 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
             use x86_64::instructions::port::Port;
             let mut status = Port::<u8>::new(COM1_PORT + 5);
             let mut data = Port::<u8>::new(COM1_PORT);
-            for chunk in bytes.chunks(16) {
-                while status.read() & 0x20 == 0 { core::hint::spin_loop(); }
-                for &byte in chunk {
-                    data.write(byte);
-                    crate::log_buffer::capture_byte(byte);
+            let mut chunk = [0u8; 16];
+            let mut used = 0;
+            for &byte in bytes {
+                // uart_16550::send translates backspace and DEL to BS SPACE BS.
+                // Apply that translation before filling the hardware FIFO too.
+                let wire = if byte == 0x08 || byte == 0x7f {
+                    [0x08, b' ', 0x08]
+                } else {
+                    [byte, 0, 0]
+                };
+                let count = if byte == 0x08 || byte == 0x7f { 3 } else { 1 };
+                for &transmitted in &wire[..count] {
+                    chunk[used] = transmitted;
+                    used += 1;
+                    if used == chunk.len() {
+                        while status.read() & 0x20 == 0 { core::hint::spin_loop(); }
+                        for &pending in &chunk { data.write(pending); }
+                        used = 0;
+                    }
                 }
+                crate::log_buffer::capture_byte(byte);
+            }
+            if used != 0 {
+                while status.read() & 0x20 == 0 { core::hint::spin_loop(); }
+                for &pending in &chunk[..used] { data.write(pending); }
             }
         }
     } else {

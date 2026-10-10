@@ -7418,7 +7418,8 @@ fn validate_process_page_table_dispositions(
     let bodies = module_function_bodies(process_memory);
     if let Some(cleanup_bodies) = bodies.get("cleanup_for_exec") {
         let custody_shaped = cleanup_bodies.iter().filter(|body| {
-            body.contains("self.release_mapped_leaves();")
+            (body.contains("self.release_mapped_leaves();")
+                || body.contains("if self.release_mapped_leaves_bounded(budget) != RetireProgress::Complete {\n            return RetireProgress::Budgeted;\n        }"))
                 && body.contains("self.retire_bounded(pid, budget)")
                 && !body.contains("Disposition::")
                 && !body.contains("deallocate_frame")
@@ -7459,7 +7460,7 @@ fn validate_process_page_table_retire_site(
         validate_census(&reclaim_sites, PENDING_RECLAIM_BOUNDED_SITES),
     );
 
-    let reclaim_present = process_task.contains("fn reclaim_bounded(&mut self)");
+    let reclaim_present = process_task.contains("fn reclaim_bounded(&mut self)") || process_task.contains("fn reclaim_bounded(&mut self, frame_budget: u32)");
     let drain_present = process_task.contains("fn reclaim_deferred_process_resources_for_pass(");
     if !reclaim_present {
         failures.push("missing fn reclaim_bounded(&mut self)".to_owned());
@@ -7579,7 +7580,8 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         && cleanup_bodies
             .iter()
             .filter(|body| {
-                body.contains("self.release_mapped_leaves();")
+                (body.contains("self.release_mapped_leaves();")
+                    || body.contains("if self.release_mapped_leaves_bounded(budget) != RetireProgress::Complete {\n            return RetireProgress::Budgeted;\n        }"))
                     && body.contains("self.retire_bounded(pid, budget)")
             })
             .count()
@@ -7651,7 +7653,7 @@ fn validate_process_page_table_exit_paths_are_minimal(
         return Err(());
     }
     let task = source(sources, "kernel/src/task/process_task.rs");
-    if !task.contains("fn reclaim_bounded(&mut self)") {
+    if !(task.contains("fn reclaim_bounded(&mut self)") || task.contains("fn reclaim_bounded(&mut self, frame_budget: u32)")) {
         return Err(());
     }
     let process_drop = process_memory
@@ -11533,12 +11535,12 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     // ratchet is proven to recognise spans and resolved calls rather than one
     // literal form.
     const CUSTODY_BODY: &str =
-        "        self.release_mapped_leaves();\n        self.retire_bounded(pid, budget)";
+        "        if self.release_mapped_leaves_bounded(budget) != RetireProgress::Complete {\n            return RetireProgress::Budgeted;\n        }\n        self.retire_bounded(pid, budget)";
 
     // 1. A raw frame return smuggled back into the custody body, block-wrapped.
     let exec_body_frame_return = process_memory.replacen(
         CUSTODY_BODY,
-        "        self.release_mapped_leaves();\n        {\n            deallocate_frame(self.level_4_frame);\n        }\n        self.retire_bounded(pid, budget)",
+        &format!("{{ deallocate_frame(self.level_4_frame); }}\n{CUSTODY_BODY}"),
         1,
     );
     assert_ne!(
@@ -11578,7 +11580,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     //    spelling differs from the deleted walk's.
     let exec_body_disposition = process_memory.replacen(
         CUSTODY_BODY,
-        "        self.release_mapped_leaves();\n        self.tables.disposition = { Disposition::Retired };\n        self.retire_bounded(pid, budget)",
+        &format!("self.tables.disposition = {{ Disposition::Retired }};\n{CUSTODY_BODY}"),
         1,
     );
     assert_ne!(
