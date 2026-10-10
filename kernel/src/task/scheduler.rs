@@ -6379,10 +6379,10 @@ pub static PROBE_SPAWN: [AtomicU64; 4 * 4 + 1] = [const { AtomicU64::new(0) }; 1
 
 fn probe_note_dispatch(cpu: usize, old: u64, next: u64) {
     let a = PROBE_TRACK[0].load(Ordering::Relaxed);
-    let b = PROBE_TRACK[1].load(Ordering::Relaxed);
-    if a == 0 || !(old == a || old == b || next == a || next == b) {
+    if a == 0 {
         return;
     }
+    let _ = (old, next);
     let pos = PROBE_RING_POS.fetch_add(1, Ordering::Relaxed);
     if pos >= 64 {
         return;
@@ -6408,14 +6408,42 @@ pub fn probe_dump(label: &str) {
         use core::fmt::Write;
         let _ = write!(line, " +{}us:c{}:{}->{}", us.saturating_sub(base), w >> 48, (w >> 24) & 0xffffff, w & 0xffffff);
     }
-    log::info!("[PROBE_RING {} track={},{} n={}]{}", label, a, b, n, line);
+    let mut tids = alloc::vec::Vec::new();
+    for i in 0..n as usize {
+        let w = PROBE_RING[i * 2 + 1].load(Ordering::Relaxed);
+        tids.push((w >> 24) & 0xffffff);
+        tids.push(w & 0xffffff);
+    }
+    let names = probe_names(&tids);
+    log::info!("[PROBE_RING {} track={},{} n={}]{} names:{}", label, a, b, n, line, names);
 }
 
 pub fn probe_reset(a: u64, b: u64) {
     PROBE_LAST_DUMP.store(0, Ordering::Relaxed);
+    PROBE_TRACK[0].store(0, Ordering::Relaxed);
     PROBE_RING_POS.store(0, Ordering::Relaxed);
-    PROBE_TRACK[0].store(a, Ordering::Relaxed);
     PROBE_TRACK[1].store(b, Ordering::Relaxed);
+    PROBE_TRACK[0].store(a, Ordering::Relaxed);
+    // Spawn marker: cpu 15, old = parent, next = child.
+    probe_note_dispatch(15, a, b);
+}
+
+pub fn probe_names(tids: &[u64]) -> alloc::string::String {
+    use core::fmt::Write;
+    let mut line = alloc::string::String::new();
+    let mut seen: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+    for &t in tids {
+        if seen.contains(&t) {
+            continue;
+        }
+        seen.push(t);
+        let name = with_scheduler(|s| s.get_thread(t).map(|th| (th.name.clone(), th.state))).flatten();
+        let _ = match name {
+            Some((n, st)) => write!(line, " {}={}:{:?}", t, n, st),
+            None => write!(line, " {}=?", t),
+        };
+    }
+    line
 }
 
 pub fn spawn(thread: Box<Thread>) {

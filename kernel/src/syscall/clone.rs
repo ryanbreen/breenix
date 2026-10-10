@@ -400,6 +400,9 @@ pub fn sys_clone(
             let _ = write!(line, " c{}:load={},idle|acc={},cur={},q={}", cpu, s[cpu*4].load(Relaxed), s[cpu*4+1].load(Relaxed), s[cpu*4+2].load(Relaxed), s[cpu*4+3].load(Relaxed));
         }
         let t = s[16].load(Relaxed);
+        let names = crate::task::scheduler::probe_names(&[s[2].load(Relaxed), s[6].load(Relaxed), s[10].load(Relaxed), s[14].load(Relaxed)]);
+        line.push_str(" names:");
+        line.push_str(&names);
         log::info!("[PROBE_SPAWN child={} parent={} target={} from_cpu={}{}]", child_thread_id, probe_parent, t & 0xff, t >> 8, line);
     }
 
