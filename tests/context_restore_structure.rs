@@ -2395,7 +2395,7 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
     }
 
     let clone_body =
-        function_body(clone, "sys_clone").ok_or_else(|| "missing sys_clone body".to_string())?;
+        function_body(clone, "sys_clone_thread").ok_or_else(|| "missing sys_clone_thread body".to_string())?;
     let clone_mask = code_mask(clone_body);
 
     let admission_calls = call_offsets(clone_body, &clone_mask, "admit_clone_into");

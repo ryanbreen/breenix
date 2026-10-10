@@ -269,11 +269,6 @@ impl WaitQueueHead {
         self.with_waiters(|waiters| waiters.len())
     }
 
-    #[cfg(feature = "boot_tests")]
-    pub(crate) fn waiter_count(&self) -> usize {
-        self.with_waiters(|waiters| waiters.len())
-    }
-
     /// Read-only membership for the boot-only blocking I/O observer.
     #[cfg(feature = "boot_tests")]
     pub(crate) fn contains_waiter(&self, tid: u64) -> bool {

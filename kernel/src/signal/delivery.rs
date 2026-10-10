@@ -368,6 +368,15 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
                         thread_id
                     );
                 }
+                // The action ends the whole process (#1033), and this may be an
+                // interrupt return, where nothing may be torn down: the rest of
+                // the thread group dies, and this row's exit hook runs, from
+                // the deferred-exit drain. An exit the drain's queue cannot
+                // take is left on the row, where the drain finds it.
+                if !crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
+                    process.unqueued_fatal_exit = Some(exit_code);
+                    crate::task::process_task::note_unqueued_fatal_exit();
+                }
             }
 
             // Return notification info for parent - caller will notify after releasing lock
@@ -401,6 +410,15 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
                         "Signal delivery: marked scheduler thread {} as Terminated (core dump)",
                         thread_id
                     );
+                }
+                // The action ends the whole process (#1033), and this may be an
+                // interrupt return, where nothing may be torn down: the rest of
+                // the thread group dies, and this row's exit hook runs, from
+                // the deferred-exit drain. An exit the drain's queue cannot
+                // take is left on the row, where the drain finds it.
+                if !crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
+                    process.unqueued_fatal_exit = Some(exit_code);
+                    crate::task::process_task::note_unqueued_fatal_exit();
                 }
             }
 
@@ -1416,17 +1434,29 @@ pub fn signal_death_exit_code(process: &Process, sig: u32) -> i32 {
 pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i32) {
     let current = crate::task::scheduler::current_thread_id();
     let peers = crate::process::with_process_manager(|manager| {
+        // A leader that already ended with its own exit, while the rest of
+        // its group ran on, reports the status the process dies with now,
+        // not that exit's.
+        let group = manager
+            .get_process(pid)
+            .map(|row| row.thread_group_id.unwrap_or(pid.as_u64()));
+        if let Some(leader) = group.and_then(|group| manager.get_process_mut(ProcessId::new(group))) {
+            if !leader.group_exit_reported {
+                leader.restate_exit_status(exit_code);
+            }
+        }
         let mut peers = manager.thread_group_peers(pid);
         peers.retain(|&peer| {
             let Some(row) = manager.get_process_mut(peer) else {
                 return false;
             };
+            // Every peer is marked in this one acquisition, before any is
+            // killed: a peer's clone refuses from here on, so the group gains
+            // no thread the kills below would miss.
+            row.signals.set_pending(SIGKILL);
+            row.group_exit_code.get_or_insert(exit_code);
             let runs_this = current.is_some()
                 && row.main_thread.as_ref().map(|thread| thread.id) == current;
-            if runs_this {
-                row.signals.set_pending(SIGKILL);
-                row.group_exit_code.get_or_insert(exit_code);
-            }
             !runs_this
         });
         peers

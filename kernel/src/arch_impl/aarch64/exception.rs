@@ -565,8 +565,15 @@ fn resolve_el0_fault_victim(page_table_phys: u64) -> Option<(crate::process::Pro
     let dispatched_tid =
         crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id);
     let resolution = crate::process::with_process_manager(|pm| {
-        let tid_owner = dispatched_tid
-            .and_then(|tid| pm.find_process_by_thread(tid).map(|(pid, _process)| pid));
+        // The faulting thread's own row, when it runs on the faulting address
+        // space: a CLONE_VM thread's row does not own the table, so the table
+        // owner is another row of its group, which did not fault.
+        let tid_owner = dispatched_tid.and_then(|tid| {
+            pm.find_process_by_thread(tid).map(|(pid, process)| {
+                let runs_here = process.cr3_value() == Some(page_table_phys);
+                (pid, process.is_terminated(), runs_here)
+            })
+        });
         let cr3_victim = pm
             .find_process_by_cr3_mut(page_table_phys)
             .map(|(pid, process)| (pid, process.is_terminated()));
@@ -579,7 +586,10 @@ fn resolve_el0_fault_victim(page_table_phys: u64) -> Option<(crate::process::Pro
     }
 
     match (tid_owner, cr3_victim) {
-        (Some(tid_pid), Some((cr3_pid, was_terminated))) => {
+        // The faulting thread's row dies: its exit kills the rest of the
+        // group, and the group's address space goes with its last row.
+        (Some((tid_pid, tid_terminated, true)), Some(_)) => Some((tid_pid, tid_terminated)),
+        (Some((tid_pid, _, false)), Some((cr3_pid, was_terminated))) => {
             if tid_pid != cr3_pid {
                 crate::trace_count!(
                     crate::tracing::providers::teardown::TEARDOWN_VICTIM_DIVERGENCE

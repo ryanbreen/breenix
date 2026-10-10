@@ -383,6 +383,22 @@ pub struct Process {
     /// The process has run a successful exec since its fork, so its parent
     /// may no longer change its process group (setpgid's EACCES).
     pub has_exec: bool,
+
+    /// `terminate` ended this row while another live row of its thread group
+    /// still ran on the address space it owns, so it released nothing. The
+    /// row's exit hook hands the address space to a live row of the group, or
+    /// releases it once none is left (#1321).
+    pub address_space_release_deferred: bool,
+
+    /// The exit status of a fatal signal's default action whose deferred exit
+    /// (`defer_fault_exit`) could not be queued: the per-CPU ring was full and
+    /// the overflow list could not grow. The deferred-exit drain finds the
+    /// row by this and ends its thread group as a queued exit would.
+    pub unqueued_fatal_exit: Option<i32>,
+
+    /// This row leads a thread group whose last row has ended, and its parent
+    /// has been told (`ProcessManager::group_exited`): it is told once.
+    pub group_exit_reported: bool,
 }
 
 /// Memory usage tracking
@@ -455,6 +471,9 @@ impl Process {
             cpu_ticks: 0,
             job: JobControl::default(),
             has_exec: false,
+            address_space_release_deferred: false,
+            unqueued_fatal_exit: None,
+            group_exit_reported: false,
         }
     }
 
@@ -544,6 +563,10 @@ impl Process {
             return;
         }
 
+        // Another live row of the thread group runs on the address space this
+        // row owns: its frames stay until the row's exit hook hands them on.
+        let address_space_shared = self.page_table.is_some() && self.lock_owner.live_rows() > 1;
+
         // Close all file descriptors before setting state to Terminated
         // This ensures pipe counts are properly decremented so readers get EOF
         self.close_all_fds();
@@ -551,7 +574,11 @@ impl Process {
 
         // Clean up Copy-on-Write frame references
         // This decrements refcounts for all pages and deallocates frames that are no longer shared
-        self.cleanup_cow_frames();
+        if address_space_shared {
+            self.address_space_release_deferred = true;
+        } else {
+            self.cleanup_cow_frames();
+        }
 
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
@@ -676,6 +703,12 @@ impl Process {
     /// Returns the FD entries without closing them — the caller is responsible
     /// for pipe close_read/close_write, PTY refcounting, etc.
     pub fn take_fd_entries(&mut self) -> alloc::vec::Vec<(usize, crate::ipc::fd::FileDescriptor)> {
+        // Another thread still holds this descriptor table (CLONE_FILES): this
+        // row lets go of it and closes nothing.
+        if self.fd_table.is_shared() {
+            self.fd_table = crate::ipc::fd::FdTable::empty();
+            return alloc::vec::Vec::new();
+        }
         let entries = self.fd_table.take_all();
         if crate::process::process_manager_held_on_current_cpu() {
             crate::tracing::providers::teardown::FD_CLOSES_UNDER_PM.add(entries.len() as u64);
@@ -692,6 +725,12 @@ impl Process {
     /// log calls create lock ordering violations (PM → SERIAL → framebuffer).
     #[cfg(target_arch = "x86_64")]
     fn close_all_fds(&mut self) {
+        // Another thread still holds this descriptor table (CLONE_FILES): this
+        // row lets go of it and closes nothing.
+        if self.fd_table.is_shared() {
+            self.fd_table = crate::ipc::fd::FdTable::empty();
+            return;
+        }
         use crate::ipc::FdKind;
 
         for fd in 0..crate::ipc::MAX_FDS {
@@ -775,6 +814,12 @@ impl Process {
     /// log calls create lock ordering violations (PM → SERIAL → framebuffer).
     #[cfg(not(target_arch = "x86_64"))]
     fn close_all_fds(&mut self) {
+        // Another thread still holds this descriptor table (CLONE_FILES): this
+        // row lets go of it and closes nothing.
+        if self.fd_table.is_shared() {
+            self.fd_table = crate::ipc::fd::FdTable::empty();
+            return;
+        }
         use crate::ipc::FdKind;
 
         for fd in 0..crate::ipc::MAX_FDS {
@@ -1029,6 +1074,18 @@ impl Process {
     #[allow(dead_code)]
     pub fn page_table(&self) -> Option<&ProcessPageTable> {
         self.page_table.as_ref().map(|b| b.as_ref())
+    }
+
+    /// The status a row that has already terminated reports, changed to
+    /// `exit_code`: a thread-group leader that ended with its own exit while
+    /// the rest of its group ran on reports the status the process later died
+    /// with (exit_group or a fatal signal). Does nothing to a live row, which
+    /// terminates only through `terminate` and `terminate_minimal`.
+    pub fn restate_exit_status(&mut self, exit_code: i32) {
+        if let ProcessState::Terminated(status) = &mut self.state {
+            *status = exit_code;
+            self.exit_code = Some(exit_code);
+        }
     }
 
     /// Get the CR3 value for this process.

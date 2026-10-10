@@ -141,6 +141,9 @@ STD_BINARIES=(
     # Fork smoke (#745 -- x86 production fork() coverage, arch-neutral)
     "fork_smoke"
 
+    # #1321: a thread outlives its process's first thread
+    "thread_teardown_test"
+
     # #575 block-EINTR oracle
     "block_eintr_oracle"
     # #568 blocking-poll-on-connected-TCP oracle

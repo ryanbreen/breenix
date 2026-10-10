@@ -1,15 +1,15 @@
 //! Futex (fast userspace mutex) syscall implementation
 //!
-//! Provides FUTEX_WAIT and FUTEX_WAKE operations for userspace synchronization.
-//! Used by pthread_join, mutexes, condition variables, and similar primitives.
+//! FUTEX_WAIT, FUTEX_WAKE, FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET, FUTEX_REQUEUE
+//! and FUTEX_CMP_REQUEUE, private and shared (#1311). Used by pthread_join,
+//! mutexes, condition variables, and similar primitives.
 
 use super::SyscallResult;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use spin::Mutex;
 
 use crate::arch_impl::traits::CpuOps;
 use crate::task::thread::ThreadState;
-use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
 
 #[cfg(target_arch = "aarch64")]
 type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
@@ -17,35 +17,247 @@ type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 #[cfg(target_arch = "x86_64")]
 type Cpu = crate::arch_impl::x86_64::cpu::X86Cpu;
 
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
+#[cfg(target_arch = "x86_64")]
+use x86_64::VirtAddr;
+
 /// Futex operation codes (Linux-compatible).
 const FUTEX_WAIT: u32 = 0;
 const FUTEX_WAKE: u32 = 1;
-/// Mask to extract the operation (ignoring FUTEX_PRIVATE_FLAG etc.).
-const FUTEX_CMD_MASK: u32 = 0x7f;
+const FUTEX_REQUEUE: u32 = 3;
+const FUTEX_CMP_REQUEUE: u32 = 4;
+const FUTEX_WAIT_BITSET: u32 = 9;
+const FUTEX_WAKE_BITSET: u32 = 10;
+/// The futex is private to the calling process: no other process maps it.
+const FUTEX_PRIVATE_FLAG: u32 = 128;
+/// FUTEX_WAIT_BITSET's absolute timeout is on CLOCK_REALTIME, not
+/// CLOCK_MONOTONIC.
+const FUTEX_CLOCK_REALTIME: u32 = 256;
+/// Mask to extract the operation from the flags.
+const FUTEX_CMD_MASK: u32 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+/// The bitset FUTEX_WAIT and FUTEX_WAKE use: every waiter matches.
+const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
 
-/// Key for futex wait queues: (thread_group_id, virtual_address).
-/// Threads sharing an address space (CLONE_VM) use the same thread_group_id,
-/// so a futex at the same virtual address maps to the same wait queue.
+/// Key for futex wait queues. A private futex, and any futex outside a shared
+/// mapping, is (thread_group_id, virtual address): threads sharing an address
+/// space (CLONE_VM) share the thread group id. A futex in a shared mapping is
+/// (`SHARED_FUTEX`, physical address), which every process mapping the page
+/// reaches.
 type FutexKey = (u64, u64);
+const SHARED_FUTEX: u64 = u64::MAX;
 
-/// Global futex wait queue registry.
-/// Maps (thread_group_id, vaddr) to a scheduler-integrated wait queue.
-static FUTEX_QUEUES: Mutex<BTreeMap<FutexKey, WaitQueueHead>> = Mutex::new(BTreeMap::new());
+/// A thread waiting on a futex, with the bitset its wait matches.
+struct Waiter {
+    tid: u64,
+    bitset: u32,
+}
 
-/// Get the thread group ID for the current process.
-///
-/// The process-manager guard is dropped when this function returns. Callers
-/// must resolve this before taking FUTEX_QUEUES so the lock order remains
-/// process manager -> futex map -> waitqueue -> scheduler.
-fn current_thread_group_id() -> Option<u64> {
-    let thread_id = crate::task::scheduler::current_thread_id()?;
-    let manager_guard = crate::process::manager();
-    if let Some(ref manager) = *manager_guard {
-        if let Some((pid, process)) = manager.find_process_by_thread(thread_id) {
-            return Some(process.thread_group_id.unwrap_or(pid.as_u64()));
+/// Every futex wait queue, and the queue each waiting thread is on (a requeue
+/// moves a waiter from one to another).
+struct FutexTable {
+    queues: BTreeMap<FutexKey, VecDeque<Waiter>>,
+    queued_on: BTreeMap<u64, FutexKey>,
+}
+
+impl FutexTable {
+    const fn new() -> Self {
+        Self {
+            queues: BTreeMap::new(),
+            queued_on: BTreeMap::new(),
         }
     }
-    None
+
+    fn enqueue(&mut self, key: FutexKey, waiter: Waiter) {
+        self.queued_on.insert(waiter.tid, key);
+        self.queues.entry(key).or_default().push_back(waiter);
+    }
+
+    /// Take `tid` off whichever queue it is on. Returns whether it was queued.
+    fn remove(&mut self, tid: u64) -> bool {
+        let Some(key) = self.queued_on.remove(&tid) else {
+            return false;
+        };
+        if let Some(queue) = self.queues.get_mut(&key) {
+            queue.retain(|waiter| waiter.tid != tid);
+            if queue.is_empty() {
+                self.queues.remove(&key);
+            }
+        }
+        true
+    }
+
+    /// Take up to `max` waiters on `key` whose bitset meets `bitset` off the
+    /// queue, oldest first, and wake each.
+    fn wake(&mut self, key: FutexKey, max: u32, bitset: u32) -> u32 {
+        let Some(queue) = self.queues.get_mut(&key) else {
+            return 0;
+        };
+        let mut woken = 0;
+        let mut index = 0;
+        while woken < max && index < queue.len() {
+            if queue[index].bitset & bitset == 0 {
+                index += 1;
+                continue;
+            }
+            let Some(waiter) = queue.remove(index) else {
+                break;
+            };
+            self.queued_on.remove(&waiter.tid);
+            crate::task::scheduler::wake_waitqueue_thread(waiter.tid);
+            woken += 1;
+        }
+        if queue.is_empty() {
+            self.queues.remove(&key);
+        }
+        woken
+    }
+
+    /// Move up to `max` waiters from `from` to the end of `to`, oldest first,
+    /// without waking them.
+    fn requeue(&mut self, from: FutexKey, to: FutexKey, max: u32) -> u32 {
+        if from == to {
+            return self.queues.get(&from).map_or(0, |queue| queue.len().min(max as usize) as u32);
+        }
+        let mut moved = 0;
+        while moved < max {
+            let Some(waiter) = self.queues.get_mut(&from).and_then(|queue| queue.pop_front()) else {
+                break;
+            };
+            self.queued_on.insert(waiter.tid, to);
+            self.queues.entry(to).or_default().push_back(waiter);
+            moved += 1;
+        }
+        if self.queues.get(&from).is_some_and(|queue| queue.is_empty()) {
+            self.queues.remove(&from);
+        }
+        moved
+    }
+
+    #[cfg(feature = "boot_tests")]
+    fn count(&self, key: &FutexKey) -> usize {
+        self.queues.get(key).map_or(0, |queue| queue.len())
+    }
+}
+
+/// How a wait's check-and-enqueue section under the futex table ended.
+#[derive(PartialEq)]
+enum Prepared {
+    /// The word could not be read (EFAULT).
+    Fault,
+    /// The word did not hold the expected value.
+    Mismatch,
+    /// The absolute deadline had already passed.
+    Expired,
+    /// The waiter was enqueued and its blocked state was published.
+    Queued,
+    /// The waiter could not be published and was removed again.
+    PublishFailed,
+}
+
+/// Global futex wait-queue registry, only taken with interrupts masked and
+/// never with PROCESS_MANAGER held: the user-word read under it may fault,
+/// and resolving the fault can take PROCESS_MANAGER. The scheduler lock is
+/// taken under it.
+static FUTEX_QUEUES: Mutex<FutexTable> = Mutex::new(FutexTable::new());
+
+fn with_table<R>(f: impl FnOnce(&mut FutexTable) -> R) -> R {
+    crate::arch_without_interrupts(|| f(&mut FUTEX_QUEUES.lock()))
+}
+
+fn monotonic_ns() -> u64 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs * 1_000_000_000 + nanos
+}
+
+fn realtime_ns() -> i128 {
+    let (secs, nanos) = crate::time::get_real_time_ns();
+    i128::from(secs) * 1_000_000_000 + i128::from(nanos)
+}
+
+/// When a futex wait times out.
+#[derive(Clone, Copy)]
+enum Deadline {
+    Never,
+    /// CLOCK_MONOTONIC nanoseconds.
+    Monotonic(u64),
+    /// CLOCK_REALTIME nanoseconds: setting the clock moves it.
+    Realtime(i128),
+}
+
+impl Deadline {
+    /// The CLOCK_MONOTONIC time the scheduler wakes the waiter at, read now.
+    fn wake_ns(&self) -> Option<u64> {
+        match *self {
+            Deadline::Never => None,
+            Deadline::Monotonic(at) => Some(at),
+            Deadline::Realtime(at) => {
+                let now_real = realtime_ns();
+                let now_mono = monotonic_ns();
+                let left = (at - now_real).max(0);
+                Some((i128::from(now_mono) + left).min(i128::from(u64::MAX)) as u64)
+            }
+        }
+    }
+
+    fn reached(&self) -> bool {
+        match *self {
+            Deadline::Never => false,
+            Deadline::Monotonic(at) => monotonic_ns() >= at,
+            Deadline::Realtime(at) => realtime_ns() >= at,
+        }
+    }
+}
+
+/// The key the calling thread's `uaddr` names. A word in a shared mapping is
+/// keyed by its physical address unless the operation is private; the caller
+/// has touched the word, so its page is present.
+fn futex_key(uaddr: u64, private: bool) -> Option<FutexKey> {
+    let thread_id = crate::task::scheduler::current_thread_id()?;
+    let mut manager_guard = crate::process::manager();
+    let manager = manager_guard.as_mut()?;
+    let group = {
+        let (pid, process) = manager.find_process_by_thread(thread_id)?;
+        process.thread_group_id.unwrap_or(pid.as_u64())
+    };
+    if private {
+        return Some((group, uaddr));
+    }
+    let physical = manager
+        .find_address_space_by_thread_mut(thread_id)
+        .and_then(|(_, owner)| {
+            let addr = VirtAddr::new(uaddr);
+            let shared = owner.vmas.iter().any(|vma| {
+                vma.contains(addr) && vma.flags.contains(crate::memory::vma::MmapFlags::SHARED)
+            });
+            if !shared {
+                return None;
+            }
+            owner.page_table.as_ref()?.translate(addr).map(|phys| phys.as_u64())
+        });
+    Some(physical.map_or((group, uaddr), |phys| (SHARED_FUTEX, phys)))
+}
+
+/// Read the futex word through the user-copy routine, faulting its page in.
+/// EFAULT if it cannot be read: another thread of the address space may have
+/// unmapped or protected the word since it was last touched, so this is also
+/// the read taken under the futex table's lock, where a raw load would fault
+/// in the kernel with the table held.
+fn read_word(uaddr: u64) -> Result<u32, u64> {
+    crate::syscall::userptr::copy_from_user::<u32>(uaddr as *const u32)
+        .map_err(|_| super::errno::EFAULT as u64)
+}
+
+/// Read a timespec argument, EINVAL if it is not a valid one.
+fn read_timespec(ptr: u64) -> Result<crate::syscall::time::Timespec, u64> {
+    let timeout = crate::syscall::userptr::copy_from_user::<crate::syscall::time::Timespec>(
+        ptr as *const crate::syscall::time::Timespec,
+    )
+    .map_err(|_| super::errno::EFAULT as u64)?;
+    if timeout.tv_nsec < 0 || timeout.tv_nsec >= 1_000_000_000 || timeout.tv_sec < 0 {
+        return Err(super::errno::EINVAL as u64);
+    }
+    Ok(timeout)
 }
 
 /// sys_futex - futex system call.
@@ -54,21 +266,226 @@ pub fn sys_futex(
     op: u32,
     val: u32,
     timeout: u64,
-    _uaddr2: u64,
+    uaddr2: u64,
     val3: u32,
 ) -> SyscallResult {
     let cmd = op & FUTEX_CMD_MASK;
+    let private = op & FUTEX_PRIVATE_FLAG != 0;
+    // Only FUTEX_WAIT_BITSET takes a CLOCK_REALTIME deadline (Linux).
+    if op & FUTEX_CLOCK_REALTIME != 0 && cmd != FUTEX_WAIT_BITSET {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
 
     match cmd {
-        FUTEX_WAIT => futex_wait(uaddr, val, timeout, val3),
-        FUTEX_WAKE => futex_wake(uaddr, val, val3),
+        FUTEX_WAIT => futex_wait(uaddr, val, timeout, val3, private),
+        FUTEX_WAIT_BITSET => {
+            if val3 == 0 {
+                return SyscallResult::Err(super::errno::EINVAL as u64);
+            }
+            let deadline = if timeout == 0 {
+                Deadline::Never
+            } else {
+                match read_timespec(timeout) {
+                    Ok(ts) => {
+                        let at = i128::from(ts.tv_sec) * 1_000_000_000 + i128::from(ts.tv_nsec);
+                        if op & FUTEX_CLOCK_REALTIME != 0 {
+                            Deadline::Realtime(at)
+                        } else {
+                            Deadline::Monotonic(at.min(i128::from(u64::MAX)) as u64)
+                        }
+                    }
+                    Err(e) => return SyscallResult::Err(e),
+                }
+            };
+            futex_wait_until(uaddr, val, deadline, val3, private)
+        }
+        FUTEX_WAKE => futex_wake(uaddr, val, val3, private, FUTEX_BITSET_MATCH_ANY),
+        FUTEX_WAKE_BITSET => {
+            if val3 == 0 {
+                return SyscallResult::Err(super::errno::EINVAL as u64);
+            }
+            futex_wake(uaddr, val, 0, private, val3)
+        }
+        // The second count, nr_requeue, travels in the timeout argument.
+        FUTEX_REQUEUE => futex_requeue(uaddr, val, timeout as u32, uaddr2, None, private),
+        FUTEX_CMP_REQUEUE => futex_requeue(uaddr, val, timeout as u32, uaddr2, Some(val3), private),
         _ => SyscallResult::Err(super::errno::ENOSYS as u64),
     }
 }
 
+/// FUTEX_WAIT_BITSET: wait on `uaddr` while it holds `expected_val`, until a
+/// wake whose bitset meets `bitset`, a signal, or the absolute `deadline`.
+fn futex_wait_until(
+    uaddr: u64,
+    expected_val: u32,
+    deadline: Deadline,
+    bitset: u32,
+    private: bool,
+) -> SyscallResult {
+    if uaddr == 0 || uaddr % 4 != 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    if let Err(e) = read_word(uaddr) {
+        return SyscallResult::Err(e);
+    }
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(super::errno::ESRCH as u64);
+    };
+    let Some(key) = futex_key(uaddr, private) else {
+        return SyscallResult::Err(super::errno::ESRCH as u64);
+    };
+    let realtime = matches!(deadline, Deadline::Realtime(_));
+
+    let prepared = with_table(|table| {
+        let Ok(current) = read_word(uaddr) else {
+            return Prepared::Fault;
+        };
+        if current != expected_val {
+            return Prepared::Mismatch;
+        }
+        if deadline.reached() {
+            return Prepared::Expired;
+        }
+        table.enqueue(key, Waiter { tid: thread_id, bitset });
+        let published = crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.realtime_sleep = realtime;
+            }
+            sched.block_current_for_io_with_timeout(deadline.wake_ns())
+        })
+        .unwrap_or(false);
+        if published {
+            Prepared::Queued
+        } else {
+            table.remove(thread_id);
+            Prepared::PublishFailed
+        }
+    });
+    match prepared {
+        Prepared::Fault => return SyscallResult::Err(super::errno::EFAULT as u64),
+        Prepared::Mismatch => return SyscallResult::Err(super::errno::EAGAIN as u64),
+        Prepared::Expired => return SyscallResult::Err(super::errno::ETIMEDOUT as u64),
+        Prepared::PublishFailed => {
+            finish_wait(thread_id);
+            return SyscallResult::Err(super::errno::ESRCH as u64);
+        }
+        Prepared::Queued => {}
+    }
+
+    // Preemption stays disabled until the signal check below has run (#1230):
+    // see `blocking_io::wait_prepared`.
+    let result = loop {
+        if crate::syscall::check_signals_for_eintr().is_some() {
+            break if with_table(|table| table.remove(thread_id)) {
+                SyscallResult::Err(super::errno::EINTR as u64)
+            } else {
+                SyscallResult::Ok(0)
+            };
+        }
+        let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
+            sched.wake_expired_timers();
+            sched
+                .current_thread_mut()
+                .is_some_and(|thread| thread.state == ThreadState::BlockedOnIO)
+        })
+        .unwrap_or(false);
+        if !still_waiting {
+            // Woken: by a waker, which took this thread off its queue, by the
+            // deadline, or by CLOCK_REALTIME being set.
+            let outcome = with_table(|table| {
+                if !table.queued_on.contains_key(&thread_id) {
+                    return Some(SyscallResult::Ok(0));
+                }
+                if deadline.reached() {
+                    table.remove(thread_id);
+                    return Some(SyscallResult::Err(super::errno::ETIMEDOUT as u64));
+                }
+                // Not yet: wait again, to the deadline as it now stands.
+                let published = crate::task::scheduler::with_scheduler(|sched| {
+                    sched.block_current_for_io_with_timeout(deadline.wake_ns())
+                })
+                .unwrap_or(false);
+                if published {
+                    None
+                } else {
+                    table.remove(thread_id);
+                    Some(SyscallResult::Err(super::errno::EINTR as u64))
+                }
+            });
+            if let Some(result) = outcome {
+                break result;
+            }
+        }
+        crate::per_cpu::preempt_enable();
+        crate::task::scheduler::yield_current();
+        Cpu::halt_with_interrupts();
+        crate::per_cpu::preempt_disable();
+    };
+    finish_wait(thread_id);
+    result
+}
+
+/// Leave a futex wait: the thread runs on in its syscall.
+fn finish_wait(thread_id: u64) {
+    crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+        if thread.state == ThreadState::BlockedOnIO {
+            thread.set_ready();
+        }
+        thread.wake_time_ns = None;
+        thread.realtime_sleep = false;
+        thread.blocked_in_syscall = false;
+    });
+    #[cfg(target_arch = "aarch64")]
+    ensure_current_address_space();
+}
+
+/// FUTEX_REQUEUE and FUTEX_CMP_REQUEUE: wake up to `nr_wake` waiters on
+/// `uaddr` and move up to `nr_requeue` of the rest to `uaddr2`. With
+/// `expected`, only while `uaddr` holds it (EAGAIN otherwise). Returns how
+/// many were woken or moved.
+fn futex_requeue(
+    uaddr: u64,
+    nr_wake: u32,
+    nr_requeue: u32,
+    uaddr2: u64,
+    expected: Option<u32>,
+    private: bool,
+) -> SyscallResult {
+    if uaddr == 0 || uaddr % 4 != 0 || uaddr2 == 0 || uaddr2 % 4 != 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    if (nr_wake as i32) < 0 || (nr_requeue as i32) < 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    if let Err(e) = read_word(uaddr).and_then(|_| read_word(uaddr2)) {
+        return SyscallResult::Err(e);
+    }
+    let (Some(from), Some(to)) = (futex_key(uaddr, private), futex_key(uaddr2, private)) else {
+        return SyscallResult::Err(super::errno::ESRCH as u64);
+    };
+    with_table(|table| {
+        if let Some(expected) = expected {
+            match read_word(uaddr) {
+                Ok(current) if current == expected => {}
+                Ok(_) => return SyscallResult::Err(super::errno::EAGAIN as u64),
+                Err(e) => return SyscallResult::Err(e),
+            }
+        }
+        let woken = table.wake(from, nr_wake, FUTEX_BITSET_MATCH_ANY);
+        let moved = table.requeue(from, to, nr_requeue);
+        SyscallResult::Ok(u64::from(woken) + u64::from(moved))
+    })
+}
+
 /// FUTEX_WAIT: atomically check *uaddr == expected_val and enqueue the
 /// current thread if it matches.
-fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> SyscallResult {
+fn futex_wait(
+    uaddr: u64,
+    expected_val: u32,
+    timeout_ptr: u64,
+    _val3: u32,
+    private: bool,
+) -> SyscallResult {
     // Arming handshake for the #584 oracle driver. This arm is compiled in only
     // where the oracle seam itself is; a production kernel ignores val3, honours
     // the probe's timeout and returns ETIMEDOUT, which is how the driver learns
@@ -131,11 +548,13 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
     };
 
     // Resolve the process-manager state before taking FUTEX_QUEUES. The
-    // manager guard is fully released by current_thread_group_id's return.
-    let tg_id = match current_thread_group_id() {
-        Some(id) => id,
+    // manager guard is fully released by futex_key's return.
+    let key = match futex_key(uaddr, private) {
+        Some(key) => key,
         None => return SyscallResult::Err(super::errno::ESRCH as u64),
     };
+    #[cfg(feature = "boot_tests")]
+    let tg_id = key.0;
 
     #[cfg(feature = "boot_tests")]
     let oracle_stage = crate::syscall::futex_oracle::arm_from_val3(_val3);
@@ -160,7 +579,6 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
         crate::syscall::futex_oracle::record_arm(stage, tg_id, uaddr, base_ns)
     });
 
-    let key = (tg_id, uaddr);
     let effective_wake_time_ns = {
         #[cfg(feature = "boot_tests")]
         {
@@ -193,9 +611,7 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
     #[cfg(feature = "coreproof_mut_futex_section")]
     let value_matches = {
         let _queues = FUTEX_QUEUES.lock();
-        // SAFETY: The address was validated and pre-touched above.
-        let current_val = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
-        current_val == expected_val
+        read_word(uaddr).is_ok_and(|current_val| current_val == expected_val)
     };
     #[cfg(feature = "coreproof_mut_futex_section")]
     let split_precheck = value_matches && !zero_timeout;
@@ -224,37 +640,59 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
         crate::syscall::futex_oracle::stage1_drive(tg_id, uaddr, expected_val);
     }
 
-    let prepare_outcome = {
-        let mut queues = FUTEX_QUEUES.lock();
-        let waitqueue = queues.entry(key).or_insert_with(WaitQueueHead::new);
-        let outcome = waitqueue.prepare_to_wait_checked(
-            ThreadState::BlockedOnIO,
-            effective_wake_time_ns,
-            || {
-                #[cfg(feature = "coreproof_mut_futex_section")]
-                {
-                    split_precheck
-                }
-                #[cfg(not(feature = "coreproof_mut_futex_section"))]
-                {
-                    // SAFETY: The address was validated and pre-touched above.
-                    // A concurrent unmap remains a documented residual risk.
-                    let current_val =
-                        unsafe { core::ptr::read_volatile(uaddr as *const u32) };
-                    value_matches = current_val == expected_val;
-                    value_matches && !zero_timeout
-                }
+    let prepare_outcome = with_table(|table| {
+        let proceed = {
+            #[cfg(feature = "coreproof_mut_futex_section")]
+            {
+                split_precheck
+            }
+            #[cfg(not(feature = "coreproof_mut_futex_section"))]
+            {
+                // A word unmapped or protected since the touch above is
+                // EFAULT, not a kernel fault with the table held.
+                let Ok(current_val) = read_word(uaddr) else {
+                    return Prepared::Fault;
+                };
+                value_matches = current_val == expected_val;
+                value_matches && !zero_timeout
+            }
+        };
+        if !proceed {
+            return Prepared::Mismatch;
+        }
+        table.enqueue(
+            key,
+            Waiter {
+                tid: thread_id,
+                bitset: FUTEX_BITSET_MATCH_ANY,
             },
         );
-
-        if outcome != PrepareOutcome::Queued && !waitqueue.has_waiters() {
-            queues.remove(&key);
+        let published = crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current_for_io_with_timeout(effective_wake_time_ns)
+        })
+        .unwrap_or(false);
+        if published {
+            Prepared::Queued
+        } else {
+            table.remove(thread_id);
+            Prepared::PublishFailed
         }
-        outcome
-    };
+    });
 
     match prepare_outcome {
-        PrepareOutcome::Mismatch => {
+        // Not produced here: FUTEX_WAIT's deadline is relative, and a zero
+        // timeout is a Mismatch with the value matching.
+        Prepared::Expired => SyscallResult::Err(super::errno::ETIMEDOUT as u64),
+        Prepared::Fault => {
+            #[cfg(feature = "boot_tests")]
+            oracle_finish(
+                oracle_stage,
+                false,
+                crate::syscall::futex_oracle::OracleRet::Other,
+            );
+            SyscallResult::Err(super::errno::EFAULT as u64)
+        }
+        Prepared::Mismatch => {
             #[cfg(feature = "boot_tests")]
             oracle_finish(
                 oracle_stage,
@@ -271,7 +709,7 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                 SyscallResult::Err(super::errno::EAGAIN as u64)
             }
         }
-        PrepareOutcome::PublishFailed => {
+        Prepared::PublishFailed => {
             #[cfg(feature = "boot_tests")]
             oracle_finish(
                 oracle_stage,
@@ -280,7 +718,7 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
             );
             SyscallResult::Err(super::errno::ESRCH as u64)
         }
-        PrepareOutcome::Queued => {
+        Prepared::Queued => {
             #[cfg(feature = "boot_tests")]
             {
                 if let Some(stage) = oracle_stage {
@@ -351,19 +789,8 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                 crate::per_cpu::preempt_disable();
             }
 
-            let removed_by_me = {
-                let mut queues = FUTEX_QUEUES.lock();
-                let waitqueue = queues.entry(key).or_insert_with(WaitQueueHead::new);
-                let removed_by_me = waitqueue.take_waiter(thread_id);
-                waitqueue.finish_wait();
-                if !waitqueue.has_waiters() {
-                    queues.remove(&key);
-                }
-                removed_by_me
-            };
-
-            #[cfg(target_arch = "aarch64")]
-            ensure_current_address_space();
+            let removed_by_me = with_table(|table| table.remove(thread_id));
+            finish_wait(thread_id);
 
             #[cfg(feature = "boot_tests")]
             if removed_by_me && !oracle_parked {
@@ -463,10 +890,11 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
     }
 }
 
-/// FUTEX_WAKE: wake up to `max_wake` threads waiting on the futex at `uaddr`.
-fn futex_wake(uaddr: u64, max_wake: u32, _val3: u32) -> SyscallResult {
+/// FUTEX_WAKE and FUTEX_WAKE_BITSET: wake up to `max_wake` threads waiting on
+/// the futex at `uaddr` whose wait's bitset meets `bitset`.
+fn futex_wake(uaddr: u64, max_wake: u32, _val3: u32, private: bool, bitset: u32) -> SyscallResult {
     #[cfg(feature = "boot_tests")]
-    if crate::syscall::futex_oracle::is_report(_val3) {
+    if bitset == FUTEX_BITSET_MATCH_ANY && crate::syscall::futex_oracle::is_report(_val3) {
         crate::syscall::futex_oracle::report();
         return SyscallResult::Ok(0);
     }
@@ -474,40 +902,30 @@ fn futex_wake(uaddr: u64, max_wake: u32, _val3: u32) -> SyscallResult {
     if uaddr == 0 || uaddr % 4 != 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-
-    let tg_id = match current_thread_group_id() {
-        Some(id) => id,
-        None => return SyscallResult::Err(super::errno::ESRCH as u64),
-    };
-
-    let key = (tg_id, uaddr);
-    let mut queues = FUTEX_QUEUES.lock();
-    let Some(waitqueue) = queues.get_mut(&key) else {
-        return SyscallResult::Ok(0);
-    };
-
-    let woken = waitqueue.wake_up_n(max_wake);
-    if !waitqueue.has_waiters() {
-        queues.remove(&key);
+    // A shared futex is keyed by its page, which must be present.
+    if !private {
+        if let Err(e) = read_word(uaddr) {
+            return SyscallResult::Err(e);
+        }
     }
-
-    SyscallResult::Ok(woken as u64)
+    let Some(key) = futex_key(uaddr, private) else {
+        return SyscallResult::Err(super::errno::ESRCH as u64);
+    };
+    SyscallResult::Ok(u64::from(with_table(|table| table.wake(key, max_wake, bitset))))
 }
 
 /// Perform a FUTEX_WAKE on a specific address for a specific thread group.
-/// Used by thread exit to notify joiners via clear_child_tid.
 pub fn futex_wake_for_thread_group(tg_id: u64, uaddr: u64, max_wake: u32) -> u32 {
-    let key = (tg_id, uaddr);
-    let mut queues = FUTEX_QUEUES.lock();
-    let Some(waitqueue) = queues.get_mut(&key) else {
-        return 0;
-    };
+    with_table(|table| table.wake((tg_id, uaddr), max_wake, FUTEX_BITSET_MATCH_ANY))
+}
 
-    let woken = waitqueue.wake_up_n(max_wake);
-    if !waitqueue.has_waiters() {
-        queues.remove(&key);
-    }
-    woken
+/// The calling thread is exiting and has cleared its CLONE_CHILD_CLEARTID word
+/// at `uaddr`: wake every waiter on it, as a FUTEX_WAKE that is not private
+/// would (a word in a shared mapping is keyed by its page). `tg_id` keys the
+/// word if it cannot be resolved.
+pub fn futex_wake_cleared_tid(tg_id: u64, uaddr: u64) {
+    let key = futex_key(uaddr, false).unwrap_or((tg_id, uaddr));
+    with_table(|table| table.wake(key, u32::MAX, FUTEX_BITSET_MATCH_ANY));
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -522,8 +940,9 @@ fn ensure_current_address_space() {
     let manager_guard = crate::process::manager();
     if let Some(ref manager) = *manager_guard {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-            if let Some(ref page_table) = process.page_table {
-                let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
+            // A thread's own table, or the one its CLONE_VM group shares.
+            let ttbr0_value = process.cr3_value();
+            if let Some(ttbr0_value) = ttbr0_value {
                 crate::arch_impl::aarch64::ttbr0::restore_process_ttbr0(ttbr0_value);
             }
         }
@@ -532,11 +951,7 @@ fn ensure_current_address_space() {
 
 #[cfg(feature = "boot_tests")]
 pub(crate) fn oracle_queue_residual(keys: [FutexKey; 3]) -> u64 {
-    let queues = FUTEX_QUEUES.lock();
-    keys.iter()
-        .filter_map(|key| queues.get(key))
-        .map(|waitqueue| waitqueue.waiter_count() as u64)
-        .sum()
+    with_table(|table| keys.iter().map(|key| table.count(key) as u64).sum())
 }
 
 #[cfg(feature = "boot_tests")]

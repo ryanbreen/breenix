@@ -40,7 +40,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Getppid => handlers::sys_getppid(),
         SyscallNumber::GetTid => handlers::sys_gettid(),
         SyscallNumber::SetTidAddress => handlers::sys_set_tid_address(arg1),
-        SyscallNumber::ExitGroup => handlers::sys_exit(arg1 as i32),
+        SyscallNumber::ExitGroup => handlers::sys_exit_group(arg1 as i32),
         SyscallNumber::ClockGetTime => {
             let clock_id = arg1 as u32;
             let user_timespec_ptr = arg2 as *mut super::time::Timespec;
@@ -160,7 +160,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Unlockpt => super::pty::sys_unlockpt(arg1),
         SyscallNumber::Ptsname => super::pty::sys_ptsname(arg1, arg2, arg3),
         SyscallNumber::GetRandom => super::random::sys_getrandom(arg1, arg2, arg3 as u32),
-        SyscallNumber::Clone => super::clone::sys_clone(arg1, arg2, arg3, arg4, arg5),
+        SyscallNumber::Clone => super::clone::sys_clone_thread(arg1, arg2, arg3, arg4, arg5, arg6),
         SyscallNumber::Futex => {
             super::futex::sys_futex(arg1, arg2 as u32, arg3 as u32, arg4, arg5, arg6 as u32)
         }

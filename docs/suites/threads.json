@@ -440,6 +440,10 @@
         {
           "id": "compiler-isolated",
           "title": "Compiler TLS written by four threads stays each thread's own"
+        },
+        {
+          "id": "kernel-settls",
+          "title": "Linux ABI: clone with CLONE_SETTLS starts the thread with the thread pointer it was given"
         }
       ]
     },

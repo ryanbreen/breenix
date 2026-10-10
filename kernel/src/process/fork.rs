@@ -528,6 +528,18 @@ pub fn copy_process_state(
     child_process.nice = parent_process.nice;
     child_process.umask = parent_process.umask;
 
+    // 5. The scheduling policy (#1320). Under SCHED_RESET_ON_FORK the child
+    // starts with SCHED_OTHER in place of a real-time policy and with no
+    // negative nice value.
+    if let Some(parent_sched) = parent_process.main_thread.as_ref().map(|thread| thread.sched) {
+        if let Some(thread) = child_process.main_thread.as_mut() {
+            thread.sched = parent_sched.for_child();
+        }
+        if parent_sched.reset_on_fork {
+            child_process.nice = child_process.nice.max(0);
+        }
+    }
+
     Ok(())
 }
 

@@ -289,6 +289,10 @@ name = "fork_smoke"
 path = "src/fork_smoke.rs"
 
 [[bin]]
+name = "thread_teardown_test"
+path = "src/thread_teardown_test.rs"
+
+[[bin]]
 name = "block_eintr_oracle"
 path = "src/block_eintr_oracle.rs"
 

@@ -16,6 +16,7 @@ use alloc::boxed::Box;
 const CLONE_VM: u64 = 0x00000100;
 const CLONE_FS: u64 = 0x00000200;
 const CLONE_FILES: u64 = 0x00000400;
+const CLONE_SETTLS: u64 = 0x00080000;
 const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
 const CLONE_CHILD_SETTID: u64 = 0x01000000;
 
@@ -40,7 +41,7 @@ pub fn refuses_init_group_clone(
     derived_tg_id == init_tg_id
 }
 
-/// sys_clone - create a new thread sharing the parent's address space
+/// sys_clone_thread - create a new thread sharing the parent's address space
 ///
 /// Breenix extension: instead of the standard Linux clone semantics where both
 /// parent and child return from the syscall, we support a fn_ptr + fn_arg style:
@@ -48,19 +49,24 @@ pub fn refuses_init_group_clone(
 ///   - fn_ptr: entry point for the child thread (set as RIP)
 ///   - fn_arg: argument for the child (set as RDI)
 ///   - child_tidptr: address to write child TID and clear on exit
+///   - tls: with CLONE_SETTLS, the child's thread pointer (TPIDR_EL0 on
+///     ARM64, the FS base on x86-64); without it the child starts with its
+///     creator's
 ///
-/// Syscall args: clone(flags, child_stack, fn_ptr, fn_arg, child_tidptr)
+/// Syscall args: clone(flags, child_stack, fn_ptr, fn_arg, child_tidptr, tls)
 ///   - arg1 (RDI): flags
 ///   - arg2 (RSI): child_stack (top of stack, grows down)
 ///   - arg3 (RDX): fn_ptr (entry point function)
 ///   - arg4 (R10): fn_arg (argument to pass in RDI)
 ///   - arg5 (R8):  child_tidptr (for CLONE_CHILD_CLEARTID / CLONE_CHILD_SETTID)
-pub fn sys_clone(
+///   - arg6 (R9):  tls (for CLONE_SETTLS)
+pub fn sys_clone_thread(
     flags: u64,
     child_stack: u64,
     fn_ptr: u64,
     fn_arg: u64,
     child_tidptr: u64,
+    tls: u64,
 ) -> SyscallResult {
     // Validate required flags
     if flags & CLONE_VM == 0 {
@@ -72,13 +78,17 @@ pub fn sys_clone(
     if child_stack == 0 || fn_ptr == 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
+    // An FS base must be a user address, as ARCH_SET_FS requires.
+    #[cfg(target_arch = "x86_64")]
+    if flags & CLONE_SETTLS != 0 && tls >= crate::memory::layout::USER_STACK_REGION_END {
+        return SyscallResult::Err(super::errno::EPERM as u64);
+    }
 
     // Get current thread/process info
     let thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
         None => return SyscallResult::Err(super::errno::ESRCH as u64),
     };
-
     let mut manager_guard = crate::process::manager();
     let manager = match manager_guard.as_mut() {
         Some(m) => m,
@@ -91,7 +101,13 @@ pub fn sys_clone(
         Some((pid, _)) => pid,
         None => return SyscallResult::Err(super::errno::ESRCH as u64),
     };
-    if !manager.admit_clone_into(parent_pid)
+    // A thread whose group is dying (a group exit or a fatal signal set
+    // `group_exit_code` on every row) creates no thread the kills would miss.
+    let group_dying = manager
+        .get_process(parent_pid)
+        .is_some_and(|process| process.group_exit_code.is_some());
+    if group_dying
+        || !manager.admit_clone_into(parent_pid)
         || !crate::process::limits::fork_allowed(manager, parent_pid)
     {
         return SyscallResult::Err(super::errno::EAGAIN as u64);
@@ -169,6 +185,14 @@ pub fn sys_clone(
             ThreadPrivilege::User,
         );
         ctx.rdi = fn_arg; // First argument per SysV ABI
+        // Without CLONE_SETTLS the thread starts with its creator's FS base,
+        // which is still loaded during the creator's syscall.
+        ctx.user_fs_base = if flags & CLONE_SETTLS != 0 {
+            tls
+        } else {
+            x86_64::registers::model_specific::FsBase::read().as_u64()
+        };
+        ctx.user_fs_base_set = true;
         ctx
     };
 
@@ -176,6 +200,16 @@ pub fn sys_clone(
     let child_context = {
         let mut ctx = CpuContext::new_user_thread(fn_ptr, child_stack, 0);
         ctx.x0 = fn_arg; // First argument per AAPCS64
+        ctx.tpidr_el0 = if flags & CLONE_SETTLS != 0 {
+            tls
+        } else {
+            let creator: u64;
+            // SAFETY: reading the calling thread's own TPIDR_EL0.
+            unsafe {
+                core::arch::asm!("mrs {}, tpidr_el0", out(reg) creator, options(nomem, nostack));
+            }
+            creator
+        };
         ctx
     };
 
@@ -237,7 +271,7 @@ pub fn sys_clone(
         #[cfg(target_arch = "x86_64")]
         fpu: crate::arch_impl::x86_64::fpu::FpuState::capture(),
         tls_block,
-        priority: 128,
+        sched: crate::task::thread::SchedPolicy::DEFAULT,
         time_slice: 10,
         entry_point: None,
         privilege: ThreadPrivilege::User,
@@ -286,6 +320,13 @@ pub fn sys_clone(
     child_process.limits = parent.limits.clone();
     child_process.cred = parent.cred.clone();
     child_process.nice = parent.nice;
+    // The creator's scheduling policy, which sched_setscheduler keeps in step
+    // with the scheduler's copy. Under SCHED_RESET_ON_FORK a new thread does
+    // not inherit a negative nice either.
+    let creator_sched = parent.main_thread.as_ref().map(|thread| thread.sched);
+    if creator_sched.is_some_and(|sched| sched.reset_on_fork) {
+        child_process.nice = child_process.nice.max(0);
+    }
     // A thread's CPU time is its process's: the group shares one account.
     child_process.cpu = parent.cpu.clone();
     child_process.itimers = parent.itimers.clone();
@@ -303,13 +344,18 @@ pub fn sys_clone(
     // the group's copies in step) and start with the creator's signal mask.
     child_process.signals = parent_signals;
 
-    // Share file descriptors if CLONE_FILES
-    if flags & CLONE_FILES != 0 {
-        child_process.fd_table = manager
-            .get_process(parent_pid)
-            .expect("parent remains present under PM during clone")
-            .fd_table.clone();
-    }
+    // CLONE_FILES: the thread shares its creator's descriptor table, so a
+    // descriptor either opens is the other's too (#1307). Without it the
+    // thread gets a copy, as fork does.
+    let parent_fds = &manager
+        .get_process(parent_pid)
+        .expect("parent remains present under PM during clone")
+        .fd_table;
+    child_process.fd_table = if flags & CLONE_FILES != 0 {
+        parent_fds.share()
+    } else {
+        parent_fds.clone()
+    };
 
     child_process.fd_table.set_limit(
         child_process
@@ -334,13 +380,16 @@ pub fn sys_clone(
     // Write child TID to parent's tidptr (CLONE_PARENT_SETTID)
     // (handled by caller since we return the tid)
 
-    // A new thread starts with its creator's CPU affinity.
-    child_thread.cpu_affinity = crate::task::thread::CpuPin::for_child(
-        manager
-            .get_process(parent_pid)
-            .and_then(|parent| parent.main_thread.as_ref())
-            .and_then(|thread| thread.cpu_affinity),
-    );
+    // A new thread starts with its creator's CPU affinity and scheduling
+    // policy (`SchedPolicy::for_child`).
+    let creator = manager
+        .get_process(parent_pid)
+        .and_then(|parent| parent.main_thread.as_ref());
+    child_thread.cpu_affinity =
+        crate::task::thread::CpuPin::for_child(creator.and_then(|thread| thread.cpu_affinity));
+    if let Some(sched) = creator_sched {
+        child_thread.sched = sched.for_child();
+    }
     child_process.attach_main_thread_unpublished(child_thread);
 
     // Add child to process manager. From here the row is published and leaves
@@ -387,6 +436,25 @@ pub fn sys_clone(
     // Add thread to scheduler
     if let Some(thread_box) = scheduler_thread {
         crate::task::scheduler::spawn(thread_box);
+    }
+
+    // A group kill that ran between the release of PROCESS_MANAGER and the
+    // spawn ended the row while its thread was in no scheduler queue, so the
+    // thread was spawned Ready all the same. Kill it again now that the
+    // scheduler has it. The creator is still in this syscall, so its row is
+    // live and the group's address space with it: the thread cannot have run
+    // on a released one in between.
+    let child_ended = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process(child_pid)
+            .map_or(Some(0), |child| match child.state {
+                crate::process::ProcessState::Terminated(code) => Some(code),
+                _ => None,
+            })
+    })
+    .flatten();
+    if let Some(code) = child_ended {
+        crate::syscall::signal::kill_process_now(child_pid, code);
     }
 
     log::info!(

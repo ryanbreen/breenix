@@ -443,7 +443,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             super::random::sys_getrandom(args.0, args.1, args.2 as u32)
         }
         Some(SyscallNumber::Clone) => {
-            super::clone::sys_clone(args.0, args.1, args.2, args.3, args.4)
+            super::clone::sys_clone_thread(args.0, args.1, args.2, args.3, args.4, args.5)
         }
         Some(SyscallNumber::Futex) => super::futex::sys_futex(
             args.0,

@@ -49,6 +49,8 @@ mod nr {
     pub const SCHED_SETSCHEDULER: u64 = 144;
     pub const SCHED_GETSCHEDULER: u64 = 145;
     pub const SCHED_GET_PRIORITY_MIN: u64 = 147;
+    pub const CLONE: u64 = 56;
+    pub const EXIT: u64 = 60;
     pub const ARCH_PRCTL: u64 = 158;
     pub const GETTID: u64 = 186;
     pub const FUTEX: u64 = 202;
@@ -78,6 +80,8 @@ mod nr {
     pub const SCHED_GETPARAM: u64 = 121;
     pub const SCHED_GET_PRIORITY_MIN: u64 = 126;
     pub const GETTID: u64 = 178;
+    pub const CLONE: u64 = 220;
+    pub const EXIT: u64 = 93;
     pub const FUTEX: u64 = 98;
     pub const SCHED_SETAFFINITY: u64 = 122;
     pub const CLOCK_SETTIME: u64 = 112;
@@ -3262,6 +3266,58 @@ fn tls_thread_pointer() -> CaseResult {
     })
 }
 
+/// The thread pointer the CLONE_SETTLS thread read, and 1 once it has.
+static SETTLS_SEEN: AtomicU64 = AtomicU64::new(0);
+static SETTLS_DONE: AtomicU32 = AtomicU32::new(0);
+
+/// The thread `tls_kernel_settls` starts with a raw clone: it records its thread pointer
+/// and ends with SYS_exit. It runs no code that reads thread-local storage.
+extern "C" fn settls_thread(_arg: u64) -> ! {
+    #[cfg(target_arch = "aarch64")]
+    let tp = {
+        let v: u64;
+        // SAFETY: reading TPIDR_EL0 from user mode is always allowed.
+        unsafe { core::arch::asm!("mrs {}, tpidr_el0", out(reg) v, options(nomem, nostack)) };
+        v
+    };
+    #[cfg(target_arch = "x86_64")]
+    let tp = {
+        const ARCH_GET_FS: u64 = 0x1003;
+        let mut v = 0u64;
+        sc(nr::ARCH_PRCTL, &[ARCH_GET_FS, &mut v as *mut u64 as u64]);
+        v
+    };
+    SETTLS_SEEN.store(tp, SeqCst);
+    SETTLS_DONE.store(1, SeqCst);
+    sc(nr::EXIT, &[0]);
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+fn tls_kernel_settls() -> CaseResult {
+    const CLONE_VM: u64 = 0x100;
+    const CLONE_FS: u64 = 0x200;
+    const CLONE_FILES: u64 = 0x400;
+    const CLONE_SIGHAND: u64 = 0x800;
+    const CLONE_THREAD: u64 = 0x10000;
+    const CLONE_SETTLS: u64 = 0x80000;
+    const STACK: u64 = 64 * 1024;
+    trial_ms(3000, || {
+        // The block the thread pointer names; the thread never reads it.
+        let block = Box::leak(Box::new([0u64; 8]));
+        let tls = block.as_ptr() as u64;
+        let stack = sc(nr::MMAP, &[0, STACK, 3, 0x22, u64::MAX, 0]);
+        check(stack > 0, &format!("mmap of the thread's stack returned {}", shown(stack)))?;
+        let flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SETTLS;
+        let tid = sc(nr::CLONE, &[flags, stack as u64 + STACK, settls_thread as usize as u64, 0, 0, tls]);
+        check(tid > 0, &format!("clone(CLONE_SETTLS) returned {}", shown(tid)))?;
+        check(until(2000, || SETTLS_DONE.load(SeqCst) == 1), "the CLONE_SETTLS thread did not run within 2 s")?;
+        let seen = SETTLS_SEEN.load(SeqCst);
+        check(seen == tls, &format!("the thread started with thread pointer {seen:#x}, not the {tls:#x} clone was given"))
+    })
+}
+
 #[thread_local]
 static TLS_INIT: Cell<u64> = Cell::new(0x5eed);
 #[thread_local]
@@ -4071,6 +4127,7 @@ static SUITE: Suite = suite("threads", "Threads", &[
         case("thread-pointer", "Linux ABI: every thread has a thread pointer (TPIDR_EL0, the FS base) of its own", tls_thread_pointer),
         case("compiler-initial", "Compiler TLS starts at its initial values in the main thread and every new thread", tls_compiler_initial),
         case("compiler-isolated", "Compiler TLS written by four threads stays each thread's own", tls_compiler_isolated),
+        case("kernel-settls", "Linux ABI: clone with CLONE_SETTLS starts the thread with the thread pointer it was given", tls_kernel_settls),
     ]),
     category("signals", "per-thread signals", &[
         case("pthread-kill", "pthread_kill runs the handler in the target thread and only there", sg_pthread_kill),
