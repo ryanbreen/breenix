@@ -22,14 +22,36 @@ pub static SERIAL2: Mutex<SerialPort> = Mutex::new(unsafe { SerialPort::new(COM2
 static SERIAL_INPUT_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
 static SERIAL_WAKER: AtomicWaker = AtomicWaker::new();
 
+static SERIAL1_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 pub fn init() {
     // Initialize the serial port for output only (no interrupts yet)
-    SERIAL1.lock().init();
+    init_port(&mut SERIAL1.lock(), COM1_PORT);
+    let fifo = unsafe {
+        use x86_64::instructions::port::Port;
+        Port::<u8>::new(COM1_PORT + 2).read() & 0xc0 == 0xc0
+    };
+    SERIAL1_FIFO.store(fifo, core::sync::atomic::Ordering::Relaxed);
 
     // Initialize COM2 for kernel log output
-    SERIAL2.lock().init();
+    init_port(&mut SERIAL2.lock(), COM2_PORT);
 
     // Don't enable interrupts here - wait until after IDT is set up
+}
+
+/// Use the PC console's 115200 baud rather than the library's 38400 default.
+/// Synchronous console output otherwise masks interrupts for over 20 ms for
+/// an ordinary 80-byte line, delaying timer delivery and charging that busy
+/// UART wait to the writing process's CPU clock.
+fn init_port(serial: &mut SerialPort, base: u16) {
+    serial.init();
+    unsafe {
+        use x86_64::instructions::port::Port;
+        Port::<u8>::new(base + 3).write(0x80); // DLAB
+        Port::<u8>::new(base).write(1);       // 115200 / 1
+        Port::<u8>::new(base + 1).write(0);
+        Port::<u8>::new(base + 3).write(0x03); // 8N1, DLAB clear
+    }
 }
 
 /// Enable serial input interrupts - call this after IDT and PIC are initialized
@@ -86,9 +108,46 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
     }
 
     let mut serial = SERIAL1.lock();
-    for &byte in bytes {
-        serial.send(byte);
-        crate::log_buffer::capture_byte(byte);
+    if SERIAL1_FIFO.load(core::sync::atomic::Ordering::Relaxed) {
+        // THRE means the 16550 transmit FIFO is empty, so all sixteen slots
+        // are available. Poll once per burst, avoiding a VM exit and a UART
+        // character-time spin for every individual byte.
+        unsafe {
+            use x86_64::instructions::port::Port;
+            let mut status = Port::<u8>::new(COM1_PORT + 5);
+            let mut data = Port::<u8>::new(COM1_PORT);
+            let mut chunk = [0u8; 16];
+            let mut used = 0;
+            for &byte in bytes {
+                // uart_16550::send translates backspace and DEL to BS SPACE BS.
+                // Apply that translation before filling the hardware FIFO too.
+                let wire = if byte == 0x08 || byte == 0x7f {
+                    [0x08, b' ', 0x08]
+                } else {
+                    [byte, 0, 0]
+                };
+                let count = if byte == 0x08 || byte == 0x7f { 3 } else { 1 };
+                for &transmitted in &wire[..count] {
+                    chunk[used] = transmitted;
+                    used += 1;
+                    if used == chunk.len() {
+                        while status.read() & 0x20 == 0 { core::hint::spin_loop(); }
+                        for &pending in &chunk { data.write(pending); }
+                        used = 0;
+                    }
+                }
+                crate::log_buffer::capture_byte(byte);
+            }
+            if used != 0 {
+                while status.read() & 0x20 == 0 { core::hint::spin_loop(); }
+                for &pending in &chunk[..used] { data.write(pending); }
+            }
+        }
+    } else {
+        for &byte in bytes {
+            serial.send(byte);
+            crate::log_buffer::capture_byte(byte);
+        }
     }
     drop(serial);
 

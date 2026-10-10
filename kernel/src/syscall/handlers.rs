@@ -2350,11 +2350,16 @@ pub fn sys_exec_with_frame(
                         );
                         crate::tls::install_exec_fs_base(current_thread_id);
 
-                        // CRITICAL FIX: Get the new stack pointer from the process
-                        // The exec_process function set up a new stack at USER_STACK_TOP
-                        // NOTE: Must match the value used in exec_process() in manager.rs
-                        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
-                        let new_rsp = USER_STACK_TOP;
+                        // exec prepared argc/envp/auxv below the stack top.
+                        // Return to that initial stack, as kernel-started exec does.
+                        let new_rsp = manager
+                            .get_process(current_pid)
+                            .expect("exec process missing after commit")
+                            .main_thread
+                            .as_ref()
+                            .expect("exec main thread missing after commit")
+                            .context
+                            .rsp;
 
                         // Modify the syscall frame so that when we return from syscall,
                         // we jump to the NEW program instead of returning to the old one
@@ -3251,6 +3256,25 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
 
 /// sys_getpid - Get the current process ID
 pub fn sys_getpid() -> SyscallResult {
+    // The running thread's shared CPU account has the immutable group ID.
+    // No process-manager or scheduler serialization is needed to read it.
+    let group = crate::arch_without_interrupts(|| {
+        #[cfg(target_arch = "x86_64")]
+        let ptr = {
+            use crate::arch_impl::PerCpuOps;
+            crate::arch_impl::x86_64::percpu::X86PerCpu::current_thread_ptr()
+        };
+        #[cfg(target_arch = "aarch64")]
+        let ptr = crate::per_cpu_aarch64::current_thread_ptr();
+        let ptr = ptr as *const crate::task::thread::Thread;
+        if ptr.is_null() { return None; }
+        // SAFETY: IRQ masking keeps the current thread alive on this CPU;
+        // reading its immutable Arc target does not create a mutable alias.
+        unsafe { (*ptr).cpu_account.as_ref().map(|account| account.process_id) }
+    });
+    if let Some(group) = group.filter(|&id| id != 0) {
+        return SyscallResult::Ok(group);
+    }
     // Disable interrupts when accessing process manager
     crate::arch_without_interrupts(|| {
         // Debug level, as below: a serial line per call serializes every CPU's
@@ -3258,6 +3282,9 @@ pub fn sys_getpid() -> SyscallResult {
         log::debug!("sys_getpid called");
 
         // Get current thread ID from scheduler
+        #[cfg(target_arch = "x86_64")]
+        let scheduler_thread_id = crate::per_cpu::current_thread_id_lock_free();
+        #[cfg(not(target_arch = "x86_64"))]
         let scheduler_thread_id = crate::task::scheduler::current_thread_id();
         log::debug!(
             "sys_getpid: scheduler_thread_id = {:?}",
@@ -3297,7 +3324,11 @@ pub fn sys_getpid() -> SyscallResult {
 /// sys_gettid - Get the current thread ID
 pub fn sys_gettid() -> SyscallResult {
     // Get current thread ID from scheduler
-    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+    #[cfg(target_arch = "x86_64")]
+    let thread_id = crate::arch_without_interrupts(crate::per_cpu::current_thread_id_lock_free);
+    #[cfg(not(target_arch = "x86_64"))]
+    let thread_id = crate::task::scheduler::current_thread_id();
+    if let Some(thread_id) = thread_id {
         // In Linux, the main thread of a process has TID = PID
         // For now, we just return the thread ID directly
         return SyscallResult::Ok(thread_id);

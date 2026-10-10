@@ -63,6 +63,17 @@ use core::cmp::Reverse;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
+/// Published under the scheduler lock; the timer IRQ reads only this scalar.
+static NEXT_TIMER_CHECK_NS: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Whether a sleep or signal timer needs a scheduling pass, without locking
+/// or walking any queue in interrupt context.
+#[inline]
+pub fn timer_deadline_due() -> bool {
+    let deadline = NEXT_TIMER_CHECK_NS.load(Ordering::Acquire);
+    deadline != u64::MAX && crate::signal::monotonic_nanos() >= deadline
+}
+
 /// Exit-batch identity carried by teardown-attributed expedite evidence.
 /// P2 uses one pid-derived batch per single-victim request; P9 later assigns
 /// one shared id to a group request rather than introducing a parallel type.
@@ -2499,6 +2510,15 @@ impl Scheduler {
         let mut retained_threads = alloc::vec::Vec::with_capacity(self.threads.len());
         let mut reclaimed_threads = alloc::vec::Vec::new();
         for thread in self.threads.drain(..) {
+            // All x86 scheduling passes release at most one retired stack.
+            // Idle dispatch restarts instead of resuming its destructor, so
+            // its non-preemptible release work must stay bounded; the scheduler
+            // retains ownership and the same grace proof for every other row.
+            #[cfg(target_arch = "x86_64")]
+            if !reclaimed_threads.is_empty() {
+                retained_threads.push(thread);
+                continue;
+            }
             if thread.state != ThreadState::Terminated || idle_ids.contains(&thread.id()) {
                 retained_threads.push(thread);
                 continue;
@@ -4595,6 +4615,7 @@ impl Scheduler {
             // wait loop and will return EINTR when they resume.
             if thread.state == ThreadState::BlockedOnIO {
                 self.unblock_for_io(thread_id);
+                self.expedite_signal_recipient(thread_id);
                 return;
             }
             // A syscall wait published as plain Blocked (pipe, FIFO, socket,
@@ -4604,12 +4625,12 @@ impl Scheduler {
             // TASK_INTERRUPTIBLE sleepers.
             if thread.state == ThreadState::Blocked && thread.blocked_in_syscall {
                 self.unblock(thread_id);
-                set_need_resched();
+                self.expedite_signal_recipient(thread_id);
                 return;
             }
             if thread.state == ThreadState::BlockedOnTimer {
                 self.unblock(thread_id);
-                set_need_resched();
+                self.expedite_signal_recipient(thread_id);
                 return;
             }
             if thread.state == ThreadState::BlockedOnSignal {
@@ -4657,8 +4678,35 @@ impl Scheduler {
                 set_need_resched();
             }
         }
+        self.expedite_signal_recipient(thread_id);
         // A missing thread has nothing to wake. No serial output: a child's
         // stop reaches here from an interrupt return path.
+    }
+
+    /// A generated, deliverable signal must reach its recipient at the next
+    /// return to user mode, including a busy remote CPU. Interruptible sleepers
+    /// receive the same bounded promotion as an already-expired sleep deadline.
+    pub(crate) fn expedite_signal_recipient(&mut self, thread_id: u64) {
+        if let Some(cpu) = self.cpu_state.iter().position(|s| s.current_thread == Some(thread_id)) {
+            if cpu == Self::current_cpu_id() {
+                set_need_resched();
+            } else {
+                self.send_resched_ipi_to_cpu(cpu);
+            }
+            return;
+        }
+        if let Some(cpu) = self.per_cpu_queues.iter().position(|q| q.contains(&thread_id)) {
+            if !self.retain_cpu_affine_thread(thread_id, cpu) && self.timer_wake_promotion_open(cpu) {
+                self.per_cpu_queues[cpu].retain(|&id| id != thread_id);
+                self.per_cpu_queues[cpu].push_front(thread_id);
+                self.cpu_state[cpu].promoted_wake = Some(thread_id);
+            }
+            if cpu == Self::current_cpu_id() {
+                set_need_resched();
+            } else {
+                self.send_resched_ipi_to_cpu(cpu);
+            }
+        }
     }
 
     /// Block current thread until a child exits
@@ -4869,6 +4917,7 @@ impl Scheduler {
             // Insert into timer heap for O(1) expiry detection
             if !already_armed {
                 self.timer_heap.push(Reverse((wake_time_ns, current_id)));
+                self.publish_timer_deadline();
             }
             for q in self.per_cpu_queues.iter_mut() {
                 q.retain(|&id| id != current_id);
@@ -4957,6 +5006,7 @@ impl Scheduler {
             // Insert into timer heap if a timeout was specified
             if let Some(wt) = wake_time_ns {
                 self.timer_heap.push(Reverse((wt, current_id)));
+                self.publish_timer_deadline();
             }
             true
         } else {
@@ -5168,6 +5218,7 @@ impl Scheduler {
             }
             // Insert into timer heap for O(1) expiry detection
             self.timer_heap.push(Reverse((timeout_ns, current_id)));
+            self.publish_timer_deadline();
             for q in self.per_cpu_queues.iter_mut() {
                 q.retain(|&id| id != current_id);
             }
@@ -5183,11 +5234,30 @@ impl Scheduler {
         }
     }
 
+    /// Recompute the next check where timer state is already serialized.
+    /// Expiry discovery must not wait for a busy CPU's 50 ms quantum.
+    fn publish_timer_deadline(&self) {
+        let now = crate::signal::timers::Now::read(0);
+        let mut deadline = self.timer_heap.peek().map_or(u64::MAX, |entry| entry.0.0);
+        for (group, _) in &self.signal_timer_groups {
+            let Some(group) = group.upgrade() else { continue; };
+            if let Some(real) = group.real.deadline_micros() {
+                deadline = deadline.min(real.saturating_mul(1000));
+            }
+            if group.virtual_timer.is_active() || group.prof.is_active() {
+                deadline = deadline.min(now.monotonic.saturating_add(crate::time::timer::MS_PER_TICK * 1_000_000));
+            }
+            deadline = deadline.min(group.posix.next_check_ns(&now));
+        }
+        NEXT_TIMER_CHECK_NS.store(deadline, Ordering::Release);
+    }
+
     /// Register an armed group from a timer syscall or exec publication.
     pub fn register_signal_timers(&mut self, timers: &alloc::sync::Arc<crate::signal::IntervalTimers>, cpu: &alloc::sync::Arc<super::thread::CpuAccount>) {
         if timers.is_active() && !self.signal_timer_groups.iter().any(|(old, _)| old.ptr_eq(&alloc::sync::Arc::downgrade(timers))) {
             self.signal_timer_groups.push((alloc::sync::Arc::downgrade(timers), alloc::sync::Arc::downgrade(cpu)));
         }
+        self.publish_timer_deadline();
     }
 
     pub fn wake_realtime_sleepers(&mut self) {
@@ -5408,6 +5478,15 @@ impl Scheduler {
                         ((was_blocked_on_io as u32) << 31) | self.ready_queue_length() as u32,
                     );
                 }
+                // The state change alone cannot release a foreign CPU's
+                // syscall halt loop. Wake its hardware wait, as unblock does,
+                // while leaving the thread exclusively current on that CPU.
+                if let Some(cpu) = (0..MAX_CPUS).find(|&cpu| self.cpu_state[cpu].current_thread == Some(tid)) {
+                    #[cfg(target_arch = "aarch64")]
+                    self.send_resched_ipi_to_cpu(cpu);
+                    #[cfg(target_arch = "x86_64")]
+                    self.wake_cpu_for_current_thread(cpu);
+                }
                 continue;
             }
 
@@ -5504,15 +5583,9 @@ impl Scheduler {
                         } else {
                             self.per_cpu_queues[target].push_back(tid);
                         }
-                        // Both architectures kick idle destinations only. This
-                        // preserves round-robin policy for busy destinations;
-                        // expiry detection still waits for a scheduling pass,
-                        // potentially most of a 50 ms quantum when CPUs are busy.
-                        // Placement prefers this CPU on equal load, so a kick
-                        // alone cannot bound deadline-to-dispatch latency.
-                        if self.cpu_is_idle(target) {
-                            self.send_resched_ipi_to_cpu(target);
-                        }
+                        // Discovery must preempt even a busy destination;
+                        // otherwise its remaining quantum delays this deadline.
+                        self.send_resched_ipi_to_cpu(target);
                         ENQUEUE_TIMER_WAKE.fetch_add(1, Ordering::Relaxed);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     } else {
@@ -5539,6 +5612,7 @@ impl Scheduler {
                 }
             }
         }
+        self.publish_timer_deadline();
     }
 
     /// Terminate the current thread
@@ -7511,22 +7585,6 @@ pub fn charge_current_cpu() -> u64 {
     .unwrap_or(0)
 }
 
-/// The calling process's CPU ticks, including running CLONE_THREAD members.
-/// Members have distinct owner PIDs and a shared account; exited members' time
-/// remains in that account. No process-manager lock is needed for this query.
-pub fn process_cpu_ticks() -> Option<u64> {
-    with_scheduler(|scheduler| {
-        let account = scheduler.current_thread()?.cpu_account.clone()?;
-        let now = crate::time::get_cpu_ticks();
-        for thread in scheduler.threads.iter_mut() {
-            if thread.cpu_account.as_ref().is_some_and(|other| alloc::sync::Arc::ptr_eq(other, &account)) {
-                thread.charge_cpu_if_running(now);
-            }
-        }
-        Some(account.ticks())
-    }).flatten()
-}
-
 /// The calling process's CPU time in nanoseconds, user and system together,
 /// with every running thread of it charged first: the counters
 /// CLOCK_PROCESS_CPUTIME_ID and the process CPU-time timers read. No
@@ -8034,28 +8092,21 @@ pub fn switch_to_idle() {
         let _ = old_val; // suppress unused warning on non-aarch64
         sched.cpu_state[cpu_id].current_thread = Some(idle_id);
 
-        // Also update per-CPU current thread pointer
+        // Also update per-CPU current thread pointer. No routine serial line
+        // here: this runs with the scheduler lock held and interrupts masked,
+        // and a fatal signal taken on interrupt return comes through here, so
+        // a line would stall every CPU's scheduling for as long as the UART
+        // takes to accept it.
         #[cfg(target_arch = "x86_64")]
         if let Some(thread) = sched.get_thread_mut(idle_id) {
             let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
             crate::per_cpu::set_current_thread(thread_ptr);
-            log::info!(
-                "Exception handler: Set per_cpu thread to idle {} at {:p}",
-                idle_id,
-                thread_ptr
-            );
         } else {
             log::error!(
                 "Exception handler: Failed to get idle thread {} from scheduler!",
                 idle_id
             );
         }
-
-        #[cfg(target_arch = "x86_64")]
-        log::info!(
-            "Exception handler: Switched scheduler to idle thread {}",
-            idle_id
-        );
     });
 }
 

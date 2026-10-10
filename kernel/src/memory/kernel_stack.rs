@@ -367,8 +367,15 @@ const KERNEL_STACK_END: u64 = 0xffffc900_0800_0000;
 /// → write_char_to_framebuffer → split_screen → font rendering
 /// This path can use 300KB+ of stack when combined with interrupt frame overhead
 /// and nested help command processing with terminal output formatting.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", any(feature = "interactive", feature = "testing", feature = "boot_tests")))]
 const KERNEL_STACK_SIZE: u64 = 512 * 1024;
+
+// Production does not compile the deep interactive echo/rendering path above.
+// Allocating its 128 pages under the clone transaction charges that work to
+// the parent and delays scheduler callers on every other CPU. Keep a 128 KiB
+// guarded stack here; the larger stacks remain available to diagnostic builds.
+#[cfg(all(target_arch = "x86_64", not(any(feature = "interactive", feature = "testing", feature = "boot_tests"))))]
+const KERNEL_STACK_SIZE: u64 = 128 * 1024;
 
 /// Size of guard page (4 KiB)
 #[cfg(target_arch = "x86_64")]

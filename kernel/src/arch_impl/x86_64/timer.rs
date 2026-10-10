@@ -130,25 +130,28 @@ pub fn calibrate() {
     // PIT countdown value for ~50ms: 1193182 * 0.05 = 59659
     const CALIBRATION_TICKS: u16 = 59659;
     const CALIBRATION_MS: u64 = 50;
-    // A virtual CPU descheduled inside a window counts the lost time as TSC
-    // cycles, and nothing can make a window shorter than the PIT interval, so
-    // the shortest of several windows is the measurement (as Linux takes the
-    // minimum of its PIT calibration loops).
+    // Each window brackets its two PIT events between TSC reads. A virtual
+    // CPU descheduled across an event widens that event's bracket, so the
+    // window whose brackets are narrowest is the measurement.
     const CALIBRATION_WINDOWS: usize = 3;
     const CALIBRATION_ATTEMPTS: usize = 12;
 
     log::info!("Calibrating TSC frequency using PIT...");
 
     let mut tsc_base = None;
-    let mut tsc_elapsed = u64::MAX;
+    let mut tsc_elapsed = 0;
+    let mut best_width = u64::MAX;
     let mut windows = 0;
     for _ in 0..CALIBRATION_ATTEMPTS {
         if windows == CALIBRATION_WINDOWS {
             break;
         }
-        if let Some((start, elapsed)) = unsafe { measure_pit_window(CALIBRATION_TICKS) } {
-            tsc_base.get_or_insert(start);
-            tsc_elapsed = tsc_elapsed.min(elapsed);
+        if let Some(window) = unsafe { measure_pit_window(CALIBRATION_TICKS) } {
+            tsc_base.get_or_insert(window.start);
+            if window.width < best_width {
+                best_width = window.width;
+                tsc_elapsed = window.elapsed;
+            }
             windows += 1;
         }
     }
@@ -170,19 +173,38 @@ pub fn calibrate() {
         frequency_hz
     );
     log::info!(
-        "TSC cycles during {}ms calibration: {}",
+        "TSC cycles during {}ms calibration: {} (within {})",
         CALIBRATION_MS,
-        tsc_elapsed
+        tsc_elapsed,
+        best_width
     );
 
     // HAL boot stage marker - proves HAL timer operations are working
     log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
 }
 
-/// Count TSC cycles across one PIT channel 2 countdown of `ticks`.
-/// Returns the TSC value at the start and the cycles elapsed, or `None` when
-/// no countdown was observed.
-unsafe fn measure_pit_window(ticks: u16) -> Option<(u64, u64)> {
+/// One PIT channel 2 countdown timed with the TSC.
+struct PitWindow {
+    /// TSC when the countdown started.
+    start: u64,
+    /// TSC cycles from the countdown's start to its end.
+    elapsed: u64,
+    /// TSC cycles of uncertainty in the two events' times together.
+    width: u64,
+}
+
+/// Count TSC cycles across one PIT channel 2 countdown of `ticks`, or `None`
+/// when no countdown was observed.
+///
+/// Both events are timed by the TSC read just after a port access: the count
+/// starts when the high byte's write lands, and OUT rises between the last poll
+/// that read it low and the first that read it high. A port access is a VM exit
+/// that takes tens of microseconds under nested virtualization, so a window
+/// timed from before the write to after the poll that saw OUT high, as this
+/// did, was long by about one exit and half a poll: 600 to 1100 ppm on the x86
+/// gate. Reading the TSC at the same point after every access cancels the exit's
+/// own latency, and the end is the middle of its poll.
+unsafe fn measure_pit_window(ticks: u16) -> Option<PitWindow> {
     // Save original gate state
     let orig_gate = inb(PIT_GATE_PORT);
 
@@ -196,26 +218,34 @@ unsafe fn measure_pit_window(ticks: u16) -> Option<(u64, u64)> {
     outb(PIT_COMMAND_PORT, 0xB0);
     outb(PIT_CHANNEL2_PORT, (ticks & 0xFF) as u8);
 
-    // Mode 0 starts counting when the high byte completes the load, so read
-    // the TSC before it: a delay here can lengthen the window, never shorten it.
-    let tsc_start = rdtsc_serialized();
+    // Mode 0 starts counting when the high byte completes the load.
+    let before_load = rdtsc_serialized();
     outb(PIT_CHANNEL2_PORT, (ticks >> 8) as u8);
+    let start = rdtsc_serialized();
 
-    // Wait for PIT channel 2 to count down to zero
-    // When the count reaches 0, bit 5 of port 0x61 goes high
+    // When the count reaches 0, bit 5 of port 0x61 goes high.
+    let mut last_low = start;
     let mut polls = 0u64;
-    while inb(PIT_GATE_PORT) & 0x20 == 0 {
+    let high = loop {
+        let out = inb(PIT_GATE_PORT) & 0x20;
+        let at = rdtsc_serialized();
+        if out != 0 {
+            break at;
+        }
+        last_low = at;
         polls += 1;
-    }
-
-    // Read final TSC
-    let tsc_end = rdtsc_serialized();
+    };
 
     // Restore original gate state
     outb(PIT_GATE_PORT, orig_gate);
 
     // OUT already high on the first poll means no countdown was measured.
-    (polls != 0).then(|| (tsc_start, tsc_end.saturating_sub(tsc_start)))
+    let end = last_low + (high - last_low) / 2;
+    (polls != 0).then(|| PitWindow {
+        start,
+        elapsed: end.saturating_sub(start),
+        width: (start - before_load) + (high - last_low),
+    })
 }
 
 /// Check if TSC has been calibrated.

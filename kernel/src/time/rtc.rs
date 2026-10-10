@@ -152,7 +152,7 @@ pub(super) fn days_in_month(month: u8, year: u16) -> u8 {
 }
 
 #[cfg(not(test))]
-fn days_in_month(month: u8, year: u16) -> u8 {
+pub(super) fn days_in_month(month: u8, year: u16) -> u8 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -342,6 +342,10 @@ fn pl031_read(offset: usize) -> u32 {
 
 #[cfg(target_arch = "aarch64")]
 pub fn read_rtc_time() -> Result<u64, &'static str> {
+    if !crate::platform_config::is_qemu() {
+        let dt = super::firmware_rtc::read()?;
+        return Ok(dt.to_unix_timestamp());
+    }
     let timestamp = pl031_read(PL031_DR) as u64;
     if timestamp == 0 {
         return Err("PL031 RTC returned 0");
@@ -365,6 +369,7 @@ pub fn read_datetime() -> DateTime {
 #[cfg(target_arch = "aarch64")]
 pub fn init() {
     if !crate::platform_config::is_qemu() {
+        super::firmware_rtc::init();
         // Use boot wall time from UEFI GetTime() (provided by the loader)
         let loader_time = crate::platform_config::boot_wall_time_utc();
         if loader_time != 0 {

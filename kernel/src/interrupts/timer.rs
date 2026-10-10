@@ -66,8 +66,10 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
     // A CPU running its idle thread reschedules on every tick, as aarch64's
     // tick does. Expired sleeps are woken by a scheduling pass, so without
     // this an idle CPU noticed one only when its quantum ran out, up to 50 ms
-    // late. Two per-CPU reads; the pass finds nothing to run when nothing is due.
-    if crate::per_cpu::running_idle_thread() {
+    // late. A busy CPU must also discover a published timer deadline when
+    // due, without waiting for its quantum. The predicate reads one atomic
+    // deadline and the counter; all expiry work stays in the scheduler.
+    if crate::per_cpu::running_idle_thread() || scheduler::timer_deadline_due() {
         scheduler::set_need_resched();
     }
 

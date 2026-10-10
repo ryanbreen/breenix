@@ -595,17 +595,21 @@ impl ProcessManager {
             return Err("Process page table not available for stack mapping");
         }
 
-        // This constructor supplies no arguments or environment. Reserve
-        // argc, argv NULL, envp NULL and the AT_NULL pair, aligned to 16 bytes.
-        // Starting at stack_top - 16 instead leaves envp outside the mapping.
-        let initial_rsp = stack_top.as_u64() - 48;
-        Self::write_bytes_to_stack(
+        // No arguments or environment, but the runtime still needs the ELF
+        // auxiliary vector to discover program headers and initialize TLS.
+        let initial_rsp = Self::setup_argv_on_stack(
             process
                 .page_table
                 .as_ref()
                 .ok_or("Process page table not available for argv setup")?,
-            initial_rsp,
-            &[0; 48],
+            stack_top.as_u64(),
+            &[],
+            &[],
+            loaded_elf.phdr_vaddr,
+            loaded_elf.phnum,
+            loaded_elf.phentsize,
+            loaded_elf.entry_point.as_u64(),
+            &process.cred,
         )?;
 
         // Create the main thread
@@ -2517,6 +2521,35 @@ impl ProcessManager {
     /// Tombstone-blind like every other live-process query: a reaped row is a
     /// stale handle and must not answer a thread lookup.
     pub fn find_process_by_thread(&self, thread_id: u64) -> Option<(ProcessId, &Process)> {
+        // The running thread already carries its owning row. Repeated syscall
+        // lookups must not scan every process (including retained tombstones).
+        // Read only immutable identity while this CPU cannot switch threads;
+        // validate the row, since non-current and construction-time lookups
+        // still use the general search below.
+        let owner = crate::arch_without_interrupts(|| {
+            #[cfg(target_arch = "x86_64")]
+            let ptr = {
+                use crate::arch_impl::PerCpuOps;
+                crate::arch_impl::x86_64::percpu::X86PerCpu::current_thread_ptr()
+            };
+            #[cfg(target_arch = "aarch64")]
+            let ptr = crate::per_cpu_aarch64::current_thread_ptr();
+            let ptr = ptr as *const crate::task::thread::Thread;
+            if ptr.is_null() {
+                None
+            } else {
+                // SAFETY: the current thread remains owned by this CPU until
+                // interrupts are restored; id and owner_pid do not change.
+                unsafe { ((*ptr).id == thread_id).then_some((*ptr).owner_pid).flatten() }
+            }
+        });
+        if let Some(pid) = owner.map(ProcessId::new) {
+            if let Some(process) = self.get_process(pid) {
+                if process.main_thread.as_ref().map(|t| t.id) == Some(thread_id) {
+                    return Some((pid, process));
+                }
+            }
+        }
         self.processes
             .iter()
             .find(|(_, process)| {
@@ -2531,13 +2564,8 @@ impl ProcessManager {
         &mut self,
         thread_id: u64,
     ) -> Option<(ProcessId, &mut Process)> {
-        self.processes
-            .iter_mut()
-            .find(|(_, process)| {
-                !process.is_tombstone()
-                    && process.main_thread.as_ref().map(|t| t.id) == Some(thread_id)
-            })
-            .map(|(pid, process)| (*pid, process))
+        let pid = self.find_process_by_thread(thread_id).map(|(pid, _)| pid)?;
+        self.get_process_mut(pid).map(|process| (pid, process))
     }
 
     /// Resolve CLONE_VM callers to the row owning their address space.
@@ -3957,6 +3985,20 @@ impl ProcessManager {
             )?;
         }
 
+        // The no-argument exec path needs the same startup ABI as argv exec,
+        // including the program headers used by the runtime to initialize TLS.
+        let initial_rsp = Self::setup_argv_on_stack(
+            &new_page_table,
+            USER_STACK_TOP,
+            &[],
+            &[],
+            loaded_elf.phdr_vaddr,
+            loaded_elf.phnum,
+            loaded_elf.phentsize,
+            new_entry_point,
+            &self.processes.live_row(&pid).ok_or("Process not found")?.cred,
+        )?;
+
         // For now, we'll use a dummy stack object since we manually mapped the stack
         // In the future, we should refactor stack allocation to support mapping into specific page tables
         let new_stack = crate::memory::stack::allocate_stack_with_privilege(
@@ -4063,7 +4105,7 @@ impl ProcessManager {
 
             // Reset the CPU context for the new program
             thread.context.rip = new_entry_point;
-            thread.context.rsp = new_stack_top.as_u64();
+            thread.context.rsp = initial_rsp;
             thread.context.rflags = 0x202; // Enable interrupts
             thread.stack_top = new_stack_top;
             thread.stack_bottom = stack_bottom;

@@ -133,6 +133,10 @@ pub struct HardwareConfig {
     /// number of CPUs the firmware reports. 0 if the MADT walk found none.
     pub firmware_cpu_count: u32,
     pub _pad7: u32,
+    pub rtc_get_time: u64,
+    pub runtime_region_count: u32,
+    pub _pad8: u32,
+    pub runtime_regions: [arm64_boot_contract::RuntimeRegion; arm64_boot_contract::MAX_RUNTIME_REGIONS],
 }
 
 pub const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58; // "BRNX"
@@ -188,6 +192,10 @@ impl HardwareConfig {
             ram_base_offset: 0,
             firmware_cpu_count: 0,
             _pad7: 0,
+            rtc_get_time: 0,
+            runtime_region_count: 0,
+            _pad8: 0,
+            runtime_regions: [arm64_boot_contract::RuntimeRegion::default(); arm64_boot_contract::MAX_RUNTIME_REGIONS],
         }
     }
 
