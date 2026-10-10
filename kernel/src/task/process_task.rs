@@ -1134,6 +1134,14 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
     if thread_id == 0 || thread_id > u32::MAX as u64 {
         return false;
     }
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        use crate::signal::types::tmpdiag::*;
+        if !DQ_WATCH.swap(true, Relaxed) {
+            RING_IDX.store(0, Relaxed);
+            DQ_US.store(crate::signal::monotonic_micros(), Relaxed);
+        }
+    }
     let thread_id = thread_id | (exit_code as u32 as u64) << FAULT_EXIT_STATUS_SHIFT;
     #[cfg(target_arch = "aarch64")]
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
@@ -1159,6 +1167,9 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
 
 /// Drain deferred kernel-fault exits from a normal scheduling context.
 pub fn drain_deferred_fault_sigsegv_exits() {
+    let dq_start = crate::signal::monotonic_micros();
+    let dq_queued = crate::signal::types::tmpdiag::DQ_US.load(core::sync::atomic::Ordering::Relaxed);
+    let mut dq_first_tid = 0u64;
     let mut tids = alloc::vec::Vec::new();
     for buf in &DEFERRED_FAULT_EXIT_BUFFERS {
         buf.drain(&mut tids);
@@ -1180,8 +1191,26 @@ pub fn drain_deferred_fault_sigsegv_exits() {
             crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
         }
         ProcessScheduler::handle_thread_exit(tid, exit_code);
+        if dq_first_tid == 0 { dq_first_tid = tid | ((exit_code as u32 as u64) << 32); }
         if diag {
             crate::signal::types::tmpdiag::PUBLISHED_US.store(crate::signal::monotonic_micros(), core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        use crate::signal::types::tmpdiag::*;
+        if dq_first_tid != 0 && DQ_WATCH.swap(false, Relaxed) {
+            let done = crate::signal::monotonic_micros();
+            let n = RING_IDX.load(Relaxed).min(32);
+            let mut ring = alloc::string::String::new();
+            for k in 0..n {
+                use core::fmt::Write;
+                let _ = write!(ring, " {}:{}<-{}", RING[(k*3) as usize].load(Relaxed) as i64 - dq_queued as i64, RING[(k*3+1) as usize].load(Relaxed), RING[(k*3+2) as usize].load(Relaxed));
+            }
+            if done - dq_queued > 5000 {
+                log::info!("[TMPDIAG-DEFER] tid={} code={} queue->drain={} drain->published={} dispatches={}:{}",
+                    dq_first_tid & 0xffff_ffff, (dq_first_tid >> 32) as u32 as i32, dq_start as i64 - dq_queued as i64, done - dq_start, n, ring);
+            }
         }
     }
 }

@@ -1415,6 +1415,19 @@ pub mod tmpdiag {
     pub static LAST_POLL_US: AtomicU64 = AtomicU64::new(0);
     pub static POLLS_AFTER_DEATH: AtomicU64 = AtomicU64::new(0);
     pub static UNPARK_US: AtomicU64 = AtomicU64::new(0);
+    pub static DQ_US: AtomicU64 = AtomicU64::new(0);
+    pub static DQ_WATCH: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    pub static RING_IDX: AtomicU64 = AtomicU64::new(0);
+    pub static RING: [AtomicU64; 96] = [const { AtomicU64::new(0) }; 96];
+    pub fn ring_push(t: u64, next: u64, old: u64) {
+        use core::sync::atomic::Ordering::Relaxed;
+        let i = RING_IDX.fetch_add(1, Relaxed);
+        if i < 32 {
+            RING[(i * 3) as usize].store(t, Relaxed);
+            RING[(i * 3 + 1) as usize].store(next, Relaxed);
+            RING[(i * 3 + 2) as usize].store(old, Relaxed);
+        }
+    }
 }
 
 pub fn monotonic_micros() -> u64 {

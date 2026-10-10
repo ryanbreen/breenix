@@ -3123,6 +3123,9 @@ impl Scheduler {
             .current_thread
             .unwrap_or(self.cpu_state[current_cpu].idle_thread);
         self.cpu_state[current_cpu].current_thread = Some(next_thread_id);
+        if crate::signal::types::tmpdiag::DQ_WATCH.load(Ordering::Relaxed) {
+            crate::signal::types::tmpdiag::ring_push(crate::signal::monotonic_micros(), next_thread_id, old_thread_id);
+        }
         // x86_64: this CPU stays on the outgoing thread's kernel stack until its
         // `iretq`; no other CPU dispatches the thread before then.
         #[cfg(target_arch = "x86_64")]
