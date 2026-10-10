@@ -28,6 +28,32 @@
 //! A case can read how much of its limit is left with [`case_ms_left`], to bound its
 //! own waits and fail with its own reason before it is killed.
 //!
+//! While it runs, a case may also report what it measures, for a reader to show live:
+//! [`value`] prints `SUITE <id> VALUE <category>/<case> <name>=<number><unit>` with an
+//! optional ` expect=<low>..<high><unit>`; [`wait_for`] prints
+//! `SUITE <id> WAIT <category>/<case> until=<ms> for=<ms> result=<name>` as it starts a
+//! wait, `until` in CLOCK_MONOTONIC milliseconds (the time since boot) and `result` the
+//! VALUE that will say how the wait ended; and [`pulses`] prints
+//! `SUITE <id> PULSES <category>/<case> every=<us> limit=<us> at=<us>,...`, the times a
+//! periodic timer fired after it was armed. They are written, like the runner's own
+//! lines, with one write that starts with a newline, through a copy of the suite's
+//! stdout the case keeps (close-on-exec) when its own output goes to /dev/null. A case
+//! process prints at most [`RECORDS_PER_CASE`] of them; the rest are dropped.
+//!
+//! The panel shows those records live: under the groups, a strip with the clocks
+//! (CLOCK_MONOTONIC to the millisecond and CLOCK_REALTIME as wall time), a countdown
+//! for the case's latest WAIT that snaps to the VALUE it names once the case reports
+//! it, the case's latest VALUEs on gauges against the ranges they accept, and its
+//! PULSES as a pulse train (libgfx's `diagnostics::draw_live`). The case sends each record to the runner as well, down a
+//! pipe; the runner, not the case, redraws the strip about 15 times a second while it
+//! waits for the case, so drawing never runs in the case's process or inside anything
+//! it times. `/etc/breenix/suite-live` reading `off` turns the strip, and the pipe, off.
+//!
+//! A case that sets CLOCK_REALTIME must put it back. After every case the runner
+//! checks: when CLOCK_REALTIME has moved more than [`REALTIME_SLACK_MS`] against
+//! CLOCK_MONOTONIC since the case started, the runner sets it back and the case fails
+//! saying so, whether it passed, failed or was killed.
+//!
 //! A suite runs as PID 1, so any process a case leaves behind is reparented to the
 //! runner once the case ends. Before the next case starts, the runner kills every such
 //! process with kill(-1, SIGKILL) and reaps it, whatever process group or session it
@@ -55,12 +81,13 @@
 //! fn main() { SUITE.run() }
 //! ```
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::fmt::Write as _;
 use std::string::String;
 use std::vec::Vec;
 
-use libgfx::diagnostics::{self, Check, CheckState, Group, Panel, Verdict};
+use libgfx::diagnostics::{self, Check, CheckState, Group, Live, LiveArea, Panel, Pulses, Reading, Verdict};
 use libgfx::framebuf::FrameBuf;
 
 use crate::error::Error;
@@ -68,7 +95,7 @@ use crate::fs;
 use crate::io::{self, poll_events, status_flags, PollFd};
 use crate::process::{self, ForkResult, WNOHANG};
 use crate::signal::{self, SIGKILL};
-use crate::types::Fd;
+use crate::types::{clock, Fd, Timespec};
 use crate::{graphics, time};
 
 /// Why a case did not pass.
@@ -149,6 +176,86 @@ pub fn case_ms_left() -> u64 {
     }
 }
 
+/// In a case's process, a close-on-exec copy of the suite's stdout for its VALUE and
+/// WAIT records; -1 elsewhere.
+static RECORD_FD: AtomicI32 = AtomicI32::new(-1);
+/// In a case's process, the write end of the runner's pipe for the live panel's copy
+/// of its records (close-on-exec, non-blocking); -1 elsewhere or with the strip off.
+static LIVE_FD: AtomicI32 = AtomicI32::new(-1);
+/// In a case's process, `SUITE <id> ` and the case's `<category>/<case>`.
+static RECORD_NAMES: OnceLock<(String, String)> = OnceLock::new();
+/// Records this process has printed.
+static RECORDS: AtomicU32 = AtomicU32::new(0);
+
+/// The most VALUE and WAIT records one case process prints.
+pub const RECORDS_PER_CASE: u32 = 12;
+
+/// Print one record for the running case; nothing outside a case or past the cap.
+fn record(kind: &str, rest: &str) {
+    let fd = RECORD_FD.load(Ordering::Relaxed);
+    let Some((prefix, name)) = RECORD_NAMES.get() else { return };
+    if fd < 0 || RECORDS.fetch_add(1, Ordering::Relaxed) >= RECORDS_PER_CASE {
+        return;
+    }
+    let line = std::format!("{prefix}{kind} {name} {rest}");
+    emit_to(Fd::from_raw(fd as u64), &line);
+    let live = LIVE_FD.load(Ordering::Relaxed);
+    if live >= 0 {
+        // One write of a short line: whole or not at all, and never blocking the case.
+        let _ = io::write(Fd::from_raw(live as u64), std::format!("{line}\n").as_bytes());
+    }
+}
+
+/// Whether `text` is a record word: lowercase words of a-z and 0-9 joined by '-'.
+fn is_word(text: &str) -> bool {
+    !text.is_empty()
+        && text.split('-').all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+}
+
+/// Report a measured quantity of the running case: `SUITE <id> VALUE <category>/<case>
+/// <name>=<number><unit>`, with ` expect=<low>..<high><unit>` when `expect` gives the
+/// range the case accepts. `name` is lowercase words joined by '-' and `unit` lowercase
+/// letters (or empty); a record with any other name or unit is not printed. Report the
+/// quantities a case asserts on, a few per case, never one per loop iteration.
+pub fn value(name: &str, number: i64, unit: &str, expect: Option<(i64, i64)>) {
+    if !is_word(name) || !unit.bytes().all(|b| b.is_ascii_lowercase()) {
+        return;
+    }
+    let mut rest = std::format!("{name}={number}{unit}");
+    if let Some((low, high)) = expect {
+        let _ = write!(rest, " expect={low}..{high}{unit}");
+    }
+    record("VALUE", &rest);
+}
+
+/// Report that the running case starts waiting `ms` milliseconds on a sleep or timer:
+/// `SUITE <id> WAIT <category>/<case> until=<ms> for=<ms> result=<name>`, `until` being
+/// when the wait should end in CLOCK_MONOTONIC milliseconds and `result` the name of
+/// the VALUE the case reports to say how the wait ended. `result` is a record word, as
+/// a VALUE's name is; a record with any other is not printed.
+pub fn wait_for(ms: u64, result: &str) {
+    if !is_word(result) {
+        return;
+    }
+    let now = monotonic_ns().map_or(0, |ns| (ns / 1_000_000) as u64);
+    record("WAIT", &std::format!("until={} for={} result={result}", now + ms, ms));
+}
+
+/// The most expiry times one PULSES record carries.
+pub const PULSES_MAX: usize = 32;
+
+/// Report when a periodic timer of `every_us` fired, each in microseconds after it was
+/// armed, and how late an expiry may be, `limit_us`: `SUITE <id> PULSES
+/// <category>/<case> every=<us> limit=<us> at=<us>,<us>,...`. The first [`PULSES_MAX`]
+/// times are printed.
+pub fn pulses(every_us: i64, limit_us: i64, at_us: &[i64]) {
+    let mut rest = std::format!("every={every_us} limit={limit_us} at=");
+    for (i, at) in at_us.iter().take(PULSES_MAX).enumerate() {
+        let _ = write!(rest, "{}{at}", if i == 0 { "" } else { "," });
+    }
+    record("PULSES", &rest);
+}
+
 /// A suite: its id, title and categories, run in order.
 pub struct Suite {
     pub id: &'static str,
@@ -180,6 +287,8 @@ impl Suite {
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = std::format!("suite {}: {} cases in {} categories", self.id, total, self.categories.len());
         let mut counts = Counts::default();
+        let mut feed = Feed::default();
+        let suite_start = monotonic_ns();
 
         emit(&std::format!("SUITE {} START cases={}", self.id, total));
         let mut done = 0;
@@ -187,10 +296,11 @@ impl Suite {
             for (k, case) in category.cases.iter().enumerate() {
                 states[c][k] = State::Running;
                 let progress = std::format!("Running {}/{} ({} of {})", category.id, case.id, done + 1, total);
-                screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress));
-
-                let outcome = run_case(case, self.case_limit_ms);
                 let name = std::format!("{}/{}", category.id, case.id);
+                feed.start(&name);
+                screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed);
+
+                let outcome = run_case(case, self.case_limit_ms, self.id, &name, &mut screen, &mut feed);
                 match &outcome {
                     Outcome::Pass { ms } => {
                         counts.passed += 1;
@@ -215,7 +325,9 @@ impl Suite {
         let summary = std::format!("{} passed, {} failed, {} skipped of {}",
             counts.passed, counts.failed, counts.skipped, total);
         let verdict = if counts.failed == 0 { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
-        screen.draw(self, &title, &subtitle, &states, verdict);
+        let ms = ms_since(suite_start);
+        feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
+        screen.draw(self, &title, &subtitle, &states, verdict, &feed);
         emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
         // A sequence replaces PID 1 with the next suite after this suite has
         // emitted its own DONE. Exec replaces the address space and closes only
@@ -233,7 +345,7 @@ impl Suite {
                     Ok(_) => { let _ = process::yield_now(); }
                     Err(error) => {
                         emit(&std::format!("SUITE_SEQUENCE FAIL acknowledgement: {:?}", error));
-                        idle();
+                        idle(&mut screen, &feed);
                     }
                 }
             }
@@ -245,7 +357,7 @@ impl Suite {
                 }
             }
         }
-        idle()
+        idle(&mut screen, &feed)
     }
 }
 
@@ -270,14 +382,16 @@ enum State {
 
 /// Write one serial line with a single write, so it is never split, starting with
 /// a newline so it always begins a line of its own.
-fn emit(line: &str) {
+fn emit(line: &str) { emit_to(Fd::STDOUT, line) }
+
+fn emit_to(fd: Fd, line: &str) {
     let mut bytes = Vec::with_capacity(line.len() + 2);
     bytes.push(b'\n');
     bytes.extend_from_slice(line.as_bytes());
     bytes.push(b'\n');
     let mut rest = &bytes[..];
     while !rest.is_empty() {
-        match io::write(Fd::STDOUT, rest) {
+        match io::write(fd, rest) {
             Ok(n) if n > 0 => rest = &rest[n..],
             _ => return,
         }
@@ -375,13 +489,18 @@ enum Waited {
     Failed(Error),
 }
 
-/// Wait up to `limit_ms` after `start` for `pid` to exit. Polls and yields rather
-/// than sleeping: a sleep's wake-up is timed by the monotonic clock, so if that
-/// clock stopped the suite would never wake to report it. Instead, polls that see
-/// the clock stand still are counted, and `CLOCK_STALL_POLLS` of them end the wait.
-fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64) -> Waited {
+/// How often the live strip is redrawn while the runner waits for a case.
+const FRAME_MS: i128 = 66;
+
+/// Wait up to `limit_ms` after `start` for `pid` to exit, calling `frame` about every
+/// `FRAME_MS` meanwhile. Polls and yields rather than sleeping: a sleep's wake-up is
+/// timed by the monotonic clock, so if that clock stopped the suite would never wake
+/// to report it. Instead, polls that see the clock stand still are counted, and
+/// `CLOCK_STALL_POLLS` of them end the wait.
+fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut()) -> Waited {
     let mut last = monotonic_ns();
     let mut still = 0;
+    let mut drawn = last;
     loop {
         let mut status = 0;
         match process::waitpid(pid, &mut status, WNOHANG) {
@@ -403,6 +522,12 @@ fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64) -> Waited {
             still = 0;
             last = now;
         }
+        if let (Some(now), Some(then)) = (now, drawn) {
+            if now - then >= FRAME_MS * 1_000_000 {
+                frame();
+                drawn = Some(now);
+            }
+        }
         let _ = process::yield_now();
     }
 }
@@ -413,7 +538,7 @@ fn stop_child(pid: i32) -> &'static str {
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
     }
-    match wait_exit(pid, monotonic_ns(), 1000) {
+    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}) {
         Waited::Exited(_) => "",
         Waited::Failed(_) => "; waitpid failed after SIGKILL",
         Waited::TimedOut(_) | Waited::ClockStopped(_) => "; still running after SIGKILL",
@@ -454,6 +579,37 @@ fn sweep() -> Option<&'static str> {
     }
 }
 
+/// How far CLOCK_REALTIME may move against CLOCK_MONOTONIC across a case before the
+/// runner sets it back.
+pub const REALTIME_SLACK_MS: i128 = 100;
+
+/// CLOCK_REALTIME less CLOCK_MONOTONIC, in nanoseconds.
+fn realtime_offset() -> Option<i128> {
+    let real = time::now_realtime().ok()?.as_nanos();
+    Some(real - monotonic_ns()?)
+}
+
+/// After a case: when CLOCK_REALTIME has moved more than REALTIME_SLACK_MS against
+/// CLOCK_MONOTONIC since `before`, set it back and say so, and whether that took.
+fn restore_realtime(before: Option<i128>) -> Option<String> {
+    let before = before?;
+    let moved = realtime_offset()? - before;
+    if moved.abs() <= REALTIME_SLACK_MS * 1_000_000 {
+        return None;
+    }
+    let target = monotonic_ns()? + before;
+    let set = time::clock_settime(clock::REALTIME, &Timespec {
+        tv_sec: target.div_euclid(1_000_000_000) as i64,
+        tv_nsec: target.rem_euclid(1_000_000_000) as i64,
+    });
+    let after = realtime_offset().map(|offset| offset - before);
+    let put_back = match (set, after) {
+        (Ok(()), Some(after)) if after.abs() <= REALTIME_SLACK_MS * 1_000_000 => "the runner set it back",
+        _ => "the runner could not set it back",
+    };
+    Some(std::format!("it left CLOCK_REALTIME {} ms off; {put_back}", moved / 1_000_000))
+}
+
 /// `outcome`, failed with `note` added.
 fn with_note(outcome: Outcome, note: &str) -> Outcome {
     match outcome {
@@ -475,12 +631,30 @@ fn silence_output() -> Result<(), Error> {
     Ok(())
 }
 
-/// Run a case in a forked child, giving it `limit_ms`.
-fn run_case(case: &Case, limit_ms: u64) -> Outcome {
+/// In the child: keep a close-on-exec copy of stdout for the case's VALUE and WAIT
+/// records, named for the suite and the case.
+fn keep_record_output(suite: &str, name: &str) {
+    if let Ok(fd) = io::fcntl(Fd::STDOUT, io::fcntl_cmd::F_DUPFD_CLOEXEC, 3) {
+        RECORD_FD.store(fd as i32, Ordering::Relaxed);
+        let _ = RECORD_NAMES.set((std::format!("SUITE {suite} "), String::from(name)));
+    }
+}
+
+/// Run a case in a forked child, giving it `limit_ms`, and keep the live strip up to
+/// date while it runs.
+fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Screen, feed: &mut Feed) -> Outcome {
+    // The live strip's copy of the case's records, when the strip is on.
+    let live = if screen.live_on() {
+        io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK).ok()
+    } else {
+        None
+    };
+    let realtime = realtime_offset();
     // Close-on-exec so a case that execs never leaves the report pipe open.
     let (reader, writer) = match io::pipe2(status_flags::O_CLOEXEC) {
         Ok(ends) => ends,
         Err(error) => {
+            if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
             return Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: pipe failed: {error}")) };
         }
     };
@@ -488,8 +662,13 @@ fn run_case(case: &Case, limit_ms: u64) -> Outcome {
     match process::fork() {
         Ok(ForkResult::Child) => {
             let _ = io::close(reader);
+            if let Some((live_reader, live_writer)) = live {
+                let _ = io::close(live_reader);
+                LIVE_FD.store(live_writer.raw() as i32, Ordering::Relaxed);
+            }
             let deadline = start.map_or(0, |start| (start + limit_ms as i128 * 1_000_000) as u64);
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
+            keep_record_output(suite, name);
             let outcome = match silence_output() {
                 Ok(()) => run_inline(case),
                 Err(error) => Outcome::Fail {
@@ -504,7 +683,15 @@ fn run_case(case: &Case, limit_ms: u64) -> Outcome {
         Ok(ForkResult::Parent(pid)) => {
             let pid = pid.raw() as i32;
             let _ = io::close(writer);
-            let outcome = match wait_exit(pid, start, limit_ms) {
+            let live_reader = live.map(|(live_reader, live_writer)| {
+                let _ = io::close(live_writer);
+                live_reader
+            });
+            let mut frame = || {
+                if let Some(fd) = live_reader { feed.drain(fd); }
+                screen.frame(feed);
+            };
+            let outcome = match wait_exit(pid, start, limit_ms, &mut frame) {
                 Waited::Exited(status) => exited(status, reader, ms_since(start)),
                 Waited::TimedOut(ms) => {
                     let note = stop_child(pid);
@@ -523,14 +710,23 @@ fn run_case(case: &Case, limit_ms: u64) -> Outcome {
                 }
             };
             let _ = io::close(reader);
-            match sweep() {
+            if let Some(fd) = live_reader {
+                feed.drain(fd);
+                let _ = io::close(fd);
+            }
+            let outcome = match sweep() {
                 Some(note) => with_note(outcome, note),
+                None => outcome,
+            };
+            match restore_realtime(realtime) {
+                Some(note) => with_note(outcome, &note),
                 None => outcome,
             }
         }
         Err(error) => {
             let _ = io::close(reader);
             let _ = io::close(writer);
+            if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
             Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: fork failed: {error}")) }
         }
     }
@@ -553,18 +749,155 @@ fn exited(status: i32, reader: Fd, ms: u64) -> Outcome {
     Outcome::Fail { ms, msg }
 }
 
-/// Reap any children forever; the final panel stays on screen.
-fn idle() -> ! {
+/// Reap any children forever; the final panel stays on screen, its clocks ticking.
+fn idle(screen: &mut Screen, feed: &Feed) -> ! {
     loop {
         let mut status = 0;
         while process::waitpid(-1, &mut status, WNOHANG).is_ok_and(|pid| pid.raw() != 0) {}
-        let _ = time::sleep_ms(1000);
+        screen.frame(feed);
+        let _ = time::sleep_ms(250);
+    }
+}
+
+/// A VALUE record as the live strip holds it.
+struct Value {
+    name: String,
+    number: i64,
+    unit: String,
+    expect: Option<(i64, i64)>,
+}
+
+/// The most values the live strip keeps for one case.
+const FEED_VALUES: usize = 32;
+
+/// What the live strip shows: the running case, fed by its VALUE and WAIT records.
+/// The last case's ended wait and its values stay up until the next case reports.
+#[derive(Default)]
+struct Feed {
+    case: String,
+    started: Option<i128>,
+    /// The case `wait` and `values` came from.
+    from: String,
+    wait: Option<diagnostics::Wait>,
+    /// The VALUE that ends `wait`.
+    wait_result: String,
+    values: Vec<Value>,
+    /// The case's PULSES: the programmed period, the lateness allowed and the expiry
+    /// times, in microseconds.
+    pulses: Option<(i64, i64, Vec<i64>)>,
+    /// Shown when no case runs.
+    idle: String,
+    /// The start of a record not yet ended by its newline.
+    partial: Vec<u8>,
+}
+
+/// `text` as a whole number and its unit: `-12us` is (-12, "us"). A fraction, which
+/// this runner's cases never print, is not taken.
+fn number_unit(text: &str) -> Option<(i64, &str)> {
+    let digits = text.char_indices().find(|&(i, c)| !(c.is_ascii_digit() || (i == 0 && c == '-')))
+        .map_or(text.len(), |(i, _)| i);
+    let unit = &text[digits..];
+    if !unit.bytes().all(|b| b.is_ascii_lowercase()) { return None; }
+    Some((text[..digits].parse().ok()?, unit))
+}
+
+impl Feed {
+    fn start(&mut self, case: &str) {
+        self.carry(String::from(case), String::new());
+        self.started = monotonic_ns();
+    }
+
+    fn finish(&mut self, idle: String) {
+        self.carry(String::new(), idle);
+        self.started = None;
+    }
+
+    /// Move on to `case`, keeping what the last one measured, its wait only if it ended.
+    fn carry(&mut self, case: String, idle: String) {
+        if self.wait.is_some_and(|wait| wait.result.is_none()) {
+            self.wait = None;
+        }
+        self.case = case;
+        self.idle = idle;
+        self.partial.clear();
+    }
+
+    /// The running case reports: drop what the last one left on screen.
+    fn own(&mut self) {
+        if self.from != self.case {
+            self.from = self.case.clone();
+            self.wait = None;
+            self.values.clear();
+            self.pulses = None;
+        }
+    }
+
+    /// Read what the case has sent so far, without blocking.
+    fn drain(&mut self, fd: Fd) {
+        let mut buf = [0u8; 512];
+        while let Ok(n) = io::read(fd, &mut buf) {
+            if n == 0 { break; }
+            self.partial.extend_from_slice(&buf[..n]);
+        }
+        while let Some(end) = self.partial.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = self.partial.drain(..=end).collect();
+            if let Ok(line) = std::str::from_utf8(&line) { self.take(line.trim()); }
+        }
+    }
+
+    /// Take one record: `SUITE <id> VALUE <name> <n>=<number><unit> [expect=<low>..<high><unit>]`,
+    /// `SUITE <id> WAIT <name> until=<ms> for=<ms> result=<n>` or
+    /// `SUITE <id> PULSES <name> every=<us> limit=<us> at=<us>,...`.
+    fn take(&mut self, line: &str) {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        match words.as_slice() {
+            ["SUITE", _, "VALUE", _, measure, rest @ ..] => {
+                let Some((name, quantity)) = measure.split_once('=') else { return };
+                let Some((number, unit)) = number_unit(quantity) else { return };
+                self.own();
+                let expect = rest.first().and_then(|e| e.strip_prefix("expect="))
+                    .and_then(|range| range.split_once(".."))
+                    .and_then(|(low, high)| Some((low.parse().ok()?, number_unit(high)?.0)));
+                if self.values.len() == FEED_VALUES { return; }
+                self.values.push(Value { name: String::from(name), number, unit: String::from(unit), expect });
+                if name == self.wait_result {
+                    if let Some(wait) = self.wait.as_mut().filter(|wait| wait.result.is_none()) {
+                        wait.result = Some(self.values.len() - 1);
+                    }
+                }
+            }
+            ["SUITE", _, "WAIT", _, until, length, result] => {
+                let until = until.strip_prefix("until=").and_then(|ms| ms.parse().ok());
+                let length = length.strip_prefix("for=").and_then(|ms| ms.parse().ok());
+                if let (Some(until_ms), Some(for_ms), Some(result)) = (until, length, result.strip_prefix("result=")) {
+                    self.own();
+                    self.wait = Some(diagnostics::Wait { until_ms, for_ms, result: None });
+                    self.wait_result = String::from(result);
+                }
+            }
+            ["SUITE", _, "PULSES", _, every, limit, at] => {
+                let every = every.strip_prefix("every=").and_then(|us| us.parse().ok());
+                let limit = limit.strip_prefix("limit=").and_then(|us| us.parse().ok());
+                let at: Option<Vec<i64>> = at.strip_prefix("at=")
+                    .map(|list| list.split(',').filter(|us| !us.is_empty()).map(|us| us.parse().ok()).collect())
+                    .unwrap_or(None);
+                if let (Some(every), Some(limit), Some(at)) = (every, limit, at) {
+                    self.own();
+                    self.pulses = Some((every, limit, at));
+                }
+            }
+            _ => {}
+        }
     }
 }
 
 /// The suite's view of the display, when there is one to draw on.
 struct Screen {
     fb: Option<FrameBuf>,
+    /// Whether the live strip is drawn (see `/etc/breenix/suite-live`).
+    live: bool,
+    /// Where the last full draw put the live strip.
+    area: Option<LiveArea>,
 }
 
 impl Screen {
@@ -584,10 +917,43 @@ impl Screen {
                     (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize, info.is_bgr())
             })
         })();
-        Screen { fb }
+        let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");
+        Screen { live: fb.is_some() && !off, fb, area: None }
     }
 
-    fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>) {
+    fn live_on(&self) -> bool { self.live }
+
+    /// The live strip's readings: the clocks now and the case's records.
+    fn with_live<R>(feed: &Feed, f: impl FnOnce(&Live<'_>) -> R) -> R {
+        let now = monotonic_ns().unwrap_or(0);
+        let realtime = time::now_realtime().map_or(0, |ts| ts.as_nanos());
+        let values: Vec<Reading<'_>> = feed.values.iter()
+            .map(|value| Reading { name: &value.name, number: value.number, unit: &value.unit, expect: value.expect })
+            .collect();
+        f(&Live {
+            check: &feed.case,
+            monotonic_ns: now as i64,
+            realtime_ns: realtime as i64,
+            check_ms: feed.started.map_or(0, |start| ((now - start) / 1_000_000) as i64),
+            wait: feed.wait,
+            values: &values,
+            pulses: feed.pulses.as_ref().map(|(every_us, limit_us, at_us)| Pulses { every_us: *every_us, limit_us: *limit_us, at_us }),
+            values_from: &feed.from,
+            idle: &feed.idle,
+        })
+    }
+
+    /// Redraw only the live strip and flush it.
+    fn frame(&mut self, feed: &Feed) {
+        let (Some(fb), Some(area), true) = (self.fb.as_mut(), self.area, self.live) else { return };
+        Self::with_live(feed, |live| diagnostics::draw_live(fb, area, live));
+        let _ = graphics::take_over_display();
+        let _ = graphics::fb_flush_rect(area.x, area.y, area.w, area.h);
+    }
+
+    fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
+        feed: &Feed) {
+        let live_on = self.live;
         let Some(fb) = self.fb.as_mut() else { return; };
         let details: Vec<Vec<String>> = states.iter()
             .map(|cases| cases.iter().map(|state| match state {
@@ -617,7 +983,9 @@ impl Screen {
         let groups: Vec<Group<'_>> = headings.iter().zip(&checks)
             .map(|(title, checks)| Group { title, checks })
             .collect();
-        diagnostics::draw(fb, &Panel { title, subtitle, groups: &groups, output: &[], verdict, scored: true });
+        self.area = Self::with_live(feed, |live| diagnostics::draw(fb, &Panel {
+            title, subtitle, groups: &groups, output: &[], verdict, scored: true, live: live_on.then_some(live),
+        }));
         // A case may have taken the display (its own take_over_display); take it
         // back, or the flush is refused and the panel stops updating.
         let _ = graphics::take_over_display();

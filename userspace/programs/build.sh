@@ -320,9 +320,11 @@ STD_BINARIES=(
     "suite-directories"
     "suite-processes"
     "suite-signals"
+    "suite-time"
     "files-io-exec_test"
     "processes-exec_test"
     "signals-exec_test"
+    "time-exec_test"
     "telnetd"
     "blogd"
 
