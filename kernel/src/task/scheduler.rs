@@ -7286,6 +7286,20 @@ pub fn process_cpu_ticks() -> Option<u64> {
     }).flatten()
 }
 
+/// The calling process's CPU time in nanoseconds, user and system together,
+/// with every running thread of it charged first: the counters
+/// CLOCK_PROCESS_CPUTIME_ID and the process CPU-time timers read. No
+/// process-manager lock is needed for this query.
+pub fn process_cpu_ns() -> Option<u64> {
+    with_scheduler(|scheduler| {
+        let account = scheduler.current_thread()?.cpu_account.clone()?;
+        scheduler.charge_account_threads(&account);
+        let (user, system) = account.split_ns();
+        Some(user.saturating_add(system))
+    })
+    .flatten()
+}
+
 /// The CPU the caller runs on.
 pub fn current_cpu() -> usize {
     Scheduler::current_cpu_id()

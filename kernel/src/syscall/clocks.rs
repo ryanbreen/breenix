@@ -1,19 +1,23 @@
 //! Clock queries outside the precision syscall path.
 use super::{time::Timespec, userptr, ErrorCode, SyscallResult};
 
-/// CPU accounting uses scheduler ticks, including the interval currently running.
+/// CLOCK_THREAD_CPUTIME_ID (3) and CLOCK_PROCESS_CPUTIME_ID (2): the user
+/// and system nanoseconds kept at kernel entry and exit, the counters the
+/// CPU-time POSIX timers expire on, so a timer and its clock agree. The
+/// process clock charges every running thread of the process first, the
+/// caller included.
 pub fn cpu_time(clock: u32) -> Result<Timespec, ErrorCode> {
-    let ticks = if clock == 3 {
-        crate::task::scheduler::charge_current_cpu()
+    let ns = if clock == 3 {
+        let (user, system) = crate::task::thread::current_thread_cpu_split_ns().unwrap_or((0, 0));
+        user.saturating_add(system)
     } else {
         // CLONE_THREAD rows have distinct owner PIDs but share this account.
         // Charge the account's running members, including non-leader rows.
-        crate::task::scheduler::process_cpu_ticks().ok_or(ErrorCode::InvalidArgument)?
+        crate::task::scheduler::process_cpu_ns().ok_or(ErrorCode::InvalidArgument)?
     };
-    let ms = ticks.saturating_mul(crate::time::timer::MS_PER_TICK);
     Ok(Timespec {
-        tv_sec: (ms / 1000) as i64,
-        tv_nsec: ((ms % 1000) * 1_000_000) as i64,
+        tv_sec: (ns / 1_000_000_000) as i64,
+        tv_nsec: (ns % 1_000_000_000) as i64,
     })
 }
 
@@ -27,7 +31,9 @@ pub fn sys_clock_getres(clock: u32, ptr: u64) -> SyscallResult {
                 1_000_000_000u64.div_ceil(hz).max(1)
             }
         }
-        2 | 3 | 5 | 6 => crate::time::timer::MS_PER_TICK * 1_000_000,
+        // The CPU-time counters advance in microseconds.
+        2 | 3 => 1_000,
+        5 | 6 => crate::time::timer::MS_PER_TICK * 1_000_000,
         _ => return SyscallResult::Err(22),
     };
     if ptr != 0 {
