@@ -165,10 +165,15 @@ for thread in threads: thread.join()
 
     def test_remote_work_applies_mask_before_exec_without_proc_environment_tag(self):
         partition = {'x86-boot': list(range(5)), 'x86-build': [5, 6, 7]}
-        with mock.patch.object(slots, 'x86_cpu_partition', return_value=partition), mock.patch.object(slots.Slots, 'snapshot', return_value=[{'resource': 'x86-boot'}]), mock.patch.object(slots, 'process_table', return_value={}), mock.patch.object(slots.os, 'sched_setaffinity', create=True) as affinity, mock.patch.object(slots.os, 'execvp', side_effect=RuntimeError('exec reached')), mock.patch.dict(os.environ):
+        with mock.patch.object(slots, 'x86_cpu_partition', return_value=partition), mock.patch.object(slots.Slots, 'snapshot', return_value=[{'resource': 'x86-boot', 'qemu_pid': 999999}]), mock.patch.object(slots, 'process_table', return_value={}), mock.patch.object(slots.os, 'sched_setaffinity', create=True) as affinity, mock.patch.object(slots.os, 'execvp', side_effect=RuntimeError('exec reached')), mock.patch.dict(os.environ):
             with self.assertRaisesRegex(RuntimeError, 'exec reached'):
                 slots.exec_x86_work(['tar', '--version'])
             affinity.assert_called_once_with(0, [5, 6, 7])
+
+    def test_legacy_boot_does_not_extend_the_wrapped_guests_work_reservation(self):
+        partition = {'x86-boot': list(range(5)), 'x86-build': [5, 6, 7]}
+        self.assertEqual(slots.pin_gate_work(partition, [{'resource': 'x86-boot'}], {}), list(range(8)))
+        self.assertEqual(slots.pin_gate_work(partition, [{'resource': 'x86-boot', 'qemu_pid': 999999}], {}), [5, 6, 7])
 
     def test_qemu_count_comes_from_launch_arguments(self):
         self.assertEqual(slots.qemu_guest_cpus(['qemu', '-smp', '4']), 4)

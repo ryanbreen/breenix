@@ -46,8 +46,8 @@ def pin_x86_work(partition, directory, env):
     wrapper.write_text('#!/bin/sh\nexec ' + shlex.join(command) + ' "$@"\n')
     wrapper.chmod(0o755)
     env['PATH'] = str(directory) + os.pathsep + env.get('PATH', os.defpath)
-    print('[host-cpus] work=' + ','.join(map(str, partition['x86-build']))
-          + ' boot=' + ','.join(map(str, partition['x86-boot'])), file=sys.stderr, flush=True)
+    print('[host-cpus] work during wrapped boot=' + ','.join(map(str, partition['x86-build']))
+          + ' reserved boot=' + ','.join(map(str, partition['x86-boot'])), file=sys.stderr, flush=True)
 
 
 def qemu_guest_cpus(argv):
@@ -81,7 +81,10 @@ def exec_x86_qemu(argv):
 
 def pin_gate_work(partition, holders, table):
     """Older supervised launchers participate through their inherited session tag."""
-    boots = [holder for holder in holders if holder['resource'] == 'x86-boot']
+    # A legacy boot has no applied isolation policy. Restrict work only once
+    # the native wrapper has registered, before its exec is acknowledged.
+    boots = [holder for holder in holders
+             if holder['resource'] == 'x86-boot' and holder.get('qemu_pid') is not None]
     excluded = {holder.get('qemu_pid') for holder in boots}
     cpus = partition['x86-build'] if boots else sorted(partition['x86-build'] + partition['x86-boot'])
     for pid, row in table.items():

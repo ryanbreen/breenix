@@ -106,10 +106,11 @@ Use `docker/qemu/run-x86-gate.sh` for queued x86 builds and boots: the helper
 provides two build leases and one boot lease. Run Inspector installs its current
 helper outside the tested checkout, including when testing an older revision.
 On Linux x86, the supervisor reserves half the allowed VM CPUs plus one
-for QEMU while a boot lease is held; at least eight allowed CPUs are required.
+for native wrapped QEMU; at least eight allowed CPUs are required.
 The wrapper checks the actual `-smp` argument and refuses a mask without one
 CPU beyond the guest count. Participating work uses the full mask while idle,
-and the remaining CPUs during a boot. The boot supervisor also applies that
+and the remaining CPUs once the wrapper registers under its boot lease.
+An older unwrapped boot does not extend that reservation. The boot supervisor applies that
 work mask to processes carrying another launcher's inherited session tag.
 The native PATH wrapper requires QEMU to be present at admission and records
 the applied process mask before exec separately from the reserved lease mask.
