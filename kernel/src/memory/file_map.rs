@@ -1644,6 +1644,16 @@ pub(crate) fn resolve_page(
     let Some(rec) = inner.rec_mut(binding.id) else {
         return FaultOutcome::NotFile;
     };
+    // The live VMA and binding must belong to this table, including when
+    // delivery reached it through a CLONE_VM sibling. Never publish a leaf
+    // from a retired or differently protected binding.
+    if rec.space != pt.address_space()
+        || address < rec.va
+        || (address - rec.va) / PAGE_SIZE >= rec.pages
+        || !permits(rec.prot, access)
+    {
+        return FaultOutcome::Signal(SIGSEGV);
+    }
     let index = rec.index(address);
     if index >= pages(mapped_size) {
         // ext2 has published a larger size that the transition has not yet

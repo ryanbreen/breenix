@@ -192,13 +192,13 @@ pub(crate) enum PrepareWriteError {
     Retry,
 }
 
-/// A signal frame is copied through the direct map and cannot take a user fault.
-/// Back missing anonymous or file pages before the permission-checked copy,
-/// which resolves resident CoW pages through the same owned table. Neither
-/// preparation nor copying touches a user VA with PROCESS_MANAGER held.
+/// Populate through the address-space owner while PROCESS_MANAGER is held.
+/// Its live VMAs authorize mmap pages; its stack bounds and limits authorize
+/// growth. CLONE_VM delivery uses this same owner's metadata, never the
+/// sibling's snapshot. No user VA access, PM reacquisition or disk I/O occurs.
+/// Resident CoW is resolved by the subsequent permission-checked table copy.
 pub(crate) fn prepare_write(
-    table: &mut super::process_memory::ProcessPageTable,
-    vmas: &[super::vma::Vma],
+    owner: &mut crate::process::Process,
     start: u64,
     length: usize,
 ) -> Result<(), PrepareWriteError> {
@@ -210,20 +210,44 @@ pub(crate) fn prepare_write(
     };
     let mut address = start & !4095;
     while address < end {
+        let table = owner
+            .page_table
+            .as_deref_mut()
+            .ok_or(PrepareWriteError::Fault)?;
+        let vma = owner
+            .vmas
+            .iter()
+            .find(|v| v.contains(VirtAddr::new(address)));
+        if vma.is_some_and(|v| !v.prot.contains(Protection::WRITE)) {
+            return Err(PrepareWriteError::Fault);
+        }
         if table.translate(VirtAddr::new(address)).is_none() {
-            let outcome = match resolve_page(table, vmas, address, Access::Write) {
-                FaultOutcome::NotFile => {
-                    super::file_map::resolve_page(table, vmas, address, Access::Write)
+            if vma.is_none() {
+                // Only grow below the recorded bottom. An absent page above
+                // it may have been unmapped and must not be resurrected.
+                if address >= owner.user_stack_bottom || !owner.grow_user_stack(address) {
+                    return Err(PrepareWriteError::Fault);
                 }
-                outcome => outcome,
-            };
-            if !matches!(outcome, FaultOutcome::Resolved) {
-                return Err(PrepareWriteError::Fault);
+            } else {
+                let outcome = match resolve_page(table, &owner.vmas, address, Access::Write) {
+                    FaultOutcome::NotFile => {
+                        super::file_map::resolve_page(table, &owner.vmas, address, Access::Write)
+                    }
+                    outcome => outcome,
+                };
+                if !matches!(outcome, FaultOutcome::Resolved) {
+                    return Err(PrepareWriteError::Fault);
+                }
             }
-            // A file-size transition may request a retry without installing a
-            // leaf. Release PM by deferring delivery; do not copy or kill the
-            // process, and do not spin while the transition needs that lock.
-            if table.translate(VirtAddr::new(address)).is_none() {
+            // A cache lock or EOF transition can request a retry without a
+            // leaf. Leave the signal pending and release PM, rather than
+            // copying, killing the process or spinning under that lock.
+            if owner
+                .page_table
+                .as_deref()
+                .and_then(|t| t.translate(VirtAddr::new(address)))
+                .is_none()
+            {
                 return Err(PrepareWriteError::Retry);
             }
         }

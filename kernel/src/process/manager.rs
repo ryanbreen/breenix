@@ -2366,15 +2366,12 @@ impl ProcessManager {
     /// Find a thread's row together with the page table of the address space it
     /// runs in when another row owns that table. A CLONE_VM thread keeps only
     /// `inherited_cr3`, so writes into its memory under this guard go through
-    /// the owner's table. The table is `None` when the row owns its own.
+    /// the owner's table and stack metadata. The owner is `None` when the row
+    /// owns its own address space.
     pub fn find_process_and_shared_table_by_thread_mut(
         &mut self,
         thread_id: u64,
-    ) -> Option<(
-        ProcessId,
-        &mut Process,
-        Option<(&mut ProcessPageTable, &[crate::memory::vma::Vma])>,
-    )> {
+    ) -> Option<(ProcessId, &mut Process, Option<&mut Process>)> {
         let (pid, shared_root) = self
             .find_process_by_thread(thread_id)
             .map(|(pid, process)| {
@@ -2396,7 +2393,7 @@ impl ProcessManager {
             } else if table.is_none() && !candidate.is_tombstone() {
                 if let Some(page_table) = candidate.page_table.as_deref_mut() {
                     if page_table.level_4_frame().start_address().as_u64() == root {
-                        table = Some((page_table, candidate.vmas.as_slice()));
+                        table = Some(candidate);
                     }
                 }
             }

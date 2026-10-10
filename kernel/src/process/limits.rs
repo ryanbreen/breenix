@@ -61,8 +61,9 @@ pub fn fork_allowed(manager: &ProcessManager, pid: ProcessId) -> bool {
 impl Process {
     /// Grow the user stack down to the page holding `addr`, as an access
     /// there grows it on Linux: every page from the current bottom down is
-    /// mapped, within MAX_USER_STACK_SIZE, RLIMIT_STACK and RLIMIT_AS. The
-    /// bottom moves with each page, so a growth that stops part way leaves it
+    /// mapped, within MAX_USER_STACK_SIZE, RLIMIT_STACK and RLIMIT_AS, without
+    /// crossing another live VMA. The bottom moves with each page, so growth
+    /// that stops part way leaves it
     /// at the lowest page mapped. Stack pages are never executable. An
     /// address at or above the bottom needs no growth; another thread may
     /// have grown the stack past it first. Returns whether `addr`'s page is
@@ -90,6 +91,15 @@ impl Process {
                     .mapped_bytes()
                     .saturating_add(stack_bottom - page_aligned)
                     > self.limits.get(AS).soft)
+        {
+            return false;
+        }
+        // Growth must not overwrite another live mapping on the way down.
+        if page_aligned < stack_bottom
+            && self
+                .vmas
+                .iter()
+                .any(|v| v.start.as_u64() < stack_bottom && v.end.as_u64() > page_aligned)
         {
             return false;
         }

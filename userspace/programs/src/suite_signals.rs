@@ -58,6 +58,7 @@ mod nr {
     pub const TGKILL: u64 = 234;
     pub const WAITID: u64 = 247;
     pub const PRLIMIT64: u64 = 302;
+    pub const FTRUNCATE: u64 = 77;
 }
 #[cfg(target_arch = "aarch64")]
 mod nr {
@@ -87,6 +88,7 @@ mod nr {
     pub const TGKILL: u64 = 131;
     pub const WAITID: u64 = 95;
     pub const PRLIMIT64: u64 = 261;
+    pub const FTRUNCATE: u64 = 46;
 }
 
 const ESRCH: i64 = 3;
@@ -3268,11 +3270,181 @@ fn file_stack_delivery(forked: bool) -> CaseResult {
     Ok(())
 }
 
+/// Move SP without touching the destination, deliver to this exact thread,
+/// and restore SP only after sigreturn. A user store before delivery would
+/// populate the page and conceal a broken kernel frame installation.
+fn signal_at_sp(sp: usize) -> i64 {
+    let tgid = pid() as u64;
+    let tid = gettid() as u64;
+    let result: i64;
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "mov r12, rsp", "mov rsp, {sp}", "syscall", "mov rsp, r12",
+            sp = in(reg) sp,
+            inlateout("rax") nr::TGKILL => result,
+            in("rdi") tgid, in("rsi") tid, in("rdx") SIGUSR1 as u64,
+            lateout("rcx") _, lateout("r11") _, out("r12") _,
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "mov x20, sp", "mov sp, {sp}", "svc #0", "mov sp, x20",
+            sp = in(reg) sp,
+            in("x8") nr::TGKILL,
+            inlateout("x0") tgid => result,
+            in("x1") tid, in("x2") SIGUSR1 as u64,
+            out("x20") _,
+        );
+    }
+    result
+}
+
+/// Pick a fixed page well below the initial 64 KiB stack on each arch.
+/// Explicitly unmap both pages the signal frame will span, so runner stack
+/// depth cannot leave a resident destination behind before delivery.
+fn demand_stack_sp() -> Result<usize, CaseError> {
+    #[cfg(target_arch = "x86_64")]
+    const TOP: usize = 0x7fff_ff01_0000;
+    #[cfg(target_arch = "aarch64")]
+    const TOP: usize = 0x0000_ffff_ff00_0000;
+    let page = TOP - (1 << 20);
+    memory::munmap((page - 4096) as *mut u8, 8192)?;
+    Ok(page + 128)
+}
+
+fn check_demand_frame(sp: usize) -> Checked {
+    let before = count(SIGUSR1);
+    ok("tgkill on a demand-grown stack", signal_at_sp(sp))?;
+    let seen = SEEN_SP.load(Ordering::SeqCst);
+    if count(SIGUSR1) != before + 1 || !(sp - 16384..sp).contains(&seen) {
+        return Err(format!("demand-stack handler ran {} times with local {seen:#x}, expected once below {sp:#x}", count(SIGUSR1) - before));
+    }
+    if mask_now()? & bit(SIGUSR1) != 0 {
+        return Err("sigreturn did not restore the demand-stack signal mask".into());
+    }
+    Ok(())
+}
+
+fn frame_main_stack() -> CaseResult {
+    catch(SIGUSR1)?;
+    check_demand_frame(demand_stack_sp()?)?;
+    Ok(())
+}
+
+fn frame_clone_vm() -> CaseResult {
+    catch(SIGUSR1)?;
+    // Use the owner's main-stack reservation from the sibling: its pthread
+    // stack is an mmap, and touching that would miss owner stack growth.
+    let sp = demand_stack_sp()?;
+    let thread = std::thread::spawn(move || -> Checked {
+        check_demand_frame(sp)?;
+        // Both the VMA and file binding belong to the owner row too. Exercise
+        // cached private bytes and post-mmap cache holes through that row.
+        fresh_file_frame(false).map_err(msg)?;
+        fresh_file_frame(true).map_err(msg)?;
+        Ok(())
+    });
+    join(thread)?;
+    check(SEEN_TID.load(Ordering::SeqCst) != gettid(), "the CLONE_VM sibling did not run the handler")
+}
+
+/// mmap beyond the current EOF, then extend while that binding is alive.
+/// These newly valid zero pages have neither user leaves nor cache frames.
+/// For the non-hole case, mmap loads nonzero file bytes into the cache but
+/// leaves every user page absent. Neither case reads the stack before delivery.
+fn fresh_file_frame(hole: bool) -> CaseResult {
+    use libbreenix::fs::{self, O_CREAT, O_RDWR, O_TRUNC};
+    let len = ALT_SIZE + 4096;
+    let contents = vec![if hole { 0 } else { 0x6b }; len];
+    let path = format!("/tmp/signal-fresh-{}", pid());
+    let fd = fs::open(&path, O_CREAT | O_TRUNC | O_RDWR)?;
+    fs::unlink(&path)?;
+    if !hole {
+        let mut at = 0;
+        while at < len {
+            let n = io::write(fd, &contents[at..])?;
+            check(n != 0, "writing the fresh stack made no progress")?;
+            at += n;
+        }
+    }
+    let mapping = memory::mmap(core::ptr::null_mut(), len,
+        PROT_READ | PROT_WRITE, MAP_PRIVATE, fd.raw() as i32, 0)?;
+    if hole {
+        want_eq("extend the mapped empty file", sc(nr::FTRUNCATE, &[fd.raw() as u64, len as u64]), 0)?;
+    }
+    let base = mapping as usize + 128;
+    ALT_LO.store(base, Ordering::SeqCst);
+    ALT_HI.store(base + ALT_SIZE, Ordering::SeqCst);
+    let stack = StackT { ss_sp: base as u64, ss_flags: 0, _pad: 0, ss_size: ALT_SIZE };
+    want_eq("install the untouched private-file stack", sigaltstack(Some(&stack), None), 0)?;
+    catch_with(SIGUSR1, on_alt_query as usize as u64, SA_ONSTACK, 0)?;
+    check_file_stack_handler_with(|| tgkill(pid(), gettid(), SIGUSR1))?;
+    check(SEEN_TID.load(Ordering::SeqCst) == gettid(), "the private-file handler ran in another thread")?;
+    // The frame must leave private bytes behind, yet change no backing byte.
+    check((ALT_SIZE - 8192..len).any(|i| unsafe {
+        core::ptr::read_volatile(mapping.add(i)) != contents[i]
+    }), "the private frame left no changed bytes in its destination")?;
+    fs::lseek(fd, 0, fs::SEEK_SET)?;
+    let mut saved = vec![0; len];
+    let mut at = 0;
+    while at < len {
+        let n = io::read(fd, &mut saved[at..])?;
+        check(n != 0, "reading the fresh stack file ended early")?;
+        at += n;
+    }
+    check(saved == contents, "the private frame changed its backing file")?;
+    io::close(fd)?;
+    Ok(())
+}
+
+fn frame_unpopulated_file() -> CaseResult { fresh_file_frame(false) }
+fn frame_cache_hole() -> CaseResult { fresh_file_frame(true) }
+
+fn frame_invalid() -> CaseResult {
+    // Permission, mapping lifetime, reservation, and owner/sibling growth limits.
+    for destination in 0..6 {
+        let mut child = Child::start(|| {
+            if destination >= 3 {
+                if catch(SIGUSR1).is_err() { return 20; }
+                let (_, hard) = match getrlimit(RLIMIT_STACK) { Ok(v) => v, Err(_) => return 21 };
+                let sp = match demand_stack_sp() { Ok(v) => v, Err(_) => return 28 };
+                if destination != 5 && prlimit(RLIMIT_STACK, 65536, hard) != 0 { return 22; }
+                if destination == 3 {
+                    signal_at_sp(sp);
+                } else {
+                    // The sibling borrows the owner's bounds and RLIMIT_STACK.
+                    // Case 5 leaves that limit alone and exceeds the 2 MiB window.
+                    let invalid_sp = if destination == 5 { sp - (2 << 20) } else { sp };
+                    let thread = std::thread::spawn(move || signal_at_sp(invalid_sp));
+                    if thread.join().is_err() { return 29; }
+                }
+            } else {
+                let base = match memory::mmap(core::ptr::null_mut(), ALT_SIZE,
+                    PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) { Ok(v) => v, Err(_) => return 23 };
+                if destination == 1 && memory::munmap(base, ALT_SIZE).is_err() { return 24; }
+                // A valid address with no VMA is as invalid as a revoked one.
+                let addr = if destination == 2 { base as u64 - ALT_SIZE as u64 } else { base as u64 };
+                let stack = StackT { ss_sp: addr, ss_flags: 0, _pad: 0, ss_size: ALT_SIZE };
+                if sigaltstack(Some(&stack), None) != 0 { return 25; }
+                if catch_with(SIGUSR1, on_sig as usize as u64, SA_ONSTACK, 0).is_err() { return 26; }
+                raise(SIGUSR1);
+            }
+            27
+        })?;
+        child.expect_death(SIGSEGV, "a signal with an invalid frame destination")?;
+    }
+    Ok(())
+}
+
 fn frame_fork_cow() -> CaseResult { file_stack_delivery(true) }
 
 fn check_file_stack_handler() -> CaseResult {
+    check_file_stack_handler_with(|| raise(SIGUSR1))
+}
+
+fn check_file_stack_handler_with(send: impl FnOnce() -> i64) -> CaseResult {
     let before = count(SIGUSR1);
-    want_eq("raise on the file-backed stack", raise(SIGUSR1), 0)?;
+    want_eq("send SIGUSR1 on the file-backed stack", send(), 0)?;
     check(count(SIGUSR1) == before + 1, "the file-backed stack handler did not run once")?;
     check(on_alt(SEEN_SP.load(Ordering::SeqCst)), "the handler missed the file-backed alternate stack")?;
     check(SEEN_SS_FLAGS.load(Ordering::SeqCst) == SS_ONSTACK,
@@ -3917,9 +4089,14 @@ static SUITE: Suite = suite(
             case("fp-registers", "Every floating-point and SIMD register, and the FP control and status state, survive handlers that overwrite them, nested or not; a handler's edit to the saved FP image takes effect", h_fp_registers),
             case("spinning-target", "A process spinning in user mode, with no system call, on another processor runs its handler", h_spinning_target),
         ]),
-        category("frames", "anonymous and cached private-file signal frames", &[
+        category("frames", "demand-backed signal frames", &[
             case("private-file", "An SA_ONSTACK handler runs on untouched anonymous and cached private-file stacks, with SS_ONSTACK only while active", a_runs_on),
             case("fork-cow", "A forked private-file stack populates a missing frame page and preserves the parent's resident CoW page and backing bytes", frame_fork_cow),
+            case("main-stack", "A handler and sigreturn work on a main-stack page first populated by signal delivery", frame_main_stack),
+            case("unpopulated-file", "A private-file alternate stack is populated without a preceding user access and preserves backing bytes", frame_unpopulated_file),
+            case("cache-hole", "A private-file alternate stack extended after mmap allocates zero cache pages for its frame", frame_cache_hole),
+            case("clone-vm", "A CLONE_VM sibling installs its frame in the owner's demand-grown main stack", frame_clone_vm),
+            case("invalid", "Read-only, unmapped, unreserved and owner or CLONE_VM over-limit frame destinations terminate with SIGSEGV", frame_invalid),
         ]),
         category("waits", "sigsuspend, pause & sigtimedwait", &[
             case("sigsuspend", "sigsuspend returns EINTR after the handler and restores the mask", w_sigsuspend),

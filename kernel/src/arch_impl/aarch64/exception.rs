@@ -2709,8 +2709,9 @@ fn file_mapping_fault(
 /// (`MAX_USER_STACK_SIZE`) maps the missing pages, as x86_64's
 /// `handle_stack_growth` does and as Linux grows a stack VMA: a function
 /// whose frame is larger than the room left touches its first page far
-/// below the current bottom. The mmap region ends far below this range on
-/// aarch64, so nothing else is mapped there.
+/// below the current bottom. The mmap region ends below this growth window;
+/// sys_mmap also confines MAP_FIXED to that region. grow_user_stack still
+/// refuses to cross any live VMA if another mapping producer places one here.
 ///
 /// The caller must not hold PROCESS_MANAGER on this CPU. Returns true if
 /// the page is now mapped.
