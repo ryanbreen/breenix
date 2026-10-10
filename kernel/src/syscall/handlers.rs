@@ -171,6 +171,19 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
 /// sys_exit - Terminate the current process
 pub fn sys_exit(exit_code: i32) -> SyscallResult {
     log::debug!("USERSPACE: sys_exit called with code: {}", exit_code);
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        use crate::signal::types::tmpdiag::*;
+        let reap = REAP_US.swap(0, Relaxed);
+        if reap != 0 {
+            let dl = DEADLINE_US.load(Relaxed) as i64;
+            let gen = GEN_US.load(Relaxed) as i64;
+            let death = DEATH_US.load(Relaxed) as i64;
+            log::info!("[TMPDIAG1263] gen-deadline={} death-gen={} reap-death={} reap-deadline={} gen_cur={} death_kind={} max_flush={} flushes={} flush_span_deadline={} gen_to_flush_end={}",
+                gen - dl, death - gen, reap as i64 - death, reap as i64 - dl, GEN_CUR.load(Relaxed), DEATH_KIND.load(Relaxed),
+                MAX_FLUSH_US.load(Relaxed), FLUSHES.load(Relaxed), FLUSH_SPAN_DEADLINE_US.load(Relaxed), GEN_TO_FLUSH_END_US.load(Relaxed));
+        }
+    }
 
     // Get current thread ID from scheduler
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {

@@ -5085,6 +5085,11 @@ impl Scheduler {
             ];
             for (expired, sig) in pending {
                 if !expired { continue; }
+                if sig == crate::signal::constants::SIGALRM {
+                    use core::sync::atomic::Ordering::Relaxed;
+                    crate::signal::types::tmpdiag::GEN_US.store(wall, Relaxed);
+                    crate::signal::types::tmpdiag::GEN_CUR.store(self.current_thread_id_inner().unwrap_or(0), Relaxed);
+                }
                 let bit = crate::signal::constants::sig_mask(sig);
                 let member = |t: &&Box<Thread>| t.state != ThreadState::Terminated
                     && t.signal_timers.as_ref().is_some_and(|timers| alloc::sync::Arc::ptr_eq(timers, &group));

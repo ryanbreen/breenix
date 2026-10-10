@@ -1396,6 +1396,21 @@ impl IntervalTimers {
     }
 }
 
+pub mod tmpdiag {
+    use core::sync::atomic::AtomicU64;
+    pub static DEADLINE_US: AtomicU64 = AtomicU64::new(0);
+    pub static GEN_US: AtomicU64 = AtomicU64::new(0);
+    pub static GEN_CUR: AtomicU64 = AtomicU64::new(0);
+    pub static DEATH_US: AtomicU64 = AtomicU64::new(0);
+    pub static DEATH_KIND: AtomicU64 = AtomicU64::new(0);
+    pub static REAP_US: AtomicU64 = AtomicU64::new(0);
+    pub static MAX_FLUSH_US: AtomicU64 = AtomicU64::new(0);
+    pub static FLUSHES: AtomicU64 = AtomicU64::new(0);
+    pub static FLUSH_SPAN_DEADLINE_US: AtomicU64 = AtomicU64::new(0);
+    pub static LAST_FLUSH_END_US: AtomicU64 = AtomicU64::new(0);
+    pub static GEN_TO_FLUSH_END_US: AtomicU64 = AtomicU64::new(0);
+}
+
 pub fn monotonic_micros() -> u64 {
     let (sec, ns) = crate::time::get_monotonic_time_ns();
     sec.saturating_mul(1_000_000).saturating_add(ns / 1000)

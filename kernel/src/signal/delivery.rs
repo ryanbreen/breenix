@@ -352,6 +352,11 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // Interrupt return holds PM: do not close descriptors, walk CoW
             // mappings or print before the parent can observe this death.
             // The normal exit worker publishes status and defers reclamation.
+            if sig == crate::signal::constants::SIGALRM {
+                use core::sync::atomic::Ordering::Relaxed;
+                crate::signal::types::tmpdiag::DEATH_US.store(crate::signal::monotonic_micros(), Relaxed);
+                crate::signal::types::tmpdiag::DEATH_KIND.store(2, Relaxed);
+            }
             if crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
                 crate::task::scheduler::terminate_thread(thread_id);
                 return DeliverResult::DeferredExit;
@@ -1497,6 +1502,11 @@ pub fn exit_if_killed_on_syscall_return() {
 /// preempt_disable() still in force.
 #[cfg(target_arch = "x86_64")]
 pub fn exit_by_signal_on_syscall_return(sig: u32) -> ! {
+    if sig == crate::signal::constants::SIGALRM {
+        use core::sync::atomic::Ordering::Relaxed;
+        crate::signal::types::tmpdiag::DEATH_US.store(crate::signal::monotonic_micros(), Relaxed);
+        crate::signal::types::tmpdiag::DEATH_KIND.store(1, Relaxed);
+    }
     let exit_code = crate::task::scheduler::current_thread_id()
         .and_then(|thread_id| {
             crate::process::with_process_manager(|manager| {

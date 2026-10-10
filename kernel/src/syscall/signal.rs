@@ -1354,10 +1354,19 @@ pub fn sys_alarm(seconds: u64) -> SyscallResult {
         it_interval: crate::signal::Timeval::zero(),
         it_value: crate::signal::Timeval::from_micros(seconds.saturating_mul(1_000_000)),
     };
+    let now_us = crate::signal::monotonic_micros();
     let old = p
         .itimers
         .real
-        .set_value(&value, crate::signal::monotonic_micros());
+        .set_value(&value, now_us);
+    if seconds == 1 {
+        use core::sync::atomic::Ordering::Relaxed;
+        use crate::signal::types::tmpdiag::*;
+        DEADLINE_US.store(now_us + 1_000_000, Relaxed);
+        GEN_US.store(0, Relaxed); DEATH_US.store(0, Relaxed); REAP_US.store(0, Relaxed);
+        MAX_FLUSH_US.store(0, Relaxed); FLUSHES.store(0, Relaxed); FLUSH_SPAN_DEADLINE_US.store(0, Relaxed);
+        GEN_TO_FLUSH_END_US.store(0, Relaxed);
+    }
     let timers = p.itimers.clone();
     let cpu = p.cpu.clone();
     drop(guard);

@@ -357,6 +357,9 @@ fn complete_wait(
     status_ptr: u64,
     reaper: crate::process::ProcessId,
 ) -> SyscallResult {
+    if exit_code == -14 {
+        crate::signal::types::tmpdiag::REAP_US.store(crate::signal::monotonic_micros(), core::sync::atomic::Ordering::Relaxed);
+    }
     let wstatus = wait_status(Event::Exited(exit_code));
 
     // P6a reap arm. Condition C3: the claim is taken under PM *before* any

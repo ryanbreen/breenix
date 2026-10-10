@@ -2963,9 +2963,23 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // SAFETY: the pane is the caller's own fb_mmap mapping, `pane.height` rows of
     // `pane.user_stride` bytes, mapped with pre-allocated frames, and the copy is
     // clipped to it.
+    let t0 = crate::signal::monotonic_micros();
     let copied = unsafe {
         crate::logger::copy_to_display(pane.user_addr as *const u8, pane.user_stride, rows, columns)
     };
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        use crate::signal::types::tmpdiag::*;
+        let t1 = crate::signal::monotonic_micros();
+        let d = t1 - t0;
+        FLUSHES.fetch_add(1, Relaxed);
+        if d > MAX_FLUSH_US.load(Relaxed) { MAX_FLUSH_US.store(d, Relaxed); }
+        let dl = DEADLINE_US.load(Relaxed);
+        if dl != 0 && t0 <= dl && dl <= t1 { FLUSH_SPAN_DEADLINE_US.store(d, Relaxed); }
+        let g = GEN_US.load(Relaxed);
+        if g != 0 && GEN_TO_FLUSH_END_US.load(Relaxed) == 0 && t1 >= g { GEN_TO_FLUSH_END_US.store(t1 - g, Relaxed); }
+        LAST_FLUSH_END_US.store(t1, Relaxed);
+    }
     if copied {
         SyscallResult::Ok(0)
     } else {
