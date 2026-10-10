@@ -616,6 +616,8 @@ pub struct Thread {
     /// When set, the scheduler will unblock this thread when the monotonic
     /// clock reaches this value.
     pub wake_time_ns: Option<u64>,
+    /// Re-evaluate this wait when CLOCK_REALTIME changes.
+    pub realtime_sleep: bool,
 
     /// What `Scheduler::wake_expired_timers` has done with the timer-heap
     /// entries of this thread's current timed wait, keyed by the deadline the
@@ -1014,6 +1016,7 @@ impl Clone for Thread {
             inline_schedule_saved_sp: self.inline_schedule_saved_sp,
             saved_userspace_context: self.saved_userspace_context.clone(),
             wake_time_ns: self.wake_time_ns,
+            realtime_sleep: false,
             timer_pop: self.timer_pop,
             run_start_ticks: self.run_start_ticks,
             cpu_ticks_total: self.cpu_ticks_total,
@@ -1138,6 +1141,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            realtime_sleep: false,
             timer_pop: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
@@ -1211,6 +1215,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            realtime_sleep: false,
             timer_pop: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
@@ -1271,6 +1276,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            realtime_sleep: false,
             timer_pop: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
@@ -1330,6 +1336,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            realtime_sleep: false,
             timer_pop: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
@@ -1402,6 +1409,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            realtime_sleep: false,
             timer_pop: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
@@ -1469,6 +1477,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            realtime_sleep: false,
             timer_pop: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
@@ -1514,6 +1523,7 @@ impl Thread {
     /// Mark thread as terminated
     pub fn set_terminated(&mut self) {
         self.stop_timer_cpu();
+        self.realtime_sleep = false;
         self.state = ThreadState::Terminated;
     }
 
@@ -1561,6 +1571,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            realtime_sleep: false,
             timer_pop: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
@@ -1616,6 +1627,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            realtime_sleep: false,
             timer_pop: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,

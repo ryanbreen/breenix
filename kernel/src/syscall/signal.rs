@@ -1364,11 +1364,13 @@ fn timer_clock(process: &crate::process::Process, which: i32) -> u64 {
     if which == crate::signal::itimer::ITIMER_REAL {
         return crate::signal::monotonic_micros();
     }
-    if which == crate::signal::itimer::ITIMER_PROF {
-        // Use the same total CPU clock as getrusage and CPU clock_gettime.
-        return process.cpu.ticks().saturating_mul(crate::time::timer::MS_PER_TICK * 1000);
-    }
-    process.cpu.user_ns.load(Ordering::Relaxed) / 1000
+    let user = process.cpu.user_ns.load(Ordering::Relaxed);
+    let system = if which == crate::signal::itimer::ITIMER_PROF {
+        process.cpu.system_ns.load(Ordering::Relaxed)
+    } else {
+        0
+    };
+    user.saturating_add(system) / 1000
 }
 
 /// getitimer(which, curr_value) - Get the current value of an interval timer
@@ -1400,9 +1402,6 @@ pub fn sys_getitimer(which: i32, curr_value: u64) -> SyscallResult {
         }
     };
 
-    if which == ITIMER_PROF {
-        crate::task::scheduler::process_cpu_ticks();
-    }
     let value = {
         let manager_guard = manager();
         let manager_ref = match manager_guard.as_ref() {
@@ -1508,9 +1507,6 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
         }
     }
 
-    if which == ITIMER_PROF {
-        crate::task::scheduler::process_cpu_ticks();
-    }
     let old_itimerval = {
         let mut manager_guard = manager();
         let manager_ref = match manager_guard.as_mut() {

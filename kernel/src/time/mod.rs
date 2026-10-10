@@ -177,6 +177,7 @@ pub fn set_real_time_ns(secs: i64, nanos: i64) {
             }
             core::hint::spin_loop();
         };
+        core::sync::atomic::fence(Ordering::Release);
         let (mono_secs, mono_nanos) = get_monotonic_time_ns();
         let borrow = u64::from((nanos as u64) < mono_nanos);
         let offset_secs = i128::from(secs)

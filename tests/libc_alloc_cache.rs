@@ -1,10 +1,7 @@
-// Run independently of the freestanding libc (whose exported malloc replaces
-// the host allocator): rustc --edition=2021 --test tests/alloc_cache.rs -o /tmp/alloc-cache-tests
-// /tmp/alloc-cache-tests --test-threads=1
 pub fn getpid() -> i32 {
     std::process::id() as i32
 }
-#[path = "../src/alloc_cache.rs"]
+#[path = "../libs/libbreenix-libc/src/alloc_cache.rs"]
 mod alloc_cache;
 
 #[test]

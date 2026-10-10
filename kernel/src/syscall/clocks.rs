@@ -7,7 +7,7 @@ pub fn cpu_time(clock: u32) -> Result<Timespec, ErrorCode> {
         crate::task::scheduler::charge_current_cpu()
     } else {
         // CLONE_THREAD rows have distinct owner PIDs but share this account.
-        // Charge every running member, rather than only the leader's row.
+        // Charge the account's running members, including non-leader rows.
         crate::task::scheduler::process_cpu_ticks().ok_or(ErrorCode::InvalidArgument)?
     };
     let ms = ticks.saturating_mul(crate::time::timer::MS_PER_TICK);

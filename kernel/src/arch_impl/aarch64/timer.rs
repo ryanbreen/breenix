@@ -81,7 +81,7 @@ impl TimerOps for Aarch64Timer {
     }
 }
 
-/// Exact conversion without a software u128 division on every clock read.
+/// Exact conversion using u64 quotient and remainder arithmetic.
 /// CNTFRQ_EL0 has a 32-bit frequency field, so a remainder times 1e9 fits u64.
 #[inline(always)]
 fn counter_nanos(ticks: u64, frequency: u64) -> u64 {

@@ -56,14 +56,21 @@ struct RTCTime {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn read_rtc_register(reg: u8) -> u8 {
-    unsafe {
-        let mut addr_port = Port::new(RTC_ADDR_PORT);
-        let mut data_port = Port::new(RTC_DATA_PORT);
+static CMOS_LOCK: spin::Mutex<()> = spin::Mutex::new(());
 
-        addr_port.write(reg);
-        data_port.read()
-    }
+#[cfg(target_arch = "x86_64")]
+fn read_rtc_register(reg: u8) -> u8 {
+    crate::arch_without_interrupts(|| {
+        let guard = CMOS_LOCK.lock();
+        let value = unsafe {
+            let mut addr_port = Port::new(RTC_ADDR_PORT);
+            let mut data_port = Port::new(RTC_DATA_PORT);
+            addr_port.write(reg);
+            data_port.read()
+        };
+        drop(guard);
+        value
+    })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -256,20 +263,22 @@ fn rtc_time_to_datetime(rtc: &RTCTime) -> DateTime {
 
 #[cfg(target_arch = "x86_64")]
 pub fn read_rtc_time() -> Result<u64, &'static str> {
-    let time1 = read_rtc_raw();
-    let time2 = read_rtc_raw();
-
-    if time1.second != time2.second
-        || time1.minute != time2.minute
-        || time1.hour != time2.hour
-        || time1.day != time2.day
-        || time1.month != time2.month
-        || time1.year != time2.year
-    {
-        return Err("RTC time changed during read");
+    // Retry a second-boundary update instead of rejecting a healthy RTC.
+    let mut previous = read_rtc_raw();
+    for _ in 0..100 {
+        let current = read_rtc_raw();
+        if previous.second == current.second
+            && previous.minute == current.minute
+            && previous.hour == current.hour
+            && previous.day == current.day
+            && previous.month == current.month
+            && previous.year == current.year
+        {
+            return Ok(rtc_to_unix_timestamp(&current));
+        }
+        previous = current;
     }
-
-    Ok(rtc_to_unix_timestamp(&time1))
+    Err("RTC did not stabilize")
 }
 
 /// Read the current date and time from the RTC

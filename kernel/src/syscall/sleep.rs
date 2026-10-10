@@ -24,20 +24,9 @@ fn ensure_current_address_space() {
     }
 }
 
-// Publication and clock-change wakeups share this lock. A clock change cannot
-// spend its wake before an absolute realtime sleeper has published its wait.
-static REALTIME_SLEEPERS: spin::Mutex<alloc::collections::BTreeSet<u64>> =
-    spin::Mutex::new(alloc::collections::BTreeSet::new());
-
+// The scheduler owns both wait publication and clock-change wakeups.
 pub fn realtime_changed() {
-    crate::arch_without_interrupts(|| {
-        let sleepers = REALTIME_SLEEPERS.lock();
-        crate::task::scheduler::with_scheduler(|sched| {
-            for &tid in sleepers.iter() {
-                sched.unblock(tid);
-            }
-        });
-    });
+    crate::task::scheduler::with_scheduler(|sched| sched.wake_realtime_sleepers());
 }
 
 pub fn nanosleep(req_ptr: u64, rem_ptr: u64) -> SyscallResult {
@@ -47,7 +36,7 @@ pub fn nanosleep(req_ptr: u64, rem_ptr: u64) -> SyscallResult {
 /// Relative sleeps use monotonic elapsed time even for CLOCK_REALTIME.
 /// Absolute realtime sleeps are re-evaluated when the wall clock is set.
 pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> SyscallResult {
-    if !matches!(clock, 0 | 1 | 7) || flags & !1 != 0 {
+    if !matches!(clock, 0 | 1 | 7) {
         return SyscallResult::Err(22);
     }
     let req: Timespec = match userptr::copy_from_user(req_ptr as *const Timespec) {
@@ -58,7 +47,7 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
         return SyscallResult::Err(22);
     }
     let requested = i128::from(req.tv_sec) * 1_000_000_000 + i128::from(req.tv_nsec);
-    let absolute = flags == 1;
+    let absolute = flags as u32 & 1 != 0;
     let realtime = absolute && clock == 0;
     let deadline = if absolute {
         requested
@@ -74,20 +63,12 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
     if now >= deadline {
         return SyscallResult::Ok(0);
     }
-    let tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    if realtime {
-        crate::arch_without_interrupts(|| {
-            REALTIME_SLEEPERS.lock().insert(tid);
-        });
-    }
     let interrupted = loop {
         if super::check_signals_for_wait().is_some() {
             break true;
         }
-        let expired = crate::arch_without_interrupts(|| {
-            let sleepers = realtime.then(|| REALTIME_SLEEPERS.lock());
-            // Sample realtime first: conversion to the later monotonic sample
-            // may round the wake later, but never before the wall deadline.
+        let expired = crate::task::scheduler::with_scheduler(|sched| {
+            // Sample realtime first, rounding toward the later monotonic sample.
             let real_now = if realtime {
                 let (secs, nanos) = crate::time::get_real_time_ns();
                 i128::from(secs) * 1_000_000_000 + i128::from(nanos)
@@ -100,10 +81,12 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
                 return true;
             }
             let wake = (i128::from(mono) + deadline - now).min(i128::from(u64::MAX)) as u64;
-            crate::task::scheduler::with_scheduler(|sched| sched.block_current_for_timer(wake));
-            drop(sleepers);
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.realtime_sleep = realtime;
+            }
+            sched.block_current_for_timer(wake);
             false
-        });
+        }).unwrap_or(true);
         if expired {
             break false;
         }
@@ -116,13 +99,9 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
         Cpu::halt_with_interrupts();
         crate::per_cpu::preempt_disable();
     };
-    if realtime {
-        crate::arch_without_interrupts(|| {
-            REALTIME_SLEEPERS.lock().remove(&tid);
-        });
-    }
     crate::task::scheduler::with_scheduler(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
+            thread.realtime_sleep = false;
             thread.blocked_in_syscall = false;
             thread.wake_time_ns = None;
             thread.set_running();

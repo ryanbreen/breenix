@@ -13,9 +13,9 @@ static COUNTS: [AtomicUsize; CLASSES] = [const { AtomicUsize::new(0) }; CLASSES]
 
 struct Guard(u64);
 impl Guard {
-    fn acquire() -> Self {
+    fn acquire() -> Option<Self> {
         // A raw fork can copy a mutex held by a different thread. Identify the
-        // process on acquisition, so its child never waits for a parent owner.
+        // process on acquisition, so a child can discard an inherited owner.
         // Breenix CLONE_VM members share getpid()'s thread-group identity.
         let pid = super::getpid() as u32 as u64;
         loop {
@@ -33,10 +33,10 @@ impl Guard {
                             COUNTS[index].store(0, Ordering::Relaxed);
                         }
                     }
-                    return Self(pid);
+                    return Some(Self(pid));
                 }
             } else {
-                core::hint::spin_loop();
+                return None;
             }
         }
     }
@@ -66,7 +66,7 @@ pub fn marked_class(word: usize) -> Option<usize> {
 }
 
 pub unsafe fn take(class: usize) -> *mut u8 {
-    let _guard = Guard::acquire();
+    let Some(_guard) = Guard::acquire() else { return core::ptr::null_mut(); };
     let head = HEADS[class].load(Ordering::Relaxed) as *mut u8;
     if !head.is_null() {
         HEADS[class].store(*(head as *const usize), Ordering::Relaxed);
@@ -77,7 +77,7 @@ pub unsafe fn take(class: usize) -> *mut u8 {
 
 /// True when the mapping was retained; false when the caller must unmap it.
 pub unsafe fn put(class: usize, ptr: *mut u8) -> bool {
-    let _guard = Guard::acquire();
+    let Some(_guard) = Guard::acquire() else { return false; };
     if COUNTS[class].load(Ordering::Relaxed) >= LIMIT {
         return false;
     }
@@ -91,6 +91,8 @@ pub unsafe fn put(class: usize, ptr: *mut u8) -> bool {
 mod tests {
     use super::*;
 
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     unsafe extern "C" {
         fn fork() -> i32;
         fn waitpid(pid: i32, status: *mut i32, flags: i32) -> i32;
@@ -99,6 +101,7 @@ mod tests {
 
     #[test]
     fn reuse_is_bounded_and_preserves_live_blocks() {
+        let _test = TEST_LOCK.lock().unwrap();
         let class = class(47).unwrap();
         assert_eq!(capacity(class), 64);
         let mut blocks = [[0usize; 8]; LIMIT + 1];
@@ -121,6 +124,7 @@ mod tests {
 
     #[test]
     fn concurrent_reuse_never_hands_out_a_live_block_twice() {
+        let _test = TEST_LOCK.lock().unwrap();
         std::thread::scope(|scope| {
             for index in 0..8 {
                 scope.spawn(move || {
@@ -154,8 +158,19 @@ mod tests {
     }
 
     #[test]
+    fn reentrant_cache_access_falls_back_without_spinning() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let guard = Guard::acquire().unwrap();
+        let mut block = [0usize; 2];
+        assert!(unsafe { take(0) }.is_null());
+        assert!(!unsafe { put(0, block.as_mut_ptr().cast()) });
+        drop(guard);
+    }
+
+    #[test]
     fn fork_discards_a_partial_free_list_without_waiting_for_parent() {
-        let guard = Guard::acquire();
+        let _test = TEST_LOCK.lock().unwrap();
+        let guard = Guard::acquire().unwrap();
         // A fork may see this inconsistent intermediate state under the lock.
         COUNTS[0].store(1, Ordering::Relaxed);
         HEADS[0].store(1, Ordering::Relaxed);

@@ -199,7 +199,7 @@ pub fn is_initialized() -> bool {
 /// Device file operations - read from device
 pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
     match device_type {
-        DeviceType::Rtc => Err(22), // RTC data is read through RTC_RD_TIME.
+        DeviceType::Rtc => Err(-22), // RTC data is read through RTC_RD_TIME.
         DeviceType::Null => {
             // /dev/null always returns EOF (0 bytes read)
             Ok(0)

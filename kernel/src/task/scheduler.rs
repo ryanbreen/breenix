@@ -4938,22 +4938,31 @@ impl Scheduler {
         }
     }
 
+    pub fn wake_realtime_sleepers(&mut self) {
+        for index in 0..self.threads.len() {
+            if self.threads[index].realtime_sleep {
+                let tid = self.threads[index].id;
+                self.unblock(tid);
+            }
+        }
+    }
+
     /// Visit armed groups only; select an accepting thread only on expiry.
     fn wake_signal_timers(&mut self) {
         if self.signal_timer_groups.is_empty() { return; }
         let wall = crate::signal::monotonic_micros();
         if let Some(thread) = self.current_thread_mut() {
-            thread.charge_cpu_if_running(crate::time::get_cpu_ticks());
+            thread.charge_timer_cpu();
         }
         self.signal_timer_groups.retain(|(timers, cpu)| cpu.strong_count() != 0 && timers.upgrade().is_some_and(|t| t.is_active()));
         for index in 0..self.signal_timer_groups.len() {
             let (Some(group), Some(cpu)) = (self.signal_timer_groups[index].0.upgrade(), self.signal_timer_groups[index].1.upgrade()) else { continue; };
             let user = cpu.user_ns.load(Ordering::Relaxed) / 1000;
-            let total = cpu.ticks().saturating_mul(crate::time::timer::MS_PER_TICK * 1000);
+            let system = cpu.system_ns.load(Ordering::Relaxed) / 1000;
             let pending = [
                 (group.real.expire(wall), crate::signal::constants::SIGALRM),
                 (group.virtual_timer.expire(user), crate::signal::constants::SIGVTALRM),
-                (group.prof.expire(total), crate::signal::constants::SIGPROF),
+                (group.prof.expire(user.saturating_add(system)), crate::signal::constants::SIGPROF),
             ];
             for (expired, sig) in pending {
                 if !expired { continue; }
@@ -7167,7 +7176,7 @@ pub fn charge_current_cpu() -> u64 {
     .unwrap_or(0)
 }
 
-/// The calling process's CPU ticks, including all running CLONE_THREAD members.
+/// The calling process's CPU ticks, including running CLONE_THREAD members.
 /// Members have distinct owner PIDs and a shared account; exited members' time
 /// remains in that account. No process-manager lock is needed for this query.
 pub fn process_cpu_ticks() -> Option<u64> {
