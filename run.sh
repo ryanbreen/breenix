@@ -903,6 +903,18 @@ if [ "$VMWARE" = true ]; then
     VM_NAME="breenix-$(date +%s)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     echo "VM name: $VM_NAME"
+    # Delete earlier boots' VM bundles, which nothing else removed (one per boot, about 100 MB each): only
+    # breenix-<epoch> bundles that are not running and were last written more than 30 minutes ago, so a caller still
+    # scoring a just-stopped VM's data disk keeps it. Never a named VM. In the background, so it never holds up this boot.
+    (
+        for old_bundle in "$VM_MACHINES"/breenix-[0-9]*.vmwarevm; do
+            [ -d "$old_bundle" ] && [ "$old_bundle" != "$VM_BUNDLE" ] || continue
+            old_vmx="$old_bundle/$(basename "$old_bundle" .vmwarevm).vmx"
+            [ -z "$(find "$old_bundle" -maxdepth 1 -mmin -30 -print -quit 2>/dev/null)" ] || continue
+            "$VMRUN" list 2>/dev/null | grep -qxF "$old_vmx" && continue
+            "$VMRUN" deleteVM "$old_vmx" >/dev/null 2>&1 || rm -rf "$old_bundle"
+        done
+    ) &
 
     # Create VM bundle
     mkdir -p "$VM_BUNDLE"
