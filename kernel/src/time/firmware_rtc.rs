@@ -101,18 +101,27 @@ pub fn read() -> Result<DateTime, &'static str> {
         let clock = guard.as_ref().ok_or("No firmware RTC")?;
         let root = clock.tables[0].frame().start_address().as_u64();
         let buffer = clock.scratch.frame().start_address().as_u64();
+        use crate::arch_impl::aarch64::{fpsimd, percpu::Aarch64PerCpu};
         let saved: u64;
-        unsafe {
-            core::arch::asm!("mrs {saved}, ttbr0_el1", "dsb ish", "msr ttbr0_el1, {root}",
-                "tlbi vmalle1", "dsb ish", "isb", saved = out(reg) saved, root = in(reg) root, options(nostack));
-        }
+        unsafe { core::arch::asm!("mrs {saved}, ttbr0_el1", saved = out(reg) saved, options(nostack)); }
+        let saved_shadow = Aarch64PerCpu::saved_process_cr3();
+        let next_shadow = Aarch64PerCpu::next_cr3();
+        let mut fp = crate::signal::types::FpsimdContext {
+            magic: crate::signal::types::FpsimdContext::MAGIC,
+            size: crate::signal::types::FpsimdContext::SIZE,
+            fpsr: 0, fpcr: 0, vregs: [0; 32],
+        };
+        fpsimd::save(&mut fp);
+        install_firmware_root(root);
         let get_time: unsafe extern "efiapi" fn(*mut EfiTime, *mut u8) -> usize =
             unsafe { core::mem::transmute(clock.get_time as usize) };
         let status = unsafe { get_time(buffer as *mut EfiTime, core::ptr::null_mut()) };
+        install_firmware_root(saved);
         unsafe {
-            core::arch::asm!("dsb ish", "msr ttbr0_el1, {root}", "tlbi vmalle1", "dsb ish", "isb",
-                root = in(reg) saved, options(nostack));
+            Aarch64PerCpu::set_saved_process_cr3(saved_shadow);
+            Aarch64PerCpu::set_next_cr3(next_shadow);
         }
+        fpsimd::restore(&fp);
         if status != 0 { return Err("Firmware GetTime failed"); }
         let time = unsafe { &*(table(buffer) as *const EfiTime) };
         if time.year < 1970 || time.year > 9999 || !(1..=12).contains(&time.month)
@@ -123,4 +132,19 @@ pub fn read() -> Result<DateTime, &'static str> {
         Ok(DateTime { year: time.year, month: time.month, day: time.day,
             hour: time.hour, minute: time.minute, second: time.second })
     })
+}
+
+/// Install a temporary firmware context with the same barriers and shadow
+/// reconciliation as process-root installation. Preserve the supplied ASID:
+/// this also restores the exact kernel or user context after GetTime.
+fn install_firmware_root(root: u64) {
+    unsafe {
+        core::arch::asm!(
+            "dsb ishst", "msr ttbr0_el1, {root}", "isb",
+            "tlbi vmalle1is", "dsb ish", "isb",
+            root = in(reg) root, options(nostack),
+        );
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::set_saved_process_cr3(root);
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::set_next_cr3(0);
+    }
 }
