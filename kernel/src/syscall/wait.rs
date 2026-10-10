@@ -267,7 +267,15 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
     };
     let found = match wait_for_child(selector, options | WEXITED) {
         Ok(Some(found)) => found,
-        Ok(None) => return SyscallResult::Ok(0),
+        Ok(None) => {
+            use core::sync::atomic::Ordering::Relaxed;
+            use crate::signal::types::tmpdiag::*;
+            if pid > 0 && pid as u64 == ALARM_PID.load(Relaxed) {
+                LAST_POLL_US.store(crate::signal::monotonic_micros(), Relaxed);
+                if DEATH_US.load(Relaxed) != 0 { POLLS_AFTER_DEATH.fetch_add(1, Relaxed); }
+            }
+            return SyscallResult::Ok(0);
+        }
         Err(e) => return SyscallResult::Err(e),
     };
     match found.event {

@@ -182,6 +182,10 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
             log::info!("[TMPDIAG1263] gen-deadline={} death-gen={} reap-death={} reap-deadline={} gen_cur={} death_kind={} max_flush={} flushes={} flush_span_deadline={} gen_to_flush_end={}",
                 gen - dl, death - gen, reap as i64 - death, reap as i64 - dl, GEN_CUR.load(Relaxed), DEATH_KIND.load(Relaxed),
                 MAX_FLUSH_US.load(Relaxed), FLUSHES.load(Relaxed), FLUSH_SPAN_DEADLINE_US.load(Relaxed), GEN_TO_FLUSH_END_US.load(Relaxed));
+            let rel = |v: u64| if v == 0 { -1 } else { v as i64 - death };
+            log::info!("[TMPDIAG1263B] rel-to-death: unpark={} drain={} published={} last_empty_poll={} reap={} polls_after_death={}",
+                rel(UNPARK_US.load(Relaxed)), rel(DRAIN_US.load(Relaxed)), rel(PUBLISHED_US.load(Relaxed)),
+                rel(LAST_POLL_US.load(Relaxed)), reap as i64 - death, POLLS_AFTER_DEATH.load(Relaxed));
         }
     }
 

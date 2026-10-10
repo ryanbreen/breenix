@@ -1409,6 +1409,12 @@ pub mod tmpdiag {
     pub static FLUSH_SPAN_DEADLINE_US: AtomicU64 = AtomicU64::new(0);
     pub static LAST_FLUSH_END_US: AtomicU64 = AtomicU64::new(0);
     pub static GEN_TO_FLUSH_END_US: AtomicU64 = AtomicU64::new(0);
+    pub static ALARM_PID: AtomicU64 = AtomicU64::new(0);
+    pub static DRAIN_US: AtomicU64 = AtomicU64::new(0);
+    pub static PUBLISHED_US: AtomicU64 = AtomicU64::new(0);
+    pub static LAST_POLL_US: AtomicU64 = AtomicU64::new(0);
+    pub static POLLS_AFTER_DEATH: AtomicU64 = AtomicU64::new(0);
+    pub static UNPARK_US: AtomicU64 = AtomicU64::new(0);
 }
 
 pub fn monotonic_micros() -> u64 {

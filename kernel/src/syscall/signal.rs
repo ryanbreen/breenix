@@ -1363,6 +1363,9 @@ pub fn sys_alarm(seconds: u64) -> SyscallResult {
         use core::sync::atomic::Ordering::Relaxed;
         use crate::signal::types::tmpdiag::*;
         DEADLINE_US.store(now_us + 1_000_000, Relaxed);
+        ALARM_PID.store(p.id.as_u64(), Relaxed);
+        DRAIN_US.store(0, Relaxed); PUBLISHED_US.store(0, Relaxed); LAST_POLL_US.store(0, Relaxed);
+        POLLS_AFTER_DEATH.store(0, Relaxed); UNPARK_US.store(0, Relaxed);
         GEN_US.store(0, Relaxed); DEATH_US.store(0, Relaxed); REAP_US.store(0, Relaxed);
         MAX_FLUSH_US.store(0, Relaxed); FLUSHES.store(0, Relaxed); FLUSH_SPAN_DEADLINE_US.store(0, Relaxed);
         GEN_TO_FLUSH_END_US.store(0, Relaxed);

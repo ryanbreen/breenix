@@ -1148,6 +1148,9 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
     #[cfg(target_arch = "x86_64")]
     if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
         crate::task::kthread::kthread_unpark(daemon);
+        if exit_code == -14 {
+            crate::signal::types::tmpdiag::UNPARK_US.store(crate::signal::monotonic_micros(), core::sync::atomic::Ordering::Relaxed);
+        }
         // Publishing a fatal signal's status cannot wait a busy CPU's quantum.
         scheduler::with_scheduler(|s| s.expedite_signal_recipient(daemon.tid()));
     }
@@ -1169,10 +1172,17 @@ pub fn drain_deferred_fault_sigsegv_exits() {
             manager.find_process_by_thread(tid).map(|(pid, _)| pid)
         })
         .flatten();
+        let diag = exit_code == -14;
+        if diag {
+            crate::signal::types::tmpdiag::DRAIN_US.store(crate::signal::monotonic_micros(), core::sync::atomic::Ordering::Relaxed);
+        }
         if let Some(pid) = pid {
             crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
         }
         ProcessScheduler::handle_thread_exit(tid, exit_code);
+        if diag {
+            crate::signal::types::tmpdiag::PUBLISHED_US.store(crate::signal::monotonic_micros(), core::sync::atomic::Ordering::Relaxed);
+        }
     }
 }
 
