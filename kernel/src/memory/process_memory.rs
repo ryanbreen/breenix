@@ -222,6 +222,7 @@ impl FlushedLeaf {
 struct OwnedLeafFrames {
     records: Vec<LeafRecord>,
     released: bool,
+    release_cursor: u64,
 }
 
 impl OwnedLeafFrames {
@@ -229,6 +230,7 @@ impl OwnedLeafFrames {
         Self {
             records: Vec::new(),
             released: false,
+            release_cursor: 0,
         }
     }
 
@@ -1748,27 +1750,67 @@ impl ProcessPageTable {
         self.leaves.released = true;
     }
 
-    /// Release recorded user leaves within the same budget as table retirement.
-    /// The dead root has already passed the caller's liveness proof. Records
-    /// remain owned until consumed, and no table is freed while any remain.
+    /// Walk mapped leaves resumably, including descriptors with no custody
+    /// record. Such descriptors are counted as refusals: freeing their frames
+    /// without allocator authority would risk returning somebody else's frame.
+    /// Tables remain owned until this scan completes. Empty subtrees are skipped
+    /// together, and both leaf release and descriptor scanning are bounded.
     pub(crate) fn release_mapped_leaves_bounded(&mut self, budget: &mut u32) -> RetireProgress {
         if self.leaves.released {
             return RetireProgress::Complete;
         }
-        while *budget > 0 {
-            let Some(record) = self.leaves.records.pop() else {
-                self.leaves.released = true;
-                return RetireProgress::Complete;
-            };
-            *budget -= 1;
-            let page = Page::containing_address(VirtAddr::new(record.page));
-            if let Some((frame, flags)) = self.get_page_info(page) {
-                if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                    Self::release_leaf_record(record, frame);
+        #[cfg(target_arch = "x86_64")]
+        const END: u64 = 1 << 47;
+        #[cfg(target_arch = "aarch64")]
+        const END: u64 = 1 << 48;
+        let offset = crate::memory::physical_memory_offset();
+        let mut scans = 0;
+        while *budget > 0 && self.leaves.release_cursor < END {
+            let address = self.leaves.release_cursor;
+            let mut table_phys = self.level_4_frame.start_address().as_u64();
+            for shift in [39, 30, 21, 12] {
+                let table_virt = offset + table_phys;
+                let table = unsafe { &*(table_virt.as_ptr() as *const PageTable) };
+                let entry = &table[((address >> shift) & 511) as usize];
+                let flags = entry.flags();
+                scans += 1;
+                if entry.is_unused() || !flags.contains(PageTableFlags::PRESENT) {
+                    self.leaves.release_cursor = ((address >> shift) + 1) << shift;
+                    break;
                 }
+                if shift == 12 || flags.contains(PageTableFlags::HUGE_PAGE) {
+                    self.leaves.release_cursor = ((address >> shift) + 1) << shift;
+                    if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                        *budget -= 1;
+                        match self.leaves.search(address) {
+                            Ok(index) if shift == 12 => Self::release_leaf_record(
+                                self.leaves.records[index], PhysFrame::containing_address(entry.addr()),
+                            ),
+                            // No huge-leaf custody exists: never treat one 4 KiB
+                            // record as authority to return an entire huge page.
+                            _ => {
+                                crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+                            },
+                        }
+                    }
+                    break;
+                }
+                table_phys = entry.addr().as_u64();
+            }
+            // Charge a bounded scan even if an address space contains no user
+            // leaves. Otherwise a sparse or corrupted root could monopolize idle.
+            if scans >= 512 {
+                *budget = budget.saturating_sub(1);
+                scans = 0;
             }
         }
-        RetireProgress::Budgeted
+        if self.leaves.release_cursor == END {
+            self.leaves.records.clear();
+            self.leaves.released = true;
+            RetireProgress::Complete
+        } else {
+            RetireProgress::Budgeted
+        }
     }
 
     /// Update the flags of an already-mapped page

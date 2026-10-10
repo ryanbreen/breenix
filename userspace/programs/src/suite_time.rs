@@ -2480,7 +2480,7 @@ static SUITE: Suite = suite(
             case("rate-realtime", "CLOCK_REALTIME and CLOCK_MONOTONIC advance at the same rate over 2 seconds", clk_rate_realtime),
             case("rate-counter", "CLOCK_MONOTONIC advances at the rate of the processor's counter over 2 seconds (ARM64 CNTVCT_EL0, x86-64 the TSC at its CPUID frequency)", clk_rate_counter),
             case("counter-cpus", "Linux ABI: user mode reads the processor's counter (ARM64 CNTVCT_EL0, x86-64 the TSC) on every online processor, from a thread pinned there by sched_setaffinity and found there by getcpu", clk_counter_cpus),
-            case("counter-trap-default", "Linux ABI: denied counter and timer register reads kill user mode with SIGILL on ARM64 (CNTPCT_EL0, CNTV_CTL_EL0, CNTP_CTL_EL0) and SIGSEGV on x86-64 (TSC, TSC-deadline, x2APIC initial-count MSRs)", clk_counter_trap_default),
+            case("counter-trap-default", "Linux ABI: denied counter and timer register reads kill user mode with SIGILL on ARM64 (CNTPCT_EL0, CNTV_CTL_EL0, CNTP_CTL_EL0) and SIGSEGV on x86-64 (RDMSR of IA32_TSC, IA32_TSC_DEADLINE, X2APIC_INITIAL_COUNT)", clk_counter_trap_default),
             case("counter-trap-caught", "Linux ABI: caught denied counter and timer register reads carry ILL_ILLOPC and si_addr on ARM64, SI_KERNEL and faulting RIP on x86-64, and resume past the instruction; granted counter reads do not trap", clk_counter_trap_caught),
             case("rate-rtc", "Linux ABI: CLOCK_REALTIME advances at the rate of the RTC, read through /dev/rtc0 RTC_RD_TIME, over 3 seconds", clk_rate_rtc),
             case("cputime-process", "CLOCK_PROCESS_CPUTIME_ID advances while the process computes and not while it sleeps", clk_cputime_process),

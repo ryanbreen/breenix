@@ -346,8 +346,8 @@ fn write_signal_stack(
 /// Returns DeliverResult indicating what action was taken
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
     #[cfg(target_arch = "x86_64")]
-    if let Some(exit_code) = fatal_exit_code(sig) {
-        let exit_code = process.group_exit_code.unwrap_or(exit_code);
+    if fatal_exit_code(sig).is_some() {
+        let exit_code = signal_death_exit_code(process, sig);
         if let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id) {
             // Interrupt return holds PM: do not close descriptors, walk CoW
             // mappings or print before the parent can observe this death.

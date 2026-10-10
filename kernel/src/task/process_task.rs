@@ -435,10 +435,9 @@ pub fn reclaim_drain_claim_snapshot() -> (bool, u32) {
 /// `RETIRE_FRAME_BUDGET` frames per receipt — but the pass itself was not, so a
 /// pass could hold the CPU for every receipt that was queued when it started.
 /// One keeps the window to one bounded retire step while leaving every
-/// production caller enough per-invocation throughput to stay ahead of its
-/// enqueue rate: the slowest re-entry cadence in the tree is x86's idle loop at
-/// roughly one call per timer tick, and process exits are orders of magnitude
-/// rarer than that. Boot-owned passes are deliberately uncapped — they feed
+/// caller a bounded preemption window. Reclamation throughput depends on
+/// idle dispatch and the queued address-space sizes; this cap is no guarantee
+/// that reclamation keeps up with allocation. Boot-owned passes are deliberately uncapped — they feed
 /// `BOOT_RECLAIM_PASS_SELECTIONS` and the oracles' drain-to-quiesce loops, whose
 /// meaning is "this pass took everything it could".
 const PRODUCTION_PASS_SELECTION_CAP: u32 = 1;
