@@ -145,7 +145,7 @@ pub fn init() {
     devfs.devices.push(DeviceNode::new(DeviceType::Tty, 5, 0)); // /dev/tty
 
     #[cfg(target_arch = "aarch64")]
-    let has_rtc = crate::platform_config::is_qemu();
+    let has_rtc = crate::platform_config::is_qemu() || crate::time::firmware_rtc::available();
     #[cfg(not(target_arch = "aarch64"))]
     let has_rtc = true;
     if has_rtc {

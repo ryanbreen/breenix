@@ -333,9 +333,21 @@ fn main() -> Status {
         }
     }
 
-    // Exit UEFI boot services. After this, NO UEFI calls are possible.
-    unsafe {
-        let _ = uefi::boot::exit_boot_services(MemoryType::LOADER_DATA);
+    // Runtime GetTime remains available after ExitBootServices in physical
+    // mode. Pass the final runtime memory map, never reclaimable boot pages.
+    let st = uefi::table::system_table_raw().expect("no system table");
+    config.rtc_get_time = unsafe { (*st.as_ref().runtime_services).get_time as usize as u64 };
+    let final_map = unsafe { uefi::boot::exit_boot_services(MemoryType::LOADER_DATA) };
+    for desc in final_map.entries().filter(|d| d.att.contains(uefi::mem::memory_map::MemoryAttribute::RUNTIME)) {
+        let i = config.runtime_region_count as usize;
+        if i == config.runtime_regions.len() {
+            config.rtc_get_time = 0; // Never call with a truncated runtime map.
+            break;
+        }
+        config.runtime_regions[i] = arm64_boot_contract::RuntimeRegion {
+            base: desc.phys_start, pages: desc.page_count, kind: desc.ty.0, _pad: 0,
+        };
+        config.runtime_region_count += 1;
     }
 
     // Post-EBS BAR re-enable DISABLED — let the kernel find the device in

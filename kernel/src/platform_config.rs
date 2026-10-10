@@ -581,6 +581,10 @@ pub struct HardwareConfig {
     pub ram_base_offset: u64,
     pub firmware_cpu_count: u32,
     pub _pad7: u32,
+    pub rtc_get_time: u64,
+    pub runtime_region_count: u32,
+    pub _pad8: u32,
+    pub runtime_regions: [arm64_boot_contract::RuntimeRegion; arm64_boot_contract::MAX_RUNTIME_REGIONS],
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -706,6 +710,8 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
     }
 
     FIRMWARE_CPU_COUNT.store(config.firmware_cpu_count as u64, Ordering::Relaxed);
+    crate::time::firmware_rtc::configure(config.rtc_get_time,
+        &config.runtime_regions[..(config.runtime_region_count as usize).min(config.runtime_regions.len())]);
 
     true
 }
