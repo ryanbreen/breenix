@@ -601,26 +601,37 @@ reaping, signals, clocks, switching user and pinning to a processor. System V st
 use the Linux ABI's 64-bit layouts (ipc64_perm, msqid64_ds, semid64_ds, shmid64_ds).
 
 Each case uses the runner's default 10-second deadline. Processes a case starts report
-through a shared page and their exit status, and every wait on one is bounded at 3 seconds
-and stops 1.5 seconds before the deadline. A process that must be blocked before it is
+through a shared page and their exit status. Every wait on one is bounded and stops 1.5
+seconds before the deadline: most are bounded at 3 seconds, the poll and select wake cases at
+4, the FIFO transfer and atomic-writes reads and `contention-cpus` at 6, and `mutex-cpus` at
+8. A process that must be blocked before it is
 released (in an open, a read, a write, a poll or select, mq_send or mq_receive, sem_wait,
 msgrcv or semop) is observed through `/proc/<pid>/status`, and must come back within 100 ms
 of its release; that is a liveness bound, not a performance target. Timed waits
 (mq_timedsend, mq_timedreceive, sem_timedwait, semtimedop) are checked as the time suite
 checks sleeps: never before the deadline and late by at most two timer ticks and 20 ms.
 Every FIFO, queue, semaphore, object and System V identifier a case makes is named after
-the case's process ID and removed when the case ends, by the process that made it.
+the case's process ID and removed when the case ends, by the process that made it; the case
+then looks it up, and fails if it is still there. Each one is also written to
+`/tmp/ipc-made` as it is made: a case the runner kills runs no destructors, so the next case
+removes everything that file lists before it starts.
 Permission cases make their objects as root and switch to user 4242 in a child.
 
 FIFO atomicity is checked at 512 bytes, the POSIX minimum of PIPE_BUF, so it holds on any
-conforming system. `fifos/write-eagain-full` fills the FIFO with 512-byte writes and then
+conforming system. In `fifos/atomic-writes` four writers open the FIFO and wait at a release
+gate; each then writes as many records as fill the FIFO, and the reader drains it only once
+at least two writers are seen blocked on the full FIFO. `fifos/write-eagain-full` fills the FIFO with 512-byte writes and then
 single bytes, and checks that a refused 512-byte O_NONBLOCK write left nothing behind.
 `mq/prio-max` sends at priority 31 (the POSIX minimum of MQ_PRIO_MAX is 32) and then needs
 sysconf(_SC_MQ_PRIO_MAX); the SEM_VALUE_MAX cases need sysconf(_SC_SEM_VALUE_MAX).
 `mq/notify-*` take the notification signal with sigtimedwait while it is blocked and check
 its si_code (SI_MESGQ) and si_value. `sysv/semctl-erange` sets a value of 65536, more than
 the unsigned short a semaphore value is. `sysv/semtimedop` is titled `Linux ABI:`: Linux
-fails a semtimedop whose timeout passes with EAGAIN.
+fails a semtimedop whose timeout passes with EAGAIN. `sysv/ftok` checks that different ids
+give different keys as a policy: POSIX says only that they should. `sysv/shmdt` and
+`sysv/shm-rdonly` store in a child that has a SA_SIGINFO SIGSEGV handler installed only once
+its setup has finished, and pass only when that store faults with si_addr the address
+stored to.
 
 The two cases titled `-cpus` (`semaphores/contention-cpus` and `semaphores/mutex-cpus`) need
 two processors. They read the count from /proc/cpuinfo, fail when it cannot be read, skip
@@ -629,7 +640,9 @@ itself to its own processor with sched_setaffinity, checks with getcpu that it r
 and the processes make a thousand rounds of a spinning barrier within 750 ms before they
 measure, which processes taking turns on one processor cannot do. `contention-cpus` has half
 of them post 20000 times each on one process-shared semaphore while the rest wait for every
-post; a waiter still blocked once the posts are made fails the case as a lost wakeup.
+post. The producers start only once every consumer is seen blocked in sem_wait, and never
+have more than SEM_VALUE_MAX posts outstanding (32767, or a smaller limit sysconf reports);
+a waiter still blocked once the posts are made fails the case as a lost wakeup.
 `mutex-cpus` has each make 5000 unsynchronized increments of a shared word inside a
 semaphore of value 1, and fails if any is lost.
 
