@@ -578,3 +578,83 @@ scripts/boot-interactive.sh --mode suite --suite threads
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode full --boots 1 --suite threads --gate-timeout 420 --sha <pushed-sha>
 ```
+
+## IPC
+
+`ipc` measures the IPC effort in `docs/efforts/path.json`: one category per suite
+milestone, `fifos`, `mq`, `semaphores`, `shm` and `sysv`. The system-interface milestone is
+a separate measure.
+
+IPC is measured through the interface a portable C program uses. A function Breenix's own
+C library, `libs/libbreenix-libc`, defines is called there: `userspace/programs/build.rs`
+reads libc.a's symbol index and sets `libc_has = "<name>"` for the IPC functions it has. A
+function the library lacks that Linux implements as a system call is made by its Linux
+number, as a C library makes it: mkfifo through mknodat, mq_open and mq_unlink without the
+name's leading slash, mq_send and mq_receive through mq_timedsend and mq_timedreceive with no
+deadline, mq_getattr and mq_setattr through mq_getsetattr, mq_close through close, and msgget,
+msgsnd, msgrcv, msgctl, semget, semop, semtimedop, semctl, shmget, shmat, shmdt and shmctl
+directly, so a kernel that lacks one fails the case with ENOSYS. A function a C library
+builds from other calls (sem_init and the other sem_* functions, shm_open, shm_unlink and
+ftok) fails each case that needs it with `the C library has no <name>` while the library
+lacks it. The suite uses raw system calls otherwise only to arrange a case: forking and
+reaping, signals, clocks, switching user and pinning to a processor. System V structures
+use the Linux ABI's 64-bit layouts (ipc64_perm, msqid64_ds, semid64_ds, shmid64_ds).
+
+Each case uses the runner's default 10-second deadline. Processes a case starts report
+through a shared page and their exit status. Every wait on one is bounded and stops 1.5
+seconds before the deadline: most are bounded at 3 seconds, the poll and select wake cases at
+4, the FIFO transfer and atomic-writes reads and `contention-cpus` at 6, and `mutex-cpus` at
+8. A process that must be blocked before it is
+released (in an open, a read, a write, a poll or select, mq_send or mq_receive, sem_wait,
+msgrcv or semop) is observed through `/proc/<pid>/status`, and must come back within 100 ms
+of its release; that is a liveness bound, not a performance target. Timed waits
+(mq_timedsend, mq_timedreceive, sem_timedwait, semtimedop) are checked as the time suite
+checks sleeps: never before the deadline and late by at most two timer ticks and 20 ms.
+Every FIFO, queue, semaphore, object and System V identifier a case makes is named after
+the case's process ID and removed when the case ends, by the process that made it; the case
+then looks it up, and fails if it is still there. Each one is also written to
+`/tmp/ipc-made` as it is made: a case the runner kills runs no destructors, so the next case
+removes everything that file lists before it starts.
+Permission cases make their objects as root and switch to user 4242 in a child.
+
+FIFO atomicity is checked at 512 bytes, the POSIX minimum of PIPE_BUF, so it holds on any
+conforming system. In `fifos/atomic-writes` four writers open the FIFO and wait at a release
+gate; each then writes as many records as fill the FIFO, and the reader drains it only once
+at least two writers are seen blocked on the full FIFO. `fifos/write-eagain-full` fills the FIFO with 512-byte writes and then
+single bytes, and checks that a refused 512-byte O_NONBLOCK write left nothing behind.
+`mq/prio-max` sends at priority 31 (the POSIX minimum of MQ_PRIO_MAX is 32) and then needs
+sysconf(_SC_MQ_PRIO_MAX); the SEM_VALUE_MAX cases need sysconf(_SC_SEM_VALUE_MAX).
+`mq/notify-*` take the notification signal with sigtimedwait while it is blocked and check
+its si_code (SI_MESGQ) and si_value. `sysv/semctl-erange` sets a value of 65536, more than
+the unsigned short a semaphore value is. `sysv/semtimedop` is titled `Linux ABI:`: Linux
+fails a semtimedop whose timeout passes with EAGAIN. `sysv/ftok` checks that different ids
+give different keys as a policy: POSIX says only that they should. `sysv/shmdt` and
+`sysv/shm-rdonly` store in a child that has a SA_SIGINFO SIGSEGV handler installed only once
+its setup has finished, and pass only when that store faults with si_addr the address
+stored to.
+
+The two cases titled `-cpus` (`semaphores/contention-cpus` and `semaphores/mutex-cpus`) need
+two processors. They read the count from /proc/cpuinfo, fail when it cannot be read, skip
+below two and start one process per processor, at most four; none assumes four. Each pins
+itself to its own processor with sched_setaffinity, checks with getcpu that it runs there,
+and the processes make a thousand rounds of a spinning barrier within 750 ms before they
+measure, which processes taking turns on one processor cannot do. `contention-cpus` has half
+of them post 20000 times each on one process-shared semaphore while the rest wait for every
+post. The producers start only once every consumer is seen blocked in sem_wait, and never
+have more than SEM_VALUE_MAX posts outstanding (32767, or a smaller limit sysconf reports);
+a waiter still blocked once the posts are made fails the case as a lost wakeup.
+`mutex-cpus` has each make 5000 unsynchronized increments of a shared word inside a
+semaphore of value 1, and fails if any is lost.
+
+Each case reports what it asserts on as VALUE records: queue depths, message and record
+counts, FIFO capacity, how soon a blocked process came back, how late a timed wait ended,
+semaphore waiter counts, posts taken and increments made; and each timed wait of 100 ms or
+more as a WAIT record naming the VALUE that ends it.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite ipc
+./run.sh --parallels --suite ipc
+./run.sh --vmware --suite ipc
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode full --boots 1 --suite ipc --gate-timeout 420 --sha <pushed-sha>
+```

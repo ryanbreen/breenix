@@ -1,0 +1,599 @@
+{
+  "id": "ipc",
+  "title": "IPC",
+  "area": "XSI & message-queue IPC",
+  "summary": "Processes talk through named pipes, POSIX message queues, semaphores and shared memory, and System V message queues, semaphore sets and shared memory segments, as POSIX requires, through Breenix's own C library, on every target.",
+  "binary": "/sbin/suite-ipc",
+  "categories": [
+    {
+      "id": "fifos",
+      "title": "Named pipes (FIFOs)",
+      "cases": [
+        {
+          "id": "mkfifo",
+          "title": "mkfifo creates a FIFO that stat reports as S_IFIFO with the mode less the umask"
+        },
+        {
+          "id": "mkfifo-eexist",
+          "title": "mkfifo of an existing path fails with EEXIST"
+        },
+        {
+          "id": "mkfifo-enoent",
+          "title": "mkfifo in a missing directory fails with ENOENT"
+        },
+        {
+          "id": "open-read-blocks",
+          "title": "A blocking O_RDONLY open waits until a writer opens the FIFO"
+        },
+        {
+          "id": "open-write-blocks",
+          "title": "A blocking O_WRONLY open waits until a reader opens the FIFO"
+        },
+        {
+          "id": "open-read-nonblock",
+          "title": "O_RDONLY|O_NONBLOCK opens at once with no writer"
+        },
+        {
+          "id": "open-write-enxio",
+          "title": "O_WRONLY|O_NONBLOCK with no reader fails with ENXIO"
+        },
+        {
+          "id": "open-write-nonblock",
+          "title": "O_WRONLY|O_NONBLOCK opens at once when a reader has the FIFO open"
+        },
+        {
+          "id": "fstat",
+          "title": "fstat of either end of an open FIFO reports S_IFIFO"
+        },
+        {
+          "id": "lseek-espipe",
+          "title": "lseek on either end of a FIFO fails with ESPIPE"
+        },
+        {
+          "id": "transfer",
+          "title": "256 KiB written in one process are read in order in another, then end of file"
+        },
+        {
+          "id": "partial-read",
+          "title": "A read asking for more than is buffered returns what is there"
+        },
+        {
+          "id": "read-blocks",
+          "title": "A blocking read of an empty FIFO waits for a writer's data"
+        },
+        {
+          "id": "read-eagain",
+          "title": "An O_NONBLOCK read of an empty FIFO with a writer fails with EAGAIN"
+        },
+        {
+          "id": "eof-last-writer",
+          "title": "Read returns end of file only once the last writer has closed"
+        },
+        {
+          "id": "eof-blocked-reader",
+          "title": "A reader blocked on an empty FIFO returns end of file when the last writer closes"
+        },
+        {
+          "id": "eof-no-writer",
+          "title": "A read of a FIFO no process has open for writing returns end of file"
+        },
+        {
+          "id": "sigpipe",
+          "title": "A write with no reader raises SIGPIPE"
+        },
+        {
+          "id": "epipe",
+          "title": "With SIGPIPE ignored, a write with no reader fails with EPIPE"
+        },
+        {
+          "id": "write-blocks-full",
+          "title": "A blocking write to a full FIFO waits until the reader makes room"
+        },
+        {
+          "id": "write-eagain-full",
+          "title": "An O_NONBLOCK write of 512 bytes to a full FIFO fails with EAGAIN and writes nothing"
+        },
+        {
+          "id": "atomic-writes",
+          "title": "Writes of 512 bytes from four writers contending for a full FIFO are never interleaved"
+        },
+        {
+          "id": "poll-in",
+          "title": "poll reports POLLIN on a reader once data is buffered and not before"
+        },
+        {
+          "id": "poll-out",
+          "title": "poll reports POLLOUT on a writer with room"
+        },
+        {
+          "id": "poll-hup",
+          "title": "poll reports POLLHUP on a reader once the last writer has closed"
+        },
+        {
+          "id": "poll-wakes",
+          "title": "A poll blocked on a reader wakes when another process writes"
+        },
+        {
+          "id": "select-read",
+          "title": "select reports a reader ready once data is buffered and not before"
+        },
+        {
+          "id": "select-write",
+          "title": "select reports a writer with room ready"
+        },
+        {
+          "id": "select-wakes",
+          "title": "A select blocked on a reader wakes when another process writes"
+        },
+        {
+          "id": "unlink-open",
+          "title": "Unlinking a FIFO leaves its open ends working"
+        },
+        {
+          "id": "reopen",
+          "title": "Data left when every end closed is discarded; the FIFO opens again empty"
+        }
+      ]
+    },
+    {
+      "id": "mq",
+      "title": "POSIX message queues",
+      "cases": [
+        {
+          "id": "open-create",
+          "title": "mq_open with O_CREAT|O_EXCL creates a queue with the attributes given"
+        },
+        {
+          "id": "open-eexist",
+          "title": "mq_open with O_CREAT|O_EXCL of an existing name fails with EEXIST"
+        },
+        {
+          "id": "open-enoent",
+          "title": "mq_open of a missing name without O_CREAT fails with ENOENT"
+        },
+        {
+          "id": "open-attr-einval",
+          "title": "mq_open with mq_maxmsg or mq_msgsize of 0 fails with EINVAL"
+        },
+        {
+          "id": "open-default-attr",
+          "title": "mq_open with no attributes creates a queue with positive limits"
+        },
+        {
+          "id": "close",
+          "title": "mq_close ends the descriptor and later use fails with EBADF"
+        },
+        {
+          "id": "unlink",
+          "title": "mq_unlink removes the name, and a second mq_unlink fails with ENOENT"
+        },
+        {
+          "id": "unlink-open",
+          "title": "A queue unlinked while open keeps working through its descriptor"
+        },
+        {
+          "id": "send-receive",
+          "title": "mq_receive returns a sent message's bytes, length and priority"
+        },
+        {
+          "id": "priority-order",
+          "title": "Messages are received highest priority first, oldest first within a priority"
+        },
+        {
+          "id": "curmsgs",
+          "title": "mq_getattr counts the messages queued"
+        },
+        {
+          "id": "setattr",
+          "title": "mq_setattr changes only O_NONBLOCK, leaves the depth alone and returns the old attributes"
+        },
+        {
+          "id": "emsgsize-receive",
+          "title": "mq_receive with a buffer smaller than mq_msgsize fails with EMSGSIZE and leaves the message"
+        },
+        {
+          "id": "emsgsize-send",
+          "title": "mq_send of more than mq_msgsize bytes fails with EMSGSIZE"
+        },
+        {
+          "id": "prio-max",
+          "title": "Priority 31 is accepted, sysconf reports MQ_PRIO_MAX, and mq_send at MQ_PRIO_MAX fails with EINVAL"
+        },
+        {
+          "id": "eagain-full",
+          "title": "In O_NONBLOCK mode mq_send to a full queue fails with EAGAIN"
+        },
+        {
+          "id": "eagain-empty",
+          "title": "In O_NONBLOCK mode mq_receive of an empty queue fails with EAGAIN"
+        },
+        {
+          "id": "ebadf-mode",
+          "title": "mq_send on a read-only descriptor and mq_receive on a write-only one fail with EBADF"
+        },
+        {
+          "id": "timedreceive-timeout",
+          "title": "mq_timedreceive of an empty queue fails with ETIMEDOUT at its deadline"
+        },
+        {
+          "id": "timedsend-timeout",
+          "title": "mq_timedsend to a full queue fails with ETIMEDOUT at its deadline"
+        },
+        {
+          "id": "timed-einval",
+          "title": "mq_timedreceive that would block with tv_nsec out of range fails with EINVAL"
+        },
+        {
+          "id": "timed-ready",
+          "title": "mq_timedreceive returns a queued message even when its deadline has passed"
+        },
+        {
+          "id": "receive-blocks",
+          "title": "A receiver blocked on an empty queue wakes when another process sends"
+        },
+        {
+          "id": "send-blocks",
+          "title": "A sender blocked on a full queue wakes when another process receives"
+        },
+        {
+          "id": "notify-signal",
+          "title": "mq_notify with SIGEV_SIGNAL sends the signal with SI_MESGQ and the value when a message arrives"
+        },
+        {
+          "id": "notify-once",
+          "title": "A notification is removed once sent and can be registered again"
+        },
+        {
+          "id": "notify-ebusy",
+          "title": "mq_notify from a second process while one is registered fails with EBUSY"
+        },
+        {
+          "id": "notify-receiver-waiting",
+          "title": "No notification is sent while a receiver waits, and the registration stays"
+        },
+        {
+          "id": "notify-remove",
+          "title": "mq_notify with no sigevent removes the registration"
+        },
+        {
+          "id": "fork-shared",
+          "title": "A queue descriptor inherited across fork reaches the same queue"
+        },
+        {
+          "id": "name-shared",
+          "title": "A process that opens the queue by name exchanges messages with its creator"
+        },
+        {
+          "id": "permissions",
+          "title": "Another user's mq_open of a 0600 queue fails with EACCES, and of a 0644 queue opens it read-only only"
+        }
+      ]
+    },
+    {
+      "id": "semaphores",
+      "title": "POSIX semaphores",
+      "cases": [
+        {
+          "id": "init",
+          "title": "sem_init sets the value sem_getvalue reports"
+        },
+        {
+          "id": "init-einval",
+          "title": "sem_init with a value above SEM_VALUE_MAX fails with EINVAL"
+        },
+        {
+          "id": "post-wait",
+          "title": "sem_post adds one and sem_wait takes one"
+        },
+        {
+          "id": "trywait",
+          "title": "sem_trywait at zero fails with EAGAIN and leaves the value"
+        },
+        {
+          "id": "wait-blocks",
+          "title": "sem_wait at zero waits for a sem_post from another process"
+        },
+        {
+          "id": "timedwait-timeout",
+          "title": "sem_timedwait at zero fails with ETIMEDOUT at its deadline"
+        },
+        {
+          "id": "timedwait-einval",
+          "title": "sem_timedwait at zero with tv_nsec out of range fails with EINVAL"
+        },
+        {
+          "id": "timedwait-ready",
+          "title": "sem_timedwait takes an available semaphore even when its deadline has passed"
+        },
+        {
+          "id": "eintr",
+          "title": "A caught signal interrupts sem_wait with EINTR"
+        },
+        {
+          "id": "destroy",
+          "title": "sem_destroy of a semaphore no one waits on returns 0"
+        },
+        {
+          "id": "pshared-fork",
+          "title": "An unnamed semaphore with pshared set in shared memory carries 100 posts across fork"
+        },
+        {
+          "id": "open-create",
+          "title": "sem_open with O_CREAT|O_EXCL creates a named semaphore with the value given"
+        },
+        {
+          "id": "open-eexist",
+          "title": "sem_open with O_CREAT|O_EXCL of an existing name fails with EEXIST"
+        },
+        {
+          "id": "open-enoent",
+          "title": "sem_open of a missing name without O_CREAT fails with ENOENT"
+        },
+        {
+          "id": "open-same",
+          "title": "Opening one name twice in a process returns the same address"
+        },
+        {
+          "id": "open-einval",
+          "title": "sem_open with O_CREAT and a value above SEM_VALUE_MAX fails with EINVAL"
+        },
+        {
+          "id": "named-processes",
+          "title": "A named semaphore opened by name in another process is the same semaphore"
+        },
+        {
+          "id": "close",
+          "title": "sem_close returns 0 and the name still opens"
+        },
+        {
+          "id": "unlink",
+          "title": "sem_unlink removes the name, open handles keep working, and a second sem_unlink fails with ENOENT"
+        },
+        {
+          "id": "permissions",
+          "title": "Another user's sem_open of a 0600 semaphore fails with EACCES"
+        },
+        {
+          "id": "getvalue-waiters",
+          "title": "sem_getvalue with one waiter reports 0 or -1"
+        },
+        {
+          "id": "contention-cpus",
+          "title": "Processes on several processors posting to waiters already blocked lose no wakeups"
+        },
+        {
+          "id": "mutex-cpus",
+          "title": "A semaphore of value 1 keeps processes on several processors out of each other's critical section"
+        }
+      ]
+    },
+    {
+      "id": "shm",
+      "title": "POSIX shared memory",
+      "cases": [
+        {
+          "id": "open-create",
+          "title": "shm_open with O_CREAT|O_EXCL creates an empty object with the mode less the umask"
+        },
+        {
+          "id": "open-eexist",
+          "title": "shm_open with O_CREAT|O_EXCL of an existing name fails with EEXIST"
+        },
+        {
+          "id": "open-enoent",
+          "title": "shm_open of a missing name without O_CREAT fails with ENOENT"
+        },
+        {
+          "id": "ftruncate",
+          "title": "ftruncate sizes the object and the new bytes read as zero"
+        },
+        {
+          "id": "map-fork",
+          "title": "Stores through a MAP_SHARED mapping are seen across fork both ways"
+        },
+        {
+          "id": "map-name",
+          "title": "A process that opens the object by name sees its creator's stores, and the creator sees its"
+        },
+        {
+          "id": "persist",
+          "title": "An object keeps its size and contents with no descriptor or mapping until it is unlinked"
+        },
+        {
+          "id": "close-keeps-mapping",
+          "title": "A mapping stays usable after its descriptor is closed"
+        },
+        {
+          "id": "unlink",
+          "title": "shm_unlink removes the name, mappings keep working, and a second shm_unlink fails with ENOENT"
+        },
+        {
+          "id": "unlink-recreate",
+          "title": "After shm_unlink, shm_open with O_CREAT|O_EXCL makes a new empty object"
+        },
+        {
+          "id": "rdonly-map",
+          "title": "A writable MAP_SHARED mapping of an O_RDONLY descriptor fails with EACCES"
+        },
+        {
+          "id": "rdonly-ftruncate",
+          "title": "ftruncate of an O_RDONLY descriptor fails with EINVAL or EBADF"
+        },
+        {
+          "id": "permissions",
+          "title": "Another user's shm_open of a 0600 object fails with EACCES, and of a 0644 object opens it read-only only"
+        },
+        {
+          "id": "trunc",
+          "title": "shm_open with O_TRUNC sets an existing object's size to 0"
+        }
+      ]
+    },
+    {
+      "id": "sysv",
+      "title": "System V IPC",
+      "cases": [
+        {
+          "id": "ftok",
+          "title": "ftok gives the same key for one file and id, and (policy) different keys for different ids"
+        },
+        {
+          "id": "ftok-enoent",
+          "title": "ftok of a missing file returns -1 with ENOENT"
+        },
+        {
+          "id": "key-private",
+          "title": "msgget of IPC_PRIVATE makes a new queue every time"
+        },
+        {
+          "id": "msgget",
+          "title": "msgget with IPC_CREAT makes a queue IPC_STAT reports with its key, mode, owner and no messages"
+        },
+        {
+          "id": "msgget-excl",
+          "title": "msgget with IPC_CREAT|IPC_EXCL of a used key fails with EEXIST, and without it returns the queue"
+        },
+        {
+          "id": "msgget-enoent",
+          "title": "msgget of an unused key without IPC_CREAT fails with ENOENT"
+        },
+        {
+          "id": "msg-send-receive",
+          "title": "msgrcv returns a message's type, bytes and length"
+        },
+        {
+          "id": "msg-types",
+          "title": "msgrcv with msgtyp 0, positive and negative takes the message POSIX names"
+        },
+        {
+          "id": "msg-nowait",
+          "title": "msgrcv with IPC_NOWAIT of an empty queue fails with ENOMSG"
+        },
+        {
+          "id": "msg-full",
+          "title": "msgsnd with IPC_NOWAIT to a queue at msg_qbytes fails with EAGAIN"
+        },
+        {
+          "id": "msg-e2big",
+          "title": "msgrcv into a short buffer fails with E2BIG, and MSG_NOERROR truncates"
+        },
+        {
+          "id": "msg-blocks",
+          "title": "msgrcv blocked on an empty queue wakes when another process sends"
+        },
+        {
+          "id": "msg-stat",
+          "title": "IPC_STAT reports msg_qnum, msg_lspid and msg_lrpid"
+        },
+        {
+          "id": "msg-set",
+          "title": "IPC_SET changes the mode and msg_qbytes IPC_STAT then reports"
+        },
+        {
+          "id": "msg-rmid",
+          "title": "IPC_RMID wakes a blocked msgrcv with EIDRM and the id stops working"
+        },
+        {
+          "id": "msg-perm",
+          "title": "Another user's msgsnd to a 0600 queue fails with EACCES"
+        },
+        {
+          "id": "semget",
+          "title": "semget makes a set IPC_STAT reports with its number of semaphores and mode"
+        },
+        {
+          "id": "semget-einval",
+          "title": "semget of an existing key asking for more semaphores than the set has fails with EINVAL"
+        },
+        {
+          "id": "semctl-val",
+          "title": "SETVAL and GETVAL, SETALL and GETALL set and read the values"
+        },
+        {
+          "id": "semctl-erange",
+          "title": "semctl SETVAL above the largest semaphore value fails with ERANGE"
+        },
+        {
+          "id": "semop",
+          "title": "semop adds to, takes from and waits for zero on a semaphore"
+        },
+        {
+          "id": "semop-nowait",
+          "title": "A semop that would wait fails with EAGAIN under IPC_NOWAIT"
+        },
+        {
+          "id": "semop-atomic",
+          "title": "A semop of several operations applies all of them or none"
+        },
+        {
+          "id": "semop-blocks",
+          "title": "A semop waiting to take from a semaphore wakes when another process adds"
+        },
+        {
+          "id": "semop-zero-blocks",
+          "title": "A semop waiting for zero wakes when the value reaches zero"
+        },
+        {
+          "id": "semctl-counts",
+          "title": "GETNCNT and GETZCNT count waiting processes, and GETPID names the last semop's process"
+        },
+        {
+          "id": "sem-undo",
+          "title": "SEM_UNDO adjustments of a +3 and a -2 operation are undone when the process exits"
+        },
+        {
+          "id": "sem-rmid",
+          "title": "IPC_RMID wakes a blocked semop with EIDRM and the id stops working"
+        },
+        {
+          "id": "sem-perm",
+          "title": "Another user's semop on a 0600 set fails with EACCES"
+        },
+        {
+          "id": "semop-efbig",
+          "title": "semop on a semaphore number past the set's size fails with EFBIG"
+        },
+        {
+          "id": "semtimedop",
+          "title": "Linux ABI: semtimedop that would wait fails with EAGAIN when its timeout passes"
+        },
+        {
+          "id": "shmget",
+          "title": "shmget makes a segment IPC_STAT reports with its size, mode, creator and no attachments"
+        },
+        {
+          "id": "shm-zero",
+          "title": "A new segment reads as zero"
+        },
+        {
+          "id": "shmat-fork",
+          "title": "A segment attached before fork is attached in the child, and stores are seen both ways"
+        },
+        {
+          "id": "shmat-other",
+          "title": "A process that attaches the segment by id sees another's stores, and shm_nattch counts both"
+        },
+        {
+          "id": "shmdt",
+          "title": "shmdt detaches: shm_nattch drops and a store to the address faults"
+        },
+        {
+          "id": "shm-rmid",
+          "title": "IPC_RMID removes an attached segment's key at once and leaves its memory usable until the last detach"
+        },
+        {
+          "id": "shm-rdonly",
+          "title": "A store through a SHM_RDONLY attachment faults"
+        },
+        {
+          "id": "shmget-einval",
+          "title": "shmget of an existing key asking for more than the segment's size fails with EINVAL"
+        },
+        {
+          "id": "shm-perm",
+          "title": "Another user's shmat of a 0600 segment fails with EACCES"
+        }
+      ]
+    }
+  ]
+}

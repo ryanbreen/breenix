@@ -326,6 +326,7 @@ STD_BINARIES=(
     "suite-time"
     "suite-memory"
     "suite-threads"
+    "suite-ipc"
     "files-io-exec_test"
     "processes-exec_test"
     "signals-exec_test"

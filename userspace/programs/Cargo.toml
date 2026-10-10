@@ -713,3 +713,7 @@ path = "src/suite_memory.rs"
 [[bin]]
 name = "suite-threads"
 path = "src/suite_threads.rs"
+
+[[bin]]
+name = "suite-ipc"
+path = "src/suite_ipc.rs"

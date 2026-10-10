@@ -10,15 +10,20 @@ fn main() {
         ));
     println!("cargo:rerun-if-changed={}", archive.display());
 
-    // `libc_has = "<name>"` for each thread, scheduling and signal function libc.a
-    // defines (and the few others suite-threads calls), from the archive's symbol
-    // index, so the threads suite can call a function the library has and fail a
-    // case naming one it lacks instead of failing to link.
-    const OTHERS: &[&str] = &["raise", "sysconf", "__errno_location", "exit", "getpid", "close", "pipe", "read", "write", "kill"];
+    // `libc_has = "<name>"` for each thread, scheduling, signal and IPC function libc.a
+    // defines (and the few others suite-threads and suite-ipc call), from the archive's
+    // symbol index, so a suite can call a function the library has and fail a case
+    // naming one it lacks, or make its system call, instead of failing to link.
+    const PREFIXES: &[&str] = &["pthread_", "sched_", "sig", "mq_", "sem", "shm", "msg"];
+    const OTHERS: &[&str] = &[
+        "raise", "sysconf", "__errno_location", "exit", "getpid", "close", "pipe", "read", "write", "kill",
+        "open", "unlink", "stat", "fstat", "lseek", "ftruncate", "mmap", "munmap", "umask", "poll", "select",
+        "mkfifo", "ftok",
+    ];
     println!("cargo:rustc-check-cfg=cfg(libc_has, values(any()))");
     if let Ok(bytes) = fs::read(&archive) {
         for name in archive_symbols(&bytes) {
-            let wanted = ["pthread_", "sched_", "sig"].iter().any(|p| name.starts_with(p)) || OTHERS.contains(&name.as_str());
+            let wanted = PREFIXES.iter().any(|p| name.starts_with(p)) || OTHERS.contains(&name.as_str());
             if wanted && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
                 println!("cargo:rustc-cfg=libc_has=\"{name}\"");
             }
