@@ -8092,28 +8092,21 @@ pub fn switch_to_idle() {
         let _ = old_val; // suppress unused warning on non-aarch64
         sched.cpu_state[cpu_id].current_thread = Some(idle_id);
 
-        // Also update per-CPU current thread pointer
+        // Also update per-CPU current thread pointer. No routine serial line
+        // here: this runs with the scheduler lock held and interrupts masked,
+        // and a fatal signal taken on interrupt return comes through here, so
+        // a line would stall every CPU's scheduling for as long as the UART
+        // takes to accept it.
         #[cfg(target_arch = "x86_64")]
         if let Some(thread) = sched.get_thread_mut(idle_id) {
             let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
             crate::per_cpu::set_current_thread(thread_ptr);
-            log::info!(
-                "Exception handler: Set per_cpu thread to idle {} at {:p}",
-                idle_id,
-                thread_ptr
-            );
         } else {
             log::error!(
                 "Exception handler: Failed to get idle thread {} from scheduler!",
                 idle_id
             );
         }
-
-        #[cfg(target_arch = "x86_64")]
-        log::info!(
-            "Exception handler: Switched scheduler to idle thread {}",
-            idle_id
-        );
     });
 }
 
