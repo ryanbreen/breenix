@@ -3463,12 +3463,16 @@ impl Scheduler {
         // can still run keeps this CPU, exactly as the same-thread branch below
         // keeps a user thread that is alone. Switching it to idle instead would
         // leave it off the CPU until this CPU's next tick, with nothing else
-        // running in its place (#1172).
+        // running in its place (#1172). A thread pinned to another CPU
+        // (sched_setaffinity) does not keep this one: it is switched out, and
+        // the requeue after its context is saved queues it on its own CPU.
         if should_requeue_old
             && next_thread_id == self.cpu_state[current_cpu].idle_thread
             && self.cpu_state[current_cpu].current_thread.is_some_and(|tid| {
-                self.get_thread(tid)
-                    .is_some_and(|t| t.privilege == super::thread::ThreadPrivilege::User)
+                self.get_thread(tid).is_some_and(|t| {
+                    t.privilege == super::thread::ThreadPrivilege::User
+                        && t.cpu_affinity.map_or(true, |pin| pin.cpu == current_cpu)
+                })
             })
         {
             let current_id = self.cpu_state[current_cpu].current_thread.unwrap_or(0);
@@ -7253,6 +7257,64 @@ pub fn process_cpu_ticks() -> Option<u64> {
         }
         Some(account.ticks())
     }).flatten()
+}
+
+/// The CPU the caller runs on.
+pub fn current_cpu() -> usize {
+    Scheduler::current_cpu_id()
+}
+
+/// How many CPUs can schedule, as placement counts them. Lock-free.
+pub fn online_cpus() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        (crate::arch_impl::aarch64::smp::cpus_online() as usize).clamp(1, MAX_CPUS)
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        (crate::arch_impl::x86_64::smp::cpus_online() as usize).clamp(1, MAX_CPUS)
+    }
+}
+
+/// sched_setaffinity's placement of thread `tid`: `pin` keeps it on the CPU
+/// the pin names, `None` lets it run anywhere. A queued thread moves to the
+/// pinned CPU's queue now; a running one moves when it is next switched out,
+/// which for the caller is its return to user mode. False when the scheduler
+/// has no such thread.
+pub fn set_user_affinity(tid: u64, pin: Option<super::thread::CpuPin>) -> bool {
+    with_scheduler(|scheduler| {
+        let Some(thread) = scheduler.get_thread_mut(tid) else {
+            return false;
+        };
+        thread.cpu_affinity = pin;
+        let Some(pin) = pin else {
+            return true;
+        };
+        let home = pin.cpu;
+        let queued_elsewhere = scheduler
+            .per_cpu_queues
+            .iter()
+            .enumerate()
+            .any(|(cpu, queue)| cpu != home && queue.contains(&tid));
+        if queued_elsewhere {
+            for queue in scheduler.per_cpu_queues.iter_mut() {
+                queue.retain(|&id| id != tid);
+            }
+            scheduler.per_cpu_queues[home].push_back(tid);
+            scheduler.send_resched_ipi_to_cpu(home);
+        }
+        if let Some(cpu) = (0..MAX_CPUS).find(|&cpu| scheduler.cpu_state[cpu].current_thread == Some(tid)) {
+            if cpu != home {
+                if cpu == Scheduler::current_cpu_id() {
+                    set_need_resched();
+                } else {
+                    scheduler.send_resched_ipi_to_cpu(cpu);
+                }
+            }
+        }
+        true
+    })
+    .unwrap_or(false)
 }
 
 /// Charge the open run interval of every thread that shares `account` to its

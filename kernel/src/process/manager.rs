@@ -3063,6 +3063,9 @@ impl ProcessManager {
         // No stack copy needed - CoW will handle it on first write.
         child_thread.context.sp_el0 = parent_context.sp_el0;
 
+        // A child starts with its parent's CPU affinity.
+        child_thread.cpu_affinity = crate::task::thread::CpuPin::for_child(parent_thread.cpu_affinity);
+
         // Set the kernel stack pointer to the TOP of the child's (freshly
         // scrubbed, see kernel_stack.rs) kernel stack. This is a clean,
         // context-authoritative frame top, not a mid-stack resume point —
@@ -3243,6 +3246,8 @@ impl ProcessManager {
         // No stack copy needed - CoW will handle it on first write.
         let child_rsp = userspace_rsp.unwrap_or(parent_thread.context.rsp);
         child_thread.context.rsp = child_rsp;
+        // A child starts with its parent's CPU affinity.
+        child_thread.cpu_affinity = crate::task::thread::CpuPin::for_child(parent_thread.cpu_affinity);
 
         // Update child's instruction pointer to return to the instruction after fork syscall.
         // The return RIP comes from RCX which was saved by the syscall instruction; if it is
@@ -3521,16 +3526,13 @@ impl ProcessManager {
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
                 kill_custody: core::sync::atomic::AtomicU64::new(0),
-                // A pin is not inherited, on either child-creation path. A
+                // A per-CPU worker's or hold pen's pin is not inherited: a
                 // `per_cpu_worker` pin is a claim about servicing one CPU's
                 // per-CPU state and a child services none of it; a hold-pen pin
                 // says the parent is parked in a staging pen the child was
-                // never put in. `sys_clone` already writes the empty state, so
-                // both paths now agree rather than disagreeing by cfg.
-                // claim-lint:ok: 14 of 15 `Thread` build sites in kernel/src carry
-                // `cpu_affinity: None` after this change, counted by grep over
-                // kernel/src in this round; the 15th is the `Clone` impl.
-                cpu_affinity: None,
+                // never put in. A CPU affinity sched_setaffinity set is, on
+                // both child-creation paths (`CpuPin::for_child`).
+                cpu_affinity: crate::task::thread::CpuPin::for_child(parent_thread.cpu_affinity),
             };
 
             // CoW fork: Child uses the same stack virtual addresses as the parent.

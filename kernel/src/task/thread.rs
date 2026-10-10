@@ -767,6 +767,13 @@ pub struct CpuPin {
     pub cpu: usize,
     /// Whether the pin exists because the work itself is CPU-local.
     pub per_cpu_worker: bool,
+    /// The CPUs the thread may run on, as sched_getaffinity reports them;
+    /// `cpu` is one of them.
+    pub allowed: u64,
+    /// Whether a child created by fork or clone inherits the pin: a CPU
+    /// affinity sched_setaffinity set is inherited, as on Linux; a per-CPU
+    /// worker's or a hold pen's is not.
+    pub inherited: bool,
 }
 
 /// `CpuPin` values minted since boot, by either constructor.
@@ -790,12 +797,34 @@ pub struct CpuPin {
 pub static CPU_PINS_STAMPED: AtomicU64 = AtomicU64::new(0);
 
 impl CpuPin {
+    /// The pin a child of a thread holding `pin` starts with.
+    pub fn for_child(pin: Option<CpuPin>) -> Option<CpuPin> {
+        pin.filter(|pin| pin.inherited)
+    }
+
     /// A pin whose work lives in `cpu`'s per-CPU state.
     pub fn per_cpu_worker(cpu: usize) -> Self {
         CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);
         Self {
             cpu,
             per_cpu_worker: true,
+            allowed: 1 << cpu,
+            inherited: false,
+        }
+    }
+
+    /// The pin sched_setaffinity sets on a user thread allowed to run only on
+    /// the CPUs in `allowed`: it runs on `cpu`, one of them, and is placed
+    /// there and on no other CPU, as a per-CPU worker is, so a wake held for
+    /// a CPU that stopped dispatching waits for it rather than migrating.
+    /// Allowed several CPUs but not all, the thread still runs on the one.
+    pub fn user_affinity(cpu: usize, allowed: u64) -> Self {
+        CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);
+        Self {
+            cpu,
+            per_cpu_worker: true,
+            allowed,
+            inherited: true,
         }
     }
 
@@ -811,6 +840,8 @@ impl CpuPin {
         Self {
             cpu,
             per_cpu_worker: false,
+            allowed: 1 << cpu,
+            inherited: false,
         }
     }
 }

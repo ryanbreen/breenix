@@ -26,6 +26,7 @@ pub mod handler;
 // Syscall implementations
 // - dispatcher is x86_64-only (ARM64 dispatch is in arch_impl/aarch64/syscall_entry.rs)
 // - handlers is shared across architectures (arch-specific parts are cfg-gated internally)
+pub mod affinity;
 pub mod audio;
 pub(crate) mod blocking_io;
 #[cfg(feature = "boot_tests")]
@@ -752,8 +753,8 @@ pub const TGKILL_SYSCALL_NUMBER: u64 = 234;
 #[cfg(target_arch = "aarch64")]
 pub const TGKILL_SYSCALL_NUMBER: u64 = 131;
 
-/// Native Linux numbers of the POSIX timer calls, dispatched like msync
-/// without enum variants.
+/// Native Linux numbers of the POSIX timer calls, sched_setaffinity,
+/// sched_getaffinity and getcpu, dispatched like msync without enum variants.
 #[cfg(target_arch = "x86_64")]
 pub const TIMER_CREATE_SYSCALL_NUMBER: u64 = 222;
 #[cfg(target_arch = "aarch64")]
@@ -774,6 +775,18 @@ pub const TIMER_GETOVERRUN_SYSCALL_NUMBER: u64 = 109;
 pub const TIMER_DELETE_SYSCALL_NUMBER: u64 = 226;
 #[cfg(target_arch = "aarch64")]
 pub const TIMER_DELETE_SYSCALL_NUMBER: u64 = 111;
+#[cfg(target_arch = "x86_64")]
+pub const SCHED_SETAFFINITY_SYSCALL_NUMBER: u64 = 203;
+#[cfg(target_arch = "aarch64")]
+pub const SCHED_SETAFFINITY_SYSCALL_NUMBER: u64 = 122;
+#[cfg(target_arch = "x86_64")]
+pub const SCHED_GETAFFINITY_SYSCALL_NUMBER: u64 = 204;
+#[cfg(target_arch = "aarch64")]
+pub const SCHED_GETAFFINITY_SYSCALL_NUMBER: u64 = 123;
+#[cfg(target_arch = "x86_64")]
+pub const GETCPU_SYSCALL_NUMBER: u64 = 309;
+#[cfg(target_arch = "aarch64")]
+pub const GETCPU_SYSCALL_NUMBER: u64 = 168;
 
 /// The calls dispatched by number above that are not dispatched by enum, on
 /// both architectures: None for any other number.
@@ -784,6 +797,9 @@ pub fn dispatch_numbered(number: u64, a: [u64; 4]) -> Option<SyscallResult> {
         TIMER_GETTIME_SYSCALL_NUMBER => timers::sys_timer_gettime(a[0] as i32, a[1]),
         TIMER_GETOVERRUN_SYSCALL_NUMBER => timers::sys_timer_getoverrun(a[0] as i32),
         TIMER_DELETE_SYSCALL_NUMBER => timers::sys_timer_delete(a[0] as i32),
+        SCHED_SETAFFINITY_SYSCALL_NUMBER => affinity::sys_sched_setaffinity(a[0] as i32 as i64, a[1], a[2]),
+        SCHED_GETAFFINITY_SYSCALL_NUMBER => affinity::sys_sched_getaffinity(a[0] as i32 as i64, a[1], a[2]),
+        GETCPU_SYSCALL_NUMBER => affinity::sys_getcpu(a[0], a[1], a[2]),
         _ => return None,
     })
 }

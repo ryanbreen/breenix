@@ -334,6 +334,13 @@ pub fn sys_clone(
     // Write child TID to parent's tidptr (CLONE_PARENT_SETTID)
     // (handled by caller since we return the tid)
 
+    // A new thread starts with its creator's CPU affinity.
+    child_thread.cpu_affinity = crate::task::thread::CpuPin::for_child(
+        manager
+            .get_process(parent_pid)
+            .and_then(|parent| parent.main_thread.as_ref())
+            .and_then(|thread| thread.cpu_affinity),
+    );
     child_process.attach_main_thread_unpublished(child_thread);
 
     // Add child to process manager. From here the row is published and leaves
