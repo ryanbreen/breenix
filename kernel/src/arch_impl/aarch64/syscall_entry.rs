@@ -117,7 +117,9 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     let custody = crate::task::thread::KillCustody::enter_syscall();
 
     let result = match resolved_num {
-        Some(SyscallNumber::Exit) | Some(SyscallNumber::ExitGroup) => {
+        Some(SyscallNumber::Exit) => sys_exit_aarch64(arg1 as i32, Some(custody), true),
+        Some(SyscallNumber::ExitGroup) => {
+            crate::syscall::handlers::end_thread_group_peers(arg1 as i32);
             sys_exit_aarch64(arg1 as i32, Some(custody), true)
         }
         Some(SyscallNumber::Fork) => sys_fork_aarch64(frame),
@@ -158,8 +160,8 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
             if arg1 & CLONE_VM == 0 {
                 sys_fork_aarch64(frame)
             } else {
-                result_to_u64(crate::syscall::clone::sys_clone(
-                    arg1, arg2, arg3, arg4, arg5,
+                result_to_u64(crate::syscall::clone::sys_clone_thread(
+                    arg1, arg2, arg3, arg4, arg5, arg6,
                 ))
             }
         }
@@ -433,7 +435,7 @@ fn sys_exit_aarch64(
         if let Some((tg_id, tid_addr)) = clear_child_tid {
             let zero = 0u32;
             let _ = crate::syscall::userptr::copy_to_user(tid_addr as *mut u32, &zero);
-            crate::syscall::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
+            crate::syscall::futex::futex_wake_cleared_tid(tg_id, tid_addr);
         }
 
         // Log outside PM lock
@@ -692,8 +694,8 @@ fn dispatch_syscall_enum(
             arg2 as *const crate::syscall::time::Timespec,
         )),
         SyscallNumber::Nanosleep => result_to_u64(crate::syscall::time::sys_nanosleep(arg1, arg2)),
-        SyscallNumber::Clone => result_to_u64(crate::syscall::clone::sys_clone(
-            arg1, arg2, arg3, arg4, arg5,
+        SyscallNumber::Clone => result_to_u64(crate::syscall::clone::sys_clone_thread(
+            arg1, arg2, arg3, arg4, arg5, arg6,
         )),
         SyscallNumber::Futex => result_to_u64(crate::syscall::futex::sys_futex(
             arg1,

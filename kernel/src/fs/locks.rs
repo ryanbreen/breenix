@@ -74,6 +74,12 @@ impl LockOwner {
         self.id
     }
 
+    /// How many of the group's rows have not terminated. Read under
+    /// PROCESS_MANAGER, which every change to the count is made under.
+    pub fn live_rows(&self) -> usize {
+        self.members.load(Ordering::Acquire)
+    }
+
     /// A new row joined the group (a thread was created).
     pub fn join(&self) {
         self.members.fetch_add(1, Ordering::AcqRel);

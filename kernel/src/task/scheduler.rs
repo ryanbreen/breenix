@@ -55,7 +55,7 @@
 #[cfg(feature = "boot_tests")]
 use super::thread::ThreadPrivilege;
 use super::thread::{CpuContext, VirtAddr};
-use super::thread::{Thread, ThreadState, TimerPop, TimerPopRecord};
+use super::thread::{SchedPolicy, Thread, ThreadState, TimerPop, TimerPopRecord};
 #[cfg(target_arch = "x86_64")]
 use crate::log_serial_println;
 use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
@@ -2675,6 +2675,54 @@ impl Scheduler {
         thread.run_start_ticks = crate::time::get_cpu_ticks();
     }
 
+    /// The scheduling rank of thread `tid` (`SchedPolicy::rank`).
+    fn sched_rank(&self, tid: u64) -> u8 {
+        self.get_thread(tid).map_or(0, |thread| thread.sched.rank())
+    }
+
+    /// Move the highest-ranked thread queued on `cpu` to the head of its
+    /// queue, the first of its rank to arrive when there are several, so that
+    /// a real-time thread is taken ahead of every lower one (#1320). Threads
+    /// of one rank keep their order.
+    fn promote_highest_rank(&mut self, cpu: usize) {
+        let queue = &self.per_cpu_queues[cpu];
+        let mut best = None;
+        let mut best_rank = 0;
+        for (index, &tid) in queue.iter().enumerate() {
+            let rank = self.sched_rank(tid);
+            if best.is_none() || rank > best_rank {
+                best = Some(index);
+                best_rank = rank;
+            }
+        }
+        if let Some(index) = best.filter(|&index| index > 0) {
+            if let Some(tid) = self.per_cpu_queues[cpu].remove(index) {
+                self.per_cpu_queues[cpu].push_front(tid);
+            }
+        }
+    }
+
+    /// Whether `tid`, chosen again on `cpu`, keeps the processor rather than
+    /// handing it to another queued thread: a real-time thread ranked above
+    /// every other thread queued there, or a SCHED_FIFO thread that did not
+    /// yield (`holds_head`) and that none ranks above.
+    fn policy_keeps_cpu(&self, tid: u64, cpu: usize, holds_head: bool) -> bool {
+        if !REALTIME_SEEN.load(Ordering::Acquire) {
+            return false;
+        }
+        let mine = self.sched_rank(tid);
+        if mine == 0 {
+            return false;
+        }
+        let other = self.per_cpu_queues[cpu]
+            .iter()
+            .filter(|&&queued| queued != tid)
+            .map(|&queued| self.sched_rank(queued))
+            .max()
+            .unwrap_or(0);
+        mine > other || (holds_head && mine >= other)
+    }
+
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
@@ -2726,6 +2774,9 @@ impl Scheduler {
         // rather than relaxing the rule that protects it.
         self.wake_expired_timers();
 
+        // Whether the outgoing thread is a SCHED_FIFO thread that keeps the
+        // processor against threads of its own priority.
+        let mut outgoing_holds_head = false;
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
@@ -2766,12 +2817,26 @@ impl Scheduler {
                 let in_queue = self.per_cpu_queues.iter().any(|q| q.contains(&current_id));
                 let will_add = !is_terminated && !is_blocked && !in_queue;
 
+                // A SCHED_FIFO thread that did not yield keeps its place at
+                // the head of its priority; any other goes behind the threads
+                // of its priority (#1320).
+                let sched = self.get_thread_mut(current_id).map(|thread| {
+                    let sched = thread.sched;
+                    thread.sched.yielded = false;
+                    sched
+                });
+                outgoing_holds_head =
+                    sched.is_some_and(|sched| sched.policy == SchedPolicy::FIFO && !sched.yielded);
                 if will_add {
                     let cpu = Self::current_cpu_id();
                     // A thread pinned to another CPU (sched_setaffinity) is
                     // queued there instead, by the migration guard.
                     if !self.retain_cpu_affine_thread(current_id, cpu) {
-                        self.per_cpu_queues[cpu].push_back(current_id);
+                        if outgoing_holds_head {
+                            self.per_cpu_queues[cpu].push_front(current_id);
+                        } else {
+                            self.per_cpu_queues[cpu].push_back(current_id);
+                        }
                     }
                     if published_ready {
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
@@ -2787,6 +2852,11 @@ impl Scheduler {
         // x86_64: CPUs still on the stack of a thread this pass passed over.
         #[cfg(target_arch = "x86_64")]
         let mut stack_waits = 0u64;
+        if REALTIME_SEEN.load(Ordering::Acquire) {
+            for cpu in 0..MAX_CPUS {
+                self.promote_highest_rank(cpu);
+            }
+        }
         let mut next_thread_id = 'outer: loop {
             // Try local queue first
             let local_candidates = self.per_cpu_queues[current_cpu].len();
@@ -2890,6 +2960,7 @@ impl Scheduler {
         if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread
             && next_thread_id != self.cpu_state[current_cpu].idle_thread
             && any_queued
+            && !self.policy_keeps_cpu(next_thread_id, current_cpu, outgoing_holds_head)
         {
             // Put current thread back in its CPU queue and get the next one
             self.per_cpu_queues[current_cpu].push_back(next_thread_id);
@@ -3373,7 +3444,28 @@ impl Scheduler {
 
         // Get next thread: local queue first, then work-steal, then idle.
         let current_cpu = Self::current_cpu_id();
-        let mut next_thread_id = 'sched_outer: loop {
+        // A real-time outgoing thread ranked above every queued thread, or a
+        // SCHED_FIFO one that did not yield and none ranks above, keeps this
+        // CPU (#1320): the selection is skipped and the outgoing thread is
+        // kept below, as one with nothing else runnable is.
+        let mut keep_outgoing = false;
+        if REALTIME_SEEN.load(Ordering::Acquire) {
+            for cpu in 0..MAX_CPUS {
+                self.promote_highest_rank(cpu);
+            }
+            if should_requeue_old {
+                if let Some(current_id) = self.cpu_state[current_cpu].current_thread {
+                    let holds_head = self.get_thread(current_id).is_some_and(|thread| {
+                        thread.sched.policy == SchedPolicy::FIFO && !thread.sched.yielded
+                    });
+                    keep_outgoing = self.policy_keeps_cpu(current_id, current_cpu, holds_head);
+                }
+            }
+        }
+        let mut next_thread_id = if keep_outgoing {
+            self.cpu_state[current_cpu].idle_thread
+        } else {
+            'sched_outer: loop {
             // Try local queue
             let local_candidates = self.per_cpu_queues[current_cpu].len();
             for _ in 0..local_candidates {
@@ -3459,6 +3551,7 @@ impl Scheduler {
                 }
             }
             break self.cpu_state[current_cpu].idle_thread;
+            }
         };
 
         // Nothing else is runnable. The outgoing thread is not on any queue --
@@ -3485,6 +3578,7 @@ impl Scheduler {
             }
             if let Some(t) = self.get_thread_mut(current_id) {
                 t.set_running();
+                t.sched.yielded = false;
             }
             trace_sched_diag(
                 TRACE_SCHED_DIAG_RETURN_NONE,
@@ -3867,8 +3961,19 @@ impl Scheduler {
             // the thread's saved SP. The guard consults the pin and yields to
             // that stack home when the two disagree, so this call cannot
             // reintroduce the two-CPUs-on-one-stack shape.
+            // A SCHED_FIFO thread that did not yield keeps its place at the
+            // head of its priority (#1320).
+            let holds_head = self.get_thread_mut(thread_id).is_some_and(|thread| {
+                let holds = thread.sched.policy == SchedPolicy::FIFO && !thread.sched.yielded;
+                thread.sched.yielded = false;
+                holds
+            });
             if !self.retain_cpu_affine_thread(thread_id, target_cpu) {
-                self.per_cpu_queues[target_cpu].push_back(thread_id);
+                if holds_head {
+                    self.per_cpu_queues[target_cpu].push_front(thread_id);
+                } else {
+                    self.per_cpu_queues[target_cpu].push_back(thread_id);
+                }
             }
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
             // Send IPI to wake an idle CPU to pick up the requeued thread
@@ -7367,6 +7472,53 @@ pub fn set_user_affinity(tid: u64, pin: Option<super::thread::CpuPin>) -> bool {
         true
     })
     .unwrap_or(false)
+}
+
+/// Whether any thread has ever been given a real-time policy. Until one has,
+/// every run queue is in arrival order and `schedule` keeps it that way
+/// without looking at policies.
+static REALTIME_SEEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Give thread `tid` scheduling policy `sched` (#1320), and have the CPU it
+/// runs or waits on choose again under it. False when the scheduler has no
+/// such thread.
+pub fn set_sched_policy(tid: u64, sched: super::thread::SchedPolicy) -> bool {
+    if sched.is_realtime() {
+        REALTIME_SEEN.store(true, Ordering::Release);
+    }
+    with_scheduler(|scheduler| {
+        let Some(thread) = scheduler.get_thread_mut(tid) else {
+            return false;
+        };
+        thread.sched = sched;
+        let here = Scheduler::current_cpu_id();
+        let running = (0..MAX_CPUS).find(|&cpu| scheduler.cpu_state[cpu].current_thread == Some(tid));
+        let queued = (0..MAX_CPUS).find(|&cpu| scheduler.per_cpu_queues[cpu].contains(&tid));
+        for cpu in [running, queued].into_iter().flatten() {
+            if cpu == here {
+                set_need_resched();
+            } else {
+                scheduler.send_resched_ipi_to_cpu(cpu);
+            }
+        }
+        true
+    })
+    .unwrap_or(false)
+}
+
+/// Thread `tid`'s scheduling policy.
+pub fn sched_policy(tid: u64) -> Option<super::thread::SchedPolicy> {
+    with_scheduler(|scheduler| scheduler.get_thread(tid).map(|thread| thread.sched)).flatten()
+}
+
+/// The calling thread asked to yield: the next reschedule puts it behind the
+/// other threads of its priority.
+pub fn note_sched_yield() {
+    with_scheduler(|scheduler| {
+        if let Some(thread) = scheduler.current_thread_mut() {
+            thread.sched.yielded = true;
+        }
+    });
 }
 
 /// Charge the open run interval of every thread that shares `account` to its

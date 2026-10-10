@@ -118,6 +118,8 @@ fn scan(thread_id: u64, selector: Selector, options: u32) -> Result<Option<Found
         let clone_only = options & WCLONE != 0 && options & WALL == 0;
         let mut any = false;
         for child_pid in children {
+            // A leader whose other threads still run is a running process.
+            let group_running = manager.leader_waits_for_group(child_pid);
             let Some(child) = manager.get_process_mut(child_pid) else {
                 continue;
             };
@@ -133,7 +135,7 @@ fn scan(thread_id: u64, selector: Selector, options: u32) -> Result<Option<Found
             any = true;
             let uid = child.cred.uid;
             if let crate::process::ProcessState::Terminated(code) = child.state {
-                if options & WEXITED != 0 {
+                if options & WEXITED != 0 && !group_running {
                     return Ok(Some(Found {
                         reaper,
                         pid: child_pid,

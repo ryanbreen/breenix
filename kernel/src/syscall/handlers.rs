@@ -201,7 +201,7 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
         if let Some((tg_id, tid_addr)) = clear_child_tid {
             let zero = 0u32;
             let _ = super::userptr::copy_to_user(tid_addr as *mut u32, &zero);
-            super::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
+            super::futex::futex_wake_cleared_tid(tg_id, tid_addr);
         }
 
         // Handle thread exit through ProcessScheduler
@@ -1945,7 +1945,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 pub fn sys_yield() -> SyscallResult {
     // log::trace!("sys_yield called");
 
-    // Yield to the scheduler
+    // Behind the other threads of its priority, then to the scheduler.
+    crate::task::scheduler::note_sched_yield();
     crate::task::scheduler::yield_current();
 
     // Note: The actual context switch will happen on the next timer interrupt
@@ -3335,11 +3336,27 @@ pub fn sys_getppid() -> SyscallResult {
     })
 }
 
-/// sys_exit_group - Terminate all threads in the process group
-///
-/// For now this is an alias for sys_exit since we are single-threaded per process.
+/// sys_exit_group - end every thread of the calling process with `exit_code`
+/// (#1033). The other threads of the group are killed first, each with the
+/// group's status, then the calling thread exits.
 pub fn sys_exit_group(exit_code: i32) -> SyscallResult {
+    end_thread_group_peers(exit_code);
     sys_exit(exit_code)
+}
+
+/// The calling thread's process is ending with `exit_code`: kill its other
+/// threads with that status. Called with no process-manager lock held.
+pub(crate) fn end_thread_group_peers(exit_code: i32) {
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return;
+    };
+    let pid = crate::process::with_process_manager(|manager| {
+        manager.find_process_by_thread(thread_id).map(|(pid, _)| pid)
+    })
+    .flatten();
+    if let Some(pid) = pid {
+        crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
+    }
 }
 
 /// sys_set_tid_address - Store TID address for thread exit notification

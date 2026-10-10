@@ -91,6 +91,28 @@ impl ProcessRowMap for BTreeMap<ProcessId, Process> {
     }
 }
 
+/// What telling a process's parent that its last thread has ended leaves to do
+/// once PROCESS_MANAGER is released (`ProcessManager::group_exited`).
+pub(crate) struct GroupExited {
+    signal_wake: Option<u64>,
+    parent_tid: Option<u64>,
+    reaped: Option<Process>,
+}
+
+impl GroupExited {
+    /// Wake the parent's waits and drop a leader row it reaped (condition C8:
+    /// outside PROCESS_MANAGER).
+    pub(crate) fn wake_parent(self) {
+        drop(self.reaped);
+        for tid in [self.signal_wake, self.parent_tid].into_iter().flatten() {
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.unblock_for_signal(tid);
+                sched.unblock_for_child_exit(tid);
+            });
+        }
+    }
+}
+
 /// Outcome of the two-event join's reap arm.
 pub(crate) enum ReapOutcome {
     /// This caller installed the reap claim, so it owns the status it read. The
@@ -1508,7 +1530,7 @@ impl ProcessManager {
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block: actual_tls_block,
-            priority: 128,
+            sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
             entry_point: None,
             privilege: crate::task::thread::ThreadPrivilege::User,
@@ -1601,7 +1623,7 @@ impl ProcessManager {
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block: initial_tpidr_el0,
-            priority: 128,
+            sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
             entry_point: None,
             privilege: crate::task::thread::ThreadPrivilege::User,
@@ -1888,6 +1910,9 @@ impl ProcessManager {
             None => return (None, None),
         };
         crate::tracing::providers::teardown::record_exit_request(already_terminated);
+        // The rest of the thread group may still run on this row's address
+        // space: it moves to one of them before this exit releases it (#1321).
+        self.hand_off_address_space(pid);
 
         // Get parent PID before we borrow the process mutably
         let parent_pid = self.processes.live_row(&pid).and_then(|p| p.parent);
@@ -1899,7 +1924,11 @@ impl ProcessManager {
                 process.exit_notifications.seed();
             }
 
-            if already_terminated {
+            // `terminate` left this row's address space for its exit because
+            // the group still ran on it; nothing has walked it.
+            let deferred_release =
+                already_terminated && core::mem::take(&mut process.address_space_release_deferred);
+            if already_terminated && !deferred_release {
                 // Preserve the single-CoW-decref invariant: external terminate()
                 // already walked these mappings, so raw-drop them without ever
                 // routing the page table through another reclaim/decref path.
@@ -2146,7 +2175,7 @@ impl ProcessManager {
     #[must_use]
     pub(crate) fn reap_if_parent_declines(&mut self, child: ProcessId) -> Option<Process> {
         let row = self.processes.live_row(&child)?;
-        if !row.is_terminated() {
+        if !row.is_terminated() || self.leader_waits_for_group(child) {
             return None;
         }
         let parent_pid = row.parent?;
@@ -2309,6 +2338,148 @@ impl ProcessManager {
             })
             .map(|(&peer, _)| peer)
             .collect()
+    }
+
+    /// Whether `pid` leads a thread group another row of which has not
+    /// terminated. Its exit is not reported, nor is it reaped, until the last
+    /// of them has ended: the process is still running (POSIX: a process
+    /// terminates when its last thread does).
+    pub fn leader_waits_for_group(&self, pid: ProcessId) -> bool {
+        self.processes.live_row(&pid).is_some_and(|row| {
+            row.thread_group_id.map_or(true, |group| group == pid.as_u64())
+        }) && self.group_has_other_live_rows(pid)
+    }
+
+    /// Whether a row of `pid`'s thread group other than `pid` has not
+    /// terminated.
+    pub fn group_has_other_live_rows(&self, pid: ProcessId) -> bool {
+        let Some(process) = self.processes.live_row(&pid) else {
+            return false;
+        };
+        let group = process.thread_group_id.unwrap_or(pid.as_u64());
+        self.processes.iter().any(|(&peer, row)| {
+            peer != pid
+                && !row.is_terminated()
+                && row.thread_group_id.unwrap_or(peer.as_u64()) == group
+        })
+    }
+
+    /// The leader of the thread group of the row `thread_id` runs, when that
+    /// row is the group's last one still running and its leader has already
+    /// exited: once the row ends, the process has exited. None otherwise.
+    pub fn last_group_row_exiting(&self, thread_id: u64) -> Option<ProcessId> {
+        let (pid, row) = self.find_process_by_thread(thread_id)?;
+        let leader = ProcessId::new(row.thread_group_id.filter(|&group| group != pid.as_u64())?);
+        let leader_row = self.processes.live_row(&leader)?;
+        (leader_row.is_terminated() && !self.group_has_other_live_rows_than(leader, pid))
+            .then_some(leader)
+    }
+
+    /// Whether a row of `leader`'s thread group other than `leader` and
+    /// `exiting` has not terminated.
+    fn group_has_other_live_rows_than(&self, leader: ProcessId, exiting: ProcessId) -> bool {
+        let group = leader.as_u64();
+        self.processes.iter().any(|(&peer, row)| {
+            peer != leader
+                && peer != exiting
+                && !row.is_terminated()
+                && row.thread_group_id.unwrap_or(peer.as_u64()) == group
+        })
+    }
+
+    /// The last row of `leader`'s thread group has ended: the process has
+    /// exited. Its leader's parent, which could not reap the leader while the
+    /// group ran (`wait`), is sent SIGCHLD and woken; a parent that declines
+    /// zombies reaps it now. Under PROCESS_MANAGER; the caller runs
+    /// `GroupExited::wake_parent` once it has released it.
+    pub(crate) fn group_exited(&mut self, leader: ProcessId) -> GroupExited {
+        let parent = self.processes.live_row(&leader).and_then(|row| row.parent);
+        let info = self
+            .processes
+            .live_row(&leader)
+            .map(crate::signal::delivery::child_exit_info);
+        let signal_wake = match (parent, info) {
+            (Some(parent), Some(info)) => {
+                self.queue_process_signal(parent, crate::signal::constants::SIGCHLD, info)
+            }
+            _ => None,
+        };
+        let parent_tid = parent
+            .and_then(|parent| self.processes.live_row(&parent))
+            .and_then(|row| row.main_thread.as_ref())
+            .map(|thread| thread.id);
+        let reaped = self.reap_if_parent_declines(leader);
+        GroupExited {
+            signal_wake,
+            parent_tid,
+            reaped,
+        }
+    }
+
+    /// A thread group's address space lives as long as any of its rows does
+    /// (#1321). `pid` is ending and owns an address space a live CLONE_VM row
+    /// still runs on: move the address space, and everything that describes
+    /// it, to that row, which then owns it and releases it when it ends in
+    /// turn. The ending row is left with nothing to release. Returns whether
+    /// the address space moved.
+    ///
+    /// Called under PROCESS_MANAGER from every exit path before it releases a
+    /// row's address space; it neither allocates nor takes another lock.
+    pub(crate) fn hand_off_address_space(&mut self, pid: ProcessId) -> bool {
+        let Some(root) = self
+            .processes
+            .live_row(&pid)
+            .and_then(|row| row.page_table.as_ref())
+            .map(|table| table.level_4_frame().start_address().as_u64())
+        else {
+            return false;
+        };
+        let Some(heir) = self
+            .processes
+            .iter()
+            .find(|(&peer, row)| {
+                peer != pid
+                    && !row.is_terminated()
+                    && row.page_table.is_none()
+                    && row.inherited_cr3 == Some(root)
+            })
+            .map(|(&peer, _)| peer)
+        else {
+            return false;
+        };
+        let Some(from) = self.processes.live_row_mut(&pid) else {
+            return false;
+        };
+        let page_table = from.page_table.take();
+        let vmas = core::mem::take(&mut from.vmas);
+        let memory_locks = core::mem::take(&mut from.memory_locks);
+        let stack = from.stack.take();
+        let pending_old_page_tables = core::mem::take(&mut from.pending_old_page_tables);
+        let memory_usage = core::mem::take(&mut from.memory_usage);
+        let fb_mmap = from.fb_mmap.take();
+        let (heap_start, heap_end, mmap_hint) = (from.heap_start, from.heap_end, from.mmap_hint);
+        let (stack_bottom, stack_top) = (from.user_stack_bottom, from.user_stack_top);
+        let (image_size, image_data_size) = (from.image_size, from.image_data_size);
+        from.address_space_release_deferred = false;
+        let to = self
+            .processes
+            .live_row_mut(&heir)
+            .expect("the heir was found under this same guard");
+        to.page_table = page_table;
+        to.vmas = vmas;
+        to.memory_locks = memory_locks;
+        to.stack = stack;
+        to.pending_old_page_tables = pending_old_page_tables;
+        to.memory_usage = memory_usage;
+        to.fb_mmap = fb_mmap;
+        to.heap_start = heap_start;
+        to.heap_end = heap_end;
+        to.mmap_hint = mmap_hint;
+        to.user_stack_bottom = stack_bottom;
+        to.user_stack_top = stack_top;
+        to.image_size = image_size;
+        to.image_data_size = image_data_size;
+        true
     }
 
     /// Remove a process from the ready queue
@@ -3500,7 +3671,7 @@ impl ProcessManager {
                 #[cfg(target_arch = "x86_64")]
                 fpu: crate::arch_impl::x86_64::fpu::FpuState::capture(),
                 tls_block: child_tls_block,
-                priority: parent_thread.priority,
+                sched: parent_thread.sched,
                 time_slice: parent_thread.time_slice,
                 entry_point: None,
                 privilege: parent_thread.privilege,

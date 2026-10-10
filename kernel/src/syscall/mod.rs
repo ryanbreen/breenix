@@ -28,6 +28,7 @@ pub mod handler;
 // - dispatcher is x86_64-only (ARM64 dispatch is in arch_impl/aarch64/syscall_entry.rs)
 // - handlers is shared across architectures (arch-specific parts are cfg-gated internally)
 pub mod affinity;
+pub mod sched;
 pub mod audio;
 pub(crate) mod blocking_io;
 #[cfg(feature = "boot_tests")]
@@ -792,6 +793,35 @@ pub const GETCPU_SYSCALL_NUMBER: u64 = 309;
 pub const GETCPU_SYSCALL_NUMBER: u64 = 168;
 
 #[cfg(target_arch = "x86_64")]
+pub const SCHED_SETPARAM_SYSCALL_NUMBER: u64 = 142;
+#[cfg(target_arch = "aarch64")]
+pub const SCHED_SETPARAM_SYSCALL_NUMBER: u64 = 118;
+#[cfg(target_arch = "x86_64")]
+pub const SCHED_GETPARAM_SYSCALL_NUMBER: u64 = 143;
+#[cfg(target_arch = "aarch64")]
+pub const SCHED_GETPARAM_SYSCALL_NUMBER: u64 = 121;
+#[cfg(target_arch = "x86_64")]
+pub const SCHED_SETSCHEDULER_SYSCALL_NUMBER: u64 = 144;
+#[cfg(target_arch = "aarch64")]
+pub const SCHED_SETSCHEDULER_SYSCALL_NUMBER: u64 = 119;
+#[cfg(target_arch = "x86_64")]
+pub const SCHED_GETSCHEDULER_SYSCALL_NUMBER: u64 = 145;
+#[cfg(target_arch = "aarch64")]
+pub const SCHED_GETSCHEDULER_SYSCALL_NUMBER: u64 = 120;
+#[cfg(target_arch = "x86_64")]
+pub const SCHED_GET_PRIORITY_MAX_SYSCALL_NUMBER: u64 = 146;
+#[cfg(target_arch = "aarch64")]
+pub const SCHED_GET_PRIORITY_MAX_SYSCALL_NUMBER: u64 = 125;
+#[cfg(target_arch = "x86_64")]
+pub const SCHED_GET_PRIORITY_MIN_SYSCALL_NUMBER: u64 = 147;
+#[cfg(target_arch = "aarch64")]
+pub const SCHED_GET_PRIORITY_MIN_SYSCALL_NUMBER: u64 = 126;
+#[cfg(target_arch = "x86_64")]
+pub const SCHED_RR_GET_INTERVAL_SYSCALL_NUMBER: u64 = 148;
+#[cfg(target_arch = "aarch64")]
+pub const SCHED_RR_GET_INTERVAL_SYSCALL_NUMBER: u64 = 127;
+
+#[cfg(target_arch = "x86_64")]
 pub const MLOCK_SYSCALL_NUMBER: u64 = 149;
 #[cfg(target_arch = "aarch64")]
 pub const MLOCK_SYSCALL_NUMBER: u64 = 228;
@@ -829,6 +859,13 @@ pub fn dispatch_numbered(number: u64, a: [u64; 4]) -> Option<SyscallResult> {
         SCHED_SETAFFINITY_SYSCALL_NUMBER => affinity::sys_sched_setaffinity(a[0] as i32 as i64, a[1], a[2]),
         SCHED_GETAFFINITY_SYSCALL_NUMBER => affinity::sys_sched_getaffinity(a[0] as i32 as i64, a[1], a[2]),
         GETCPU_SYSCALL_NUMBER => affinity::sys_getcpu(a[0], a[1], a[2]),
+        SCHED_SETPARAM_SYSCALL_NUMBER => sched::sys_sched_setparam(a[0], a[1]),
+        SCHED_GETPARAM_SYSCALL_NUMBER => sched::sys_sched_getparam(a[0], a[1]),
+        SCHED_SETSCHEDULER_SYSCALL_NUMBER => sched::sys_sched_setscheduler(a[0], a[1], a[2]),
+        SCHED_GETSCHEDULER_SYSCALL_NUMBER => sched::sys_sched_getscheduler(a[0]),
+        SCHED_GET_PRIORITY_MAX_SYSCALL_NUMBER => sched::sys_sched_get_priority_max(a[0]),
+        SCHED_GET_PRIORITY_MIN_SYSCALL_NUMBER => sched::sys_sched_get_priority_min(a[0]),
+        SCHED_RR_GET_INTERVAL_SYSCALL_NUMBER => sched::sys_sched_rr_get_interval(a[0], a[1]),
         _ => return None,
     })
 }

@@ -878,8 +878,19 @@ impl ProcessScheduler {
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {
                 let designated_init = manager.designated_init();
+                // The rest of the thread group may still run on this row's
+                // address space: it moves to one of them before anything here
+                // releases it (#1321).
+                if let Some((pid, _)) = manager.find_process_by_thread(thread_id) {
+                    manager.hand_off_address_space(pid);
+                }
+                let group_wake = manager.last_group_row_exiting(thread_id);
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     let already_terminated = process.is_terminated();
+                    // `terminate` left this row's address space for this hook
+                    // because the group still ran on it; nothing walked it.
+                    let deferred_release = already_terminated
+                        && core::mem::take(&mut process.address_space_release_deferred);
                     crate::tracing::providers::teardown::record_exit_request(already_terminated);
                     if !already_terminated {
                         process.exit_notifications.seed();
@@ -895,7 +906,7 @@ impl ProcessScheduler {
                     // Extract FDs without closing them under the PM lock.
                     let fd_entries = process.take_fd_entries();
                     let retirement_receipt: Option<crate::process::RetirementReceipt> =
-                        if already_terminated {
+                        if already_terminated && !deferred_release {
                             // Preserve the single-CoW-decref invariant: external
                             // terminate() already walked these mappings, so raw-drop
                             // them without another reclaim/decref path.
@@ -985,6 +996,9 @@ impl ProcessScheduler {
                     // A parent that declines zombies reaps the row now; it is
                     // dropped after PM is released.
                     let auto_reaped = manager.reap_if_parent_declines(pid);
+                    // The group's last row has ended after its leader: the
+                    // process has now exited, so its parent may reap it.
+                    let group_exited = group_wake.map(|leader| manager.group_exited(leader));
 
                     Some((
                         pid,
@@ -997,6 +1011,7 @@ impl ProcessScheduler {
                         reported_exit_code,
                         orphaned_groups,
                         auto_reaped,
+                        group_exited,
                     ))
                 } else {
                     None
@@ -1018,10 +1033,14 @@ impl ProcessScheduler {
             reported_exit_code,
             orphaned_groups,
             auto_reaped,
+            group_exited,
         )) = phase1_result
         {
             // Condition C8: a row the auto-reap removed is destroyed outside PM.
             drop(auto_reaped);
+            if let Some(exited) = group_exited {
+                exited.wake_parent();
+            }
             if let Some(mut receipt) = retirement_receipt {
                 if let Some(reclaim) = receipt.take_contents() {
                     enqueue_process_reclaim(reclaim);
@@ -1118,17 +1137,21 @@ pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     defer_fault_exit(thread_id, -(crate::signal::constants::SIGSEGV as i32))
 }
 
-/// A queued fault exit: the thread id, with the negated exit status in the
-/// top byte. Thread ids are allocated upward from 1 and never reach that
-/// byte, and the entry is never 0, the empty slot.
+/// A queued fault exit: the thread id, with the exit status's magnitude in the
+/// top byte and its sign in the bit below. Thread ids are allocated upward
+/// from 1 and never reach those bits, and the entry is never 0, the empty slot.
 const FAULT_EXIT_STATUS_SHIFT: u32 = 56;
+const FAULT_EXIT_NEGATIVE: u64 = 1 << 55;
 
-/// Defer the exit of the process of user thread `thread_id`, ended by a fault
+/// Defer the exit of the process of user thread `thread_id`, ended by a
 /// signal's default action with `exit_code` (-1 to -255: the signal, with
-/// 0x80 for a core dump). The rest of its thread group dies with it. Returns
-/// false as `defer_fault_sigsegv_exit`.
+/// 0x80 for a core dump; or the status of the group exit that sent the
+/// SIGKILL). The rest of its thread group dies with it. Returns false as
+/// `defer_fault_sigsegv_exit`.
 pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
-    let thread_id = thread_id | (exit_code.unsigned_abs() as u8 as u64) << FAULT_EXIT_STATUS_SHIFT;
+    let sign = if exit_code < 0 { FAULT_EXIT_NEGATIVE } else { 0 };
+    let thread_id =
+        thread_id | sign | (exit_code.unsigned_abs() as u8 as u64) << FAULT_EXIT_STATUS_SHIFT;
     #[cfg(target_arch = "aarch64")]
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     #[cfg(target_arch = "x86_64")]
@@ -1154,8 +1177,9 @@ pub fn drain_deferred_fault_sigsegv_exits() {
     }
     crate::arch_without_interrupts(|| tids.append(&mut DEFERRED_FAULT_EXIT_OVERFLOW.lock()));
     for entry in tids {
-        let tid = entry & ((1 << FAULT_EXIT_STATUS_SHIFT) - 1);
-        let exit_code = -((entry >> FAULT_EXIT_STATUS_SHIFT) as i32);
+        let tid = entry & (FAULT_EXIT_NEGATIVE - 1);
+        let magnitude = (entry >> FAULT_EXIT_STATUS_SHIFT) as i32;
+        let exit_code = if entry & FAULT_EXIT_NEGATIVE != 0 { -magnitude } else { magnitude };
         // A fatal signal ends the whole process, not one thread (POSIX).
         let pid = crate::process::with_process_manager(|manager| {
             manager.find_process_by_thread(tid).map(|(pid, _)| pid)

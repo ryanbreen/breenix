@@ -554,6 +554,53 @@ impl CpuAccount {
     }
 }
 
+/// A thread's scheduling policy and real-time priority (#1320).
+///
+/// SCHED_FIFO and SCHED_RR threads run ahead of every other thread, higher
+/// priority first. A SCHED_FIFO thread keeps its processor until it blocks,
+/// yields or a higher-priority thread is ready; a SCHED_RR thread also gives
+/// it up to another of its priority at the end of each quantum. SCHED_OTHER,
+/// SCHED_BATCH and SCHED_IDLE threads share what is left, in turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchedPolicy {
+    /// SCHED_OTHER (0), SCHED_FIFO (1), SCHED_RR (2), SCHED_BATCH (3) or
+    /// SCHED_IDLE (5).
+    pub policy: u8,
+    /// 1 to 99 for SCHED_FIFO and SCHED_RR, 0 for the others.
+    pub priority: u8,
+    /// The thread called sched_yield: the next reschedule puts it behind the
+    /// other threads of its priority.
+    pub yielded: bool,
+}
+
+impl SchedPolicy {
+    pub const OTHER: u8 = 0;
+    pub const FIFO: u8 = 1;
+    pub const RR: u8 = 2;
+    pub const BATCH: u8 = 3;
+    pub const IDLE: u8 = 5;
+    /// A thread's policy until it is changed: SCHED_OTHER.
+    pub const DEFAULT: Self = Self {
+        policy: Self::OTHER,
+        priority: 0,
+        yielded: false,
+    };
+
+    pub fn is_realtime(&self) -> bool {
+        matches!(self.policy, Self::FIFO | Self::RR)
+    }
+
+    /// Where the thread stands in a run queue: real-time threads by priority,
+    /// every other thread below them all.
+    pub fn rank(&self) -> u8 {
+        if self.is_realtime() {
+            self.priority
+        } else {
+            0
+        }
+    }
+}
+
 /// Extended Thread Control Block for preemptive multitasking
 pub struct Thread {
     /// Thread ID
@@ -586,8 +633,8 @@ pub struct Thread {
     /// TLS block address
     pub tls_block: VirtAddr,
 
-    /// Priority (0 = highest)
-    pub priority: u8,
+    /// Scheduling policy and real-time priority (sched_setscheduler).
+    pub sched: SchedPolicy,
 
     /// Time slice remaining (in timer ticks)
     pub time_slice: u32,
@@ -1115,7 +1162,7 @@ impl Clone for Thread {
             #[cfg(target_arch = "x86_64")]
             fpu: self.fpu,
             tls_block: self.tls_block,
-            priority: self.priority,
+            sched: self.sched,
             time_slice: self.time_slice,
             entry_point: self.entry_point, // fn pointers can be copied
             privilege: self.privilege,
@@ -1240,7 +1287,7 @@ impl Thread {
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
-            priority: 64,      // Higher priority for kernel threads
+            sched: SchedPolicy::DEFAULT,
             time_slice: 20,    // Longer time slice
             entry_point: None, // Kernel threads use direct entry
             privilege: ThreadPrivilege::Kernel,
@@ -1314,7 +1361,7 @@ impl Thread {
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
-            priority: 64,
+            sched: SchedPolicy::DEFAULT,
             time_slice: 20,
             entry_point: None,
             privilege: ThreadPrivilege::Kernel,
@@ -1375,7 +1422,7 @@ impl Thread {
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
-            priority: 128,  // Default medium priority
+            sched: crate::task::thread::SchedPolicy::DEFAULT,  // Default medium priority
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
@@ -1435,7 +1482,7 @@ impl Thread {
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
-            priority: 128,
+            sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
             entry_point: Some(entry_point),
             privilege,
@@ -1508,7 +1555,7 @@ impl Thread {
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block: actual_tls_block,
-            priority: 128,     // Default medium priority
+            sched: crate::task::thread::SchedPolicy::DEFAULT,     // Default medium priority
             time_slice: 10,    // Default time slice
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: ThreadPrivilege::User,
@@ -1576,7 +1623,7 @@ impl Thread {
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block: actual_tls_block,
-            priority: 128,
+            sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
             entry_point: None,
             privilege: ThreadPrivilege::User,
@@ -1670,7 +1717,7 @@ impl Thread {
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
-            priority: 128,  // Default medium priority
+            sched: crate::task::thread::SchedPolicy::DEFAULT,  // Default medium priority
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
@@ -1726,7 +1773,7 @@ impl Thread {
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             tls_block,
-            priority: 128,
+            sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
             entry_point: Some(entry_point),
             privilege,

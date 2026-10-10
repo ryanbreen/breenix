@@ -368,6 +368,11 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
                         thread_id
                     );
                 }
+                // The action ends the whole process (#1033), and this may be an
+                // interrupt return, where nothing may be torn down: the rest of
+                // the thread group dies, and this row's exit hook runs, from
+                // the deferred-exit drain.
+                let _ = crate::task::process_task::defer_fault_exit(thread_id, exit_code);
             }
 
             // Return notification info for parent - caller will notify after releasing lock
@@ -402,6 +407,11 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
                         thread_id
                     );
                 }
+                // The action ends the whole process (#1033), and this may be an
+                // interrupt return, where nothing may be torn down: the rest of
+                // the thread group dies, and this row's exit hook runs, from
+                // the deferred-exit drain.
+                let _ = crate::task::process_task::defer_fault_exit(thread_id, exit_code);
             }
 
             // Return notification info for parent - caller will notify after releasing lock
@@ -1421,12 +1431,13 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
             let Some(row) = manager.get_process_mut(peer) else {
                 return false;
             };
+            // Every peer is marked in this one acquisition, before any is
+            // killed: a peer's clone refuses from here on, so the group gains
+            // no thread the kills below would miss.
+            row.signals.set_pending(SIGKILL);
+            row.group_exit_code.get_or_insert(exit_code);
             let runs_this = current.is_some()
                 && row.main_thread.as_ref().map(|thread| thread.id) == current;
-            if runs_this {
-                row.signals.set_pending(SIGKILL);
-                row.group_exit_code.get_or_insert(exit_code);
-            }
             !runs_this
         });
         peers

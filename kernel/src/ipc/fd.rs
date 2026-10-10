@@ -319,7 +319,7 @@ impl FileDescriptor {
     }
 }
 
-/// Per-process file descriptor table
+/// The slots of a file descriptor table.
 ///
 /// Note: Uses SlabBox to allocate the fd array from a slab cache (O(1) alloc/free)
 /// with fallback to the global heap. The array is ~6KB which is too large for stack.
@@ -370,10 +370,44 @@ impl FdSlots {
     }
 }
 
+/// Per-process file descriptor table.
+///
+/// Threads created with CLONE_FILES share one table (#1307): `FdTable` is a
+/// handle to the table, and every row of the process holds one. Cloning a
+/// handle (fork) copies the table; `share` (CLONE_FILES) hands out another
+/// handle to the same one.
 pub struct FdTable {
-    /// The file descriptors (None = unused slot)
-    fds: FdSlots,
-    allocation_limit: usize,
+    shared: Arc<SharedFdTable>,
+}
+
+/// The table behind every `FdTable` handle that shares it.
+///
+/// A handle is only ever reached through its `Process` row, and rows are only
+/// ever reached under PROCESS_MANAGER, which therefore serializes every access
+/// to a table however many rows' handles share it: the lock is the table's
+/// lock. A `&`/`&mut` borrow taken through one handle lives no longer than the
+/// call that took it, and no caller holds borrows through two rows of one
+/// thread group at once.
+struct SharedFdTable(core::cell::UnsafeCell<FdTableInner>);
+
+// SAFETY: see `SharedFdTable`: PROCESS_MANAGER serializes all access.
+unsafe impl Sync for SharedFdTable {}
+// SAFETY: the table owns its descriptors; it may move to another CPU's context.
+unsafe impl Send for SharedFdTable {}
+
+impl core::ops::Deref for FdTable {
+    type Target = FdTableInner;
+    fn deref(&self) -> &FdTableInner {
+        // SAFETY: see `SharedFdTable`.
+        unsafe { &*self.shared.0.get() }
+    }
+}
+
+impl core::ops::DerefMut for FdTable {
+    fn deref_mut(&mut self) -> &mut FdTableInner {
+        // SAFETY: see `SharedFdTable`.
+        unsafe { &mut *self.shared.0.get() }
+    }
 }
 
 impl Default for FdTable {
@@ -383,6 +417,51 @@ impl Default for FdTable {
 }
 
 impl Clone for FdTable {
+    /// A copy of the table, as fork gives a child: its descriptors refer to
+    /// the same open file descriptions.
+    fn clone(&self) -> Self {
+        Self::from_inner((**self).clone())
+    }
+}
+
+impl FdTable {
+    fn from_inner(inner: FdTableInner) -> Self {
+        Self {
+            shared: Arc::new(SharedFdTable(core::cell::UnsafeCell::new(inner))),
+        }
+    }
+
+    /// Create a new file descriptor table with standard I/O pre-allocated
+    pub fn new() -> Self {
+        Self::from_inner(FdTableInner::new())
+    }
+
+    /// A table with no descriptors at all.
+    pub fn empty() -> Self {
+        Self::from_inner(FdTableInner::empty())
+    }
+
+    /// Another handle to this same table (CLONE_FILES).
+    pub fn share(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+        }
+    }
+
+    /// Whether another row holds a handle to this table.
+    pub fn is_shared(&self) -> bool {
+        Arc::strong_count(&self.shared) > 1
+    }
+}
+
+/// The descriptors of an `FdTable`.
+pub struct FdTableInner {
+    /// The file descriptors (None = unused slot)
+    fds: FdSlots,
+    allocation_limit: usize,
+}
+
+impl Clone for FdTableInner {
     fn clone(&self) -> Self {
         // CRITICAL: No logging here - this runs during fork() with potential timer interrupts
         // Logging can cause deadlock if timer fires while holding logger lock
@@ -431,23 +510,33 @@ impl Clone for FdTable {
             }
         }
 
-        FdTable {
+        FdTableInner {
             fds: cloned_fds,
             allocation_limit: self.allocation_limit,
         }
     }
 }
 
-impl FdTable {
+impl FdTableInner {
     /// Lowering a limit leaves already open descriptors usable.
     pub fn set_limit(&mut self, limit: u64) {
         self.allocation_limit = limit.min(MAX_FDS as u64) as usize;
     }
 
-    /// Create a new file descriptor table with standard I/O pre-allocated
-    pub fn new() -> Self {
+    /// A table with standard I/O pre-allocated.
+    fn new() -> Self {
+        let mut table = Self::empty();
+        // Pre-allocate stdin, stdout, stderr
+        table.fds[STDIN as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDIN)));
+        table.fds[STDOUT as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDOUT)));
+        table.fds[STDERR as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDERR)));
+        table
+    }
+
+    /// A table with no descriptors.
+    fn empty() -> Self {
         // Try slab allocation first (O(1)), fall back to global heap
-        let mut fds = if let Some(raw) = FD_TABLE_SLAB.alloc() {
+        let fds = if let Some(raw) = FD_TABLE_SLAB.alloc() {
             // Slab returns zeroed memory; write None into each slot
             let arr = raw as *mut [Option<FileDescriptor>; INITIAL_FDS];
             for i in 0..INITIAL_FDS {
@@ -460,12 +549,7 @@ impl FdTable {
             SlabBox::from_box(alloc::boxed::Box::new(core::array::from_fn(|_| None)))
         };
 
-        // Pre-allocate stdin, stdout, stderr
-        fds[STDIN as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDIN)));
-        fds[STDOUT as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDOUT)));
-        fds[STDERR as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDERR)));
-
-        FdTable {
+        FdTableInner {
             fds: FdSlots::Slab(fds),
             allocation_limit: INITIAL_FDS,
         }
@@ -773,7 +857,7 @@ impl FdTable {
 ///
 /// Note: UdpSocket cleanup is handled by UdpSocket's own Drop impl when the
 /// Arc reference count goes to zero.
-impl Drop for FdTable {
+impl Drop for FdTableInner {
     fn drop(&mut self) {
         log::debug!("FdTable::drop() - closing all fds and decrementing pipe counts");
         for i in 0..self.fds.len() {
