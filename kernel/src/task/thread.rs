@@ -1004,6 +1004,12 @@ impl Thread {
         }
     }
 
+    /// Lock-free admission to the full signal/stop/CPU-limit return check.
+    pub fn needs_user_return_check(&self) -> bool {
+        self.signals.needs_return_check()
+            || self.resource_limits.as_ref().is_some_and(|limits| limits.has_pending_cpu_signals())
+    }
+
     /// Charge the interval this thread is running in, when it is: a thread
     /// that dies where it runs keeps that time. A blocked thread was charged
     /// when it blocked, so nothing is added for it.

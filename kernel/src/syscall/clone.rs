@@ -457,7 +457,7 @@ pub fn sys_clone_thread(
         crate::syscall::signal::kill_process_now(child_pid, code);
     }
 
-    log::info!(
+    log::debug!(
         "clone: created child thread {} (pid {}) for parent pid {}, fn_ptr={:#x}, stack={:#x}",
         child_thread_id,
         child_pid.as_u64(),
