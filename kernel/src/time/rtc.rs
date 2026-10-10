@@ -39,7 +39,13 @@ struct RTCTime {
 }
 
 #[cfg(target_arch = "x86_64")]
-static CMOS_LOCK: spin::Mutex<()> = spin::Mutex::new(());
+struct CachedRtc {
+    raw: [u8; 7],
+    sampled_tsc: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+static CMOS_LOCK: spin::Mutex<Option<CachedRtc>> = spin::Mutex::new(None);
 
 #[cfg(target_arch = "x86_64")]
 // Called only with interrupts masked and CMOS_LOCK held for the snapshot.
@@ -71,16 +77,32 @@ fn read_rtc_raw() -> Result<RTCTime, &'static str> {
 fn read_rtc_raw_with(mut read: impl FnMut(u8) -> u8) -> Result<RTCTime, &'static str> {
     for _ in 0..100 {
         let raw = crate::arch_without_interrupts(|| {
-            let guard = CMOS_LOCK.lock();
+            let mut cache = CMOS_LOCK.lock();
             let before = super::tsc::read_tsc_serialized();
-            let raw = cmos::snapshot(&mut read);
+            let budget = super::tsc::frequency_hz() / 2;
+            let raw = match cache.as_ref() {
+                Some(cached) if before.wrapping_sub(cached.sampled_tsc) < budget => {
+                    cmos::seconds(&mut read).and_then(|second| {
+                        let age = super::tsc::read_tsc_serialized().wrapping_sub(cached.sampled_tsc);
+                        cmos::advance_cached(cached.raw, second, age, budget)
+                            .or_else(|| cmos::snapshot(&mut read))
+                    })
+                }
+                _ => cmos::snapshot(&mut read),
+            };
             let elapsed = super::tsc::read_tsc_serialized().wrapping_sub(before);
-            drop(guard);
             // A VM pause or NMI lasting a full minute can hide a seconds wrap.
             // A conservative half-second budget also keeps multiple updates
             // out of any accepted snapshot; time is still read from the RTC.
-            let budget = super::tsc::frequency_hz() / 2;
-            if budget != 0 && elapsed < budget { raw } else { None }
+            if budget != 0 && elapsed < budget {
+                if let Some(raw) = raw {
+                    *cache = Some(CachedRtc { raw, sampled_tsc: before });
+                }
+                raw
+            } else {
+                *cache = None;
+                None
+            }
         });
         if let Some(raw) = raw {
             return Ok(decode_rtc(raw));
@@ -265,23 +287,28 @@ pub fn read_datetime() -> DateTime {
 /// Initialize RTC and cache boot time
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
-    let before = super::tsc::read_tsc_serialized();
-    let mut reads = 0u64;
-    let mut port_cycles = 0u64;
-    let mut uip_waits = 0u64;
-    let result = read_rtc_raw_with(|reg| {
-        let start = super::tsc::read_tsc_serialized();
-        let value = read_rtc_register(reg);
-        port_cycles += super::tsc::read_tsc_serialized() - start;
-        reads += 1;
-        if reg == 0x0a && value & 0x80 != 0 { uip_waits += 1; }
-        value
-    }).map(|time| rtc_to_unix_timestamp(&time));
-    let elapsed = super::tsc::read_tsc_serialized() - before;
-    let hz = super::tsc::frequency_hz();
-    log::info!("RTC_COST reads={} port_accesses={} port_ns={} total_ns={} uip_waits={}",
-        reads, 2 * reads, port_cycles * 1_000_000_000 / hz,
-        elapsed * 1_000_000_000 / hz, uip_waits);
+    let mut result = Err("RTC did not stabilize");
+    // Two bounded startup samples expose cold/warm port costs without adding
+    // profiling work or output to RTC_RD_TIME's polling path.
+    for mode in ["cold", "warm"] {
+        let before = super::tsc::read_tsc_serialized();
+        let mut reads = 0u64;
+        let mut port_cycles = 0u64;
+        let mut uip_waits = 0u64;
+        result = read_rtc_raw_with(|reg| {
+            let start = super::tsc::read_tsc_serialized();
+            let value = read_rtc_register(reg);
+            port_cycles += super::tsc::read_tsc_serialized() - start;
+            reads += 1;
+            if reg == 0x0a && value & 0x80 != 0 { uip_waits += 1; }
+            value
+        }).map(|time| rtc_to_unix_timestamp(&time));
+        let elapsed = super::tsc::read_tsc_serialized() - before;
+        let hz = super::tsc::frequency_hz();
+        log::info!("RTC_COST mode={} reads={} port_accesses={} port_ns={} total_ns={} uip_waits={}",
+            mode, reads, 2 * reads, port_cycles * 1_000_000_000 / hz,
+            elapsed * 1_000_000_000 / hz, uip_waits);
+    }
     match result {
         Ok(timestamp) => {
             BOOT_WALL_TIME.store(timestamp, Ordering::Relaxed);

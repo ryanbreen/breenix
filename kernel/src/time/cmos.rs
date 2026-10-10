@@ -30,6 +30,45 @@ pub(crate) fn snapshot(mut read: impl FnMut(u8) -> u8) -> Option<[u8; 7]> {
     Some(time)
 }
 
+/// A live seconds sample. Reading seconds on both sides of UIP rejects an
+/// ongoing update as well as one completed while the caller was paused.
+pub(crate) fn seconds(mut read: impl FnMut(u8) -> u8) -> Option<u8> {
+    let second = read(SECONDS);
+    if read(STATUS_A) & UIP != 0 || read(SECONDS) != second {
+        return None;
+    }
+    Some(second)
+}
+
+/// Reuse calendar fields only within the same RTC minute and for a short
+/// observation gap. Seconds are always read from CMOS, never extrapolated
+/// from the processor counter. A minute/date rollover or a long pause needs
+/// a full guarded snapshot. RTC writes must invalidate the driver's cache.
+pub(crate) fn advance_cached(
+    mut raw: [u8; 7],
+    second: u8,
+    age: u64,
+    budget: u64,
+) -> Option<[u8; 7]> {
+    if budget == 0 || age >= budget {
+        return None;
+    }
+    let decode = |value: u8| {
+        if raw[6] & 0x04 != 0 {
+            value
+        } else {
+            (value >> 4) * 10 + (value & 0x0f)
+        }
+    };
+    let previous = decode(raw[0]);
+    let current = decode(second);
+    if current >= 60 || current < previous || current - previous > 1 {
+        return None;
+    }
+    raw[0] = second;
+    Some(raw)
+}
+
 /// Preserve the PM bit before BCD conversion; 12 AM is zero, 12 PM is twelve.
 pub(crate) fn decode_hour(raw: u8, status_b: u8) -> u8 {
     let pm = raw & 0x80 != 0;
@@ -65,6 +104,42 @@ mod tests {
             STATUS_A => 0,
             _ => panic!("unexpected CMOS register"),
         }
+    }
+
+    #[test]
+    fn cached_calendar_tracks_live_seconds_but_never_crosses_a_minute() {
+        let mut raw = OLD;
+        raw[0] = 0x09;
+        let next = advance_cached(raw, 0x10, 1, 10).unwrap();
+        assert_eq!(next[0], 0x10);
+        assert_eq!(next[1..], raw[1..]);
+        assert_eq!(advance_cached(OLD, NEW[0], 1, 10), None);
+        assert_eq!(advance_cached(raw, 0x08, 1, 10), None);
+        assert_eq!(advance_cached(raw, 0x11, 1, 10), None);
+        assert_eq!(advance_cached(raw, raw[0], 10, 10), None);
+        assert_eq!(advance_cached(raw, raw[0], 1, 0), None);
+        raw[6] |= 0x04;
+        raw[0] = 9;
+        assert_eq!(advance_cached(raw, 10, 1, 10).unwrap()[0], 10);
+        raw[0] = 59;
+        assert_eq!(advance_cached(raw, 0, 1, 10), None);
+    }
+
+    #[test]
+    fn live_seconds_reject_uip_and_completed_updates() {
+        assert_eq!(seconds(|reg| register(OLD, reg)), Some(OLD[0]));
+        assert_eq!(
+            seconds(|reg| if reg == STATUS_A { UIP } else { OLD[0] }),
+            None
+        );
+        let mut accesses = 0;
+        assert_eq!(
+            seconds(|reg| {
+                accesses += 1;
+                register(if accesses < 3 { OLD } else { NEW }, reg)
+            }),
+            None
+        );
     }
 
     #[test]
