@@ -978,11 +978,33 @@ fn ppm(measured: i64, reference: i64) -> i64 {
     ((measured - reference) as i128 * 1_000_000 / reference as i128) as i64
 }
 
+/// Resolve the 100 ppm comparison: two 100 us brackets contribute at most
+/// 100 us of midpoint uncertainty over the two-second interval (50 ppm).
+/// Preempted pairings are discarded, never accepted as clock-rate evidence.
+fn realtime_pair() -> Result<(i64, i64, i64), String> {
+    const MAX_BRACKET_NS: i64 = 100_000;
+    let start = now_ms();
+    loop {
+        let before = clock_ns(CLOCK_MONOTONIC)?;
+        let real = clock_ns(CLOCK_REALTIME)?;
+        let after = clock_ns(CLOCK_MONOTONIC)?;
+        let width = after - before;
+        if (0..=MAX_BRACKET_NS).contains(&width) {
+            return Ok((real, before + width / 2, width));
+        }
+        if now_ms().saturating_sub(start) >= 1000 {
+            return Err(format!("no realtime pairing bracket at most {MAX_BRACKET_NS} ns in 1 s; last bracket {width} ns"));
+        }
+    }
+}
+
 fn clk_rate_realtime() -> CaseResult {
-    let (r0, m0) = paired(CLOCK_REALTIME)?;
+    let (r0, m0, w0) = realtime_pair()?;
     wait_for(2000, "drift");
     pause_ms(2000);
-    let (r1, m1) = paired(CLOCK_REALTIME)?;
+    let (r1, m1, w1) = realtime_pair()?;
+    value("start-bracket", w0, "ns", Some((0, 100_000)));
+    value("end-bracket", w1, "ns", Some((0, 100_000)));
     let drift = ppm(r1 - r0, m1 - m0);
     value("drift", drift, "ppm", Some((-100, 100)));
     check(drift.abs() <= 100, &format!("over {} ms of CLOCK_MONOTONIC, CLOCK_REALTIME advanced {} ms: {drift} ppm apart", (m1 - m0) / MS, (r1 - r0) / MS))
@@ -1993,8 +2015,10 @@ fn cpu_timer_fires(clock: i32) -> CaseResult {
     let timer = Timer::signal(clock, SIGUSR1, 1)?;
     timer.arm(0, 100 * MS)?;
     no_signal(SIGUSR1, 300, &format!("a 100 ms {name} timer while the caller slept 300 ms"))?;
-    let left = its_value(&timer.get()?);
+    // Start CPU accounting before reading the remaining duration: the gap
+    // between calls must not make an on-time expiry appear early (#1276).
     let c0 = clock_ns(clock)?;
+    let left = its_value(&timer.get()?);
     let fired = burn_until(2000, || pending().is_ok_and(|p| p & bit(SIGUSR1) != 0));
     let used = clock_ns(clock)? - c0;
     value("left", left / MS, "ms", Some((1, 100)));
