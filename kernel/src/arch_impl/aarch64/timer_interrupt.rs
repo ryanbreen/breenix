@@ -304,6 +304,7 @@ pub fn init() {
     if TIMER_INITIALIZED.load(Ordering::Relaxed) {
         return;
     }
+    super::timer::grant_el0_virtual_counter();
 
     // Get the timer frequency from hardware
     let freq = super::timer::frequency_hz();
@@ -1208,6 +1209,7 @@ pub fn reset_quantum_call_count_reset() {
 /// does not need re-configuration for PPIs. We just arm the timer and enable
 /// the interrupt in this CPU's GIC interface.
 pub fn init_secondary() {
+    super::timer::grant_el0_virtual_counter();
     // CRITICAL: Set IMASK=1 before the first arm to establish HVF vtimer protocol.
     // Same rationale as init() — HVF needs to see the IMASK transition to properly
     // track vtimer state for this secondary CPU.

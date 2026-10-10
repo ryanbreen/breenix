@@ -799,6 +799,7 @@ pub enum SyscallResult {
 mod exception_class {
     pub const UNKNOWN: u32 = 0b000000;
     pub const SVC_AARCH64: u32 = 0b010101; // SVC instruction (syscall)
+    pub const SYSTEM_REGISTER: u32 = 0b011000; // Trapped MSR, MRS or system instruction
     pub const INSTRUCTION_ABORT_LOWER: u32 = 0b100000;
     pub const INSTRUCTION_ABORT_SAME: u32 = 0b100001;
     pub const DATA_ABORT_LOWER: u32 = 0b100100;
@@ -1968,14 +1969,22 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         }
 
         _ => {
-            // An undefined instruction or a trapped floating-point exception at
-            // EL0: SIGILL or SIGFPE, delivered on this exception's return, where
-            // the handler runs or the default action ends the process.
+            // An undefined instruction, a system-register access the kernel does
+            // not grant or emulate, or a trapped floating-point exception at EL0:
+            // SIGILL or SIGFPE, delivered on this exception's return, where the
+            // handler runs or the default action ends the process.
             let from_el0 = unsafe { (*frame).spsr & 0xF } == 0;
-            if from_el0 && matches!(ec, exception_class::UNKNOWN | exception_class::FP_EXCEPTION) {
+            if from_el0
+                && matches!(
+                    ec,
+                    exception_class::UNKNOWN
+                        | exception_class::SYSTEM_REGISTER
+                        | exception_class::FP_EXCEPTION
+                )
+            {
                 let frame_ref = unsafe { &mut *frame };
                 let pc = frame_ref.elr;
-                let (sig, code) = if ec == exception_class::UNKNOWN {
+                let (sig, code) = if ec != exception_class::FP_EXCEPTION {
                     (crate::signal::constants::SIGILL, crate::signal::constants::ILL_ILLOPC)
                 } else {
                     use crate::signal::constants::*;

@@ -5,7 +5,8 @@
 //! calibration, CNTFRQ_EL0 provides the frequency directly (set by firmware).
 //!
 //! Key registers:
-//! - CNTVCT_EL0: Virtual counter value (always readable from EL0)
+//! - CNTVCT_EL0: Virtual counter value (readable from EL0 once
+//!   [`grant_el0_virtual_counter`] has run on the CPU)
 //! - CNTFRQ_EL0: Counter frequency in Hz (read-only, set by firmware)
 //! - CNTV_CTL_EL0: Virtual timer control (for timer interrupts)
 //! - CNTV_CVAL_EL0: Virtual timer compare value
@@ -134,6 +135,26 @@ pub fn rdtsc_serialized() -> u64 {
         core::arch::asm!("isb", options(nomem, nostack));
     }
     read_cntvct()
+}
+
+/// CNTKCTL_EL1 bits that give EL0 access to the timer registers.
+const CNTKCTL_EL0PCTEN: u64 = 1 << 0;
+const CNTKCTL_EL0VCTEN: u64 = 1 << 1;
+const CNTKCTL_EL0VTEN: u64 = 1 << 8;
+const CNTKCTL_EL0PTEN: u64 = 1 << 9;
+
+/// Let EL0 read the virtual counter (CNTVCT_EL0, and with it CNTFRQ_EL0) on the
+/// calling CPU, as Linux does, and nothing else: EL0 may not read the physical
+/// counter or touch either timer. CNTKCTL_EL1 is per CPU and its reset value is
+/// unknown, so every CPU runs this as it brings up its timer.
+pub fn grant_el0_virtual_counter() {
+    unsafe {
+        let mut cntkctl: u64;
+        core::arch::asm!("mrs {}, cntkctl_el1", out(reg) cntkctl, options(nomem, nostack));
+        cntkctl &= !(CNTKCTL_EL0PCTEN | CNTKCTL_EL0VTEN | CNTKCTL_EL0PTEN);
+        cntkctl |= CNTKCTL_EL0VCTEN;
+        core::arch::asm!("msr cntkctl_el1, {}", "isb", in(reg) cntkctl, options(nomem, nostack));
+    }
 }
 
 /// Initialize/calibrate the timer
