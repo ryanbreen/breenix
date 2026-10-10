@@ -1099,6 +1099,19 @@ fn rtc_counter_edge(fd: Fd) -> Result<RtcEdge, String> {
 fn counter_frequency() -> Result<u64, String> {
     let fd = libbreenix::fs::open("/dev/rtc0", libbreenix::fs::O_RDONLY).map_err(|e| format!("open(/dev/rtc0) failed: {e}"))?;
     let result = (|| -> Result<u64, String> {
+        // A bounded sample reports RTC_RD_TIME cost without serial output in
+        // the edge-polling loop or changing its acceptance criteria.
+        let mut total = 0;
+        let mut maximum = 0;
+        for _ in 0..32 {
+            let before = clock_ns(CLOCK_MONOTONIC)?;
+            rtc_seconds(fd)?;
+            let cost = clock_ns(CLOCK_MONOTONIC)? - before;
+            total += cost;
+            maximum = maximum.max(cost);
+        }
+        value("rtc-read-mean", total / 32, "ns", Some((0, 2_000_000)));
+        value("rtc-read-max", maximum, "ns", Some((0, 2_000_000)));
         let mut first = rtc_counter_edge(fd)?;
         let mut passed_over = 0;
         loop {
@@ -1116,6 +1129,8 @@ fn counter_frequency() -> Result<u64, String> {
                 continue;
             }
             if seconds < RTC_SPAN_S { continue; }
+            value("rtc-start-poll", (first.width as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 1_000_000 / RTC_EDGE_DIVISOR as i64)));
+            value("rtc-end-poll", (edge.width as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 1_000_000 / RTC_EDGE_DIVISOR as i64)));
             value("rtc-edge-polls", ((first.width + edge.width) as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 2_000_000 / RTC_EDGE_DIVISOR as i64)));
             return Ok(freq);
         }

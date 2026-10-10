@@ -56,18 +56,27 @@ struct RTCTime {
 }
 
 #[cfg(target_arch = "x86_64")]
+static RTC_PORT_CYCLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+static RTC_REGISTER_READS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+static RTC_UIP_WAITS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
 static CMOS_LOCK: spin::Mutex<()> = spin::Mutex::new(());
 
 #[cfg(target_arch = "x86_64")]
 fn read_rtc_register(reg: u8) -> u8 {
     crate::arch_without_interrupts(|| {
         let guard = CMOS_LOCK.lock();
+        let before = super::tsc::read_tsc_serialized();
         let value = unsafe {
             let mut addr_port = Port::new(RTC_ADDR_PORT);
             let mut data_port = Port::new(RTC_DATA_PORT);
             addr_port.write(reg);
             data_port.read()
         };
+        RTC_PORT_CYCLES.fetch_add(super::tsc::read_tsc_serialized() - before, Ordering::Relaxed);
+        RTC_REGISTER_READS.fetch_add(1, Ordering::Relaxed);
         drop(guard);
         value
     })
@@ -91,6 +100,7 @@ fn bcd_to_binary(value: u8) -> u8 {
 #[cfg(target_arch = "x86_64")]
 fn read_rtc_raw() -> RTCTime {
     while rtc_update_in_progress() {
+        RTC_UIP_WAITS.fetch_add(1, Ordering::Relaxed);
         core::hint::spin_loop();
     }
 
@@ -292,7 +302,17 @@ pub fn read_datetime() -> DateTime {
 /// Initialize RTC and cache boot time
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
-    match read_rtc_time() {
+    let before = super::tsc::read_tsc_serialized();
+    let result = read_rtc_time();
+    let elapsed = super::tsc::read_tsc_serialized() - before;
+    let hz = super::tsc::frequency_hz();
+    log::info!("RTC_COST reads={} port_accesses={} port_ns={} total_ns={} uip_waits={}",
+        RTC_REGISTER_READS.load(Ordering::Relaxed),
+        2 * RTC_REGISTER_READS.load(Ordering::Relaxed),
+        RTC_PORT_CYCLES.load(Ordering::Relaxed) * 1_000_000_000 / hz,
+        elapsed * 1_000_000_000 / hz,
+        RTC_UIP_WAITS.load(Ordering::Relaxed));
+    match result {
         Ok(timestamp) => {
             BOOT_WALL_TIME.store(timestamp, Ordering::Relaxed);
             let dt = DateTime::from_unix_timestamp(timestamp);
