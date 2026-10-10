@@ -79,11 +79,11 @@
         },
         {
           "id": "guard-overflow",
-          "title": "A thread overflowing its 256 KiB stack faults with SIGSEGV within its 64 KiB guard"
+          "title": "Linux policy: a thread overflowing the 256 KiB stack it asked for faults with SIGSEGV within its 64 KiB guard"
         },
         {
           "id": "many-threads",
-          "title": "100 threads run at once, each returning its own result"
+          "title": "64 threads (_POSIX_THREAD_THREADS_MAX) run at once, each returning its own result"
         },
         {
           "id": "main-exit",
@@ -103,7 +103,7 @@
         },
         {
           "id": "getpid-shared",
-          "title": "Every thread sees the process's getpid and has a thread ID of its own"
+          "title": "Every thread sees the process's getpid, and gettid gives each its own thread ID"
         },
         {
           "id": "shared-fds",
@@ -431,7 +431,7 @@
         },
         {
           "id": "thread-pointer",
-          "title": "Every new thread has a thread pointer of its own"
+          "title": "Linux ABI: every thread has a thread pointer (TPIDR_EL0, the FS base) of its own"
         },
         {
           "id": "compiler-initial",

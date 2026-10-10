@@ -1332,7 +1332,8 @@ fn lc_guard_overflow() -> CaseResult {
 }
 
 fn lc_many_threads() -> CaseResult {
-    const N: usize = 100;
+    // _POSIX_THREAD_THREADS_MAX: the fewest threads per process POSIX allows a system.
+    const N: usize = 64;
     trial(|| {
         let started = Arc::new(AtomicU32::new(0));
         let mut threads = Vec::new();
@@ -3748,13 +3749,13 @@ static SUITE: Suite = suite("threads", "Threads", &[
         case("attr-stack", "A thread created with pthread_attr_setstack runs on the memory it was given", lc_attr_stack),
         case("attr-stacksize-min", "pthread_attr_setstacksize below PTHREAD_STACK_MIN returns EINVAL", lc_attr_stacksize_min),
         case("attr-guardsize", "pthread_attr_setguardsize's value is what pthread_attr_getguardsize returns", lc_attr_guardsize),
-        case("guard-overflow", "A thread overflowing its 256 KiB stack faults with SIGSEGV within its 64 KiB guard", lc_guard_overflow),
-        case("many-threads", "100 threads run at once, each returning its own result", lc_many_threads),
+        case("guard-overflow", "Linux policy: a thread overflowing the 256 KiB stack it asked for faults with SIGSEGV within its 64 KiB guard", lc_guard_overflow),
+        case("many-threads", "64 threads (_POSIX_THREAD_THREADS_MAX) run at once, each returning its own result", lc_many_threads),
         case("main-exit", "pthread_exit in the main thread leaves the others running and the process exits 0 after the last", lc_main_exit),
         case("exit-from-thread", "exit in one thread ends the whole process, a thread blocked in pthread_join included", lc_exit_from_thread),
         case("exit-from-main", "exit in the main thread ends the process while other threads run", lc_exit_from_main),
         case("exit-tid-word", "Linux ABI: a process ending with threads running clears their exit thread-ID words in itself, never in its parent's memory", lc_exit_tid_word),
-        case("getpid-shared", "Every thread sees the process's getpid and has a thread ID of its own", lc_getpid_shared),
+        case("getpid-shared", "Every thread sees the process's getpid, and gettid gives each its own thread ID", lc_getpid_shared),
         case("shared-fds", "A descriptor one thread opens is usable in another", lc_shared_fds),
     ]),
     category("mutex", "mutexes", &[
@@ -3838,7 +3839,7 @@ static SUITE: Suite = suite("threads", "Threads", &[
         case("key-delete", "A deleted key's destructor never runs, while another key's does", tls_key_delete),
         case("keys-max", "PTHREAD_KEYS_MAX keys can be created and each keeps its own value", tls_keys_max),
         case("errno-per-thread", "errno is per thread: a failing call in one thread leaves another's alone", tls_errno),
-        case("thread-pointer", "Every new thread has a thread pointer of its own", tls_thread_pointer),
+        case("thread-pointer", "Linux ABI: every thread has a thread pointer (TPIDR_EL0, the FS base) of its own", tls_thread_pointer),
         case("compiler-initial", "Compiler TLS starts at its initial values in the main thread and every new thread", tls_compiler_initial),
         case("compiler-isolated", "Compiler TLS written by four threads stays each thread's own", tls_compiler_isolated),
     ]),
