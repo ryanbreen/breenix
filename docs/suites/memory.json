@@ -1,0 +1,487 @@
+{
+  "id": "memory",
+  "title": "Memory",
+  "area": "Memory",
+  "summary": "Anonymous and shared mappings, protection changes and the faults they produce, the program break and memory locking behave as POSIX requires, on every target.",
+  "binary": "/sbin/suite-memory",
+  "categories": [
+    {
+      "id": "anonymous",
+      "title": "anonymous mmap & munmap",
+      "cases": [
+        {
+          "id": "private-zero",
+          "title": "An anonymous MAP_PRIVATE mapping of 16 pages reads as zero throughout and keeps what is written to every page"
+        },
+        {
+          "id": "shared-zero",
+          "title": "An anonymous MAP_SHARED mapping of 16 pages reads as zero throughout and keeps what is written to every page"
+        },
+        {
+          "id": "page-aligned",
+          "title": "mmap returns a page-aligned address for lengths of 1, 4095, 4096 and 4097 bytes"
+        },
+        {
+          "id": "partial-page",
+          "title": "Linux policy: a mapping whose length is not a multiple of the page size covers the whole last page: its last byte reads zero and can be written"
+        },
+        {
+          "id": "distinct",
+          "title": "Two anonymous mappings made one after the other do not overlap, and writing one leaves the other unchanged"
+        },
+        {
+          "id": "hint-occupied",
+          "title": "mmap without MAP_FIXED, given a hint inside an existing mapping, places the new mapping elsewhere and leaves the existing one unchanged"
+        },
+        {
+          "id": "hint-free",
+          "title": "Linux policy: mmap without MAP_FIXED uses a free, page-aligned hint address exactly"
+        },
+        {
+          "id": "fixed-replace",
+          "title": "MAP_FIXED over the middle page of a 3-page mapping replaces it with a zero-filled page at exactly that address and leaves the pages either side unchanged"
+        },
+        {
+          "id": "fixed-unaligned",
+          "title": "MAP_FIXED at an address that is not page-aligned fails with EINVAL and leaves the mapping there unchanged"
+        },
+        {
+          "id": "noreplace-busy",
+          "title": "Linux ABI: MAP_FIXED_NOREPLACE at an address already mapped fails with EEXIST and leaves that mapping unchanged"
+        },
+        {
+          "id": "noreplace-free",
+          "title": "Linux ABI: MAP_FIXED_NOREPLACE at a free page-aligned address maps exactly there"
+        },
+        {
+          "id": "length-zero",
+          "title": "mmap of length 0 fails with EINVAL"
+        },
+        {
+          "id": "no-type",
+          "title": "mmap with neither MAP_SHARED nor MAP_PRIVATE fails with EINVAL"
+        },
+        {
+          "id": "offset-unaligned",
+          "title": "mmap of a file at an offset that is not a multiple of the page size fails with EINVAL"
+        },
+        {
+          "id": "ebadf",
+          "title": "mmap without MAP_ANONYMOUS of descriptor -1 or of a closed descriptor fails with EBADF"
+        },
+        {
+          "id": "enomem-space",
+          "title": "mmap of 2^60 bytes, more address space than a process has, fails with ENOMEM"
+        },
+        {
+          "id": "enomem-fixed",
+          "title": "MAP_FIXED at 2^56, past the end of the user address space, fails with ENOMEM or EINVAL"
+        },
+        {
+          "id": "rlimit-as",
+          "title": "With RLIMIT_AS at 256 MiB, a 512 MiB mmap that succeeds without the limit fails with ENOMEM, and a 16 MiB one succeeds"
+        },
+        {
+          "id": "munmap-whole",
+          "title": "After munmap, every page of the former mapping raises SIGSEGV with SEGV_MAPERR and si_addr the byte touched"
+        },
+        {
+          "id": "munmap-middle",
+          "title": "munmap of the middle page of a 3-page mapping splits it: the outer pages keep their contents and the middle one raises SEGV_MAPERR"
+        },
+        {
+          "id": "munmap-head-tail",
+          "title": "munmap of the first and last pages of a 4-page mapping leaves the middle two with their contents and the ends unmapped"
+        },
+        {
+          "id": "munmap-unmapped",
+          "title": "munmap of a page-aligned range with nothing mapped in it succeeds"
+        },
+        {
+          "id": "munmap-span",
+          "title": "One munmap across two separate mappings and the gap between them removes both"
+        },
+        {
+          "id": "munmap-unaligned",
+          "title": "munmap at an address that is not page-aligned fails with EINVAL and leaves the mapping in place"
+        },
+        {
+          "id": "munmap-zero",
+          "title": "munmap of length 0 fails with EINVAL"
+        },
+        {
+          "id": "remap-zero",
+          "title": "A page mapped with MAP_FIXED into the hole a munmap left reads as zero, not the old contents"
+        },
+        {
+          "id": "sparse",
+          "title": "Linux policy: touching one byte every 1 MiB of a 256 MiB anonymous mapping makes about 256 pages resident, not 65536"
+        },
+        {
+          "id": "page-by-page",
+          "title": "Each page of a 16 MiB anonymous mapping, touched in order, keeps its own contents, and unmapping it gives back all 4096 pages as resident"
+        },
+        {
+          "id": "churn",
+          "title": "Mapping, touching and unmapping 1 MiB 100 times leaves free memory within 4 MiB of where it was and the resident set no larger"
+        },
+        {
+          "id": "many",
+          "title": "1000 one-page anonymous mappings exist at once at distinct addresses, each keeping its own contents, and all unmap"
+        },
+        {
+          "id": "unmap-cpus",
+          "title": "With two to four processors, worker threads pinned one to each other processor and reading a page the case's thread has just unmapped raise SIGSEGV with SEGV_MAPERR at the byte read every time and never read the old page"
+        }
+      ]
+    },
+    {
+      "id": "protection",
+      "title": "mprotect & faults",
+      "cases": [
+        {
+          "id": "none-read",
+          "title": "Reading a PROT_NONE mapping raises SIGSEGV with SEGV_ACCERR and si_addr the byte read"
+        },
+        {
+          "id": "none-write",
+          "title": "Writing a PROT_NONE mapping raises SIGSEGV with SEGV_ACCERR and si_addr the byte written"
+        },
+        {
+          "id": "readonly-write",
+          "title": "Writing a PROT_READ mapping raises SIGSEGV with SEGV_ACCERR and leaves the byte unchanged, while reading succeeds"
+        },
+        {
+          "id": "unmapped-maperr",
+          "title": "Reading an address with nothing mapped raises SIGSEGV with SEGV_MAPERR and si_addr that address"
+        },
+        {
+          "id": "handler-retry",
+          "title": "A SIGSEGV handler that mprotects the faulting page writable and returns lets the write complete: 64 PROT_NONE pages take exactly 64 faults, each SEGV_ACCERR at the byte written"
+        },
+        {
+          "id": "make-readonly",
+          "title": "mprotect to PROT_READ keeps the contents readable and makes writes raise SEGV_ACCERR"
+        },
+        {
+          "id": "make-writable",
+          "title": "mprotect to PROT_READ makes writes raise SEGV_ACCERR, and mprotect back to PROT_READ|PROT_WRITE lets writes succeed and keeps the contents"
+        },
+        {
+          "id": "none-keeps",
+          "title": "mprotect to PROT_NONE and back to PROT_READ|PROT_WRITE keeps the contents, and reads fault in between"
+        },
+        {
+          "id": "guard-page",
+          "title": "A PROT_NONE guard page in the middle of a mapping faults at its first and last bytes while the bytes either side stay accessible"
+        },
+        {
+          "id": "partial",
+          "title": "mprotect of the first page of a 4-page mapping to PROT_READ changes only that page"
+        },
+        {
+          "id": "partial-middle",
+          "title": "mprotect of two middle pages of a 6-page mapping to PROT_READ makes both refuse writes, and mprotect of one of them back leaves exactly the other read-only"
+        },
+        {
+          "id": "unaligned",
+          "title": "mprotect at an address that is not page-aligned fails with EINVAL and leaves the protection unchanged"
+        },
+        {
+          "id": "unmapped-enomem",
+          "title": "mprotect of a range that includes an unmapped page fails with ENOMEM"
+        },
+        {
+          "id": "bad-prot",
+          "title": "Linux ABI: mprotect with an unknown protection bit fails with EINVAL"
+        },
+        {
+          "id": "file-eacces",
+          "title": "mprotect adding PROT_WRITE to a MAP_SHARED mapping of a file opened read-only fails with EACCES"
+        },
+        {
+          "id": "exec-denied",
+          "title": "Linux policy: calling into a PROT_READ|PROT_WRITE anonymous mapping raises SIGSEGV with SEGV_ACCERR at the call's target (ARM64 and x86-64 both enforce no-execute)"
+        },
+        {
+          "id": "exec-file",
+          "title": "Code in a file mapped PROT_READ|PROT_EXEC runs, and after mprotect to PROT_READ calling it raises SIGSEGV with SEGV_ACCERR"
+        },
+        {
+          "id": "exec-add",
+          "title": "Calling code in a file mapped PROT_READ raises SIGSEGV, and after mprotect adds PROT_EXEC the code runs"
+        },
+        {
+          "id": "exec-jit",
+          "title": "Linux ABI: code written into an anonymous mapping and made coherent as a C library's __clear_cache does (ARM64 DC CVAU and IC IVAU from user mode) runs after mprotect to PROT_READ|PROT_EXEC"
+        },
+        {
+          "id": "fork-inherits",
+          "title": "A forked child inherits each page's protection: its PROT_NONE page raises SEGV_ACCERR at the byte read, and its PROT_READ page raises SEGV_ACCERR at the byte written but reads"
+        },
+        {
+          "id": "tlb-cpus",
+          "title": "With two to four processors, a write by a worker thread pinned to another processor, begun after mprotect to PROT_READ returned, always raises SIGSEGV with SEGV_ACCERR at the byte written"
+        }
+      ]
+    },
+    {
+      "id": "shared",
+      "title": "shared mappings across fork",
+      "cases": [
+        {
+          "id": "anon-child-sees",
+          "title": "A MAP_SHARED anonymous page written by the parent after fork is seen by the child"
+        },
+        {
+          "id": "anon-parent-sees",
+          "title": "A MAP_SHARED anonymous page written by the child is seen by the parent"
+        },
+        {
+          "id": "pingpong",
+          "title": "Parent and child take 100 turns storing to a MAP_SHARED anonymous page, each seeing the other's latest store"
+        },
+        {
+          "id": "anon-atomic",
+          "title": "Two processes each atomically adding 1 to a counter in a MAP_SHARED anonymous page 100000 times leave 200000"
+        },
+        {
+          "id": "private-child-isolated",
+          "title": "After fork, a child's stores to a MAP_PRIVATE anonymous page are not seen by the parent"
+        },
+        {
+          "id": "private-parent-isolated",
+          "title": "After fork, the parent's stores to a MAP_PRIVATE anonymous page are not seen by the child"
+        },
+        {
+          "id": "private-cow-many",
+          "title": "After fork, parent and child each rewrite all 64 pages of a MAP_PRIVATE mapping and each sees only its own stores"
+        },
+        {
+          "id": "file-child-sees",
+          "title": "A child's store into a MAP_SHARED file mapping inherited across fork is seen through the parent's mapping and by read()"
+        },
+        {
+          "id": "file-independent",
+          "title": "Two processes that each map the same file MAP_SHARED see each other's stores"
+        },
+        {
+          "id": "file-msync-read",
+          "title": "Stores into a MAP_SHARED mapping of a sparse file are on disk when msync(MS_SYNC) returns: the file has the disk blocks they need (st_blocks), and read() returns them"
+        },
+        {
+          "id": "file-write-seen",
+          "title": "A write() to a file is seen at once through an existing MAP_SHARED mapping of it"
+        },
+        {
+          "id": "file-private",
+          "title": "Stores into a MAP_PRIVATE file mapping are not written to the file and not seen by another process's MAP_SHARED mapping of it"
+        },
+        {
+          "id": "child-unmaps",
+          "title": "A child's munmap of an inherited MAP_SHARED anonymous mapping makes its own reads raise SEGV_MAPERR at the byte read, and leaves the parent's view, and its later stores, in place"
+        },
+        {
+          "id": "parent-unmaps",
+          "title": "After the parent unmaps a MAP_SHARED anonymous mapping, the child still reads the parent's last store and can store its own"
+        },
+        {
+          "id": "eof-zero-tail",
+          "title": "The part of a file mapping's last page past the end of the file reads as zero, and a store there is never written to the file: the file stays 100 bytes and, extended afterwards, reads zero there"
+        },
+        {
+          "id": "eof-sigbus",
+          "title": "Touching a page of a file mapping that lies wholly past the end of the file raises SIGBUS with BUS_ADRERR or BUS_OBJERR and si_addr the byte touched"
+        },
+        {
+          "id": "eof-truncated",
+          "title": "Linux policy: after the file is truncated, touching a page of its MAP_SHARED mapping past the new end raises SIGBUS with BUS_ADRERR or BUS_OBJERR at the byte touched"
+        },
+        {
+          "id": "write-only-fd",
+          "title": "mmap of a file opened O_WRONLY fails with EACCES"
+        },
+        {
+          "id": "readonly-shared-write",
+          "title": "mmap with PROT_WRITE and MAP_SHARED of a file opened O_RDONLY fails with EACCES"
+        },
+        {
+          "id": "readonly-private-write",
+          "title": "mmap with PROT_WRITE and MAP_PRIVATE of a file opened O_RDONLY succeeds, and its stores stay private"
+        },
+        {
+          "id": "pipe-enodev",
+          "title": "Linux policy: mmap of a pipe fails with ENODEV"
+        }
+      ]
+    },
+    {
+      "id": "brk",
+      "title": "brk & sbrk",
+      "cases": [
+        {
+          "id": "query",
+          "title": "brk(0), as a C library's sbrk(0) makes it, reports the same nonzero break each time"
+        },
+        {
+          "id": "grow",
+          "title": "Growing the break by 64 KiB succeeds, and the new memory reads as zero and keeps what is written"
+        },
+        {
+          "id": "grow-exact",
+          "title": "Linux ABI: brk sets and returns exactly the break asked for, not one rounded up to a page"
+        },
+        {
+          "id": "sbrk-sequence",
+          "title": "Successive sbrk(4096) calls return consecutive blocks, each starting at the previous break"
+        },
+        {
+          "id": "shrink",
+          "title": "Shrinking the break with sbrk(-8192) moves it down, and touching memory above the new break raises SIGSEGV with SEGV_MAPERR"
+        },
+        {
+          "id": "regrow-zero",
+          "title": "Linux policy: memory given back by shrinking the break and then regrown reads as zero, not the old contents"
+        },
+        {
+          "id": "below-start",
+          "title": "brk below the start of the heap fails and leaves the break unchanged"
+        },
+        {
+          "id": "huge",
+          "title": "Linux policy: growing the break by 1 TiB fails and leaves the break unchanged"
+        },
+        {
+          "id": "rlimit-data",
+          "title": "With RLIMIT_DATA at 0, growing the break fails and leaves it unchanged; with the limit raised again the same growth succeeds"
+        },
+        {
+          "id": "rlimit-data-mmap",
+          "title": "Linux policy: with RLIMIT_DATA at 0, a private writable anonymous mmap fails with ENOMEM while a read-only one succeeds"
+        },
+        {
+          "id": "fork-heap",
+          "title": "A forked child inherits the break and the heap's contents, and its brk leaves the parent's break unchanged"
+        },
+        {
+          "id": "heap-large",
+          "title": "Growing the break by 8 MiB gives 2048 pages that each keep their own index, and touching them makes 2048 to 2112 more pages resident"
+        }
+      ]
+    },
+    {
+      "id": "locking",
+      "title": "mlock & msync",
+      "cases": [
+        {
+          "id": "mlock",
+          "title": "mlock of 16 untouched anonymous pages succeeds and makes them resident: unmapping them gives back all 16 as resident pages"
+        },
+        {
+          "id": "munlock",
+          "title": "munlock of a locked range succeeds, unlocks it (VmLck falls back by the 16 kB mlock added) and leaves its contents unchanged"
+        },
+        {
+          "id": "mlock-unaligned",
+          "title": "Linux policy: mlock and munlock of 10 bytes inside a page lock and unlock that whole page (VmLck changes by 4 kB)"
+        },
+        {
+          "id": "mlock-enomem",
+          "title": "mlock of a range that includes an unmapped page fails with ENOMEM"
+        },
+        {
+          "id": "munlock-enomem",
+          "title": "munlock of a range that includes an unmapped page fails with ENOMEM"
+        },
+        {
+          "id": "mlock-eperm",
+          "title": "Linux policy: an unprivileged process with RLIMIT_MEMLOCK at 0 is refused mlock with EPERM"
+        },
+        {
+          "id": "mlock-limit",
+          "title": "Linux policy: an unprivileged process may lock 32 KiB under a 64 KiB RLIMIT_MEMLOCK and is refused 64 KiB more with ENOMEM"
+        },
+        {
+          "id": "mlockall-current",
+          "title": "mlockall(MCL_CURRENT) makes an untouched mapping that existed before it resident: unmapping it gives back all 16 pages as resident"
+        },
+        {
+          "id": "mlockall-future",
+          "title": "After mlockall(MCL_FUTURE), a new anonymous mapping is resident as soon as mmap returns: unmapping it untouched gives back all 16 pages as resident"
+        },
+        {
+          "id": "mlockall-einval",
+          "title": "mlockall with no flags or with an unknown flag fails with EINVAL"
+        },
+        {
+          "id": "munlockall",
+          "title": "munlockall succeeds whether or not anything is locked, brings VmLck to 0 after an mlock, and leaves contents unchanged"
+        },
+        {
+          "id": "msync-async",
+          "title": "msync(MS_ASYNC) of a MAP_SHARED file mapping returns 0 and read() returns the stores made through it"
+        },
+        {
+          "id": "msync-invalidate",
+          "title": "msync(MS_SYNC|MS_INVALIDATE) of a MAP_SHARED file mapping returns 0, and the mapping shows a write() made to the file"
+        },
+        {
+          "id": "msync-both",
+          "title": "msync with both MS_SYNC and MS_ASYNC fails with EINVAL"
+        },
+        {
+          "id": "msync-flags",
+          "title": "msync with an unknown flag fails with EINVAL"
+        },
+        {
+          "id": "msync-unaligned",
+          "title": "msync at an address that is not page-aligned fails with EINVAL"
+        },
+        {
+          "id": "msync-unmapped",
+          "title": "msync of a range that includes an unmapped page fails with ENOMEM"
+        },
+        {
+          "id": "msync-locked",
+          "title": "msync(MS_SYNC|MS_INVALIDATE) of a range locked by mlock fails with EBUSY"
+        },
+        {
+          "id": "msync-anon",
+          "title": "Linux policy: msync(MS_SYNC) of an anonymous mapping returns 0"
+        },
+        {
+          "id": "posix-madvise",
+          "title": "posix_madvise with POSIX_MADV_NORMAL, SEQUENTIAL, RANDOM and WILLNEED returns 0 and leaves the contents unchanged"
+        },
+        {
+          "id": "posix-madvise-einval",
+          "title": "posix_madvise with an unknown advice value returns EINVAL"
+        },
+        {
+          "id": "posix-madvise-enomem",
+          "title": "posix_madvise of a range that includes an unmapped page returns ENOMEM"
+        },
+        {
+          "id": "madvise-unaligned",
+          "title": "Linux policy: posix_madvise at an address that is not page-aligned returns EINVAL"
+        },
+        {
+          "id": "madvise-dontneed",
+          "title": "Linux ABI: madvise(MADV_DONTNEED) of private anonymous memory frees its pages, which then read as zero"
+        },
+        {
+          "id": "mincore",
+          "title": "Linux ABI: mincore reports the touched pages of an anonymous mapping resident and the untouched ones not"
+        },
+        {
+          "id": "mincore-enomem",
+          "title": "Linux ABI: mincore of a range that includes an unmapped page fails with ENOMEM"
+        },
+        {
+          "id": "mincore-einval",
+          "title": "Linux ABI: mincore at an address that is not page-aligned fails with EINVAL"
+        }
+      ]
+    }
+  ]
+}

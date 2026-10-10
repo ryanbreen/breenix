@@ -701,3 +701,7 @@ path = "src/suite_time.rs"
 [[bin]]
 name = "time-exec_test"
 path = "src/time_exec.rs"
+
+[[bin]]
+name = "suite-memory"
+path = "src/suite_memory.rs"

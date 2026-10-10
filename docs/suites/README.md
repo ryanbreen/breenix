@@ -419,3 +419,84 @@ scripts/boot-interactive.sh --mode suite --suite time
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode full --boots 1 --suite time --gate-timeout 420 --sha <pushed-sha>
 ```
+
+## Memory
+
+`memory` measures the memory effort in `docs/efforts/path.json`: one category per suite
+milestone, `anonymous`, `protection`, `shared`, `brk` and `locking`. The system-interface
+milestone is a separate measure.
+
+Cases call the kernel by its Linux numbers and assert on the raw return, so an
+unimplemented call fails with ENOSYS. On x86-64 they use the SYSCALL instruction.
+Library-level interfaces are made as a C library makes them: sbrk from brk (it fails when
+brk leaves the break below the one asked for), posix_madvise through madvise with the
+POSIX advice values, and setrlimit through prlimit64. brk and sbrk left POSIX in Issue 6;
+the `brk` cases measure what SUSv2 specified for them, including that memory the break
+grows over reads as zero. SUSv2 leaves the contents of memory given back and regrown
+unspecified, so `brk/regrow-zero` is a Linux policy case.
+
+Faults are taken in the case's own process. A SA_SIGINFO handler records the signal,
+si_code and si_addr of each SIGSEGV, SIGBUS and SIGILL in the faulting thread's own record,
+and resumes only from three probes at known addresses: a one-byte load, a one-byte store and
+a call, each returning a value that says it faulted. A fault anywhere else restores the
+default action and kills the case. Every expected fault is checked for its signal, si_code
+and si_addr; a SIGBUS past the end of a file may carry BUS_ADRERR or BUS_OBJERR.
+`protection/handler-retry` instead has the handler make the page of the byte being written
+writable and return, as a garbage collector's write barrier does, and counts the faults; a
+fault that is not SEGV_ACCERR at that byte fails the case. The exec cases call into the
+mapping and expect SEGV_ACCERR at the call's target. They take their code from a file mapping, so no user-mode cache
+maintenance is involved, except `protection/exec-jit`, which writes the code itself and
+makes it coherent as a C library's `__clear_cache` does (on ARM64, DC CVAU and IC IVAU from
+user mode, which Linux allows).
+
+Children report to the case through pipes and exit codes, never through the memory under
+test, and every wait on one is bounded at 3 seconds and stops 1.5 seconds before the
+deadline. Files live under `/tmp`, named after the case's process ID, and are removed when
+the case ends.
+
+Two cases need two processors (`anonymous/unmap-cpus` and `protection/tlb-cpus`). They read
+the count from /proc/cpuinfo, fail when it cannot be read, skip below two and start one
+worker thread per processor beyond the first, at most three; none assumes four. The case's
+thread pins itself to processor 0 and worker i to processor i + 1 with sched_setaffinity,
+and each confirms with getcpu that it runs there. Before measuring, the case and all its
+workers make a thousand rounds of handoffs within 750 ms, each worker checking its processor
+at every handoff: threads taking turns on one processor hand off at most once per 1 ms
+timer tick, so they would need at least 1000 ms. Then, for 50 rounds, the workers read (or write) a page in a loop while the case
+unmaps it (or makes it read-only). Each worker has accessed the page at least 100 times
+that round before the call, so its processor has the translation in use; an access begun
+after the call returned must fault with SEGV_MAPERR (or SEGV_ACCERR) at the byte touched,
+one that succeeds is counted as stale, and any other fault fails the case.
+
+Where POSIX leaves a behaviour to the implementation, the case title begins `Linux policy:`
+and measures what Linux does: the rest of a mapping's last page is usable
+(`anonymous/partial-page`), a free hint is used exactly (`anonymous/hint-free`), memory is
+committed only when touched (`anonymous/sparse`), PROT_EXEC is required to run code
+(`protection/exec-denied`), touching a mapping past a truncated end raises SIGBUS
+(`shared/eof-truncated`), a pipe cannot be mapped (`shared/pipe-enodev`), regrown break
+memory reads as zero (`brk/regrow-zero`), a 1 TiB break increase is refused (`brk/huge`),
+RLIMIT_DATA also limits private writable mappings (`brk/rlimit-data-mmap`), mlock rounds an
+unaligned address to its page and refuses an unprivileged caller past RLIMIT_MEMLOCK (EPERM
+at 0, ENOMEM above it), msync of an anonymous mapping succeeds, and posix_madvise refuses
+an unaligned address. Cases titled
+`Linux ABI:` measure interfaces POSIX does not define: MAP_FIXED_NOREPLACE, unknown
+mprotect bits, brk returning the exact break, MADV_DONTNEED, mincore and user-mode cache
+maintenance on ARM64.
+
+Resident pages are read from VmRSS in `/proc/<pid>/status`, locked memory from VmLck there,
+and free memory from MemFree in `/proc/meminfo`, all as Linux reports them. A mapping's own
+resident pages are measured as the drop in VmRSS across munmap of just that mapping, which
+holds whether the kernel maps pages when they are touched or at once. `shared/file-msync-read`
+shows that MS_SYNC wrote the stores by the disk blocks of a sparse file: fstat's st_blocks
+counts blocks on disk, while read() returns cached pages before any sync; it skips if the
+stores alone gave the file its blocks. Each case reports what it asserts on as VALUE records: bytes mapped,
+resident pages, fault counts, stale accesses, the time a first touch or a copy-on-write
+fault takes per page, and the longest munmap or mprotect while other processors used the
+page.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite memory
+./run.sh --parallels --suite memory
+./run.sh --vmware --suite memory
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode full --boots 1 --suite memory --gate-timeout 420 --sha <pushed-sha>
+```
