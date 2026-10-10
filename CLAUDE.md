@@ -460,7 +460,7 @@ Worked example: #737's fix is a single `cld` in `kernel/src/interrupts/timer_ent
 | File | Reason |
 |------|--------|
 | `kernel/src/interrupts/context_switch.rs` | Context switch path - timing sensitive |
-| `kernel/src/interrupts/mod.rs` | Interrupt dispatch - timing sensitive |
+| `kernel/src/interrupts.rs` | Interrupt dispatch - timing sensitive |
 | `kernel/src/task/kthread.rs` | kthread_entry runs with interrupts enabled - log deadlocks |
 | `kernel/src/task/workqueue.rs` | worker_thread_fn runs with interrupts - log deadlocks |
 | `kernel/src/gdt.rs` | GDT/TSS - rarely needs changes |
