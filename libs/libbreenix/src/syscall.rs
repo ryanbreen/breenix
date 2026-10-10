@@ -20,16 +20,6 @@ use core::arch::asm;
 /// ARM64: Uses Linux ARM64 (asm-generic/unistd.h) numbers for musl libc compatibility.
 #[cfg(target_arch = "x86_64")]
 pub mod nr {
-    pub const SCHED_SETPARAM: u64 = 142;
-    pub const SCHED_GETPARAM: u64 = 143;
-    pub const SCHED_SETSCHEDULER: u64 = 144;
-    pub const SCHED_GETSCHEDULER: u64 = 145;
-    pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
-    pub const SCHED_GET_PRIORITY_MIN: u64 = 147;
-    pub const SCHED_RR_GET_INTERVAL: u64 = 148;
-    pub const TGKILL: u64 = 234;
-    pub const SIGTIMEDWAIT: u64 = 128;
-
     // Linux x86_64 ABI numbers
     pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
@@ -109,9 +99,17 @@ pub mod nr {
     pub const GETPGID: u64 = 121;
     pub const GETSID: u64 = 124;
     pub const SIGPENDING: u64 = 127;
+    pub const SIGTIMEDWAIT: u64 = 128;
     pub const SIGSUSPEND: u64 = 130;
     pub const SIGALTSTACK: u64 = 131;
     pub const MKNOD: u64 = 133;
+    pub const SCHED_SETPARAM: u64 = 142;
+    pub const SCHED_GETPARAM: u64 = 143;
+    pub const SCHED_SETSCHEDULER: u64 = 144;
+    pub const SCHED_GETSCHEDULER: u64 = 145;
+    pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
+    pub const SCHED_GET_PRIORITY_MIN: u64 = 147;
+    pub const SCHED_RR_GET_INTERVAL: u64 = 148;
     pub const ARCH_PRCTL: u64 = 158;
     pub const GETTID: u64 = 186;
     pub const FUTEX: u64 = 202;
@@ -120,6 +118,7 @@ pub mod nr {
     pub const CLOCK_SETTIME: u64 = 227;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const EXIT_GROUP: u64 = 231;
+    pub const TGKILL: u64 = 234;
     pub const OPEN: u64 = 2;           // Linux x86_64 open
     pub const NEWFSTATAT: u64 = 262;
     pub const OPENAT: u64 = 257;
@@ -171,16 +170,6 @@ pub mod nr {
 
 #[cfg(target_arch = "aarch64")]
 pub mod nr {
-    pub const SCHED_SETPARAM: u64 = 118;
-    pub const SCHED_GETPARAM: u64 = 121;
-    pub const SCHED_SETSCHEDULER: u64 = 119;
-    pub const SCHED_GETSCHEDULER: u64 = 120;
-    pub const SCHED_GET_PRIORITY_MAX: u64 = 125;
-    pub const SCHED_GET_PRIORITY_MIN: u64 = 126;
-    pub const SCHED_RR_GET_INTERVAL: u64 = 127;
-    pub const TGKILL: u64 = 131;
-    pub const SIGTIMEDWAIT: u64 = 137;
-
     // Linux ARM64 ABI numbers (asm-generic/unistd.h)
     // ARM64 Linux has NO legacy syscalls: use *at variants instead of
     // open/mkdir/rmdir/link/unlink/symlink/readlink/mknod/rename/access.
@@ -247,15 +236,24 @@ pub mod nr {
     pub const CLOCK_GETTIME: u64 = 113;
 
     // Scheduling
+    pub const SCHED_SETPARAM: u64 = 118;
+    pub const SCHED_GETPARAM: u64 = 121;
+    pub const SCHED_SETSCHEDULER: u64 = 119;
+    pub const SCHED_GETSCHEDULER: u64 = 120;
     pub const YIELD: u64 = 124;
+    pub const SCHED_GET_PRIORITY_MAX: u64 = 125;
+    pub const SCHED_GET_PRIORITY_MIN: u64 = 126;
+    pub const SCHED_RR_GET_INTERVAL: u64 = 127;
 
     // Signals
     pub const KILL: u64 = 129;
+    pub const TGKILL: u64 = 131;
     pub const SIGALTSTACK: u64 = 132;
     pub const SIGSUSPEND: u64 = 133;
     pub const SIGACTION: u64 = 134;
     pub const SIGPROCMASK: u64 = 135;
     pub const SIGPENDING: u64 = 136;
+    pub const SIGTIMEDWAIT: u64 = 137;
     pub const SIGRETURN: u64 = 139;
 
     // Session/process group

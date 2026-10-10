@@ -1,11 +1,9 @@
-//! Clean-room POSIX threads. Object layouts fit the Linux ABI storage used by
-//! Breenix's C clients; zero is the static initializer for every lock and once.
-//! All sleeping uses futexes. Kernel clear_child_tid is the reclamation fence:
-//! publishing a result alone never permits a stack or descriptor to be unmapped.
+//! C thread interfaces using the ABI storage declared for Breenix clients.
+//! Waiters use futexes; descriptor reclamation waits for clear_child_tid.
 use super::{EBUSY, EINVAL, ENOMEM, EPERM};
 use core::ptr::{null, null_mut};
 use core::sync::atomic::{
-    AtomicBool, AtomicU32,
+    AtomicBool, AtomicPtr, AtomicU32,
     Ordering::{Acquire, Relaxed, Release},
 };
 use libbreenix::syscall::{nr, raw};
@@ -48,9 +46,6 @@ struct Lock(AtomicU32);
 impl Lock {
     const fn new() -> Self {
         Self(AtomicU32::new(0))
-    }
-    fn try_lock(&self) -> bool {
-        self.0.compare_exchange(0, 1, Acquire, Relaxed).is_ok()
     }
     fn lock(&self) {
         if self.0.compare_exchange(0, 1, Acquire, Relaxed).is_ok() {
@@ -216,7 +211,17 @@ unsafe fn alloc_thread() -> *mut Thread {
     if TLS_FILE != 0 {
         core::ptr::copy_nonoverlapping(TLS_IMAGE, data as *mut u8, TLS_FILE);
     }
-    *(tp as *mut usize) = p as usize;
+    #[cfg(target_arch = "aarch64")]
+    {
+        *(tp as *mut usize) = p as usize;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // The compiler reads fs:0 as the variant-II TLS base. Keep our
+        // descriptor in the following reserved word, outside static TLS.
+        *(tp as *mut usize) = tp;
+        *((tp + 8) as *mut usize) = p as usize;
+    }
     (*p).tp = tp;
     p
 }
@@ -284,7 +289,7 @@ pub unsafe fn startup(envp: *const *const u8) {
     }
     let t = current();
     if t.is_null() {
-        libbreenix::process::exit(127);
+        super::exit_group(127);
     }
     set_tp((*t).tp);
     RUNTIME_READY.store(true, Release);
@@ -318,7 +323,7 @@ unsafe fn registry_lock() {
             p = (*p).next;
         }
         HEAD = survivor;
-        LIVE.store(1, Relaxed);
+        LIVE.store((!survivor.is_null()) as u32, Relaxed);
         KEY_LOCK.0.store(0, Relaxed);
         REAPER_STARTED = false;
         if !survivor.is_null() {
@@ -336,6 +341,20 @@ unsafe fn registry_lock() {
     }
     REGISTRY.lock();
 }
+/// Repair cached identities before a fork child enters the C runtime again.
+#[no_mangle]
+pub unsafe extern "C" fn __breenix_after_fork() {
+    registry_lock();
+    REGISTRY.unlock();
+}
+unsafe fn current_id() -> u32 {
+    let p = current();
+    if p.is_null() {
+        tid()
+    } else {
+        (*p).id
+    }
+}
 unsafe fn reap() {
     let mut link = core::ptr::addr_of_mut!(HEAD);
     while !(*link).is_null() {
@@ -349,14 +368,14 @@ unsafe fn reap() {
     }
 }
 unsafe fn current() -> *mut Thread {
-    let id = tid();
-    if RUNTIME_READY.load(Acquire) && PROCESS.load(Relaxed) == pid() {
+    if RUNTIME_READY.load(Acquire) {
         let p = descriptor_from_tp();
-        if !p.is_null() && (*p).id == id {
+        if !p.is_null() {
             return p;
         }
     }
     registry_lock();
+    let id = tid();
     let mut p = HEAD;
     while !p.is_null() {
         if (*p).id == id {
@@ -369,17 +388,19 @@ unsafe fn current() -> *mut Thread {
     if !p.is_null() {
         (*p).id = id;
         (*p).clear.store(id, Relaxed);
-        // clone registers this word for created threads. The initial thread,
-        // and the survivor after fork, need the same exit notification.
-        raw::syscall1(nr::SET_TID_ADDRESS, &(*p).clear as *const AtomicU32 as u64);
+        // The initial thread needs an exit notification. Do not overwrite an
+        // externally created thread's notification address.
+        if HEAD.is_null() {
+            raw::syscall1(nr::SET_TID_ADDRESS, &(*p).clear as *const AtomicU32 as u64);
+        }
         (*p).next = HEAD;
         HEAD = p;
-        LIVE.store(1, Release);
+        LIVE.fetch_add(1, Release);
     }
     REGISTRY.unlock();
     p
 }
-/// Both ABI TCBs hold our descriptor in their first reserved word. Reading
+/// The ABI TCB has a reserved descriptor word. Reading
 /// errno does not take a lock or allocate, including from a signal handler.
 unsafe fn descriptor_from_tp() -> *mut Thread {
     #[cfg(target_arch = "aarch64")]
@@ -395,7 +416,7 @@ unsafe fn descriptor_from_tp() -> *mut Thread {
     #[cfg(target_arch = "x86_64")]
     {
         let p: *mut Thread;
-        core::arch::asm!("mov {}, fs:[0]", out(reg) p, options(readonly, nostack));
+        core::arch::asm!("mov {}, fs:[8]", out(reg) p, options(readonly, nostack));
         p
     }
 }
@@ -410,7 +431,7 @@ pub fn errno_location() -> *mut i32 {
         // Failure to allocate even the thread's C runtime state is fatal rather
         // than silently sharing errno with another thread.
         if p.is_null() {
-            libbreenix::process::exit(127);
+            super::exit_group(127);
         }
         core::ptr::addr_of_mut!((*p).errno)
     }
@@ -463,6 +484,21 @@ unsafe fn start_reaper() -> i32 {
     }
     (*p).mapping = stack;
     (*p).mapping_len = 32 * 1024;
+    // Block before clone so the helper cannot receive a process-directed
+    // signal even in the interval before its first userspace instruction.
+    let all = u64::MAX;
+    let mut saved = 0u64;
+    let mask = raw::syscall4(
+        nr::SIGPROCMASK,
+        2,
+        &all as *const u64 as u64,
+        &mut saved as *mut u64 as u64,
+        8,
+    ) as i64;
+    if mask < 0 {
+        free_thread(p);
+        return EAGAIN;
+    }
     let r = raw::syscall6(
         nr::CLONE,
         0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x80000 | 0x200000 | 0x1000000,
@@ -472,6 +508,7 @@ unsafe fn start_reaper() -> i32 {
         &(*p).clear as *const AtomicU32 as u64,
         (*p).tp as u64,
     ) as i64;
+    raw::syscall4(nr::SIGPROCMASK, 2, &saved as *const u64 as u64, 0, 8);
     if r < 0 {
         free_thread(p);
         return -r as i32;
@@ -548,16 +585,14 @@ pub unsafe extern "C" fn pthread_create(
             let r = raw::syscall2(nr::SCHED_GETPARAM, 0, &mut priority as *mut i32 as u64) as i64;
             if r < 0 {
                 REGISTRY.unlock();
-                return -r as i32;
+                return EINVAL;
             }
         }
     }
-    if a.detached == 1 {
-        let r = start_reaper();
-        if r != 0 {
-            REGISTRY.unlock();
-            return r;
-        }
+    let r = start_reaper();
+    if r != 0 {
+        REGISTRY.unlock();
+        return EAGAIN;
     }
     let p = alloc_thread();
     if p.is_null() {
@@ -620,7 +655,13 @@ pub unsafe extern "C" fn pthread_create(
     if r < 0 {
         free_thread(p);
         REGISTRY.unlock();
-        return -r as i32;
+        return if r == -(EPERM as i64) {
+            EPERM
+        } else if r == -(EINVAL as i64) {
+            EINVAL
+        } else {
+            EAGAIN
+        };
     }
     (*p).id = r as u32;
     (*p).next = HEAD;
@@ -654,7 +695,11 @@ pub unsafe extern "C" fn pthread_create(
             *link = (*p).next;
             free_thread(p);
             REGISTRY.unlock();
-            return -result as i32;
+            return if result == -(EPERM as i64) {
+                EPERM
+            } else {
+                EINVAL
+            };
         }
     }
     *out = p as usize;
@@ -714,11 +759,8 @@ pub unsafe extern "C" fn pthread_detach(handle: usize) -> i32 {
         REGISTRY.unlock();
         return EINVAL;
     }
-    let r = start_reaper();
-    if r != 0 {
-        REGISTRY.unlock();
-        return r;
-    }
+    // Creation reserves the helper before publishing a joinable handle, so
+    // detach itself has no allocation failure outside its POSIX error set.
     (*p).state = 1;
     REAPER_EVENT.fetch_add(1, Release);
     wake(&REAPER_EVENT, 1);
@@ -765,6 +807,7 @@ pub unsafe extern "C" fn pthread_getattr_np(handle: usize, attr: *mut u8) -> i32
         return ESRCH;
     }
     *(attr as *mut Attr) = (*p).attr;
+    (*(attr as *mut Attr)).detached = ((*p).state == 1 || (*p).state == 3) as i32;
     REGISTRY.unlock();
     0
 }
@@ -895,12 +938,12 @@ pub extern "C" fn pthread_setname_np(thread: usize, name: *const u8) -> i32 {
 // key creation can exhaust address-space resources, but runtime-owned keys do
 // not subtract from the POSIX minimum available to application code.
 struct Key {
-    generation: u32,
+    generation: AtomicU32,
     destructor: Destructor,
 }
 #[repr(C)]
 struct KeyBlock {
-    next: *mut KeyBlock,
+    next: AtomicPtr<KeyBlock>,
     keys: [Key; KEYS],
 }
 #[repr(C)]
@@ -910,14 +953,14 @@ struct Values {
     entries: [(*mut u8, u32); KEYS],
 }
 static KEY_LOCK: Lock = Lock::new();
-static mut KEY_BLOCKS: *mut KeyBlock = null_mut();
+static KEY_BLOCKS: AtomicPtr<KeyBlock> = AtomicPtr::new(null_mut());
 unsafe fn key_at(k: u32) -> *mut Key {
-    let mut p = KEY_BLOCKS;
+    let mut p = KEY_BLOCKS.load(Acquire);
     for _ in 0..k as usize / KEYS {
         if p.is_null() {
             return null_mut();
         }
-        p = (*p).next;
+        p = (*p).next.load(Acquire);
     }
     if p.is_null() {
         null_mut()
@@ -954,20 +997,34 @@ pub unsafe extern "C" fn pthread_key_create(out: *mut u32, destructor: Destructo
         return EINVAL;
     }
     KEY_LOCK.lock();
-    let mut link = core::ptr::addr_of_mut!(KEY_BLOCKS);
+    let mut link = &KEY_BLOCKS;
     let mut base = 0u32;
     loop {
-        if (*link).is_null() {
-            *link = map(PAGE, 3) as *mut KeyBlock;
-            if (*link).is_null() {
+        let mut block = link.load(Relaxed);
+        if block.is_null() {
+            block = map(PAGE, 3) as *mut KeyBlock;
+            if block.is_null() {
                 KEY_LOCK.unlock();
                 return EAGAIN;
             }
+            core::ptr::write(
+                block,
+                KeyBlock {
+                    next: AtomicPtr::new(null_mut()),
+                    keys: core::array::from_fn(|_| Key {
+                        generation: AtomicU32::new(0),
+                        destructor: None,
+                    }),
+                },
+            );
+            link.store(block, Release);
         }
-        for (i, key) in (**link).keys.iter_mut().enumerate() {
-            if key.generation & 1 == 0 {
-                key.destructor = destructor;
-                key.generation = key.generation.wrapping_add(1);
+        for i in 0..KEYS {
+            let key = core::ptr::addr_of_mut!((*block).keys[i]);
+            let generation = (*key).generation.load(Relaxed);
+            if generation & 1 == 0 {
+                (*key).destructor = destructor;
+                (*key).generation.store(generation.wrapping_add(1), Release);
                 *out = base + i as u32;
                 KEY_LOCK.unlock();
                 return 0;
@@ -978,18 +1035,18 @@ pub unsafe extern "C" fn pthread_key_create(out: *mut u32, destructor: Destructo
             return EAGAIN;
         };
         base = next_base;
-        link = core::ptr::addr_of_mut!((**link).next);
+        link = &(*block).next;
     }
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_key_delete(k: u32) -> i32 {
     KEY_LOCK.lock();
     let key = key_at(k);
-    if key.is_null() || (*key).generation & 1 == 0 {
+    if key.is_null() || (*key).generation.load(Relaxed) & 1 == 0 {
         KEY_LOCK.unlock();
         return EINVAL;
     }
-    (*key).generation = (*key).generation.wrapping_add(1);
+    (*key).generation.fetch_add(1, Release);
     (*key).destructor = None;
     KEY_LOCK.unlock();
     0
@@ -1002,7 +1059,7 @@ pub unsafe extern "C" fn pthread_setspecific(k: u32, value: *mut u8) -> i32 {
     }
     KEY_LOCK.lock();
     let key = key_at(k);
-    if key.is_null() || (*key).generation & 1 == 0 {
+    if key.is_null() || (*key).generation.load(Relaxed) & 1 == 0 {
         KEY_LOCK.unlock();
         return EINVAL;
     }
@@ -1011,7 +1068,7 @@ pub unsafe extern "C" fn pthread_setspecific(k: u32, value: *mut u8) -> i32 {
         KEY_LOCK.unlock();
         return ENOMEM;
     }
-    *entry = (value, (*key).generation);
+    *entry = (value, (*key).generation.load(Relaxed));
     KEY_LOCK.unlock();
     0
 }
@@ -1021,19 +1078,19 @@ pub unsafe extern "C" fn pthread_getspecific(k: u32) -> *mut u8 {
     if p.is_null() {
         return null_mut();
     }
-    KEY_LOCK.lock();
     let key = key_at(k);
     let entry = value_at(p, k, false);
-    let value = if !key.is_null()
-        && !entry.is_null()
-        && (*key).generation & 1 != 0
-        && (*entry).1 == (*key).generation
-    {
-        (*entry).0
+    let generation = if key.is_null() {
+        0
     } else {
-        null_mut()
+        (*key).generation.load(Acquire)
     };
-    KEY_LOCK.unlock();
+    let value =
+        if !key.is_null() && !entry.is_null() && generation & 1 != 0 && (*entry).1 == generation {
+            (*entry).0
+        } else {
+            null_mut()
+        };
     value
 }
 unsafe fn destructors(p: *mut Thread) {
@@ -1053,7 +1110,7 @@ unsafe fn destructors(p: *mut Thread) {
                 (*entry).0 = null_mut();
                 (
                     value,
-                    if g & 1 != 0 && g == (*definition).generation {
+                    if g & 1 != 0 && g == (*definition).generation.load(Relaxed) {
                         (*definition).destructor
                     } else {
                         None
@@ -1100,7 +1157,7 @@ unsafe fn deadline_wait(p: &AtomicU32, value: u32, deadline: *const i64, clock: 
             0
         };
     }
-    // Main currently has relative FUTEX_WAIT only. Bound each sleep so that
+    // For kernels with relative FUTEX_WAIT only, bound each sleep so that
     // CLOCK_REALTIME adjustments are noticed; prefer the exact absolute kernel
     // operation as soon as the other lane implements it.
     let mut now = [0i64; 2];
@@ -1122,9 +1179,8 @@ unsafe fn deadline_wait(p: &AtomicU32, value: u32, deadline: *const i64, clock: 
     0
 }
 
-// A mutex's owner is also its futex word. Unlock always wakes a waiter, avoiding
-// a separate waiters bit and its publication races. The small extra syscall on
-// an uncontended unlock buys a single source of truth for errorcheck/recursive.
+// A mutex's owner is also its futex word; the high bit carries the wake baton
+// through contended acquisitions, avoiding a syscall on uncontended unlock.
 #[repr(C)]
 struct Mutex {
     owner: AtomicU32,
@@ -1134,22 +1190,28 @@ struct Mutex {
     next: *mut Mutex,    // private to the owner, used only for robust mutexes
 }
 const ROBUST: u32 = 4;
+const WAITERS: u32 = 1 << 31;
 unsafe fn mutex_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 {
     if m.is_null() {
         return EINVAL;
     }
-    let id = tid();
+    let id = current_id();
+    let mut contended = 0;
     loop {
         if (*m).recovery.load(Acquire) == 2 {
             return ENOTRECOVERABLE;
         }
-        match (*m).owner.compare_exchange(0, id, Acquire, Relaxed) {
+        match (*m)
+            .owner
+            .compare_exchange(0, id | contended, Acquire, Relaxed)
+        {
             Ok(_) => {
                 // A recovering owner can mark the mutex unrecoverable between
                 // our initial check and acquisition. Never admit that race.
                 if (*m).recovery.load(Acquire) == 2 {
-                    (*m).owner.store(0, Release);
-                    wake(&(*m).owner, u32::MAX);
+                    let owner = core::ptr::addr_of!((*m).owner);
+                    (*owner).store(0, Release);
+                    futex(owner, 1, u32::MAX, null());
                     return ENOTRECOVERABLE;
                 }
                 (*m).depth = 1;
@@ -1165,7 +1227,7 @@ unsafe fn mutex_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 
                 };
             }
             Err(owner) => {
-                if owner == id {
+                if owner & !WAITERS == id {
                     if (*m).kind & 3 == 1 {
                         let Some(depth) = (*m).depth.checked_add(1) else {
                             return EAGAIN;
@@ -1180,7 +1242,15 @@ unsafe fn mutex_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 
                 if attempt {
                     return EBUSY;
                 }
-                let r = deadline_wait(&(*m).owner, owner, deadline, 0);
+                contended = WAITERS;
+                if (*m)
+                    .owner
+                    .compare_exchange(owner, owner | WAITERS, Relaxed, Relaxed)
+                    .is_err()
+                {
+                    continue;
+                }
+                let r = deadline_wait(&(*m).owner, owner | WAITERS, deadline, 0);
                 if r != 0 {
                     return r;
                 }
@@ -1238,7 +1308,7 @@ pub unsafe extern "C" fn pthread_mutex_unlock(m: *mut u8) -> i32 {
         return EINVAL;
     }
     let m = m as *mut Mutex;
-    if (*m).kind != 0 && (*m).owner.load(Relaxed) != tid() {
+    if (*m).kind != 0 && (*m).owner.load(Relaxed) & !WAITERS != current_id() {
         return EPERM;
     }
     if (*m).kind & 3 == 1 && (*m).depth > 1 {
@@ -1259,13 +1329,16 @@ pub unsafe extern "C" fn pthread_mutex_unlock(m: *mut u8) -> i32 {
         }
     }
     (*m).depth = 0;
-    (*m).owner.store(0, Release);
     let count = if (*m).recovery.load(Relaxed) == 2 {
         u32::MAX
     } else {
         1
     };
-    wake(&(*m).owner, count);
+    let owner = core::ptr::addr_of!((*m).owner);
+    if (*owner).swap(0, Release) & WAITERS != 0 {
+        // No object read follows release: the next owner may destroy it.
+        futex(owner, 1, count, null());
+    }
     0
 }
 #[no_mangle]
@@ -1275,7 +1348,7 @@ pub unsafe extern "C" fn pthread_mutex_consistent(m: *mut u8) -> i32 {
     }
     let m = &*(m as *mut Mutex);
     if m.kind & ROBUST == 0
-        || m.owner.load(Relaxed) != tid()
+        || m.owner.load(Relaxed) & !WAITERS != current_id()
         || m.recovery.compare_exchange(1, 0, Relaxed, Relaxed).is_err()
     {
         EINVAL
@@ -1354,6 +1427,7 @@ pub unsafe extern "C" fn pthread_mutexattr_getprotocol(a: *const u8, v: *mut i32
 struct Cond {
     sequence: AtomicU32,
     clock: i32,
+    waiting: AtomicU32,
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_cond_init(c: *mut u8, a: *const u8) -> i32 {
@@ -1365,15 +1439,24 @@ pub unsafe extern "C" fn pthread_cond_init(c: *mut u8, a: *const u8) -> i32 {
         Cond {
             sequence: AtomicU32::new(0),
             clock: if a.is_null() { 0 } else { *(a as *const i32) },
+            waiting: AtomicU32::new(0),
         },
     );
     0
 }
 #[no_mangle]
-pub extern "C" fn pthread_cond_destroy(c: *mut u8) -> i32 {
+pub unsafe extern "C" fn pthread_cond_destroy(c: *mut u8) -> i32 {
     if c.is_null() {
         EINVAL
     } else {
+        let c = &*(c as *const Cond);
+        loop {
+            let n = c.waiting.load(Acquire);
+            if n == 0 {
+                break;
+            }
+            wait(&c.waiting, n);
+        }
         0
     }
 }
@@ -1402,18 +1485,28 @@ unsafe fn cond_wait(c: *mut u8, m: *mut u8, t: *const i64) -> i32 {
         return EINVAL;
     }
     let c = &*(c as *const Cond);
+    c.waiting.fetch_add(1, Acquire);
     let seq = c.sequence.load(Acquire);
+    let clock = c.clock;
     let r = pthread_mutex_unlock(m);
     if r != 0 {
+        let waiting = core::ptr::addr_of!(c.waiting);
+        (*waiting).fetch_sub(1, Release);
+        futex(waiting, 1, u32::MAX, null());
         return r;
     }
     let mut r;
     loop {
-        r = deadline_wait(&c.sequence, seq, t, c.clock);
+        r = deadline_wait(&c.sequence, seq, t, clock);
         if r != 0 || c.sequence.load(Acquire) != seq {
             break;
         }
     }
+    // Destroy drains this reference count before freeing or reinitializing
+    // the condition; release it before reacquiring the application mutex.
+    let waiting = core::ptr::addr_of!(c.waiting);
+    (*waiting).fetch_sub(1, Release);
+    futex(waiting, 1, u32::MAX, null());
     let lock = pthread_mutex_lock(m);
     if lock != 0 {
         lock
@@ -1587,13 +1680,7 @@ unsafe fn rw_take(p: *mut u8, write: bool, attempt: bool, deadline: *const i64) 
         policy,
         priority,
     };
-    if attempt {
-        if !(*r).gate.try_lock() {
-            return EBUSY;
-        }
-    } else {
-        (*r).gate.lock();
-    }
+    (*r).gate.lock();
     if write && !attempt {
         waiter.next = (*r).writers;
         (*r).writers = &mut waiter;
@@ -1607,7 +1694,7 @@ unsafe fn rw_take(p: *mut u8, write: bool, attempt: bool, deadline: *const i64) 
         };
         if available {
             if write {
-                (*r).writer = tid();
+                (*r).writer = (*thread).id;
                 if !attempt {
                     remove_writer(r, &mut waiter);
                 }
@@ -1717,7 +1804,7 @@ pub unsafe extern "C" fn pthread_rwlock_unlock(p: *mut u8) -> i32 {
     let r = p as *mut Rwlock;
     (*r).gate.lock();
     if (*r).writer != 0 {
-        if (*r).writer != tid() {
+        if (*r).writer != current_id() {
             (*r).gate.unlock();
             return EPERM;
         }
@@ -1745,6 +1832,7 @@ struct Barrier {
     count: u32,
     arrived: u32,
     generation: AtomicU32,
+    leaving: AtomicU32,
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_barrier_init(p: *mut u8, attr: *const u8, count: u32) -> i32 {
@@ -1761,6 +1849,7 @@ pub unsafe extern "C" fn pthread_barrier_init(p: *mut u8, attr: *const u8, count
             count,
             arrived: 0,
             generation: AtomicU32::new(0),
+            leaving: AtomicU32::new(0),
         },
     );
     0
@@ -1774,17 +1863,24 @@ pub unsafe extern "C" fn pthread_barrier_wait(p: *mut u8) -> i32 {
     (*b).gate.lock();
     let g = (*b).generation.load(Relaxed);
     (*b).arrived += 1;
+    (*b).leaving.fetch_add(1, Relaxed);
     if (*b).arrived == (*b).count {
         (*b).arrived = 0;
         (*b).generation.fetch_add(1, Release);
         (*b).gate.unlock();
         wake(&(*b).generation, u32::MAX);
+        let leaving = core::ptr::addr_of!((*b).leaving);
+        (*leaving).fetch_sub(1, Release);
+        futex(leaving, 1, u32::MAX, null());
         return -1;
     }
     (*b).gate.unlock();
     while (*b).generation.load(Acquire) == g {
         wait(&(*b).generation, g);
     }
+    let leaving = core::ptr::addr_of!((*b).leaving);
+    (*leaving).fetch_sub(1, Release);
+    futex(leaving, 1, u32::MAX, null());
     0
 }
 #[no_mangle]
@@ -1799,6 +1895,13 @@ pub unsafe extern "C" fn pthread_barrier_destroy(p: *mut u8) -> i32 {
     if busy {
         EBUSY
     } else {
+        loop {
+            let n = b.leaving.load(Acquire);
+            if n == 0 {
+                break;
+            }
+            wait(&b.leaving, n);
+        }
         0
     }
 }
@@ -1828,14 +1931,14 @@ pub unsafe extern "C" fn pthread_kill(handle: usize, sig: i32) -> i32 {
     if !(0..=64).contains(&sig) {
         return EINVAL;
     }
-    registry_lock();
-    let p = find(handle);
+    // POSIX requires a handle whose lifetime has not ended. Such a handle
+    // pins its descriptor until join (or detached termination); traversing
+    // the reclaiming registry would make this signal-safe API deadlock.
+    let p = handle as *const Thread;
     if p.is_null() {
-        REGISTRY.unlock();
         return ESRCH;
     }
     let id = (*p).id;
-    REGISTRY.unlock();
     let r = raw::syscall3(nr::TGKILL, pid() as u64, id as u64, sig as u64) as i64;
     if r < 0 {
         -r as i32

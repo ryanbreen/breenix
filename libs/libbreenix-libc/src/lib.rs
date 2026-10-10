@@ -994,7 +994,10 @@ pub extern "C" fn setpgid(pid: i32, pgid: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn fork() -> i32 {
     match libbreenix::process::fork() {
-        Ok(libbreenix::process::ForkResult::Child) => 0,
+        Ok(libbreenix::process::ForkResult::Child) => {
+            unsafe { pthread::__breenix_after_fork(); }
+            0
+        },
         Ok(libbreenix::process::ForkResult::Parent(pid)) => pid.raw() as i32,
         Err(e) => set_errno_from_error(e),
     }
@@ -1039,7 +1042,7 @@ pub extern "C" fn kill(pid: i32, sig: i32) -> i32 {
     result_unit_to_c_int(libbreenix::signal::kill(pid, sig))
 }
 
-/// raise - send a signal to the calling process
+/// raise - send a signal to the calling thread
 #[no_mangle]
 pub extern "C" fn raise(sig: i32) -> i32 {
     syscall_result_to_c_int(pthread::signal_current(sig))
@@ -1574,15 +1577,10 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
         _SC_PAGESIZE => 4096,
         _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => 1,
         _SC_GETPW_R_SIZE_MAX | _SC_GETGR_R_SIZE_MAX => 1024,
-        67 | 77 | 78 | 133 => 200809, // threads, stack attributes, barriers
+        67 | 77 | 78 | 133 | 153 | 164 => 200809, // threads, stack attributes, barriers, rwlocks, timeouts
         73 => 4, // PTHREAD_DESTRUCTOR_ITERATIONS
         74 => -1, // keys grow until allocation fails; no fixed limit
-        79 => {
-            // Advertise the optional scheduling interface only on kernels that
-            // provide it; wrappers still report ENOSYS on an older kernel.
-            let r = unsafe { libbreenix::raw::syscall1(libbreenix::syscall::nr::SCHED_GET_PRIORITY_MIN, 0) } as i64;
-            if r >= 0 { 200809 } else { -1 }
-        },
+        79 => -1, // priority-ordered mutex/condition wakeups are not provided
         80 | 81 => -1, // priority inheritance/protection are not provided
         75 => 16384, // PTHREAD_STACK_MIN
         _ => -1,

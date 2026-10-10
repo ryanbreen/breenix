@@ -11,11 +11,12 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
-Threads P2 implements the clean-room POSIX C library surface in
+Threads P2 implements the assigned C thread interfaces in
 `libs/libbreenix-libc` (issues #1302–#1306, #1308–#1310, #1312–#1319).
 ARM64 QEMU gates the library; the separate kernel lane supplies group teardown,
 absolute futex waits and requeue, thread scheduling, and clone TLS initialization.
-
+Cancellation and cleanup handlers, atfork handlers, spin locks, process-shared
+attributes, and contention-scope attributes remain tracked in #1328.
 
 [PR #1098](https://github.com/ryanbreen/breenix/pull/1098) supplies the Files & I/O
 poll/select cases and sync/statfs/fstatfs interfaces. Its suite manifest lists

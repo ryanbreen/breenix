@@ -997,7 +997,7 @@ pub const PTHREAD_INHERIT_SCHED: c_int = 0;
 pub const PTHREAD_EXPLICIT_SCHED: c_int = 1;
 pub const PTHREAD_BARRIER_SERIAL_THREAD: c_int = -1;
 pub const PTHREAD_DESTRUCTOR_ITERATIONS: c_int = 4;
-pub const PTHREAD_KEYS_MAX: c_int = 128;
+pub const PTHREAD_KEYS_MAX: c_int = 128; // guaranteed minimum; runtime keys grow dynamically
 pub const PTHREAD_ONCE_INIT: pthread_once_t = 0;
 pub const SCHED_OTHER: c_int = 0;
 pub const SCHED_FIFO: c_int = 1;
@@ -1012,6 +1012,8 @@ pub const _SC_THREAD_PRIORITY_SCHEDULING: c_int = 79;
 pub const _SC_THREAD_PRIO_INHERIT: c_int = 80;
 pub const _SC_THREAD_PRIO_PROTECT: c_int = 81;
 pub const _SC_BARRIERS: c_int = 133;
+pub const _SC_READER_WRITER_LOCKS: c_int = 153;
+pub const _SC_TIMEOUTS: c_int = 164;
 pub const PTHREAD_RWLOCK_INITIALIZER: pthread_rwlock_t = pthread_rwlock_t { __size: [0; 56] };
 
 // pthread initializers (Linux x86_64 compatible - zero-initialized)
