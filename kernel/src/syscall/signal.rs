@@ -1364,8 +1364,8 @@ fn timer_clock(process: &crate::process::Process, which: i32) -> u64 {
     if which == crate::signal::itimer::ITIMER_REAL {
         return crate::signal::monotonic_micros();
     }
-    // The caller's system time in this call so far counts for ITIMER_PROF.
-    crate::task::thread::charge_current_cpu_time();
+    // getitimer and setitimer charged the process's running threads before
+    // they took the process manager (`charge_current_process_cpu`).
     let user = process.cpu.user_ns.load(Ordering::Relaxed);
     let system = if which == crate::signal::itimer::ITIMER_PROF {
         process.cpu.system_ns.load(Ordering::Relaxed)
@@ -1403,6 +1403,13 @@ pub fn sys_getitimer(which: i32, curr_value: u64) -> SyscallResult {
             return SyscallResult::Err(3); // ESRCH
         }
     };
+
+    // A CPU-time timer reads the process's account: charge its running
+    // threads, this one's time in this call included, before the process
+    // manager is taken.
+    if which != ITIMER_REAL {
+        crate::task::scheduler::charge_current_process_cpu();
+    }
 
     let value = {
         let manager_guard = manager();
@@ -1507,6 +1514,14 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
             log::warn!("sys_setitimer: negative seconds not allowed");
             return SyscallResult::Err(22); // EINVAL
         }
+    }
+
+    // Arming a CPU-time timer measures its deadline from the process's
+    // account, so every running thread of the process is charged first: an
+    // interval a thread on another CPU had not yet charged would otherwise
+    // count against the new deadline.
+    if which != ITIMER_REAL {
+        crate::task::scheduler::charge_current_process_cpu();
     }
 
     let old_itimerval = {

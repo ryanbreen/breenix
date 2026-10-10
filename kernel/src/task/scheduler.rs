@@ -4939,6 +4939,15 @@ impl Scheduler {
         }
     }
 
+    /// Charge the open run interval of every thread charged to `account`.
+    fn charge_account_threads(&self, account: &alloc::sync::Arc<super::thread::CpuAccount>) {
+        for thread in self.threads.iter() {
+            if thread.cpu_account.as_ref().is_some_and(|a| alloc::sync::Arc::ptr_eq(a, account)) {
+                thread.charge_timer_cpu();
+            }
+        }
+    }
+
     /// Register an armed group from a timer syscall or exec publication.
     pub fn register_signal_timers(&mut self, timers: &alloc::sync::Arc<crate::signal::IntervalTimers>, cpu: &alloc::sync::Arc<super::thread::CpuAccount>) {
         if timers.is_active() && !self.signal_timer_groups.iter().any(|(old, _)| old.ptr_eq(&alloc::sync::Arc::downgrade(timers))) {
@@ -7326,11 +7335,16 @@ pub fn set_user_affinity(tid: u64, pin: Option<super::thread::CpuPin>) -> bool {
 /// time its threads running on other CPUs have used. Called without the
 /// process-manager lock held.
 pub fn charge_account_cpu(account: &alloc::sync::Arc<super::thread::CpuAccount>) {
+    with_scheduler(|scheduler| scheduler.charge_account_threads(account));
+}
+
+/// `charge_account_cpu` for the caller's own process, found from the calling
+/// thread rather than the process table, so it needs no process-manager lock
+/// and is called before that lock is taken.
+pub fn charge_current_process_cpu() {
     with_scheduler(|scheduler| {
-        for thread in scheduler.threads.iter() {
-            if thread.cpu_account.as_ref().is_some_and(|a| alloc::sync::Arc::ptr_eq(a, account)) {
-                thread.charge_timer_cpu();
-            }
+        if let Some(account) = scheduler.current_thread().and_then(|thread| thread.cpu_account.clone()) {
+            scheduler.charge_account_threads(&account);
         }
     });
 }
