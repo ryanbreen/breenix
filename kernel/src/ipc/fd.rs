@@ -452,6 +452,17 @@ impl FdTable {
     pub fn is_shared(&self) -> bool {
         Arc::strong_count(&self.shared) > 1
     }
+
+    /// Give this handle a table of its own: when another row shares the
+    /// table (CLONE_FILES), the handle is replaced by a copy of it, whose
+    /// descriptors refer to the same open file descriptions. Exec does this
+    /// before it closes FD_CLOEXEC descriptors, so the closes, and every
+    /// later change, leave the other rows' table alone.
+    pub fn unshare(&mut self) {
+        if self.is_shared() {
+            *self = self.clone();
+        }
+    }
 }
 
 /// The descriptors of an `FdTable`.
@@ -459,6 +470,9 @@ pub struct FdTableInner {
     /// The file descriptors (None = unused slot)
     fds: FdSlots,
     allocation_limit: usize,
+    /// Free slots an open holds for the descriptor it installs once it has
+    /// changed the disk (`reserve_slot`). No other allocation takes them.
+    reserved: alloc::vec::Vec<usize>,
 }
 
 impl Clone for FdTableInner {
@@ -513,6 +527,8 @@ impl Clone for FdTableInner {
         FdTableInner {
             fds: cloned_fds,
             allocation_limit: self.allocation_limit,
+            // A reservation belongs to the open in progress in this table.
+            reserved: alloc::vec::Vec::new(),
         }
     }
 }
@@ -552,6 +568,7 @@ impl FdTableInner {
         FdTableInner {
             fds: FdSlots::Slab(fds),
             allocation_limit: INITIAL_FDS,
+            reserved: alloc::vec::Vec::new(),
         }
     }
 
@@ -583,16 +600,38 @@ impl FdTableInner {
         Ok(slot as i32)
     }
 
-    /// Make sure a slot is free below the soft limit, growing the table now if
-    /// that is what it takes, so a later allocation needs no memory. Returns
-    /// false at the limit or when the table cannot grow.
-    pub fn reserve_free_slot(&mut self) -> bool {
-        self.free_slot(0).is_ok()
+    /// Hold the lowest free slot below the soft limit, growing the table now
+    /// if that is what it takes, for a descriptor installed later with
+    /// `install_reserved`. No other allocation takes the slot meanwhile, even
+    /// one by a thread sharing the table (CLONE_FILES), so the install needs
+    /// no memory and cannot fail. None at the limit or when the table cannot
+    /// grow.
+    pub fn reserve_slot(&mut self) -> Option<i32> {
+        let slot = self.free_slot(0).ok()?;
+        self.reserved.try_reserve(1).ok()?;
+        self.reserved.push(slot);
+        Some(slot as i32)
+    }
+
+    /// Install `entry` in slot `fd`, held by `reserve_slot`. A slot that is
+    /// not held is allocated as `alloc_with_entry` would.
+    pub fn install_reserved(&mut self, fd: i32, entry: FileDescriptor) -> Result<i32, i32> {
+        let Some(index) = self.reserved.iter().position(|&slot| slot as i32 == fd) else {
+            return self.alloc_with_entry(entry);
+        };
+        let slot = self.reserved.swap_remove(index);
+        self.fds[slot] = Some(entry);
+        Ok(fd)
+    }
+
+    /// Give back slot `fd`, held by `reserve_slot` for an open that failed.
+    pub fn release_reserved(&mut self, fd: i32) {
+        self.reserved.retain(|&slot| slot as i32 != fd);
     }
 
     fn free_slot(&mut self, start: usize) -> Result<usize, i32> {
-        if let Some(slot) =
-            (start..self.allocation_limit.min(self.fds.len())).find(|&i| self.fds[i].is_none())
+        if let Some(slot) = (start..self.allocation_limit.min(self.fds.len()))
+            .find(|&i| self.fds[i].is_none() && !self.reserved.contains(&i))
         {
             return Ok(slot);
         }
@@ -674,6 +713,10 @@ impl FdTableInner {
         // Equal descriptors allocate nothing, including when the limit was lowered.
         if new_fd as usize >= self.allocation_limit {
             return Err(9);
+        }
+        // A slot an open in progress holds is busy (Linux: EBUSY).
+        if self.reserved.contains(&(new_fd as usize)) {
+            return Err(16);
         }
 
         self.fds.grow(new_fd as usize + 1)?;

@@ -85,6 +85,23 @@ fn spill_fault_exit(thread_id: u64) -> bool {
 fn fault_exits_pending() -> bool {
     !DEFERRED_FAULT_EXIT_BUFFERS.iter().all(|buf| buf.is_empty())
         || crate::arch_without_interrupts(|| !DEFERRED_FAULT_EXIT_OVERFLOW.lock().is_empty())
+        || UNQUEUED_FATAL_EXITS.load(Ordering::Acquire)
+}
+
+/// Some row carries a fatal exit its signal delivery could not queue
+/// (`Process::unqueued_fatal_exit`).
+static UNQUEUED_FATAL_EXITS: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// A fatal signal's deferred exit could not be queued and was left on its
+/// row (`Process::unqueued_fatal_exit`): have the deferred-exit drain look
+/// for it. Takes no lock and allocates nothing.
+pub fn note_unqueued_fatal_exit() {
+    UNQUEUED_FATAL_EXITS.store(true, Ordering::Release);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
+        crate::task::kthread::kthread_unpark(daemon);
+    }
 }
 
 pub(crate) struct PendingProcessReclaim {
@@ -885,6 +902,12 @@ impl ProcessScheduler {
                     manager.hand_off_address_space(pid);
                 }
                 let group_wake = manager.last_group_row_exiting(thread_id);
+                // A leader whose other threads still run has not exited as a
+                // process: its parent gets SIGCHLD when the last of them ends
+                // (`group_exited`), not now.
+                let sigchld_withheld = manager
+                    .find_process_by_thread(thread_id)
+                    .is_some_and(|(pid, _)| manager.leader_waits_for_group(pid));
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     let already_terminated = process.is_terminated();
                     // `terminate` left this row's address space for this hook
@@ -969,7 +992,7 @@ impl ProcessScheduler {
                         .map(crate::signal::delivery::child_exit_info);
                     let mut signal_wake = None;
                     let parent_tid = if let Some(parent_pid) = parent_pid {
-                        if let (true, Some(info)) = (sigchld_pending, child_info) {
+                        if let (true, Some(info)) = (sigchld_pending && !sigchld_withheld, child_info) {
                             signal_wake = manager.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
                         }
                         if let Some(parent_process) = manager.get_process_mut(parent_pid) {
@@ -1039,7 +1062,7 @@ impl ProcessScheduler {
             // Condition C8: a row the auto-reap removed is destroyed outside PM.
             drop(auto_reaped);
             if let Some(exited) = group_exited {
-                exited.wake_parent();
+                wake_group_parent(exited);
             }
             if let Some(mut receipt) = retirement_receipt {
                 if let Some(reclaim) = receipt.take_contents() {
@@ -1120,6 +1143,19 @@ impl ProcessScheduler {
     }
 }
 
+/// A thread group's last row has ended (`ProcessManager::group_exited`):
+/// wake its leader's parent, and drop a leader row that parent reaped.
+/// Called with PROCESS_MANAGER released (condition C8).
+fn wake_group_parent(exited: crate::process::manager::GroupExited) {
+    drop(exited.reaped);
+    for tid in [exited.signal_wake, exited.parent_tid].into_iter().flatten() {
+        scheduler::with_scheduler(|sched| {
+            sched.unblock_for_signal(tid);
+            sched.unblock_for_child_exit(tid);
+        });
+    }
+}
+
 fn next_reclaim_pass_id(mut pass: u32) -> u32 {
     while pass == 0 {
         pass = RECLAIM_PASS_ID
@@ -1190,6 +1226,24 @@ pub fn drain_deferred_fault_sigsegv_exits() {
         }
         ProcessScheduler::handle_thread_exit(tid, exit_code);
     }
+    // Exits that could not be queued were left on their rows; one row is
+    // taken at a time, so finding them allocates nothing.
+    if UNQUEUED_FATAL_EXITS.swap(false, Ordering::AcqRel) {
+        while let Some((tid, exit_code)) = crate::process::with_process_manager(|manager| {
+            manager.take_unqueued_fatal_exit()
+        })
+        .flatten()
+        {
+            let pid = crate::process::with_process_manager(|manager| {
+                manager.find_process_by_thread(tid).map(|(pid, _)| pid)
+            })
+            .flatten();
+            if let Some(pid) = pid {
+                crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
+            }
+            ProcessScheduler::handle_thread_exit(tid, exit_code);
+        }
+    }
 }
 
 /// x86_64: the kernel thread that runs deferred fault exits (#511).
@@ -1206,10 +1260,17 @@ static FAULT_EXIT_DAEMON: spin::Once<crate::task::kthread::KthreadHandle> = spin
 /// before any user process exists.
 #[cfg(target_arch = "x86_64")]
 pub fn start_fault_exit_daemon() {
-    FAULT_EXIT_DAEMON.call_once(|| {
+    let daemon = FAULT_EXIT_DAEMON.call_once(|| {
         crate::task::kthread::kthread_run(fault_exit_daemon, "kfaultexit")
             .expect("could not spawn the fault-exit kernel thread")
     });
+    // A fatal signal kills the rest of its thread group from this thread, so
+    // it ranks above every real-time thread: runnable SCHED_FIFO threads on
+    // every CPU cannot hold the group's deaths off (#1033).
+    crate::task::scheduler::set_sched_policy(
+        daemon.tid(),
+        crate::task::thread::SchedPolicy::KERNEL_EXIT,
+    );
 }
 
 #[cfg(target_arch = "x86_64")]

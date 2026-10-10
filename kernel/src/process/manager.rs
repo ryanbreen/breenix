@@ -92,25 +92,13 @@ impl ProcessRowMap for BTreeMap<ProcessId, Process> {
 }
 
 /// What telling a process's parent that its last thread has ended leaves to do
-/// once PROCESS_MANAGER is released (`ProcessManager::group_exited`).
+/// once PROCESS_MANAGER is released (`ProcessManager::group_exited`): wake
+/// these threads, and drop a leader row the parent reaped (condition C8).
+/// Done by `process_task::wake_group_parent`.
 pub(crate) struct GroupExited {
-    signal_wake: Option<u64>,
-    parent_tid: Option<u64>,
-    reaped: Option<Process>,
-}
-
-impl GroupExited {
-    /// Wake the parent's waits and drop a leader row it reaped (condition C8:
-    /// outside PROCESS_MANAGER).
-    pub(crate) fn wake_parent(self) {
-        drop(self.reaped);
-        for tid in [self.signal_wake, self.parent_tid].into_iter().flatten() {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock_for_signal(tid);
-                sched.unblock_for_child_exit(tid);
-            });
-        }
-    }
+    pub(crate) signal_wake: Option<u64>,
+    pub(crate) parent_tid: Option<u64>,
+    pub(crate) reaped: Option<Process>,
 }
 
 /// Outcome of the two-event join's reap arm.
@@ -1999,7 +1987,11 @@ impl ProcessManager {
                 .processes
                 .live_row(&pid)
                 .map(crate::signal::delivery::child_exit_info);
-            if let (Some(parent_pid), Some(info)) = (parent_pid, child_info) {
+            // A leader whose other threads still run has not exited as a
+            // process: its parent is told when the last of them ends
+            // (`group_exited`).
+            let withheld = self.leader_waits_for_group(pid);
+            if let (Some(parent_pid), Some(info), false) = (parent_pid, child_info, withheld) {
                 signal_wake = self.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
             }
             if let Some(process) = self.processes.live_row_mut(&pid) {
@@ -2393,6 +2385,17 @@ impl ProcessManager {
     /// zombies reaps it now. Under PROCESS_MANAGER; the caller runs
     /// `GroupExited::wake_parent` once it has released it.
     pub(crate) fn group_exited(&mut self, leader: ProcessId) -> GroupExited {
+        // Two rows ending together can each find itself the last one.
+        match self.processes.live_row_mut(&leader) {
+            Some(row) if !row.group_exit_reported => row.group_exit_reported = true,
+            _ => {
+                return GroupExited {
+                    signal_wake: None,
+                    parent_tid: None,
+                    reaped: None,
+                }
+            }
+        }
         let parent = self.processes.live_row(&leader).and_then(|row| row.parent);
         let info = self
             .processes
@@ -2414,6 +2417,16 @@ impl ProcessManager {
             parent_tid,
             reaped,
         }
+    }
+
+    /// A row whose fatal signal's deferred exit could not be queued
+    /// (`Process::unqueued_fatal_exit`): its thread and exit status, taken
+    /// off the row so the deferred-exit drain carries it out once.
+    pub(crate) fn take_unqueued_fatal_exit(&mut self) -> Option<(u64, i32)> {
+        self.processes.values_mut().find_map(|row| {
+            let tid = row.main_thread.as_ref()?.id;
+            row.unqueued_fatal_exit.take().map(|code| (tid, code))
+        })
     }
 
     /// A thread group's address space lives as long as any of its rows does
@@ -4003,6 +4016,10 @@ impl ProcessManager {
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         process.memory_locks.clear();
+        // A table this row shares with a thread that does not exec
+        // (CLONE_FILES) is copied first, so exec leaves that thread's
+        // descriptors alone.
+        process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
         closes.release_record_locks(process.lock_owner.id());
@@ -4452,6 +4469,10 @@ impl ProcessManager {
         process.vmas.clear();
         process.memory_locks.clear();
 
+        // A table this row shares with a thread that does not exec
+        // (CLONE_FILES) is copied first, so exec leaves that thread's
+        // descriptors alone.
+        process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
         closes.release_record_locks(process.lock_owner.id());
@@ -4840,6 +4861,10 @@ impl ProcessManager {
         process.vmas.clear();
         process.memory_locks.clear();
 
+        // A table this row shares with a thread that does not exec
+        // (CLONE_FILES) is copied first, so exec leaves that thread's
+        // descriptors alone.
+        process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
         closes.release_record_locks(process.lock_owner.id());
@@ -5185,6 +5210,10 @@ impl ProcessManager {
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         process.memory_locks.clear();
+        // A table this row shares with a thread that does not exec
+        // (CLONE_FILES) is copied first, so exec leaves that thread's
+        // descriptors alone.
+        process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec(closes);
         closes.release_record_locks(process.lock_owner.id());

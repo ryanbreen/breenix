@@ -409,18 +409,65 @@ fn sys_open_write_path(
     Ok((ino, ft, is_dir, is_reg, mid, handle))
 }
 
-/// Make sure the calling thread's descriptor table has a free slot, growing
-/// it now if needed. False when it is full or cannot grow.
-fn reserve_descriptor_slot() -> bool {
-    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
-        return false;
-    };
-    crate::process::with_process_manager(|manager| {
-        manager
-            .find_process_by_thread_mut(thread_id)
-            .is_some_and(|(_, process)| process.fd_table.reserve_free_slot())
-    })
-    .unwrap_or(false)
+/// A descriptor slot held in the calling thread's table for an open that
+/// changes the disk (O_CREAT, O_TRUNC) before it installs the descriptor. No
+/// other allocation takes the slot meanwhile, a thread sharing the table
+/// (CLONE_FILES) included, so the install cannot fail with EMFILE or need
+/// memory after the disk has changed. A slot not installed is given back when
+/// this is dropped, which must not happen while PROCESS_MANAGER is held.
+struct ReservedSlot {
+    thread_id: u64,
+    fd: i32,
+}
+
+impl ReservedSlot {
+    /// None when the table is full or cannot grow.
+    fn take() -> Option<Self> {
+        let thread_id = crate::task::scheduler::current_thread_id()?;
+        let fd = crate::process::with_process_manager(|manager| {
+            manager
+                .find_process_by_thread_mut(thread_id)
+                .and_then(|(_, process)| process.fd_table.reserve_slot())
+        })
+        .flatten()?;
+        Some(Self { thread_id, fd })
+    }
+
+    /// Install `entry` in the held slot of `table`, the calling thread's,
+    /// under PROCESS_MANAGER.
+    fn install(
+        self,
+        table: &mut crate::ipc::fd::FdTable,
+        entry: crate::ipc::fd::FileDescriptor,
+    ) -> Result<i32, i32> {
+        let fd = self.fd;
+        core::mem::forget(self);
+        table.install_reserved(fd, entry)
+    }
+}
+
+impl Drop for ReservedSlot {
+    fn drop(&mut self) {
+        let (thread_id, fd) = (self.thread_id, self.fd);
+        crate::process::with_process_manager(|manager| {
+            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+                process.fd_table.release_reserved(fd);
+            }
+        });
+    }
+}
+
+/// Install `entry` in the calling thread's `table`: in the slot `reserved`
+/// holds, or in the lowest free one.
+fn install_descriptor(
+    table: &mut crate::ipc::fd::FdTable,
+    reserved: Option<ReservedSlot>,
+    entry: crate::ipc::fd::FileDescriptor,
+) -> Result<i32, i32> {
+    match reserved {
+        Some(slot) => slot.install(table, entry),
+        None => table.alloc_with_entry(entry),
+    }
 }
 
 /// Helper: sys_open read path — works on any Ext2Fs instance.
@@ -537,13 +584,19 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     let cred = current_file_credentials();
 
     // An open that creates or truncates must not change the disk and then
-    // fail with EMFILE. The slot is made free now, growing the table if need
-    // be, so installing the descriptor below cannot fail on a full table or a
-    // failed grow; a row's descriptor table is filled only by its own thread,
-    // so the slot is still free then.
-    if needs_write && !reserve_descriptor_slot() {
-        return SyscallResult::Err(EMFILE as u64);
-    }
+    // fail with EMFILE. A slot is held now, growing the table if need be, so
+    // installing the descriptor below cannot fail on a full table or a failed
+    // grow, and no thread sharing the table can take the slot first (#1307).
+    // Declared before every PROCESS_MANAGER guard below, it is dropped after
+    // them on each early return.
+    let reserved = if needs_write {
+        match ReservedSlot::take() {
+            Some(slot) => Some(slot),
+            None => return SyscallResult::Err(EMFILE as u64),
+        }
+    } else {
+        None
+    };
 
     let result = if needs_write {
         // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
@@ -615,7 +668,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
             // Allocate file descriptor for directory
             let fd_entry =
                 FileDescriptor::opened(FdKind::Directory(Arc::new(Mutex::new(dir_file))), flags);
-            match process.fd_table.alloc_with_entry(fd_entry) {
+            match install_descriptor(&mut process.fd_table, reserved, fd_entry) {
                 Ok(fd) => {
                     log::info!(
                         "sys_open: opened directory {} as fd {} (inode {})",
@@ -688,7 +741,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         // its access mode, status flags and O_CLOEXEC from the open flags.
         let fd_entry =
             FileDescriptor::opened(FdKind::RegularFile(Arc::new(Mutex::new(regular_file))), flags);
-        match process.fd_table.alloc_with_entry(fd_entry) {
+        match install_descriptor(&mut process.fd_table, reserved, fd_entry) {
             Ok(fd) => {
                 // Debug level: this runs under the process manager, which
                 // every other CPU waits for while a serial line is written.

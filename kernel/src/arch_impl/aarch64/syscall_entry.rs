@@ -680,6 +680,8 @@ fn dispatch_syscall_enum(
             arg4 as u32,
         )),
         SyscallNumber::Yield => {
+            // Behind the other threads of its priority, then to the scheduler.
+            crate::task::scheduler::note_sched_yield();
             crate::task::scheduler::yield_current();
             0
         }

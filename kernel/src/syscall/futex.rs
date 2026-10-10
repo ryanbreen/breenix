@@ -10,7 +10,6 @@ use spin::Mutex;
 
 use crate::arch_impl::traits::CpuOps;
 use crate::task::thread::ThreadState;
-use crate::task::waitqueue::PrepareOutcome;
 
 #[cfg(target_arch = "aarch64")]
 type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
@@ -141,8 +140,25 @@ impl FutexTable {
     }
 }
 
-/// Global futex wait-queue registry. Lock order: process manager -> futex
-/// table -> scheduler; the table is only taken with interrupts masked.
+/// How a wait's check-and-enqueue section under the futex table ended.
+#[derive(PartialEq)]
+enum Prepared {
+    /// The word could not be read (EFAULT).
+    Fault,
+    /// The word did not hold the expected value.
+    Mismatch,
+    /// The absolute deadline had already passed.
+    Expired,
+    /// The waiter was enqueued and its blocked state was published.
+    Queued,
+    /// The waiter could not be published and was removed again.
+    PublishFailed,
+}
+
+/// Global futex wait-queue registry, only taken with interrupts masked and
+/// never with PROCESS_MANAGER held: the user-word read under it may fault,
+/// and resolving the fault can take PROCESS_MANAGER. The scheduler lock is
+/// taken under it.
 static FUTEX_QUEUES: Mutex<FutexTable> = Mutex::new(FutexTable::new());
 
 fn with_table<R>(f: impl FnOnce(&mut FutexTable) -> R) -> R {
@@ -222,7 +238,11 @@ fn futex_key(uaddr: u64, private: bool) -> Option<FutexKey> {
     Some(physical.map_or((group, uaddr), |phys| (SHARED_FUTEX, phys)))
 }
 
-/// Read the futex word, faulting its page in. EFAULT if it cannot be read.
+/// Read the futex word through the user-copy routine, faulting its page in.
+/// EFAULT if it cannot be read: another thread of the address space may have
+/// unmapped or protected the word since it was last touched, so this is also
+/// the read taken under the futex table's lock, where a raw load would fault
+/// in the kernel with the table held.
 fn read_word(uaddr: u64) -> Result<u32, u64> {
     crate::syscall::userptr::copy_from_user::<u32>(uaddr as *const u32)
         .map_err(|_| super::errno::EFAULT as u64)
@@ -316,17 +336,10 @@ fn futex_wait_until(
     };
     let realtime = matches!(deadline, Deadline::Realtime(_));
 
-    #[derive(PartialEq)]
-    enum Prepared {
-        Mismatch,
-        Expired,
-        Queued,
-        PublishFailed,
-    }
     let prepared = with_table(|table| {
-        // SAFETY: the word was validated and touched above. A concurrent unmap
-        // remains a documented residual risk, as for FUTEX_WAIT.
-        let current = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
+        let Ok(current) = read_word(uaddr) else {
+            return Prepared::Fault;
+        };
         if current != expected_val {
             return Prepared::Mismatch;
         }
@@ -349,6 +362,7 @@ fn futex_wait_until(
         }
     });
     match prepared {
+        Prepared::Fault => return SyscallResult::Err(super::errno::EFAULT as u64),
         Prepared::Mismatch => return SyscallResult::Err(super::errno::EAGAIN as u64),
         Prepared::Expired => return SyscallResult::Err(super::errno::ETIMEDOUT as u64),
         Prepared::PublishFailed => {
@@ -451,10 +465,10 @@ fn futex_requeue(
     };
     with_table(|table| {
         if let Some(expected) = expected {
-            // SAFETY: the word was validated and touched above.
-            let current = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
-            if current != expected {
-                return SyscallResult::Err(super::errno::EAGAIN as u64);
+            match read_word(uaddr) {
+                Ok(current) if current == expected => {}
+                Ok(_) => return SyscallResult::Err(super::errno::EAGAIN as u64),
+                Err(e) => return SyscallResult::Err(e),
             }
         }
         let woken = table.wake(from, nr_wake, FUTEX_BITSET_MATCH_ANY);
@@ -597,9 +611,7 @@ fn futex_wait(
     #[cfg(feature = "coreproof_mut_futex_section")]
     let value_matches = {
         let _queues = FUTEX_QUEUES.lock();
-        // SAFETY: The address was validated and pre-touched above.
-        let current_val = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
-        current_val == expected_val
+        read_word(uaddr).is_ok_and(|current_val| current_val == expected_val)
     };
     #[cfg(feature = "coreproof_mut_futex_section")]
     let split_precheck = value_matches && !zero_timeout;
@@ -636,15 +648,17 @@ fn futex_wait(
             }
             #[cfg(not(feature = "coreproof_mut_futex_section"))]
             {
-                // SAFETY: The address was validated and pre-touched above.
-                // A concurrent unmap remains a documented residual risk.
-                let current_val = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
+                // A word unmapped or protected since the touch above is
+                // EFAULT, not a kernel fault with the table held.
+                let Ok(current_val) = read_word(uaddr) else {
+                    return Prepared::Fault;
+                };
                 value_matches = current_val == expected_val;
                 value_matches && !zero_timeout
             }
         };
         if !proceed {
-            return PrepareOutcome::Mismatch;
+            return Prepared::Mismatch;
         }
         table.enqueue(
             key,
@@ -658,15 +672,27 @@ fn futex_wait(
         })
         .unwrap_or(false);
         if published {
-            PrepareOutcome::Queued
+            Prepared::Queued
         } else {
             table.remove(thread_id);
-            PrepareOutcome::PublishFailed
+            Prepared::PublishFailed
         }
     });
 
     match prepare_outcome {
-        PrepareOutcome::Mismatch => {
+        // Not produced here: FUTEX_WAIT's deadline is relative, and a zero
+        // timeout is a Mismatch with the value matching.
+        Prepared::Expired => SyscallResult::Err(super::errno::ETIMEDOUT as u64),
+        Prepared::Fault => {
+            #[cfg(feature = "boot_tests")]
+            oracle_finish(
+                oracle_stage,
+                false,
+                crate::syscall::futex_oracle::OracleRet::Other,
+            );
+            SyscallResult::Err(super::errno::EFAULT as u64)
+        }
+        Prepared::Mismatch => {
             #[cfg(feature = "boot_tests")]
             oracle_finish(
                 oracle_stage,
@@ -683,7 +709,7 @@ fn futex_wait(
                 SyscallResult::Err(super::errno::EAGAIN as u64)
             }
         }
-        PrepareOutcome::PublishFailed => {
+        Prepared::PublishFailed => {
             #[cfg(feature = "boot_tests")]
             oracle_finish(
                 oracle_stage,
@@ -692,7 +718,7 @@ fn futex_wait(
             );
             SyscallResult::Err(super::errno::ESRCH as u64)
         }
-        PrepareOutcome::Queued => {
+        Prepared::Queued => {
             #[cfg(feature = "boot_tests")]
             {
                 if let Some(stage) = oracle_stage {
@@ -915,7 +941,8 @@ fn ensure_current_address_space() {
     if let Some(ref manager) = *manager_guard {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
             // A thread's own table, or the one its CLONE_VM group shares.
-            if let Some(ttbr0_value) = process.cr3_value() {
+            let ttbr0_value = process.cr3_value();
+            if let Some(ttbr0_value) = ttbr0_value {
                 crate::arch_impl::aarch64::ttbr0::restore_process_ttbr0(ttbr0_value);
             }
         }

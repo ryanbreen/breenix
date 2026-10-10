@@ -389,6 +389,16 @@ pub struct Process {
     /// row's exit hook hands the address space to a live row of the group, or
     /// releases it once none is left (#1321).
     pub address_space_release_deferred: bool,
+
+    /// The exit status of a fatal signal's default action whose deferred exit
+    /// (`defer_fault_exit`) could not be queued: the per-CPU ring was full and
+    /// the overflow list could not grow. The deferred-exit drain finds the
+    /// row by this and ends its thread group as a queued exit would.
+    pub unqueued_fatal_exit: Option<i32>,
+
+    /// This row leads a thread group whose last row has ended, and its parent
+    /// has been told (`ProcessManager::group_exited`): it is told once.
+    pub group_exit_reported: bool,
 }
 
 /// Memory usage tracking
@@ -462,6 +472,8 @@ impl Process {
             job: JobControl::default(),
             has_exec: false,
             address_space_release_deferred: false,
+            unqueued_fatal_exit: None,
+            group_exit_reported: false,
         }
     }
 
@@ -1062,6 +1074,18 @@ impl Process {
     #[allow(dead_code)]
     pub fn page_table(&self) -> Option<&ProcessPageTable> {
         self.page_table.as_ref().map(|b| b.as_ref())
+    }
+
+    /// The status a row that has already terminated reports, changed to
+    /// `exit_code`: a thread-group leader that ended with its own exit while
+    /// the rest of its group ran on reports the status the process later died
+    /// with (exit_group or a fatal signal). Does nothing to a live row, which
+    /// terminates only through `terminate` and `terminate_minimal`.
+    pub fn restate_exit_status(&mut self, exit_code: i32) {
+        if let ProcessState::Terminated(status) = &mut self.state {
+            *status = exit_code;
+            self.exit_code = Some(exit_code);
+        }
     }
 
     /// Get the CR3 value for this process.

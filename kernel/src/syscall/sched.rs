@@ -7,14 +7,16 @@
 //! another thread's policy when it is root or its effective user ID is that
 //! thread's real or effective user ID; an unprivileged caller may take
 //! SCHED_FIFO or SCHED_RR only up to its RLIMIT_RTPRIO, and may always lower
-//! a priority or return to a normal policy.
+//! a priority or return to a normal policy. SCHED_RESET_ON_FORK stays with the
+//! policy: a thread or process its holder creates starts with SCHED_OTHER in
+//! place of a real-time policy, and an unprivileged caller cannot clear it.
 
 use super::errno::{EFAULT, EINVAL, EPERM, ESRCH};
 use super::userptr::{copy_from_user, copy_to_user};
 use super::SyscallResult;
 use crate::task::thread::SchedPolicy;
 
-/// SCHED_RESET_ON_FORK, which sched_setscheduler accepts with a policy.
+/// SCHED_RESET_ON_FORK, which sched_setscheduler accepts ORed into a policy.
 const SCHED_RESET_ON_FORK: u64 = 0x4000_0000;
 /// The real-time priorities.
 const RT_PRIORITY_MIN: i32 = 1;
@@ -64,16 +66,27 @@ fn target(pid: u64) -> Result<(u64, bool, Option<u64>), u64> {
     Ok((tid, may, rtprio))
 }
 
-/// Set thread `pid`'s policy and priority, checking both and the caller's
-/// permission as Linux does.
-fn set(pid: u64, policy: Option<u8>, param: u64) -> Result<u64, u64> {
+/// Serializes every change of a thread's policy. The process row's copy of
+/// the thread, which fork and clone inherit, and the scheduler's, which it
+/// runs by, change together, and each change starts from the policy the one
+/// before it left: two setters cannot leave contradictory copies, and
+/// sched_setparam never acts on a stale policy.
+static POLICY_CHANGE: spin::Mutex<()> = spin::Mutex::new(());
+
+/// Set thread `pid`'s policy (`None`: keep it) and priority, checking both and
+/// the caller's permission as Linux does. `reset_on_fork` is
+/// SCHED_RESET_ON_FORK as sched_setscheduler gives it; sched_setparam keeps
+/// the thread's.
+fn set(pid: u64, policy: Option<u8>, reset_on_fork: Option<bool>, param: u64) -> Result<u64, u64> {
     if param == 0 {
         return Err(EINVAL as u64);
     }
     let priority: i32 = copy_from_user(param as *const i32).map_err(|_| EFAULT as u64)?;
     let (tid, may, rtprio) = target(pid)?;
+    let _serial = POLICY_CHANGE.lock();
     let old = crate::task::scheduler::sched_policy(tid).ok_or(ESRCH as u64)?;
     let policy = policy.unwrap_or(old.policy);
+    let reset_on_fork = reset_on_fork.unwrap_or(old.reset_on_fork);
     let realtime = matches!(policy, SchedPolicy::FIFO | SchedPolicy::RR);
     let valid = if realtime {
         (RT_PRIORITY_MIN..=RT_PRIORITY_MAX).contains(&priority)
@@ -86,19 +99,21 @@ fn set(pid: u64, policy: Option<u8>, param: u64) -> Result<u64, u64> {
     if !may {
         return Err(EPERM as u64);
     }
-    if let (Some(limit), true) = (rtprio, realtime) {
+    if let Some(limit) = rtprio {
         // Unprivileged: a real-time priority up to RLIMIT_RTPRIO, or no
         // higher than the thread already has.
         let within = (priority as u64) <= limit
             || (old.is_realtime() && priority <= i32::from(old.priority));
-        if !within {
+        // Nor may it clear SCHED_RESET_ON_FORK.
+        if (realtime && !within) || (old.reset_on_fork && !reset_on_fork) {
             return Err(EPERM as u64);
         }
     }
     let sched = SchedPolicy {
         policy,
         priority: priority as u8,
-        yielded: false,
+        reset_on_fork,
+        ..SchedPolicy::DEFAULT
     };
     // The process row's copy of the thread is what fork and clone inherit.
     {
@@ -115,24 +130,30 @@ fn set(pid: u64, policy: Option<u8>, param: u64) -> Result<u64, u64> {
     Ok(0)
 }
 
-/// sched_setscheduler(pid, policy, param).
+/// sched_setscheduler(pid, policy, param). SCHED_RESET_ON_FORK may be ORed
+/// into the policy.
 pub fn sys_sched_setscheduler(pid: u64, policy: u64, param: u64) -> SyscallResult {
-    let Some(policy) = valid_policy(policy & !SCHED_RESET_ON_FORK) else {
+    let Some(policy_number) = valid_policy(policy & !SCHED_RESET_ON_FORK) else {
         return SyscallResult::Err(EINVAL as u64);
     };
-    result(set(pid, Some(policy), param))
+    let reset_on_fork = policy & SCHED_RESET_ON_FORK != 0;
+    result(set(pid, Some(policy_number), Some(reset_on_fork), param))
 }
 
 /// sched_setparam(pid, param): the priority, under the thread's policy.
 pub fn sys_sched_setparam(pid: u64, param: u64) -> SyscallResult {
-    result(set(pid, None, param))
+    result(set(pid, None, None, param))
 }
 
-/// sched_getscheduler(pid).
+/// sched_getscheduler(pid): the policy, with SCHED_RESET_ON_FORK ORed in
+/// when the thread has it.
 pub fn sys_sched_getscheduler(pid: u64) -> SyscallResult {
     result(target(pid).and_then(|(tid, _, _)| {
         crate::task::scheduler::sched_policy(tid)
-            .map(|sched| u64::from(sched.policy))
+            .map(|sched| {
+                let reset = if sched.reset_on_fork { SCHED_RESET_ON_FORK } else { 0 };
+                u64::from(sched.policy) | reset
+            })
             .ok_or(ESRCH as u64)
     }))
 }

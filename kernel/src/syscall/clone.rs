@@ -89,7 +89,6 @@ pub fn sys_clone_thread(
         Some(id) => id,
         None => return SyscallResult::Err(super::errno::ESRCH as u64),
     };
-
     let mut manager_guard = crate::process::manager();
     let manager = match manager_guard.as_mut() {
         Some(m) => m,
@@ -186,10 +185,14 @@ pub fn sys_clone_thread(
             ThreadPrivilege::User,
         );
         ctx.rdi = fn_arg; // First argument per SysV ABI
-        if flags & CLONE_SETTLS != 0 {
-            ctx.user_fs_base = tls;
-            ctx.user_fs_base_set = true;
-        }
+        // Without CLONE_SETTLS the thread starts with its creator's FS base,
+        // which is still loaded during the creator's syscall.
+        ctx.user_fs_base = if flags & CLONE_SETTLS != 0 {
+            tls
+        } else {
+            x86_64::registers::model_specific::FsBase::read().as_u64()
+        };
+        ctx.user_fs_base_set = true;
         ctx
     };
 
@@ -317,6 +320,13 @@ pub fn sys_clone_thread(
     child_process.limits = parent.limits.clone();
     child_process.cred = parent.cred.clone();
     child_process.nice = parent.nice;
+    // The creator's scheduling policy, which sched_setscheduler keeps in step
+    // with the scheduler's copy. Under SCHED_RESET_ON_FORK a new thread does
+    // not inherit a negative nice either.
+    let creator_sched = parent.main_thread.as_ref().map(|thread| thread.sched);
+    if creator_sched.is_some_and(|sched| sched.reset_on_fork) {
+        child_process.nice = child_process.nice.max(0);
+    }
     // A thread's CPU time is its process's: the group shares one account.
     child_process.cpu = parent.cpu.clone();
     child_process.itimers = parent.itimers.clone();
@@ -371,14 +381,14 @@ pub fn sys_clone_thread(
     // (handled by caller since we return the tid)
 
     // A new thread starts with its creator's CPU affinity and scheduling
-    // policy.
+    // policy (`SchedPolicy::for_child`).
     let creator = manager
         .get_process(parent_pid)
         .and_then(|parent| parent.main_thread.as_ref());
     child_thread.cpu_affinity =
         crate::task::thread::CpuPin::for_child(creator.and_then(|thread| thread.cpu_affinity));
-    if let Some(sched) = creator.map(|thread| thread.sched) {
-        child_thread.sched = crate::task::thread::SchedPolicy { yielded: false, ..sched };
+    if let Some(sched) = creator_sched {
+        child_thread.sched = sched.for_child();
     }
     child_process.attach_main_thread_unpublished(child_thread);
 
@@ -426,6 +436,25 @@ pub fn sys_clone_thread(
     // Add thread to scheduler
     if let Some(thread_box) = scheduler_thread {
         crate::task::scheduler::spawn(thread_box);
+    }
+
+    // A group kill that ran between the release of PROCESS_MANAGER and the
+    // spawn ended the row while its thread was in no scheduler queue, so the
+    // thread was spawned Ready all the same. Kill it again now that the
+    // scheduler has it. The creator is still in this syscall, so its row is
+    // live and the group's address space with it: the thread cannot have run
+    // on a released one in between.
+    let child_ended = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process(child_pid)
+            .map_or(Some(0), |child| match child.state {
+                crate::process::ProcessState::Terminated(code) => Some(code),
+                _ => None,
+            })
+    })
+    .flatten();
+    if let Some(code) = child_ended {
+        crate::syscall::signal::kill_process_now(child_pid, code);
     }
 
     log::info!(
