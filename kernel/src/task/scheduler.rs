@@ -63,6 +63,19 @@ use core::cmp::Reverse;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
+/// Published under the scheduler lock; the timer IRQ reads only this scalar.
+#[cfg(target_arch = "x86_64")]
+static NEXT_TIMER_CHECK_NS: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Whether a sleep or signal timer needs a scheduling pass, without locking
+/// or walking any queue in interrupt context.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn timer_deadline_due() -> bool {
+    let deadline = NEXT_TIMER_CHECK_NS.load(Ordering::Acquire);
+    deadline != u64::MAX && crate::signal::monotonic_nanos() >= deadline
+}
+
 /// Exit-batch identity carried by teardown-attributed expedite evidence.
 /// P2 uses one pid-derived batch per single-victim request; P9 later assigns
 /// one shared id to a group request rather than introducing a parallel type.
@@ -4869,6 +4882,8 @@ impl Scheduler {
             // Insert into timer heap for O(1) expiry detection
             if !already_armed {
                 self.timer_heap.push(Reverse((wake_time_ns, current_id)));
+                #[cfg(target_arch = "x86_64")]
+                self.publish_timer_deadline();
             }
             for q in self.per_cpu_queues.iter_mut() {
                 q.retain(|&id| id != current_id);
@@ -4957,6 +4972,8 @@ impl Scheduler {
             // Insert into timer heap if a timeout was specified
             if let Some(wt) = wake_time_ns {
                 self.timer_heap.push(Reverse((wt, current_id)));
+                #[cfg(target_arch = "x86_64")]
+                self.publish_timer_deadline();
             }
             true
         } else {
@@ -5168,6 +5185,8 @@ impl Scheduler {
             }
             // Insert into timer heap for O(1) expiry detection
             self.timer_heap.push(Reverse((timeout_ns, current_id)));
+            #[cfg(target_arch = "x86_64")]
+            self.publish_timer_deadline();
             for q in self.per_cpu_queues.iter_mut() {
                 q.retain(|&id| id != current_id);
             }
@@ -5183,11 +5202,32 @@ impl Scheduler {
         }
     }
 
+    /// Recompute the next check where timer state is already serialized.
+    /// Expiry discovery must not wait for a busy CPU's 50 ms quantum.
+    #[cfg(target_arch = "x86_64")]
+    fn publish_timer_deadline(&self) {
+        let now = crate::signal::timers::Now::read(0);
+        let mut deadline = self.timer_heap.peek().map_or(u64::MAX, |entry| entry.0.0);
+        for (group, _) in &self.signal_timer_groups {
+            let Some(group) = group.upgrade() else { continue; };
+            if let Some(real) = group.real.deadline_micros() {
+                deadline = deadline.min(real.saturating_mul(1000));
+            }
+            if group.virtual_timer.is_active() || group.prof.is_active() {
+                deadline = deadline.min(now.monotonic.saturating_add(crate::time::timer::MS_PER_TICK * 1_000_000));
+            }
+            deadline = deadline.min(group.posix.next_check_ns(&now));
+        }
+        NEXT_TIMER_CHECK_NS.store(deadline, Ordering::Release);
+    }
+
     /// Register an armed group from a timer syscall or exec publication.
     pub fn register_signal_timers(&mut self, timers: &alloc::sync::Arc<crate::signal::IntervalTimers>, cpu: &alloc::sync::Arc<super::thread::CpuAccount>) {
         if timers.is_active() && !self.signal_timer_groups.iter().any(|(old, _)| old.ptr_eq(&alloc::sync::Arc::downgrade(timers))) {
             self.signal_timer_groups.push((alloc::sync::Arc::downgrade(timers), alloc::sync::Arc::downgrade(cpu)));
         }
+        #[cfg(target_arch = "x86_64")]
+        self.publish_timer_deadline();
     }
 
     pub fn wake_realtime_sleepers(&mut self) {
@@ -5504,13 +5544,10 @@ impl Scheduler {
                         } else {
                             self.per_cpu_queues[target].push_back(tid);
                         }
-                        // Both architectures kick idle destinations only. This
-                        // preserves round-robin policy for busy destinations;
-                        // expiry detection still waits for a scheduling pass,
-                        // potentially most of a 50 ms quantum when CPUs are busy.
-                        // Placement prefers this CPU on equal load, so a kick
-                        // alone cannot bound deadline-to-dispatch latency.
-                        if self.cpu_is_idle(target) {
+                        // A discovered x86 deadline also preempts a busy remote
+                        // destination; otherwise discovery still adds its
+                        // remaining quantum to deadline-to-dispatch latency.
+                        if cfg!(target_arch = "x86_64") || self.cpu_is_idle(target) {
                             self.send_resched_ipi_to_cpu(target);
                         }
                         ENQUEUE_TIMER_WAKE.fetch_add(1, Ordering::Relaxed);
@@ -5539,6 +5576,8 @@ impl Scheduler {
                 }
             }
         }
+        #[cfg(target_arch = "x86_64")]
+        self.publish_timer_deadline();
     }
 
     /// Terminate the current thread

@@ -1284,6 +1284,13 @@ impl IntervalTimer {
         self.active.load(Ordering::Acquire)
     }
 
+    /// Physical wall-clock deadline publication, outside the interrupt path.
+    #[cfg(target_arch = "x86_64")]
+    pub fn deadline_micros(&self) -> Option<u64> {
+        if !self.is_active() { return None; }
+        Some(self.value.try_lock().map_or(0, |value| value.0))
+    }
+
     pub fn get_value(&self, now: u64) -> Itimerval {
         let value = self.value.lock();
         Itimerval {
