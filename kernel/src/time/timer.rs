@@ -122,6 +122,8 @@ pub fn init() {
 #[inline]
 pub fn timer_interrupt() {
     #[cfg(target_arch = "x86_64")]
+    crate::signal::types::tmpring::tick();
+    #[cfg(target_arch = "x86_64")]
     {
         // LAPIC periodic interrupts coalesce while IF is clear or the vCPU is
         // descheduled. Count elapsed periods, retaining fractional cycles in

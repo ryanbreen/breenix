@@ -97,6 +97,14 @@ pub fn write_byte(byte: u8) {
 }
 
 /// Write one caller-defined output unit while holding the serial lock once.
+struct TmpSerial(u64, u64);
+impl Drop for TmpSerial {
+    fn drop(&mut self) {
+        let t1 = crate::signal::types::tmpring::now();
+        if t1 - self.0 > 200 { crate::signal::types::tmpring::rec(crate::signal::types::tmpring::K_SERIAL, t1, ((t1 - self.0) << 16) | (self.1 & 0xffff)); }
+    }
+}
+
 pub fn write_bytes_atomic(bytes: &[u8]) {
     // CRITICAL: Check if interrupts are currently enabled
     // We must NOT re-enable interrupts if they were disabled by syscall entry
@@ -107,6 +115,9 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
         crate::arch_disable_interrupts();
     }
 
+    let tmp_t0 = crate::signal::types::tmpring::now();
+    let tmp_len = bytes.len() as u64;
+    let _tmp_guard = TmpSerial(tmp_t0, tmp_len);
     let mut serial = SERIAL1.lock();
     if SERIAL1_FIFO.load(core::sync::atomic::Ordering::Relaxed) {
         // THRE means the 16550 transmit FIFO is empty, so all sixteen slots
@@ -334,10 +345,15 @@ pub fn _log_print(args: fmt::Arguments) {
         crate::arch_disable_interrupts();
     }
 
+    let tmp_t0 = crate::signal::types::tmpring::now();
     SERIAL2
         .lock()
         .write_fmt(args)
         .expect("Printing to log serial failed");
+    {
+        let t1 = crate::signal::types::tmpring::now();
+        if t1 - tmp_t0 > 200 { crate::signal::types::tmpring::rec(crate::signal::types::tmpring::K_SERIAL, t1, ((t1 - tmp_t0) << 16) | 0xfffe); }
+    }
 
     // Only re-enable if they were enabled before
     if irq_enabled {

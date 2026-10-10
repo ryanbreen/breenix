@@ -5078,6 +5078,18 @@ impl Scheduler {
             }
             let user = user_ns / 1000;
             let system = system_ns / 1000;
+            {
+                use crate::signal::types::tmpring::*;
+                let lastp = LAST_REALPASS.swap(wall, core::sync::atomic::Ordering::Relaxed);
+                if lastp != 0 && wall > lastp + 3000 && wall - lastp < 10_000_000 { rec(K_REALPASS_GAP, wall, wall - lastp); }
+                if let Some(dl) = group.real.deadline_micros() {
+                    if dl != 0 && wall > dl + 20_000 && !FROZEN.load(core::sync::atomic::Ordering::Relaxed) {
+                        rec(K_LATE, wall, wall - dl);
+                        FROZEN.store(true, core::sync::atomic::Ordering::Relaxed);
+                        DUMP.store(true, core::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
             let pending = [
                 (group.real.expire(wall), crate::signal::constants::SIGALRM),
                 (group.virtual_timer.expire(user), crate::signal::constants::SIGVTALRM),
@@ -6965,6 +6977,16 @@ pub fn is_current_idle_thread() -> Option<bool> {
 
 /// Get access to the scheduler
 /// This function disables interrupts to prevent deadlock with timer interrupt
+struct TmpHold(u64, u64);
+impl Drop for TmpHold {
+    fn drop(&mut self) {
+        let t2 = crate::signal::types::tmpring::now();
+        if t2 - self.0 > 500 {
+            crate::signal::types::tmpring::rec(crate::signal::types::tmpring::K_SCHEDHOLD, t2, ((self.1 - self.0) << 32) | ((t2 - self.1) & 0xffff_ffff));
+        }
+    }
+}
+
 pub fn with_scheduler<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Scheduler) -> R,
@@ -6979,7 +7001,10 @@ where
         }
     }
     without_interrupts(|| {
+        let tmp_t0 = crate::signal::types::tmpring::now();
         let mut scheduler_lock = lock_scheduler();
+        let tmp_t1 = crate::signal::types::tmpring::now();
+        let _tmp_hold = TmpHold(tmp_t0, tmp_t1);
         let _scheduler_scope = crate::tracing::providers::teardown::SchedulerScope::enter();
         #[cfg(target_arch = "aarch64")]
         {
