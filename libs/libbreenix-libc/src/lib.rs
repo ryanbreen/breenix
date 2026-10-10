@@ -1581,7 +1581,7 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
         73 => 4, // PTHREAD_DESTRUCTOR_ITERATIONS
         74 => -1, // keys grow until allocation fails; no fixed limit
         79 => -1, // priority-ordered mutex/condition wakeups are not provided
-        80 | 81 => -1, // priority inheritance/protection are not provided
+        80 | 81 => 200809, // PTHREAD_PRIO_INHERIT and PTHREAD_PRIO_PROTECT mutexes
         75 => 16384, // PTHREAD_STACK_MIN
         _ => -1,
     }

@@ -9,6 +9,7 @@ use core::sync::atomic::{
 };
 use libbreenix::syscall::{nr, raw};
 const ESRCH: i32 = 3;
+const EINTR: i32 = 4;
 const EAGAIN: i32 = 11;
 const EDEADLK: i32 = 35;
 const ETIMEDOUT: i32 = 110;
@@ -19,6 +20,9 @@ const KEYS: usize = 128;
 const STACK_MIN: usize = 16384;
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
+const FUTEX_LOCK_PI: u64 = 6;
+const FUTEX_UNLOCK_PI: u64 = 7;
+const FUTEX_TRYLOCK_PI: u64 = 8;
 const FUTEX_WAIT_BITSET: u64 = 9;
 const FUTEX_CLOCK_REALTIME: u64 = 256;
 const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
@@ -150,6 +154,8 @@ struct Thread {
     tp: usize,
     errno: i32,
     robust: *mut Mutex,
+    // How many PTHREAD_PRIO_PROTECT mutexes with each ceiling it holds.
+    ceilings: [u32; CEILINGS],
     values: [(*mut u8, u32); KEYS],
     extra_values: *mut Values,
     reads: *mut ReadBlock,
@@ -216,6 +222,7 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
             tp: 0,
             errno: 0,
             robust: null_mut(),
+            ceilings: [0; CEILINGS],
             values: [(null_mut(), 0); KEYS],
             extra_values: null_mut(),
             reads: null_mut(),
@@ -792,8 +799,12 @@ pub unsafe extern "C" fn pthread_exit(value: *mut u8) -> ! {
             (*p).robust = (*m).next;
             (*m).recovery.store(1, Relaxed);
             (*m).depth = 0;
-            (*m).owner.store(0, Release);
-            wake(&(*m).owner, u32::MAX);
+            if protocol((*m).kind) == PRIO_INHERIT {
+                pi_release(m);
+            } else {
+                (*m).owner.store(0, Release);
+                wake(&(*m).owner, u32::MAX);
+            }
         }
         (*p).result = value;
     }
@@ -1183,10 +1194,56 @@ struct Mutex {
 }
 const ROBUST: u32 = 4;
 const WAITERS: u32 = 1 << 31;
+// A mutex attribute, and a mutex's kind, hold the type in bits 0-1, ROBUST,
+// the protocol in bits 3-4 and the priority ceiling in bits 8-15 (0: the
+// lowest SCHED_FIFO priority). A held PTHREAD_PRIO_PROTECT mutex also keeps
+// the ceiling its owner took it at in bits 16-23.
+const PROTOCOL_SHIFT: u32 = 3;
+const PROTOCOL_MASK: u32 = 3 << PROTOCOL_SHIFT;
+const PRIO_INHERIT: u32 = 1;
+const PRIO_PROTECT: u32 = 2;
+const CEILING_SHIFT: u32 = 8;
+const CEILING_MASK: u32 = 0xff << CEILING_SHIFT;
+const HELD_SHIFT: u32 = 16;
+const HELD_MASK: u32 = 0xff << HELD_SHIFT;
+/// SCHED_FIFO's priorities run 1 to 99.
+const CEILINGS: usize = 100;
+// A PTHREAD_PRIO_INHERIT mutex's word follows the kernel's
+// priority-inheritance futex protocol: its owner's thread ID, WAITERS while
+// threads are blocked in the kernel, OWNER_DIED once an owner ended holding it.
+const OWNER_DIED: u32 = 1 << 30;
+const TID_MASK: u32 = OWNER_DIED - 1;
+fn protocol(kind: u32) -> u32 {
+    (kind & PROTOCOL_MASK) >> PROTOCOL_SHIFT
+}
+fn ceiling(kind: u32) -> u32 {
+    ((kind & CEILING_MASK) >> CEILING_SHIFT).clamp(1, CEILINGS as u32 - 1)
+}
 unsafe fn mutex_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 {
     if m.is_null() {
         return EINVAL;
     }
+    match protocol((*m).kind) {
+        PRIO_INHERIT => pi_take(m, attempt, deadline),
+        PRIO_PROTECT => pp_take(m, attempt, deadline),
+        _ => plain_take(m, attempt, deadline),
+    }
+}
+/// The mutex has just been taken: finish recording the caller as its owner.
+unsafe fn taken(m: *mut Mutex) -> i32 {
+    (*m).depth = 1;
+    if (*m).kind & ROBUST != 0 {
+        let t = current();
+        (*m).next = (*t).robust;
+        (*t).robust = m;
+    }
+    if (*m).recovery.load(Relaxed) == 1 {
+        EOWNERDEAD
+    } else {
+        0
+    }
+}
+unsafe fn plain_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 {
     let id = current_id();
     let mut contended = 0;
     loop {
@@ -1206,17 +1263,7 @@ unsafe fn mutex_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 
                     futex(owner, FUTEX_WAKE, u32::MAX, null());
                     return ENOTRECOVERABLE;
                 }
-                (*m).depth = 1;
-                if (*m).kind & ROBUST != 0 {
-                    let t = current();
-                    (*m).next = (*t).robust;
-                    (*t).robust = m;
-                }
-                return if (*m).recovery.load(Relaxed) == 1 {
-                    EOWNERDEAD
-                } else {
-                    0
-                };
+                return taken(m);
             }
             Err(owner) => {
                 if owner & !WAITERS == id {
@@ -1248,6 +1295,115 @@ unsafe fn mutex_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 
                 }
             }
         }
+    }
+}
+/// Lock a PTHREAD_PRIO_INHERIT mutex: uncontended in userspace, otherwise
+/// in the kernel, which runs its owner at the caller's priority meanwhile.
+unsafe fn pi_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 {
+    let id = current_id();
+    let word = core::ptr::addr_of!((*m).owner);
+    loop {
+        if (*m).recovery.load(Acquire) == 2 {
+            return ENOTRECOVERABLE;
+        }
+        if (*word).load(Relaxed) & TID_MASK == id {
+            if (*m).kind & 3 == 1 {
+                let Some(depth) = (*m).depth.checked_add(1) else {
+                    return EAGAIN;
+                };
+                (*m).depth = depth;
+                return 0;
+            }
+            return if attempt { EBUSY } else { EDEADLK };
+        }
+        if (*word).compare_exchange(0, id, Acquire, Relaxed).is_err() {
+            let r = if attempt {
+                futex(word, FUTEX_TRYLOCK_PI, 0, null())
+            } else {
+                if !deadline.is_null() {
+                    let t = core::ptr::read_unaligned(deadline as *const [i64; 2]);
+                    if !valid_time(&t) {
+                        return EINVAL;
+                    }
+                    if t[0] < 0 {
+                        return ETIMEDOUT;
+                    }
+                }
+                // FUTEX_LOCK_PI takes an absolute CLOCK_REALTIME deadline.
+                futex(word, FUTEX_LOCK_PI, 0, deadline)
+            };
+            match -r {
+                0 => {}
+                EINTR => continue,
+                EAGAIN | EDEADLK if attempt => return EBUSY,
+                e => return e,
+            }
+        }
+        // An owner that ended holding it left OWNER_DIED for this one.
+        if (*word).fetch_and(!OWNER_DIED, Relaxed) & OWNER_DIED != 0 && (*m).kind & ROBUST != 0 {
+            let _ = (*m).recovery.compare_exchange(0, 1, Relaxed, Relaxed);
+        }
+        if (*m).recovery.load(Acquire) == 2 {
+            pi_release(m);
+            return ENOTRECOVERABLE;
+        }
+        return taken(m);
+    }
+}
+/// Release a PTHREAD_PRIO_INHERIT mutex the caller owns: in userspace when
+/// no thread is blocked on it, otherwise the kernel hands it to the
+/// highest-priority waiter. No object read follows release.
+unsafe fn pi_release(m: *mut Mutex) {
+    let word = core::ptr::addr_of!((*m).owner);
+    if (*word).compare_exchange(current_id(), 0, Release, Relaxed).is_err() {
+        futex(word, FUTEX_UNLOCK_PI, 0, null());
+    }
+}
+/// Run the calling thread at no less than the highest ceiling among the
+/// PTHREAD_PRIO_PROTECT mutexes it holds; with `check`, refuse (EINVAL) if
+/// its own priority is above `check`.
+unsafe fn apply_ceilings(t: *mut Thread, check: u32) -> i32 {
+    let top = (1..CEILINGS).rev().find(|&c| (*t).ceilings[c] > 0).unwrap_or(0);
+    let r = raw::syscall2(nr::PRIO_CEILING, top as u64, check as u64) as i64;
+    if r < 0 {
+        -r as i32
+    } else {
+        0
+    }
+}
+/// Lock a PTHREAD_PRIO_PROTECT mutex: the caller first rises to its ceiling
+/// (EINVAL if its own priority is above the ceiling), and stays there until
+/// it unlocks.
+unsafe fn pp_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 {
+    if (*m).owner.load(Relaxed) & !WAITERS == current_id() {
+        return plain_take(m, attempt, deadline);
+    }
+    let t = current();
+    if t.is_null() {
+        return EAGAIN;
+    }
+    let c = ceiling((*m).kind);
+    (*t).ceilings[c as usize] += 1;
+    let r = apply_ceilings(t, c);
+    if r != 0 {
+        (*t).ceilings[c as usize] -= 1;
+        return r;
+    }
+    let r = plain_take(m, attempt, deadline);
+    if r == 0 || r == EOWNERDEAD {
+        (*m).kind = ((*m).kind & !HELD_MASK) | (c << HELD_SHIFT);
+    } else {
+        lower_ceiling(c);
+    }
+    r
+}
+/// The caller no longer holds a PTHREAD_PRIO_PROTECT mutex it took at
+/// ceiling `c`.
+unsafe fn lower_ceiling(c: u32) {
+    let t = current();
+    if !t.is_null() && (*t).ceilings[c as usize] > 0 {
+        (*t).ceilings[c as usize] -= 1;
+        apply_ceilings(t, 0);
     }
 }
 #[no_mangle]
@@ -1326,11 +1482,55 @@ pub unsafe extern "C" fn pthread_mutex_unlock(m: *mut u8) -> i32 {
     } else {
         1
     };
+    let kind = (*m).kind;
+    if protocol(kind) == PRIO_INHERIT {
+        pi_release(m);
+        return 0;
+    }
     let owner = core::ptr::addr_of!((*m).owner);
     if (*owner).swap(0, Release) & WAITERS != 0 {
         // No object read follows release: the next owner may destroy it.
         futex(owner, FUTEX_WAKE, count, null());
     }
+    if protocol(kind) == PRIO_PROTECT {
+        lower_ceiling((kind & HELD_MASK) >> HELD_SHIFT);
+    }
+    0
+}
+#[no_mangle]
+pub unsafe extern "C" fn pthread_mutex_setprioceiling(m: *mut u8, prio: i32, old: *mut i32) -> i32 {
+    if m.is_null() || !(1..CEILINGS as i32).contains(&prio) {
+        return EINVAL;
+    }
+    let m = m as *mut Mutex;
+    if protocol((*m).kind) != PRIO_PROTECT {
+        return EINVAL;
+    }
+    // The caller changes the ceiling holding the mutex: taken here, at the
+    // ceiling it had, unless the caller already holds it.
+    let held = (*m).owner.load(Relaxed) & !WAITERS == current_id();
+    if !held {
+        let r = mutex_take(m, false, null());
+        if r != 0 && r != EOWNERDEAD {
+            return r;
+        }
+    }
+    let previous = ceiling((*m).kind);
+    (*m).kind = ((*m).kind & !CEILING_MASK) | ((prio as u32) << CEILING_SHIFT);
+    if !old.is_null() {
+        *old = previous as i32;
+    }
+    if !held {
+        pthread_mutex_unlock(m as *mut u8);
+    }
+    0
+}
+#[no_mangle]
+pub unsafe extern "C" fn pthread_mutex_getprioceiling(m: *const u8, prio: *mut i32) -> i32 {
+    if m.is_null() || prio.is_null() || protocol((*(m as *const Mutex)).kind) != PRIO_PROTECT {
+        return EINVAL;
+    }
+    *prio = ceiling((*(m as *const Mutex)).kind) as i32;
     0
 }
 #[no_mangle]
@@ -1397,21 +1597,35 @@ pub unsafe extern "C" fn pthread_mutexattr_getrobust(a: *const u8, v: *mut i32) 
     0
 }
 #[no_mangle]
-pub extern "C" fn pthread_mutexattr_setprotocol(a: *mut u8, v: i32) -> i32 {
+pub unsafe extern "C" fn pthread_mutexattr_setprotocol(a: *mut u8, v: i32) -> i32 {
     if a.is_null() || !(0..=2).contains(&v) {
-        EINVAL
-    } else if v != 0 {
-        95
-    } else {
-        0
+        return EINVAL;
     }
+    *(a as *mut u32) = (*(a as *mut u32) & !PROTOCOL_MASK) | ((v as u32) << PROTOCOL_SHIFT);
+    0
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_mutexattr_getprotocol(a: *const u8, v: *mut i32) -> i32 {
     if a.is_null() || v.is_null() {
         return EINVAL;
     }
-    *v = 0;
+    *v = protocol(*(a as *const u32)) as i32;
+    0
+}
+#[no_mangle]
+pub unsafe extern "C" fn pthread_mutexattr_setprioceiling(a: *mut u8, prio: i32) -> i32 {
+    if a.is_null() || !(1..CEILINGS as i32).contains(&prio) {
+        return EINVAL;
+    }
+    *(a as *mut u32) = (*(a as *mut u32) & !CEILING_MASK) | ((prio as u32) << CEILING_SHIFT);
+    0
+}
+#[no_mangle]
+pub unsafe extern "C" fn pthread_mutexattr_getprioceiling(a: *const u8, prio: *mut i32) -> i32 {
+    if a.is_null() || prio.is_null() {
+        return EINVAL;
+    }
+    *prio = ceiling(*(a as *const u32)) as i32;
     0
 }
 
