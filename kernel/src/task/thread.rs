@@ -590,6 +590,17 @@ pub struct SchedPolicy {
     /// Decided when the thread was switched out: it goes back to the head of
     /// its priority rather than behind the others (`Thread::settle_outgoing`).
     pub head_on_requeue: bool,
+    /// The rank the thread inherits from the threads blocked on the
+    /// priority-inheritance futexes it owns, directly or through a chain of
+    /// owners (FUTEX_LOCK_PI); 0 for none.
+    pub inherited: u8,
+    /// The rank of the highest priority ceiling of the PTHREAD_PRIO_PROTECT
+    /// mutexes the thread holds (`sys_breenix_prio_ceiling`); 0 for none.
+    pub ceiling: u8,
+    /// The thread is exiting and has left the priority-inheritance futexes
+    /// it owned (`futex::pi_thread_exit`): one it still names as owner is
+    /// treated as having lost its owner.
+    pub pi_exited: bool,
 }
 
 impl SchedPolicy {
@@ -611,6 +622,9 @@ impl SchedPolicy {
         rr_used: 0,
         rr_seen: 0,
         head_on_requeue: false,
+        inherited: 0,
+        ceiling: 0,
+        pi_exited: false,
     };
     /// A SCHED_RR quantum, in timer ticks (`sched_rr_get_interval`).
     pub const RR_QUANTUM_TICKS: u64 = 10;
@@ -626,13 +640,39 @@ impl SchedPolicy {
 
     /// Where the thread stands in a run queue: SCHED_IDLE lowest, then
     /// SCHED_OTHER and SCHED_BATCH, then real-time threads by priority, then
-    /// the kernel's fatal-exit thread.
+    /// the kernel's fatal-exit thread. A priority inherited through a
+    /// priority-inheritance futex, or taken from a priority-protect mutex's
+    /// ceiling, raises it (`inherited`, `ceiling`).
     pub fn rank(&self) -> u8 {
+        self.own_rank().max(self.inherited).max(self.ceiling)
+    }
+
+    /// The rank of the thread's own policy and priority, before anything it
+    /// inherits or takes from a ceiling.
+    pub fn own_rank(&self) -> u8 {
         match self.policy {
             Self::IDLE => 0,
             Self::FIFO | Self::RR => 1 + self.priority,
             Self::KERNEL => 101,
             _ => 1,
+        }
+    }
+
+    /// Whether the thread runs above its own rank, on an inherited priority
+    /// or a ceiling. It then keeps its processor as a SCHED_FIFO thread
+    /// would, unless it is a SCHED_RR thread.
+    pub fn is_boosted(&self) -> bool {
+        self.rank() > self.own_rank()
+    }
+
+    /// `new`, with what this policy holds that sched_setscheduler does not
+    /// set: the inherited rank, the ceiling and the exit mark.
+    pub fn keeping_boosts(&self, new: Self) -> Self {
+        Self {
+            inherited: self.inherited,
+            ceiling: self.ceiling,
+            pi_exited: self.pi_exited,
+            ..new
         }
     }
 
@@ -650,6 +690,9 @@ impl SchedPolicy {
                 rr_used: 0,
                 rr_seen: 0,
                 head_on_requeue: false,
+                inherited: 0,
+                ceiling: 0,
+                pi_exited: false,
                 ..self
             }
         }
@@ -969,8 +1012,10 @@ impl Thread {
         let total = self.cpu_ticks_total + now.saturating_sub(self.run_start_ticks);
         let sched = &mut self.sched;
         let yielded = core::mem::take(&mut sched.yielded);
+        let boosted = sched.is_boosted();
         let head = match sched.policy {
             SchedPolicy::FIFO => !yielded,
+            _ if boosted && sched.policy != SchedPolicy::RR => !yielded,
             SchedPolicy::RR => {
                 sched.rr_used += total.saturating_sub(sched.rr_seen);
                 sched.rr_seen = total;

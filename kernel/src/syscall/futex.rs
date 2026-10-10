@@ -3,9 +3,18 @@
 //! FUTEX_WAIT, FUTEX_WAKE, FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET, FUTEX_REQUEUE
 //! and FUTEX_CMP_REQUEUE, private and shared (#1311). Used by pthread_join,
 //! mutexes, condition variables, and similar primitives.
+//!
+//! FUTEX_LOCK_PI, FUTEX_TRYLOCK_PI and FUTEX_UNLOCK_PI are the
+//! priority-inheritance futexes behind PTHREAD_PRIO_INHERIT mutexes. The word
+//! holds its owner's thread ID, with FUTEX_WAITERS set while threads are
+//! blocked on it in the kernel and FUTEX_OWNER_DIED once an owner ended
+//! holding it. While threads are blocked, the owner runs at the highest of
+//! their ranks, and so on along a chain of owners each blocked on the next;
+//! unlocking hands the futex to the highest-ranked waiter and drops what the
+//! unlocker had inherited through it.
 
 use super::SyscallResult;
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use spin::Mutex;
 
 use crate::task::thread::ThreadState;
@@ -20,8 +29,21 @@ const FUTEX_WAIT: u32 = 0;
 const FUTEX_WAKE: u32 = 1;
 const FUTEX_REQUEUE: u32 = 3;
 const FUTEX_CMP_REQUEUE: u32 = 4;
+const FUTEX_LOCK_PI: u32 = 6;
+const FUTEX_UNLOCK_PI: u32 = 7;
+const FUTEX_TRYLOCK_PI: u32 = 8;
 const FUTEX_WAIT_BITSET: u32 = 9;
 const FUTEX_WAKE_BITSET: u32 = 10;
+/// A priority-inheritance futex word: threads are blocked on it in the kernel,
+/// so its owner unlocks through FUTEX_UNLOCK_PI.
+const FUTEX_WAITERS: u32 = 0x8000_0000;
+/// A priority-inheritance futex word: an owner ended holding it.
+const FUTEX_OWNER_DIED: u32 = 0x4000_0000;
+/// The owner's thread ID in a priority-inheritance futex word.
+const FUTEX_TID_MASK: u32 = 0x3fff_ffff;
+/// The longest chain of owners, each blocked on a futex the next owns, that
+/// FUTEX_LOCK_PI follows: a longer one fails with EDEADLK.
+const PI_CHAIN_MAX: usize = 1024;
 /// The futex is private to the calling process: no other process maps it.
 const FUTEX_PRIVATE_FLAG: u32 = 128;
 /// FUTEX_WAIT_BITSET's absolute timeout is on CLOCK_REALTIME, not
@@ -46,11 +68,70 @@ struct Waiter {
     bitset: u32,
 }
 
+/// A priority-inheritance futex that threads are blocked on.
+struct PiState {
+    /// The thread that owns it; 0 once its owner ended holding it, until a
+    /// waiter takes it.
+    owner: u64,
+    /// The threads blocked in FUTEX_LOCK_PI on it, in arrival order.
+    waiters: alloc::vec::Vec<u64>,
+}
+
 /// Every futex wait queue, and the queue each waiting thread is on (a requeue
-/// moves a waiter from one to another).
+/// moves a waiter from one to another); and every priority-inheritance futex
+/// with blocked threads, which one each blocked thread waits on, which ones
+/// each owner holds, and the waiters an unlock has handed one to that have not
+/// yet run.
 struct FutexTable {
     queues: BTreeMap<FutexKey, VecDeque<Waiter>>,
     queued_on: BTreeMap<u64, FutexKey>,
+    pi: BTreeMap<FutexKey, PiState>,
+    pi_waiting: BTreeMap<u64, FutexKey>,
+    pi_owned: BTreeMap<u64, alloc::vec::Vec<FutexKey>>,
+    pi_granted: BTreeSet<u64>,
+}
+
+/// Thread `tid`'s scheduling rank, 0 when it is gone.
+fn rank_of(tid: u64) -> u8 {
+    crate::task::scheduler::sched_policy(tid).map_or(0, |sched| sched.rank())
+}
+
+/// Whether thread `tid`, named as a priority-inheritance futex's owner, no
+/// longer runs: it is gone, has ended, or is exiting and has left its futexes.
+fn owner_gone(tid: u64) -> bool {
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched
+            .get_thread(tid)
+            .map_or(true, |thread| thread.state == ThreadState::Terminated || thread.sched.pi_exited)
+    })
+    .unwrap_or(false)
+}
+
+/// The highest-ranked of `waiters`, the earliest of those sharing that rank.
+fn top_waiter(waiters: &[u64]) -> Option<u64> {
+    let mut best: Option<(u8, u64)> = None;
+    for &tid in waiters {
+        let rank = rank_of(tid);
+        if best.map_or(true, |(best_rank, _)| rank > best_rank) {
+            best = Some((rank, tid));
+        }
+    }
+    best.map(|(_, tid)| tid)
+}
+
+/// Compare-and-exchange the futex word: Ok(true) when it held `expected` and
+/// now holds `new`, Ok(false) when it held something else.
+fn exchange_word(uaddr: u64, expected: u32, new: u32) -> Result<bool, u64> {
+    crate::syscall::userptr::cmpxchg_user_u32(uaddr, expected, new).map(|seen| seen == expected)
+}
+
+/// How an attempt to take a priority-inheritance futex ended.
+enum PiAttempt {
+    /// The caller owns it.
+    Acquired,
+    /// The caller is queued on it and its blocked state is published.
+    Blocked,
+    Failed(u64),
 }
 
 impl FutexTable {
@@ -58,6 +139,259 @@ impl FutexTable {
         Self {
             queues: BTreeMap::new(),
             queued_on: BTreeMap::new(),
+            pi: BTreeMap::new(),
+            pi_waiting: BTreeMap::new(),
+            pi_owned: BTreeMap::new(),
+            pi_granted: BTreeSet::new(),
+        }
+    }
+
+    /// The rank `owner` inherits: the highest of the threads blocked on the
+    /// priority-inheritance futexes it owns.
+    fn inherited_rank(&self, owner: u64) -> u8 {
+        self.pi_owned
+            .get(&owner)
+            .into_iter()
+            .flatten()
+            .filter_map(|key| self.pi.get(key))
+            .flat_map(|state| state.waiters.iter())
+            .map(|&tid| rank_of(tid))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Bring `tid`'s inherited rank up to date, then that of the owner of the
+    /// futex it is blocked on, and so on along the chain, stopping where a
+    /// rank does not change.
+    fn propagate(&self, mut tid: u64) {
+        for _ in 0..PI_CHAIN_MAX {
+            let inherited = self.inherited_rank(tid);
+            let before = rank_of(tid);
+            let after = crate::task::scheduler::update_sched_boost(tid, |sched| sched.inherited = inherited)
+                .map_or(before, |sched| sched.rank());
+            if after == before {
+                return;
+            }
+            let Some(owner) = self
+                .pi_waiting
+                .get(&tid)
+                .and_then(|key| self.pi.get(key))
+                .map(|state| state.owner)
+                .filter(|&owner| owner != 0)
+            else {
+                return;
+            };
+            tid = owner;
+        }
+    }
+
+    /// Whether following owners from `owner`, each blocked on a futex the
+    /// next owns, reaches `me`, or runs past `PI_CHAIN_MAX`.
+    fn chain_reaches(&self, mut owner: u64, me: u64) -> bool {
+        for _ in 0..PI_CHAIN_MAX {
+            if owner == me {
+                return true;
+            }
+            let Some(next) = self
+                .pi_waiting
+                .get(&owner)
+                .and_then(|key| self.pi.get(key))
+                .map(|state| state.owner)
+                .filter(|&next| next != 0)
+            else {
+                return false;
+            };
+            owner = next;
+        }
+        true
+    }
+
+    fn disown(&mut self, owner: u64, key: FutexKey) {
+        if let Some(keys) = self.pi_owned.get_mut(&owner) {
+            keys.retain(|&owned| owned != key);
+            if keys.is_empty() {
+                self.pi_owned.remove(&owner);
+            }
+        }
+    }
+
+    fn own(&mut self, owner: u64, key: FutexKey) {
+        let keys = self.pi_owned.entry(owner).or_default();
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+
+    /// Take `tid` off the priority-inheritance futex it is blocked on, if
+    /// any, and lower its owner's inherited rank to match. A futex left with
+    /// no owner passes to the next waiter's attempt.
+    fn leave_pi(&mut self, tid: u64) {
+        let Some(key) = self.pi_waiting.remove(&tid) else {
+            return;
+        };
+        let Some(state) = self.pi.get_mut(&key) else {
+            return;
+        };
+        state.waiters.retain(|&waiter| waiter != tid);
+        let owner = state.owner;
+        let next = (owner == 0).then(|| top_waiter(&state.waiters)).flatten();
+        if state.waiters.is_empty() {
+            self.pi.remove(&key);
+            self.disown(owner, key);
+        }
+        if owner != 0 {
+            self.propagate(owner);
+        }
+        if let Some(next) = next {
+            crate::task::scheduler::wake_waitqueue_thread(next);
+        }
+    }
+
+    /// One attempt by thread `me` to take the priority-inheritance futex
+    /// `key` at `uaddr`: take it if it is free or its owner is gone,
+    /// otherwise (unless `trylock`) queue on it and publish the blocked state
+    /// to wake at `deadline`.
+    fn pi_attempt(&mut self, key: FutexKey, uaddr: u64, me: u64, trylock: bool, deadline: Deadline) -> PiAttempt {
+        loop {
+            let word = match read_word(uaddr) {
+                Ok(word) => word,
+                Err(e) => return PiAttempt::Failed(e),
+            };
+            let owner = u64::from(word & FUTEX_TID_MASK);
+            if owner == me {
+                return PiAttempt::Failed(super::errno::EDEADLK as u64);
+            }
+            let state = self.pi.get(&key);
+            let others = state.is_some_and(|state| state.waiters.iter().any(|&tid| tid != me));
+            let died = if owner == 0 {
+                Some(word & FUTEX_OWNER_DIED)
+            } else if state.is_some_and(|state| state.owner == 0) || owner_gone(owner) {
+                Some(FUTEX_OWNER_DIED)
+            } else {
+                None
+            };
+            if let Some(died) = died {
+                let new = me as u32 | died | if others { FUTEX_WAITERS } else { 0 };
+                match exchange_word(uaddr, word, new) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(e) => return PiAttempt::Failed(e),
+                }
+                self.pi_waiting.remove(&me);
+                let mut previous = None;
+                if let Some(state) = self.pi.get_mut(&key) {
+                    state.waiters.retain(|&tid| tid != me);
+                    previous = Some(state.owner).filter(|&prev| prev != 0 && prev != me);
+                    state.owner = me;
+                    let empty = state.waiters.is_empty();
+                    if let Some(prev) = previous {
+                        self.disown(prev, key);
+                    }
+                    if empty {
+                        self.pi.remove(&key);
+                    } else {
+                        self.own(me, key);
+                    }
+                }
+                if let Some(prev) = previous {
+                    self.propagate(prev);
+                }
+                self.propagate(me);
+                return PiAttempt::Acquired;
+            }
+            if trylock {
+                return PiAttempt::Failed(super::errno::EAGAIN as u64);
+            }
+            if self.chain_reaches(owner, me) {
+                return PiAttempt::Failed(super::errno::EDEADLK as u64);
+            }
+            if deadline.reached() {
+                return PiAttempt::Failed(super::errno::ETIMEDOUT as u64);
+            }
+            if word & FUTEX_WAITERS == 0 {
+                match exchange_word(uaddr, word, word | FUTEX_WAITERS) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(e) => return PiAttempt::Failed(e),
+                }
+            }
+            let state = self.pi.entry(key).or_insert_with(|| PiState {
+                owner,
+                waiters: alloc::vec::Vec::new(),
+            });
+            // The word names an owner other than the one the kernel handed
+            // it to: userspace wrote it behind the kernel's back.
+            if state.owner != owner {
+                if state.waiters.is_empty() {
+                    self.pi.remove(&key);
+                }
+                return PiAttempt::Failed(super::errno::EINVAL as u64);
+            }
+            if !state.waiters.contains(&me) {
+                state.waiters.push(me);
+            }
+            self.own(owner, key);
+            self.pi_waiting.insert(me, key);
+            self.propagate(owner);
+            let realtime = matches!(deadline, Deadline::Realtime(_));
+            let published = crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.realtime_sleep = realtime;
+                }
+                sched.block_current_for_io_with_timeout(deadline.wake_ns())
+            })
+            .unwrap_or(false);
+            if !published {
+                self.leave_pi(me);
+                return PiAttempt::Failed(super::errno::ESRCH as u64);
+            }
+            return PiAttempt::Blocked;
+        }
+    }
+
+    /// Thread `me` unlocks the priority-inheritance futex `key` at `uaddr`:
+    /// hand it to the highest-ranked waiter, or leave it free.
+    fn pi_unlock(&mut self, key: FutexKey, uaddr: u64, me: u64) -> Result<(), u64> {
+        loop {
+            let word = read_word(uaddr)?;
+            if u64::from(word & FUTEX_TID_MASK) != me {
+                return Err(super::errno::EPERM as u64);
+            }
+            let next = self
+                .pi
+                .get(&key)
+                .and_then(|state| top_waiter(&state.waiters).map(|top| (top, state.waiters.len() > 1)));
+            let Some((next, more)) = next else {
+                if !exchange_word(uaddr, word, 0)? {
+                    continue;
+                }
+                if self.pi.get(&key).is_some_and(|state| state.waiters.is_empty()) {
+                    self.pi.remove(&key);
+                }
+                self.disown(me, key);
+                self.propagate(me);
+                return Ok(());
+            };
+            let new = next as u32 | if more { FUTEX_WAITERS } else { 0 };
+            if !exchange_word(uaddr, word, new)? {
+                continue;
+            }
+            self.pi_waiting.remove(&next);
+            self.pi_granted.insert(next);
+            self.disown(me, key);
+            if let Some(state) = self.pi.get_mut(&key) {
+                state.waiters.retain(|&tid| tid != next);
+                state.owner = next;
+                if state.waiters.is_empty() {
+                    self.pi.remove(&key);
+                } else {
+                    self.own(next, key);
+                }
+            }
+            self.propagate(me);
+            self.propagate(next);
+            crate::task::scheduler::wake_waitqueue_thread(next);
+            return Ok(());
         }
     }
 
@@ -302,8 +636,161 @@ pub fn sys_futex(
         // The second count, nr_requeue, travels in the timeout argument.
         FUTEX_REQUEUE => futex_requeue(uaddr, val, timeout as u32, uaddr2, None, private),
         FUTEX_CMP_REQUEUE => futex_requeue(uaddr, val, timeout as u32, uaddr2, Some(val3), private),
+        // FUTEX_LOCK_PI's timeout is an absolute CLOCK_REALTIME time.
+        FUTEX_LOCK_PI => {
+            let deadline = if timeout == 0 {
+                Deadline::Never
+            } else {
+                match read_timespec(timeout) {
+                    Ok(ts) => Deadline::Realtime(i128::from(ts.tv_sec) * 1_000_000_000 + i128::from(ts.tv_nsec)),
+                    Err(e) => return SyscallResult::Err(e),
+                }
+            };
+            futex_lock_pi(uaddr, false, deadline, private)
+        }
+        FUTEX_TRYLOCK_PI => futex_lock_pi(uaddr, true, Deadline::Never, private),
+        FUTEX_UNLOCK_PI => futex_unlock_pi(uaddr, private),
         _ => SyscallResult::Err(super::errno::ENOSYS as u64),
     }
+}
+
+/// FUTEX_LOCK_PI and FUTEX_TRYLOCK_PI: take the priority-inheritance futex
+/// at `uaddr`. While it is held, block (unless `trylock`) with the owner
+/// running at least at the caller's rank, until it is handed over, its owner
+/// is gone, a signal (EINTR), or `deadline` (ETIMEDOUT).
+fn futex_lock_pi(uaddr: u64, trylock: bool, deadline: Deadline, private: bool) -> SyscallResult {
+    if uaddr == 0 || uaddr % 4 != 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    if let Err(e) = read_word(uaddr) {
+        return SyscallResult::Err(e);
+    }
+    let Some(me) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(super::errno::ESRCH as u64);
+    };
+    let Some(key) = futex_key(uaddr, private) else {
+        return SyscallResult::Err(super::errno::ESRCH as u64);
+    };
+    match with_table(|table| table.pi_attempt(key, uaddr, me, trylock, deadline)) {
+        PiAttempt::Acquired => return SyscallResult::Ok(0),
+        PiAttempt::Failed(e) => {
+            finish_wait(me);
+            return SyscallResult::Err(e);
+        }
+        PiAttempt::Blocked => {}
+    }
+    // Preemption stays disabled until the signal check below has run (#1230):
+    // see `blocking_io::wait_prepared`.
+    let result = loop {
+        if crate::syscall::check_signals_for_eintr().is_some() {
+            break with_table(|table| {
+                if table.pi_granted.remove(&me) {
+                    SyscallResult::Ok(0)
+                } else {
+                    table.leave_pi(me);
+                    SyscallResult::Err(super::errno::EINTR as u64)
+                }
+            });
+        }
+        let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
+            sched.wake_expired_timers();
+            sched
+                .current_thread_mut()
+                .is_some_and(|thread| thread.state == ThreadState::BlockedOnIO)
+        })
+        .unwrap_or(false);
+        if !still_waiting {
+            // Woken: handed the futex by its owner's unlock, by the deadline,
+            // by CLOCK_REALTIME being set, or because the owner is gone.
+            let outcome = with_table(|table| {
+                if table.pi_granted.remove(&me) {
+                    return Some(SyscallResult::Ok(0));
+                }
+                if deadline.reached() {
+                    table.leave_pi(me);
+                    return Some(SyscallResult::Err(super::errno::ETIMEDOUT as u64));
+                }
+                match table.pi_attempt(key, uaddr, me, false, deadline) {
+                    PiAttempt::Acquired => Some(SyscallResult::Ok(0)),
+                    PiAttempt::Blocked => None,
+                    PiAttempt::Failed(e) => {
+                        table.leave_pi(me);
+                        Some(SyscallResult::Err(e))
+                    }
+                }
+            });
+            if let Some(result) = outcome {
+                break result;
+            }
+        }
+        crate::per_cpu::preempt_enable();
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_while_blocked();
+        crate::per_cpu::preempt_disable();
+    };
+    finish_wait(me);
+    result
+}
+
+/// FUTEX_UNLOCK_PI: the caller, which the word at `uaddr` names as owner,
+/// hands the futex to its highest-ranked waiter or leaves it free (EPERM if
+/// the caller does not own it).
+fn futex_unlock_pi(uaddr: u64, private: bool) -> SyscallResult {
+    if uaddr == 0 || uaddr % 4 != 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    if let Err(e) = read_word(uaddr) {
+        return SyscallResult::Err(e);
+    }
+    let Some(me) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(super::errno::ESRCH as u64);
+    };
+    let Some(key) = futex_key(uaddr, private) else {
+        return SyscallResult::Err(super::errno::ESRCH as u64);
+    };
+    match with_table(|table| table.pi_unlock(key, uaddr, me)) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(e) => SyscallResult::Err(e),
+    }
+}
+
+/// Thread `tid` is exiting: it leaves the priority-inheritance futex it is
+/// blocked on, and each one it owns passes to its highest-ranked waiter with
+/// FUTEX_OWNER_DIED set. A futex whose word still names it is treated as
+/// having lost its owner from now on.
+pub fn pi_thread_exit(tid: u64) {
+    with_table(|table| {
+        table.pi_granted.remove(&tid);
+        table.leave_pi(tid);
+        crate::task::scheduler::update_sched_boost(tid, |sched| {
+            sched.pi_exited = true;
+            sched.inherited = 0;
+        });
+        for key in table.pi_owned.remove(&tid).unwrap_or_default() {
+            if let Some(state) = table.pi.get_mut(&key) {
+                state.owner = 0;
+                if let Some(next) = top_waiter(&state.waiters) {
+                    crate::task::scheduler::wake_waitqueue_thread(next);
+                }
+            }
+        }
+    });
+}
+
+/// Thread `tid`'s own priority changed: if it is blocked on a
+/// priority-inheritance futex, the owners along the chain from it rank anew.
+pub fn pi_priority_changed(tid: u64) {
+    with_table(|table| {
+        if let Some(owner) = table
+            .pi_waiting
+            .get(&tid)
+            .and_then(|key| table.pi.get(key))
+            .map(|state| state.owner)
+            .filter(|&owner| owner != 0)
+        {
+            table.propagate(owner);
+        }
+    });
 }
 
 /// FUTEX_WAIT_BITSET: wait on `uaddr` while it holds `expected_val`, until a
