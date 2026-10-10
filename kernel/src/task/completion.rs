@@ -6,12 +6,21 @@
 //!
 //! # Race prevention
 //!
-//! The done-check and `block_current_for_io()` execute under a single
+//! `complete(token)` takes no lock. It stores `done`, issues a SeqCst fence,
+//! then reads `waiter`; if a waiter is registered it buffers a wake for it
+//! (`isr_unblock_for_io`), which the scheduler applies when it drains the wake
+//! buffer. The waiter stores its tid in `waiter` and fences before it checks
+//! `done`, so at least one side sees the other: either `complete()` reads the
+//! tid and buffers a wake, or the waiter sees `done` and does not sleep.
+//!
+//! The waiter's done-check and `block_current_for_io()` execute under a single
 //! `with_scheduler()` call, matching Linux's `raw_spin_lock_irq` around
-//! `__prepare_to_swait`.  The ISR calls `complete(token)` which itself acquires
-//! the scheduler lock via `with_scheduler()`.  Because `with_scheduler()`
-//! disables interrupts before locking, and the ISR runs with interrupts
-//! already masked by hardware, there is no deadlock risk.
+//! `__prepare_to_swait`, and it checks `done` again after that call and after
+//! each wake. A waiter that sees `done` clears `waiter`, so `complete()` may
+//! read 0 and buffer no wake; every exit therefore goes through
+//! `finish_wait_current()`, which takes back a published `BlockedOnIO` under
+//! the scheduler lock. A buffered wake applied after that finds the thread
+//! running and does nothing.
 //!
 //! # Caller contract
 //!
@@ -395,13 +404,17 @@ impl Completion {
                 //    already, skip the block; otherwise set BlockedOnIO.
                 // 3. Inline schedule() — switch fully off CPU until either the
                 //    ISR unblocks us or the timed BlockedOnIO wait expires.
-                // 4. Clear blocked state, check done, check timeout.
+                // 4. finish_wait_current() takes back BlockedOnIO, then check
+                //    done and the timeout.
                 //
-                // Race safety: the scheduler lock serialises our done-check and
-                // block_current_for_io() against complete(token)/unblock_for_io().
-                // If the ISR fires between our done-check and block_current_for_io,
-                // with_scheduler sees the ISR cleared the state already and the
-                // next iteration detects done=expected_token.
+                // Race safety: complete(token) publishes done without the
+                // scheduler lock and buffers a wake only if it reads a nonzero
+                // waiter. If done lands after our locked done-check, the
+                // unlocked recheck below sees it; we then clear waiter, so the
+                // ISR may buffer no wake, and finish_wait_current() returns the
+                // still-published BlockedOnIO to Running before we return.
+                // Otherwise the ISR read our tid and its buffered wake ends the
+                // halt or schedule() below.
                 // ============================================================
 
                 // Fast check after waiter store — ISR may have fired already.
