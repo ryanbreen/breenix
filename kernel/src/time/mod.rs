@@ -7,6 +7,8 @@
 
 use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
+#[cfg(target_arch = "aarch64")]
+pub mod firmware_rtc;
 pub mod rtc;
 pub mod time;
 pub mod timer;

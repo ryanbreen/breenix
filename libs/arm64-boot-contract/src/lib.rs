@@ -8,7 +8,19 @@ pub const LINKED_RAM_START: u64 = 0x4000_0000;
 pub const LINKED_RAM_SIZE: u64 = 0x2000_0000;
 /// HardwareConfig version carrying the loader's RAM relocation offset and the
 /// firmware's enabled-CPU count.
-pub const HARDWARE_CONFIG_VERSION: u32 = 3;
+pub const HARDWARE_CONFIG_VERSION: u32 = 4;
+
+/// Firmware ranges that must remain identity mapped for physical-mode runtime
+/// services after ExitBootServices. They are excluded from usable RAM.
+pub const MAX_RUNTIME_REGIONS: usize = 64;
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RuntimeRegion {
+    pub base: u64,
+    pub pages: u64,
+    pub kind: u32,
+    pub _pad: u32,
+}
 
 /// Convert a linked kernel alias or direct RAM/MMIO VA to a device-visible IPA.
 /// Low linked aliases follow the same mapping as their high-half counterparts.
