@@ -1647,7 +1647,14 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
 
                 if !boot_test_owned {
                     production_selections = production_selections.saturating_add(1);
-                    if production_selections >= PRODUCTION_PASS_SELECTION_CAP {
+                    // Idle cannot be preempted inside this ownership bracket.
+                    // Once a wake requests dispatch, finish this bounded receipt
+                    // and leave the rest queued instead of consuming the whole
+                    // batch before the recipient can run. Always completing one
+                    // selection preserves reclamation progress under load.
+                    if production_selections >= PRODUCTION_PASS_SELECTION_CAP
+                        || scheduler::is_need_resched()
+                    {
                         crate::trace_count!(
                             crate::tracing::providers::teardown::RECLAIM_PASS_SELECTION_CAPPED
                         );
