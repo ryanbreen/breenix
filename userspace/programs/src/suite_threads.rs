@@ -34,6 +34,7 @@ use std::sync::Arc;
 #[cfg(target_arch = "x86_64")]
 mod nr {
     pub const MMAP: u64 = 9;
+    pub const MUNMAP: u64 = 11;
     pub const RT_SIGACTION: u64 = 13;
     pub const RT_SIGPROCMASK: u64 = 14;
     pub const NANOSLEEP: u64 = 35;
@@ -59,6 +60,7 @@ mod nr {
 #[cfg(target_arch = "aarch64")]
 mod nr {
     pub const MMAP: u64 = 222;
+    pub const MUNMAP: u64 = 215;
     pub const RT_SIGACTION: u64 = 134;
     pub const RT_SIGPROCMASK: u64 = 135;
     pub const NANOSLEEP: u64 = 101;
@@ -643,8 +645,7 @@ impl Proc {
 
     /// Wait up to `ms` for the process to put a result on its board or end. A result is
     /// returned as the case's; a process that ended without one, or ran too long, fails.
-    /// The process is killed and reaped before its result is read, so nothing it leaves
-    /// running can change the case's memory while the result is put together.
+    /// The process is killed and reaped before its result is read.
     fn result(&mut self, ms: u64) -> CaseResult {
         let ms = bounded(ms, CLEANUP_MS);
         let start = now_ms();
@@ -1412,71 +1413,62 @@ fn lc_exit_from_main() -> CaseResult {
     check(status == 3 << 8, &format!("after the main thread called exit(3) the process {}", status_text(status)))
 }
 
-extern "C" fn rt_publish_stack(_: *mut u8) -> *mut u8 {
-    let x = core::hint::black_box(1u64);
-    if let Some(b) = board() { b.words[0].store(&x as *const u64 as i64, SeqCst); }
-    sleep_ms(5000);
+/// The most rounds `exit-tid-word` makes (it stops at the first change it finds), the pages
+/// it maps after each, and the pattern it fills them with.
+const TID_ROUNDS: usize = 12;
+const TID_PAGES: usize = 32;
+const PATTERN: u8 = 0xa5;
+
+/// Count the thread in on the board, then sleep a second.
+extern "C" fn rt_count_and_sleep(_: *mut u8) -> *mut u8 {
+    if let Some(b) = board() { b.words[3].fetch_add(1, SeqCst); }
+    sleep_ms(1000);
     null_mut()
 }
 
-/// The C library's thread stack and the page after it that holds the thread's start
-/// information and exit-cleared thread-ID word (CLONE_CHILD_CLEARTID).
-const LIBC_STACK: usize = 2 * MIB;
-const MIRROR: usize = 64 * KIB;
-const PATTERN: u8 = 0xa5;
-
 fn lc_exit_tid_word() -> CaseResult {
-    // The process makes one thread, so the first mappings it makes after the fork are
-    // that thread's stack and its exit word's page. The case makes mappings of the same
-    // sizes, which a deterministic allocator puts at the same addresses, and checks it
-    // did by finding the thread's stack variable inside its copy. Once the case has
-    // filled its copy, the process's main thread calls exit_group with the thread still
-    // running, and the case reaps it.
-    let mut p = spawn_proc(|| {
-        create(rt_publish_stack, null_mut())?;
-        let b = board().ok_or("no board")?;
-        check(until(2000, || b.word(0) != 0 && b.word(2) == 1), "the thread did not start, or the case did not fill its copy, within 2 s")
-    })?;
-    let stack = mmap_anon(LIBC_STACK, MAP_PRIVATE_ANON)?;
-    let around = mmap_anon(MIRROR, MAP_PRIVATE_ANON)?;
-    // SAFETY: fresh private mappings of LIBC_STACK and MIRROR bytes.
-    unsafe {
-        core::ptr::write_bytes(stack, PATTERN, LIBC_STACK);
-        core::ptr::write_bytes(around, PATTERN, MIRROR);
-    }
-    if !until(2000, || p.board.word(0) != 0 || p.board.state.load(SeqCst) != RUNNING) {
-        return fail("the thread in the process to be killed did not start within 2 s");
-    }
-    if p.board.state.load(SeqCst) == FAILED { return fail(p.board.msg()); }
-    let local = p.board.word(0) as usize;
-    if !(stack as usize..stack as usize + LIBC_STACK).contains(&local) {
-        return Err(CaseError::Skip(format!(
-            "the thread's stack variable at {local:#x} is outside the case's copy of its stack at {:#x}, so the case cannot place a page where its exit word is",
-            stack as usize
-        )));
-    }
-    p.board.words[2].store(1, SeqCst);
-    let ended = p.wait(2000);
-    if p.board.state.load(SeqCst) == FAILED { return fail(p.board.msg()); }
-    p.stop();
-    let mut changed = 0usize;
+    // Each round starts a process that makes two threads (each with an exit-cleared
+    // thread-ID word, CLONE_CHILD_CLEARTID, in a page of its own), waits until both run
+    // and sleep, and then ends its main thread with exit_group. The case kills and reaps it, maps fresh pages
+    // at once, fills them with a pattern, waits and checks every byte: the dead process's
+    // threads, ending, may write only to their own memory. The case waits 50 ms after the
+    // process reports before killing it, so the kill does not race its main thread's exit.
+    let mut hits = 0;
     let mut first = None;
-    for (base, len) in [(stack, LIBC_STACK), (around, MIRROR)] {
-        // SAFETY: both mappings are still ours, of these lengths.
-        let bytes = unsafe { core::slice::from_raw_parts(base, len) };
-        for (i, &v) in bytes.iter().enumerate() {
-            if v != PATTERN {
-                changed += 1;
-                first.get_or_insert((base as usize + i, v));
-            }
+    for round in 0..TID_ROUNDS {
+        let mut p = spawn_proc(|| {
+            create(rt_count_and_sleep, null_mut())?;
+            create(rt_count_and_sleep, null_mut())?;
+            let b = board().ok_or("no board")?;
+            check(until(1000, || b.word(3) == 2), "the two threads did not both start within a second")
+        })?;
+        if !until(2000, || p.board.state.load(SeqCst) != RUNNING) {
+            return fail(format!("round {round}: the process did not start its two threads within 2 s{}", p.board.last_step()));
         }
+        if p.board.state.load(SeqCst) == FAILED { return fail(p.board.msg()); }
+        sleep_ms(50);
+        p.stop();
+        let len = TID_PAGES * 4096;
+        let mem = mmap_anon(len, MAP_PRIVATE_ANON)?;
+        // SAFETY: a fresh private mapping of len bytes, unmapped below.
+        unsafe { core::ptr::write_bytes(mem, PATTERN, len) };
+        sleep_ms(50);
+        // SAFETY: as above.
+        let bytes = unsafe { core::slice::from_raw_parts(mem, len) };
+        if let Some(at) = bytes.iter().position(|&b| b != PATTERN) {
+            hits += 1;
+            let changed = bytes.iter().filter(|&&b| b != PATTERN).count();
+            first.get_or_insert((round, at % 4096, changed));
+        }
+        let _ = sc(nr::MUNMAP, &[mem as u64, len as u64]);
+        if first.is_some() { break; }
     }
-    value("bytes-changed", changed as i64, "", Some((0, 0)));
+    value("rounds-changed", hits, "", Some((0, 0)));
     match first {
         None => Ok(()),
-        Some((at, v)) => fail(format!(
-            "a process whose main thread called exit_group with another thread running ({}) changed {changed} bytes of its parent's memory at the addresses of its thread's stack and exit word, the first to {v:#x} at {at:#x}",
-            if ended.is_some() { "and was reaped" } else { "and was then killed" },
+        Some((round, offset, changed)) => fail(format!(
+            "in round {} of up to {TID_ROUNDS}, {changed} bytes of pages mapped just after killing and reaping a process with sleeping threads changed, at page offset {offset}",
+            round + 1
         )),
     }
 }
@@ -3754,7 +3746,7 @@ static SUITE: Suite = suite("threads", "Threads", &[
         case("main-exit", "pthread_exit in the main thread leaves the others running and the process exits 0 after the last", lc_main_exit),
         case("exit-from-thread", "exit in one thread ends the whole process, a thread blocked in pthread_join included", lc_exit_from_thread),
         case("exit-from-main", "exit in the main thread ends the process while other threads run", lc_exit_from_main),
-        case("exit-tid-word", "Linux ABI: a process ending with threads running clears their exit thread-ID words in itself, never in its parent's memory", lc_exit_tid_word),
+        case("exit-tid-word", "Linux ABI: the threads of a process killed and reaped write nothing into pages its parent maps afterwards", lc_exit_tid_word),
         case("getpid-shared", "Every thread sees the process's getpid, and gettid gives each its own thread ID", lc_getpid_shared),
         case("shared-fds", "A descriptor one thread opens is usable in another", lc_shared_fds),
     ]),

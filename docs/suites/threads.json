@@ -99,7 +99,7 @@
         },
         {
           "id": "exit-tid-word",
-          "title": "Linux ABI: a process ending with threads running clears their exit thread-ID words in itself, never in its parent's memory"
+          "title": "Linux ABI: the threads of a process killed and reaped write nothing into pages its parent maps afterwards"
         },
         {
           "id": "getpid-shared",

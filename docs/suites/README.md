@@ -522,20 +522,18 @@ Each case runs its threads in a process of its own below the case's (a trial), w
 its result on a shared page; the case waits for it with a bound and kills the trial when it
 ends. A thread that never returns from a lock or a wait therefore fails the case with the
 step it was in, rather than running the case out of time. The case kills and reaps the
-trial before it reads the trial's result, so nothing the trial leaves running can change the
-case's memory while the result is put together. Cases whose process must die (a stack
+trial before it reads the trial's result. Cases whose process must die (a stack
 overflow, exit from a thread, a signal's default action) start it the same way and read its
 wait status. Every wait is bounded and stops 1.5 seconds before the case's 10-second
 deadline.
 
-`lifecycle/exit-tid-word` checks that a process ending with a thread still running clears
-that thread's exit thread-ID word (CLONE_CHILD_CLEARTID, which pthread_join waits on) in its
-own memory and nowhere else. The process makes one thread, so its first two mappings after
-the fork are the C library's thread stack and the page holding that word; the case makes
-mappings of the same sizes, fills them with a pattern, and confirms they landed at the same
-addresses by finding the thread's stack variable inside its copy (it skips, saying so, when
-they did not). The process's main thread then calls exit_group with the thread running, the
-case reaps it, and every byte of the case's copies must still hold the pattern.
+`lifecycle/exit-tid-word` checks that the threads of a killed process write nothing into
+memory after the process is reaped. In each of up to 12 rounds a process makes two threads,
+each with its exit-cleared thread-ID word (CLONE_CHILD_CLEARTID, which pthread_join waits on)
+in a page of its own, waits until both have started and ends its main thread with exit_group;
+50 ms later the case kills and reaps it, maps 32 fresh pages at once, fills them with a
+pattern, waits 50 ms and checks every byte. It stops at the first round in which a byte
+changed.
 
 Timed waits (pthread_mutex_timedlock, pthread_cond_timedwait, the rwlock timed locks and
 FUTEX_WAIT) are checked as the time suite checks sleeps: never before the deadline and late
