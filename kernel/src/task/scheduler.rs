@@ -64,12 +64,10 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 /// Published under the scheduler lock; the timer IRQ reads only this scalar.
-#[cfg(target_arch = "x86_64")]
 static NEXT_TIMER_CHECK_NS: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// Whether a sleep or signal timer needs a scheduling pass, without locking
 /// or walking any queue in interrupt context.
-#[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn timer_deadline_due() -> bool {
     let deadline = NEXT_TIMER_CHECK_NS.load(Ordering::Acquire);
@@ -4882,7 +4880,6 @@ impl Scheduler {
             // Insert into timer heap for O(1) expiry detection
             if !already_armed {
                 self.timer_heap.push(Reverse((wake_time_ns, current_id)));
-                #[cfg(target_arch = "x86_64")]
                 self.publish_timer_deadline();
             }
             for q in self.per_cpu_queues.iter_mut() {
@@ -4972,7 +4969,6 @@ impl Scheduler {
             // Insert into timer heap if a timeout was specified
             if let Some(wt) = wake_time_ns {
                 self.timer_heap.push(Reverse((wt, current_id)));
-                #[cfg(target_arch = "x86_64")]
                 self.publish_timer_deadline();
             }
             true
@@ -5185,7 +5181,6 @@ impl Scheduler {
             }
             // Insert into timer heap for O(1) expiry detection
             self.timer_heap.push(Reverse((timeout_ns, current_id)));
-            #[cfg(target_arch = "x86_64")]
             self.publish_timer_deadline();
             for q in self.per_cpu_queues.iter_mut() {
                 q.retain(|&id| id != current_id);
@@ -5204,7 +5199,6 @@ impl Scheduler {
 
     /// Recompute the next check where timer state is already serialized.
     /// Expiry discovery must not wait for a busy CPU's 50 ms quantum.
-    #[cfg(target_arch = "x86_64")]
     fn publish_timer_deadline(&self) {
         let now = crate::signal::timers::Now::read(0);
         let mut deadline = self.timer_heap.peek().map_or(u64::MAX, |entry| entry.0.0);
@@ -5226,7 +5220,6 @@ impl Scheduler {
         if timers.is_active() && !self.signal_timer_groups.iter().any(|(old, _)| old.ptr_eq(&alloc::sync::Arc::downgrade(timers))) {
             self.signal_timer_groups.push((alloc::sync::Arc::downgrade(timers), alloc::sync::Arc::downgrade(cpu)));
         }
-        #[cfg(target_arch = "x86_64")]
         self.publish_timer_deadline();
     }
 
@@ -5576,7 +5569,6 @@ impl Scheduler {
                 }
             }
         }
-        #[cfg(target_arch = "x86_64")]
         self.publish_timer_deadline();
     }
 
