@@ -1285,7 +1285,6 @@ impl IntervalTimer {
     }
 
     /// Physical wall-clock deadline publication, outside the interrupt path.
-    #[cfg(target_arch = "x86_64")]
     pub fn deadline_micros(&self) -> Option<u64> {
         if !self.is_active() { return None; }
         Some(self.value.try_lock().map_or(0, |value| value.0))
