@@ -24,12 +24,27 @@ static SERIAL_WAKER: AtomicWaker = AtomicWaker::new();
 
 pub fn init() {
     // Initialize the serial port for output only (no interrupts yet)
-    SERIAL1.lock().init();
+    init_port(&mut SERIAL1.lock(), COM1_PORT);
 
     // Initialize COM2 for kernel log output
-    SERIAL2.lock().init();
+    init_port(&mut SERIAL2.lock(), COM2_PORT);
 
     // Don't enable interrupts here - wait until after IDT is set up
+}
+
+/// Use the PC console's 115200 baud rather than the library's 38400 default.
+/// Synchronous console output otherwise masks interrupts for over 20 ms for
+/// an ordinary 80-byte line, delaying timer delivery and charging that busy
+/// UART wait to the writing process's CPU clock.
+fn init_port(serial: &mut SerialPort, base: u16) {
+    serial.init();
+    unsafe {
+        use x86_64::instructions::port::Port;
+        Port::<u8>::new(base + 3).write(0x80); // DLAB
+        Port::<u8>::new(base).write(1);       // 115200 / 1
+        Port::<u8>::new(base + 1).write(0);
+        Port::<u8>::new(base + 3).write(0x03); // 8N1, DLAB clear
+    }
 }
 
 /// Enable serial input interrupts - call this after IDT and PIC are initialized
