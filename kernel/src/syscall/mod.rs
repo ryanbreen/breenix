@@ -686,6 +686,14 @@ pub fn check_signals_for_restartable_wait() -> Option<i32> {
         let (_pid, process) = manager.find_process_by_thread(thread_id)?;
         if crate::signal::delivery::has_interrupting_signals(process) {
             Some(process.signals.interruption_restarts())
+        } else if crate::signal::delivery::stop_pending_or_in_force(process) {
+            // kill takes a stop at once and reports it to the parent when no
+            // thread of the group can run. A thread on its way into this wait
+            // then found nothing pending and slept, unheld and unreported, so
+            // the parent's waitpid(WUNTRACED) never saw the stop. Leave the
+            // wait as Linux does: the return path holds the thread, which
+            // completes the report, and the call restarts after SIGCONT.
+            Some(true)
         } else {
             None
         }
