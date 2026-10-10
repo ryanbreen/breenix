@@ -126,18 +126,6 @@ unsafe fn inb(port: u16) -> u8 {
 ///
 /// Must be called after PIT is initialized but before interrupts are enabled.
 pub fn calibrate() {
-    // CPUID describes the actual counter rate when hardware or a recognized
-    // hypervisor supplies it. PIT-port latency in a VM otherwise inflates the
-    // measured window. Machines lacking either leaf keep the PIT fallback.
-    if let Some(frequency_hz) = advertised_tsc_frequency() {
-        TSC_FREQUENCY_HZ.store(frequency_hz, Ordering::SeqCst);
-        TSC_BASE.store(rdtsc_serialized(), Ordering::SeqCst);
-        TSC_CALIBRATED.store(true, Ordering::SeqCst);
-        log::info!("TSC frequency from CPUID: {} Hz", frequency_hz);
-        log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
-        return;
-    }
-
     // We'll measure TSC cycles over ~50ms using PIT channel 2
     // PIT countdown value for ~50ms: 1193182 * 0.05 = 59659
     const CALIBRATION_TICKS: u16 = 59659;
@@ -189,27 +177,6 @@ pub fn calibrate() {
 
     // HAL boot stage marker - proves HAL timer operations are working
     log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
-}
-
-fn advertised_tsc_frequency() -> Option<u64> {
-    use core::arch::x86_64::__cpuid;
-    // SAFETY: CPUID is available on every x86-64 processor.
-    let max = unsafe { __cpuid(0).eax };
-    if max >= 0x15 {
-        let leaf = unsafe { __cpuid(0x15) };
-        if leaf.eax != 0 && leaf.ebx != 0 && leaf.ecx != 0 {
-            let hz = leaf.ecx as u64 * leaf.ebx as u64 / leaf.eax as u64;
-            if hz != 0 { return Some(hz); }
-        }
-    }
-    if unsafe { __cpuid(1).ecx } & (1 << 31) == 0 { return None; }
-    let hyper = unsafe { __cpuid(0x4000_0000) };
-    let vendor = [hyper.ebx, hyper.ecx, hyper.edx];
-    let kvm = vendor == [0x4b4d_564b, 0x564b_4d56, 0x0000_004d];
-    let vmware = vendor == [0x6177_4d56, 0x4d56_6572, 0x6572_6177];
-    if hyper.eax < 0x4000_0010 || !(kvm || vmware) { return None; }
-    let khz = unsafe { __cpuid(0x4000_0010).eax };
-    (khz != 0).then_some(khz as u64 * 1000)
 }
 
 /// Count TSC cycles across one PIT channel 2 countdown of `ticks`.
