@@ -4311,7 +4311,7 @@ const THREAD_STATE_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
     // row above), a distinct Ready construction.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_main_thread_with_sp => Ready", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => Ready", 1),
-    ("kernel/src/syscall/clone.rs", "fn sys_clone => Blocked", 1),
+    ("kernel/src/syscall/clone.rs", "fn sys_clone_thread => Blocked", 1),
     // The core-proof driver's census scratch arrays, each initialised to the
     // same `Running` placeholder the strand oracle uses below. None of these
     // is a thread publication: all three are array fill values immediately
@@ -4456,14 +4456,14 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
 /// manager.rs + process.rs and exactly one non-`None` write.
 #[rustfmt::skip]
 const THREAD_GROUP_WRITES: &[(&str, &str, usize)] = &[
-    ("kernel/src/syscall/clone.rs", "fn sys_clone", 1),
+    ("kernel/src/syscall/clone.rs", "fn sys_clone_thread", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 1),
 ];
 /// `call_offsets` excludes the `refuses_init_group_clone` definition itself, so
 /// this census contains consultations only.
 #[rustfmt::skip]
 const INIT_GROUP_REFUSAL_CONSULTATIONS: &[(&str, &str, usize)] = &[
-    ("kernel/src/syscall/clone.rs", "fn sys_clone", 1),
+    ("kernel/src/syscall/clone.rs", "fn sys_clone_thread", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 5),
 ];
 /// `call_offsets` excludes the `designated_init` definition itself. Production
@@ -5231,7 +5231,7 @@ fn validate_designated_init_reads(
 }
 
 fn validate_init_group_refusal_ordering(clone: &str) -> Result<(), ()> {
-    let body = function_body(clone, "sys_clone");
+    let body = function_body(clone, "sys_clone_thread");
     let mask = code_mask(body);
     let effective_group = code_offsets(body, &mask, "thread_group_id.unwrap_or(");
     let refusal = call_offsets(body, &mask, "refuses_init_group_clone");
@@ -5763,7 +5763,7 @@ fn validate_clear_child_tid_exit_paths(
         let mask = code_mask(body);
         let read = clear_child_tid_read_offsets(body, &mask);
         let copy = call_offsets(body, &mask, "copy_to_user");
-        let wake = call_offsets(body, &mask, "futex_wake_for_thread_group");
+        let wake = call_offsets(body, &mask, "futex_wake_cleared_tid");
         let teardown = call_offsets(body, &mask, "handle_thread_exit");
         let raw_write = call_offsets(body, &mask, "write_volatile");
         let manager = call_offsets(body, &mask, "manager");
@@ -5779,7 +5779,7 @@ fn validate_clear_child_tid_exit_paths(
                 .iter()
                 .any(|end| read[0] < *end && *end < copy[0])
             || !code.contains("copy_to_user(tid_addr as *mut u32, &zero);")
-            || !code.contains("futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);")
+            || !code.contains("futex_wake_cleared_tid(tg_id, tid_addr);")
             || !(read[0] < copy[0] && copy[0] < wake[0] && wake[0] < teardown[0])
         {
             failures.push(format!(
@@ -5829,37 +5829,54 @@ fn call_argument<'a>(source: &'a str, mask: &[bool], call: usize, name: &str) ->
     None
 }
 
+/// The futex waits whose user-word check, enqueue and blocked-state publication
+/// must be one section under the futex table's lock (#584): `futex_wait`
+/// (FUTEX_WAIT) and `futex_wait_until` (FUTEX_WAIT_BITSET).
+const FUTEX_WAITS: [&str; 2] = ["futex_wait", "futex_wait_until"];
+
 fn validate_futex_wait_atomicity(sources: &[(String, String)]) -> Result<(), Vec<String>> {
     let futex = source(sources, "kernel/src/syscall/futex.rs");
-    let body = function_body(futex, "futex_wait");
-    let mask = code_mask(body);
-    let prepares = call_offsets(body, &mask, "prepare_to_wait_checked");
     let mut failures = Vec::new();
-    check(
-        &mut failures,
-        "futex_wait must contain exactly one prepare_to_wait_checked call",
-        prepares.len() == 1,
-    );
-    if let Some(prepare) = prepares.first() {
-        let argument = call_argument(body, &mask, *prepare, "prepare_to_wait_checked");
-        let argument_mask = argument.map(code_mask);
-        let in_argument = argument
-            .zip(argument_mask.as_deref())
-            .map(|(argument, mask)| expected_value_comparison_offsets(argument, mask).len())
-            == Some(1);
+    for name in FUTEX_WAITS {
+        let body = function_body(futex, name);
+        let mask = code_mask(body);
+        // The section that compares the word: the `with_table` call whose
+        // closure holds the comparison.
+        let sections: Vec<usize> = call_offsets(body, &mask, "with_table")
+            .into_iter()
+            .filter(|call| {
+                call_argument(body, &mask, *call, "with_table").is_some_and(|argument| {
+                    !expected_value_comparison_offsets(argument, &code_mask(argument)).is_empty()
+                })
+            })
+            .collect();
         check(
             &mut failures,
-            "futex_wait must compare the user word inside prepare_to_wait_checked's closure",
-            in_argument,
+            &format!("{name} must compare the user word in exactly one with_table section"),
+            sections.len() == 1,
         );
-        let before_prepare = expected_value_comparison_offsets(
-            &body[..*prepare],
-            &code_mask(&body[..*prepare]),
+        let Some(section) = sections.first() else {
+            continue;
+        };
+        let argument = call_argument(body, &mask, *section, "with_table").unwrap_or_default();
+        let argument_mask = code_mask(argument);
+        check(
+            &mut failures,
+            &format!("{name} must compare the user word exactly once inside its with_table section"),
+            expected_value_comparison_offsets(argument, &argument_mask).len() == 1,
         );
         check(
             &mut failures,
-            "futex_wait must not compare expected_val before prepare_to_wait_checked",
-            before_prepare.is_empty(),
+            &format!("{name} must enqueue and publish the waiter in the section that compares the word"),
+            call_offsets(argument, &argument_mask, "enqueue").len() == 1
+                && call_offsets(argument, &argument_mask, "block_current_for_io_with_timeout").len()
+                    == 1,
+        );
+        let before = &body[..*section];
+        check(
+            &mut failures,
+            &format!("{name} must not compare expected_val before its with_table section"),
+            expected_value_comparison_offsets(before, &code_mask(before)).is_empty(),
         );
     }
     failures.is_empty().then_some(()).ok_or(failures)
@@ -5887,10 +5904,24 @@ fn validate_futex_queue_value_type(sources: &[(String, String)]) -> Result<(), V
             .copied()
             .unwrap_or(0)..],
     );
+    // Every waiter is in the one table, under its one lock, which indexes
+    // each queue by key and each waiting thread by the queue it is on, so a
+    // wake, a requeue and a waiter's own departure agree about where it is.
     check(
         &mut failures,
-        "FUTEX_QUEUES must map keys to WaitQueueHead",
-        declaration.contains("static FUTEX_QUEUES: Mutex<BTreeMap<FutexKey, WaitQueueHead>>"),
+        "FUTEX_QUEUES must be the one Mutex<FutexTable>",
+        declaration.contains("static FUTEX_QUEUES: Mutex<FutexTable>"),
+    );
+    let table = normalized_code(
+        &futex[code_offsets(futex, &mask, "struct FutexTable {")
+            .first()
+            .copied()
+            .unwrap_or(0)..],
+    );
+    check(
+        &mut failures,
+        "FutexTable must hold the queues by key and the queue each waiter is on",
+        table.contains("queues: BTreeMap<FutexKey, VecDeque<Waiter>>, queued_on: BTreeMap<u64, FutexKey>, }"),
     );
     check(
         &mut failures,
@@ -5952,8 +5983,16 @@ fn validate_sleeping_preempt_discipline(
         }
         let enables = call_offsets(body, &mask, "preempt_enable");
         let disables = call_offsets(body, &mask, "preempt_disable");
-        let disciplined = enables.first().is_some_and(|enable| *enable < first_loop)
+        // Either preemption is enabled for the whole loop, or (#1230: the
+        // syscall's preempt_disable stays in force until the loop's signal
+        // check has run) the loop enables it around each sleep and disables
+        // it again before its next check.
+        let around_loop = enables.first().is_some_and(|enable| *enable < first_loop)
             && disables.last().is_some_and(|disable| *disable > first_loop);
+        let around_each_sleep = enables
+            .iter()
+            .any(|enable| *enable > first_loop && disables.iter().any(|disable| disable > enable));
+        let disciplined = around_loop || around_each_sleep;
         if !disciplined {
             failures.push(format!(
                 "{path} :: {item} must enable preemption before its first sleep loop and disable it after"
@@ -5963,39 +6002,27 @@ fn validate_sleeping_preempt_discipline(
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
+/// The functions in futex.rs that hold the futex table's lock: `with_table`,
+/// which takes it, and every function that enters a section through it.
 fn futex_map_lock_users(sources: &[(String, String)]) -> Vec<(String, String, String)> {
     let futex = source(sources, "kernel/src/syscall/futex.rs");
-    let body_mask = code_mask(futex);
-    identifier_offsets(futex, &body_mask, "FUTEX_QUEUES")
+    let mask = code_mask(futex);
+    rendered_item_spans(&item_spans(futex, &mask))
         .into_iter()
-        .filter(|offset| {
-            let Some(dot) = next_code(futex, &body_mask, *offset + "FUTEX_QUEUES".len()) else {
-                return false;
-            };
-            let Some(lock) = next_code(futex, &body_mask, dot + 1) else {
-                return false;
-            };
-            let Some(open) = next_code(futex, &body_mask, lock + "lock".len()) else {
-                return false;
-            };
-            &futex[dot..=dot] == "."
-                && futex[lock..].starts_with("lock")
-                && futex.as_bytes()[open] == b'('
-        })
-        .filter_map(|offset| {
-            let spans = rendered_item_spans(&item_spans(futex, &body_mask));
-            let item = item_path_at(&spans, offset);
-            item_body_for_path(futex, &item).map(|body| {
-                (
-                    "kernel/src/syscall/futex.rs".to_owned(),
-                    item,
-                    body.to_owned(),
-                )
-            })
+        .filter(|(_, _, item)| item.starts_with("fn "))
+        .filter_map(|(open, close, item)| {
+            let body = &futex[open..=close];
+            let body_mask = code_mask(body);
+            let locks = !code_offsets(body, &body_mask, "FUTEX_QUEUES.lock()").is_empty()
+                || !call_offsets(body, &body_mask, "with_table").is_empty();
+            locks.then(|| ("kernel/src/syscall/futex.rs".to_owned(), item, body.to_owned()))
         })
         .collect()
 }
 
+/// PROCESS_MANAGER is never held while the futex table is: a table section
+/// takes no manager, and the key a section uses (`futex_key`, which takes and
+/// releases the manager) is resolved before the section is entered.
 fn validate_futex_lock_order(sources: &[(String, String)]) -> Result<(), Vec<String>> {
     let mut failures = Vec::new();
     let mut seen = BTreeSet::new();
@@ -6004,28 +6031,22 @@ fn validate_futex_lock_order(sources: &[(String, String)]) -> Result<(), Vec<Str
             continue;
         }
         let mask = code_mask(&body);
-        let has_group_id = !call_offsets(&body, &mask, "current_thread_group_id").is_empty();
-        let has_group_key = !identifier_offsets(&body, &mask, "tg_id").is_empty();
-        if !(has_group_id || has_group_key) {
-            continue;
-        }
-        let group_calls = call_offsets(&body, &mask, "current_thread_group_id");
-        let locks = code_offsets(&body, &mask, "FUTEX_QUEUES.lock()");
-        let group_identity = group_calls.last().copied().or_else(|| {
-            identifier_offsets(&body, &mask, "tg_id")
-                .into_iter()
-                .next()
+        let sections = call_offsets(&body, &mask, "with_table");
+        let manager_in_section = sections.iter().any(|section| {
+            call_argument(&body, &mask, *section, "with_table").is_some_and(|argument| {
+                !identifier_offsets(argument, &code_mask(argument), "manager").is_empty()
+            })
         });
-        let valid = group_identity
-            .zip(locks.first())
-            .is_some_and(|(group, lock)| {
-                group < *lock
-                    && identifier_offsets(&body[group..*lock], &code_mask(&body[group..*lock]), "manager")
-                        .is_empty()
-            });
-        if !valid {
+        let key_before_section = match (
+            call_offsets(&body, &mask, "futex_key").first(),
+            sections.first(),
+        ) {
+            (Some(key), Some(section)) => key < section,
+            _ => true,
+        };
+        if manager_in_section || !key_before_section {
             failures.push(format!(
-                "{path} :: {item} must resolve group identity before FUTEX_QUEUES without manager held"
+                "{path} :: {item} must resolve the futex key before entering the table and take no manager inside it"
             ));
         }
     }
@@ -10783,6 +10804,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "let mut value_matches = false; let broken_comparison = expected_val == 0;",
         1,
     );
+    assert_ne!(broken_atomicity, futex, "the atomicity mutation must change futex.rs");
     report_vacuity(
         "check/enqueue atomicity",
         validate_futex_wait_atomicity(&with_replaced_source(
@@ -10794,7 +10816,12 @@ fn deliberately_broken_variants_fail_the_ratchet() {
 
     // Replacing the queue-head value with a bare vector must be rejected, proving the
     // declaration shape cannot silently reintroduce an unsynchronised waiter list.
-    let broken_queue_type = futex.replacen("WaitQueueHead>>", "Vec<u64>>", 1);
+    let broken_queue_type = futex.replacen(
+        "static FUTEX_QUEUES: Mutex<FutexTable>",
+        "static FUTEX_QUEUES: Mutex<BTreeMap<FutexKey, Vec<u64>>>",
+        1,
+    );
+    assert_ne!(broken_queue_type, futex, "the queue-type mutation must change futex.rs");
     report_vacuity(
         "queue value type",
         validate_futex_queue_value_type(&with_replaced_source(
@@ -10841,10 +10868,11 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     // Inserting a manager acquisition between group lookup and map locking must be rejected,
     // proving the lock-order ratchet catches the deadlock-prone inversion directly.
     let broken_lock_order = futex.replacen(
-        "let key = (tg_id, uaddr);\n    let mut queues = FUTEX_QUEUES.lock();",
-        "let key = (tg_id, uaddr);\n    let _manager = crate::process::manager();\n    let mut queues = FUTEX_QUEUES.lock();",
+        "with_table(|table| table.wake(key, max_wake, bitset))",
+        "with_table(|table| { let _manager = crate::process::manager(); table.wake(key, max_wake, bitset) })",
         1,
     );
+    assert_ne!(broken_lock_order, futex, "the lock-order mutation must change futex.rs");
     report_vacuity(
         "futex lock order",
         validate_futex_lock_order(&with_replaced_source(

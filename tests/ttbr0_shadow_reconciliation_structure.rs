@@ -1625,11 +1625,16 @@ fn blocking_resume_restore_census(sources: &[(String, String)]) -> (Vec<String>,
         if !guarded && !adopts {
             continue;
         }
+        // The found row's table: its own (`level_4_frame()`), or through
+        // `cr3_value()`, which is that or the table its CLONE_VM thread group
+        // shares (#1321).
         let installs_the_found_row = INSTALLS.iter().any(|call| {
             calls_function(&body, call)
                 && last_call_argument(&body, call)
                     .and_then(|argument| let_binding_rhs(&body, &argument))
-                    .is_some_and(|derivation| derivation.contains("level_4_frame()"))
+                    .is_some_and(|derivation| {
+                        derivation.contains("level_4_frame()") || derivation.contains("cr3_value()")
+                    })
         });
         if !installs_the_found_row {
             continue;
