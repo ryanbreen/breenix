@@ -105,11 +105,26 @@ fn trace_wait_timeout_stage(stage: u16) {
     );
 }
 
+/// End the current thread's wait: clear `blocked_in_syscall` and take back the
+/// `BlockedOnIO` state the wait published, as Linux's `finish_wait` sets
+/// `TASK_RUNNING`.
+///
+/// A waiter that sees `done` after publishing that state returns still running
+/// with it published, and no wake need be on its way to clear it: `complete()`
+/// reads `waiter` after storing `done`, and finds 0 once the waiter, having seen
+/// `done`, has cleared it. Left published, the state switched the thread out at
+/// its next scheduling point and kept it off every CPU until the wait's timer
+/// entry expired, a whole one-second block-device slice later (#1244). A wake
+/// that does arrive later finds the thread running and does nothing.
 #[inline]
-fn clear_blocked_in_syscall_current() {
+fn finish_wait_current() {
     crate::task::scheduler::with_scheduler(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
             thread.blocked_in_syscall = false;
+            if thread.state == crate::task::thread::ThreadState::BlockedOnIO {
+                thread.set_running();
+                thread.wake_time_ns = None;
+            }
         }
     });
 }
@@ -311,7 +326,7 @@ impl Completion {
         if self.done.load(Ordering::Acquire) == expected_token {
             let in_syscall = syscall_sleep_path_available();
             if in_syscall {
-                clear_blocked_in_syscall_current();
+                finish_wait_current();
             }
             return Ok(true);
         }
@@ -392,13 +407,13 @@ impl Completion {
                 // Fast check after waiter store — ISR may have fired already.
                 if self.done.load(Ordering::Acquire) == expected_token {
                     self.waiter.store(0, Ordering::Release);
-                    clear_blocked_in_syscall_current();
+                    finish_wait_current();
                     return Ok(true);
                 }
 
                 if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
                     self.waiter.store(0, Ordering::Release);
-                    clear_blocked_in_syscall_current();
+                    finish_wait_current();
                     return Err(EINTR);
                 }
 
@@ -412,7 +427,7 @@ impl Completion {
                 loop {
                     if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
                         self.waiter.store(0, Ordering::Release);
-                        clear_blocked_in_syscall_current();
+                        finish_wait_current();
                         restore_syscall_preempt_state();
                         return Err(EINTR);
                     }
@@ -433,7 +448,7 @@ impl Completion {
 
                     if already_done || self.done.load(Ordering::Acquire) == expected_token {
                         self.waiter.store(0, Ordering::Release);
-                        clear_blocked_in_syscall_current();
+                        finish_wait_current();
                         // Restore preempt_count to the value expected by the
                         // syscall exit path (preempt_disable was called on entry).
                         restore_syscall_preempt_state();
@@ -461,7 +476,7 @@ impl Completion {
                     trace_wait_timeout_stage(1);
 
                     // Clear BlockedOnIO state after wake (could be timer or ISR).
-                    clear_blocked_in_syscall_current();
+                    finish_wait_current();
 
                     #[cfg(target_arch = "aarch64")]
                     trace_wait_timeout_stage(2);
