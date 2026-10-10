@@ -139,11 +139,40 @@ pub fn calibrate() {
     // from its starting write left the kernel up to 1100 ppm off the host.
     const PERIOD_TICKS: u16 = 59660;
     const MIN_PERIODS: usize = 5;
+    // Collections refused for a polling gap before calibration gives up.
+    const ATTEMPTS: u32 = 8;
 
     log::info!("Calibrating TSC frequency using PIT...");
 
-    let Some(edges) = (unsafe { pit_rising_edges(PERIOD_TICKS) }) else {
-        panic!("TSC calibration observed no PIT channel 2 square wave");
+    // The edges are counted, not the periods between them, so the collection
+    // is only usable if no rising edge went unseen. OUT stays low for half a
+    // period, and an edge is missed only when no poll falls inside that low
+    // half, so an interval that hides an edge holds a gap over half a period.
+    // Requiring the longest gap after the first edge to stay under a quarter
+    // of the shortest interval therefore refuses any collection in which one
+    // interval missed an edge while another did not, and any in which every
+    // interval missed exactly one; it cannot see every interval missing two
+    // or more. A refused collection, whose virtual CPU was descheduled for a
+    // long gap, is taken again.
+    let mut attempt = 0;
+    let edges = loop {
+        attempt += 1;
+        let Some((edges, max_gap)) = (unsafe { pit_rising_edges(PERIOD_TICKS) }) else {
+            panic!("TSC calibration observed no PIT channel 2 square wave");
+        };
+        let shortest = edges.windows(2).map(|pair| pair[1].at - pair[0].at).min().unwrap_or(0);
+        if max_gap.saturating_mul(4) < shortest {
+            break edges;
+        }
+        log::warn!(
+            "TSC calibration attempt {} refused: a {}-cycle gap between PIT polls could hide an edge (shortest interval {})",
+            attempt,
+            max_gap,
+            shortest
+        );
+        if attempt == ATTEMPTS {
+            panic!("TSC calibration could not observe every PIT edge in {} attempts", ATTEMPTS);
+        }
     };
 
     // The two edges at least MIN_PERIODS apart whose times are known most
@@ -194,8 +223,9 @@ struct PitEdge {
 }
 
 /// Run PIT channel 2 as a square wave of `period` ticks and time its first
-/// seven rising edges, or `None` when OUT stopped toggling.
-unsafe fn pit_rising_edges(period: u16) -> Option<[PitEdge; 7]> {
+/// seven rising edges, with the longest TSC gap between consecutive polls from
+/// the first edge on, or `None` when OUT stopped toggling.
+unsafe fn pit_rising_edges(period: u16) -> Option<([PitEdge; 7], u64)> {
     // Bounds the wait for one edge far above a period's worth of polls, so a
     // PIT that never toggles fails calibration instead of hanging the boot.
     const POLLS_PER_EDGE: u64 = 50_000_000;
@@ -219,9 +249,13 @@ unsafe fn pit_rising_edges(period: u16) -> Option<[PitEdge; 7]> {
     let mut was_high = inb(PIT_GATE_PORT) & 0x20 != 0;
     let mut last = rdtsc_serialized();
     let mut polls = 0u64;
+    let mut max_gap = 0u64;
     while found < edges.len() && polls < POLLS_PER_EDGE {
         let high = inb(PIT_GATE_PORT) & 0x20 != 0;
         let at = rdtsc_serialized();
+        if found > 0 {
+            max_gap = max_gap.max(at - last);
+        }
         if high && !was_high {
             edges[found] = PitEdge { at: last + (at - last) / 2, width: at - last };
             found += 1;
@@ -235,7 +269,7 @@ unsafe fn pit_rising_edges(period: u16) -> Option<[PitEdge; 7]> {
     // Restore original gate state
     outb(PIT_GATE_PORT, orig_gate);
 
-    (found == edges.len()).then_some(edges)
+    (found == edges.len()).then_some((edges, max_gap))
 }
 
 /// Check if TSC has been calibrated.
