@@ -16,6 +16,7 @@ pub mod slab;
 pub mod stack;
 pub mod tlb;
 pub mod vma;
+pub mod locked;
 
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::{

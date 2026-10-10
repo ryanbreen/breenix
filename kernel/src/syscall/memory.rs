@@ -113,6 +113,16 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
         return SyscallResult::Ok(current_break);
     }
 
+    let old_page_end = super::memory_common::round_up_to_page(current_break);
+    let new_page_end = super::memory_common::round_up_to_page(new_break);
+    if new_page_end > old_page_end
+        && super::memory_advice::prepare_future(process, new_page_end - old_page_end).is_err() {
+        return SyscallResult::Ok(current_break);
+    }
+    if new_page_end < old_page_end && process.memory_locks.reserve_split().is_err() {
+        return SyscallResult::Ok(current_break);
+    }
+
     // Handle heap expansion
     if new_break > current_break {
         log::info!(
@@ -188,6 +198,7 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
         log::info!("sys_brk: Successfully mapped {} pages", pages_mapped);
 
         // Update the heap end
+        super::memory_advice::record_future(process, old_page_end, new_page_end);
         process.heap_end = new_break;
         process.memory_usage.heap_size = (new_break - heap_start) as usize;
 
@@ -245,6 +256,7 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
         log::info!("sys_brk: Successfully unmapped {} pages", pages_unmapped);
 
         // Update the heap end
+        process.memory_locks.remove(new_page_end, old_page_end);
         process.heap_end = new_break;
         process.memory_usage.heap_size = (new_break - heap_start) as usize;
 

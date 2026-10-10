@@ -47,7 +47,24 @@ fn descriptor_is_open(fd: i32) -> bool {
 /// - offset: File offset (0 for anonymous)
 ///
 /// Returns: Start address of mapping on success, or negative errno
-pub fn sys_mmap(
+pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: u64) -> SyscallResult {
+    let value = mmap_inner(addr, length, prot, flags, fd, offset);
+    if let SyscallResult::Ok(start) = value {
+        if let Some(thread) = get_current_thread_id() {
+            if let Err(errno) = super::memory_advice::lock_future_mapping(thread, start, length) {
+                // This newly-created mapping has no caller-visible contents yet.
+                let rollback = sys_munmap(start, length);
+                if let SyscallResult::Err(error) = rollback { return SyscallResult::Err(error); }
+                return SyscallResult::Err(if errno == crate::syscall::errno::EPERM as u64 {
+                    ErrorCode::OutOfMemory as u64
+                } else { errno });
+            }
+        }
+    }
+    value
+}
+
+fn mmap_inner(
     addr: u64,
     length: u64,
     prot: u32,
@@ -155,6 +172,12 @@ pub fn sys_mmap(
                     > process.limits.get(crate::process::limits::DATA).soft)
         {
             return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        }
+
+        if let Err(errno) = super::memory_advice::prepare_future(process, length) {
+            return SyscallResult::Err(if errno == crate::syscall::errno::EPERM as u64 {
+                ErrorCode::OutOfMemory as u64
+            } else { errno });
         }
 
         // Determine the start address
@@ -670,6 +693,27 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
 ///
 /// Returns: 0 on success, negative errno on error
 pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
+    let thread = get_current_thread_id();
+    if let Some(thread) = thread {
+        let mut guard = crate::process::manager();
+        if let Some((_, p)) = guard.as_mut().and_then(|m| m.find_address_space_by_thread_mut(thread)) {
+            if let Err(errno) = p.memory_locks.reserve_split() { return SyscallResult::Err(errno); }
+        }
+    }
+    let value = munmap_inner(addr, length);
+    if let (SyscallResult::Ok(_), Some(thread)) = (&value, thread) {
+        let mut guard = crate::process::manager();
+        if let Some((_, p)) = guard.as_mut().and_then(|m| m.find_address_space_by_thread_mut(thread)) {
+            if let Some(end) = length.checked_add(PAGE_SIZE - 1)
+                .and_then(|n| addr.checked_add(n & !(PAGE_SIZE - 1))) {
+                p.memory_locks.remove(addr, end);
+            }
+        }
+    }
+    value
+}
+
+fn munmap_inner(addr: u64, length: u64) -> SyscallResult {
     log::trace!("sys_munmap: addr={:#x} length={:#x}", addr, length);
 
     // Validate addr is page-aligned
@@ -799,7 +843,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
 /// work. Only covered shared file ranges enter the snapshot; no mount guard
 /// is acquired while PROCESS_MANAGER is held.
 pub fn sys_msync(addr: u64, length: u64, flags: u32) -> SyscallResult {
-    use super::errno::{EINVAL, EIO, ENOMEM};
+    use super::errno::{EBUSY, EINVAL, EIO, ENOMEM};
     const MS_ASYNC: u32 = 1;
     const MS_INVALIDATE: u32 = 2;
     const MS_SYNC: u32 = 4;
@@ -834,6 +878,9 @@ pub fn sys_msync(addr: u64, length: u64, flags: u32) -> SyscallResult {
         else {
             return SyscallResult::Err(ENOMEM as u64);
         };
+        if flags & MS_INVALIDATE != 0 && process.memory_locks.overlaps(addr, end) {
+            return SyscallResult::Err(EBUSY as u64);
+        }
         let mut cursor = addr;
         while cursor < end {
             let Some(vma) = process

@@ -1185,6 +1185,7 @@ fn generate_pid_status(pid: u64) -> String {
          VmCode:\t{} kB\n\
          VmHeap:\t{} kB\n\
          VmStack:\t{} kB\n\
+         VmLck:\t{} kB\n\
          VmRSS:\t{} kB\n\
          CpuTicks:\t{}\n\
          CpuSampleTicks:\t{}\n\
@@ -1199,6 +1200,9 @@ fn generate_pid_status(pid: u64) -> String {
         vm_code_kb,
         vm_heap_kb,
         vm_stack_kb,
+        manager.find_process_by_cr3(process.inherited_cr3.unwrap_or_else(|| {
+            process.page_table.as_ref().map_or(0, |t| t.level_4_frame().start_address().as_u64())
+        })).map_or(0, |(_, owner)| owner.memory_locks.bytes() / 1024),
         vm_rss_kb,
         process.cpu.ticks(),
         cpu_sample_ticks,

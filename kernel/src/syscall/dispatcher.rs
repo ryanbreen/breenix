@@ -180,7 +180,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Writev => super::iovec::sys_writev(arg1, arg2, arg3),
         // Stubs for musl libc compatibility
         SyscallNumber::Mremap => SyscallResult::Err(super::errno::ENOMEM as u64),
-        SyscallNumber::Madvise => SyscallResult::Ok(0),
+        SyscallNumber::Madvise => super::memory_advice::sys_madvise(arg1, arg2, arg3),
         SyscallNumber::Ppoll => super::handlers::sys_ppoll(arg1, arg2, arg3, arg4, arg5),
         SyscallNumber::SetRobustList => SyscallResult::Ok(0),
         // arch_prctl (x86_64 only)

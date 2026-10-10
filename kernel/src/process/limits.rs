@@ -10,6 +10,7 @@ pub const STACK: usize = 3;
 pub const CORE: usize = 4;
 pub const NPROC: usize = 6;
 pub const NOFILE: usize = 7;
+pub const MEMLOCK: usize = 8;
 pub const AS: usize = 9;
 pub const SIGPENDING: usize = 11;
 pub const COUNT: usize = 16;
@@ -103,6 +104,10 @@ impl Process {
         {
             return false;
         }
+        if page_aligned < stack_bottom
+            && crate::syscall::memory_advice::prepare_future(self, stack_bottom - page_aligned).is_err() {
+            return false;
+        }
         let Some(page_table) = self.page_table.as_mut() else {
             return false;
         };
@@ -156,6 +161,7 @@ impl Process {
         unsafe {
             core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
         }
+        crate::syscall::memory_advice::record_future(self, self.user_stack_bottom, stack_bottom);
         grown
     }
 
