@@ -4606,6 +4606,7 @@ impl Scheduler {
             // wait loop and will return EINTR when they resume.
             if thread.state == ThreadState::BlockedOnIO {
                 self.unblock_for_io(thread_id);
+                self.expedite_signal_recipient(thread_id);
                 return;
             }
             // A syscall wait published as plain Blocked (pipe, FIFO, socket,
@@ -4615,12 +4616,12 @@ impl Scheduler {
             // TASK_INTERRUPTIBLE sleepers.
             if thread.state == ThreadState::Blocked && thread.blocked_in_syscall {
                 self.unblock(thread_id);
-                set_need_resched();
+                self.expedite_signal_recipient(thread_id);
                 return;
             }
             if thread.state == ThreadState::BlockedOnTimer {
                 self.unblock(thread_id);
-                set_need_resched();
+                self.expedite_signal_recipient(thread_id);
                 return;
             }
             if thread.state == ThreadState::BlockedOnSignal {
@@ -4668,8 +4669,35 @@ impl Scheduler {
                 set_need_resched();
             }
         }
+        self.expedite_signal_recipient(thread_id);
         // A missing thread has nothing to wake. No serial output: a child's
         // stop reaches here from an interrupt return path.
+    }
+
+    /// A generated, deliverable signal must reach its recipient at the next
+    /// return to user mode, including a busy remote CPU. Interruptible sleepers
+    /// receive the same bounded promotion as an already-expired sleep deadline.
+    fn expedite_signal_recipient(&mut self, thread_id: u64) {
+        if let Some(cpu) = self.cpu_state.iter().position(|s| s.current_thread == Some(thread_id)) {
+            if cpu == Self::current_cpu_id() {
+                set_need_resched();
+            } else {
+                self.send_resched_ipi_to_cpu(cpu);
+            }
+            return;
+        }
+        if let Some(cpu) = self.per_cpu_queues.iter().position(|q| q.contains(&thread_id)) {
+            if self.timer_wake_promotion_open(cpu) {
+                self.per_cpu_queues[cpu].retain(|&id| id != thread_id);
+                self.per_cpu_queues[cpu].push_front(thread_id);
+                self.cpu_state[cpu].promoted_wake = Some(thread_id);
+            }
+            if cpu == Self::current_cpu_id() {
+                set_need_resched();
+            } else {
+                self.send_resched_ipi_to_cpu(cpu);
+            }
+        }
     }
 
     /// Block current thread until a child exits
@@ -5537,12 +5565,9 @@ impl Scheduler {
                         } else {
                             self.per_cpu_queues[target].push_back(tid);
                         }
-                        // A discovered x86 deadline also preempts a busy remote
-                        // destination; otherwise discovery still adds its
-                        // remaining quantum to deadline-to-dispatch latency.
-                        if cfg!(target_arch = "x86_64") || self.cpu_is_idle(target) {
-                            self.send_resched_ipi_to_cpu(target);
-                        }
+                        // Discovery must preempt even a busy destination;
+                        // otherwise its remaining quantum delays this deadline.
+                        self.send_resched_ipi_to_cpu(target);
                         ENQUEUE_TIMER_WAKE.fetch_add(1, Ordering::Relaxed);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     } else {
