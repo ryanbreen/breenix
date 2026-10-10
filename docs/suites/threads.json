@@ -200,6 +200,22 @@
           "title": "A PTHREAD_PRIO_INHERIT mutex's low-priority owner runs ahead of a middle-priority thread, where offered"
         },
         {
+          "id": "prio-inherit-chain",
+          "title": "A high-priority thread's priority passes along a chain of PTHREAD_PRIO_INHERIT mutexes to a low-priority owner two locks away"
+        },
+        {
+          "id": "prio-protect",
+          "title": "A PTHREAD_PRIO_PROTECT mutex's low-priority owner runs at the ceiling, ahead of a middle-priority thread"
+        },
+        {
+          "id": "prio-ceiling",
+          "title": "Mutex priority ceilings read back and change, and a thread above a mutex's ceiling cannot lock it"
+        },
+        {
+          "id": "futex-pi",
+          "title": "Linux ABI: FUTEX_LOCK_PI, FUTEX_TRYLOCK_PI and FUTEX_UNLOCK_PI keep the owner's thread ID, hand over to a waiter and report a dead owner"
+        },
+        {
           "id": "futex-eagain",
           "title": "Linux ABI: FUTEX_WAIT on a word that does not hold the value returns EAGAIN"
         },

@@ -122,6 +122,7 @@ const PTHREAD_MUTEX_DEFAULT: i32 = 0;
 const PTHREAD_MUTEX_STALLED: i32 = 0;
 const PTHREAD_MUTEX_ROBUST: i32 = 1;
 const PTHREAD_PRIO_INHERIT: i32 = 1;
+const PTHREAD_PRIO_PROTECT: i32 = 2;
 const PTHREAD_INHERIT_SCHED: i32 = 0;
 const PTHREAD_EXPLICIT_SCHED: i32 = 1;
 const PTHREAD_BARRIER_SERIAL_THREAD: i32 = -1;
@@ -133,6 +134,7 @@ const SCHED_RR: i32 = 2;
 const SC_THREAD_DESTRUCTOR_ITERATIONS: i32 = 73;
 const SC_THREAD_KEYS_MAX: i32 = 74;
 const SC_THREAD_PRIO_INHERIT: i32 = 80;
+const SC_THREAD_PRIO_PROTECT: i32 = 81;
 /// The POSIX minimums of PTHREAD_DESTRUCTOR_ITERATIONS and PTHREAD_KEYS_MAX.
 const POSIX_DESTRUCTOR_ITERATIONS: i64 = 4;
 const POSIX_KEYS_MAX: i64 = 128;
@@ -143,7 +145,15 @@ const CLOCK_MONOTONIC: i32 = 1;
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
 const FUTEX_CMP_REQUEUE: u64 = 4;
+const FUTEX_LOCK_PI: u64 = 6;
+const FUTEX_UNLOCK_PI: u64 = 7;
+const FUTEX_TRYLOCK_PI: u64 = 8;
 const FUTEX_WAIT_BITSET: u64 = 9;
+/// A priority-inheritance futex word: threads are blocked on it in the kernel.
+const FUTEX_WAITERS: u32 = 0x8000_0000;
+/// A priority-inheritance futex word: an owner ended holding it.
+const FUTEX_OWNER_DIED: u32 = 0x4000_0000;
+const FUTEX_TID_MASK: u32 = 0x3fff_ffff;
 const FUTEX_PRIVATE: u64 = 128;
 const FUTEX_CLOCK_REALTIME: u64 = 256;
 
@@ -237,6 +247,10 @@ libc! {
     "pthread_mutexattr_getrobust" fn pthread_mutexattr_getrobust(attr: *const u8, robust: *mut i32) -> i32;
     "pthread_mutexattr_setprotocol" fn pthread_mutexattr_setprotocol(attr: *mut u8, protocol: i32) -> i32;
     "pthread_mutexattr_getprotocol" fn pthread_mutexattr_getprotocol(attr: *const u8, protocol: *mut i32) -> i32;
+    "pthread_mutexattr_setprioceiling" fn pthread_mutexattr_setprioceiling(attr: *mut u8, prio: i32) -> i32;
+    "pthread_mutexattr_getprioceiling" fn pthread_mutexattr_getprioceiling(attr: *const u8, prio: *mut i32) -> i32;
+    "pthread_mutex_setprioceiling" fn pthread_mutex_setprioceiling(m: *mut u8, prio: i32, old: *mut i32) -> i32;
+    "pthread_mutex_getprioceiling" fn pthread_mutex_getprioceiling(m: *const u8, prio: *mut i32) -> i32;
 
     "pthread_cond_init" fn pthread_cond_init(c: *mut u8, attr: *const u8) -> i32;
     "pthread_cond_signal" fn pthread_cond_signal(c: *mut u8) -> i32;
@@ -1976,6 +1990,281 @@ fn mx_prio_inherit() -> CaseResult {
         let waited = got - go_at.load(SeqCst);
         value("waited", waited / 1000, "us", Some((0, 200_000)));
         check(waited <= 200 * MS, &format!("the high-priority thread got the mutex {} ms after its owner was told to finish, behind a 500 ms middle-priority spinner", waited / MS))
+    })
+}
+
+/// A mutex with protocol PTHREAD_PRIO_INHERIT, or PTHREAD_PRIO_PROTECT with priority
+/// ceiling `ceiling`.
+fn prio_mutex(protocol: i32, ceiling: Option<i32>) -> Result<P, CaseError> {
+    let a = obj();
+    rc("pthread_mutexattr_init", pthread_mutexattr_init(a.p())?)?;
+    let name = if protocol == PTHREAD_PRIO_INHERIT { "PTHREAD_PRIO_INHERIT" } else { "PTHREAD_PRIO_PROTECT" };
+    rc(&format!("pthread_mutexattr_setprotocol({name})"), pthread_mutexattr_setprotocol(a.p(), protocol)?)?;
+    if let Some(c) = ceiling {
+        rc(&format!("pthread_mutexattr_setprioceiling({c})"), pthread_mutexattr_setprioceiling(a.p(), c)?)?;
+    }
+    let m = obj();
+    rc("pthread_mutex_init", pthread_mutex_init(m.p(), a.p())?)?;
+    Ok(m)
+}
+
+/// The option sysconf names must be offered: a case measuring it fails rather than skips
+/// where it is not.
+fn offered(name: i32, what: &str) -> CaseResult {
+    let v = sysconf(name)?;
+    check(v > 0, &format!("sysconf({what}) returns {v}: the option is not offered"))
+}
+
+/// Start a thread that takes SCHED_FIFO priority `prio`, moves to processor 0 and computes
+/// there for 500 ms, and wait until it has started.
+fn spinner_on_0(prio: i32) -> Result<Th<CaseResult>, CaseError> {
+    let spinning = Arc::new(AtomicU32::new(0));
+    let sp = spinning.clone();
+    let mid = spawn("the middle-priority spinner", move || -> CaseResult {
+        set_sched(SCHED_FIFO, prio)?;
+        pin_to(0).map_err(CaseError::Fail)?;
+        sp.store(1, SeqCst);
+        let t0 = now_ms();
+        while now_ms() - t0 < 500 { core::hint::spin_loop(); }
+        Ok(())
+    })?;
+    check(until(1000, || spinning.load(SeqCst) == 1 || mid.finished()), "the middle-priority thread did not start computing on processor 0 within a second")?;
+    Ok(mid)
+}
+
+fn mx_prio_inherit_chain() -> CaseResult {
+    trial(|| {
+        offered(SC_THREAD_PRIO_INHERIT, "_SC_THREAD_PRIO_INHERIT")?;
+        let first = prio_mutex(PTHREAD_PRIO_INHERIT, None)?;
+        let second = prio_mutex(PTHREAD_PRIO_INHERIT, None)?;
+        let lo = fifo_min()?;
+        // On processor 0: a low-priority thread holds the first mutex; a middle-priority
+        // thread holds the second and blocks on the first; a high-priority thread blocks on
+        // the second; and a thread between the middle and the high priority computes for
+        // 500 ms. The low-priority owner, told to finish, needs 20 ms of computing: it gets
+        // it ahead of the spinner only if the high priority passes to it through the middle
+        // thread.
+        let cpus = processors()?;
+        if cpus < 2 { return Err(CaseError::Skip(format!("{cpus} processor online; the case needs 2"))); }
+        pin_to(1).map_err(CaseError::Fail)?;
+        let owned = Arc::new(AtomicU32::new(0));
+        let middle_waiting = Arc::new(AtomicU32::new(0));
+        let high_waiting = Arc::new(AtomicU32::new(0));
+        let go_at = Arc::new(AtomicI64::new(0));
+        let (o, g) = (owned.clone(), go_at.clone());
+        let low = spawn("the low-priority owner of the first mutex", move || -> CaseResult {
+            set_sched(SCHED_FIFO, lo + 1)?;
+            pin_to(0).map_err(CaseError::Fail)?;
+            lock(first)?;
+            o.store(1, SeqCst);
+            let t0 = now_ms();
+            while g.load(SeqCst) == 0 && now_ms() - t0 < 3000 { nap(); }
+            let told = g.load(SeqCst) != 0;
+            let t = mono();
+            while mono() - t < 20 * MS { core::hint::spin_loop(); }
+            unlock(first)?;
+            check(told, "the owner held the first mutex for 3 s without being told to finish")
+        })?;
+        check(until(1000, || owned.load(SeqCst) == 1), "the low-priority thread did not take the first mutex")?;
+        let w = middle_waiting.clone();
+        let middle = spawn("the middle-priority thread", move || -> CaseResult {
+            set_sched(SCHED_FIFO, lo + 2)?;
+            pin_to(0).map_err(CaseError::Fail)?;
+            lock(second)?;
+            let r = pthread_mutex_trylock(first.p())?;
+            if r == 0 {
+                unlock(first)?;
+                unlock(second)?;
+                return err("the first mutex was free when the middle-priority thread came to take it");
+            }
+            want("pthread_mutex_trylock of the first mutex while the low-priority thread holds it", r, EBUSY)?;
+            w.store(1, SeqCst);
+            lock(first)?;
+            unlock(first)?;
+            unlock(second)
+        })?;
+        check(until(1000, || middle_waiting.load(SeqCst) == 1 || middle.finished()), "the middle-priority thread did not come to the first mutex within a second")?;
+        sleep_ms(20);
+        let w = high_waiting.clone();
+        let high = spawn("the high-priority waiter", move || -> Result<i64, CaseError> {
+            set_sched(SCHED_FIFO, lo + 4)?;
+            pin_to(0).map_err(CaseError::Fail)?;
+            let r = pthread_mutex_trylock(second.p())?;
+            if r == 0 {
+                unlock(second)?;
+                return err("the second mutex was free when the high-priority thread came to take it");
+            }
+            want("pthread_mutex_trylock of the second mutex while the middle-priority thread holds it", r, EBUSY)?;
+            w.store(1, SeqCst);
+            lock(second)?;
+            let got = mono();
+            unlock(second)?;
+            Ok(got)
+        })?;
+        check(until(1000, || high_waiting.load(SeqCst) == 1 || high.finished()), "the high-priority thread did not come to the second mutex within a second")?;
+        sleep_ms(20);
+        let mid = spinner_on_0(lo + 3)?;
+        go_at.store(mono(), SeqCst);
+        let got = high.wait(4000)??;
+        mid.wait(3000)??;
+        middle.wait(3000)??;
+        low.wait(3000)??;
+        let waited = got - go_at.load(SeqCst);
+        value("waited", waited / 1000, "us", Some((0, 200_000)));
+        check(waited <= 200 * MS, &format!("the high-priority thread got the second mutex {} ms after the first mutex's owner was told to finish, behind a 500 ms spinner ranked above the middle thread", waited / MS))
+    })
+}
+
+fn mx_prio_protect() -> CaseResult {
+    trial(|| {
+        offered(SC_THREAD_PRIO_PROTECT, "_SC_THREAD_PRIO_PROTECT")?;
+        let lo = fifo_min()?;
+        let m = prio_mutex(PTHREAD_PRIO_PROTECT, Some(lo + 3))?;
+        // On processor 0: a low-priority thread holds a mutex whose ceiling is above a
+        // middle-priority thread that computes for 500 ms. The owner, told to finish, needs
+        // 20 ms of computing: it gets it ahead of the spinner only by running at the ceiling.
+        let cpus = processors()?;
+        if cpus < 2 { return Err(CaseError::Skip(format!("{cpus} processor online; the case needs 2"))); }
+        pin_to(1).map_err(CaseError::Fail)?;
+        let owned = Arc::new(AtomicU32::new(0));
+        let go_at = Arc::new(AtomicI64::new(0));
+        let (o, g) = (owned.clone(), go_at.clone());
+        let low = spawn("the low-priority owner", move || -> Result<i64, CaseError> {
+            set_sched(SCHED_FIFO, lo + 1)?;
+            pin_to(0).map_err(CaseError::Fail)?;
+            lock(m)?;
+            o.store(1, SeqCst);
+            let t0 = now_ms();
+            while g.load(SeqCst) == 0 && now_ms() - t0 < 3000 { nap(); }
+            let told = g.load(SeqCst) != 0;
+            let t = mono();
+            while mono() - t < 20 * MS { core::hint::spin_loop(); }
+            let done = mono();
+            unlock(m)?;
+            check(told, "the owner held the mutex for 3 s without being told to finish")?;
+            Ok(done)
+        })?;
+        check(until(1000, || owned.load(SeqCst) == 1 || low.finished()), "the low-priority thread did not take the mutex")?;
+        let mid = spinner_on_0(lo + 2)?;
+        go_at.store(mono(), SeqCst);
+        let done = low.wait(4000)??;
+        mid.wait(3000)??;
+        let waited = done - go_at.load(SeqCst);
+        value("finished", waited / 1000, "us", Some((0, 200_000)));
+        check(waited <= 200 * MS, &format!("the owner finished {} ms after it was told to, behind a 500 ms spinner below the mutex's ceiling", waited / MS))
+    })
+}
+
+fn mx_prio_ceiling() -> CaseResult {
+    trial_ms(4000, || {
+        offered(SC_THREAD_PRIO_PROTECT, "_SC_THREAD_PRIO_PROTECT")?;
+        let lo = fifo_min()?;
+        let hi = sched_get_priority_max(SCHED_FIFO)?;
+        let a = obj();
+        rc("pthread_mutexattr_init", pthread_mutexattr_init(a.p())?)?;
+        rc("pthread_mutexattr_setprotocol(PTHREAD_PRIO_PROTECT)", pthread_mutexattr_setprotocol(a.p(), PTHREAD_PRIO_PROTECT)?)?;
+        let mut v = -1;
+        rc("pthread_mutexattr_getprotocol", pthread_mutexattr_getprotocol(a.p(), &mut v)?)?;
+        check(v == PTHREAD_PRIO_PROTECT, &format!("pthread_mutexattr_getprotocol gave {v} after PTHREAD_PRIO_PROTECT was set"))?;
+        rc(&format!("pthread_mutexattr_setprioceiling({})", lo + 5), pthread_mutexattr_setprioceiling(a.p(), lo + 5)?)?;
+        rc("pthread_mutexattr_getprioceiling", pthread_mutexattr_getprioceiling(a.p(), &mut v)?)?;
+        check(v == lo + 5, &format!("pthread_mutexattr_getprioceiling gave {v} after {} was set", lo + 5))?;
+        want(&format!("pthread_mutexattr_setprioceiling({}) above the SCHED_FIFO maximum", hi + 1), pthread_mutexattr_setprioceiling(a.p(), hi + 1)?, EINVAL)?;
+        let m = obj();
+        rc("pthread_mutex_init", pthread_mutex_init(m.p(), a.p())?)?;
+        rc("pthread_mutex_getprioceiling", pthread_mutex_getprioceiling(m.p(), &mut v)?)?;
+        check(v == lo + 5, &format!("pthread_mutex_getprioceiling gave {v} for a mutex made with ceiling {}", lo + 5))?;
+        let mut old = -1;
+        rc(&format!("pthread_mutex_setprioceiling({})", lo + 2), pthread_mutex_setprioceiling(m.p(), lo + 2, &mut old)?)?;
+        check(old == lo + 5, &format!("pthread_mutex_setprioceiling gave the old ceiling as {old}, not {}", lo + 5))?;
+        rc("pthread_mutex_getprioceiling", pthread_mutex_getprioceiling(m.p(), &mut v)?)?;
+        check(v == lo + 2, &format!("pthread_mutex_getprioceiling gave {v} after the ceiling was set to {}", lo + 2))?;
+        let above = spawn("a thread above the ceiling", move || -> Result<i32, CaseError> {
+            set_sched(SCHED_FIFO, lo + 3)?;
+            let r = pthread_mutex_lock(m.p())?;
+            if r == 0 { unlock(m)?; }
+            Ok(r)
+        })?
+        .wait(2000)??;
+        want("pthread_mutex_lock by a SCHED_FIFO thread above the mutex's ceiling", above, EINVAL)?;
+        let at = spawn("a thread at the ceiling", move || -> CaseResult {
+            set_sched(SCHED_FIFO, lo + 2)?;
+            lock(m)?;
+            unlock(m)
+        })?;
+        at.wait(2000)??;
+        lock(m)?;
+        unlock(m)
+    })
+}
+
+/// The calling thread's thread ID, as a futex word holds it.
+fn own_tid() -> u32 { gettid() as u32 }
+
+fn mx_futex_pi() -> CaseResult {
+    trial_ms(6000, || {
+        let word = Arc::new(AtomicU32::new(0));
+        let me = own_tid();
+        step("in FUTEX_LOCK_PI on a free word");
+        let r = futex(&word, FUTEX_LOCK_PI, 0, 0, 0, 0);
+        check(r == 0, &format!("FUTEX_LOCK_PI on a free word returned {}", shown(r)))?;
+        check(word.load(SeqCst) == me, &format!("after FUTEX_LOCK_PI the word holds {:#x}, not the caller's thread ID {me:#x}", word.load(SeqCst)))?;
+        let r = futex(&word, FUTEX_LOCK_PI, 0, 0, 0, 0);
+        check(r == -(EDEADLK as i64), &format!("FUTEX_LOCK_PI by the word's owner returned {}, expected EDEADLK", shown(r)))?;
+        let w = word.clone();
+        spawn("the second thread", move || -> CaseResult {
+            let r = futex(&w, FUTEX_TRYLOCK_PI, 0, 0, 0, 0);
+            check(r == -(EAGAIN as i64), &format!("FUTEX_TRYLOCK_PI on a word another thread owns returned {}, expected EAGAIN", shown(r)))?;
+            let when = deadline(CLOCK_REALTIME, 100);
+            step("in FUTEX_LOCK_PI with a CLOCK_REALTIME deadline 100 ms ahead, the word owned elsewhere");
+            let r = futex(&w, FUTEX_LOCK_PI, 0, when.as_ptr() as u64, 0, 0);
+            let end = rt();
+            check(r == -(ETIMEDOUT as i64), &format!("FUTEX_LOCK_PI with a deadline on a word another thread owns returned {}, expected ETIMEDOUT", shown(r)))?;
+            on_time("FUTEX_LOCK_PI", end, ts_ns(&when))?;
+            let r = futex(&w, FUTEX_UNLOCK_PI, 0, 0, 0, 0);
+            check(r == -(EPERM as i64), &format!("FUTEX_UNLOCK_PI on a word another thread owns returned {}, expected EPERM", shown(r)))
+        })?
+        .wait(3000)??;
+        let (w, waiter_tid) = (word.clone(), Arc::new(AtomicU32::new(0)));
+        let t = waiter_tid.clone();
+        let waiter = spawn("the waiting thread", move || -> Result<u32, CaseError> {
+            t.store(own_tid(), SeqCst);
+            let r = futex(&w, FUTEX_LOCK_PI, 0, 0, 0, 0);
+            check(r == 0, &format!("FUTEX_LOCK_PI of a word its owner then unlocked returned {}", shown(r)))?;
+            let held = w.load(SeqCst);
+            let r = futex(&w, FUTEX_UNLOCK_PI, 0, 0, 0, 0);
+            check(r == 0, &format!("FUTEX_UNLOCK_PI by the word's new owner returned {}", shown(r)))?;
+            Ok(held)
+        })?;
+        check(
+            until(1000, || word.load(SeqCst) & FUTEX_WAITERS != 0 || waiter.finished()),
+            "a thread blocked in FUTEX_LOCK_PI did not set FUTEX_WAITERS in the word within a second",
+        )?;
+        step("in FUTEX_UNLOCK_PI with a thread blocked on the word");
+        let r = futex(&word, FUTEX_UNLOCK_PI, 0, 0, 0, 0);
+        check(r == 0, &format!("FUTEX_UNLOCK_PI by the owner with a thread blocked returned {}", shown(r)))?;
+        let held = waiter.wait(2000)??;
+        let tid = waiter_tid.load(SeqCst);
+        check(held == tid, &format!("the waiter was handed the word holding {held:#x}, not its thread ID {tid:#x}"))?;
+        check(word.load(SeqCst) == 0, &format!("after its last owner unlocked it the word holds {:#x}, not 0", word.load(SeqCst)))?;
+        // An owner that ends holding the word, without unlocking it.
+        let w = word.clone();
+        let _gone = spawn("the thread that ends holding the word", move || -> CaseResult {
+            let r = futex(&w, FUTEX_LOCK_PI, 0, 0, 0, 0);
+            check(r == 0, &format!("FUTEX_LOCK_PI on a free word returned {}", shown(r)))?;
+            sc(nr::EXIT, &[0]);
+            err("SYS_exit returned")
+        })?;
+        check(until(1000, || word.load(SeqCst) != 0), "the thread that was to end holding the word did not take it within a second")?;
+        let when = deadline(CLOCK_REALTIME, 2000);
+        step("in FUTEX_LOCK_PI on a word whose owner ends holding it");
+        let r = futex(&word, FUTEX_LOCK_PI, 0, when.as_ptr() as u64, 0, 0);
+        check(r == 0, &format!("FUTEX_LOCK_PI on a word whose owner ended holding it returned {}", shown(r)))?;
+        let held = word.load(SeqCst);
+        check(
+            held & FUTEX_TID_MASK == me && held & FUTEX_OWNER_DIED != 0,
+            &format!("FUTEX_LOCK_PI took a dead owner's word holding {held:#x}, not the caller's thread ID {me:#x} with FUTEX_OWNER_DIED"),
+        )
     })
 }
 
@@ -4065,6 +4354,10 @@ static SUITE: Suite = suite("threads", "Threads", &[
         case("robust-notrecoverable", "A robust mutex unlocked without pthread_mutex_consistent returns ENOTRECOVERABLE", mx_robust_notrecoverable),
         case("robust-attr", "pthread_mutexattr_getrobust starts at PTHREAD_MUTEX_STALLED and reads back PTHREAD_MUTEX_ROBUST", mx_robust_attr),
         case("prio-inherit", "A PTHREAD_PRIO_INHERIT mutex's low-priority owner runs ahead of a middle-priority thread, where offered", mx_prio_inherit),
+        case("prio-inherit-chain", "A high-priority thread's priority passes along a chain of PTHREAD_PRIO_INHERIT mutexes to a low-priority owner two locks away", mx_prio_inherit_chain),
+        case("prio-protect", "A PTHREAD_PRIO_PROTECT mutex's low-priority owner runs at the ceiling, ahead of a middle-priority thread", mx_prio_protect),
+        case("prio-ceiling", "Mutex priority ceilings read back and change, and a thread above a mutex's ceiling cannot lock it", mx_prio_ceiling),
+        case("futex-pi", "Linux ABI: FUTEX_LOCK_PI, FUTEX_TRYLOCK_PI and FUTEX_UNLOCK_PI keep the owner's thread ID, hand over to a waiter and report a dead owner", mx_futex_pi),
         case("futex-eagain", "Linux ABI: FUTEX_WAIT on a word that does not hold the value returns EAGAIN", mx_futex_eagain),
         case("futex-wake-count", "Linux ABI: FUTEX_WAKE wakes exactly as many waiters as asked", mx_futex_wake_count),
         case("futex-timeout", "Linux ABI: FUTEX_WAIT with a 100 ms timeout returns ETIMEDOUT on time", mx_futex_timeout),
