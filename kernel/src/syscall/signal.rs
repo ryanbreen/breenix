@@ -1773,7 +1773,7 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
             let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) else {
                 break SyscallResult::Err(3);
             };
-            p.signals.collect_timer_signals();
+            p.signals.collect_timer_signals(&p.itimers);
             let pending = p.signals.pending & set;
             if pending == 0 {
                 None

@@ -179,13 +179,16 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
         None if syscall_num == crate::syscall::TGKILL_SYSCALL_NUMBER => result_to_u64(
             crate::syscall::signal::sys_tgkill(arg1 as i32 as i64, arg2 as i32 as i64, arg3 as i32),
         ),
-        None => {
-            crate::serial_println!(
-                "[syscall] Unknown ARM64 syscall {} - returning ENOSYS",
-                syscall_num
-            );
-            (-38_i64) as u64 // -ENOSYS
-        }
+        None => match crate::syscall::dispatch_numbered(syscall_num, [arg1, arg2, arg3, arg4]) {
+            Some(result) => result_to_u64(result),
+            None => {
+                crate::serial_println!(
+                    "[syscall] Unknown ARM64 syscall {} - returning ENOSYS",
+                    syscall_num
+                );
+                (-38_i64) as u64 // -ENOSYS
+            }
+        },
     };
 
     drop(custody);

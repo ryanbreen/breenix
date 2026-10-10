@@ -55,6 +55,7 @@ pub mod rusage;
 pub mod session;
 pub mod signal;
 pub mod socket;
+pub mod timers;
 pub mod wait;
 
 /// System call numbers - semantic names only.
@@ -640,7 +641,7 @@ pub fn check_signals_for_wait() -> Option<i32> {
     loop {
         let mut guard = crate::process::manager();
         let (_, p) = guard.as_mut()?.find_process_by_thread_mut(tid)?;
-        p.signals.collect_timer_signals();
+        p.signals.collect_timer_signals(&p.itimers);
         if crate::signal::delivery::stop_pending_or_in_force(p) {
             drop(guard);
             crate::signal::delivery::hold_stopped_thread_on_syscall_return();
@@ -750,3 +751,39 @@ pub const TKILL_SYSCALL_NUMBER: u64 = 130;
 pub const TGKILL_SYSCALL_NUMBER: u64 = 234;
 #[cfg(target_arch = "aarch64")]
 pub const TGKILL_SYSCALL_NUMBER: u64 = 131;
+
+/// Native Linux numbers of the POSIX timer calls, dispatched like msync
+/// without enum variants.
+#[cfg(target_arch = "x86_64")]
+pub const TIMER_CREATE_SYSCALL_NUMBER: u64 = 222;
+#[cfg(target_arch = "aarch64")]
+pub const TIMER_CREATE_SYSCALL_NUMBER: u64 = 107;
+#[cfg(target_arch = "x86_64")]
+pub const TIMER_SETTIME_SYSCALL_NUMBER: u64 = 223;
+#[cfg(target_arch = "aarch64")]
+pub const TIMER_SETTIME_SYSCALL_NUMBER: u64 = 110;
+#[cfg(target_arch = "x86_64")]
+pub const TIMER_GETTIME_SYSCALL_NUMBER: u64 = 224;
+#[cfg(target_arch = "aarch64")]
+pub const TIMER_GETTIME_SYSCALL_NUMBER: u64 = 108;
+#[cfg(target_arch = "x86_64")]
+pub const TIMER_GETOVERRUN_SYSCALL_NUMBER: u64 = 225;
+#[cfg(target_arch = "aarch64")]
+pub const TIMER_GETOVERRUN_SYSCALL_NUMBER: u64 = 109;
+#[cfg(target_arch = "x86_64")]
+pub const TIMER_DELETE_SYSCALL_NUMBER: u64 = 226;
+#[cfg(target_arch = "aarch64")]
+pub const TIMER_DELETE_SYSCALL_NUMBER: u64 = 111;
+
+/// The calls dispatched by number above that are not dispatched by enum, on
+/// both architectures: None for any other number.
+pub fn dispatch_numbered(number: u64, a: [u64; 4]) -> Option<SyscallResult> {
+    Some(match number {
+        TIMER_CREATE_SYSCALL_NUMBER => timers::sys_timer_create(a[0] as i32, a[1], a[2]),
+        TIMER_SETTIME_SYSCALL_NUMBER => timers::sys_timer_settime(a[0] as i32, a[1], a[2], a[3]),
+        TIMER_GETTIME_SYSCALL_NUMBER => timers::sys_timer_gettime(a[0] as i32, a[1]),
+        TIMER_GETOVERRUN_SYSCALL_NUMBER => timers::sys_timer_getoverrun(a[0] as i32),
+        TIMER_DELETE_SYSCALL_NUMBER => timers::sys_timer_delete(a[0] as i32),
+        _ => return None,
+    })
+}

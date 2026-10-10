@@ -4958,7 +4958,7 @@ impl Scheduler {
         // A timer counting CPU time reads the account its threads are charged
         // to, so the threads running on the other CPUs are charged too.
         let counts_cpu = self.signal_timer_groups.iter().any(|(timers, _)| {
-            timers.upgrade().is_some_and(|t| t.virtual_timer.is_active() || t.prof.is_active())
+            timers.upgrade().is_some_and(|t| t.virtual_timer.is_active() || t.prof.is_active() || t.posix.counts_cpu())
         });
         if counts_cpu {
             for cpu in 0..MAX_CPUS {
@@ -4972,6 +4972,9 @@ impl Scheduler {
         for index in 0..self.signal_timer_groups.len() {
             let (Some(group), Some(cpu)) = (self.signal_timer_groups[index].0.upgrade(), self.signal_timer_groups[index].1.upgrade()) else { continue; };
             let (user_ns, system_ns) = cpu.split_ns();
+            if self.expire_posix_timers(&group, user_ns.saturating_add(system_ns)) {
+                self.wake_posix_timer_recipients(&group);
+            }
             let user = user_ns / 1000;
             let system = system_ns / 1000;
             let pending = [
@@ -4998,6 +5001,51 @@ impl Scheduler {
                     }
                 }
             }
+        }
+    }
+
+    /// Expire `group`'s POSIX timers, given its process's CPU time. Each
+    /// newly generated signal goes to the thread SIGEV_THREAD_ID names, or to
+    /// a thread of the process that has it unblocked or waits for it, else to
+    /// any. Returns true when a signal became due.
+    fn expire_posix_timers(&self, group: &alloc::sync::Arc<crate::signal::IntervalTimers>, process_cpu: u64) -> bool {
+        if !group.posix.is_active() {
+            return false;
+        }
+        let now = crate::signal::timers::Now::read(process_cpu);
+        let member = |t: &&Box<Thread>| t.state != ThreadState::Terminated
+            && t.signal_timers.as_ref().is_some_and(|timers| alloc::sync::Arc::ptr_eq(timers, group));
+        group.posix.expire(&now, |thread, sig| {
+            let bit = crate::signal::constants::sig_mask(sig);
+            let accepts = |t: &&Box<Thread>| {
+                (!t.signals.blocked.load(Ordering::Relaxed) | t.signals.wait_set.load(Ordering::Acquire)) & bit != 0
+            };
+            let chosen = match thread {
+                Some(tid) => self.threads.iter().filter(member).find(|t| t.id == tid),
+                None => self.threads.iter().filter(member).find(accepts).or_else(|| self.threads.iter().find(member)),
+            };
+            chosen.map(|t| &*t.signals)
+        })
+    }
+
+    /// Wake the threads of `group`'s process that a POSIX timer signal just
+    /// became due for and that have it unblocked or wait for it.
+    fn wake_posix_timer_recipients(&mut self, group: &alloc::sync::Arc<crate::signal::IntervalTimers>) {
+        let mut index = 0;
+        while index < self.threads.len() {
+            let thread = &self.threads[index];
+            index += 1;
+            let due = thread.signals.posix_pending.load(Ordering::Acquire);
+            let accepted = (!thread.signals.blocked.load(Ordering::Relaxed) | thread.signals.wait_set.load(Ordering::Acquire)) & due;
+            if accepted == 0
+                || thread.state == ThreadState::Terminated
+                || !thread.signal_timers.as_ref().is_some_and(|timers| alloc::sync::Arc::ptr_eq(timers, group))
+            {
+                continue;
+            }
+            let id = thread.id;
+            self.unblock_for_signal(id);
+            self.unblock_for_child_exit(id);
         }
     }
 

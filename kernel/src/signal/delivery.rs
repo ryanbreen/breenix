@@ -1681,7 +1681,7 @@ fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification>
 /// was blocked. Expiry and recipient selection belong to the scheduler.
 #[inline]
 pub fn collect_itimer_signals(process: &mut Process) {
-    process.signals.collect_timer_signals();
+    process.signals.collect_timer_signals(&process.itimers);
 }
 
 /// Consume resource-limit signals at a user-return boundary.
