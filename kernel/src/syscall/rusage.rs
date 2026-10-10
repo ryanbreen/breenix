@@ -3,11 +3,11 @@
 //!
 //! The total is the CPU time the scheduler charges in ticks while a thread
 //! runs, the same account /proc and the CPU-time clocks read, so they agree.
-//! It is split between user and system time in the proportion the nanosecond
-//! counters kept at kernel entry and exit give (`Thread::switch_timer_mode`):
-//! a system call's time, from its entry to the end of its return path, and an
-//! interrupt or fault taken from user mode, is system time; the rest is user
-//! time. A child's time counts towards its parent's children's time when the
+//! User time within it is what the nanosecond counters kept at kernel entry
+//! and exit measured (`Thread::switch_timer_mode`), the time ITIMER_VIRTUAL
+//! counts, and system time is the rest: a system call's time, from its entry
+//! to the end of its return path, and an interrupt or fault taken from user
+//! mode. A child's time counts towards its parent's children's time when the
 //! parent reaps it (`ProcessManager::reap_row`), not before.
 
 use super::errno::{EINVAL, ESRCH};
@@ -25,18 +25,19 @@ const CLK_TCK: u64 = 100;
 /// User and system nanoseconds.
 type Split = (u64, u64);
 
-/// `ticks` of CPU time, in nanoseconds, split between user and system time
-/// in the proportion of the user and system nanoseconds counted; all user
-/// time when the counters have recorded none. System time is a whole number
-/// of microseconds, so the two timevals add up to the total exactly.
+/// `ticks` of CPU time, in nanoseconds, split into user time as the
+/// nanosecond counters measured it, to whole microseconds and never more than
+/// the total, and system time as the rest of the total: all user time when
+/// the counters have recorded none. User time is what ITIMER_VIRTUAL counts,
+/// so the two agree to the microsecond, and the two timevals add up to the
+/// total exactly.
 fn split(ticks: u64, (user, system): Split) -> Split {
     let total = ticks.saturating_mul(MS_PER_TICK).saturating_mul(1_000_000);
-    let counted = user.saturating_add(system);
-    if counted == 0 {
+    if user.saturating_add(system) == 0 {
         return (total, 0);
     }
-    let system = (u128::from(total) * u128::from(system) / u128::from(counted)) as u64 / 1000 * 1000;
-    (total - system, system)
+    let user = user.min(total) / 1000 * 1000;
+    (user, total - user)
 }
 
 /// The CPU time of the calling thread, of its process and of the process's
