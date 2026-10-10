@@ -4402,7 +4402,9 @@ impl Scheduler {
                         self.per_cpu_queues[target].push_back(thread_id);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
 
-                        // Send IPI to wake an idle CPU
+                        #[cfg(target_arch = "x86_64")]
+                        self.send_resched_ipi_to_cpu(target);
+                        #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
                         self.hold_pinned_wake_for_home(thread_id);
@@ -4493,7 +4495,9 @@ impl Scheduler {
                         // No serial output: a child's stop wakes its parent
                         // through here from an interrupt return path.
 
-                        // Send IPI to wake an idle CPU
+                        #[cfg(target_arch = "x86_64")]
+                        self.send_resched_ipi_to_cpu(target);
+                        #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
                         self.hold_pinned_wake_for_home(thread_id);
@@ -5166,8 +5170,12 @@ impl Scheduler {
                         } else {
                             self.per_cpu_queues[target].push_back(tid);
                         }
-                        // Placement prefers an idle CPU, which may not be this
-                        // one: wake it, or the thread waits for its next tick.
+                        // A deadline wake must reach a busy x86 destination
+                        // too; its remaining quantum can exceed the deadline's
+                        // latency budget.
+                        #[cfg(target_arch = "x86_64")]
+                        self.send_resched_ipi_to_cpu(target);
+                        #[cfg(target_arch = "aarch64")]
                         if self.cpu_is_idle(target) {
                             self.send_resched_ipi_to_cpu(target);
                         }
