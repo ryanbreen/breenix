@@ -1,18 +1,13 @@
 //! getrusage and times: the CPU time of the caller and of the children it has
 //! waited for.
 //!
-//! The total is the CPU time the scheduler charges in ticks while a thread
-//! runs, the same account /proc and the CPU-time clocks read, so they agree.
-//! User time within it is what the nanosecond counters kept at kernel entry
-//! and exit measured (`Thread::switch_timer_mode`), the time ITIMER_VIRTUAL
-//! counts, and system time is the rest: a system call's time, from its entry
-//! to the end of its return path, and an interrupt or fault taken from user
-//! mode. A child's time counts towards its parent's children's time when the
-//! parent reaps it (`ProcessManager::reap_row`), not before.
+//! User and system time come from the same nanosecond counters as the
+//! CPU-time clocks and interval timers. getrusage reports microseconds;
+//! times converts their sum to USER_HZ ticks at its output boundary. A
+//! child's time counts when its parent reaps it, not before.
 
 use super::errno::{EINVAL, ESRCH};
 use super::SyscallResult;
-use crate::time::timer::MS_PER_TICK;
 
 const RUSAGE_SELF: i64 = 0;
 const RUSAGE_CHILDREN: i64 = -1;
@@ -25,27 +20,10 @@ const CLK_TCK: u64 = 100;
 /// User and system nanoseconds.
 type Split = (u64, u64);
 
-/// `ticks` of CPU time, in nanoseconds, split into user time as the
-/// nanosecond counters measured it, to whole microseconds and never more than
-/// the total, and system time as the rest of the total: all user time when
-/// the counters have recorded none. User time is what ITIMER_VIRTUAL counts,
-/// so the two agree to the microsecond, and the two timevals add up to the
-/// total exactly.
-fn split(ticks: u64, (user, system): Split) -> Split {
-    let total = ticks.saturating_mul(MS_PER_TICK).saturating_mul(1_000_000);
-    if user.saturating_add(system) == 0 {
-        return (total, 0);
-    }
-    let user = user.min(total) / 1000 * 1000;
-    (user, total - user)
-}
-
 /// The CPU time of the calling thread, of its process and of the process's
 /// waited-for children, with every running thread of the process charged up
 /// to now first.
 fn cpu_split() -> Result<(Split, Split, Split), u64> {
-    let thread_ticks = crate::task::scheduler::charge_current_cpu();
-    let process_ticks = crate::task::scheduler::process_cpu_ticks().ok_or(ESRCH as u64)?;
     let account = crate::arch_without_interrupts(|| -> Result<_, u64> {
         let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)?;
         let guard = crate::process::manager();
@@ -58,9 +36,9 @@ fn cpu_split() -> Result<(Split, Split, Split), u64> {
     crate::task::scheduler::charge_account_cpu(&account);
     let thread = crate::task::thread::current_thread_cpu_split_ns().ok_or(ESRCH as u64)?;
     Ok((
-        split(thread_ticks, thread),
-        split(process_ticks, account.split_ns()),
-        split(account.children_ticks(), account.children_split_ns()),
+        thread,
+        account.split_ns(),
+        account.children_split_ns(),
     ))
 }
 
