@@ -344,11 +344,22 @@ for i in $(seq 1 "$COUNT"); do
     fi
     cat "$OUTDIR/stdout.log"
   elif [ -n "$SUITE" ]; then
-    BREENIX_NET_MODE=none python3 "$REPO_DIR/scripts/x86-suite-boot.py" "$REPO_DIR" "$OUTDIR" "$SUITE" "$TIMEOUT_SECS" \
+    # FORCING (temporary, never merged): five busy loops share host CPUs 0-3
+    # with the guest, ten nice levels below the gate's normal priority, and
+    # the gate's own boot command is offset by the same ten levels.
+    FORCE_HOGS=()
+    for _hog in 1 2 3 4 5; do
+      nice -n 10 taskset -c 0-3 sh -c 'while :; do :; done' &
+      FORCE_HOGS+=($!)
+    done
+    echo "[forcing] hogs=${FORCE_HOGS[*]} at nice 10 on CPUs 0-3; guest command offset by nice 10 on CPUs 0-3"
+    BREENIX_NET_MODE=none nice -n 10 taskset -c 0-3 python3 "$REPO_DIR/scripts/x86-suite-boot.py" "$REPO_DIR" "$OUTDIR" "$SUITE" "$TIMEOUT_SECS" \
       "$REPO_DIR/target/release/qemu-uefi" \
       -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" \
       > "$OUTDIR/stdout.log" 2>&1
     suite_boot_status=$?
+    kill "${FORCE_HOGS[@]}" 2>/dev/null || true
+    wait "${FORCE_HOGS[@]}" 2>/dev/null || true
     cat "$OUTDIR/stdout.log"
   else
     BREENIX_NET_MODE=none timeout --foreground "$TIMEOUT_SECS" "$REPO_DIR/target/release/qemu-uefi" \
