@@ -607,6 +607,20 @@ pub enum SyscallResult {
     Err(u64),
 }
 
+/// A quiet wait has no signal, stop or CPU-limit work to serialize with
+/// PROCESS_MANAGER. Publishers set the return-to-user admission hint. Some
+/// waits reopen preemption, so protect the current-thread read briefly.
+fn signal_wait_thread() -> Option<u64> {
+    crate::arch_without_interrupts(|| {
+        #[cfg(target_arch = "x86_64")]
+        let thread = crate::per_cpu::current_thread();
+        #[cfg(target_arch = "aarch64")]
+        let thread = crate::per_cpu_aarch64::current_thread();
+        let thread = thread?;
+        thread.needs_user_return_check().then_some(thread.id)
+    })
+}
+
 /// Check if current thread has pending signals that should interrupt a syscall.
 /// Returns Some(EINTR) if syscall should be interrupted, None otherwise.
 ///
@@ -616,10 +630,7 @@ pub enum SyscallResult {
 /// 2. Return -EINTR to userspace
 /// 3. The signal will be delivered when the syscall returns
 pub fn check_signals_for_eintr() -> Option<i32> {
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => return None,
-    };
+    let thread_id = signal_wait_thread()?;
 
     let manager_guard = crate::process::manager();
     let mut interrupted = false;
@@ -641,7 +652,7 @@ pub fn check_signals_for_eintr() -> Option<i32> {
 /// caught or fatal signals end the wait; SIGCONT resumes its existing deadline
 /// and temporary mask. Called with syscall preemption disabled and no PM guard.
 pub fn check_signals_for_wait() -> Option<i32> {
-    let tid = crate::task::scheduler::current_thread_id()?;
+    let tid = signal_wait_thread()?;
     loop {
         let mut guard = crate::process::manager();
         let (_, p) = guard.as_mut()?.find_process_by_thread_mut(tid)?;
@@ -667,7 +678,7 @@ pub fn check_signals_for_wait() -> Option<i32> {
 /// Some(ERESTARTSYS) otherwise, which the syscall return path turns into a
 /// re-execution of the syscall once any handler has run.
 pub fn check_signals_for_restartable_wait() -> Option<i32> {
-    let thread_id = crate::task::scheduler::current_thread_id()?;
+    let thread_id = signal_wait_thread()?;
 
     let manager_guard = crate::process::manager();
     let restarts = manager_guard.as_ref().and_then(|manager| {
