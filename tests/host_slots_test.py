@@ -37,7 +37,7 @@ class HostSlotsTest(unittest.TestCase):
                 process.communicate()
         self.temporary.cleanup()
 
-    def launch(self, script, bypass=False, miss_first_snapshot=False):
+    def launch(self, script, bypass=False, miss_first_snapshot=False, environment=None):
         # Only tests inject a directory and disable observational VM discovery.
         # Production's fixed directory has no environment override.
         program = f'''import importlib.util, sys
@@ -45,6 +45,8 @@ spec = importlib.util.spec_from_file_location('host_slots', {str(HELPER)!r})
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.SLOT_DIR = m.Path({str(self.root / 'locks')!r})
 m.mac_vms = lambda: []
+original_command_output = m.command_output
+m.command_output = lambda argv: '' if argv[0] == 'pgrep' else original_command_output(argv)
 m.WAIT_MESSAGE_SECONDS = 0.2
 if {miss_first_snapshot!r}:
     original_snapshot = m.Slots.snapshot
@@ -56,7 +58,8 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         process = subprocess.Popen([sys.executable, '-u', '-c', program, script],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT,
-                                   env=dict(os.environ, BREENIX_BOOT_NO_QUEUE='1' if bypass else '0'))
+                                   env=dict(os.environ, BREENIX_BOOT_NO_QUEUE='1' if bypass else '0',
+                                            **(environment or {})))
         self.processes.append(process)
         return process
 
@@ -94,6 +97,46 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         first.stdin.write(b'release\n'); first.stdin.flush()
         self.assertEqual(first.wait(timeout=10), 0)
         self.line_matching(third, 'READY')
+
+    @unittest.skipUnless(sys.platform == 'linux' and os.uname().machine == 'x86_64',
+                         'Linux x86 CPU affinity')
+    def test_guest_threads_use_boot_cpus_and_gate_work_keeps_work_cpus(self):
+        allowed = sorted(os.sched_getaffinity(0))
+        binary = self.root / 'qemu-system-x86_64'
+        binary.write_text(f'''#!{sys.executable}
+import json, os, threading
+def vcpu():
+    print('VCPU=' + json.dumps(sorted(os.sched_getaffinity(0))), flush=True)
+threads = [threading.Thread(target=vcpu) for i in range(4)]
+for thread in threads: thread.start()
+for thread in threads: thread.join()
+''')
+        binary.chmod(0o755)
+        work = f"{sys.executable} -c 'import json,os;print(\"WORK=\"+json.dumps(sorted(os.sched_getaffinity(0))))'"
+        command = '; '.join([work, self.request('acquire', 'x86-build'), work,
+                             self.request('release', 'x86-build'),
+                             self.request('acquire', 'x86-boot'), 'qemu-system-x86_64', work,
+                             self.request('release', 'x86-boot'), work])
+        process = self.launch(command, environment={'PATH': str(self.root) + os.pathsep + os.environ['PATH']})
+        output, _ = process.communicate(timeout=30)
+        self.assertEqual(process.returncode, 0, output.decode())
+        lines = output.decode().splitlines()
+        self.assertEqual([json.loads(row[5:]) for row in lines if row.startswith('WORK=')], [allowed[4:]] * 4)
+        self.assertEqual([json.loads(row[5:]) for row in lines if row.startswith('VCPU=')], [allowed[:4]] * 4)
+        self.assertIn('[host-cpus] QEMU and inherited vCPU threads=', output.decode())
+
+    @unittest.skipUnless(sys.platform == 'linux' and os.uname().machine == 'x86_64',
+                         'Linux x86 CPU affinity')
+    def test_guest_cannot_start_without_boot_lease(self):
+        binary = self.root / 'qemu-system-x86_64'
+        binary.write_text('#!/bin/sh\necho UNLEASED_GUEST\n')
+        binary.chmod(0o755)
+        process = self.launch('qemu-system-x86_64',
+                              environment={'PATH': str(self.root) + os.pathsep + os.environ['PATH']})
+        output, _ = process.communicate(timeout=30)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertNotIn('UNLEASED_GUEST', output.decode())
+        self.assertIn('QEMU requires the x86-boot lease', output.decode())
 
     def test_fresh_cargo_home_preserves_config_without_copying_live_cache(self):
         source = self.root / 'cargo'

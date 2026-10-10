@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+import shlex
 import shutil
 import signal
 import socket
@@ -19,6 +20,46 @@ SLOT_DIR = Path('/tmp/breenix-host-slots')
 RESOURCES = {'x86-build': 2, 'x86-boot': 1, 'mac-boot': 1}
 WAIT_MESSAGE_SECONDS = 60
 VMRUN = '/Applications/VMware Fusion.app/Contents/Public/vmrun'
+
+
+def x86_cpu_partition():
+    """Reserve four of the launcher's allowed Linux CPUs, without changing its cgroup."""
+    if sys.platform != 'linux' or os.uname().machine != 'x86_64':
+        return None
+    allowed = sorted(os.sched_getaffinity(0))
+    if len(allowed) < 5:
+        raise RuntimeError('x86 gate needs four boot CPUs and at least one work CPU')
+    return {'x86-boot': allowed[:4], 'x86-build': allowed[4:]}
+
+
+def pin_x86_work(partition, directory, env):
+    if partition is None:
+        return
+    # Do this before any checkout, Cargo, userspace or disk work is spawned.
+    # Descendants inherit the work mask; only the QEMU exec below widens it.
+    os.sched_setaffinity(0, partition['x86-build'])
+    binary = shutil.which('qemu-system-x86_64', path=env.get('PATH'))
+    if binary:
+        wrapper = Path(directory) / 'qemu-system-x86_64'
+        command = [sys.executable, str(Path(__file__).resolve()), 'qemu', binary]
+        wrapper.write_text('#!/bin/sh\nexec ' + shlex.join(command) + ' "$@"\n')
+        wrapper.chmod(0o755)
+        env['PATH'] = str(directory) + os.pathsep + env.get('PATH', os.defpath)
+    print('[host-cpus] work=' + ','.join(map(str, sorted(os.sched_getaffinity(0))))
+          + ' boot=' + ','.join(map(str, partition['x86-boot'])), file=sys.stderr, flush=True)
+
+
+def exec_x86_qemu(argv):
+    # All PATH-based launches (including qemu-uefi in full/suite mode and
+    # legacy shell launchers) reach here before QEMU creates its vCPU threads.
+    cpus = send_request({'operation': 'boot-cpus'})['cpus']
+    os.sched_setaffinity(0, cpus)
+    applied = sorted(os.sched_getaffinity(0))
+    if applied != cpus:
+        raise RuntimeError(f'QEMU CPU affinity mismatch: requested={cpus} applied={applied}')
+    print('[host-cpus] QEMU and inherited vCPU threads=' + ','.join(map(str, applied)),
+          file=sys.stderr, flush=True)
+    os.execv(argv[0], argv)
 
 
 def command_output(argv):
@@ -240,6 +281,7 @@ def supervise(argv):
 
 def supervise_worker(argv, parent):
     slots = Slots()
+    partition = x86_cpu_partition()
     worktree = os.environ.get('BREENIX_SLOT_WORKTREE', str(Path(__file__).resolve().parents[1]))
     identity = {'worktree': worktree, 'commit': os.environ.get('BREENIX_SLOT_COMMIT') or command_output(['git', '-C', worktree, 'rev-parse', 'HEAD']) or 'unknown'}
     stop_commands = []
@@ -297,6 +339,7 @@ def supervise_worker(argv, parent):
             server.listen()
             selector.register(server, selectors.EVENT_READ)
             env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record)
+            pin_x86_work(partition, temporary, env)
             child = subprocess.Popen(argv, env=env, start_new_session=True)
             try:
                 forwarded_signal = None
@@ -335,7 +378,14 @@ def supervise_worker(argv, parent):
                                        'load_at_enqueue': os.getloadavg(), 'observed': [],
                                        'bypass': resource == 'mac-boot' and os.environ.get('BREENIX_BOOT_NO_QUEUE') == '1'}
                         else:
-                            if operation == 'release':
+                            if operation == 'boot-cpus':
+                                if partition is None or 'x86-boot' not in slots.held:
+                                    client.sendall(b'{"error":"QEMU requires the x86-boot lease and reserved CPUs"}\n')
+                                else:
+                                    client.sendall(json.dumps({'cpus': partition['x86-boot']}).encode() + b'\n')
+                                client.close()
+                                continue
+                            elif operation == 'release':
                                 if request['resource'].endswith('boot'):
                                     stop_qemu()
                                 slots.release(request['resource'])
@@ -391,6 +441,8 @@ def supervise_worker(argv, parent):
                               'bypass': bypass, 'load_at_enqueue': pending['load_at_enqueue'],
                               'load_at_acquire': os.getloadavg(), 'observed_running': pending['observed'],
                               'running_at_acquire': observed, **identity}
+                    if partition is not None and resource in partition:
+                        result['cpus'] = partition[resource]
                     with open(record, 'a') as output:
                         output.write(json.dumps(result, sort_keys=True) + '\n')
                     print(f'[host-slot] {"BYPASS" if bypass else "acquired"} {resource}; waited={waited:.1f}s load={os.getloadavg()}', file=sys.stderr, flush=True)
@@ -427,10 +479,13 @@ def supervise_worker(argv, parent):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'vm', 'serial', 'header', 'cargo-home', 'quiesce'))
+    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'vm', 'serial', 'header', 'cargo-home', 'quiesce', 'qemu'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     values = args.arguments
+    if args.operation == 'qemu':
+        exec_x86_qemu(values)
+        return 0
     if args.operation == 'cargo-home':
         print(send_request({'operation': 'cargo-home', 'source': values[0], 'directory': values[1]})['path'])
         return 0
