@@ -118,6 +118,9 @@ unsafe fn inb(port: u16) -> u8 {
     value
 }
 
+/// PIT input clock, in Hz.
+const PIT_HZ: u64 = 1_193_182;
+
 /// Calibrate TSC frequency using the PIT as a reference.
 ///
 /// This function uses the PIT's known frequency to measure how many
@@ -126,45 +129,42 @@ unsafe fn inb(port: u16) -> u8 {
 ///
 /// Must be called after PIT is initialized but before interrupts are enabled.
 pub fn calibrate() {
-    // We'll measure TSC cycles over ~50ms using PIT channel 2
-    // PIT countdown value for ~50ms: 1193182 * 0.05 = 59659
-    const CALIBRATION_TICKS: u16 = 59659;
-    const CALIBRATION_MS: u64 = 50;
-    // Each window brackets its two PIT events between TSC reads. A virtual
-    // CPU descheduled across an event widens that event's bracket, so the
-    // window whose brackets are narrowest is the measurement.
-    const CALIBRATION_WINDOWS: usize = 3;
-    const CALIBRATION_ATTEMPTS: usize = 12;
+    // PIT channel 2 runs as a square wave of ~50 ms periods, and the TSC times
+    // its rising edges. An edge is seen between the last poll that read OUT low
+    // and the first that read it high; a port access is a VM exit of tens of
+    // microseconds on the x86 gate, so one edge is known to within one poll.
+    // Timing whole periods between two edges found the same way cancels the
+    // exit's own latency, and spreading the edges five or six periods apart
+    // divides the remaining error by the span: a single 50 ms countdown timed
+    // from its starting write left the kernel up to 1100 ppm off the host.
+    const PERIOD_TICKS: u16 = 59660;
+    const MIN_PERIODS: usize = 5;
 
     log::info!("Calibrating TSC frequency using PIT...");
 
-    let mut tsc_base = None;
-    let mut tsc_elapsed = 0;
-    let mut best_width = u64::MAX;
-    let mut windows = 0;
-    for _ in 0..CALIBRATION_ATTEMPTS {
-        if windows == CALIBRATION_WINDOWS {
-            break;
-        }
-        if let Some(window) = unsafe { measure_pit_window(CALIBRATION_TICKS) } {
-            tsc_base.get_or_insert(window.start);
-            if window.width < best_width {
-                best_width = window.width;
-                tsc_elapsed = window.elapsed;
-            }
-            windows += 1;
-        }
-    }
-    let Some(tsc_base) = tsc_base else {
-        panic!("TSC calibration observed no PIT channel 2 countdown");
+    let Some(edges) = (unsafe { pit_rising_edges(PERIOD_TICKS) }) else {
+        panic!("TSC calibration observed no PIT channel 2 square wave");
     };
 
-    // TSC frequency = (tsc_elapsed / calibration_time_seconds)
-    // = tsc_elapsed * 1000 / CALIBRATION_MS
-    let frequency_hz = (tsc_elapsed * 1000) / CALIBRATION_MS;
+    // The two edges at least MIN_PERIODS apart whose times are known most
+    // tightly: a virtual CPU descheduled across an edge widens that edge.
+    let mut best = (0, MIN_PERIODS);
+    for first in 0..edges.len() {
+        for last in first + MIN_PERIODS..edges.len() {
+            let width = edges[first].width + edges[last].width;
+            if width < edges[best.0].width + edges[best.1].width {
+                best = (first, last);
+            }
+        }
+    }
+    let (first, last) = (edges[best.0], edges[best.1]);
+    let periods = (best.1 - best.0) as u64;
+    let tsc_elapsed = last.at - first.at;
+    let pit_ticks = periods * PERIOD_TICKS as u64;
+    let frequency_hz = tsc_elapsed * PIT_HZ / pit_ticks;
 
     TSC_FREQUENCY_HZ.store(frequency_hz, Ordering::SeqCst);
-    TSC_BASE.store(tsc_base, Ordering::SeqCst);
+    TSC_BASE.store(first.at, Ordering::SeqCst);
     TSC_CALIBRATED.store(true, Ordering::SeqCst);
 
     log::info!(
@@ -173,38 +173,33 @@ pub fn calibrate() {
         frequency_hz
     );
     log::info!(
-        "TSC cycles during {}ms calibration: {} (within {})",
-        CALIBRATION_MS,
+        "TSC cycles over {} PIT periods ({} ms): {} (within {})",
+        periods,
+        pit_ticks * 1000 / PIT_HZ,
         tsc_elapsed,
-        best_width
+        first.width + last.width
     );
 
     // HAL boot stage marker - proves HAL timer operations are working
     log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
 }
 
-/// One PIT channel 2 countdown timed with the TSC.
-struct PitWindow {
-    /// TSC when the countdown started.
-    start: u64,
-    /// TSC cycles from the countdown's start to its end.
-    elapsed: u64,
-    /// TSC cycles of uncertainty in the two events' times together.
+/// A rising edge of PIT channel 2's OUT, timed by the TSC.
+#[derive(Clone, Copy, Default)]
+struct PitEdge {
+    /// Middle of the poll in which OUT rose.
+    at: u64,
+    /// TSC cycles between the reads either side of the edge.
     width: u64,
 }
 
-/// Count TSC cycles across one PIT channel 2 countdown of `ticks`, or `None`
-/// when no countdown was observed.
-///
-/// Both events are timed by the TSC read just after a port access: the count
-/// starts when the high byte's write lands, and OUT rises between the last poll
-/// that read it low and the first that read it high. A port access is a VM exit
-/// that takes tens of microseconds under nested virtualization, so a window
-/// timed from before the write to after the poll that saw OUT high, as this
-/// did, was long by about one exit and half a poll: 600 to 1100 ppm on the x86
-/// gate. Reading the TSC at the same point after every access cancels the exit's
-/// own latency, and the end is the middle of its poll.
-unsafe fn measure_pit_window(ticks: u16) -> Option<PitWindow> {
+/// Run PIT channel 2 as a square wave of `period` ticks and time its first
+/// seven rising edges, or `None` when OUT stopped toggling.
+unsafe fn pit_rising_edges(period: u16) -> Option<[PitEdge; 7]> {
+    // Bounds the wait for one edge far above a period's worth of polls, so a
+    // PIT that never toggles fails calibration instead of hanging the boot.
+    const POLLS_PER_EDGE: u64 = 50_000_000;
+
     // Save original gate state
     let orig_gate = inb(PIT_GATE_PORT);
 
@@ -213,39 +208,34 @@ unsafe fn measure_pit_window(ticks: u16) -> Option<PitWindow> {
     // Bit 1: Speaker data enable (0 = disable speaker)
     outb(PIT_GATE_PORT, (orig_gate & 0xFC) | 0x01);
 
-    // Program PIT channel 2 for one-shot mode
-    // 0xB0 = channel 2, lobyte/hibyte, mode 0 (interrupt on terminal count), binary
-    outb(PIT_COMMAND_PORT, 0xB0);
-    outb(PIT_CHANNEL2_PORT, (ticks & 0xFF) as u8);
+    // 0xB6 = channel 2, lobyte/hibyte, mode 3 (square wave), binary
+    outb(PIT_COMMAND_PORT, 0xB6);
+    outb(PIT_CHANNEL2_PORT, (period & 0xFF) as u8);
+    outb(PIT_CHANNEL2_PORT, (period >> 8) as u8);
 
-    // Mode 0 starts counting when the high byte completes the load.
-    let before_load = rdtsc_serialized();
-    outb(PIT_CHANNEL2_PORT, (ticks >> 8) as u8);
-    let start = rdtsc_serialized();
-
-    // When the count reaches 0, bit 5 of port 0x61 goes high.
-    let mut last_low = start;
+    // Bit 5 of port 0x61 is channel 2's OUT.
+    let mut edges = [PitEdge::default(); 7];
+    let mut found = 0;
+    let mut was_high = inb(PIT_GATE_PORT) & 0x20 != 0;
+    let mut last = rdtsc_serialized();
     let mut polls = 0u64;
-    let high = loop {
-        let out = inb(PIT_GATE_PORT) & 0x20;
+    while found < edges.len() && polls < POLLS_PER_EDGE {
+        let high = inb(PIT_GATE_PORT) & 0x20 != 0;
         let at = rdtsc_serialized();
-        if out != 0 {
-            break at;
+        if high && !was_high {
+            edges[found] = PitEdge { at: last + (at - last) / 2, width: at - last };
+            found += 1;
+            polls = 0;
         }
-        last_low = at;
+        was_high = high;
+        last = at;
         polls += 1;
-    };
+    }
 
     // Restore original gate state
     outb(PIT_GATE_PORT, orig_gate);
 
-    // OUT already high on the first poll means no countdown was measured.
-    let end = last_low + (high - last_low) / 2;
-    (polls != 0).then(|| PitWindow {
-        start,
-        elapsed: end.saturating_sub(start),
-        width: (start - before_load) + (high - last_low),
-    })
+    (found == edges.len()).then_some(edges)
 }
 
 /// Check if TSC has been calibrated.
