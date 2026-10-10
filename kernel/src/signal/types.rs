@@ -1412,6 +1412,33 @@ pub mod tmpring {
     pub const K_REALPASS_GAP: u64 = 6;
     pub const K_PMHOLD: u64 = 7;
     pub static LAST_REALPASS: AtomicU64 = AtomicU64::new(0);
+    pub const K_EXPIRE: u64 = 8;
+    pub const K_ENQ: u64 = 9;
+    pub const K_DISPATCH: u64 = 10;
+    pub const K_SW: u64 = 11;
+    pub const K_RECLAIM: u64 = 12;
+    pub static IN_RECLAIM: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+    pub static LAST_DL: AtomicU64 = AtomicU64::new(0);
+    pub static RECIP: AtomicU64 = AtomicU64::new(0);
+    pub static ANCHOR: AtomicU64 = AtomicU64::new(0);
+    pub fn expired(wall: u64, dl: u64, tid: u64) {
+        rec(K_EXPIRE, wall, ((wall.saturating_sub(dl)) << 16) | (tid & 0xffff));
+        RECIP.store(tid, Relaxed);
+        LAST_DL.store(dl, Relaxed);
+    }
+    pub fn switched(tid: u64) {
+        let t = now();
+        rec(K_SW, t, tid);
+        if tid != RECIP.load(Relaxed) { return; }
+        let dl = LAST_DL.swap(0, Relaxed);
+        if dl == 0 { return; }
+        rec(K_DISPATCH, t, t.saturating_sub(dl));
+        if t > dl + 5_000 && !FROZEN.load(Relaxed) {
+            ANCHOR.store(t, Relaxed);
+            FROZEN.store(true, Relaxed);
+            DUMP.store(true, Relaxed);
+        }
+    }
     pub fn cpu() -> u64 {
         #[cfg(target_arch = "aarch64")]
         { crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64 }
@@ -1439,10 +1466,10 @@ pub mod tmpring {
         if !DUMP.swap(false, Relaxed) { return; }
         let end = IDX.load(Relaxed);
         let start = end.saturating_sub(N);
-        let mut late_t = 0u64;
+        let mut late_t = ANCHOR.load(Relaxed);
         for i in start..end {
             let w = RING[((i % N) * 2) as usize].load(Relaxed);
-            if w & 0xff == K_LATE { late_t = w >> 16; }
+            if w & 0xff == K_LATE && late_t == 0 { late_t = w >> 16; }
         }
         let mut line = alloc::string::String::new();
         let mut n = 0;
@@ -1451,14 +1478,16 @@ pub mod tmpring {
             let w = RING[((i % N) * 2) as usize].load(Relaxed);
             let p = RING[((i % N) * 2 + 1) as usize].load(Relaxed);
             let t = w >> 16;
-            if late_t != 0 && t + 400_000 < late_t { continue; }
+            if late_t != 0 && t + 250_000 < late_t { continue; }
+            if w & 0xff == K_SW && late_t != 0 && t + 60_000 < late_t { continue; }
             let _ = write!(line, " {}:c{}:k{}:{}", t as i64 - late_t as i64, (w >> 8) & 0xff, w & 0xff, p);
             n += 1;
-            if n % 12 == 0 { log::info!("[TMPRING]{}", line); line.clear(); }
+            if n % 12 == 0 { crate::serial_println!("[TMPRING]{}", line); line.clear(); }
         }
-        if !line.is_empty() { log::info!("[TMPRING]{}", line); }
-        log::info!("[TMPRING] end events={}", n);
+        if !line.is_empty() { crate::serial_println!("[TMPRING]{}", line); }
+        crate::serial_println!("[TMPRING] end events={}", n);
         IDX.store(0, Relaxed);
+        ANCHOR.store(0, Relaxed);
         FROZEN.store(false, Relaxed);
     }
 }

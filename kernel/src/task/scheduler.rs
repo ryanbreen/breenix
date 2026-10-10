@@ -3123,6 +3123,7 @@ impl Scheduler {
             .current_thread
             .unwrap_or(self.cpu_state[current_cpu].idle_thread);
         self.cpu_state[current_cpu].current_thread = Some(next_thread_id);
+        crate::signal::types::tmpring::switched(next_thread_id);
         // x86_64: this CPU stays on the outgoing thread's kernel stack until its
         // `iretq`; no other CPU dispatches the thread before then.
         #[cfg(target_arch = "x86_64")]
@@ -4452,6 +4453,14 @@ impl Scheduler {
     /// return to user mode, including a busy remote CPU. Interruptible sleepers
     /// receive the same bounded promotion as an already-expired sleep deadline.
     pub(crate) fn expedite_signal_recipient(&mut self, thread_id: u64) {
+        if thread_id == crate::signal::types::tmpring::RECIP.load(Ordering::Relaxed) {
+            let cur = self.cpu_state.iter().position(|s| s.current_thread == Some(thread_id)).map_or(0xff, |c| c as u64);
+            let q = self.per_cpu_queues.iter().position(|q| q.contains(&thread_id)).map_or(0xff, |c| c as u64);
+            let qlen = if q < 0xff { self.per_cpu_queues[q as usize].len() as u64 } else { 0 };
+            let inr = if q < 8 { crate::signal::types::tmpring::IN_RECLAIM[q as usize].load(Ordering::Relaxed) as u64 } else { 0 };
+            let tq = crate::signal::types::tmpring::now();
+            crate::signal::types::tmpring::rec(crate::signal::types::tmpring::K_ENQ, tq, (inr << 32) | (cur << 24) | (q << 16) | (qlen << 8) | (Self::current_cpu_id() as u64));
+        }
         if let Some(cpu) = self.cpu_state.iter().position(|s| s.current_thread == Some(thread_id)) {
             if cpu == Self::current_cpu_id() {
                 set_need_resched();
@@ -5090,6 +5099,7 @@ impl Scheduler {
                     }
                 }
             }
+            let real_dl = group.real.deadline_micros().unwrap_or(0);
             let pending = [
                 (group.real.expire(wall), crate::signal::constants::SIGALRM),
                 (group.virtual_timer.expire(user), crate::signal::constants::SIGVTALRM),
@@ -5104,6 +5114,9 @@ impl Scheduler {
                     (!t.signals.blocked.load(Ordering::Relaxed) | t.signals.wait_set.load(Ordering::Acquire)) & bit != 0
                 }).or_else(|| self.threads.iter().find(member)).map(|t| t.id);
                 if let Some(recipient) = recipient {
+                    if sig == crate::signal::constants::SIGALRM {
+                        crate::signal::types::tmpring::expired(wall, real_dl, recipient);
+                    }
                     let target = self.get_thread_mut(recipient).unwrap();
                     target.signals.timer_pending.fetch_or(bit, Ordering::Release);
                     let eligible = ((!target.signals.blocked.load(Ordering::Relaxed)

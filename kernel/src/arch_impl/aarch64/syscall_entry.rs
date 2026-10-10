@@ -445,6 +445,7 @@ fn sys_exit_aarch64(
             crate::syscall::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
         }
 
+        crate::signal::types::tmpring::dump();
         // Log outside PM lock
         if report_exit {
             if let (Some(pid), Some(name)) = (pid_for_log, &name_for_log) {

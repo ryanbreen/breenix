@@ -1458,8 +1458,19 @@ pub fn reclaim_deferred_process_resources() {
 
     // Keep detached Unix close work inside the existing preemption/ownership
     // bracket, after PM and scheduler-scope refusal.
+    let tmp_c = (crate::signal::types::tmpring::cpu() as usize).min(7);
+    crate::signal::types::tmpring::IN_RECLAIM[tmp_c].store(true, Ordering::Relaxed);
+    let tmp_t0 = crate::signal::types::tmpring::now();
+    let tmp_len = PENDING_PROCESS_RECLAIMS.try_lock().map_or(0xffff, |p| p.len() as u64);
     crate::socket::unix::drain_close_notifications();
     reclaim_deferred_process_resources_for_pass(my_pass, false);
+    {
+        let t1 = crate::signal::types::tmpring::now();
+        crate::signal::types::tmpring::IN_RECLAIM[tmp_c].store(false, Ordering::Relaxed);
+        if t1 - tmp_t0 > 300 {
+            crate::signal::types::tmpring::rec(crate::signal::types::tmpring::K_RECLAIM, t1, ((t1 - tmp_t0) << 16) | (tmp_len & 0xffff));
+        }
+    }
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
     reclaim_preempt_enable();
 }
