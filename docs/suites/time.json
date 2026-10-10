@@ -43,11 +43,11 @@
         },
         {
           "id": "counter-trap-default",
-          "title": "Linux ABI: ARM64 user mode that reads the physical counter CNTPCT_EL0 or the timer registers CNTV_CTL_EL0 and CNTP_CTL_EL0 is killed by SIGILL"
+          "title": "Linux ABI: denied counter and timer register reads kill user mode with SIGILL on ARM64 (CNTPCT_EL0, CNTV_CTL_EL0, CNTP_CTL_EL0) and SIGSEGV on x86-64 (TSC, TSC-deadline, x2APIC initial-count MSRs)"
         },
         {
           "id": "counter-trap-caught",
-          "title": "Linux ABI: a caught SIGILL for each of those ARM64 reads carries ILL_ILLOPC and the instruction's address, and the program resumes past it; CNTVCT_EL0 and CNTFRQ_EL0 do not trap"
+          "title": "Linux ABI: caught denied counter and timer register reads carry ILL_ILLOPC and si_addr on ARM64, SI_KERNEL and faulting RIP on x86-64, and resume past the instruction; granted counter reads do not trap"
         },
         {
           "id": "rate-rtc",
