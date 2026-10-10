@@ -13,8 +13,9 @@ log: `docs/planning/ralph-roadmap.html`.
 
 Threads P2 implements the assigned C thread interfaces in
 `libs/libbreenix-libc` (issues #1302–#1306, #1308–#1310, #1312–#1319).
-ARM64 QEMU gates the library; the separate kernel lane supplies group teardown,
-absolute futex waits and requeue, thread scheduling, and clone TLS initialization.
+It runs on the kernel interfaces #1327 added: exit_group ending every thread,
+absolute futex waits and requeue, thread scheduling, shared descriptor tables and
+CLONE_SETTLS, which starts each new thread on its own static TLS block.
 Cancellation and cleanup handlers, atfork handlers, spin locks, process-shared
 attributes, and contention-scope attributes remain tracked in #1328.
 

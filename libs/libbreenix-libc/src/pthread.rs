@@ -1,5 +1,6 @@
 //! C thread interfaces using the ABI storage declared for Breenix clients.
-//! Waiters use futexes; descriptor reclamation waits for clear_child_tid.
+//! Waiters use futexes; a thread's memory is reclaimed once the kernel clears
+//! its CLONE_CHILD_CLEARTID word.
 use super::{EBUSY, EINVAL, ENOMEM, EPERM};
 use core::ptr::{null, null_mut};
 use core::sync::atomic::{
@@ -16,6 +17,19 @@ const ENOTRECOVERABLE: i32 = 131;
 const PAGE: usize = 4096;
 const KEYS: usize = 128;
 const STACK_MIN: usize = 16384;
+const FUTEX_WAIT: u64 = 0;
+const FUTEX_WAKE: u64 = 1;
+const FUTEX_WAIT_BITSET: u64 = 9;
+const FUTEX_CLOCK_REALTIME: u64 = 256;
+const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
+const CLONE_VM: u64 = 0x100;
+const CLONE_FS: u64 = 0x200;
+const CLONE_FILES: u64 = 0x400;
+const CLONE_SIGHAND: u64 = 0x800;
+const CLONE_THREAD: u64 = 0x10000;
+const CLONE_SETTLS: u64 = 0x80000;
+const CLONE_CHILD_CLEARTID: u64 = 0x200000;
+const CLONE_CHILD_SETTID: u64 = 0x1000000;
 type Start = extern "C" fn(*mut u8) -> *mut u8;
 type Destructor = Option<unsafe extern "C" fn(*mut u8)>;
 
@@ -30,14 +44,14 @@ unsafe fn futex(p: *const AtomicU32, op: u64, v: u32, timeout: *const i64) -> i3
         v as u64,
         timeout as u64,
         0,
-        u32::MAX as u64,
+        FUTEX_BITSET_MATCH_ANY as u64,
     ) as i64 as i32
 }
 unsafe fn wake(p: &AtomicU32, n: u32) {
-    futex(p, 1, n, null());
+    futex(p, FUTEX_WAKE, n, null());
 }
 unsafe fn wait(p: &AtomicU32, v: u32) {
-    futex(p, 0, v, null());
+    futex(p, FUTEX_WAIT, v, null());
 }
 
 /// Internal locks use the same futex protocol as public locks, without errno or
@@ -110,24 +124,29 @@ impl Attr {
         }
     }
 }
+/// A thread's descriptor. It lives in the thread's control area, beside its
+/// static TLS, at the top of the one mapping that also holds the stack this
+/// library allocated for it.
 #[repr(C)]
 struct Thread {
     next: *mut Thread,
-    id: u32,
+    id: AtomicU32,
+    // The kernel's CLONE_CHILD_SETTID/CLEARTID word: the thread ID while the
+    // thread runs, 0 once it has ended and no longer uses its memory.
     clear: AtomicU32,
-    // 0 joinable, 1 detached, 2 join claimed, 3 reaper claimed.
-    // Only the registry owns reclamation.
+    // 0 joinable, 1 detached, 2 join claimed; under REGISTRY.
     state: u32,
+    // Set while pthread_create still uses the descriptor; reaping waits.
+    creating: bool,
+    // Creation handshake for an explicitly scheduled thread: 0 wait, 1 run,
+    // 2 end without running.
     ready: AtomicU32,
-    exiting: bool,
     result: *mut u8,
     start: Option<Start>,
     arg: *mut u8,
     attr: Attr,
     mapping: *mut u8,
     mapping_len: usize,
-    tls: *mut u8,
-    tls_len: usize,
     tp: usize,
     errno: i32,
     robust: *mut Mutex,
@@ -137,10 +156,8 @@ struct Thread {
 }
 static REGISTRY: Lock = Lock::new();
 static PROCESS: AtomicU32 = AtomicU32::new(0);
-static LIVE: AtomicU32 = AtomicU32::new(0);
 static RUNTIME_READY: AtomicBool = AtomicBool::new(false);
-static REAPER_EVENT: AtomicU32 = AtomicU32::new(0);
-static mut REAPER_STARTED: bool = false;
+static mut EARLY_ERRNO: i32 = 0;
 static mut HEAD: *mut Thread = null_mut();
 static mut TLS_IMAGE: *const u8 = null();
 static mut TLS_FILE: usize = 0;
@@ -150,28 +167,52 @@ fn rounded(n: usize, a: usize) -> Option<usize> {
     n.checked_add(a - 1).map(|v| v & !(a - 1))
 }
 
-unsafe fn alloc_thread() -> *mut Thread {
-    let p = map(rounded(core::mem::size_of::<Thread>(), PAGE).unwrap(), 3) as *mut Thread;
-    if p.is_null() {
-        return p;
+/// Bytes of a thread's control area: its descriptor, then static TLS with
+/// room to align it and the ABI's reserved words.
+unsafe fn control_len() -> Option<usize> {
+    let align = TLS_ALIGN.max(16);
+    rounded(core::mem::size_of::<Thread>(), 16)?
+        .checked_add(TLS_SIZE)?
+        .checked_add(align * 2)?
+        .checked_add(32)
+        .and_then(|v| rounded(v, PAGE))
+}
+
+/// Map `guard` inaccessible bytes, `stack` bytes of stack and the thread's
+/// control area above it, and initialize the descriptor and static TLS.
+unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
+    let Some(len) = control_len()
+        .and_then(|c| c.checked_add(stack))
+        .and_then(|v| v.checked_add(guard))
+    else {
+        return null_mut();
+    };
+    let base = map(len, 3);
+    if base.is_null() {
+        return null_mut();
     }
+    if guard != 0
+        && (raw::syscall3(nr::MPROTECT, base as u64, guard as u64, 0) as i64) < 0
+    {
+        unmap(base, len);
+        return null_mut();
+    }
+    let p = base.add(guard + stack) as *mut Thread;
     core::ptr::write(
         p,
         Thread {
             next: null_mut(),
-            id: 0,
+            id: AtomicU32::new(0),
             clear: AtomicU32::new(0),
             state: 0,
-            ready: AtomicU32::new(0),
-            exiting: false,
+            creating: false,
+            ready: AtomicU32::new(1),
             result: null_mut(),
             start: None,
             arg: null_mut(),
             attr: Attr::new(),
-            mapping: null_mut(),
-            mapping_len: 0,
-            tls: null_mut(),
-            tls_len: 0,
+            mapping: base,
+            mapping_len: len,
             tp: 0,
             errno: 0,
             robust: null_mut(),
@@ -181,31 +222,17 @@ unsafe fn alloc_thread() -> *mut Thread {
         },
     );
     let align = TLS_ALIGN.max(16);
-    let Some(len) = TLS_SIZE
-        .checked_add(align * 2)
-        .and_then(|v| v.checked_add(32))
-        .and_then(|v| rounded(v, PAGE))
-    else {
-        free_thread(p);
-        return null_mut();
-    };
-    let block = map(len, 3);
-    if block.is_null() {
-        free_thread(p);
-        return null_mut();
-    }
-    (*p).tls = block;
-    (*p).tls_len = len;
+    let block = p as usize + rounded(core::mem::size_of::<Thread>(), 16).unwrap();
     #[cfg(target_arch = "aarch64")]
     let (tp, data) = {
         // AArch64 TLS variant I: two reserved words before aligned static TLS.
-        let tp = rounded(block as usize, align).unwrap();
+        let tp = rounded(block, align).unwrap();
         (tp, rounded(tp + 16, align).unwrap())
     };
     #[cfg(target_arch = "x86_64")]
     let (tp, data) = {
         // x86 TLS variant II: static TLS immediately precedes the thread pointer.
-        let data = rounded(block as usize, align).unwrap();
+        let data = rounded(block, align).unwrap();
         (data + rounded(TLS_SIZE, align).unwrap(), data)
     };
     if TLS_FILE != 0 {
@@ -226,10 +253,8 @@ unsafe fn alloc_thread() -> *mut Thread {
     p
 }
 unsafe fn free_thread(p: *mut Thread) {
-    let stack = (*p).mapping;
-    let size = (*p).mapping_len;
-    let tls = (*p).tls;
-    let tls_len = (*p).tls_len;
+    let mapping = (*p).mapping;
+    let len = (*p).mapping_len;
     let mut values = (*p).extra_values;
     while !values.is_null() {
         let next = (*values).next;
@@ -242,12 +267,7 @@ unsafe fn free_thread(p: *mut Thread) {
         unmap(reads as *mut u8, PAGE);
         reads = next;
     }
-    unmap(stack, size);
-    unmap(tls, tls_len);
-    unmap(
-        p as *mut u8,
-        rounded(core::mem::size_of::<Thread>(), PAGE).unwrap(),
-    );
+    unmap(mapping, len);
 }
 unsafe fn set_tp(tp: usize) {
     #[cfg(target_arch = "aarch64")]
@@ -258,8 +278,30 @@ unsafe fn set_tp(tp: usize) {
     }
 }
 
-/// Read the executable's PT_TLS template from the kernel-supplied ELF headers.
-/// No compiler TLS is accessed before this runs from libc's process entry.
+// The linker defines __ehdr_start when the ELF header is part of a loaded
+// segment; a program linked without that leaves the weak reference 0.
+core::arch::global_asm!(".weak __ehdr_start");
+unsafe fn ehdr_start() -> usize {
+    let p: usize;
+    #[cfg(target_arch = "aarch64")]
+    core::arch::asm!(
+        "adrp {p}, __ehdr_start",
+        "add {p}, {p}, :lo12:__ehdr_start",
+        p = out(reg) p,
+        options(nomem, nostack, pure)
+    );
+    #[cfg(target_arch = "x86_64")]
+    core::arch::asm!(
+        "lea {p}, [rip + __ehdr_start]",
+        p = out(reg) p,
+        options(nomem, nostack, pure)
+    );
+    p
+}
+
+/// Read the executable's PT_TLS template from its program headers, set up the
+/// initial thread's descriptor and TLS, and install its thread pointer. No
+/// compiler TLS is accessed before this runs from libc's process entry.
 pub unsafe fn startup(envp: *const *const u8) {
     let mut e = envp;
     while !(*e).is_null() {
@@ -276,95 +318,116 @@ pub unsafe fn startup(envp: *const *const u8) {
         }
         aux = aux.add(2);
     }
+    // A process started without AT_PHDR finds its headers through the loaded
+    // ELF header instead (e_phoff, e_phentsize, e_phnum).
+    let mut base_vaddr = None;
+    if phdr == 0 {
+        let ehdr = ehdr_start();
+        if ehdr != 0 {
+            let h = ehdr as *const u8;
+            phdr = ehdr + core::ptr::read_unaligned(h.add(32) as *const u64) as usize;
+            stride = core::ptr::read_unaligned(h.add(54) as *const u16) as usize;
+            count = core::ptr::read_unaligned(h.add(56) as *const u16) as usize;
+            base_vaddr = Some(ehdr);
+        }
+    }
     if phdr != 0 && stride >= 56 {
+        // The load bias: from PT_PHDR when the headers name themselves, else
+        // from the segment that maps file offset 0 (the ELF header).
+        let mut bias = 0usize;
+        for i in 0..count {
+            let h = (phdr + i * stride) as *const u8;
+            let kind = core::ptr::read_unaligned(h as *const u32);
+            let offset = core::ptr::read_unaligned(h.add(8) as *const usize);
+            let vaddr = core::ptr::read_unaligned(h.add(16) as *const usize);
+            if kind == 6 {
+                bias = phdr.wrapping_sub(vaddr);
+            } else if kind == 1 && offset == 0 {
+                if let Some(ehdr) = base_vaddr {
+                    bias = ehdr.wrapping_sub(vaddr);
+                }
+            }
+        }
         for i in 0..count {
             let h = (phdr + i * stride) as *const u8;
             if core::ptr::read_unaligned(h as *const u32) == 7 {
-                TLS_IMAGE = core::ptr::read_unaligned(h.add(16) as *const usize) as *const u8;
+                TLS_IMAGE = core::ptr::read_unaligned(h.add(16) as *const usize).wrapping_add(bias)
+                    as *const u8;
                 TLS_FILE = core::ptr::read_unaligned(h.add(32) as *const usize);
                 TLS_SIZE = core::ptr::read_unaligned(h.add(40) as *const usize);
                 TLS_ALIGN = core::ptr::read_unaligned(h.add(48) as *const usize).max(1);
             }
         }
     }
-    let t = current();
+    let t = alloc_thread(0, 0);
     if t.is_null() {
         super::exit_group(127);
     }
+    let id = tid();
+    (*t).id.store(id, Relaxed);
+    (*t).clear.store(id, Relaxed);
+    raw::syscall1(nr::SET_TID_ADDRESS, &(*t).clear as *const AtomicU32 as u64);
+    HEAD = t;
+    PROCESS.store(pid(), Relaxed);
     set_tp((*t).tp);
     RUNTIME_READY.store(true, Release);
 }
 
-unsafe fn registry_lock() {
-    let process = pid();
-    if PROCESS.load(Acquire) != process {
-        // After fork only the calling thread survives. No inherited futex lock
-        // can have an owner in the child; retain that thread's TLS and TSD.
-        let id = tid();
-        let mut p = HEAD;
-        #[cfg(target_arch = "aarch64")]
-        let inherited: usize = {
-            let v;
-            core::arch::asm!("mrs {}, tpidr_el0", out(reg) v, options(nomem, nostack));
-            v
-        };
-        #[cfg(target_arch = "x86_64")]
-        let inherited: usize = {
-            let mut v = 0usize;
-            raw::syscall2(nr::ARCH_PRCTL, 0x1003, &mut v as *mut usize as u64);
-            v
-        };
-        let mut survivor = null_mut();
-        while !p.is_null() {
-            if (*p).tp == inherited {
-                survivor = p;
-                break;
-            }
-            p = (*p).next;
-        }
-        HEAD = survivor;
-        LIVE.store((!survivor.is_null()) as u32, Relaxed);
-        KEY_LOCK.0.store(0, Relaxed);
-        REAPER_STARTED = false;
-        if !survivor.is_null() {
-            (*survivor).next = null_mut();
-            (*survivor).id = id;
-            (*survivor).clear.store(id, Relaxed);
-            raw::syscall1(
-                nr::SET_TID_ADDRESS,
-                &(*survivor).clear as *const AtomicU32 as u64,
-            );
-            (*survivor).state = 0;
-        }
-        REGISTRY.0.store(0, Relaxed);
-        PROCESS.store(process, Release);
-    }
-    REGISTRY.lock();
-}
-/// Repair cached identities before a fork child enters the C runtime again.
+/// Repair the registry in a fork child before it enters the C runtime again.
+/// Only the calling thread survives a fork, so no inherited lock has an owner
+/// in the child; the survivor keeps its descriptor, TLS and thread-specific
+/// data. Idempotent: both libc's fork and libbreenix's call it.
 #[no_mangle]
 pub unsafe extern "C" fn __breenix_after_fork() {
-    registry_lock();
-    REGISTRY.unlock();
+    let process = pid();
+    if PROCESS.load(Acquire) == process || !RUNTIME_READY.load(Acquire) {
+        return;
+    }
+    let survivor = descriptor_from_tp();
+    REGISTRY.0.store(0, Relaxed);
+    KEY_LOCK.0.store(0, Relaxed);
+    HEAD = survivor;
+    if !survivor.is_null() {
+        let id = tid();
+        (*survivor).next = null_mut();
+        (*survivor).id.store(id, Relaxed);
+        (*survivor).clear.store(id, Relaxed);
+        (*survivor).state = 0;
+        raw::syscall1(
+            nr::SET_TID_ADDRESS,
+            &(*survivor).clear as *const AtomicU32 as u64,
+        );
+    }
+    PROCESS.store(process, Release);
 }
 unsafe fn current_id() -> u32 {
     let p = current();
     if p.is_null() {
         tid()
     } else {
-        (*p).id
+        (*p).id.load(Relaxed)
     }
 }
+/// Reclaim detached threads the kernel has finished with. Under REGISTRY.
 unsafe fn reap() {
     let mut link = core::ptr::addr_of_mut!(HEAD);
     while !(*link).is_null() {
         let p = *link;
-        if (*p).state == 1 && (*p).clear.load(Acquire) == 0 {
+        if (*p).state == 1 && !(*p).creating && (*p).clear.load(Acquire) == 0 {
             *link = (*p).next;
             free_thread(p);
         } else {
             link = core::ptr::addr_of_mut!((*p).next);
         }
+    }
+}
+unsafe fn unlink(p: *mut Thread) {
+    let mut link = core::ptr::addr_of_mut!(HEAD);
+    while !(*link).is_null() && *link != p {
+        link = core::ptr::addr_of_mut!((**link).next);
+    }
+    if *link == p {
+        *link = (*p).next;
     }
 }
 unsafe fn current() -> *mut Thread {
@@ -374,28 +437,25 @@ unsafe fn current() -> *mut Thread {
             return p;
         }
     }
-    registry_lock();
+    // A thread this library did not create (raw clone without a thread
+    // pointer) gets a descriptor on first use; its thread pointer is its own.
+    REGISTRY.lock();
     let id = tid();
     let mut p = HEAD;
     while !p.is_null() {
-        if (*p).id == id {
+        if (*p).id.load(Relaxed) == id {
             REGISTRY.unlock();
             return p;
         }
         p = (*p).next;
     }
-    p = alloc_thread();
+    p = alloc_thread(0, 0);
     if !p.is_null() {
-        (*p).id = id;
+        (*p).id.store(id, Relaxed);
+        // Its creator owns its exit notification; the word reads it running.
         (*p).clear.store(id, Relaxed);
-        // The initial thread needs an exit notification. Do not overwrite an
-        // externally created thread's notification address.
-        if HEAD.is_null() {
-            raw::syscall1(nr::SET_TID_ADDRESS, &(*p).clear as *const AtomicU32 as u64);
-        }
         (*p).next = HEAD;
         HEAD = p;
-        LIVE.fetch_add(1, Release);
     }
     REGISTRY.unlock();
     p
@@ -423,11 +483,11 @@ unsafe fn descriptor_from_tp() -> *mut Thread {
 
 pub fn errno_location() -> *mut i32 {
     unsafe {
-        let p = if RUNTIME_READY.load(Acquire) {
-            descriptor_from_tp()
-        } else {
-            current()
-        };
+        if !RUNTIME_READY.load(Acquire) {
+            // Only the initial thread exists before startup completes.
+            return core::ptr::addr_of_mut!(EARLY_ERRNO);
+        }
+        let p = current();
         // Failure to allocate even the thread's C runtime state is fatal rather
         // than silently sharing errno with another thread.
         if p.is_null() {
@@ -458,101 +518,34 @@ pub extern "C" fn pthread_equal(a: usize, b: usize) -> i32 {
 extern "C" fn entry(arg: u64) -> ! {
     unsafe {
         let p = arg as *mut Thread;
-        set_tp((*p).tp);
-        while (*p).ready.load(Acquire) == 0 {
-            wait(&(*p).ready, 0);
-        }
-        if (*p).ready.load(Acquire) == 2 {
-            libbreenix::process::exit(0);
+        // CLONE_SETTLS installed the thread pointer and CLONE_CHILD_SETTID
+        // wrote this thread's ID before it was scheduled.
+        (*p).id.store((*p).clear.load(Relaxed), Relaxed);
+        if (*p).ready.load(Acquire) != 1 {
+            loop {
+                let r = (*p).ready.load(Acquire);
+                if r != 0 {
+                    break;
+                }
+                wait(&(*p).ready, 0);
+            }
+            if (*p).ready.load(Acquire) == 2 {
+                libbreenix::process::exit(0);
+            }
         }
         let result = ((*p).start.unwrap())((*p).arg);
         pthread_exit(result)
     }
 }
-unsafe fn start_reaper() -> i32 {
-    if REAPER_STARTED {
-        return 0;
-    }
-    let p = alloc_thread();
-    if p.is_null() {
-        return EAGAIN;
-    }
-    let stack = map(32 * 1024, 3);
-    if stack.is_null() {
-        free_thread(p);
-        return EAGAIN;
-    }
-    (*p).mapping = stack;
-    (*p).mapping_len = 32 * 1024;
-    // Block before clone so the helper cannot receive a process-directed
-    // signal even in the interval before its first userspace instruction.
-    let all = u64::MAX;
-    let mut saved = 0u64;
-    let mask = raw::syscall4(
-        nr::SIGPROCMASK,
-        2,
-        &all as *const u64 as u64,
-        &mut saved as *mut u64 as u64,
-        8,
-    ) as i64;
-    if mask < 0 {
-        free_thread(p);
-        return EAGAIN;
-    }
-    let r = raw::syscall6(
-        nr::CLONE,
-        // The helper performs no I/O. Breenix clone gives it a fresh private
-        // FD table without CLONE_FILES, so it cannot retain application pipe
-        // ends or otherwise participate in application descriptor ownership.
-        0x100 | 0x200 | 0x800 | 0x10000 | 0x80000 | 0x200000 | 0x1000000,
-        stack.add(32 * 1024) as u64,
-        reaper_entry as *const () as u64,
-        p as u64,
-        &(*p).clear as *const AtomicU32 as u64,
-        (*p).tp as u64,
-    ) as i64;
-    raw::syscall4(nr::SIGPROCMASK, 2, &saved as *const u64 as u64, 0, 8);
-    if r < 0 {
-        free_thread(p);
-        return -r as i32;
-    }
-    REAPER_STARTED = true;
-    0
-}
-extern "C" fn reaper_entry(arg: u64) -> ! {
-    unsafe {
-        let own = arg as *mut Thread;
-        set_tp((*own).tp);
-        loop {
-            registry_lock();
-            let observed = REAPER_EVENT.load(Acquire);
-            let mut p = HEAD;
-            while !p.is_null() && !((*p).state == 1 && (*p).exiting) {
-                p = (*p).next;
-            }
-            if p.is_null() {
-                REGISTRY.unlock();
-                wait(&REAPER_EVENT, observed);
-                continue;
-            }
-            (*p).state = 3;
-            REGISTRY.unlock();
-            loop {
-                let id = (*p).clear.load(Acquire);
-                if id == 0 {
-                    break;
-                }
-                wait(&(*p).clear, id);
-            }
-            registry_lock();
-            let mut link = core::ptr::addr_of_mut!(HEAD);
-            while *link != p {
-                link = core::ptr::addr_of_mut!((**link).next);
-            }
-            *link = (*p).next;
-            free_thread(p);
-            REGISTRY.unlock();
+
+/// Wait until the kernel has finished with thread `p`.
+unsafe fn await_end(p: *mut Thread) {
+    loop {
+        let id = (*p).clear.load(Acquire);
+        if id == 0 {
+            break;
         }
+        wait(&(*p).clear, id);
     }
 }
 
@@ -567,85 +560,71 @@ pub unsafe extern "C" fn pthread_create(
         return EINVAL;
     }
     if current().is_null() {
-        return ENOMEM;
+        return EAGAIN;
     }
-    registry_lock();
-    reap();
     let a = if attr.is_null() {
         Attr::new()
     } else {
         *(attr as *const Attr)
     };
-    // Inherit the calling thread's actual policy, not the attribute defaults.
-    // An older kernel returning ENOSYS still creates ordinary inherited threads.
-    let mut policy = a.policy;
-    let mut priority = a.priority;
-    if a.inherit == 0 {
-        let inherited = raw::syscall1(nr::SCHED_GETSCHEDULER, 0) as i64;
-        policy = if inherited >= 0 { inherited as i32 } else { 0 };
-        priority = 0;
-        if inherited >= 0 {
-            let r = raw::syscall2(nr::SCHED_GETPARAM, 0, &mut priority as *mut i32 as u64) as i64;
-            if r < 0 {
-                REGISTRY.unlock();
-                return EINVAL;
-            }
-        }
-    }
-    let r = start_reaper();
-    if r != 0 {
-        REGISTRY.unlock();
-        return EAGAIN;
-    }
-    let p = alloc_thread();
-    if p.is_null() {
-        REGISTRY.unlock();
-        return EAGAIN;
-    }
-    (*p).attr = a;
-    (*p).start = Some(start);
-    (*p).arg = arg;
-    let stack;
-    if a.stack.is_null() {
-        let Some(guard) = rounded(a.guard, PAGE) else {
-            free_thread(p);
-            REGISTRY.unlock();
+    REGISTRY.lock();
+    reap();
+    REGISTRY.unlock();
+    // The kernel starts a thread with its creator's policy, which is
+    // PTHREAD_INHERIT_SCHED. An explicit policy is applied before it runs.
+    let explicit = a.inherit == 1;
+    let p = if a.stack.is_null() {
+        let (Some(guard), Some(size)) = (rounded(a.guard, PAGE), rounded(a.size, PAGE)) else {
             return EINVAL;
         };
-        let Some(len) = a.size.checked_add(guard).and_then(|v| rounded(v, PAGE)) else {
-            free_thread(p);
-            REGISTRY.unlock();
-            return EINVAL;
-        };
-        let base = map(len, 0);
-        if base.is_null() {
-            free_thread(p);
-            REGISTRY.unlock();
-            return EAGAIN;
+        let p = alloc_thread(guard, size);
+        if !p.is_null() {
+            (*p).attr.stack = (*p).mapping.add(guard);
         }
-        (*p).mapping = base;
-        (*p).mapping_len = len;
-        stack = base.add(guard);
-        let r = raw::syscall3(nr::MPROTECT, stack as u64, (len - guard) as u64, 3) as i64;
-        if r < 0 {
-            free_thread(p);
-            REGISTRY.unlock();
-            return -r as i32;
-        }
-        (*p).attr.stack = stack;
+        p
     } else {
-        stack = a.stack;
+        let p = alloc_thread(0, 0);
+        if !p.is_null() {
+            (*p).attr.stack = a.stack;
+        }
+        p
+    };
+    if p.is_null() {
+        return EAGAIN;
     }
+    let stack = (*p).attr.stack;
     let Some(top) = (stack as usize).checked_add(a.size) else {
         free_thread(p);
-        REGISTRY.unlock();
         return EINVAL;
     };
+    (*p).attr.size = a.size;
+    (*p).attr.guard = a.guard;
+    (*p).attr.detached = a.detached;
+    (*p).attr.inherit = a.inherit;
+    (*p).attr.policy = a.policy;
+    (*p).attr.priority = a.priority;
+    (*p).start = Some(start);
+    (*p).arg = arg;
+    (*p).state = a.detached as u32;
+    (*p).creating = true;
+    (*p).ready.store(if explicit { 0 } else { 1 }, Relaxed);
+    // Nonzero until the kernel reports the thread ended, so neither reaping
+    // nor a join can take it before it has started.
     (*p).clear.store(u32::MAX, Relaxed);
-    // Breenix's clone ABI supplies entry and argument explicitly. The sixth
-    // argument is the TLS pointer for the kernel lane's CLONE_SETTLS extension.
-    // Until that extension lands, entry installs the pointer before user code.
-    let flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x80000 | 0x200000 | 0x1000000;
+    // Published before the thread exists, so the thread itself can detach or
+    // name itself at once.
+    REGISTRY.lock();
+    (*p).next = HEAD;
+    HEAD = p;
+    REGISTRY.unlock();
+    let flags = CLONE_VM
+        | CLONE_FS
+        | CLONE_FILES
+        | CLONE_SIGHAND
+        | CLONE_THREAD
+        | CLONE_SETTLS
+        | CLONE_CHILD_CLEARTID
+        | CLONE_CHILD_SETTID;
     let r = raw::syscall6(
         nr::CLONE,
         flags,
@@ -656,8 +635,10 @@ pub unsafe extern "C" fn pthread_create(
         (*p).tp as u64,
     ) as i64;
     if r < 0 {
-        free_thread(p);
+        REGISTRY.lock();
+        unlink(p);
         REGISTRY.unlock();
+        free_thread(p);
         return if r == -(EPERM as i64) {
             EPERM
         } else if r == -(EINVAL as i64) {
@@ -666,50 +647,37 @@ pub unsafe extern "C" fn pthread_create(
             EAGAIN
         };
     }
-    (*p).id = r as u32;
-    (*p).next = HEAD;
-    HEAD = p;
-    if a.inherit == 1 || policy != 0 {
+    (*p).id.store(r as u32, Relaxed);
+    *out = p as usize;
+    if explicit {
         let result = raw::syscall3(
             nr::SCHED_SETSCHEDULER,
             r as u64,
-            policy as u64,
-            &priority as *const i32 as u64,
+            a.policy as u64,
+            &a.priority as *const i32 as u64,
         ) as i64;
         if result < 0 {
-            // A failed creation must not leave a descriptor for the caller to
-            // collect. The child never ran the application routine.
-            (*p).state = 2;
+            // A failed creation leaves no thread for the caller to collect.
+            // The child never ran the application routine.
             (*p).ready.store(2, Release);
             wake(&(*p).ready, 1);
+            await_end(p);
+            REGISTRY.lock();
+            unlink(p);
             REGISTRY.unlock();
-            loop {
-                let id = (*p).clear.load(Acquire);
-                if id == 0 {
-                    break;
-                }
-                wait(&(*p).clear, id);
-            }
-            registry_lock();
-            let mut link = core::ptr::addr_of_mut!(HEAD);
-            while *link != p {
-                link = core::ptr::addr_of_mut!((**link).next);
-            }
-            *link = (*p).next;
             free_thread(p);
-            REGISTRY.unlock();
             return if result == -(EPERM as i64) {
                 EPERM
             } else {
                 EINVAL
             };
         }
+        (*p).ready.store(1, Release);
+        wake(&(*p).ready, 1);
     }
-    *out = p as usize;
-    (*p).state = a.detached as u32;
-    LIVE.fetch_add(1, Release);
-    (*p).ready.store(1, Release);
-    wake(&(*p).ready, 1);
+    // From here a detached thread that has ended may be reclaimed at once.
+    REGISTRY.lock();
+    (*p).creating = false;
     REGISTRY.unlock();
     0
 }
@@ -718,7 +686,7 @@ pub unsafe extern "C" fn pthread_join(handle: usize, value: *mut *mut u8) -> i32
     if handle == pthread_self() {
         return EDEADLK;
     }
-    registry_lock();
+    REGISTRY.lock();
     let p = find(handle);
     if p.is_null() {
         REGISTRY.unlock();
@@ -730,29 +698,19 @@ pub unsafe extern "C" fn pthread_join(handle: usize, value: *mut *mut u8) -> i32
     }
     (*p).state = 2;
     REGISTRY.unlock();
-    loop {
-        let id = (*p).clear.load(Acquire);
-        if id == 0 {
-            break;
-        }
-        wait(&(*p).clear, id);
-    }
+    await_end(p);
     if !value.is_null() {
         *value = (*p).result;
     }
-    registry_lock();
-    let mut link = core::ptr::addr_of_mut!(HEAD);
-    while *link != p {
-        link = core::ptr::addr_of_mut!((**link).next);
-    }
-    *link = (*p).next;
-    free_thread(p);
+    REGISTRY.lock();
+    unlink(p);
     REGISTRY.unlock();
+    free_thread(p);
     0
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_detach(handle: usize) -> i32 {
-    registry_lock();
+    REGISTRY.lock();
     let p = find(handle);
     if p.is_null() {
         REGISTRY.unlock();
@@ -762,11 +720,10 @@ pub unsafe extern "C" fn pthread_detach(handle: usize) -> i32 {
         REGISTRY.unlock();
         return EINVAL;
     }
-    // Creation reserves the helper before publishing a joinable handle, so
-    // detach itself has no allocation failure outside its POSIX error set.
     (*p).state = 1;
-    REAPER_EVENT.fetch_add(1, Release);
-    wake(&REAPER_EVENT, 1);
+    // A thread that has already ended is reclaimed now; a running one by the
+    // first registry pass after the kernel clears its exit word.
+    reap();
     REGISTRY.unlock();
     0
 }
@@ -784,17 +741,9 @@ pub unsafe extern "C" fn pthread_exit(value: *mut u8) -> ! {
             wake(&(*m).owner, u32::MAX);
         }
         (*p).result = value;
-        registry_lock();
-        (*p).exiting = true;
-        REAPER_EVENT.fetch_add(1, Release);
-        wake(&REAPER_EVENT, 1);
-        REGISTRY.unlock();
-        // The internal reaper does not keep the application alive after its
-        // last user thread exits. Process termination also releases its stack.
-        if LIVE.fetch_sub(1, Release) == 1 {
-            super::exit_group(0);
-        }
     }
+    // The kernel ends the process when its last thread ends, with the status
+    // of exit(0) when the initial thread left through pthread_exit.
     libbreenix::process::exit(0)
 }
 
@@ -803,14 +752,14 @@ pub unsafe extern "C" fn pthread_getattr_np(handle: usize, attr: *mut u8) -> i32
     if attr.is_null() {
         return EINVAL;
     }
-    registry_lock();
+    REGISTRY.lock();
     let p = find(handle);
     if p.is_null() {
         REGISTRY.unlock();
         return ESRCH;
     }
     *(attr as *mut Attr) = (*p).attr;
-    (*(attr as *mut Attr)).detached = ((*p).state == 1 || (*p).state == 3) as i32;
+    (*(attr as *mut Attr)).detached = ((*p).state == 1) as i32;
     REGISTRY.unlock();
     0
 }
@@ -1149,37 +1098,17 @@ unsafe fn deadline_wait(p: &AtomicU32, value: u32, deadline: *const i64, clock: 
     if !valid_time(&t) {
         return EINVAL;
     }
-    let op = 9 | if clock == 0 { 256 } else { 0 };
+    // FUTEX_WAIT_BITSET takes an absolute deadline on CLOCK_MONOTONIC, or on
+    // CLOCK_REALTIME (following clock changes) with FUTEX_CLOCK_REALTIME.
+    let op = FUTEX_WAIT_BITSET | if clock == 0 { FUTEX_CLOCK_REALTIME } else { 0 };
     let r = futex(p, op, value, t.as_ptr());
-    if r != -38 {
-        return if r == -ETIMEDOUT {
-            ETIMEDOUT
-        } else if r == -EINVAL {
-            EINVAL
-        } else {
-            0
-        };
-    }
-    // For kernels with relative FUTEX_WAIT only, bound each sleep so that
-    // CLOCK_REALTIME adjustments are noticed; prefer the exact absolute kernel
-    // operation as soon as the other lane implements it.
-    let mut now = [0i64; 2];
-    let r = raw::syscall2(nr::CLOCK_GETTIME, clock as u64, now.as_mut_ptr() as u64) as i64;
-    if r < 0 {
-        return -r as i32;
-    }
-    let ns = (t[0] as i128 - now[0] as i128) * 1_000_000_000 + t[1] as i128 - now[1] as i128;
-    if ns <= 0 {
-        return ETIMEDOUT;
-    }
-    let ns = ns.min(if clock == 0 {
-        10_000_000
+    if r == -ETIMEDOUT {
+        ETIMEDOUT
+    } else if r == -EINVAL {
+        EINVAL
     } else {
-        i64::MAX as i128
-    });
-    let relative = [(ns / 1_000_000_000) as i64, (ns % 1_000_000_000) as i64];
-    futex(p, 0, value, relative.as_ptr());
-    0
+        0
+    }
 }
 
 // A mutex's owner is also its futex word; the high bit carries the wake baton
@@ -1214,7 +1143,7 @@ unsafe fn mutex_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 
                 if (*m).recovery.load(Acquire) == 2 {
                     let owner = core::ptr::addr_of!((*m).owner);
                     (*owner).store(0, Release);
-                    futex(owner, 1, u32::MAX, null());
+                    futex(owner, FUTEX_WAKE, u32::MAX, null());
                     return ENOTRECOVERABLE;
                 }
                 (*m).depth = 1;
@@ -1340,7 +1269,7 @@ pub unsafe extern "C" fn pthread_mutex_unlock(m: *mut u8) -> i32 {
     let owner = core::ptr::addr_of!((*m).owner);
     if (*owner).swap(0, Release) & WAITERS != 0 {
         // No object read follows release: the next owner may destroy it.
-        futex(owner, 1, count, null());
+        futex(owner, FUTEX_WAKE, count, null());
     }
     0
 }
@@ -1426,6 +1355,28 @@ pub unsafe extern "C" fn pthread_mutexattr_getprotocol(a: *const u8, v: *mut i32
     0
 }
 
+/// Set in a waiter count while destroy waits for it to drain, so departing
+/// waiters wake the destroyer only when one is waiting.
+const DRAIN: u32 = 1 << 31;
+/// Leave a drained count; wake a waiting destroyer. No object read follows.
+unsafe fn depart(count: *const AtomicU32) {
+    if (*count).fetch_sub(1, Release) & DRAIN != 0 {
+        futex(count, FUTEX_WAKE, u32::MAX, null());
+    }
+}
+/// Mark a count draining and wait until no user holds it.
+fn drain(count: &AtomicU32) {
+    count.fetch_or(DRAIN, Acquire);
+    loop {
+        let n = count.load(Acquire);
+        if n & !DRAIN == 0 {
+            break;
+        }
+        unsafe {
+            wait(count, n);
+        }
+    }
+}
 #[repr(C)]
 struct Cond {
     sequence: AtomicU32,
@@ -1452,14 +1403,7 @@ pub unsafe extern "C" fn pthread_cond_destroy(c: *mut u8) -> i32 {
     if c.is_null() {
         EINVAL
     } else {
-        let c = &*(c as *const Cond);
-        loop {
-            let n = c.waiting.load(Acquire);
-            if n == 0 {
-                break;
-            }
-            wait(&c.waiting, n);
-        }
+        drain(&(*(c as *const Cond)).waiting);
         0
     }
 }
@@ -1493,9 +1437,7 @@ unsafe fn cond_wait(c: *mut u8, m: *mut u8, t: *const i64) -> i32 {
     let clock = c.clock;
     let r = pthread_mutex_unlock(m);
     if r != 0 {
-        let waiting = core::ptr::addr_of!(c.waiting);
-        (*waiting).fetch_sub(1, Release);
-        futex(waiting, 1, u32::MAX, null());
+        depart(core::ptr::addr_of!(c.waiting));
         return r;
     }
     let mut r;
@@ -1507,9 +1449,7 @@ unsafe fn cond_wait(c: *mut u8, m: *mut u8, t: *const i64) -> i32 {
     }
     // Destroy drains this reference count before freeing or reinitializing
     // the condition; release it before reacquiring the application mutex.
-    let waiting = core::ptr::addr_of!(c.waiting);
-    (*waiting).fetch_sub(1, Release);
-    futex(waiting, 1, u32::MAX, null());
+    depart(core::ptr::addr_of!(c.waiting));
     let lock = pthread_mutex_lock(m);
     if lock != 0 {
         lock
@@ -1697,7 +1637,7 @@ unsafe fn rw_take(p: *mut u8, write: bool, attempt: bool, deadline: *const i64) 
         };
         if available {
             if write {
-                (*r).writer = (*thread).id;
+                (*r).writer = (*thread).id.load(Relaxed);
                 if !attempt {
                     remove_writer(r, &mut waiter);
                 }
@@ -1872,18 +1812,14 @@ pub unsafe extern "C" fn pthread_barrier_wait(p: *mut u8) -> i32 {
         (*b).generation.fetch_add(1, Release);
         (*b).gate.unlock();
         wake(&(*b).generation, u32::MAX);
-        let leaving = core::ptr::addr_of!((*b).leaving);
-        (*leaving).fetch_sub(1, Release);
-        futex(leaving, 1, u32::MAX, null());
+        depart(core::ptr::addr_of!((*b).leaving));
         return -1;
     }
     (*b).gate.unlock();
     while (*b).generation.load(Acquire) == g {
         wait(&(*b).generation, g);
     }
-    let leaving = core::ptr::addr_of!((*b).leaving);
-    (*leaving).fetch_sub(1, Release);
-    futex(leaving, 1, u32::MAX, null());
+    depart(core::ptr::addr_of!((*b).leaving));
     0
 }
 #[no_mangle]
@@ -1898,13 +1834,7 @@ pub unsafe extern "C" fn pthread_barrier_destroy(p: *mut u8) -> i32 {
     if busy {
         EBUSY
     } else {
-        loop {
-            let n = b.leaving.load(Acquire);
-            if n == 0 {
-                break;
-            }
-            wait(&b.leaving, n);
-        }
+        drain(&b.leaving);
         0
     }
 }
@@ -1941,7 +1871,7 @@ pub unsafe extern "C" fn pthread_kill(handle: usize, sig: i32) -> i32 {
     if p.is_null() {
         return ESRCH;
     }
-    let id = (*p).id;
+    let id = (*p).id.load(Relaxed);
     let r = raw::syscall3(nr::TGKILL, pid() as u64, id as u64, sig as u64) as i64;
     if r < 0 {
         -r as i32
@@ -2016,7 +1946,7 @@ pub unsafe extern "C" fn pthread_setschedparam(
     policy: i32,
     param: *const i32,
 ) -> i32 {
-    registry_lock();
+    REGISTRY.lock();
     let p = find(handle);
     if p.is_null() {
         REGISTRY.unlock();
@@ -2024,7 +1954,7 @@ pub unsafe extern "C" fn pthread_setschedparam(
     }
     let r = raw::syscall3(
         nr::SCHED_SETSCHEDULER,
-        (*p).id as u64,
+        (*p).id.load(Relaxed) as u64,
         policy as u64,
         param as u64,
     ) as i64;
@@ -2044,19 +1974,19 @@ pub unsafe extern "C" fn pthread_getschedparam(
     if policy.is_null() || param.is_null() {
         return EINVAL;
     }
-    registry_lock();
+    REGISTRY.lock();
     let p = find(handle);
     if p.is_null() {
         REGISTRY.unlock();
         return ESRCH;
     }
-    let r = raw::syscall1(nr::SCHED_GETSCHEDULER, (*p).id as u64) as i64;
+    let r = raw::syscall1(nr::SCHED_GETSCHEDULER, (*p).id.load(Relaxed) as u64) as i64;
     if r < 0 {
         REGISTRY.unlock();
         return -r as i32;
     }
     *policy = r as i32;
-    let r = raw::syscall2(nr::SCHED_GETPARAM, (*p).id as u64, param as u64) as i64;
+    let r = raw::syscall2(nr::SCHED_GETPARAM, (*p).id.load(Relaxed) as u64, param as u64) as i64;
     REGISTRY.unlock();
     if r < 0 {
         -r as i32
@@ -2066,7 +1996,7 @@ pub unsafe extern "C" fn pthread_getschedparam(
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_setschedprio(handle: usize, priority: i32) -> i32 {
-    registry_lock();
+    REGISTRY.lock();
     let p = find(handle);
     if p.is_null() {
         REGISTRY.unlock();
@@ -2074,7 +2004,7 @@ pub unsafe extern "C" fn pthread_setschedprio(handle: usize, priority: i32) -> i
     }
     let r = raw::syscall2(
         nr::SCHED_SETPARAM,
-        (*p).id as u64,
+        (*p).id.load(Relaxed) as u64,
         &priority as *const i32 as u64,
     ) as i64;
     REGISTRY.unlock();
