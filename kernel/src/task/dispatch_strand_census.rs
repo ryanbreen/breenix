@@ -354,6 +354,7 @@ fn census_thread_fn() {
     loop {
         sleep_one_interval();
         report_heartbeat_if_due();
+        super::scheduler::probe_dump("census");
     }
 }
 

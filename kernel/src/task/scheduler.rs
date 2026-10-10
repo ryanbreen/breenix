@@ -3103,6 +3103,7 @@ impl Scheduler {
             .current_thread
             .unwrap_or(self.cpu_state[current_cpu].idle_thread);
         self.cpu_state[current_cpu].current_thread = Some(next_thread_id);
+        probe_note_dispatch(current_cpu, old_thread_id, next_thread_id);
         // x86_64: this CPU stays on the outgoing thread's kernel stack until its
         // `iretq`; no other CPU dispatches the thread before then.
         #[cfg(target_arch = "x86_64")]
@@ -6369,6 +6370,54 @@ pub fn register_cpu_idle_thread(cpu_id: usize, idle_thread: Box<Thread>) {
 }
 
 /// Add a thread to the scheduler
+
+// PROBE (temporary, never merged): placement and dispatch history.
+pub static PROBE_TRACK: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+pub static PROBE_RING: [AtomicU64; 128] = [const { AtomicU64::new(0) }; 128];
+pub static PROBE_RING_POS: AtomicU64 = AtomicU64::new(0);
+pub static PROBE_SPAWN: [AtomicU64; 4 * 4 + 1] = [const { AtomicU64::new(0) }; 17];
+
+fn probe_note_dispatch(cpu: usize, old: u64, next: u64) {
+    let a = PROBE_TRACK[0].load(Ordering::Relaxed);
+    let b = PROBE_TRACK[1].load(Ordering::Relaxed);
+    if a == 0 || !(old == a || old == b || next == a || next == b) {
+        return;
+    }
+    let pos = PROBE_RING_POS.fetch_add(1, Ordering::Relaxed);
+    if pos >= 64 {
+        return;
+    }
+    let us = crate::time::tsc::read_tsc() / (crate::time::tsc::frequency_hz() / 1_000_000).max(1);
+    PROBE_RING[(pos * 2) as usize].store(us, Ordering::Relaxed);
+    PROBE_RING[(pos * 2 + 1) as usize].store(((cpu as u64) << 48) | ((old & 0xffffff) << 24) | (next & 0xffffff), Ordering::Relaxed);
+}
+
+pub static PROBE_LAST_DUMP: AtomicU64 = AtomicU64::new(0);
+pub fn probe_dump(label: &str) {
+    let n = PROBE_RING_POS.load(Ordering::Relaxed).min(64);
+    if n == 0 || PROBE_LAST_DUMP.swap(n, Ordering::Relaxed) == n {
+        return;
+    }
+    let a = PROBE_TRACK[0].load(Ordering::Relaxed);
+    let b = PROBE_TRACK[1].load(Ordering::Relaxed);
+    let base = PROBE_RING[0].load(Ordering::Relaxed);
+    let mut line = alloc::string::String::new();
+    for i in 0..n as usize {
+        let us = PROBE_RING[i * 2].load(Ordering::Relaxed);
+        let w = PROBE_RING[i * 2 + 1].load(Ordering::Relaxed);
+        use core::fmt::Write;
+        let _ = write!(line, " +{}us:c{}:{}->{}", us.saturating_sub(base), w >> 48, (w >> 24) & 0xffffff, w & 0xffffff);
+    }
+    log::info!("[PROBE_RING {} track={},{} n={}]{}", label, a, b, n, line);
+}
+
+pub fn probe_reset(a: u64, b: u64) {
+    PROBE_LAST_DUMP.store(0, Ordering::Relaxed);
+    PROBE_RING_POS.store(0, Ordering::Relaxed);
+    PROBE_TRACK[0].store(a, Ordering::Relaxed);
+    PROBE_TRACK[1].store(b, Ordering::Relaxed);
+}
+
 pub fn spawn(thread: Box<Thread>) {
     note_scheduler_publication();
     // Disable interrupts to prevent timer interrupt deadlock
@@ -6376,6 +6425,14 @@ pub fn spawn(thread: Box<Thread>) {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             let target = scheduler.add_thread(thread);
+            PROBE_SPAWN[16].store(target as u64 | ((Scheduler::current_cpu_id() as u64) << 8), Ordering::Relaxed);
+            for cpu in 0..4usize.min(scheduler.online_cpu_count()) {
+                let st = &scheduler.cpu_state[cpu];
+                PROBE_SPAWN[cpu * 4].store(scheduler.cpu_load(cpu) as u64, Ordering::Relaxed);
+                PROBE_SPAWN[cpu * 4 + 1].store(scheduler.cpu_is_idle(cpu) as u64 | ((scheduler.cpu_accepts_wakeups(cpu) as u64) << 1), Ordering::Relaxed);
+                PROBE_SPAWN[cpu * 4 + 2].store(st.pending_next.or(st.current_thread).unwrap_or(0), Ordering::Relaxed);
+                PROBE_SPAWN[cpu * 4 + 3].store(scheduler.per_cpu_queues[cpu].len() as u64, Ordering::Relaxed);
+            }
             // Reschedule this CPU only if the thread was queued here; a thread
             // queued on another CPU is that CPU's to run, and asking this one
             // to reschedule would only preempt whatever it is running (#1172).

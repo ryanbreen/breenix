@@ -385,8 +385,22 @@ pub fn sys_clone(
     }
 
     // Add thread to scheduler
+    crate::task::scheduler::probe_dump("prev");
+    let probe_parent = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    crate::task::scheduler::probe_reset(probe_parent, child_thread_id);
     if let Some(thread_box) = scheduler_thread {
         crate::task::scheduler::spawn(thread_box);
+    }
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        let s = &crate::task::scheduler::PROBE_SPAWN;
+        let mut line = alloc::string::String::new();
+        for cpu in 0..4 {
+            use core::fmt::Write;
+            let _ = write!(line, " c{}:load={},idle|acc={},cur={},q={}", cpu, s[cpu*4].load(Relaxed), s[cpu*4+1].load(Relaxed), s[cpu*4+2].load(Relaxed), s[cpu*4+3].load(Relaxed));
+        }
+        let t = s[16].load(Relaxed);
+        log::info!("[PROBE_SPAWN child={} parent={} target={} from_cpu={}{}]", child_thread_id, probe_parent, t & 0xff, t >> 8, line);
     }
 
     log::info!(
