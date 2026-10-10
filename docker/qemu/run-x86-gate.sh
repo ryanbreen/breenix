@@ -344,11 +344,11 @@ for i in $(seq 1 "$COUNT"); do
     fi
     cat "$OUTDIR/stdout.log"
   elif [ -n "$SUITE" ]; then
-    # FORCING (temporary, never merged): five busy loops share host CPUs 0-3
+    # FORCING (temporary, never merged): eight busy loops share host CPUs 0-3
     # with the guest, ten nice levels below the gate's normal priority, and
     # the gate's own boot command is offset by the same ten levels.
     FORCE_HOGS=()
-    for _hog in 1 2 3 4 5; do
+    for _hog in 1 2 3 4 5 6 7 8; do
       nice -n 10 taskset -c 0-3 sh -c 'while :; do :; done' &
       FORCE_HOGS+=($!)
     done
