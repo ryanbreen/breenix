@@ -414,7 +414,7 @@ impl Process {
             sid: ProcessId(super::RESERVED_INIT_PID),
             cred: super::credentials::ProcessCredentials::root(),
             nice: 0,
-            cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::default()),
+            cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::new(id.as_u64())),
             // Standard default umask: owner rwx, group/other rx
             umask: 0o022,
             // Default working directory is root
@@ -663,7 +663,7 @@ impl Process {
         timers.virtual_timer.set_value(&self.itimers.virtual_timer.get_value(user), 0);
         timers.prof.set_value(&self.itimers.prof.get_value(total), 0);
         self.itimers = timers;
-        self.cpu = alloc::sync::Arc::new(crate::task::thread::CpuAccount::default());
+        self.cpu = alloc::sync::Arc::new(crate::task::thread::CpuAccount::new(id));
         if let Some(thread) = self.main_thread.as_mut() {
             thread.cpu_account = Some(self.cpu.clone());
             thread.signals = self.signals.thread.clone();
