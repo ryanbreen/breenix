@@ -1,10 +1,5 @@
 //! Interruptible sleep, separate from the precision clock syscall path.
 use super::{time::Timespec, userptr, SyscallResult};
-use crate::arch_impl::traits::CpuOps;
-#[cfg(target_arch = "aarch64")]
-type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
-#[cfg(target_arch = "x86_64")]
-type Cpu = crate::arch_impl::x86_64::cpu::X86Cpu;
 
 #[cfg(target_arch = "aarch64")]
 fn ensure_current_address_space() {
@@ -96,7 +91,7 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
         }
         crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
-        Cpu::halt_with_interrupts();
+        crate::arch_halt_while_blocked();
         crate::per_cpu::preempt_disable();
     };
     crate::task::scheduler::with_scheduler(|sched| {

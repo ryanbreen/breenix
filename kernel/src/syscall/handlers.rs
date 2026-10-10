@@ -919,7 +919,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                             crate::per_cpu::preempt_enable();
                             crate::task::scheduler::yield_current();
-                            crate::arch_halt_with_interrupts();
+                            crate::arch_halt_while_blocked();
                             crate::per_cpu::preempt_disable();
 
                             // Check if we were unblocked (thread state changed from Blocked)
@@ -1072,7 +1072,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                             crate::per_cpu::preempt_enable();
                             crate::task::scheduler::yield_current();
-                            crate::arch_halt_with_interrupts();
+                            crate::arch_halt_while_blocked();
                             crate::per_cpu::preempt_disable();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -1220,7 +1220,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                             crate::per_cpu::preempt_enable();
                             crate::task::scheduler::yield_current();
-                            crate::arch_halt_with_interrupts();
+                            crate::arch_halt_while_blocked();
                             crate::per_cpu::preempt_disable();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -1512,7 +1512,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                     crate::per_cpu::preempt_enable();
                     crate::task::scheduler::yield_current();
-                    crate::arch_halt_with_interrupts();
+                    crate::arch_halt_while_blocked();
                     crate::per_cpu::preempt_disable();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -1629,7 +1629,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                     crate::per_cpu::preempt_enable();
                     crate::task::scheduler::yield_current();
-                    crate::arch_halt_with_interrupts();
+                    crate::arch_halt_while_blocked();
                     crate::per_cpu::preempt_disable();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -1728,7 +1728,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                     crate::per_cpu::preempt_enable();
                     crate::task::scheduler::yield_current();
-                    crate::arch_halt_with_interrupts();
+                    crate::arch_halt_while_blocked();
                     crate::per_cpu::preempt_disable();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -1851,7 +1851,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                             crate::per_cpu::preempt_enable();
                             crate::task::scheduler::yield_current();
-                            crate::arch_halt_with_interrupts();
+                            crate::arch_halt_while_blocked();
                             crate::per_cpu::preempt_disable();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {

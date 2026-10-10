@@ -387,7 +387,7 @@ fn inspect(
                     "check_signals_for_eintr",
                     "with_scheduler",
                     "yield_current",
-                    "arch_halt_with_interrupts",
+                    "arch_halt_while_blocked",
                     "preempt_enable",
                     "preempt_disable",
                     "from",

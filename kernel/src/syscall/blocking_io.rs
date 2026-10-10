@@ -54,7 +54,7 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
         }
         crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
-        crate::arch_halt_with_interrupts();
+        crate::arch_halt_while_blocked();
         crate::per_cpu::preempt_disable();
     };
 

@@ -239,7 +239,7 @@ fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64
         }
         crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
-        crate::arch_halt_with_interrupts();
+        crate::arch_halt_while_blocked();
         crate::per_cpu::preempt_disable();
     }
 }

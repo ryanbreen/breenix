@@ -1352,7 +1352,7 @@ pub fn hold_stopped_thread_on_syscall_return() {
             Some(true) => {
                 crate::per_cpu::preempt_enable();
                 crate::task::scheduler::yield_current();
-                crate::arch_halt_with_interrupts();
+                crate::arch_halt_while_blocked();
                 crate::per_cpu::preempt_disable();
             }
             Some(false) => break,

@@ -238,7 +238,7 @@ fn prepared_sleep_owns_no_guard_and_cleans_up_eintr() {
     let defs = functions(&lex(&source));
     let sleep: Vec<_> = defs
         .iter()
-        .filter(|(_, f)| contains(&f.body, "arch_halt_with_interrupts()"))
+        .filter(|(_, f)| contains(&f.body, "arch_halt_while_blocked()"))
         .collect();
     assert_eq!(sleep.len(), 1, "one shared sleep lifecycle");
     let body = compact(&sleep[0].1.body);
