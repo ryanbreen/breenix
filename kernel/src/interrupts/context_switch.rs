@@ -150,6 +150,7 @@ fn note_dispatch_guard_available() {
 
 #[inline(always)]
 fn note_dispatch_guard_unavailable() {
+    crate::task::scheduler::PROBE_REFUSED.fetch_add(1, Ordering::Relaxed);
     let streak = DISPATCH_GUARD_UNAVAILABLE_STREAK
         .fetch_add(1, Ordering::Relaxed)
         .wrapping_add(1);

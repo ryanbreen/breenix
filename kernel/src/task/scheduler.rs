@@ -6382,7 +6382,14 @@ fn probe_note_dispatch(cpu: usize, old: u64, next: u64) {
     if a == 0 {
         return;
     }
-    let _ = (old, next);
+    if old == next {
+        return;
+    }
+    if next == PROBE_TRACK[1].load(Ordering::Relaxed) && cpu != 15 && PROBE_FIRST.load(Ordering::Relaxed) == 0 {
+        let us = crate::time::tsc::read_tsc() / (crate::time::tsc::frequency_hz() / 1_000_000).max(1);
+        PROBE_FIRST.store(us.max(1), Ordering::Relaxed);
+        PROBE_REFUSED_AT_SPAWN.store(PROBE_REFUSED.load(Ordering::Relaxed).wrapping_sub(PROBE_REFUSED_AT_SPAWN.load(Ordering::Relaxed)) | (1 << 62), Ordering::Relaxed);
+    }
     let pos = PROBE_RING_POS.fetch_add(1, Ordering::Relaxed);
     if pos >= 64 {
         return;
@@ -6393,6 +6400,9 @@ fn probe_note_dispatch(cpu: usize, old: u64, next: u64) {
 }
 
 pub static PROBE_LAST_DUMP: AtomicU64 = AtomicU64::new(0);
+pub static PROBE_REFUSED: AtomicU64 = AtomicU64::new(0);
+pub static PROBE_REFUSED_AT_SPAWN: AtomicU64 = AtomicU64::new(0);
+pub static PROBE_FIRST: AtomicU64 = AtomicU64::new(0);
 pub fn probe_dump(label: &str) {
     let n = PROBE_RING_POS.load(Ordering::Relaxed).min(64);
     if n == 0 || PROBE_LAST_DUMP.swap(n, Ordering::Relaxed) == n {
@@ -6415,12 +6425,16 @@ pub fn probe_dump(label: &str) {
         tids.push(w & 0xffffff);
     }
     let names = probe_names(&tids);
-    log::info!("[PROBE_RING {} track={},{} n={}]{} names:{}", label, a, b, n, line, names);
+    let first = PROBE_FIRST.load(Ordering::Relaxed);
+    let refused = PROBE_REFUSED_AT_SPAWN.load(Ordering::Relaxed);
+    log::info!("[PROBE_RING {} track={},{} n={} reader_first_us={} refused_before_first={}]{} names:{}", label, a, b, n, first.saturating_sub(base), if refused >> 62 == 1 { (refused & ((1 << 62) - 1)) as i64 } else { -1 }, line, names);
 }
 
 pub fn probe_reset(a: u64, b: u64) {
     PROBE_LAST_DUMP.store(0, Ordering::Relaxed);
     PROBE_TRACK[0].store(0, Ordering::Relaxed);
+    PROBE_FIRST.store(0, Ordering::Relaxed);
+    PROBE_REFUSED_AT_SPAWN.store(PROBE_REFUSED.load(Ordering::Relaxed), Ordering::Relaxed);
     PROBE_RING_POS.store(0, Ordering::Relaxed);
     PROBE_TRACK[1].store(b, Ordering::Relaxed);
     PROBE_TRACK[0].store(a, Ordering::Relaxed);
