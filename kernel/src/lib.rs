@@ -549,7 +549,6 @@ pub fn arch_halt_with_interrupts() {
 /// that read ends the halt, through `sti; hlt` on x86 and, on ARM64, a WFI with
 /// IRQs masked, which ends when one is pending and takes it as they unmask.
 pub fn arch_halt_while_blocked() {
-    per_cpu::note_wait_loop_park();
     // SAFETY: interrupts are masked only for the state read, and every path
     // below unmasks them before returning.
     unsafe { arch_disable_interrupts() };
@@ -564,6 +563,9 @@ pub fn arch_halt_while_blocked() {
         unsafe { arch_enable_interrupts() };
         return;
     }
+    // Counted only when the halt happens: a wake that already ended the wait
+    // is not a park.
+    per_cpu::note_wait_loop_park();
     #[cfg(target_arch = "x86_64")]
     x86_64::instructions::interrupts::enable_and_hlt();
     #[cfg(target_arch = "aarch64")]
