@@ -20,6 +20,16 @@ use core::arch::asm;
 /// ARM64: Uses Linux ARM64 (asm-generic/unistd.h) numbers for musl libc compatibility.
 #[cfg(target_arch = "x86_64")]
 pub mod nr {
+    pub const SCHED_SETPARAM: u64 = 142;
+    pub const SCHED_GETPARAM: u64 = 143;
+    pub const SCHED_SETSCHEDULER: u64 = 144;
+    pub const SCHED_GETSCHEDULER: u64 = 145;
+    pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
+    pub const SCHED_GET_PRIORITY_MIN: u64 = 147;
+    pub const SCHED_RR_GET_INTERVAL: u64 = 148;
+    pub const TGKILL: u64 = 234;
+    pub const SIGTIMEDWAIT: u64 = 128;
+
     // Linux x86_64 ABI numbers
     pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
@@ -161,6 +171,16 @@ pub mod nr {
 
 #[cfg(target_arch = "aarch64")]
 pub mod nr {
+    pub const SCHED_SETPARAM: u64 = 118;
+    pub const SCHED_GETPARAM: u64 = 121;
+    pub const SCHED_SETSCHEDULER: u64 = 119;
+    pub const SCHED_GETSCHEDULER: u64 = 120;
+    pub const SCHED_GET_PRIORITY_MAX: u64 = 125;
+    pub const SCHED_GET_PRIORITY_MIN: u64 = 126;
+    pub const SCHED_RR_GET_INTERVAL: u64 = 127;
+    pub const TGKILL: u64 = 131;
+    pub const SIGTIMEDWAIT: u64 = 137;
+
     // Linux ARM64 ABI numbers (asm-generic/unistd.h)
     // ARM64 Linux has NO legacy syscalls: use *at variants instead of
     // open/mkdir/rmdir/link/unlink/symlink/readlink/mknod/rename/access.

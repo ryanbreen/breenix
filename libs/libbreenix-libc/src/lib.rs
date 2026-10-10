@@ -52,17 +52,10 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 // Error Handling
 // =============================================================================
 
-/// Thread-local errno storage
-///
-/// Note: This is a simple static for now. Thread-local storage (TLS) will be
-/// implemented in Phase 4 when we add threading support.
-#[no_mangle]
-pub static mut ERRNO: i32 = 0;
-
-/// Returns a pointer to the thread-local errno variable.
+/// Returns the calling thread's errno slot.
 #[no_mangle]
 pub extern "C" fn __errno_location() -> *mut i32 {
-    core::ptr::addr_of_mut!(ERRNO)
+    pthread::errno_location()
 }
 
 /// Set errno from a negative syscall return value
@@ -74,7 +67,7 @@ fn set_errno_from_result(result: i64) -> i32 {
     if result < 0 {
         let errno_val = (-result) as i32;
         unsafe {
-            ERRNO = errno_val;
+            *__errno_location() = errno_val;
         }
         errno_val
     } else {
@@ -116,7 +109,7 @@ fn error_to_errno(e: &Error) -> i32 {
 /// Set errno from an Error and return -1
 #[inline]
 fn set_errno_from_error(e: Error) -> i32 {
-    unsafe { ERRNO = error_to_errno(&e); }
+    unsafe { *__errno_location() = error_to_errno(&e); }
     -1
 }
 
@@ -167,7 +160,7 @@ fn result_i64_to_c_int(result: Result<i64, Error>) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
     if buf.is_null() && count > 0 {
-        ERRNO = libbreenix::Errno::EFAULT as i32;
+        *__errno_location() = libbreenix::Errno::EFAULT as i32;
         return -1;
     }
 
@@ -186,7 +179,7 @@ pub unsafe extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
 #[no_mangle]
 pub unsafe extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
     if buf.is_null() && count > 0 {
-        ERRNO = libbreenix::Errno::EFAULT as i32;
+        *__errno_location() = libbreenix::Errno::EFAULT as i32;
         return -1;
     }
 
@@ -228,7 +221,7 @@ pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn pipe(pipefd: *mut i32) -> i32 {
     if pipefd.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -246,7 +239,7 @@ pub unsafe extern "C" fn pipe(pipefd: *mut i32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn pipe2(pipefd: *mut i32, flags: i32) -> i32 {
     if pipefd.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -290,7 +283,7 @@ pub struct Iovec {
 #[no_mangle]
 pub unsafe extern "C" fn open(path: *const u8, flags: i32, mode: u32) -> i32 {
     if path.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -322,7 +315,7 @@ pub unsafe extern "C" fn open(path: *const u8, flags: i32, mode: u32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn openat(dirfd: i32, path: *const u8, flags: i32, mode: u32) -> i32 {
     if path.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -340,7 +333,7 @@ pub unsafe extern "C" fn openat(dirfd: i32, path: *const u8, flags: i32, mode: u
 #[no_mangle]
 pub unsafe extern "C" fn fstat(fd: i32, buf: *mut u8) -> i32 {
     if buf.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -363,7 +356,7 @@ pub unsafe extern "C" fn stat(path: *const u8, buf: *mut u8) -> i32 {
 
 unsafe fn stat_by_path(path: *const u8, buf: *mut u8, flags: u64) -> i32 {
     if path.is_null() || buf.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
     const AT_FDCWD: i64 = -100;
@@ -429,7 +422,7 @@ pub unsafe extern "C" fn lseek64(fd: i32, offset: i64, whence: i32) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn readlink(path: *const u8, buf: *mut u8, bufsiz: usize) -> isize {
     if path.is_null() || buf.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -461,7 +454,7 @@ pub unsafe extern "C" fn readlink(path: *const u8, buf: *mut u8, bufsiz: usize) 
 #[no_mangle]
 pub unsafe extern "C" fn unlink(path: *const u8) -> i32 {
     if path.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -490,7 +483,7 @@ pub unsafe extern "C" fn unlink(path: *const u8) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn rename(oldpath: *const u8, newpath: *const u8) -> i32 {
     if oldpath.is_null() || newpath.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -521,7 +514,7 @@ pub unsafe extern "C" fn rename(oldpath: *const u8, newpath: *const u8) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn mkdir(path: *const u8, mode: u32) -> i32 {
     if path.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -551,7 +544,7 @@ pub unsafe extern "C" fn mkdir(path: *const u8, mode: u32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn rmdir(path: *const u8) -> i32 {
     if path.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -580,7 +573,7 @@ pub unsafe extern "C" fn rmdir(path: *const u8) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn link(oldpath: *const u8, newpath: *const u8) -> i32 {
     if oldpath.is_null() || newpath.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -618,7 +611,7 @@ pub unsafe extern "C" fn linkat(
     flags: i32,
 ) -> i32 {
     if oldpath.is_null() || newpath.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -637,7 +630,7 @@ pub unsafe extern "C" fn linkat(
 #[no_mangle]
 pub unsafe extern "C" fn symlink(target: *const u8, linkpath: *const u8) -> i32 {
     if target.is_null() || linkpath.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -667,7 +660,7 @@ pub unsafe extern "C" fn symlink(target: *const u8, linkpath: *const u8) -> i32 
 #[no_mangle]
 pub unsafe extern "C" fn access(path: *const u8, mode: i32) -> i32 {
     if path.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -700,7 +693,7 @@ pub unsafe extern "C" fn access(path: *const u8, mode: i32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn getcwd(buf: *mut u8, size: usize) -> *mut u8 {
     if buf.is_null() || size == 0 {
-        ERRNO = EINVAL;
+        *__errno_location() = EINVAL;
         return core::ptr::null_mut();
     }
 
@@ -722,7 +715,7 @@ pub unsafe extern "C" fn getcwd(buf: *mut u8, size: usize) -> *mut u8 {
 #[no_mangle]
 pub unsafe extern "C" fn chdir(path: *const u8) -> i32 {
     if path.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -783,7 +776,7 @@ pub unsafe extern "C" fn ioctl(fd: i32, request: u64, arg: u64) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn getdents64(fd: i32, buf: *mut u8, count: usize) -> isize {
     if buf.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -866,7 +859,7 @@ pub unsafe extern "C" fn chmod(path: *const u8, mode: u32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn fchmodat(fd: i32, path: *const u8, mode: u32, flags: i32) -> i32 {
     if flags != 0 {
-        ERRNO = if flags & !0x100 != 0 { EINVAL } else { 95 };
+        *__errno_location() = if flags & !0x100 != 0 { EINVAL } else { 95 };
         return -1;
     }
     syscall_result_to_c_int(libbreenix::raw::syscall3(libbreenix::syscall::nr::FCHMODAT, fd as u64, path as u64, mode as u64) as i64)
@@ -896,7 +889,7 @@ pub unsafe extern "C" fn umask(mask: u32) -> u32 {
 /// utimes - change file access and modification times
 #[no_mangle]
 pub unsafe extern "C" fn utimes(_path: *const u8, _times: *const u8) -> i32 {
-    ERRNO = ENOSYS;
+    *__errno_location() = ENOSYS;
     -1
 }
 
@@ -914,21 +907,22 @@ pub unsafe extern "C" fn fcntl(fd: i32, cmd: i32, arg: u64) -> i32 {
 /// Terminate the calling process.
 #[no_mangle]
 pub extern "C" fn exit(status: i32) -> ! {
-    libbreenix::process::exit(status)
+    unsafe { libbreenix::raw::syscall1(libbreenix::syscall::nr::EXIT_GROUP, status as u64); }
+    loop { core::hint::spin_loop(); }
 }
 
 /// Terminate the calling process immediately.
 #[no_mangle]
 pub extern "C" fn _exit(status: i32) -> ! {
-    libbreenix::process::exit(status)
+    unsafe { libbreenix::raw::syscall1(libbreenix::syscall::nr::EXIT_GROUP, status as u64); }
+    loop { core::hint::spin_loop(); }
 }
 
 /// Terminate all threads in the current process group.
-///
-/// For now this is equivalent to exit() since we are single-threaded per process.
 #[no_mangle]
 pub extern "C" fn exit_group(status: i32) -> ! {
-    libbreenix::process::exit(status)
+    unsafe { libbreenix::raw::syscall1(libbreenix::syscall::nr::EXIT_GROUP, status as u64); }
+    loop { core::hint::spin_loop(); }
 }
 
 /// set_tid_address - Store TID address for thread exit notification.
@@ -1016,7 +1010,7 @@ pub unsafe extern "C" fn execve(
     envp: *const *const u8,
 ) -> i32 {
     if path.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -1048,7 +1042,7 @@ pub extern "C" fn kill(pid: i32, sig: i32) -> i32 {
 /// raise - send a signal to the calling process
 #[no_mangle]
 pub extern "C" fn raise(sig: i32) -> i32 {
-    kill(getpid(), sig)
+    syscall_result_to_c_int(pthread::signal_current(sig))
 }
 
 // =============================================================================
@@ -1077,7 +1071,7 @@ pub unsafe extern "C" fn mmap(
 
     let result_signed = result as i64;
     if result_signed < 0 && result_signed >= -4096 {
-        ERRNO = (-result_signed) as i32;
+        *__errno_location() = (-result_signed) as i32;
         libbreenix::memory::MAP_FAILED
     } else {
         result as *mut u8
@@ -1102,7 +1096,7 @@ pub unsafe extern "C" fn brk(addr: *mut u8) -> i32 {
     let result = libbreenix::memory::brk(addr as u64);
 
     if result == 0 && !addr.is_null() {
-        ERRNO = libbreenix::Errno::ENOMEM as i32;
+        *__errno_location() = libbreenix::Errno::ENOMEM as i32;
         -1
     } else {
         0
@@ -1117,14 +1111,14 @@ pub unsafe extern "C" fn sbrk(increment: isize) -> *mut u8 {
     }
 
     if increment < 0 {
-        ERRNO = libbreenix::Errno::EINVAL as i32;
+        *__errno_location() = libbreenix::Errno::EINVAL as i32;
         return usize::MAX as *mut u8;
     }
 
     let result = libbreenix::memory::sbrk(increment as usize);
 
     if result.is_null() {
-        ERRNO = libbreenix::Errno::ENOMEM as i32;
+        *__errno_location() = libbreenix::Errno::ENOMEM as i32;
         usize::MAX as *mut u8
     } else {
         result
@@ -1265,6 +1259,7 @@ extern "C" fn _start_rust(sp: *const u64) -> ! {
         // envp starts after argv NULL terminator: sp + 1 (argc) + argc + 1 (NULL)
         let envp = sp.add(1 + argc as usize + 1) as *const *const u8;
         environ = envp as usize;
+        pthread::startup(envp);
 
         extern "C" {
             fn main(argc: isize, argv: *const *const u8) -> isize;
@@ -1305,7 +1300,7 @@ pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
     }
     let capacity = class.map_or(size, alloc_cache::capacity);
     let Some(total_size) = capacity.checked_add(ALLOC_HEADER_SIZE) else {
-        ERRNO = ENOMEM;
+        *__errno_location() = ENOMEM;
         return core::ptr::null_mut();
     };
     let ptr = mmap(
@@ -1552,7 +1547,7 @@ pub unsafe extern "C" fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> i
     );
     let ret = ret as i64;
     if ret < 0 {
-        ERRNO = (-ret) as i32;
+        *__errno_location() = (-ret) as i32;
         -1
     } else {
         ret as isize
@@ -1579,6 +1574,17 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
         _SC_PAGESIZE => 4096,
         _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => 1,
         _SC_GETPW_R_SIZE_MAX | _SC_GETGR_R_SIZE_MAX => 1024,
+        67 | 77 | 78 | 133 => 200809, // threads, stack attributes, barriers
+        73 => 4, // PTHREAD_DESTRUCTOR_ITERATIONS
+        74 => -1, // keys grow until allocation fails; no fixed limit
+        79 => {
+            // Advertise the optional scheduling interface only on kernels that
+            // provide it; wrappers still report ENOSYS on an older kernel.
+            let r = unsafe { libbreenix::raw::syscall1(libbreenix::syscall::nr::SCHED_GET_PRIORITY_MIN, 0) } as i64;
+            if r >= 0 { 200809 } else { -1 }
+        },
+        80 | 81 => -1, // priority inheritance/protection are not provided
+        75 => 16384, // PTHREAD_STACK_MIN
         _ => -1,
     }
 }
@@ -1955,7 +1961,7 @@ pub unsafe extern "C" fn sigprocmask(
 #[no_mangle]
 pub unsafe extern "C" fn clock_gettime(clk_id: i32, tp: *mut u8) -> i32 {
     if tp.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -1978,7 +1984,7 @@ pub unsafe extern "C" fn nanosleep(req: *const u8, rem: *mut u8) -> i32 {
     );
     let ret = ret as i64;
     if ret < 0 {
-        ERRNO = (-ret) as i32;
+        *__errno_location() = (-ret) as i32;
         -1
     } else {
         0
@@ -1999,7 +2005,7 @@ pub extern "C" fn socket(domain: i32, sock_type: i32, protocol: i32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn bind(sockfd: i32, addr: *const u8, addrlen: u32) -> i32 {
     if addr.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -2046,7 +2052,7 @@ pub unsafe extern "C" fn accept4(
 #[no_mangle]
 pub unsafe extern "C" fn connect(sockfd: i32, addr: *const u8, addrlen: u32) -> i32 {
     if addr.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -2120,14 +2126,14 @@ pub unsafe extern "C" fn recvfrom(
 /// sendmsg - send a message on a socket
 #[no_mangle]
 pub unsafe extern "C" fn sendmsg(_sockfd: i32, _msg: *const u8, _flags: i32) -> isize {
-    ERRNO = ENOSYS;
+    *__errno_location() = ENOSYS;
     -1
 }
 
 /// recvmsg - receive a message from a socket
 #[no_mangle]
 pub unsafe extern "C" fn recvmsg(_sockfd: i32, _msg: *mut u8, _flags: i32) -> isize {
-    ERRNO = ENOSYS;
+    *__errno_location() = ENOSYS;
     -1
 }
 
@@ -2218,7 +2224,7 @@ pub unsafe extern "C" fn socketpair(
     sv: *mut i32,
 ) -> i32 {
     if sv.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return -1;
     }
 
@@ -2260,7 +2266,7 @@ pub unsafe extern "C" fn select(
             } else {
                 let tv = core::ptr::read_unaligned(timeout as *const [i64; 2]);
                 if tv[0] < 0 || tv[1] < 0 || tv[1] >= 1_000_000 {
-                    ERRNO = EINVAL;
+                    *__errno_location() = EINVAL;
                     return -1;
                 }
                 Some([tv[0], tv[1] * 1000])
@@ -2339,13 +2345,9 @@ pub extern "C" fn pause() -> i32 {
 /// syscall - generic syscall interface
 #[no_mangle]
 pub unsafe extern "C" fn syscall(num: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) -> i64 {
-    let sys_futex = libbreenix::syscall::nr::FUTEX as i64;
     let sys_getrandom = libbreenix::syscall::nr::GETRANDOM as i64;
 
-    match num {
-        n if n == sys_futex => {
-            0
-        }
+    let result = match num {
         n if n == sys_getrandom => {
             -(ENOSYS as i64)
         }
@@ -2361,7 +2363,8 @@ pub unsafe extern "C" fn syscall(num: i64, a1: i64, a2: i64, a3: i64, a4: i64, a
                 a6 as u64,
             ) as i64
         }
-    }
+    };
+    if result < 0 { set_errno_from_result(result); -1 } else { result }
 }
 
 // =============================================================================
@@ -2375,560 +2378,7 @@ pub extern "C" fn sched_yield() -> i32 {
     0
 }
 
-// =============================================================================
-// Thread-Local Storage and Pthread Functions
-// =============================================================================
-
-/// pthread_self - get current thread ID
-#[no_mangle]
-pub extern "C" fn pthread_self() -> usize {
-    unsafe {
-        libbreenix::syscall::raw::syscall0(libbreenix::syscall::nr::GETTID) as usize
-    }
-}
-
-/// Clone flags for thread creation
-const CLONE_VM: u64 = 0x00000100;
-const CLONE_FS: u64 = 0x00000200;
-const CLONE_FILES: u64 = 0x00000400;
-const CLONE_SIGHAND: u64 = 0x00000800;
-const CLONE_THREAD: u64 = 0x00010000;
-const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
-const CLONE_CHILD_SETTID: u64 = 0x01000000;
-
-/// Futex operation codes
-const FUTEX_WAIT: u32 = 0;
-const FUTEX_WAKE: u32 = 1;
-
-/// Thread start info passed through the heap to the child thread
-#[repr(C)]
-struct ThreadStartInfo {
-    func: extern "C" fn(*mut u8) -> *mut u8,
-    arg: *mut u8,
-    /// Address of the tid word that gets cleared on thread exit (for join)
-    tid_addr: *mut u32,
-}
-
-/// Entry point for child threads created by pthread_create.
-/// This function is set as the RIP for the new thread by the kernel's clone syscall.
-/// RDI contains the pointer to a heap-allocated ThreadStartInfo.
-extern "C" fn thread_entry(info_ptr: u64) -> ! {
-    unsafe {
-        let info = info_ptr as *mut ThreadStartInfo;
-        let func = (*info).func;
-        let arg = (*info).arg;
-        // Don't free info - it's in shared memory and the parent may be reading tid_addr
-        // The start info is small and will be cleaned up when the process exits.
-
-        // Call the user's thread function
-        func(arg);
-
-        // Thread function returned - exit this thread
-        libbreenix::process::exit(0);
-    }
-}
-
-/// pthread_create - create a new thread
-#[no_mangle]
-pub unsafe extern "C" fn pthread_create(
-    thread: *mut usize,
-    _attr: *const u8,
-    start_routine: extern "C" fn(*mut u8) -> *mut u8,
-    arg: *mut u8,
-) -> i32 {
-    // Allocate stack for the child thread (2MB)
-    let stack_size: usize = 2 * 1024 * 1024;
-    let stack_base = mmap(
-        core::ptr::null_mut(),
-        stack_size,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS,
-        -1,
-        0,
-    );
-    if stack_base == MAP_FAILED {
-        return ENOMEM;
-    }
-
-    // Stack grows downward - child_stack is the top of the stack
-    // Ensure 16-byte alignment
-    let stack_top = (stack_base as usize + stack_size) & !0xF;
-
-    // Allocate ThreadStartInfo on the heap (shared memory via CLONE_VM)
-    // We use mmap to allocate since we don't have a proper allocator here
-    let info_mem = mmap(
-        core::ptr::null_mut(),
-        4096,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS,
-        -1,
-        0,
-    );
-    if info_mem == MAP_FAILED {
-        munmap(stack_base, stack_size);
-        return ENOMEM;
-    }
-
-    let info = info_mem as *mut ThreadStartInfo;
-    (*info).func = start_routine;
-    (*info).arg = arg;
-
-    // The tid word follows the ThreadStartInfo struct
-    // This is the address that gets written to 0 on thread exit and futex-woken
-    let tid_addr = (info_mem as usize + core::mem::size_of::<ThreadStartInfo>()) as *mut u32;
-    (*info).tid_addr = tid_addr;
-    // Initialize tid to a non-zero value (will be set by kernel via CLONE_CHILD_SETTID)
-    *tid_addr = 0xFFFF;
-
-    // Clone flags for thread creation
-    let flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND
-        | CLONE_THREAD | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID;
-
-    // Call clone syscall: clone(flags, child_stack, fn_ptr, fn_arg, child_tidptr)
-    let ret = libbreenix::syscall::raw::syscall5(
-        libbreenix::syscall::nr::CLONE,
-        flags,
-        stack_top as u64,
-        thread_entry as u64,
-        info as u64,
-        tid_addr as u64,
-    ) as i64;
-
-    if ret < 0 {
-        munmap(stack_base, stack_size);
-        munmap(info_mem, 4096);
-        return -(ret as i32);
-    }
-
-    // Store the thread handle (we use the tid_addr as the handle since
-    // pthread_join needs to know where to futex-wait)
-    if !thread.is_null() {
-        *thread = tid_addr as usize;
-    }
-
-    0
-}
-
-/// pthread_join - wait for thread termination
-#[no_mangle]
-pub extern "C" fn pthread_join(thread: usize, _retval: *mut *mut u8) -> i32 {
-    if thread == 0 {
-        return EINVAL;
-    }
-
-    // thread is the tid_addr pointer set up by pthread_create
-    let tid_addr = thread as *const u32;
-
-    // Wait for the tid word to become 0 (kernel writes 0 on thread exit)
-    loop {
-        let tid_val = unsafe { core::ptr::read_volatile(tid_addr) };
-        if tid_val == 0 {
-            // Thread has exited
-            return 0;
-        }
-
-        // FUTEX_WAIT: block until *tid_addr != tid_val
-        unsafe {
-            libbreenix::syscall::raw::syscall6(
-                libbreenix::syscall::nr::FUTEX,
-                tid_addr as u64,
-                FUTEX_WAIT as u64,
-                tid_val as u64,
-                0, // no timeout
-                0, // uaddr2 unused
-                0, // val3 unused
-            );
-        }
-        // Loop back to check - may have been spuriously woken
-    }
-}
-
-/// pthread_detach - detach a thread (stub - returns 0)
-#[no_mangle]
-pub extern "C" fn pthread_detach(_thread: usize) -> i32 {
-    0
-}
-
-/// pthread_key_create - create a thread-local key
-#[no_mangle]
-pub unsafe extern "C" fn pthread_key_create(
-    key: *mut u32,
-    _destructor: Option<unsafe extern "C" fn(*mut u8)>,
-) -> i32 {
-    static mut NEXT_KEY: u32 = 0;
-    *key = NEXT_KEY;
-    NEXT_KEY += 1;
-    0
-}
-
-/// pthread_key_delete - delete a thread-local key
-#[no_mangle]
-pub extern "C" fn pthread_key_delete(_key: u32) -> i32 {
-    0
-}
-
-/// pthread_getspecific - get thread-local value
-#[no_mangle]
-pub extern "C" fn pthread_getspecific(_key: u32) -> *mut u8 {
-    core::ptr::null_mut()
-}
-
-/// pthread_setspecific - set thread-local value
-#[no_mangle]
-pub extern "C" fn pthread_setspecific(_key: u32, _value: *const u8) -> i32 {
-    0
-}
-
-/// pthread_getattr_np - get thread attributes
-#[no_mangle]
-pub extern "C" fn pthread_getattr_np(_thread: usize, _attr: *mut u8) -> i32 {
-    0
-}
-
-/// pthread_attr_init - initialize thread attributes
-#[no_mangle]
-pub extern "C" fn pthread_attr_init(_attr: *mut u8) -> i32 {
-    0
-}
-
-/// pthread_attr_destroy - destroy thread attributes
-#[no_mangle]
-pub extern "C" fn pthread_attr_destroy(_attr: *mut u8) -> i32 {
-    0
-}
-
-/// pthread_attr_setstacksize - set stack size attribute
-#[no_mangle]
-pub extern "C" fn pthread_attr_setstacksize(_attr: *mut u8, _stacksize: usize) -> i32 {
-    0
-}
-
-/// pthread_attr_getstack - get stack attributes
-#[no_mangle]
-pub unsafe extern "C" fn pthread_attr_getstack(
-    _attr: *const u8,
-    stackaddr: *mut *mut u8,
-    stacksize: *mut usize,
-) -> i32 {
-    *stackaddr = 0x7fff0000_00000000_u64 as *mut u8;
-    *stacksize = 8 * 1024 * 1024; // 8 MB stack
-    0
-}
-
-/// pthread_attr_getguardsize - get guard size attribute
-#[no_mangle]
-pub unsafe extern "C" fn pthread_attr_getguardsize(
-    _attr: *const u8,
-    guardsize: *mut usize,
-) -> i32 {
-    if !guardsize.is_null() {
-        *guardsize = 4096; // One page guard
-    }
-    0
-}
-
-/// pthread_attr_setguardsize - set guard size attribute
-#[no_mangle]
-pub extern "C" fn pthread_attr_setguardsize(_attr: *mut u8, _guardsize: usize) -> i32 {
-    0
-}
-
-/// pthread_setname_np - set thread name
-#[no_mangle]
-pub extern "C" fn pthread_setname_np(_thread: usize, _name: *const u8) -> i32 {
-    0
-}
-
-// =============================================================================
-// Pthread Mutex Functions (futex-based)
-// =============================================================================
-//
-// Mutex state word (u32 at the start of pthread_mutex_t):
-//   0 = unlocked
-//   1 = locked, no waiters
-//   2 = locked, one or more waiters
-//
-// This is a standard futex-based mutex following the Drepper "Futexes Are Tricky" pattern.
-
-/// Helper: perform a futex_wait syscall on `addr`. Blocks if *addr == expected.
-#[inline]
-unsafe fn futex_wait(addr: *const u32, expected: u32) {
-    libbreenix::syscall::raw::syscall6(
-        libbreenix::syscall::nr::FUTEX,
-        addr as u64,
-        FUTEX_WAIT as u64,
-        expected as u64,
-        0, // no timeout
-        0,
-        0,
-    );
-}
-
-/// Helper: perform a futex_wake syscall on `addr`. Wakes up to `count` waiters.
-#[inline]
-unsafe fn futex_wake(addr: *const u32, count: u32) {
-    libbreenix::syscall::raw::syscall6(
-        libbreenix::syscall::nr::FUTEX,
-        addr as u64,
-        FUTEX_WAKE as u64,
-        count as u64,
-        0,
-        0,
-        0,
-    );
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_mutex_init(mutex: *mut u8, _attr: *const u8) -> i32 {
-    if mutex.is_null() {
-        return EINVAL;
-    }
-    // Zero-initialize the mutex state word
-    unsafe {
-        core::ptr::write_volatile(mutex as *mut u32, 0);
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_mutex_destroy(_mutex: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_mutex_lock(mutex: *mut u8) -> i32 {
-    if mutex.is_null() {
-        return EINVAL;
-    }
-    let state = mutex as *mut u32;
-    unsafe {
-        // Fast path: try CAS 0 -> 1 (unlocked -> locked, no waiters)
-        let old = atomic_cmpxchg_u32(state, 0, 1);
-        if old == 0 {
-            return 0; // Acquired
-        }
-
-        // Slow path: set state to 2 (locked with waiters) and wait
-        // If old was 1, swap to 2 so unlock knows to wake
-        let mut c = old;
-        if c != 2 {
-            c = atomic_xchg_u32(state, 2);
-        }
-        while c != 0 {
-            futex_wait(state, 2);
-            c = atomic_xchg_u32(state, 2);
-        }
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_mutex_trylock(mutex: *mut u8) -> i32 {
-    if mutex.is_null() {
-        return EINVAL;
-    }
-    let state = mutex as *mut u32;
-    unsafe {
-        let old = atomic_cmpxchg_u32(state, 0, 1);
-        if old == 0 { 0 } else { EBUSY }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_mutex_unlock(mutex: *mut u8) -> i32 {
-    if mutex.is_null() {
-        return EINVAL;
-    }
-    let state = mutex as *mut u32;
-    unsafe {
-        // Atomically decrement. If old state was 2 (waiters), we need to wake.
-        let old = atomic_xchg_u32(state, 0);
-        if old == 2 {
-            // There were waiters - wake one
-            futex_wake(state, 1);
-        }
-    }
-    0
-}
-
-/// Atomic compare-and-exchange for u32. Returns the previous value.
-#[inline]
-unsafe fn atomic_cmpxchg_u32(ptr: *mut u32, expected: u32, desired: u32) -> u32 {
-    use core::sync::atomic::{AtomicU32, Ordering};
-    let atomic = &*(ptr as *const AtomicU32);
-    match atomic.compare_exchange(expected, desired, Ordering::Acquire, Ordering::Relaxed) {
-        Ok(v) => v,
-        Err(v) => v,
-    }
-}
-
-/// Atomic exchange for u32. Returns the previous value.
-#[inline]
-unsafe fn atomic_xchg_u32(ptr: *mut u32, val: u32) -> u32 {
-    use core::sync::atomic::{AtomicU32, Ordering};
-    let atomic = &*(ptr as *const AtomicU32);
-    atomic.swap(val, Ordering::AcqRel)
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_mutexattr_init(_attr: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_mutexattr_destroy(_attr: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_mutexattr_settype(_attr: *mut u8, _kind: i32) -> i32 {
-    0
-}
-
-// =============================================================================
-// Pthread Condition Variable Functions (futex-based)
-// =============================================================================
-//
-// Uses a sequence counter pattern:
-//   - The first u32 of pthread_cond_t is a sequence number.
-//   - signal/broadcast increments the sequence and wakes waiters.
-//   - wait reads the sequence, releases the mutex, then futex_waits on the
-//     sequence value. On wakeup it re-acquires the mutex.
-
-#[no_mangle]
-pub extern "C" fn pthread_cond_init(cond: *mut u8, _attr: *const u8) -> i32 {
-    if cond.is_null() {
-        return EINVAL;
-    }
-    unsafe {
-        core::ptr::write_volatile(cond as *mut u32, 0);
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_cond_destroy(_cond: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_cond_signal(cond: *mut u8) -> i32 {
-    if cond.is_null() {
-        return EINVAL;
-    }
-    let seq = cond as *mut u32;
-    unsafe {
-        // Increment sequence counter
-        let atomic = &*(seq as *const core::sync::atomic::AtomicU32);
-        atomic.fetch_add(1, core::sync::atomic::Ordering::Release);
-        // Wake one waiter
-        futex_wake(seq, 1);
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_cond_broadcast(cond: *mut u8) -> i32 {
-    if cond.is_null() {
-        return EINVAL;
-    }
-    let seq = cond as *mut u32;
-    unsafe {
-        let atomic = &*(seq as *const core::sync::atomic::AtomicU32);
-        atomic.fetch_add(1, core::sync::atomic::Ordering::Release);
-        // Wake all waiters
-        futex_wake(seq, u32::MAX);
-    }
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_cond_wait(cond: *mut u8, mutex: *mut u8) -> i32 {
-    if cond.is_null() || mutex.is_null() {
-        return EINVAL;
-    }
-    let seq = cond as *mut u32;
-    unsafe {
-        // Read current sequence before releasing mutex
-        let atomic = &*(seq as *const core::sync::atomic::AtomicU32);
-        let current_seq = atomic.load(core::sync::atomic::Ordering::Acquire);
-
-        // Release the mutex
-        pthread_mutex_unlock(mutex);
-
-        // Block until sequence changes (signal/broadcast increments it)
-        futex_wait(seq, current_seq);
-
-        // Re-acquire the mutex before returning
-        pthread_mutex_lock(mutex);
-    }
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn pthread_cond_timedwait(
-    cond: *mut u8,
-    mutex: *mut u8,
-    _abstime: *const u8,
-) -> i32 {
-    // For now, delegate to regular wait (no timeout support yet).
-    // Real timedwait would pass a timeout to futex_wait.
-    pthread_cond_wait(cond, mutex)
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_condattr_init(_attr: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_condattr_destroy(_attr: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_condattr_setclock(_attr: *mut u8, _clock: i32) -> i32 {
-    0
-}
-
-// =============================================================================
-// Pthread Read-Write Lock Functions (no-op stubs)
-// =============================================================================
-
-#[no_mangle]
-pub extern "C" fn pthread_rwlock_init(_rwlock: *mut u8, _attr: *const u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_rwlock_destroy(_rwlock: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_rwlock_rdlock(_rwlock: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_rwlock_tryrdlock(_rwlock: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_rwlock_wrlock(_rwlock: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_rwlock_trywrlock(_rwlock: *mut u8) -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn pthread_rwlock_unlock(_rwlock: *mut u8) -> i32 {
-    0
-}
+mod pthread;
 
 // =============================================================================
 // Additional libc functions needed by Rust std
@@ -2985,7 +2435,7 @@ const O_DIRECTORY: i32 = 0o200000;
 #[no_mangle]
 pub unsafe extern "C" fn opendir(name: *const u8) -> *mut Dir {
     if name.is_null() {
-        ERRNO = EFAULT;
+        *__errno_location() = EFAULT;
         return core::ptr::null_mut();
     }
 
@@ -3001,7 +2451,7 @@ pub unsafe extern "C" fn opendir(name: *const u8) -> *mut Dir {
     let ptr = sbrk(dir_size as isize) as *mut Dir;
     if ptr.is_null() || (ptr as usize) == usize::MAX {
         close(fd);
-        ERRNO = libbreenix::Errno::ENOMEM as i32;
+        *__errno_location() = libbreenix::Errno::ENOMEM as i32;
         return core::ptr::null_mut();
     }
 
@@ -3107,7 +2557,7 @@ pub unsafe extern "C" fn readdir_r(
 #[no_mangle]
 pub unsafe extern "C" fn closedir(dirp: *mut Dir) -> i32 {
     if dirp.is_null() {
-        ERRNO = EINVAL;
+        *__errno_location() = EINVAL;
         return -1;
     }
 
@@ -3121,7 +2571,7 @@ pub unsafe extern "C" fn closedir(dirp: *mut Dir) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn dirfd(dirp: *mut Dir) -> i32 {
     if dirp.is_null() {
-        ERRNO = EINVAL;
+        *__errno_location() = EINVAL;
         return -1;
     }
     (*dirp).fd
@@ -3130,7 +2580,7 @@ pub unsafe extern "C" fn dirfd(dirp: *mut Dir) -> i32 {
 /// futimens - change file timestamps with nanosecond precision
 #[no_mangle]
 pub unsafe extern "C" fn futimens(_fd: i32, _times: *const u8) -> i32 {
-    ERRNO = ENOSYS;
+    *__errno_location() = ENOSYS;
     -1
 }
 
@@ -3202,7 +2652,7 @@ pub struct CItimerval {
 pub unsafe extern "C" fn setitimer(which: i32, new_value: *const CItimerval, old_value: *mut CItimerval) -> i32 {
     // Convert C structs to libbreenix types
     if new_value.is_null() {
-        ERRNO = EINVAL;
+        *__errno_location() = EINVAL;
         return -1;
     }
 
@@ -3244,7 +2694,7 @@ pub unsafe extern "C" fn setitimer(which: i32, new_value: *const CItimerval, old
 #[no_mangle]
 pub unsafe extern "C" fn getitimer(which: i32, curr_value: *mut CItimerval) -> i32 {
     if curr_value.is_null() {
-        ERRNO = EINVAL;
+        *__errno_location() = EINVAL;
         return -1;
     }
 
@@ -3267,12 +2717,12 @@ pub unsafe extern "C" fn getitimer(which: i32, curr_value: *mut CItimerval) -> i
 #[no_mangle]
 pub unsafe extern "C" fn sigsuspend(mask: *const u64) -> i32 {
     if mask.is_null() {
-        ERRNO = EINVAL;
+        *__errno_location() = EINVAL;
         return -1;
     }
     let _ret = libbreenix::signal::sigsuspend(&*mask);
     // sigsuspend always returns -1 with EINTR
-    ERRNO = 4; // EINTR
+    *__errno_location() = 4; // EINTR
     -1
 }
 
