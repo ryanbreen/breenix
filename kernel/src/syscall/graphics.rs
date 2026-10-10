@@ -1934,6 +1934,25 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
         new_num_pages
     );
 
+    let total_size = new_num_pages as u64 * PAGE_SIZE;
+    let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
+    if new_addr < crate::memory::vma::MMAP_REGION_START {
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+    }
+    if let Err(errno) = process.memory_locks.reserve_split() {
+        return SyscallResult::Err(errno);
+    }
+    // Prepare replacement accounting before retiring the old mapping.
+    let released = old_mapping
+        - process
+            .memory_locks
+            .additional(old_vaddr, old_vaddr + old_mapping);
+    if let Err(errno) =
+        super::memory_advice::prepare_future(process, total_size.saturating_sub(released))
+    {
+        return SyscallResult::Err(errno);
+    }
+
     // Allocate new physical pages
     let mut new_phys_addrs = alloc::vec::Vec::with_capacity(new_num_pages);
     for _ in 0..new_num_pages {
@@ -2003,13 +2022,11 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
 
     // Remove old VMA
     process.vmas.retain(|vma| vma.start.as_u64() != old_vaddr);
+    process
+        .memory_locks
+        .remove(old_vaddr, old_vaddr + old_mapping);
 
     // Map new pages at a new virtual address
-    let total_size = (new_num_pages as u64) * PAGE_SIZE;
-    let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
-    if new_addr < crate::memory::vma::MMAP_REGION_START {
-        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
-    }
     process.mmap_hint = new_addr;
 
     let page_flags = prot_to_page_flags(Protection::from_bits_truncate(3));
@@ -2042,6 +2059,7 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
         MmapFlags::from_bits_truncate(0x21),
     );
     process.vmas.push(vma);
+    super::memory_advice::record_future(process, new_addr, new_addr + total_size);
 
     // Update registry
     {
@@ -2143,6 +2161,9 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     if new_addr < crate::memory::vma::MMAP_REGION_START {
         return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     }
+    if let Err(errno) = super::memory_advice::prepare_future(process, total_size) {
+        return SyscallResult::Err(errno);
+    }
     process.mmap_hint = new_addr;
 
     let page_table = match process.page_table.as_mut() {
@@ -2173,6 +2194,7 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
         MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
     );
     process.vmas.push(vma);
+    super::memory_advice::record_future(process, new_addr, new_addr + total_size);
 
     crate::serial_println!(
         "[compositor] Mapped window {} into BWM: virt={:#x}, {}x{}, {} pages",
@@ -2265,6 +2287,9 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
     if new_addr < crate::memory::vma::MMAP_REGION_START {
         return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     }
+    if let Err(errno) = super::memory_advice::prepare_future(process, total_size) {
+        return SyscallResult::Err(errno);
+    }
     process.mmap_hint = new_addr;
 
     let page_table = match process.page_table.as_mut() {
@@ -2296,6 +2321,7 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
         MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
     );
     process.vmas.push(vma);
+    super::memory_advice::record_future(process, new_addr, new_addr + total_size);
 
     crate::serial_println!(
         "[compositor] Mapped compositor buffer into process: virt={:#x}, {}x{}, {} pages (backend={:?})",
@@ -2945,12 +2971,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // `pane.user_stride` bytes, mapped with pre-allocated frames, and the copy is
     // clipped to it.
     let copied = unsafe {
-        crate::logger::copy_to_display(
-            pane.user_addr as *const u8,
-            pane.user_stride,
-            rows,
-            columns,
-        )
+        crate::logger::copy_to_display(pane.user_addr as *const u8, pane.user_stride, rows, columns)
     };
     if copied {
         SyscallResult::Ok(0)
@@ -3089,8 +3110,7 @@ fn fbmmap(width_out: u64) -> SyscallResult {
 
     #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
     let (pane_width, height, bpp) = {
-        let Some((width, height, _stride, bpp, _is_bgr)) = crate::logger::display_geometry()
-        else {
+        let Some((width, height, _stride, bpp, _is_bgr)) = crate::logger::display_geometry() else {
             return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
         };
         let pane_width = if whole_screen { width } else { width / 2 };
@@ -3291,4 +3311,3 @@ fn fbmmap(width_out: u64) -> SyscallResult {
 
     SyscallResult::Ok(start_addr)
 }
-

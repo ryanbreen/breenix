@@ -604,6 +604,7 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
         page_table.abandon(AbandonReason::NoProofPipeline);
     }
     process.vmas.clear();
+    process.memory_locks.clear();
     #[cfg(target_arch = "x86_64")]
     debug_assert!(process.page_table.is_none());
     drop(process.stack.take());
@@ -681,6 +682,7 @@ pub(crate) fn defer_process_resources(
     // The mappings go with the table; their file bindings must not outlive
     // the row's address space in a zombie.
     process.vmas.clear();
+    process.memory_locks.clear();
     #[cfg(target_arch = "x86_64")]
     if let Some(page_table) = page_table.as_ref() {
         clear_shadow_root(page_table.level_4_frame().start_address().as_u64());
@@ -902,6 +904,7 @@ impl ProcessScheduler {
                                 page_table.abandon(AbandonReason::AlreadyTerminated);
                             }
                             process.vmas.clear();
+                            process.memory_locks.clear();
                             drop(process.stack.take());
                             process.pending_old_page_tables.clear();
                             None

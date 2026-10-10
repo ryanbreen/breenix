@@ -28,11 +28,25 @@ impl MemoryLocks {
                 .sum::<u64>()
     }
 
-    pub fn insert(&mut self, mut start: u64, mut end: u64) -> Result<(), u64> {
+    pub fn insert(&mut self, start: u64, end: u64) -> Result<(), u64> {
+        self.ranges.try_reserve(2).map_err(|_| ENOMEM as u64)?;
+        self.insert_reserved(start, end)
+    }
+
+    pub fn can_insert(&self, start: u64, end: u64) -> bool {
+        start == end
+            || self.ranges.len() < self.ranges.capacity()
+            || self.ranges.iter().any(|&(a, b)| a <= end && start <= b)
+    }
+
+    // Fault paths use capacity reserved by a syscall, without heap allocation.
+    pub fn insert_reserved(&mut self, mut start: u64, mut end: u64) -> Result<(), u64> {
         if start == end {
             return Ok(());
         }
-        self.ranges.try_reserve(1).map_err(|_| ENOMEM as u64)?;
+        if !self.can_insert(start, end) {
+            return Err(ENOMEM as u64);
+        }
         let mut first = 0;
         while first < self.ranges.len() && self.ranges[first].1 < start {
             first += 1;
@@ -50,7 +64,7 @@ impl MemoryLocks {
 
     // Reserve before any unmap: deleting a middle range can split one interval.
     pub fn reserve_split(&mut self) -> Result<(), u64> {
-        self.ranges.try_reserve(1).map_err(|_| ENOMEM as u64)
+        self.ranges.try_reserve(2).map_err(|_| ENOMEM as u64)
     }
 
     pub fn remove(&mut self, start: u64, end: u64) {

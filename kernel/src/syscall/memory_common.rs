@@ -178,7 +178,7 @@ pub fn map_prepared_frames(
     frames: alloc::vec::Vec<PhysFrame<Size4KiB>>,
     page_flags: PageTableFlags,
     vma: crate::memory::vma::Vma,
-) -> Result<(), crate::syscall::ErrorCode> {
+) -> Result<bool, crate::syscall::ErrorCode> {
     use crate::syscall::ErrorCode;
 
     let end = start + (frames.len() as u64) * PAGE_SIZE;
@@ -202,6 +202,20 @@ pub fn map_prepared_frames(
             .vmas
             .iter()
             .any(|existing| start < existing.end.as_u64() && end > existing.start.as_u64());
+        if mapped + MAP_CHUNK_PAGES >= frames.len() {
+            if process.vmas.try_reserve(1).is_err()
+                || super::memory_advice::prepare_future(
+                    process,
+                    process.memory_locks.additional(start, end),
+                )
+                .is_err()
+            {
+                drop(manager_guard);
+                free_from(mapped);
+                unmap_prepared_prefix(thread_id, root, start, mapped);
+                return Err(ErrorCode::TryAgain);
+            }
+        }
         let Some(page_table) = process
             .page_table
             .as_mut()
@@ -217,7 +231,10 @@ pub fn map_prepared_frames(
             let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
                 start + (mapped as u64) * PAGE_SIZE,
             ));
-            if page_table.map_page(page, frames[mapped], page_flags).is_ok() {
+            if page_table
+                .map_page(page, frames[mapped], page_flags)
+                .is_ok()
+            {
                 mapped += 1;
             } else {
                 failed = true;
@@ -231,7 +248,8 @@ pub fn map_prepared_frames(
         }
         if mapped == frames.len() {
             process.vmas.push(vma);
-            return Ok(());
+            super::memory_advice::record_future(process, start, end);
+            return Ok(process.memory_locks.future && !process.memory_locks.onfault);
         }
     }
 }

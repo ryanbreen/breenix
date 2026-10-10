@@ -48,3 +48,17 @@ fn unmapping_and_clearing_release_charges_and_future_policy() {
     assert_eq!(locks.bytes(), 0);
     assert!(!locks.future && !locks.onfault);
 }
+
+#[test]
+fn stack_growth_uses_reserved_capacity_and_merges_without_allocating() {
+    let mut locks = MemoryLocks::default();
+    assert!(!locks.can_insert(4096, 8192));
+    assert_eq!(locks.insert_reserved(4096, 8192), Err(12));
+    locks.reserve_split().unwrap();
+    let capacity = locks.ranges.capacity();
+    locks.insert_reserved(12288, 16384).unwrap();
+    locks.insert_reserved(8192, 12288).unwrap();
+    locks.insert_reserved(4096, 8192).unwrap();
+    assert_eq!(locks.ranges, [(4096, 16384)]);
+    assert_eq!(locks.ranges.capacity(), capacity);
+}

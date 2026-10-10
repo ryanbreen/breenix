@@ -586,6 +586,8 @@ pub enum ErrorCode {
     NoSuchProcess = 3, // ESRCH
     /// I/O error
     IoError = 5, // EIO
+    /// Resource temporarily unavailable
+    TryAgain = 11, // EAGAIN
     /// Cannot allocate memory
     OutOfMemory = 12, // ENOMEM
     /// Bad address
