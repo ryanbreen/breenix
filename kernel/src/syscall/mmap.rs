@@ -19,7 +19,7 @@ use crate::memory::arch_stub::VirtAddr;
 // Import common memory syscall helpers
 use crate::syscall::memory_common::{
     allocate_zeroed_frames, flush_tlb, get_current_thread_id, is_page_aligned, map_prepared_frames,
-    round_down_to_page, round_up_to_page, PAGE_SIZE,
+    place_below_hint, round_up_to_page, PAGE_SIZE,
 };
 
 extern crate alloc;
@@ -57,6 +57,8 @@ pub fn sys_mmap(
 ) -> SyscallResult {
     let prot = Protection::from_bits_truncate(prot);
     let flags = MmapFlags::from_bits_truncate(flags);
+    let noreplace = flags.contains(MmapFlags::FIXED_NOREPLACE);
+    let fixed = noreplace || flags.contains(MmapFlags::FIXED);
 
     log::trace!(
         "sys_mmap: addr={:#x} length={:#x} prot={:?} flags={:?} fd={} offset={:#x}",
@@ -147,113 +149,100 @@ pub fn sys_mmap(
             }
         };
 
-        if process.mapped_bytes().saturating_add(length)
+        // A fixed mapping (MAP_FIXED, or MAP_FIXED_NOREPLACE, which refuses to
+        // replace anything) is placed at `addr` exactly. It bypasses the
+        // placement below, so it needs its own region check: the mapping must
+        // land wholly inside the mmap region the validator polices, or the
+        // address mmap returns is memory userspace can touch directly but no
+        // syscall can ever accept via a user pointer (#742 M-2).
+        //
+        // This is a Linux-semantics deviation, deliberately (PR #744 review
+        // F7): real MAP_FIXED is allowed to land anywhere in the process's
+        // address space, including inside its own code/data or stack
+        // windows. A mapping placed there could clobber the ELF image or a
+        // live stack, so this check refuses MAP_FIXED outside the mmap region.
+        let (covered, covered_data) = if fixed {
+            if !is_page_aligned(addr) {
+                log::warn!("sys_mmap: MAP_FIXED requires page-aligned address");
+                return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+            }
+            let Some(end) = addr.checked_add(length) else {
+                log::warn!("sys_mmap: addr + length would overflow");
+                return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+            };
+            if addr < crate::memory::vma::MMAP_REGION_START
+                || end > crate::memory::vma::MMAP_REGION_END
+            {
+                log::warn!(
+                    "sys_mmap: MAP_FIXED region {:#x}..{:#x} escapes the mmap region [{:#x}, {:#x})",
+                    addr,
+                    end,
+                    crate::memory::vma::MMAP_REGION_START,
+                    crate::memory::vma::MMAP_REGION_END
+                );
+                return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+            }
+            if noreplace && range_is_mapped(process, addr, end) {
+                return SyscallResult::Err(crate::syscall::errno::EEXIST as u64);
+            }
+            // What the mapping replaces is not charged again.
+            covered_bytes(process, addr, end)
+        } else {
+            (0, 0)
+        };
+
+        if process
+            .mapped_bytes()
+            .saturating_sub(covered)
+            .saturating_add(length)
             > process.limits.get(crate::process::limits::AS).soft
             || (is_private
                 && prot.contains(Protection::WRITE)
-                && process.data_bytes().saturating_add(length)
+                && process
+                    .data_bytes()
+                    .saturating_sub(covered_data)
+                    .saturating_add(length)
                     > process.limits.get(crate::process::limits::DATA).soft)
         {
             return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
         }
 
-        if super::memory_advice::prepare_future(process, length).is_err() {
+        // Under mlockall(MCL_FUTURE) the mapping is locked, beside what is
+        // locked already.
+        let lock_bytes = if fixed {
+            process.memory_locks.additional(addr, addr + length)
+        } else {
+            length
+        };
+        if super::memory_advice::prepare_future(process, lock_bytes).is_err() {
             return SyscallResult::Err(crate::syscall::errno::EAGAIN as u64);
         }
 
-        // Determine the start address
-        let start_addr = if flags.contains(MmapFlags::FIXED) {
-            // MAP_FIXED: use addr directly
-            if !is_page_aligned(addr) {
-                log::warn!("sys_mmap: MAP_FIXED requires page-aligned address");
-                return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
-            }
+        // Otherwise a free, page-aligned hint is used as it is, and failing
+        // that the mapping goes in the highest free range below the process's
+        // mmap hint, whose floor is `MMAP_REGION_START` itself -- the same
+        // constant `is_valid_user_range`'s mmap arm polices (#742).
+        let start_addr = if fixed {
             addr
+        } else if let Some(start) = free_hint(process, addr, length) {
+            start
         } else {
-            let hint = process.mmap_hint;
-            previous_hint = Some(hint);
-            let new_addr = round_down_to_page(hint.saturating_sub(length));
-            // The floor is `MMAP_REGION_START` itself -- the same constant
-            // `is_valid_user_range`'s mmap arm polices -- not a second,
-            // independently hardcoded number. Before this the allocator
-            // floor (0x1000_0000) and the validator's floor
-            // (`MMAP_REGION_START`, 0x7000_0000_0000) were ~17.6 TB apart,
-            // so a sufficiently-descended `mmap_hint` could hand out a
-            // "successfully mapped" region every syscall pointer into it
-            // would then EFAULT against (#742, the same "validator anchored
-            // to a bound the allocator does not use" shape as #729's B4-a).
-            if new_addr < crate::memory::vma::MMAP_REGION_START {
-                log::error!("sys_mmap: out of mmap space");
-                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-            }
-            process.mmap_hint = new_addr;
-            new_addr
-        };
-
-        // Check for overflow when calculating end address
-        let end_addr = match start_addr.checked_add(length) {
-            Some(a) => a,
-            None => {
-                log::warn!("sys_mmap: start_addr + length would overflow");
-                return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+            previous_hint = Some(process.mmap_hint);
+            match place_below_hint(process, length) {
+                Some(start) => start,
+                None => {
+                    log::error!("sys_mmap: out of mmap space");
+                    return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+                }
             }
         };
-
-        // MAP_FIXED bypasses the hint-descent floor above entirely, so it
-        // needs its own region check: the mapping must land wholly inside
-        // the mmap region the validator polices, or the address mmap
-        // returns is memory userspace can touch directly but no syscall
-        // can ever accept via a user pointer (#742 M-2). The non-FIXED arm
-        // above never needs this check itself -- `new_addr` is bounded
-        // below by the floor just enforced, and above by construction
-        // (`mmap_hint` only ever descends from `MMAP_REGION_END`, so
-        // `end_addr` here equals the pre-allocation hint, which is always
-        // <= `MMAP_REGION_END`).
-        //
-        // This is a Linux-semantics deviation, deliberately (PR #744 review
-        // F7): real MAP_FIXED is allowed to land anywhere in the process's
-        // address space, including inside its own code/data or stack
-        // windows (that is how Linux lets a program remap over itself).
-        // This check refuses MAP_FIXED outside `[MMAP_REGION_START,
-        // MMAP_REGION_END)` even for addresses `is_valid_user_range` would
-        // otherwise accept as code/data or stack -- there are zero in-tree
-        // callers of MAP_FIXED today, and a mapping placed there could
-        // clobber the ELF image or a live stack, so refusing the wider
-        // allow-list is the conservative, correct call here. It is not
-        // simply mirroring the validator's allow-list.
-        if flags.contains(MmapFlags::FIXED)
-            && (start_addr < crate::memory::vma::MMAP_REGION_START
-                || end_addr > crate::memory::vma::MMAP_REGION_END)
-        {
-            log::warn!(
-                "sys_mmap: MAP_FIXED region {:#x}..{:#x} escapes the mmap region [{:#x}, {:#x})",
-                start_addr,
-                end_addr,
-                crate::memory::vma::MMAP_REGION_START,
-                crate::memory::vma::MMAP_REGION_END
-            );
-            return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
-        }
+        let end_addr = start_addr + length;
 
         log::trace!(
             "sys_mmap: allocating region {:#x}..{:#x}",
             start_addr,
             end_addr
         );
-
-        // Check for overlaps with existing VMAs
-        for vma in &process.vmas {
-            let vma_start = vma.start.as_u64();
-            let vma_end = vma.end.as_u64();
-            if start_addr < vma_end && end_addr > vma_start {
-                log::warn!(
-                    "sys_mmap: region overlaps with existing VMA at {:#x}..{:#x}",
-                    vma_start,
-                    vma_end
-                );
-                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-            }
-        }
 
         let page_table = match process.page_table.as_mut() {
             Some(pt) => pt,
@@ -313,20 +302,13 @@ pub fn sys_mmap(
             prot,
             flags,
         );
-        if process.vmas.iter().any(|other| vma.overlaps(other))
-            || process.vmas.try_reserve(1).is_err()
-        {
+        if let Err(errno) = clear_for_mapping(process, start_addr, end_addr, flags) {
             drop(guard);
-            return give_back(ErrorCode::OutOfMemory as u64);
+            return give_back(errno);
         }
-        let eager = match super::memory_advice::publish_future(process, start_addr, end_addr) {
-            Ok(eager) => eager,
-            Err(errno) => {
-                drop(guard);
-                return give_back(errno);
-            }
-        };
         process.vmas.push(vma);
+        super::memory_advice::record_future(process, start_addr, end_addr);
+        let eager = process.memory_locks.future && !process.memory_locks.onfault;
         drop(guard);
         if eager {
             let _ = super::memory_advice::populate(current_thread_id, start_addr, end_addr);
@@ -354,7 +336,7 @@ pub fn sys_mmap(
         vma,
     ) {
         Ok(eager) => eager,
-        Err(error) => return give_back(error as u64),
+        Err(errno) => return give_back(errno),
     };
     if eager {
         let _ = super::memory_advice::populate(current_thread_id, start_addr, end_addr);
@@ -375,6 +357,79 @@ fn restore_mmap_hint(thread_id: u64, start: u64, hint: u64) {
             process.mmap_hint = hint;
         }
     }
+}
+
+/// Whether any VMA of `process` overlaps `[start, end)`.
+fn range_is_mapped(process: &crate::process::Process, start: u64, end: u64) -> bool {
+    process
+        .vmas
+        .iter()
+        .any(|vma| vma.start.as_u64() < end && start < vma.end.as_u64())
+}
+
+/// The bytes of `[start, end)` that VMAs of `process` already cover, and how
+/// many of those are private and writable (charged to RLIMIT_DATA).
+fn covered_bytes(process: &crate::process::Process, start: u64, end: u64) -> (u64, u64) {
+    let mut covered = (0, 0);
+    for vma in &process.vmas {
+        let bytes = end
+            .min(vma.end.as_u64())
+            .saturating_sub(start.max(vma.start.as_u64()));
+        covered.0 += bytes;
+        if vma.flags.contains(MmapFlags::PRIVATE) && vma.prot.contains(Protection::WRITE) {
+            covered.1 += bytes;
+        }
+    }
+    covered
+}
+
+/// The hint `addr`, rounded up to a page, if `length` bytes there lie inside
+/// the mmap region with nothing mapped: a mapping made without MAP_FIXED is
+/// placed exactly there, as Linux places it.
+fn free_hint(process: &crate::process::Process, addr: u64, length: u64) -> Option<u64> {
+    if addr == 0 {
+        return None;
+    }
+    let start = addr.checked_add(PAGE_SIZE - 1)? & !(PAGE_SIZE - 1);
+    let end = start.checked_add(length)?;
+    (start >= crate::memory::vma::MMAP_REGION_START
+        && end <= crate::memory::vma::MMAP_REGION_END
+        && !range_is_mapped(process, start, end))
+    .then_some(start)
+}
+
+/// Make `[start, end)` ready for a new VMA, with room reserved to push it
+/// and, under mlockall(MCL_FUTURE), to record its lock (EAGAIN past
+/// RLIMIT_MEMLOCK). MAP_FIXED unmaps what is there, splitting VMAs that
+/// extend past either end, in the same PROCESS_MANAGER section as the
+/// caller's push, so no other thread sees the range empty. Any other mapping
+/// finds the range taken because another thread mapped there after it was
+/// chosen: EEXIST for MAP_FIXED_NOREPLACE, ENOMEM otherwise.
+pub(crate) fn clear_for_mapping(
+    process: &mut crate::process::Process,
+    start: u64,
+    end: u64,
+    flags: MmapFlags,
+) -> Result<(), u64> {
+    // A replacement removes VMAs and pushes up to two pieces of them.
+    if process.vmas.try_reserve(3).is_err() {
+        return Err(ErrorCode::OutOfMemory as u64);
+    }
+    let mapped = range_is_mapped(process, start, end);
+    if mapped && flags.contains(MmapFlags::FIXED_NOREPLACE) {
+        return Err(crate::syscall::errno::EEXIST as u64);
+    }
+    if mapped && !flags.contains(MmapFlags::FIXED) {
+        return Err(ErrorCode::OutOfMemory as u64);
+    }
+    // Under mlockall(MCL_FUTURE), room to record the new VMA's lock, which
+    // the caller records once it has pushed the VMA.
+    super::memory_advice::prepare_future(process, process.memory_locks.additional(start, end))
+        .map_err(|_| crate::syscall::errno::EAGAIN as u64)?;
+    if !mapped {
+        return Ok(());
+    }
+    unmap_range(process, start, end)
 }
 
 /// The file handle for a file-backed mmap request, or its errno. The
@@ -462,37 +517,32 @@ fn map_file(
         },
     )?;
     let object = handle.object.clone();
-    let abandon = |errno: ErrorCode| {
+    let abandon = |errno: u64| {
         object.map.abandon_population();
-        errno as u64
+        errno
     };
     let mut manager_guard = crate::process::manager();
     let Some((pid, process)) = manager_guard
         .as_mut()
         .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
     else {
-        return Err(abandon(ErrorCode::NoSuchProcess));
+        return Err(abandon(ErrorCode::NoSuchProcess as u64));
     };
-    if process.vmas.iter().any(|other| vma.overlaps(other)) {
-        return Err(abandon(ErrorCode::OutOfMemory));
-    }
-    super::memory_advice::prepare_future(
-        process,
-        process
-            .memory_locks
-            .additional(vma.start.as_u64(), vma.end.as_u64()),
-    )
-    .map_err(|_| crate::syscall::errno::EAGAIN as u64)?;
-    let Some(page_table) = process
+    if process
         .page_table
         .as_deref()
-        .filter(|pt| pt.level_4_frame().start_address().as_u64() == root)
-    else {
-        return Err(abandon(ErrorCode::OutOfMemory));
-    };
-    if process.vmas.try_reserve(1).is_err() {
-        return Err(abandon(ErrorCode::OutOfMemory));
+        .map(|pt| pt.level_4_frame().start_address().as_u64())
+        != Some(root)
+    {
+        return Err(abandon(ErrorCode::OutOfMemory as u64));
     }
+    let (start, end) = (vma.start.as_u64(), vma.end.as_u64());
+    if let Err(errno) = clear_for_mapping(process, start, end, vma.flags) {
+        return Err(abandon(errno));
+    }
+    let Some(page_table) = process.page_table.as_deref() else {
+        return Err(abandon(ErrorCode::OutOfMemory as u64));
+    };
     match file_map::bind(
         handle,
         pid,
@@ -502,10 +552,8 @@ fn map_file(
         may_write && !append_only,
     ) {
         Ok(binding) => vma.backing = Some(binding),
-        Err(_) => return Err(abandon(ErrorCode::OutOfMemory)),
+        Err(_) => return Err(abandon(ErrorCode::OutOfMemory as u64)),
     }
-    let start = vma.start.as_u64();
-    let end = vma.end.as_u64();
     process.vmas.push(vma);
     super::memory_advice::record_future(process, start, end);
     Ok((
@@ -764,48 +812,59 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
         }
     };
 
-    if let Err(errno) = process.memory_locks.reserve_split() {
-        return SyscallResult::Err(errno);
+    match unmap_range(process, addr, end_addr) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(errno) => SyscallResult::Err(errno),
     }
+}
+
+/// Unmap `[addr, end_addr)` (page-aligned) from `process`, splitting VMAs that
+/// extend past either end, and drop the memory locks on it. A range within
+/// one file VMA is split out and unmapped on its own; any other range may not
+/// touch a file VMA (EINVAL). PROCESS_MANAGER held.
+pub(crate) fn unmap_range(
+    process: &mut crate::process::Process,
+    addr: u64,
+    end_addr: u64,
+) -> Result<(), u64> {
+    // Removing the locks on a middle range can split one interval.
+    process.memory_locks.reserve_split()?;
 
     // A range within one file VMA is split out and unmapped on its own. If an
     // entry's custody disagrees, the VMA and its binding are kept.
     match crate::memory::file_map::isolate(&mut process.vmas, addr, end_addr, 0) {
         Ok(Some(index)) => {
             let Some(page_table) = process.page_table.as_deref_mut() else {
-                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+                return Err(ErrorCode::OutOfMemory as u64);
             };
-            return match crate::memory::file_map::unmap(&mut process.vmas, index, page_table) {
-                Ok(()) => {
-                    process.memory_locks.remove(addr, end_addr);
-                    SyscallResult::Ok(0)
-                }
-                Err(error) => SyscallResult::Err(file_vma_errno(error)),
-            };
+            crate::memory::file_map::unmap(&mut process.vmas, index, page_table)
+                .map_err(file_vma_errno)?;
+            process.memory_locks.remove(addr, end_addr);
+            return Ok(());
         }
         Ok(None) => {}
-        Err(error) => return SyscallResult::Err(file_vma_errno(error)),
+        Err(error) => return Err(file_vma_errno(error)),
     }
 
     let Some(page_table) = process.page_table.as_deref_mut() else {
-        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        return Err(ErrorCode::OutOfMemory as u64);
     };
     if process
         .vmas
         .iter()
         .any(|v| v.start.as_u64() < end_addr && addr < v.end.as_u64() && v.backing.is_some())
     {
-        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+        return Err(ErrorCode::InvalidArgument as u64);
     }
     if process.vmas.try_reserve(2).is_err() {
-        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        return Err(ErrorCode::OutOfMemory as u64);
     }
     let mut from = addr;
     while let Some(page) = page_table.next_mapped_page(from, end_addr) {
         from = page.start_address().as_u64() + PAGE_SIZE;
         match page_table.unmap_page_deferred(page) {
             Ok(leaf) => leaf.flush().release(),
-            Err(_) => return SyscallResult::Err(ErrorCode::OutOfMemory as u64),
+            Err(_) => return Err(ErrorCode::OutOfMemory as u64),
         }
     }
     let mut index = 0;
@@ -836,7 +895,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
     }
 
     process.memory_locks.remove(addr, end_addr);
-    SyscallResult::Ok(0)
+    Ok(())
 }
 
 /// msync validates the complete virtual range before doing any filesystem

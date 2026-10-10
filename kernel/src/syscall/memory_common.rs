@@ -122,6 +122,37 @@ pub fn cleanup_mapped_pages(
     }
 }
 
+/// The highest page-aligned range of `length` bytes below `process`'s mmap
+/// hint that no VMA overlaps, which the hint then moves down to. None once the
+/// range would fall below `MMAP_REGION_START`, the floor
+/// `is_valid_user_range`'s mmap arm polices (#742). Mappings placed at a hint
+/// or with MAP_FIXED can sit below the hint, so the descent steps under each
+/// one it meets. PROCESS_MANAGER held.
+pub fn place_below_hint(process: &mut crate::process::Process, length: u64) -> Option<u64> {
+    let mut top = process.mmap_hint;
+    loop {
+        let start = round_down_to_page(top.checked_sub(length)?);
+        if start < crate::memory::vma::MMAP_REGION_START {
+            return None;
+        }
+        let end = start + length;
+        match process
+            .vmas
+            .iter()
+            .filter(|vma| vma.start.as_u64() < end && start < vma.end.as_u64())
+            .map(|vma| vma.start.as_u64())
+            .min()
+        {
+            // Strictly below `top`, since the overlap starts before `end`.
+            Some(lowest) => top = lowest,
+            None => {
+                process.mmap_hint = start;
+                return Some(start);
+            }
+        }
+    }
+}
+
 /// Pages mapped per PROCESS_MANAGER section by `map_prepared_frames`.
 const MAP_CHUNK_PAGES: usize = 64;
 
@@ -164,7 +195,9 @@ pub fn allocate_zeroed_frames(count: usize) -> Option<alloc::vec::Vec<PhysFrame<
 /// leaf-record storage and allocates any missing intermediate table frames,
 /// and the last section's VMA push can grow `vmas`. Each section re-checks
 /// that the process still owns the table whose root is `root` and that no VMA
-/// overlaps the range; the last one pushes `vma`.
+/// overlaps the range; the last one pushes `vma`. A MAP_FIXED `vma` first
+/// replaces what it covers, and MAP_FIXED_NOREPLACE finds it taken, in the
+/// first section (`clear_for_mapping`).
 ///
 /// New descriptors replace invalid ones, so no TLB entry needs flushing. On
 /// failure every frame left unmapped is freed and the pages this call mapped
@@ -178,7 +211,7 @@ pub fn map_prepared_frames(
     frames: alloc::vec::Vec<PhysFrame<Size4KiB>>,
     page_flags: PageTableFlags,
     vma: crate::memory::vma::Vma,
-) -> Result<bool, crate::syscall::ErrorCode> {
+) -> Result<bool, u64> {
     use crate::syscall::ErrorCode;
 
     let end = start + (frames.len() as u64) * PAGE_SIZE;
@@ -196,8 +229,25 @@ pub fn map_prepared_frames(
             .map(|(_, process)| process)
         else {
             free_from(mapped);
-            return Err(ErrorCode::NoSuchProcess);
+            return Err(ErrorCode::NoSuchProcess as u64);
         };
+        if process
+            .page_table
+            .as_ref()
+            .map(|page_table| page_table.level_4_frame().start_address().as_u64())
+            != Some(root)
+        {
+            free_from(mapped);
+            return Err(ErrorCode::OutOfMemory as u64);
+        }
+        if mapped == 0 {
+            if let Err(errno) =
+                crate::syscall::mmap::clear_for_mapping(process, start, end, vma.flags)
+            {
+                free_from(0);
+                return Err(errno);
+            }
+        }
         let overlaps = process
             .vmas
             .iter()
@@ -213,16 +263,12 @@ pub fn map_prepared_frames(
                 drop(manager_guard);
                 free_from(mapped);
                 unmap_prepared_prefix(thread_id, root, start, mapped);
-                return Err(ErrorCode::TryAgain);
+                return Err(ErrorCode::TryAgain as u64);
             }
         }
-        let Some(page_table) = process
-            .page_table
-            .as_mut()
-            .filter(|page_table| page_table.level_4_frame().start_address().as_u64() == root)
-        else {
+        let Some(page_table) = process.page_table.as_mut() else {
             free_from(mapped);
-            return Err(ErrorCode::OutOfMemory);
+            return Err(ErrorCode::OutOfMemory as u64);
         };
 
         let chunk_end = (mapped + MAP_CHUNK_PAGES).min(frames.len());
@@ -244,7 +290,7 @@ pub fn map_prepared_frames(
             drop(manager_guard);
             free_from(mapped);
             unmap_prepared_prefix(thread_id, root, start, mapped);
-            return Err(ErrorCode::OutOfMemory);
+            return Err(ErrorCode::OutOfMemory as u64);
         }
         if mapped == frames.len() {
             process.vmas.push(vma);

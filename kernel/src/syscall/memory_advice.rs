@@ -362,14 +362,6 @@ pub fn sys_munlockall() -> SyscallResult {
     })())
 }
 
-/// Charge at VMA publication, under its existing PM section.
-pub(crate) fn publish_future(process: &mut Process, start: u64, end: u64) -> Result<bool, u64> {
-    prepare_future(process, process.memory_locks.additional(start, end))
-        .map_err(|_| super::errno::EAGAIN as u64)?;
-    record_future(process, start, end);
-    Ok(process.memory_locks.future && !process.memory_locks.onfault)
-}
-
 pub fn sys_madvise(addr: u64, length: u64, advice: u64) -> SyscallResult {
     if !matches!(advice, 0..=4 | 8..=11) {
         return SyscallResult::Err(EINVAL as u64);

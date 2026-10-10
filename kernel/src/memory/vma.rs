@@ -63,6 +63,7 @@ impl MmapFlags {
     pub const FIXED: Self = Self(0x10);
     pub const ANONYMOUS: Self = Self(0x20);
     pub const POPULATE: Self = Self(0x8000);
+    pub const FIXED_NOREPLACE: Self = Self(0x10_0000);
 
     #[allow(dead_code)]
     pub fn empty() -> Self {
