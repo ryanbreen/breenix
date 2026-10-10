@@ -500,3 +500,77 @@ scripts/boot-interactive.sh --mode suite --suite memory
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode full --boots 1 --suite memory --gate-timeout 420 --sha <pushed-sha>
 ```
+
+## Threads
+
+`threads` measures the threads effort in `docs/efforts/path.json`: one category per suite
+milestone, `lifecycle`, `mutex`, `cond`, `rwlock-barrier`, `tls`, `signals` and
+`scheduling`. The system-interface milestone is a separate measure.
+
+Threads are measured through the interface a portable C program uses: cases call Breenix's
+own C library, `libs/libbreenix-libc`, for every pthread, sched and signal function they
+test, not Rust's std::thread. A function the library does not define fails each case that
+needs it with `the C library has no <name>`: `userspace/programs/build.rs` reads libc.a's
+symbol index and sets `libc_has = "<name>"` for the thread, sched and signal functions it
+has, and the suite calls the library's function under that cfg. Cases titled `Linux ABI:`
+call the kernel underneath by its Linux numbers (futex, tgkill, rt_sigprocmask,
+sched_setscheduler), so a gap in the kernel is told apart from one in the library. The
+suite uses raw system calls otherwise only to arrange a case: installing handlers, reading
+the clocks and pending sets, pinning threads and setting the clock.
+
+Each case runs its threads in a process of its own below the case's (a trial), which puts
+its result on a shared page; the case waits for it with a bound and kills the trial when it
+ends. A thread that never returns from a lock or a wait therefore fails the case with the
+step it was in, rather than running the case out of time. The case kills and reaps the
+trial before it reads the trial's result, so nothing the trial leaves running can change the
+case's memory while the result is put together. Cases whose process must die (a stack
+overflow, exit from a thread, a signal's default action) start it the same way and read its
+wait status. Every wait is bounded and stops 1.5 seconds before the case's 10-second
+deadline.
+
+`lifecycle/exit-tid-word` checks that a process ending with a thread still running clears
+that thread's exit thread-ID word (CLONE_CHILD_CLEARTID, which pthread_join waits on) in its
+own memory and nowhere else. The process makes one thread, so its first two mappings after
+the fork are the C library's thread stack and the page holding that word; the case makes
+mappings of the same sizes, fills them with a pattern, and confirms they landed at the same
+addresses by finding the thread's stack variable inside its copy (it skips, saying so, when
+they did not). The process's main thread then calls exit_group with the thread running, the
+case reaps it, and every byte of the case's copies must still hold the pattern.
+
+Timed waits (pthread_mutex_timedlock, pthread_cond_timedwait, the rwlock timed locks and
+FUTEX_WAIT) are checked as the time suite checks sleeps: never before the deadline and late
+by at most two timer ticks and 20 ms. A thread blocked on a lock, a condition or a barrier
+must come back within 100 ms of its release; that is a liveness bound, not a performance
+target. Cases that set CLOCK_REALTIME put it back before they end.
+
+The cases titled `-cpus` need two processors. They read the count from /proc/cpuinfo, fail
+when it cannot be read, skip below two and start one thread per processor, at most four; none
+assumes four. Each thread pins itself to its own processor with sched_setaffinity and the
+threads make a thousand rendezvous within 750 ms before they measure, which threads taking
+turns on one processor cannot do. The scheduling cases that compare SCHED_FIFO threads pin
+both to processor 0.
+
+Where POSIX leaves a behaviour to the implementation, the case title begins `Linux policy:`
+and measures what Linux does: pthread_join of the caller returns EDEADLK and of a detached
+thread EINVAL (both "may fail" errors in POSIX), detached threads that ended give back their
+memory, a thread started normally is SCHED_OTHER with priority 0, a new attribute object is
+PTHREAD_INHERIT_SCHED, an unprivileged pthread_setschedparam to SCHED_FIFO returns EPERM,
+and sched_yield hands one processor between two SCHED_OTHER threads. The zero-filled
+PTHREAD_MUTEX_INITIALIZER and PTHREAD_COND_INITIALIZER are the Linux ABI's. POSIX leaves the
+order of destructor calls unspecified, so the destructor cases check rounds and counts, not
+the order of keys. Priority inheritance is an option: `mutex/prio-inherit` skips when
+sysconf(_SC_THREAD_PRIO_INHERIT) says it is not offered. Robust mutexes are in the base
+standard and are not skipped.
+
+Each case reports what it asserts on as VALUE records: how late a timed wait ended, how
+soon a woken thread came back, contention and increment counts, barrier cycles, items
+through a queue, destructor calls and the time handoffs took; and each timed wait of 100 ms
+or more as a WAIT record naming the VALUE that ends it.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite threads
+./run.sh --parallels --suite threads
+./run.sh --vmware --suite threads
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode full --boots 1 --suite threads --gate-timeout 420 --sha <pushed-sha>
+```
