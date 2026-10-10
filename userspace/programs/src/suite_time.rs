@@ -1782,18 +1782,21 @@ fn tm_many() -> CaseResult {
 }
 
 /// A CPU-time timer of 100 ms on `clock`: no signal during a 300 ms sleep, then one while
-/// the caller computes.
+/// the caller computes, no sooner than the CPU time timer_gettime said was left when the
+/// computing began (the sleep's own system calls may have used some).
 fn cpu_timer(clock: i32) -> CaseResult {
     block(bit(SIGUSR1))?;
     let timer = Timer::signal(clock, SIGUSR1, 1)?;
     timer.arm(0, 100 * MS)?;
     no_signal(SIGUSR1, 300, &format!("a 100 ms {} timer while the process slept 300 ms", clock_name(clock)))?;
+    let left = its_value(&timer.get()?) / MS;
     let start = mono();
     let fired = burn_until(2000, || pending().is_ok_and(|p| p & bit(SIGUSR1) != 0));
     let took = (mono() - start) / MS;
-    value("fired-after", took, "ms", Some((100, 2000)));
+    value("fired-after", took, "ms", Some((left, 2000)));
+    check(left > 0, &format!("after the sleep, timer_gettime reports {left} ms left of a 100 ms {} timer that has not fired", clock_name(clock)))?;
     check(fired, &format!("a 100 ms {} timer did not fire in 2 s of computing", clock_name(clock)))?;
-    check(took >= 100, &format!("a 100 ms {} timer fired after {took} ms of computing", clock_name(clock)))
+    check(took >= left, &format!("a {} timer with {left} ms of CPU time left fired after {took} ms of computing", clock_name(clock)))
 }
 
 fn tm_cputime_process() -> CaseResult { cpu_timer(CLOCK_PROCESS_CPUTIME_ID) }
@@ -1992,18 +1995,22 @@ fn it_alarm_shares_real() -> CaseResult {
 }
 
 /// A 100 ms CPU-time interval timer `which` sending `sig`: none while the process sleeps
-/// 300 ms, then one while it computes.
+/// 300 ms, then one while it computes, no sooner than the CPU time getitimer said was
+/// left when the computing began (ITIMER_PROF counts the sleep's own system calls).
 fn cpu_itimer(which: i32, sig: i32) -> CaseResult {
     catch(sig)?;
     arm_itimer(which, 0, 100_000)?;
     pause_ms(300);
     check(count(sig) == 0, &format!("signal {sig} arrived while the process slept"))?;
+    let left = itv_value(&getitimer(which)?) / 1000;
     let start = mono();
     let fired = burn_until(2000, || count(sig) > 0);
     let took = (mono() - start) / MS;
-    value("fired-after", took, "ms", Some((100, 2000)));
+    value("left", left, "ms", Some((1, 100)));
+    value("fired-after", took, "ms", Some((left, 2000)));
+    check(left > 0 && left <= 100, &format!("after the sleep, getitimer reports {left} ms left of a 100 ms timer that has not fired"))?;
     check(fired, &format!("a 100 ms timer did not send signal {sig} in 2 s of computing"))?;
-    check(took >= 100, &format!("a 100 ms timer fired after {took} ms of computing"))
+    check(took >= left, &format!("a timer with {left} ms of CPU time left fired after {took} ms of computing"))
 }
 
 fn it_virtual() -> CaseResult { cpu_itimer(ITIMER_VIRTUAL, SIGVTALRM) }
