@@ -775,14 +775,17 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     // does. Idle time is timed from the scheduler's idle transitions
     // (`note_cpu_idle_change`); this only credits an idle stretch still open,
     // so /proc/stat keeps up with a CPU that stays idle.
-    if cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS {
+    let elapsed_ticks = if cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS {
         let last = CPU_LAST_TICK[cpu_id].swap(tick, Ordering::Relaxed);
         let ticks = if last == NO_TICK_YET { 1 } else { tick.saturating_sub(last) };
         CPU_ELAPSED_TICKS[cpu_id].fetch_add(ticks, Ordering::Relaxed);
         if scheduler::is_cpu_idle(cpu_id) {
             credit_idle(cpu_id, tick, true);
         }
-    }
+        ticks
+    } else {
+        1
+    };
 
     // Increment timer interrupt counter (used for debugging when needed)
     let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
@@ -828,11 +831,17 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     } else {
         0
     };
-    let old_quantum = CURRENT_QUANTUM[quantum_idx].fetch_sub(1, Ordering::Relaxed);
-    if old_quantum <= 1 {
+    // Coalesced/masked IRQs are not elapsed time: charge the counter-derived
+    // ticks already credited above, rather than stretching a quantum until
+    // ten IRQs have finally been delivered.
+    let remaining = CURRENT_QUANTUM[quantum_idx].load(Ordering::Relaxed)
+        .saturating_sub(elapsed_ticks.min(u32::MAX as u64) as u32);
+    if remaining == 0 {
         // Quantum expired - request reschedule (all CPUs participate)
         scheduler::set_need_resched();
         CURRENT_QUANTUM[quantum_idx].store(TIME_QUANTUM, Ordering::Relaxed);
+    } else {
+        CURRENT_QUANTUM[quantum_idx].store(remaining, Ordering::Relaxed);
     }
 
     // IDLE CPU FAST PATH: If this CPU is running its idle thread, always
@@ -841,7 +850,9 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     // within one timer tick (~5ms) instead of waiting for a full quantum
     // (~50ms). The scheduling decision quickly returns None if the ready
     // queue is empty, so the overhead is negligible for idle CPUs.
-    if scheduler::is_cpu_idle(cpu_id) {
+    // A busy CPU discovers expired timers on the next available IRQ too;
+    // expiry and recipient selection remain outside this handler.
+    if scheduler::is_cpu_idle(cpu_id) || scheduler::timer_deadline_due() {
         scheduler::set_need_resched();
     }
 
