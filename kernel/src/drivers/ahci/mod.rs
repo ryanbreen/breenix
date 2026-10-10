@@ -248,6 +248,9 @@ static PORT_ACTIVE_MASK: [AlignedAtomicU32; MAX_AHCI_PORTS] =
 /// Per-port ISR hit counter: incremented each time the ISR sees PORT_IS != 0 for a port.
 static AHCI_ISR_PORT_HIT: [AlignedAtomicU32; MAX_AHCI_PORTS] =
     [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+/// Per-port empty-status global acknowledgements, inspectable through GDB.
+static AHCI_ISR_STALE_ACK: [AlignedAtomicU32; MAX_AHCI_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
 /// Per-port completion hit counter: incremented each time the ISR calls complete() for a port.
 static AHCI_ISR_COMPLETE_HIT: [AlignedAtomicU32; MAX_AHCI_PORTS] =
     [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
@@ -2578,8 +2581,20 @@ pub fn handle_interrupt() {
             // wired interrupt retriggers indefinitely and starves the caller.
             if (hba_is & (1 << port)) != 0 {
                 ack_port_interrupt(abar, port, 0);
+                AHCI_ISR_STALE_ACK[port].fetch_add(1, Ordering::Relaxed);
+                // A completion can race the global W1C acknowledgement. Drain
+                // fresh port status and CI before deciding there is no work,
+                // just as the normal completion loop does after its ack.
+                is = port_read(abar, port, PORT_IS);
+                let ci_after_ack = port_read(abar, port, PORT_CI);
+                let active_after_ack =
+                    PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
+                if is == 0 && (active_after_ack & !ci_after_ack) == 0 {
+                    continue;
+                }
+            } else {
+                continue;
             }
-            continue;
         }
         if is != 0 {
             AHCI_ISR_PORT_HIT[port].fetch_add(1, Ordering::Relaxed);
