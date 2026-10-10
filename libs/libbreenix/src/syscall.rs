@@ -163,6 +163,8 @@ pub mod nr {
     pub const EPOLL_CREATE1: u64 = 291;
     // Process spawning (Breenix-specific)
     pub const SPAWN: u64 = 440;
+    // Priority-protect mutex ceilings (Breenix-specific)
+    pub const PRIO_CEILING: u64 = 510;
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;
     pub const SIMULATE_OOM: u64 = 501;
@@ -329,6 +331,8 @@ pub mod nr {
     pub const EPOLL_PWAIT: u64 = 22;
     // Process spawning (Breenix-specific)
     pub const SPAWN: u64 = 440;
+    // Priority-protect mutex ceilings (Breenix-specific)
+    pub const PRIO_CEILING: u64 = 510;
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;
     pub const SIMULATE_OOM: u64 = 501;

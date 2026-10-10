@@ -911,6 +911,10 @@ impl ProcessScheduler {
     /// SERIAL and framebuffer locks) creates an unbreakable deadlock.
     pub fn handle_thread_exit(thread_id: u64, exit_code: i32) {
         crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_EXIT);
+        // The priority-inheritance futexes it owns pass to their waiters, and
+        // one it is blocked on stops counting it. Before PM: the futex table
+        // is never taken under it.
+        crate::syscall::futex::pi_thread_exit(thread_id);
         // Capture the claimer before taking PM. This is a separate scheduler-only
         // acquisition; no scheduler state is consulted while PM is live.
         let report_claimer = scheduler::current_thread_id().unwrap_or(thread_id);

@@ -840,6 +840,10 @@ pub const SCHED_RR_GET_INTERVAL_SYSCALL_NUMBER: u64 = 148;
 #[cfg(target_arch = "aarch64")]
 pub const SCHED_RR_GET_INTERVAL_SYSCALL_NUMBER: u64 = 127;
 
+/// Breenix's priority-protect call (`sched::sys_breenix_prio_ceiling`), the
+/// same number on both architectures.
+pub const BREENIX_PRIO_CEILING_SYSCALL_NUMBER: u64 = 510;
+
 #[cfg(target_arch = "x86_64")]
 pub const MLOCK_SYSCALL_NUMBER: u64 = 149;
 #[cfg(target_arch = "aarch64")]
@@ -885,6 +889,7 @@ pub fn dispatch_numbered(number: u64, a: [u64; 4]) -> Option<SyscallResult> {
         SCHED_GET_PRIORITY_MAX_SYSCALL_NUMBER => sched::sys_sched_get_priority_max(a[0]),
         SCHED_GET_PRIORITY_MIN_SYSCALL_NUMBER => sched::sys_sched_get_priority_min(a[0]),
         SCHED_RR_GET_INTERVAL_SYSCALL_NUMBER => sched::sys_sched_rr_get_interval(a[0], a[1]),
+        BREENIX_PRIO_CEILING_SYSCALL_NUMBER => sched::sys_breenix_prio_ceiling(a[0], a[1]),
         _ => return None,
     })
 }

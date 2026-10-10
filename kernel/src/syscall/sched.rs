@@ -127,7 +127,39 @@ fn set(pid: u64, policy: Option<u8>, reset_on_fork: Option<bool>, param: u64) ->
     if !crate::task::scheduler::set_sched_policy(tid, sched) {
         return Err(ESRCH as u64);
     }
+    drop(_serial);
+    // A thread blocked on a priority-inheritance futex passes its new
+    // priority on to the owner.
+    super::futex::pi_priority_changed(tid);
     Ok(0)
+}
+
+/// Breenix's priority-protect call, behind PTHREAD_PRIO_PROTECT mutexes:
+/// the calling thread runs at no less than SCHED_FIFO priority `ceiling`
+/// while it holds mutexes with that ceiling, and at its own priority again
+/// with `ceiling` 0. With `check` nonzero, a SCHED_FIFO or SCHED_RR caller
+/// whose own priority is above `check` gets EINVAL and nothing changes: a
+/// mutex with ceiling `check` may not be locked by it.
+pub fn sys_breenix_prio_ceiling(ceiling: u64, check: u64) -> SyscallResult {
+    if ceiling > RT_PRIORITY_MAX as u64 || check > RT_PRIORITY_MAX as u64 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let Some(me) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(ESRCH as u64);
+    };
+    let mut refused = false;
+    let rank = if ceiling == 0 { 0 } else { 1 + ceiling as u8 };
+    crate::task::scheduler::update_sched_boost(me, |sched| {
+        refused = check != 0 && sched.is_realtime() && u64::from(sched.priority) > check;
+        if !refused {
+            sched.ceiling = rank;
+        }
+    });
+    if refused {
+        SyscallResult::Err(EINVAL as u64)
+    } else {
+        SyscallResult::Ok(0)
+    }
 }
 
 /// sched_setscheduler(pid, policy, param). SCHED_RESET_ON_FORK may be ORed
