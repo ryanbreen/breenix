@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+import shlex
 import shutil
 import signal
 import socket
@@ -19,6 +20,105 @@ SLOT_DIR = Path('/tmp/breenix-host-slots')
 RESOURCES = {'x86-build': 2, 'x86-boot': 1, 'mac-boot': 1}
 WAIT_MESSAGE_SECONDS = 60
 VMRUN = '/Applications/VMware Fusion.app/Contents/Public/vmrun'
+
+
+def x86_cpu_partition():
+    """Split the allowed VM CPUs, with an extra CPU for emulator overhead."""
+    if sys.platform != 'linux' or os.uname().machine != 'x86_64':
+        return None
+    allowed = sorted(os.sched_getaffinity(0))
+    if len(allowed) < 8:
+        raise RuntimeError('x86 gate CPU isolation requires at least eight allowed CPUs')
+    boot_count = len(allowed) // 2 + 1
+    return {'x86-boot': allowed[:boot_count], 'x86-build': allowed[boot_count:]}
+
+
+def pin_x86_work(partition, directory, env):
+    if partition is None:
+        return
+    # Install before spawning work. Boot admission sets the work mask;
+    # QEMU replaces that inherited mask with the boot mask before exec.
+    binary = shutil.which('qemu-system-x86_64', path=env.get('PATH'))
+    if binary is None:
+        raise RuntimeError('QEMU executable is missing from PATH; CPU isolation cannot be installed')
+    wrapper = Path(directory) / 'qemu-system-x86_64'
+    command = [sys.executable, str(Path(__file__).resolve()), 'qemu', binary]
+    wrapper.write_text('#!/bin/sh\nexec ' + shlex.join(command) + ' "$@"\n')
+    wrapper.chmod(0o755)
+    env['PATH'] = str(directory) + os.pathsep + env.get('PATH', os.defpath)
+    print('[host-cpus] work during wrapped boot=' + ','.join(map(str, partition['x86-build']))
+          + ' reserved boot=' + ','.join(map(str, partition['x86-boot'])), file=sys.stderr, flush=True)
+
+
+def qemu_guest_cpus(argv):
+    """Read the actual launch's -smp count, including QEMU's topology syntax."""
+    try:
+        spec = argv[argv.index('-smp') + 1]
+        fields = dict(item.split('=', 1) for item in spec.split(',') if '=' in item)
+        count = int(fields.get('cpus', spec.split(',')[0]))
+    except (ValueError, IndexError) as error:
+        raise RuntimeError('QEMU isolation requires an explicit -smp CPU count') from error
+    if count < 1:
+        raise RuntimeError('QEMU -smp CPU count must be positive')
+    return count
+
+
+def exec_x86_qemu(argv):
+    # Supervised native PATH launches use this wrapper; absolute paths and
+    # Docker launches do not. This is VM-local affinity, not physical CPU isolation.
+    guest_cpus = qemu_guest_cpus(argv)
+    cpus = send_request({'operation': 'boot-cpus', 'guest_cpus': guest_cpus, 'pid': os.getpid()})['cpus']
+    os.sched_setaffinity(0, cpus)
+    applied = sorted(os.sched_getaffinity(0))
+    if applied != cpus:
+        raise RuntimeError(f'QEMU CPU affinity mismatch: requested={cpus} applied={applied}')
+    send_request({'operation': 'qemu-applied', 'pid': os.getpid(),
+                  'cpus': applied, 'guest_cpus': guest_cpus})
+    print('[host-cpus] QEMU process mask before exec=' + ','.join(map(str, applied)),
+          file=sys.stderr, flush=True)
+    os.execv(argv[0], argv)
+
+
+def pin_gate_work(partition, holders, table):
+    """Older supervised launchers participate through their inherited session tag."""
+    # A legacy boot has no applied isolation policy. Restrict work only once
+    # the native wrapper has registered, before its exec is acknowledged.
+    boots = [holder for holder in holders
+             if holder['resource'] == 'x86-boot' and holder.get('qemu_pid') is not None]
+    excluded = {holder.get('qemu_pid') for holder in boots}
+    cpus = partition['x86-build'] if boots else sorted(partition['x86-build'] + partition['x86-boot'])
+    for pid, row in table.items():
+        if pid in excluded or not any(field.startswith('BREENIX_SLOT_SESSION=') for field in row[3].split()):
+            continue
+        if Path(row[3].split()[0]).name.startswith('qemu-system'):
+            continue
+        try:
+            for thread in (Path('/proc') / str(pid) / 'task').iterdir():
+                os.sched_setaffinity(int(thread.name), cpus)
+        except ProcessLookupError:
+            continue
+        except FileNotFoundError:
+            continue
+    return cpus
+
+
+def foreign_boot_tasks(cpus, owned):
+    """Record unowned userspace tasks that can contend with the boot mask."""
+    tasks = []
+    for process in Path('/proc').iterdir():
+        if not process.name.isdigit() or int(process.name) in owned:
+            continue
+        try:
+            if not (process / 'exe').exists():
+                continue
+            for thread in (process / 'task').iterdir():
+                overlap = sorted(set(os.sched_getaffinity(int(thread.name))) & set(cpus))
+                if overlap:
+                    tasks.append({'pid': int(process.name), 'tid': int(thread.name),
+                                  'comm': (thread / 'comm').read_text().strip(), 'cpus': overlap})
+        except (OSError, ProcessLookupError):
+            continue
+    return tasks
 
 
 def command_output(argv):
@@ -128,6 +228,16 @@ class Slots:
                 return holder
             return None
 
+    def set_qemu_pid(self, pid):
+        with (self.directory / 'metadata.lock').open('a+') as state:
+            fcntl.flock(state, fcntl.LOCK_EX)
+            path = self.path('x86-boot', 1).with_suffix('.json')
+            holder = json.loads(path.read_text())
+            holder['qemu_pid'] = pid
+            temporary = path.with_suffix(f'.{os.getpid()}.tmp')
+            temporary.write_text(json.dumps(holder) + '\n')
+            temporary.replace(path)
+
     def release(self, resource):
         handle = self.held.pop(resource, None)
         if handle is not None:
@@ -222,6 +332,9 @@ def supervise(argv):
         os.setsid()
         try:
             status = supervise_worker(argv, parent)
+        except (RuntimeError, OSError, ValueError) as error:
+            print(f'GATE: FAIL ({error})', file=sys.stderr, flush=True)
+            status = 1
         except BaseException:
             import traceback
             traceback.print_exc()
@@ -240,6 +353,7 @@ def supervise(argv):
 
 def supervise_worker(argv, parent):
     slots = Slots()
+    partition = x86_cpu_partition()
     worktree = os.environ.get('BREENIX_SLOT_WORKTREE', str(Path(__file__).resolve().parents[1]))
     identity = {'worktree': worktree, 'commit': os.environ.get('BREENIX_SLOT_COMMIT') or command_output(['git', '-C', worktree, 'rev-parse', 'HEAD']) or 'unknown'}
     stop_commands = []
@@ -297,12 +411,15 @@ def supervise_worker(argv, parent):
             server.listen()
             selector.register(server, selectors.EVENT_READ)
             env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record)
+            pin_x86_work(partition, temporary, env)
             child = subprocess.Popen(argv, env=env, start_new_session=True)
             try:
                 forwarded_signal = None
                 stop_deadline = None
                 while child.poll() is None:
                     refresh()
+                    if partition is not None:
+                        pin_gate_work(partition, slots.snapshot(), process_table())
                     if os.getppid() != parent and received_signal is None:
                         received_signal = signal.SIGHUP
                     if received_signal is not None and received_signal != forwarded_signal:
@@ -335,10 +452,30 @@ def supervise_worker(argv, parent):
                                        'load_at_enqueue': os.getloadavg(), 'observed': [],
                                        'bypass': resource == 'mac-boot' and os.environ.get('BREENIX_BOOT_NO_QUEUE') == '1'}
                         else:
-                            if operation == 'release':
+                            if operation == 'boot-cpus':
+                                if partition is None or 'x86-boot' not in slots.held:
+                                    client.sendall(b'{"error":"QEMU requires the x86-boot lease and reserved CPUs"}\n')
+                                elif request['guest_cpus'] >= len(partition['x86-boot']):
+                                    client.sendall(b'{"error":"boot mask needs one CPU beyond the QEMU -smp count"}\n')
+                                else:
+                                    slots.set_qemu_pid(request['pid'])
+                                    client.sendall(json.dumps({'cpus': partition['x86-boot']}).encode() + b'\n')
+                                client.close()
+                                continue
+                            elif operation == 'qemu-applied':
+                                if partition is None or 'x86-boot' not in slots.held or request['cpus'] != partition['x86-boot']:
+                                    raise RuntimeError('unleased or mismatched QEMU affinity report')
+                                applied = dict(request, applied_at=time.time(),
+                                               build_holders=[h for h in slots.snapshot() if h['resource'] == 'x86-build'],
+                                               foreign_boot_tasks=foreign_boot_tasks(request['cpus'], set(refresh()) | {os.getpid(), parent}))
+                                with open(record, 'a') as output:
+                                    output.write(json.dumps(applied, sort_keys=True) + '\n')
+                            elif operation == 'release':
                                 if request['resource'].endswith('boot'):
                                     stop_qemu()
                                 slots.release(request['resource'])
+                                if partition is not None:
+                                    pin_gate_work(partition, slots.snapshot(), process_table())
                             elif operation == 'cargo-home':
                                 home = isolated_cargo_home(request['source'], request['directory'])
                                 cargo_homes.append(home)
@@ -387,10 +524,14 @@ def supervise_worker(argv, parent):
                             print(f'[host-slot] waiting for {resource}: {description}; waited={waited:.1f}s', file=sys.stderr, flush=True)
                             pending['next_message'] = waited + WAIT_MESSAGE_SECONDS
                         continue
+                    if partition is not None:
+                        work_cpus = pin_gate_work(partition, slots.snapshot(), process_table())
                     result = {'resource': resource, 'queue_wait_seconds': round(waited, 3),
                               'bypass': bypass, 'load_at_enqueue': pending['load_at_enqueue'],
                               'load_at_acquire': os.getloadavg(), 'observed_running': pending['observed'],
                               'running_at_acquire': observed, **identity}
+                    if partition is not None and resource in partition:
+                        result['reserved_cpus' if resource == 'x86-boot' else 'cpus'] = partition[resource] if resource == 'x86-boot' else work_cpus
                     with open(record, 'a') as output:
                         output.write(json.dumps(result, sort_keys=True) + '\n')
                     print(f'[host-slot] {"BYPASS" if bypass else "acquired"} {resource}; waited={waited:.1f}s load={os.getloadavg()}', file=sys.stderr, flush=True)
@@ -416,21 +557,38 @@ def supervise_worker(argv, parent):
                     child.wait()
                     stop_qemu()
                 for serial, context in serials.items():
-                    write_header(record, serial, context)
+                    write_header(record, serial, Path(record).read_bytes() if partition is not None else context)
                 if pending is not None:
                     pending['client'].close()
                 for home in cargo_homes:
                     shutil.rmtree(home, ignore_errors=True)
                 slots.close()
+                if partition is not None:
+                    pin_gate_work(partition, slots.snapshot(), process_table())
     return child.returncode if child.returncode >= 0 else 128 - child.returncode
+
+
+def exec_x86_work(argv):
+    partition = x86_cpu_partition()
+    if partition is not None:
+        os.environ['BREENIX_SLOT_SESSION'] = f'work-{os.getpid()}'
+        cpus = pin_gate_work(partition, Slots().snapshot(), process_table())
+        os.sched_setaffinity(0, cpus)
+    os.execvp(argv[0], argv)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'vm', 'serial', 'header', 'cargo-home', 'quiesce'))
+    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'vm', 'serial', 'header', 'cargo-home', 'quiesce', 'qemu', 'work'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     values = args.arguments
+    if args.operation == 'work':
+        exec_x86_work(values[1:] if values[0] == '--' else values)
+        return 0
+    if args.operation == 'qemu':
+        exec_x86_qemu(values)
+        return 0
     if args.operation == 'cargo-home':
         print(send_request({'operation': 'cargo-home', 'source': values[0], 'directory': values[1]})['path'])
         return 0
@@ -450,4 +608,8 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (RuntimeError, OSError, ValueError) as error:
+        print(f'GATE: FAIL ({error})', file=sys.stderr, flush=True)
+        sys.exit(1)

@@ -189,7 +189,7 @@ public struct BeastLauncher {
         defer { withExtendedLifetime(signals) {} }
         let live = try LiveX86Serials(directory: runDirectory, id: id, options: options, script: vigilScript, runner: runner)
         live.start()
-        let stream = try? serialStreaming.start(RemoteCommand.streamSerialsRequest(paths: planResult.paths, boots: options.boots)) { data in
+        let stream = try? serialStreaming.start(RemoteCommand.streamSerialsRequest(paths: planResult.paths, boots: options.boots, supervised: slotHelperBase64 != nil)) { data in
             live.receive(data)
         }
         var finishStatus: Int32 = 1

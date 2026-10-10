@@ -305,10 +305,11 @@ while read -r pci_id pci_count; do
 done <<< "$expected_pci"
 
 echo "[gate] === Running $COUNT boot test(s), mode=$MODE ==="
-# The gate host also runs builds and other launchers. A case that needs two
-# guest CPUs running at the same time fails when the host time-slices the
-# guest's vCPUs with that work, so the guest runs 10 nice levels above it.
-# Without permission to raise priority, nice warns and runs the boot anyway.
+# During the boot lease, the supervisor restricts participating work and the
+# native PATH wrapper sets the QEMU process mask before exec. Unsupervised
+# work and absolute-path or Docker launches are outside that policy.
+# Preserve the existing priority boost as well; isolation must not lower the
+# guest's priority relative to other host services.
 GUEST_PRIORITY=(nice -n -10)
 # Sequential, not wall-clock-parallel: the qemu-uefi binary opens the shared
 # breenix-uefi.img read-write, so simultaneous instances collide on QEMU's image
