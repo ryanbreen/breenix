@@ -458,7 +458,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Writev) => super::iovec::sys_writev(args.0, args.1, args.2),
         // Stubs for musl libc compatibility
         Some(SyscallNumber::Mremap) => SyscallResult::Err(super::errno::ENOMEM as u64),
-        Some(SyscallNumber::Madvise) => SyscallResult::Ok(0),
+        Some(SyscallNumber::Madvise) => super::memory_advice::sys_madvise(args.0, args.1, args.2),
         Some(SyscallNumber::Ppoll) => {
             super::handlers::sys_ppoll(args.0, args.1, args.2, args.3, args.4)
         }
