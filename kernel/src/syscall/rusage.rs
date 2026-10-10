@@ -26,15 +26,16 @@ const CLK_TCK: u64 = 100;
 type Split = (u64, u64);
 
 /// `ticks` of CPU time, in nanoseconds, split between user and system time
-/// in the proportion of `ratio`'s user and system nanoseconds; all user time
-/// when the counters have recorded none.
+/// in the proportion of the user and system nanoseconds counted; all user
+/// time when the counters have recorded none. System time is a whole number
+/// of microseconds, so the two timevals add up to the total exactly.
 fn split(ticks: u64, (user, system): Split) -> Split {
     let total = ticks.saturating_mul(MS_PER_TICK).saturating_mul(1_000_000);
     let counted = user.saturating_add(system);
     if counted == 0 {
         return (total, 0);
     }
-    let system = (u128::from(total) * u128::from(system) / u128::from(counted)) as u64;
+    let system = (u128::from(total) * u128::from(system) / u128::from(counted)) as u64 / 1000 * 1000;
     (total - system, system)
 }
 
