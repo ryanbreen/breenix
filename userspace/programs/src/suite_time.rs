@@ -1026,58 +1026,121 @@ fn counter_now() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
-/// The processor's own counter and its frequency in Hz, or why there is none.
+/// The processor's own counter's frequency in Hz: CNTFRQ_EL0 on ARM64.
 #[cfg(target_arch = "aarch64")]
-fn counter() -> Result<(u64, u64), String> {
-    let count = counter_now();
+fn counter_frequency() -> Result<u64, String> {
     let freq: u64;
     // SAFETY: a read of the counter's frequency, which Linux lets user mode make.
     unsafe { core::arch::asm!("mrs {f}, cntfrq_el0", f = out(reg) freq, options(nostack)) };
     if freq == 0 { return Err("CNTFRQ_EL0 reads 0".into()); }
-    Ok((count, freq))
+    Ok(freq)
 }
 
+/// RTC seconds the x86-64 counter frequency is measured across.
 #[cfg(target_arch = "x86_64")]
-fn counter() -> Result<(u64, u64), String> {
-    // SAFETY: CPUID is available in user mode on every x86-64 processor.
-    let (max, leaf) = unsafe { (core::arch::x86_64::__cpuid(0).eax, core::arch::x86_64::__cpuid(0x15)) };
-    let freq = if max >= 0x15 && leaf.eax != 0 && leaf.ebx != 0 && leaf.ecx != 0 {
-        leaf.ecx as u64 * leaf.ebx as u64 / leaf.eax as u64
-    } else {
-        // KVM/QEMU and VMware publish the vCPU's TSC frequency in kHz in
-        // this CPUID leaf. It comes from the hypervisor, independently of
-        // the kernel's PIT calibration and monotonic-clock conversion.
-        let hyper = unsafe { core::arch::x86_64::__cpuid(0x4000_0000) };
-        let vendor = [hyper.ebx, hyper.ecx, hyper.edx];
-        let kvm = vendor == [0x4b4d_564b, 0x564b_4d56, 0x0000_004d];
-        let vmware = vendor == [0x6177_4d56, 0x4d56_6572, 0x6572_6177];
-        if hyper.eax < 0x4000_0010 || !(kvm || vmware) {
-            return Err("CPUID gives no independent TSC frequency".into());
-        }
-        let khz = unsafe { core::arch::x86_64::__cpuid(0x4000_0010).eax };
-        if khz == 0 { return Err("CPUID hypervisor TSC frequency is zero".into()); }
-        khz as u64 * 1000
-    };
-    Ok((counter_now(), freq))
+const RTC_SPAN_S: u64 = 4;
+/// The widest RTC_RD_TIME poll that may time a seconds edge, as a fraction of a
+/// second: 1/500 s. Each edge is timed to within half its poll, so the two edges
+/// of the span add at most 1/(500 * RTC_SPAN_S), 500 ppm, to the measured frequency.
+#[cfg(target_arch = "x86_64")]
+const RTC_EDGE_DIVISOR: u64 = 500;
+/// How long the counter case waits: on x86-64 the frequency measurement, up to a
+/// second for the first RTC edge plus the span, and two passed-over edges.
+#[cfg(target_arch = "x86_64")]
+const COUNTER_WAIT_MS: u64 = (RTC_SPAN_S + 3) * 1000;
+#[cfg(target_arch = "aarch64")]
+const COUNTER_WAIT_MS: u64 = 2000;
+
+/// The RTC's time of day in seconds, read from the CMOS clock through RTC_RD_TIME.
+#[cfg(target_arch = "x86_64")]
+fn rtc_seconds(fd: Fd) -> Result<i64, String> {
+    let mut tm = [0i32; 9];
+    zero("ioctl(RTC_RD_TIME)", sc(nr::IOCTL, &[fd.raw(), RTC_RD_TIME, tm.as_mut_ptr() as u64]))?;
+    Ok(i64::from(tm[2]) * 3600 + i64::from(tm[1]) * 60 + i64::from(tm[0]))
 }
 
-/// The counter read halfway across a CLOCK_MONOTONIC pair: (count, monotonic ns, Hz).
-fn counter_pair() -> Result<(u64, i64, u64), String> {
+/// An RTC seconds edge timed by the counter.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+struct RtcEdge {
+    /// The RTC's time of day, in seconds, after the edge.
+    second: i64,
+    /// The counter halfway between the ends of the last poll that read the old
+    /// second and the first that read the new one.
+    at: u64,
+    /// Counter cycles between those two ends.
+    width: u64,
+}
+
+/// Poll the RTC until its seconds change. Each poll samples the seconds register
+/// the same distance before it returns, so timing poll ends cancels that distance
+/// between two edges.
+#[cfg(target_arch = "x86_64")]
+fn rtc_counter_edge(fd: Fd) -> Result<RtcEdge, String> {
+    let first = rtc_seconds(fd)?;
+    let mut last = counter_now();
+    let start = now_ms();
+    loop {
+        let second = rtc_seconds(fd)?;
+        let at = counter_now();
+        if second != first { return Ok(RtcEdge { second, at: last + (at - last) / 2, width: at - last }); }
+        if now_ms().saturating_sub(start) >= 1500 { return Err("the RTC's seconds did not change within 1500 ms".into()); }
+        last = at;
+    }
+}
+
+/// The TSC's frequency in Hz on x86-64, measured against the RTC, a clock the
+/// kernel does not derive CLOCK_MONOTONIC from: counter cycles between two RTC
+/// seconds edges RTC_SPAN_S or more seconds apart. An edge timed by a poll wider
+/// than 1/RTC_EDGE_DIVISOR s, because the thread was descheduled, is passed over:
+/// a wide starting edge is replaced by the next one, a wide ending edge by the one
+/// after it, at most twice in all.
+#[cfg(target_arch = "x86_64")]
+fn counter_frequency() -> Result<u64, String> {
+    let fd = libbreenix::fs::open("/dev/rtc0", libbreenix::fs::O_RDONLY).map_err(|e| format!("open(/dev/rtc0) failed: {e}"))?;
+    let result = (|| -> Result<u64, String> {
+        let mut first = rtc_counter_edge(fd)?;
+        let mut passed_over = 0;
+        loop {
+            let edge = rtc_counter_edge(fd)?;
+            let seconds = (edge.second - first.second).rem_euclid(86_400) as u64;
+            if seconds == 0 { return Err(format!("two RTC seconds edges both read {}", edge.second)); }
+            let freq = (edge.at - first.at) / seconds;
+            let limit = freq / RTC_EDGE_DIVISOR;
+            if first.width > limit || (seconds >= RTC_SPAN_S && edge.width > limit) {
+                passed_over += 1;
+                if passed_over > 2 {
+                    return Err(format!("RTC_RD_TIME polls of {} and {} counter cycles are wider than the {limit} that times an edge", first.width, edge.width));
+                }
+                if first.width > limit { first = edge; }
+                continue;
+            }
+            if seconds < RTC_SPAN_S { continue; }
+            value("rtc-edge-polls", ((first.width + edge.width) as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 2_000_000 / RTC_EDGE_DIVISOR as i64)));
+            return Ok(freq);
+        }
+    })();
+    let _ = io::close(fd);
+    result
+}
+
+/// The counter read halfway across a CLOCK_MONOTONIC pair: (count, monotonic ns).
+fn counter_pair() -> Result<(u64, i64), String> {
     let before = clock_ns(CLOCK_MONOTONIC)?;
-    let (count, freq) = counter()?;
+    let count = counter_now();
     let after = clock_ns(CLOCK_MONOTONIC)?;
-    Ok((count, before + (after - before) / 2, freq))
+    Ok((count, before + (after - before) / 2))
 }
 
 fn clk_rate_counter() -> CaseResult {
-    let (c0, m0, freq) = match counter_pair() {
-        Ok(read) => read,
-        Err(why) if cfg!(target_arch = "x86_64") && why.starts_with("CPUID") => return skip(why),
-        Err(why) => return fail(why),
-    };
-    wait_for(2000, "drift");
-    pause_ms(2000);
-    let (c1, m1, _) = counter_pair()?;
+    wait_for(COUNTER_WAIT_MS, "drift");
+    let (c0, m0) = counter_pair()?;
+    let freq = counter_frequency()?;
+    // Measuring the x86-64 frequency already spans the RTC seconds; follow the
+    // counter for at least 2 s on either architecture.
+    let spent = (clock_ns(CLOCK_MONOTONIC)? - m0) / MS;
+    if spent < 2000 { pause_ms((2000 - spent) as u64); }
+    let (c1, m1) = counter_pair()?;
     let counted = ((c1.wrapping_sub(c0)) as u128 * NS as u128 / freq as u128) as i64;
     let drift = ppm(m1 - m0, counted);
     value("frequency", freq as i64, "hz", None);
@@ -2478,7 +2541,7 @@ static SUITE: Suite = suite(
             case("monotonic-cpus", "CLOCK_MONOTONIC never goes backwards between threads running on two processors", clk_monotonic_cpus),
             case("monotonic-fine", "Linux policy: CLOCK_MONOTONIC advances between consecutive reads rather than once per tick", clk_monotonic_fine),
             case("rate-realtime", "CLOCK_REALTIME and CLOCK_MONOTONIC advance at the same rate over 2 seconds", clk_rate_realtime),
-            case("rate-counter", "CLOCK_MONOTONIC advances at the rate of the processor's counter over 2 seconds (ARM64 CNTVCT_EL0, x86-64 the TSC at its CPUID frequency)", clk_rate_counter),
+            case("rate-counter", "CLOCK_MONOTONIC advances at the rate of the processor's counter over at least 2 seconds (ARM64 CNTVCT_EL0 at CNTFRQ_EL0; x86-64 the TSC at a frequency measured against the RTC's seconds through /dev/rtc0)", clk_rate_counter),
             case("counter-cpus", "Linux ABI: user mode reads the processor's counter (ARM64 CNTVCT_EL0, x86-64 the TSC) on every online processor, from a thread pinned there by sched_setaffinity and found there by getcpu", clk_counter_cpus),
             case("counter-trap-default", "Linux ABI: denied counter and timer register reads kill user mode with SIGILL on ARM64 (CNTPCT_EL0, CNTV_CTL_EL0, CNTP_CTL_EL0) and SIGSEGV on x86-64 (RDMSR of IA32_TSC, IA32_TSC_DEADLINE, X2APIC_INITIAL_COUNT)", clk_counter_trap_default),
             case("counter-trap-caught", "Linux ABI: caught denied counter and timer register reads carry ILL_ILLOPC and si_addr on ARM64, SI_KERNEL and faulting RIP on x86-64, and resume past the instruction; granted counter reads do not trap", clk_counter_trap_caught),
