@@ -218,6 +218,22 @@ fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
     // claim-lint:ok: 6 zero-feature production boots are recorded in
     // docs/planning/green-program/sockets/serials/775/round4/production/.
     assert!(census.contains("kthread_run(census_thread_fn, \"kstrandd\")"));
+    // Both automatic emitters run in every profile: a stranded production boot
+    // that never completes must still publish fresh snapshots, so neither the
+    // spawn nor the heartbeat may be compiled or branched out by feature.
+    for emitter in ["start_census_kthread", "report_heartbeat_if_due"] {
+        let start = census
+            .find(&format!("pub(crate) fn {emitter}()"))
+            .unwrap_or_else(|| panic!("{emitter} is missing"));
+        let body = &census[start..];
+        let body = &body[..body.find("\n}\n").expect("emitter body ends")];
+        let attributes = &census[..start];
+        let attributes = &attributes[attributes.rfind("\n\n").unwrap_or(0)..];
+        assert!(
+            !body.contains("cfg!(") && !body.contains("#[cfg(") && !attributes.contains("#[cfg("),
+            "{emitter} is gated by a feature, so production boots publish no census"
+        );
+    }
     assert!(census.contains("scheduler.block_current_for_timer(wake_at)"));
     assert_eq!(
         census.matches("report_heartbeat_if_due();").count(),

@@ -314,12 +314,29 @@ fn main() {
         Ok("max") => "max",
         _ => "qemu64",
     };
+    let qemu_cpu = qemu_cpu.to_owned();
+    #[cfg(target_os = "linux")]
+    let qemu_cpu = if qemu_accel == "kvm" && qemu_cpu == "host" {
+        // Supply the rate KVM reports for a new vCPU, independently of the
+        // guest's PIT calibration. QEMU sets that virtual TSC rate and makes
+        // it available through its CPUID frequency leaf even when an outer
+        // hypervisor masks invariant TSC. No invented CPU capability is needed.
+        match kvm_tsc_frequency_hz() {
+            Ok(hz) => format!("host,tsc-frequency={hz}"),
+            Err(error) => {
+                eprintln!("[qemu-uefi] Cannot query KVM TSC frequency; using host CPU: {error}");
+                qemu_cpu
+            }
+        }
+    } else {
+        qemu_cpu
+    };
     let machine = format!("{},accel={}", profile.machine(), qemu_accel);
     qemu.args([
         "-machine",
         machine.as_str(),
         "-cpu",
-        qemu_cpu,
+        qemu_cpu.as_str(),
         "-smp",
         profile.cpus(),
         "-m",
@@ -587,4 +604,29 @@ fn main() {
     };
 
     process::exit(exit_status.code().unwrap_or(-1));
+}
+
+/// Query KVM's virtual counter rate before launching QEMU. Every descriptor
+/// belongs to this short-lived query and is closed before the real VM starts.
+#[cfg(target_os = "linux")]
+fn kvm_tsc_frequency_hz() -> std::io::Result<u64> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    extern "C" {
+        fn ioctl(fd: i32, request: std::os::raw::c_ulong, ...) -> i32;
+    }
+    fn query(file: &fs::File, request: u32) -> std::io::Result<i32> {
+        // KVM_CREATE_VM, KVM_CREATE_VCPU and KVM_GET_TSC_KHZ are _IO
+        // requests from linux/kvm.h. VM type and vCPU index are both zero.
+        let result = unsafe { ioctl(file.as_raw_fd(), request as std::os::raw::c_ulong, 0usize) };
+        if result < 0 { Err(std::io::Error::last_os_error()) } else { Ok(result) }
+    }
+    let kvm = fs::OpenOptions::new().read(true).write(true).open("/dev/kvm")?;
+    // SAFETY: the successful create ioctls return new, uniquely owned fds.
+    let vm = unsafe { fs::File::from_raw_fd(query(&kvm, 0xae01)?) };
+    let cpu = unsafe { fs::File::from_raw_fd(query(&vm, 0xae41)?) };
+    let khz = query(&cpu, 0xaea3)?;
+    if khz == 0 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "KVM returned a zero TSC rate"));
+    }
+    Ok(khz as u64 * 1000)
 }

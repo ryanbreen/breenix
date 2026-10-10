@@ -318,10 +318,10 @@ impl PendingProcessReclaim {
         })
     }
 
-    fn reclaim_bounded(&mut self) -> crate::memory::process_memory::RetireProgress {
-        use crate::memory::process_memory::{RetireProgress, RETIRE_FRAME_BUDGET};
+    fn reclaim_bounded(&mut self, frame_budget: u32) -> crate::memory::process_memory::RetireProgress {
+        use crate::memory::process_memory::RetireProgress;
 
-        let mut budget = RETIRE_FRAME_BUDGET;
+        let mut budget = frame_budget;
         #[cfg(target_arch = "aarch64")]
         while budget > 0 {
             let Some(old_page_table) = self.old_page_tables.last_mut() else {
@@ -343,7 +343,9 @@ impl PendingProcessReclaim {
         let Some(page_table) = self.page_table.as_mut() else {
             return RetireProgress::Complete;
         };
-        page_table.release_mapped_leaves();
+        if page_table.release_mapped_leaves_bounded(&mut budget) != RetireProgress::Complete {
+            return RetireProgress::Budgeted;
+        }
         let progress = page_table.retire_bounded(self.pid, &mut budget);
         if progress == RetireProgress::Complete {
             self.page_table = None;
@@ -432,14 +434,34 @@ pub fn reclaim_drain_claim_snapshot() -> (bool, u32) {
 /// selection is already bounded — `reclaim_bounded` retires at most
 /// `RETIRE_FRAME_BUDGET` frames per receipt — but the pass itself was not, so a
 /// pass could hold the CPU for every receipt that was queued when it started.
-/// Four keeps the window to four bounded retire steps while leaving every
-/// production caller enough per-invocation throughput to stay ahead of its
-/// enqueue rate: the slowest re-entry cadence in the tree is x86's idle loop at
-/// roughly one call per timer tick, and process exits are orders of magnitude
-/// rarer than that. Boot-owned passes are deliberately uncapped — they feed
+/// One keeps the window to one bounded retire step while leaving every
+/// caller a bounded preemption window. Reclamation throughput depends on
+/// idle dispatch and the queued address-space sizes; this cap is no guarantee
+/// that reclamation keeps up with allocation. Boot-owned passes are deliberately uncapped — they feed
 /// `BOOT_RECLAIM_PASS_SELECTIONS` and the oracles' drain-to-quiesce loops, whose
 /// meaning is "this pass took everything it could".
-const PRODUCTION_PASS_SELECTION_CAP: u32 = 4;
+const PRODUCTION_PASS_SELECTION_CAP: u32 = 1;
+/// Bound leaf and table release work in the non-preemptible production step.
+/// Boot-owned drains retain RETIRE_FRAME_BUDGET and their verification contract.
+const PRODUCTION_RECLAIM_FRAME_BUDGET: u32 = 16;
+/// Selections a production pass takes while memory is short. The bounded step
+/// above returns about 16 frames per idle pass, slower than a suite of forking
+/// processes frees them, and an allocation that finds no frame kills its
+/// process: a copy-on-write fault after fork ended PID 1 that way. Below the
+/// watermark a pass completes whole receipts again, trading the short step's
+/// dispatch latency for memory, as the uncapped drain did.
+const PRESSURED_PASS_SELECTION_CAP: u32 = 4;
+
+/// Whether fewer than half of the usable frames are free: unallocated at the
+/// frontier or on the free list.
+fn memory_pressure() -> bool {
+    let stats = crate::memory::frame_allocator::memory_stats();
+    let total = (stats.total_bytes / 4096) as usize;
+    let available = total
+        .saturating_sub(stats.allocated_frames)
+        .saturating_add(stats.free_list_frames);
+    available < total / 2
+}
 
 /// Injected nested refusals observed by `boot_prove_nested_drain_refusal`.
 #[cfg(feature = "boot_tests")]
@@ -606,8 +628,14 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     }
     #[cfg(target_arch = "aarch64")]
     process.cleanup_cow_frames();
+    // The superseded roots are cleared below, so their bounded leaf release
+    // must finish here: a partial walk would keep the rest of their frames
+    // referenced, and shared with the parent, for the life of the system.
     #[cfg(target_arch = "aarch64")]
-    process.drain_old_page_tables();
+    {
+        let mut budget = u32::MAX;
+        let _ = process.drain_old_page_tables_bounded(&mut budget);
+    }
     #[cfg(target_arch = "x86_64")]
     {
         let mut budget = u32::MAX;
@@ -1201,6 +1229,8 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
     #[cfg(target_arch = "x86_64")]
     if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
         crate::task::kthread::kthread_unpark(daemon);
+        // Publishing a fatal signal's status cannot wait a busy CPU's quantum.
+        scheduler::with_scheduler(|s| s.expedite_signal_recipient(daemon.tid()));
     }
     queued
 }
@@ -1549,6 +1579,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
     // the number of receipts one invocation may take is bounded. Boot-owned
     // passes are uncapped and keep their drain-to-quiesce meaning.
     let mut production_selections: u32 = 0;
+    let pressured = !boot_test_owned && memory_pressure();
 
     loop {
         #[cfg(feature = "boot_tests")]
@@ -1608,7 +1639,13 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     } else {
                         push_pending_or_abandon(reclaim);
                     }
-                } else if reclaim.reclaim_bounded()
+                } else if reclaim.reclaim_bounded(if boot_test_owned {
+                    crate::memory::process_memory::RETIRE_FRAME_BUDGET
+                } else if pressured {
+                    u32::MAX
+                } else {
+                    PRODUCTION_RECLAIM_FRAME_BUDGET
+                })
                     == crate::memory::process_memory::RetireProgress::Complete
                 {
                     crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
@@ -1643,7 +1680,20 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
 
                 if !boot_test_owned {
                     production_selections = production_selections.saturating_add(1);
-                    if production_selections >= PRODUCTION_PASS_SELECTION_CAP {
+                    // Idle cannot be preempted inside this ownership bracket.
+                    // Once a wake requests dispatch, finish this bounded receipt
+                    // and leave the rest queued instead of consuming the whole
+                    // batch before the recipient can run. Always completing one
+                    // selection preserves reclamation progress under load.
+                    // Short of memory, frames come first.
+                    let cap = if pressured {
+                        PRESSURED_PASS_SELECTION_CAP
+                    } else {
+                        PRODUCTION_PASS_SELECTION_CAP
+                    };
+                    if production_selections >= cap
+                        || (!pressured && scheduler::is_need_resched())
+                    {
                         crate::trace_count!(
                             crate::tracing::providers::teardown::RECLAIM_PASS_SELECTION_CAPPED
                         );

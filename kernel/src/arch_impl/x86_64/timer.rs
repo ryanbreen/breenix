@@ -118,6 +118,9 @@ unsafe fn inb(port: u16) -> u8 {
     value
 }
 
+/// PIT input clock, in Hz.
+const PIT_HZ: u64 = 1_193_182;
+
 /// Calibrate TSC frequency using the PIT as a reference.
 ///
 /// This function uses the PIT's known frequency to measure how many
@@ -126,42 +129,71 @@ unsafe fn inb(port: u16) -> u8 {
 ///
 /// Must be called after PIT is initialized but before interrupts are enabled.
 pub fn calibrate() {
-    // We'll measure TSC cycles over ~50ms using PIT channel 2
-    // PIT countdown value for ~50ms: 1193182 * 0.05 = 59659
-    const CALIBRATION_TICKS: u16 = 59659;
-    const CALIBRATION_MS: u64 = 50;
-    // A virtual CPU descheduled inside a window counts the lost time as TSC
-    // cycles, and nothing can make a window shorter than the PIT interval, so
-    // the shortest of several windows is the measurement (as Linux takes the
-    // minimum of its PIT calibration loops).
-    const CALIBRATION_WINDOWS: usize = 3;
-    const CALIBRATION_ATTEMPTS: usize = 12;
+    // PIT channel 2 runs as a square wave of ~50 ms periods, and the TSC times
+    // its rising edges. An edge is seen between the last poll that read OUT low
+    // and the first that read it high; a port access is a VM exit of tens of
+    // microseconds on the x86 gate, so one edge is known to within one poll.
+    // Timing whole periods between two edges found the same way cancels the
+    // exit's own latency, and spreading the edges five or six periods apart
+    // divides the remaining error by the span: a single 50 ms countdown timed
+    // from its starting write left the kernel up to 1100 ppm off the host.
+    const PERIOD_TICKS: u16 = 59660;
+    const MIN_PERIODS: usize = 5;
+    // Collections refused for a polling gap before calibration gives up.
+    const ATTEMPTS: u32 = 8;
 
     log::info!("Calibrating TSC frequency using PIT...");
 
-    let mut tsc_base = None;
-    let mut tsc_elapsed = u64::MAX;
-    let mut windows = 0;
-    for _ in 0..CALIBRATION_ATTEMPTS {
-        if windows == CALIBRATION_WINDOWS {
-            break;
+    // The edges are counted, not the periods between them, so the collection
+    // is only usable if no rising edge went unseen. OUT stays low for half a
+    // period, and an edge is missed only when no poll falls inside that low
+    // half, so an interval that hides an edge holds a gap over half a period.
+    // Requiring the longest gap after the first edge to stay under a quarter
+    // of the shortest interval therefore refuses any collection in which one
+    // interval missed an edge while another did not, and any in which every
+    // interval missed exactly one; it cannot see every interval missing two
+    // or more. A refused collection, whose virtual CPU was descheduled for a
+    // long gap, is taken again.
+    let mut attempt = 0;
+    let edges = loop {
+        attempt += 1;
+        let Some((edges, max_gap)) = (unsafe { pit_rising_edges(PERIOD_TICKS) }) else {
+            panic!("TSC calibration observed no PIT channel 2 square wave");
+        };
+        let shortest = edges.windows(2).map(|pair| pair[1].at - pair[0].at).min().unwrap_or(0);
+        if max_gap.saturating_mul(4) < shortest {
+            break edges;
         }
-        if let Some((start, elapsed)) = unsafe { measure_pit_window(CALIBRATION_TICKS) } {
-            tsc_base.get_or_insert(start);
-            tsc_elapsed = tsc_elapsed.min(elapsed);
-            windows += 1;
+        log::warn!(
+            "TSC calibration attempt {} refused: a {}-cycle gap between PIT polls could hide an edge (shortest interval {})",
+            attempt,
+            max_gap,
+            shortest
+        );
+        if attempt == ATTEMPTS {
+            panic!("TSC calibration could not observe every PIT edge in {} attempts", ATTEMPTS);
         }
-    }
-    let Some(tsc_base) = tsc_base else {
-        panic!("TSC calibration observed no PIT channel 2 countdown");
     };
 
-    // TSC frequency = (tsc_elapsed / calibration_time_seconds)
-    // = tsc_elapsed * 1000 / CALIBRATION_MS
-    let frequency_hz = (tsc_elapsed * 1000) / CALIBRATION_MS;
+    // The two edges at least MIN_PERIODS apart whose times are known most
+    // tightly: a virtual CPU descheduled across an edge widens that edge.
+    let mut best = (0, MIN_PERIODS);
+    for first in 0..edges.len() {
+        for last in first + MIN_PERIODS..edges.len() {
+            let width = edges[first].width + edges[last].width;
+            if width < edges[best.0].width + edges[best.1].width {
+                best = (first, last);
+            }
+        }
+    }
+    let (first, last) = (edges[best.0], edges[best.1]);
+    let periods = (best.1 - best.0) as u64;
+    let tsc_elapsed = last.at - first.at;
+    let pit_ticks = periods * PERIOD_TICKS as u64;
+    let frequency_hz = tsc_elapsed * PIT_HZ / pit_ticks;
 
     TSC_FREQUENCY_HZ.store(frequency_hz, Ordering::SeqCst);
-    TSC_BASE.store(tsc_base, Ordering::SeqCst);
+    TSC_BASE.store(first.at, Ordering::SeqCst);
     TSC_CALIBRATED.store(true, Ordering::SeqCst);
 
     log::info!(
@@ -170,19 +202,34 @@ pub fn calibrate() {
         frequency_hz
     );
     log::info!(
-        "TSC cycles during {}ms calibration: {}",
-        CALIBRATION_MS,
-        tsc_elapsed
+        "TSC cycles over {} PIT periods ({} ms): {} (within {})",
+        periods,
+        pit_ticks * 1000 / PIT_HZ,
+        tsc_elapsed,
+        first.width + last.width
     );
 
     // HAL boot stage marker - proves HAL timer operations are working
     log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
 }
 
-/// Count TSC cycles across one PIT channel 2 countdown of `ticks`.
-/// Returns the TSC value at the start and the cycles elapsed, or `None` when
-/// no countdown was observed.
-unsafe fn measure_pit_window(ticks: u16) -> Option<(u64, u64)> {
+/// A rising edge of PIT channel 2's OUT, timed by the TSC.
+#[derive(Clone, Copy, Default)]
+struct PitEdge {
+    /// Middle of the poll in which OUT rose.
+    at: u64,
+    /// TSC cycles between the reads either side of the edge.
+    width: u64,
+}
+
+/// Run PIT channel 2 as a square wave of `period` ticks and time its first
+/// seven rising edges, with the longest TSC gap between consecutive polls from
+/// the first edge on, or `None` when OUT stopped toggling.
+unsafe fn pit_rising_edges(period: u16) -> Option<([PitEdge; 7], u64)> {
+    // Bounds the wait for one edge far above a period's worth of polls, so a
+    // PIT that never toggles fails calibration instead of hanging the boot.
+    const POLLS_PER_EDGE: u64 = 50_000_000;
+
     // Save original gate state
     let orig_gate = inb(PIT_GATE_PORT);
 
@@ -191,31 +238,38 @@ unsafe fn measure_pit_window(ticks: u16) -> Option<(u64, u64)> {
     // Bit 1: Speaker data enable (0 = disable speaker)
     outb(PIT_GATE_PORT, (orig_gate & 0xFC) | 0x01);
 
-    // Program PIT channel 2 for one-shot mode
-    // 0xB0 = channel 2, lobyte/hibyte, mode 0 (interrupt on terminal count), binary
-    outb(PIT_COMMAND_PORT, 0xB0);
-    outb(PIT_CHANNEL2_PORT, (ticks & 0xFF) as u8);
+    // 0xB6 = channel 2, lobyte/hibyte, mode 3 (square wave), binary
+    outb(PIT_COMMAND_PORT, 0xB6);
+    outb(PIT_CHANNEL2_PORT, (period & 0xFF) as u8);
+    outb(PIT_CHANNEL2_PORT, (period >> 8) as u8);
 
-    // Mode 0 starts counting when the high byte completes the load, so read
-    // the TSC before it: a delay here can lengthen the window, never shorten it.
-    let tsc_start = rdtsc_serialized();
-    outb(PIT_CHANNEL2_PORT, (ticks >> 8) as u8);
-
-    // Wait for PIT channel 2 to count down to zero
-    // When the count reaches 0, bit 5 of port 0x61 goes high
+    // Bit 5 of port 0x61 is channel 2's OUT.
+    let mut edges = [PitEdge::default(); 7];
+    let mut found = 0;
+    let mut was_high = inb(PIT_GATE_PORT) & 0x20 != 0;
+    let mut last = rdtsc_serialized();
     let mut polls = 0u64;
-    while inb(PIT_GATE_PORT) & 0x20 == 0 {
+    let mut max_gap = 0u64;
+    while found < edges.len() && polls < POLLS_PER_EDGE {
+        let high = inb(PIT_GATE_PORT) & 0x20 != 0;
+        let at = rdtsc_serialized();
+        if found > 0 {
+            max_gap = max_gap.max(at - last);
+        }
+        if high && !was_high {
+            edges[found] = PitEdge { at: last + (at - last) / 2, width: at - last };
+            found += 1;
+            polls = 0;
+        }
+        was_high = high;
+        last = at;
         polls += 1;
     }
-
-    // Read final TSC
-    let tsc_end = rdtsc_serialized();
 
     // Restore original gate state
     outb(PIT_GATE_PORT, orig_gate);
 
-    // OUT already high on the first poll means no countdown was measured.
-    (polls != 0).then(|| (tsc_start, tsc_end.saturating_sub(tsc_start)))
+    (found == edges.len()).then_some((edges, max_gap))
 }
 
 /// Check if TSC has been calibrated.

@@ -3117,8 +3117,22 @@ fn mmap_read() -> CaseResult {
 
 fn mmap_shared_writeback() -> CaseResult {
     let f = Fixture::new(b"abcdef")?;
-    let p =
-        map(f.fd(), memory::MAP_SHARED, 0).map_err(|e| format!("file-backed mmap failed: {e}"))?;
+    // Own both pages before installing the file in the second. The first
+    // remains reserved until immediately before the across-hole syscall.
+    let range = memory::mmap(
+        std::ptr::null_mut(), 8192, memory::PROT_NONE,
+        memory::MAP_PRIVATE | memory::MAP_ANONYMOUS, -1, 0,
+    )?;
+    let p = match memory::mmap(
+        unsafe { range.add(4096) }, 4096, memory::PROT_READ | memory::PROT_WRITE,
+        memory::MAP_SHARED | memory::MAP_FIXED, f.fd().raw() as i32, 0,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            memory::munmap(range, 8192)?;
+            return Err(format!("file-backed mmap failed: {e}").into());
+        }
+    };
     let result = (|| -> CaseResult {
         check(
             unsafe { std::slice::from_raw_parts(p, 6) } == b"abcdef",
@@ -3144,8 +3158,9 @@ fn mmap_shared_writeback() -> CaseResult {
             12,
             "overflowing msync",
         )?;
-        // The preceding page is a hole in the mmap arena. Validation must
-        // reject it before starting writeback of the covered second page.
+        // Make a real gap, without allocating between unmap and msync.
+        // Validation must reject it before writeback of the second page.
+        memory::munmap(range, 4096)?;
         expect_errno(
             sc(MSYNC, p as u64 - 4096, 8192, 4, 0, "msync across a hole"),
             12,
@@ -3171,7 +3186,7 @@ fn mmap_shared_writeback() -> CaseResult {
         sync_fd(f.fd(), true)?;
         contents(f.fd(), b"XYZdef")
     })();
-    memory::munmap(p, 4096).map_err(|e| format!("file-backed mmap failed: {e}"))?;
+    memory::munmap(range, 8192).map_err(|e| format!("file-backed munmap failed: {e}"))?;
     result?;
     contents(f.fd(), b"XYZdef")?;
 

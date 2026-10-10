@@ -507,6 +507,8 @@ pub enum TimerPop {
 /// the CPU-time clocks and timers, and ITIMER_VIRTUAL and ITIMER_PROF.
 #[derive(Default)]
 pub struct CpuAccount {
+    /// Immutable thread-group identity, shared by every CLONE_THREAD member.
+    pub process_id: u64,
     own: AtomicU64,
     children: AtomicU64,
     pub user_ns: AtomicU64,
@@ -516,6 +518,10 @@ pub struct CpuAccount {
 }
 
 impl CpuAccount {
+    pub fn new(process_id: u64) -> Self {
+        Self { process_id, ..Self::default() }
+    }
+
     /// User and system nanoseconds charged so far.
     pub fn split_ns(&self) -> (u64, u64) {
         (self.user_ns.load(Ordering::Relaxed), self.system_ns.load(Ordering::Relaxed))
@@ -996,6 +1002,12 @@ impl Thread {
         if let Some(limits) = &self.resource_limits {
             limits.charge_cpu(ran);
         }
+    }
+
+    /// Lock-free admission to the full signal/stop/CPU-limit return check.
+    pub fn needs_user_return_check(&self) -> bool {
+        self.signals.needs_return_check()
+            || self.resource_limits.as_ref().is_some_and(|limits| limits.has_pending_cpu_signals())
     }
 
     /// Charge the interval this thread is running in, when it is: a thread

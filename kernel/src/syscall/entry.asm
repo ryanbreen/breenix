@@ -282,7 +282,11 @@ syscall_save_registers:
     test rax, rax                      ; Check if it was saved (non-zero)
     jz .no_saved_cr3_syscall           ; If 0, skip (shouldn't happen from userspace)
 
-    ; Switch back to original process CR3
+    ; Entry keeps the process CR3 active. Avoid flushing the TLB when
+    ; the syscall did not change it; restore only a different root.
+    mov rdx, cr3
+    cmp rdx, rax
+    je .no_saved_cr3_syscall
     mov cr3, rax
 
 .no_saved_cr3_syscall:

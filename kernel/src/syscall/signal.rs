@@ -430,11 +430,6 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
             // We need the thread ID from the process's main thread
             if let Some(ref thread) = process.main_thread {
                 let thread_id = thread.id;
-                log::info!(
-                    "kill: Found main_thread {} for process {}, will unblock if BlockedOnSignal",
-                    thread_id,
-                    target.as_u64()
-                );
                 // Release the manager lock before acquiring the scheduler lock
                 // to avoid deadlock
                 drop(manager_guard);
