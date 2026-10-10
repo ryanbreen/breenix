@@ -674,9 +674,11 @@ fn deliver_signals_on_syscall_return(frame: &mut SyscallFrame) -> bool {
     }
 
     // Try to acquire process manager lock (non-blocking)
+    crate::task::scheduler::PROBE_SYSRET.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let mut manager_guard = match crate::process::try_manager() {
         Some(guard) => guard,
         None => {
+            crate::task::scheduler::PROBE_SYSRET_BUSY.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             // Lock held: the signal check moves to this return's reschedule
             // check (syscall/entry.asm), which delivers before Ring 3 and
             // waits out a holder on another CPU. A deferred SIGKILL cannot

@@ -6402,6 +6402,8 @@ fn probe_note_dispatch(cpu: usize, old: u64, next: u64) {
 pub static PROBE_LAST_DUMP: AtomicU64 = AtomicU64::new(0);
 pub static PROBE_REFUSED: AtomicU64 = AtomicU64::new(0);
 pub static PROBE_FAULT_BUSY: AtomicU64 = AtomicU64::new(0);
+pub static PROBE_SYSRET_BUSY: AtomicU64 = AtomicU64::new(0);
+pub static PROBE_SYSRET: AtomicU64 = AtomicU64::new(0);
 pub static PROBE_YIELDS: AtomicU64 = AtomicU64::new(0);
 pub static PROBE_YIELD_PASSES: AtomicU64 = AtomicU64::new(0);
 pub static PROBE_REFUSED_AT_SPAWN: AtomicU64 = AtomicU64::new(0);
