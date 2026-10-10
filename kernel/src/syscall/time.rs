@@ -104,7 +104,7 @@ pub fn sys_clock_settime(clock_id: u32, user_ptr: *const Timespec) -> SyscallRes
         Err(_) => return SyscallResult::Err(ErrorCode::Fault as u64),
     };
 
-    if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+    if ts.tv_sec < 0 || ts.tv_sec > i64::MAX / 1_000_000_000 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
     }
 
