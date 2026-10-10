@@ -10,18 +10,29 @@ use x86_64::{
 };
 
 /// Allocate and zero outside PM, then revalidate the reservation before publishing.
-pub(crate) fn handle_fault(
+///
+/// `acquire` takes PROCESS_MANAGER for each of the two sections. When it
+/// returns `None` (the lock stayed busy and the fault is to be retried, as the
+/// x86 page-fault handler's bounded wait reports) nothing is published and the
+/// access is reported `Resolved`, so it runs again and faults again.
+pub(crate) fn handle_fault<G>(
     root: u64,
     address: u64,
     access: Access,
     user_thread: Option<u64>,
-) -> FaultOutcome {
+    mut acquire: impl FnMut() -> Option<G>,
+) -> FaultOutcome
+where
+    G: core::ops::DerefMut<Target = Option<crate::process::ProcessManager>>,
+{
     if crate::process::process_manager_held_on_current_cpu() {
         return FaultOutcome::NotFile;
     }
     let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
     let snapshot = {
-        let guard = crate::process::manager();
+        let Some(guard) = acquire() else {
+            return FaultOutcome::Resolved;
+        };
         let Some((pid, owner)) = guard.as_ref().and_then(|m| m.find_process_by_cr3(root)) else {
             return FaultOutcome::NotFile;
         };
@@ -42,7 +53,12 @@ pub(crate) fn handle_fault(
         None
     };
     let outcome = {
-        let mut guard = crate::process::manager();
+        let Some(mut guard) = acquire() else {
+            if let Some(frame) = frame {
+                let _ = super::frame_allocator::deallocate_leaf_frame(frame);
+            }
+            return FaultOutcome::Resolved;
+        };
         let Some(manager) = guard.as_mut() else {
             if let Some(frame) = frame {
                 let _ = super::frame_allocator::deallocate_leaf_frame(frame);

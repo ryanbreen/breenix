@@ -2732,7 +2732,9 @@ fn file_mapping_fault(
     } else {
         None
     };
-    match crate::memory::anon_map::handle_fault(root, far, access, thread) {
+    match crate::memory::anon_map::handle_fault(root, far, access, thread, || {
+        Some(crate::process::manager())
+    }) {
         FaultOutcome::NotFile => {}
         outcome => return outcome,
     }
