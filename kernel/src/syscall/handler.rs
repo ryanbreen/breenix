@@ -663,7 +663,7 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
 /// process is stopped, or has a stop to take, and nothing was delivered.
 fn deliver_signals_on_syscall_return(frame: &mut SyscallFrame) -> bool {
     // Get current thread ID
-    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+    let current_thread_id = match crate::per_cpu::current_thread_id_lock_free() {
         Some(id) => id,
         None => return false,
     };
