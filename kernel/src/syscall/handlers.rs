@@ -3251,6 +3251,25 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
 
 /// sys_getpid - Get the current process ID
 pub fn sys_getpid() -> SyscallResult {
+    // The running thread's shared CPU account has the immutable group ID.
+    // No process-manager or scheduler serialization is needed to read it.
+    let group = crate::arch_without_interrupts(|| {
+        #[cfg(target_arch = "x86_64")]
+        let ptr = {
+            use crate::arch_impl::PerCpuOps;
+            crate::arch_impl::x86_64::percpu::X86PerCpu::current_thread_ptr()
+        };
+        #[cfg(target_arch = "aarch64")]
+        let ptr = crate::per_cpu_aarch64::current_thread_ptr();
+        let ptr = ptr as *const crate::task::thread::Thread;
+        if ptr.is_null() { return None; }
+        // SAFETY: IRQ masking keeps the current thread alive on this CPU;
+        // reading its immutable Arc target does not create a mutable alias.
+        unsafe { (*ptr).cpu_account.as_ref().map(|account| account.process_id) }
+    });
+    if let Some(group) = group.filter(|&id| id != 0) {
+        return SyscallResult::Ok(group);
+    }
     // Disable interrupts when accessing process manager
     crate::arch_without_interrupts(|| {
         // Debug level, as below: a serial line per call serializes every CPU's
