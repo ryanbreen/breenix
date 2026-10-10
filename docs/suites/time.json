@@ -353,7 +353,7 @@
         },
         {
           "id": "virtual",
-          "title": "ITIMER_VIRTUAL counts user CPU time: no SIGVTALRM while the process sleeps, one while it computes"
+          "title": "ITIMER_VIRTUAL counts user CPU time: a 300 ms sleep uses almost none of it and sends no SIGVTALRM; computing sends one"
         },
         {
           "id": "virtual-interval",

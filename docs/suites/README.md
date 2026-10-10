@@ -343,7 +343,11 @@ CLOCK_MONOTONIC (100 ppm), CLOCK_MONOTONIC against the processor's own counter (
 ARM64's CNTVCT_EL0 at CNTFRQ_EL0, x86-64's TSC at the frequency CPUID leaf 0x15 gives,
 and a skip when the processor does not give one) and CLOCK_REALTIME against the RTC read
 through Linux's `/dev/rtc0` RTC_RD_TIME (2000 ppm). CPU-time clocks and timers are
-checked to stand still while the caller sleeps and to advance while it computes.
+checked to stand still while the caller sleeps and to advance while it computes. A CPU-time
+timer must not fire before the caller has computed for as long as getitimer or
+timer_gettime said was left when the computing began, since the sleep before it makes
+system calls that ITIMER_PROF and the process CPU-time clock rightly count; ITIMER_VIRTUAL,
+which counts only user mode, may lose no more than two ticks and 2 ms to that sleep.
 
 Cases that set CLOCK_REALTIME put it back before they end, advanced by the time that
 passed. `clocks/settime-eperm` sets it as user 4242 in a child. `clocks/monotonic-cpus`

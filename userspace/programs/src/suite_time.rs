@@ -1995,9 +1995,11 @@ fn it_alarm_shares_real() -> CaseResult {
 }
 
 /// A 100 ms CPU-time interval timer `which` sending `sig`: none while the process sleeps
-/// 300 ms, then one while it computes, no sooner than the CPU time getitimer said was
-/// left when the computing began (ITIMER_PROF counts the sleep's own system calls).
-fn cpu_itimer(which: i32, sig: i32) -> CaseResult {
+/// 300 ms, at least `min_left` ms of it left after the sleep, then one while it computes,
+/// no sooner than the CPU time getitimer said was left when the computing began.
+/// ITIMER_PROF counts the sleep's own system calls; ITIMER_VIRTUAL counts only the few
+/// instructions the sleep runs in user mode.
+fn cpu_itimer(which: i32, sig: i32, min_left: i64) -> CaseResult {
     catch(sig)?;
     arm_itimer(which, 0, 100_000)?;
     pause_ms(300);
@@ -2006,15 +2008,16 @@ fn cpu_itimer(which: i32, sig: i32) -> CaseResult {
     let start = mono();
     let fired = burn_until(2000, || count(sig) > 0);
     let took = (mono() - start) / MS;
-    value("left", left, "ms", Some((1, 100)));
+    value("left", left, "ms", Some((min_left, 100)));
     value("fired-after", took, "ms", Some((left, 2000)));
-    check(left > 0 && left <= 100, &format!("after the sleep, getitimer reports {left} ms left of a 100 ms timer that has not fired"))?;
+    check(left >= min_left && left <= 100, &format!("after a 300 ms sleep, getitimer reports {left} ms left of the 100 ms timer, not {min_left} ms or more"))?;
     check(fired, &format!("a 100 ms timer did not send signal {sig} in 2 s of computing"))?;
     check(took >= left, &format!("a timer with {left} ms of CPU time left fired after {took} ms of computing"))
 }
 
-fn it_virtual() -> CaseResult { cpu_itimer(ITIMER_VIRTUAL, SIGVTALRM) }
-fn it_prof() -> CaseResult { cpu_itimer(ITIMER_PROF, SIGPROF) }
+/// What a sleep may take of ITIMER_VIRTUAL's 100 ms: two ticks charged to user mode, and 2 ms.
+fn it_virtual() -> CaseResult { cpu_itimer(ITIMER_VIRTUAL, SIGVTALRM, 100 - 2 * TICK_MS - 2) }
+fn it_prof() -> CaseResult { cpu_itimer(ITIMER_PROF, SIGPROF, 1) }
 
 fn it_virtual_interval() -> CaseResult {
     catch(SIGVTALRM)?;
@@ -2175,7 +2178,7 @@ static SUITE: Suite = suite(
             case("small", "An ITIMER_REAL value of one microsecond still fires", it_small),
             case("einval", "setitimer and getitimer of an unknown timer, and setitimer with tv_usec out of range, fail with EINVAL", it_einval),
             case("alarm-shares-real", "Linux policy: alarm and setitimer ITIMER_REAL are one timer", it_alarm_shares_real),
-            case("virtual", "ITIMER_VIRTUAL counts user CPU time: no SIGVTALRM while the process sleeps, one while it computes", it_virtual),
+            case("virtual", "ITIMER_VIRTUAL counts user CPU time: a 300 ms sleep uses almost none of it and sends no SIGVTALRM; computing sends one", it_virtual),
             case("virtual-interval", "ITIMER_VIRTUAL reloads its interval while the process computes", it_virtual_interval),
             case("prof", "ITIMER_PROF counts CPU time: no SIGPROF while the process sleeps, one while it computes", it_prof),
             case("fork", "fork clears the child's alarm and interval timers and leaves the parent's armed", it_fork),
