@@ -3258,6 +3258,9 @@ pub fn sys_getpid() -> SyscallResult {
         log::debug!("sys_getpid called");
 
         // Get current thread ID from scheduler
+        #[cfg(target_arch = "x86_64")]
+        let scheduler_thread_id = crate::per_cpu::current_thread_id_lock_free();
+        #[cfg(not(target_arch = "x86_64"))]
         let scheduler_thread_id = crate::task::scheduler::current_thread_id();
         log::debug!(
             "sys_getpid: scheduler_thread_id = {:?}",
@@ -3297,7 +3300,11 @@ pub fn sys_getpid() -> SyscallResult {
 /// sys_gettid - Get the current thread ID
 pub fn sys_gettid() -> SyscallResult {
     // Get current thread ID from scheduler
-    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+    #[cfg(target_arch = "x86_64")]
+    let thread_id = crate::arch_without_interrupts(crate::per_cpu::current_thread_id_lock_free);
+    #[cfg(not(target_arch = "x86_64"))]
+    let thread_id = crate::task::scheduler::current_thread_id();
+    if let Some(thread_id) = thread_id {
         // In Linux, the main thread of a process has TID = PID
         // For now, we just return the thread ID directly
         return SyscallResult::Ok(thread_id);
