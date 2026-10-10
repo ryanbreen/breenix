@@ -905,6 +905,7 @@ fn fault_manager(
             return Ok(guard);
         }
         if may_retry {
+            crate::task::scheduler::PROBE_FAULT_BUSY.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             return Err(FaultManagerUnavailable::Busy);
         }
     }

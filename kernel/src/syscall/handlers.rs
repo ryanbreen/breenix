@@ -1946,6 +1946,8 @@ pub fn sys_yield() -> SyscallResult {
     // log::trace!("sys_yield called");
 
     // Yield to the scheduler
+    crate::task::scheduler::PROBE_YIELDS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    crate::task::scheduler::PROBE_YIELD_PASSES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     crate::task::scheduler::yield_current();
 
     // Note: The actual context switch will happen on the next timer interrupt

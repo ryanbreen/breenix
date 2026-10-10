@@ -355,6 +355,11 @@ fn census_thread_fn() {
         sleep_one_interval();
         report_heartbeat_if_due();
         super::scheduler::probe_dump("census");
+        {
+            use core::sync::atomic::Ordering::Relaxed;
+            use super::scheduler::{PROBE_REFUSED, PROBE_FAULT_BUSY, PROBE_YIELDS, PROBE_YIELD_PASSES};
+            log::info!("[PROBE_TOTALS refused={} fault_busy={} yields={} yield_passes={}]", PROBE_REFUSED.load(Relaxed), PROBE_FAULT_BUSY.load(Relaxed), PROBE_YIELDS.load(Relaxed), PROBE_YIELD_PASSES.load(Relaxed));
+        }
     }
 }
 
