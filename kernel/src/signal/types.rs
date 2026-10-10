@@ -304,6 +304,9 @@ impl SignalTable {
 /// Dispositions remain under the process manager; these words never take its lock.
 #[derive(Default)]
 pub struct ThreadSignals {
+    /// Conservative notification for PM-owned pending signals and job stops.
+    /// Generation sets it before releasing PM; only a quiet return check clears it.
+    pub return_work: AtomicBool,
     pub blocked: AtomicU64,
     saved_mask: AtomicU64,
     saved_mask_valid: AtomicBool,
@@ -325,6 +328,13 @@ pub struct ThreadSignals {
 }
 
 impl ThreadSignals {
+    pub fn needs_return_check(&self) -> bool {
+        self.return_work.load(Ordering::Acquire)
+            || self.timer_pending.load(Ordering::Acquire) != 0
+            || self.posix_pending.load(Ordering::Acquire) != 0
+            || self.posix_retry.load(Ordering::Acquire)
+    }
+
     pub fn with_mask(mask: u64) -> Self {
         Self {
             blocked: AtomicU64::new(mask),
@@ -507,6 +517,7 @@ impl SignalState {
         let seq = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
         self.queued.push(Instance { sig, info, seq, process, timer: Some(timer) });
         self.pending |= bit;
+        self.thread.return_work.store(true, Ordering::Release);
         if process {
             self.process_pending |= bit;
         }
@@ -622,6 +633,15 @@ impl SignalState {
         self.set_pending_info(sig, SigInfo::kernel());
     }
 
+    /// PM held and the row is not stopped: a false hint is published only
+    /// after checking all PM-owned pending state. Timer writers have their
+    /// own atomics and never rely on this hint.
+    pub fn clear_quiet_return_hint(&self) {
+        if self.pending == 0 {
+            self.thread.return_work.store(false, Ordering::Release);
+        }
+    }
+
     /// Whether generating `sig` here discards it: it is ignored, unless it is
     /// blocked and ignoring is its default action, when it is kept for
     /// synchronous acceptance, as Linux does. Explicit SIG_IGN discards.
@@ -666,6 +686,7 @@ impl SignalState {
             self.handlers.info[(sig - 1) as usize] = info;
         }
         self.pending |= bit;
+        self.thread.return_work.store(true, Ordering::Release);
         if process {
             self.process_pending |= bit;
         }
@@ -691,6 +712,7 @@ impl SignalState {
         }
         self.handlers.info[(sig - 1) as usize] = info;
         self.pending |= bit;
+        self.thread.return_work.store(true, Ordering::Release);
         if process {
             self.process_pending |= bit;
         }
@@ -782,6 +804,7 @@ impl SignalState {
         let at = self.queued.iter().position(|i| i.seq > seq).unwrap_or(self.queued.len());
         self.queued.insert(at, Instance { sig, info, seq, process: true, timer });
         self.pending |= sig_mask(sig);
+        self.thread.return_work.store(true, Ordering::Release);
         self.process_pending |= sig_mask(sig);
     }
 

@@ -389,7 +389,7 @@ pub fn sys_clone(
         crate::task::scheduler::spawn(thread_box);
     }
 
-    log::info!(
+    log::debug!(
         "clone: created child thread {} (pid {}) for parent pid {}, fn_ptr={:#x}, stack={:#x}",
         child_thread_id,
         child_pid.as_u64(),

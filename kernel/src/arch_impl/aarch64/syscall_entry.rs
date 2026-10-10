@@ -246,6 +246,9 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
 /// One pass of `check_and_deliver_signals_aarch64`: true when the process is
 /// stopped, or has a stop to take, and nothing was delivered.
 fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
+    if crate::per_cpu_aarch64::current_thread().is_some_and(|thread| !thread.needs_user_return_check()) {
+        return false;
+    }
     // Get current thread ID
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
@@ -280,6 +283,7 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
 
             // Check if there are any deliverable signals, or a stop in force
             if !crate::signal::delivery::needs_action_on_return_to_user(process) {
+                process.signals.clear_quiet_return_hint();
                 return false;
             }
 
