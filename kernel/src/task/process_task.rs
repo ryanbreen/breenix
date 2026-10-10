@@ -343,7 +343,9 @@ impl PendingProcessReclaim {
         let Some(page_table) = self.page_table.as_mut() else {
             return RetireProgress::Complete;
         };
-        page_table.release_mapped_leaves();
+        if page_table.release_mapped_leaves_bounded(&mut budget) != RetireProgress::Complete {
+            return RetireProgress::Budgeted;
+        }
         let progress = page_table.retire_bounded(self.pid, &mut budget);
         if progress == RetireProgress::Complete {
             self.page_table = None;
