@@ -22,9 +22,16 @@ pub static SERIAL2: Mutex<SerialPort> = Mutex::new(unsafe { SerialPort::new(COM2
 static SERIAL_INPUT_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
 static SERIAL_WAKER: AtomicWaker = AtomicWaker::new();
 
+static SERIAL1_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 pub fn init() {
     // Initialize the serial port for output only (no interrupts yet)
     init_port(&mut SERIAL1.lock(), COM1_PORT);
+    let fifo = unsafe {
+        use x86_64::instructions::port::Port;
+        Port::<u8>::new(COM1_PORT + 2).read() & 0xc0 == 0xc0
+    };
+    SERIAL1_FIFO.store(fifo, core::sync::atomic::Ordering::Relaxed);
 
     // Initialize COM2 for kernel log output
     init_port(&mut SERIAL2.lock(), COM2_PORT);
@@ -101,9 +108,27 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
     }
 
     let mut serial = SERIAL1.lock();
-    for &byte in bytes {
-        serial.send(byte);
-        crate::log_buffer::capture_byte(byte);
+    if SERIAL1_FIFO.load(core::sync::atomic::Ordering::Relaxed) {
+        // THRE means the 16550 transmit FIFO is empty, so all sixteen slots
+        // are available. Poll once per burst, avoiding a VM exit and a UART
+        // character-time spin for every individual byte.
+        unsafe {
+            use x86_64::instructions::port::Port;
+            let mut status = Port::<u8>::new(COM1_PORT + 5);
+            let mut data = Port::<u8>::new(COM1_PORT);
+            for chunk in bytes.chunks(16) {
+                while status.read() & 0x20 == 0 { core::hint::spin_loop(); }
+                for &byte in chunk {
+                    data.write(byte);
+                    crate::log_buffer::capture_byte(byte);
+                }
+            }
+        }
+    } else {
+        for &byte in bytes {
+            serial.send(byte);
+            crate::log_buffer::capture_byte(byte);
+        }
     }
     drop(serial);
 
