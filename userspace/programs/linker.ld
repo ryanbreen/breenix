@@ -28,16 +28,17 @@ SECTIONS {
         *(.data .data.*)
     } :data
 
-    .bss : ALIGN(4K) {
-        *(.bss .bss.*)
-    } :data
-
-    /* Thread-local storage */
-    .tdata : ALIGN(4K) {
+    /* Thread-local storage template, ahead of .bss so .bss stays out of the
+     * file. The C library reads it through PT_TLS. */
+    .tdata : {
         *(.tdata .tdata.*)
     } :data :tls
 
-    .tbss : ALIGN(4K) {
+    .tbss : {
         *(.tbss .tbss.*)
     } :data :tls
+
+    .bss : ALIGN(4K) {
+        *(.bss .bss.*)
+    } :data
 }
