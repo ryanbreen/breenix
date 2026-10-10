@@ -93,10 +93,10 @@ public enum RemoteCommand {
             mode: mode,
             timeoutSecs: timeoutSecs,
             paths: paths,
-            prepareClone: prepareCloneRequest(sha: sha, paths: paths, treeHelperBase64: treeHelperBase64),
+            prepareClone: prepareCloneRequest(sha: sha, paths: paths, treeHelperBase64: treeHelperBase64, slotHelperBase64: slotHelperBase64),
             runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs, slotHelperBase64: slotHelperBase64),
-            pullEvidence: pullEvidenceRequest(paths: paths),
-            removeClone: removeCloneRequest(paths: paths)
+            pullEvidence: pullEvidenceRequest(paths: paths, supervised: slotHelperBase64 != nil),
+            removeClone: removeCloneRequest(paths: paths, supervised: slotHelperBase64 != nil)
         )
     }
 
@@ -107,10 +107,10 @@ public enum RemoteCommand {
     // ([[workflow-worktree-isolation]] R83; #797 is concurrent lanes
     // clobbering a shared /tmp path). `rm -rf` before clone is defensive
     // against a stale directory reusing the same id, not expected to fire.
-    public static func prepareCloneRequest(sha: String, paths: BeastPaths, treeHelperBase64: String? = nil) -> ProcessRequest {
+    public static func prepareCloneRequest(sha: String, paths: BeastPaths, treeHelperBase64: String? = nil, slotHelperBase64: String? = nil) -> ProcessRequest {
         if let treeHelperBase64, paths.laneKey != nil {
             let script = "mkdir -p \(paths.gateTmpPath) && printf %s \(treeHelperBase64) | base64 -d > \(paths.gateTmpPath)/gate-tree.py"
-            return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
+            return prepareWorkRequest(paths: paths, script: script, helper: slotHelperBase64)
         }
         // Concurrent launchers share this cache: do not update its remote refs,
         // tags or FETCH_HEAD, or spawn background maintenance during preparation.
@@ -118,7 +118,20 @@ public enum RemoteCommand {
             + " && rm -rf \(paths.clonePath)"
             + " && git clone --shared \(paths.canonicalRepoDir) \(paths.clonePath)"
             + " && git -C \(paths.clonePath) checkout --detach \(sha)"
-        return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
+        return prepareWorkRequest(paths: paths, script: script, helper: slotHelperBase64)
+    }
+
+    private static func workPrefix(paths: BeastPaths, supervised: Bool) -> String {
+        supervised ? "python3 \(paths.clonePath).host-slots.py work -- " : ""
+    }
+
+    private static func prepareWorkRequest(paths: BeastPaths, script: String, helper: String?) -> ProcessRequest {
+        guard let helper else {
+            return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
+        }
+        let install = "printf %s \(helper) | base64 -d > \(paths.clonePath).host-slots.py"
+        let launch = workPrefix(paths: paths, supervised: true) + "bash -c \"\(script)\""
+        return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: install + " && " + launch))
     }
 
     // `mkdir -p` runs BEFORE the gate script: if the build steps inside
@@ -224,10 +237,10 @@ while time.monotonic() - last < 5:
             break
 """#
 
-    public static func streamSerialsRequest(paths: BeastPaths, boots: Int) -> ProcessRequest {
+    public static func streamSerialsRequest(paths: BeastPaths, boots: Int, supervised: Bool = false) -> ProcessRequest {
         let encoded = Data(serialReader.utf8).base64EncodedString()
         let python = "import base64;exec(base64.b64decode(\"\(encoded)\"))"
-        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -u -c '\(python)' \(paths.gateTmpPath) \(boots)", combineOutput: false, liveStream: true)
+        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- \(workPrefix(paths: paths, supervised: supervised))python3 -u -c '\(python)' \(paths.gateTmpPath) \(boots)", combineOutput: false, liveStream: true)
     }
 
     /// Signal this run's supervisor and detached worker, including a worker whose
@@ -287,19 +300,21 @@ if __name__ == "__main__":
     // features. `combineOutput: false` is load-bearing here - stdout carries
     // raw gzip bytes and must never be interleaved with stderr text (see the
     // pure builder's call to `sshRequest` below).
-    public static func pullEvidenceRequest(paths: BeastPaths) -> ProcessRequest {
-        let remote = "sudo -n incus exec \(paths.container) -- tar -czf - -C \(paths.clonePath) gate-tmp"
+    public static func pullEvidenceRequest(paths: BeastPaths, supervised: Bool = false) -> ProcessRequest {
+        let remote = "sudo -n incus exec \(paths.container) -- \(workPrefix(paths: paths, supervised: supervised))tar -czf - -C \(paths.clonePath) gate-tmp"
         return sshRequest(paths: paths, remote: remote, combineOutput: false)
     }
 
-    public static func removeCloneRequest(paths: BeastPaths) -> ProcessRequest {
+    public static func removeCloneRequest(paths: BeastPaths, supervised: Bool = false) -> ProcessRequest {
         let remote: String
         if paths.laneKey != nil {
             remote = "sudo -n incus exec \(paths.container) -- python3 \(paths.gateTmpPath)/gate-tree.py remove-evidence \(paths.clonePath)"
         } else {
             remote = "sudo -n incus exec \(paths.container) -- rm -rf \(paths.clonePath)"
         }
-        return sshRequest(paths: paths, remote: remote)
+        let work = supervised ? remote.replacingOccurrences(of: " -- ", with: " -- " + workPrefix(paths: paths, supervised: true))
+            + " && sudo -n incus exec \(paths.container) -- rm -f \(paths.clonePath).host-slots.py" : remote
+        return sshRequest(paths: paths, remote: work)
     }
 
     // Beast's own host-facts sample - DESIGN.md 5.3's concept applied to the

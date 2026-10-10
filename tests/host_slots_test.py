@@ -37,7 +37,7 @@ class HostSlotsTest(unittest.TestCase):
                 process.communicate()
         self.temporary.cleanup()
 
-    def launch(self, script, bypass=False, miss_first_snapshot=False, environment=None):
+    def launch(self, script, bypass=False, miss_first_snapshot=False, environment=None, affinity=False):
         # Only tests inject a directory and disable observational VM discovery.
         # Production's fixed directory has no environment override.
         program = f'''import importlib.util, sys
@@ -47,7 +47,10 @@ m.SLOT_DIR = m.Path({str(self.root / 'locks')!r})
 m.mac_vms = lambda: []
 original_command_output = m.command_output
 m.command_output = lambda argv: '' if argv[0] == 'pgrep' else original_command_output(argv)
+original_process_table = m.process_table
+m.process_table = lambda: {{pid: row for pid, row in original_process_table().items() if 'BREENIX_TEST_SLOT_ROOT=' + {str(self.root)!r} in row[3].split()}}
 m.WAIT_MESSAGE_SECONDS = 0.2
+if not {affinity!r}: m.x86_cpu_partition = lambda: None
 if {miss_first_snapshot!r}:
     original_snapshot = m.Slots.snapshot
     def missed_snapshot(self):
@@ -58,7 +61,7 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         process = subprocess.Popen([sys.executable, '-u', '-c', program, script],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT,
-                                   env=dict(os.environ, BREENIX_BOOT_NO_QUEUE='1' if bypass else '0',
+                                   env=dict(os.environ, BREENIX_TEST_SLOT_ROOT=str(self.root), BREENIX_BOOT_NO_QUEUE='1' if bypass else '0',
                                             **(environment or {})))
         self.processes.append(process)
         return process
@@ -102,6 +105,9 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
                          'Linux x86 CPU affinity')
     def test_guest_threads_use_boot_cpus_and_gate_work_keeps_work_cpus(self):
         allowed = sorted(os.sched_getaffinity(0))
+        if len(allowed) < 8:
+            self.skipTest('CPU isolation requires eight allowed CPUs')
+        partition = slots.x86_cpu_partition()
         binary = self.root / 'qemu-system-x86_64'
         binary.write_text(f'''#!{sys.executable}
 import json, os, threading
@@ -115,28 +121,55 @@ for thread in threads: thread.join()
         work = f"{sys.executable} -c 'import json,os;print(\"WORK=\"+json.dumps(sorted(os.sched_getaffinity(0))))'"
         command = '; '.join([work, self.request('acquire', 'x86-build'), work,
                              self.request('release', 'x86-build'),
-                             self.request('acquire', 'x86-boot'), 'qemu-system-x86_64', work,
+                             self.request('acquire', 'x86-boot'), 'qemu-system-x86_64 -smp 4', work,
                              self.request('release', 'x86-boot'), work])
-        process = self.launch(command, environment={'PATH': str(self.root) + os.pathsep + os.environ['PATH']})
+        process = self.launch(command, affinity=True, environment={'PATH': str(self.root) + os.pathsep + os.environ['PATH']})
         output, _ = process.communicate(timeout=30)
         self.assertEqual(process.returncode, 0, output.decode())
         lines = output.decode().splitlines()
-        self.assertEqual([json.loads(row[5:]) for row in lines if row.startswith('WORK=')], [allowed[4:]] * 4)
-        self.assertEqual([json.loads(row[5:]) for row in lines if row.startswith('VCPU=')], [allowed[:4]] * 4)
-        self.assertIn('[host-cpus] QEMU and inherited vCPU threads=', output.decode())
+        self.assertEqual([json.loads(row[5:]) for row in lines if row.startswith('WORK=')], [allowed, allowed, partition['x86-build'], allowed])
+        self.assertEqual([json.loads(row[5:]) for row in lines if row.startswith('VCPU=')], [partition['x86-boot']] * 4)
+        self.assertIn('[host-cpus] QEMU process mask before exec=', output.decode())
 
     @unittest.skipUnless(sys.platform == 'linux' and os.uname().machine == 'x86_64',
                          'Linux x86 CPU affinity')
     def test_guest_cannot_start_without_boot_lease(self):
+        if len(os.sched_getaffinity(0)) < 8:
+            self.skipTest('CPU isolation requires eight allowed CPUs')
         binary = self.root / 'qemu-system-x86_64'
         binary.write_text('#!/bin/sh\necho UNLEASED_GUEST\n')
         binary.chmod(0o755)
-        process = self.launch('qemu-system-x86_64',
+        process = self.launch('qemu-system-x86_64 -smp 4', affinity=True,
                               environment={'PATH': str(self.root) + os.pathsep + os.environ['PATH']})
         output, _ = process.communicate(timeout=30)
         self.assertNotEqual(process.returncode, 0)
         self.assertNotIn('UNLEASED_GUEST', output.decode())
         self.assertIn('QEMU requires the x86-boot lease', output.decode())
+
+    def test_partition_rejects_small_cpu_masks(self):
+        with mock.patch.object(slots.sys, 'platform', 'linux'), mock.patch.object(slots.os, 'uname') as uname, mock.patch.object(slots.os, 'sched_getaffinity', create=True) as affinity:
+            uname.return_value.machine = 'x86_64'
+            for count in range(1, 8):
+                affinity.return_value = set(range(count))
+                with self.assertRaisesRegex(RuntimeError, 'at least eight'):
+                    slots.x86_cpu_partition()
+            affinity.return_value = set(range(8))
+            self.assertEqual(slots.x86_cpu_partition(), {'x86-boot': list(range(5)), 'x86-build': list(range(5, 8))})
+
+    def test_missing_qemu_fails_before_changing_affinity(self):
+        with mock.patch.object(slots.shutil, 'which', return_value=None), mock.patch.object(slots.os, 'sched_setaffinity', create=True) as affinity:
+            with self.assertRaisesRegex(RuntimeError, 'missing from PATH'):
+                slots.pin_x86_work({'x86-boot': [0, 1], 'x86-build': [2]}, self.root, {'PATH': ''})
+            affinity.assert_not_called()
+            self.assertFalse((self.root / 'qemu-system-x86_64').exists())
+
+    def test_qemu_count_comes_from_launch_arguments(self):
+        self.assertEqual(slots.qemu_guest_cpus(['qemu', '-smp', '4']), 4)
+        self.assertEqual(slots.qemu_guest_cpus(['qemu', '-smp', 'cpus=6,sockets=2,cores=3']), 6)
+        self.assertEqual(slots.qemu_guest_cpus(['qemu', '-smp', '4,maxcpus=8']), 4)
+        for argv in (['qemu'], ['qemu', '-smp'], ['qemu', '-smp', '0']):
+            with self.assertRaises(RuntimeError):
+                slots.qemu_guest_cpus(argv)
 
     def test_fresh_cargo_home_preserves_config_without_copying_live_cache(self):
         source = self.root / 'cargo'

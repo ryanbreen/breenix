@@ -305,9 +305,9 @@ while read -r pci_id pci_count; do
 done <<< "$expected_pci"
 
 echo "[gate] === Running $COUNT boot test(s), mode=$MODE ==="
-# The shared supervisor confines gate work to the work CPUs and wraps the
-# QEMU exec with the boot CPU mask, inherited by every vCPU thread. The full,
-# suite and kthread runners stay on the work CPUs, including disk checks.
+# During the boot lease, the supervisor restricts participating work and the
+# native PATH wrapper sets the QEMU process mask before exec. Unsupervised
+# work and absolute-path or Docker launches are outside that policy.
 # Preserve the existing priority boost as well; isolation must not lower the
 # guest's priority relative to other host services.
 GUEST_PRIORITY=(nice -n -10)

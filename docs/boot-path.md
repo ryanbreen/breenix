@@ -105,14 +105,18 @@ against it too.
 Use `docker/qemu/run-x86-gate.sh` for queued x86 builds and boots: the helper
 provides two build leases and one boot lease. Run Inspector installs its current
 helper outside the tested checkout, including when testing an older revision.
-On Linux x86, the supervisor reserves the first four CPUs in its allowed mask
-for the boot lease and confines gate work to the remaining CPUs. It sets QEMU's
-mask before exec, so all vCPU threads inherit the reserved CPUs, while full and
-suite runners, Cargo, userspace builds and disk work keep the work mask. Both
-masks and the applied QEMU mask appear as `[host-cpus]` lines in the gate log;
-the lease sidecar records its CPU list. Fewer than five allowed CPUs fails
-admission rather than silently running a contended guest. Neither the container
-CPU limit nor the guest CPU count changes.
+On Linux x86, the supervisor reserves half the allowed VM CPUs plus one
+for QEMU while a boot lease is held; at least eight allowed CPUs are required.
+The wrapper checks the actual `-smp` argument and refuses a mask without one
+CPU beyond the guest count. Participating work uses the full mask while idle,
+and the remaining CPUs during a boot. The boot supervisor also applies that
+work mask to processes carrying another launcher's inherited session tag.
+The native PATH wrapper requires QEMU to be present at admission and records
+the applied process mask before exec separately from the reserved lease mask.
+Absolute-path and Docker launches bypass it. Foreign userspace tasks that can
+use the boot mask and concurrent build holders are recorded in the sidecar.
+This policy cannot reserve physical CPUs beneath the VM or constrain unrelated
+interactive work. The VM CPU limit and guest CPU count are unchanged.
 Historical gates hold both leases for their whole run. Launchers sourcing
 `docker/qemu/lib/qemu-host-lock.sh` also enroll in the host queue; on Linux they
 hold a build lease until boot admission. Mac builds remain unrestricted.
