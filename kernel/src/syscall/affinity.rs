@@ -43,15 +43,22 @@ fn target(pid: i64, setting: bool) -> Result<u64, u64> {
     Ok(tid)
 }
 
-/// The pin of thread `tid` in the process table, which a later publication of
-/// the row to the scheduler carries.
-fn record_pin(tid: u64, pin: Option<CpuPin>) {
+/// Set thread `tid`'s pin in the process table, which fork and clone copy and
+/// a later publication of the row carries, and in the scheduler, which
+/// places it and which sched_getaffinity reads. Both are written under one
+/// hold of the process manager, so that concurrent calls cannot leave the
+/// two holding different pins: fork and clone read the row under it too.
+/// False when the scheduler has no such thread.
+fn apply_pin(tid: u64, pin: Option<CpuPin>) -> bool {
     let mut guard = crate::process::manager();
     if let Some((_, process)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) {
         if let Some(thread) = process.main_thread.as_mut().filter(|t| t.id == tid) {
             thread.cpu_affinity = pin;
         }
     }
+    let placed = crate::task::scheduler::set_user_affinity(tid, pin);
+    drop(guard);
+    placed
 }
 
 /// The CPUs thread `tid` may run on.
@@ -100,8 +107,7 @@ fn set_affinity(pid: i64, len: u64, mask_ptr: u64) -> Result<(), u64> {
         let cpu = if on_here { here } else { allowed.trailing_zeros() as usize };
         Some(CpuPin::user_affinity(cpu, allowed))
     };
-    record_pin(tid, pin);
-    if !crate::task::scheduler::set_user_affinity(tid, pin) {
+    if !apply_pin(tid, pin) {
         return Err(ESRCH as u64);
     }
     Ok(())

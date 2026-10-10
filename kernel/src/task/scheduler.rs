@@ -5717,10 +5717,10 @@ impl Scheduler {
     ///
     /// The cost at a site on a kernel that has stamped no pin is 1 relaxed load
     /// and 1 compare, not a thread lookup. `CPU_PINS_STAMPED` counts the
-    /// `CpuPin` values both constructors have built, so a 0 reading says 0
+    /// `CpuPin` values its constructors have built, so a 0 reading says 0
     /// threads carry a pin and the guard has nothing to decide -- the same
     /// shape `deliver_pinned_wakes_for_this_cpu` uses to skip its own scan.
-    /// claim-lint:ok: 2 of 2 `CpuPin` constructors increment that counter,
+    /// claim-lint:ok: every `CpuPin` constructor increments that counter,
     /// pinned by
     /// `tests/loopback_pump_structure.rs::every_cpu_pin_is_minted_by_a_counting_constructor`
     fn retain_cpu_affine_thread(&mut self, thread_id: u64, taking_cpu: usize) -> bool {
@@ -7306,36 +7306,47 @@ pub fn online_cpus() -> usize {
 /// sched_setaffinity's placement of thread `tid`: `pin` keeps it on the CPU
 /// the pin names, `None` lets it run anywhere. A queued thread moves to the
 /// pinned CPU's queue now; a running one moves when it is next switched out,
-/// which for the caller is its return to user mode. False when the scheduler
-/// has no such thread.
+/// which for the caller is its return to user mode. A wake held for the CPU
+/// the old pin named is placed now: only that pin's CPU delivers it, so once
+/// the pin changes nothing else would. False when the scheduler has no such
+/// thread.
 pub fn set_user_affinity(tid: u64, pin: Option<super::thread::CpuPin>) -> bool {
-    with_scheduler(|scheduler| {
-        let Some(thread) = scheduler.get_thread_mut(tid) else {
+    with_scheduler(|sched| {
+        let Some(old) = sched.get_thread(tid).map(|thread| thread.cpu_affinity) else {
             return false;
         };
-        thread.cpu_affinity = pin;
+        let held = old.is_some_and(|old| sched.pinned_wake_is_waiting_here(tid, old.cpu));
+        if let Some(thread) = sched.get_thread_mut(tid) {
+            thread.cpu_affinity = pin;
+        }
+        if held {
+            let here = Scheduler::current_cpu_id();
+            if !sched.retain_cpu_affine_thread(tid, here) {
+                sched.per_cpu_queues[here].push_back(tid);
+            }
+        }
         let Some(pin) = pin else {
             return true;
         };
         let home = pin.cpu;
-        let queued_elsewhere = scheduler
+        let queued_elsewhere = sched
             .per_cpu_queues
             .iter()
             .enumerate()
             .any(|(cpu, queue)| cpu != home && queue.contains(&tid));
         if queued_elsewhere {
-            for queue in scheduler.per_cpu_queues.iter_mut() {
+            for queue in sched.per_cpu_queues.iter_mut() {
                 queue.retain(|&id| id != tid);
             }
-            scheduler.per_cpu_queues[home].push_back(tid);
-            scheduler.send_resched_ipi_to_cpu(home);
+            sched.per_cpu_queues[home].push_back(tid);
+            sched.send_resched_ipi_to_cpu(home);
         }
-        if let Some(cpu) = (0..MAX_CPUS).find(|&cpu| scheduler.cpu_state[cpu].current_thread == Some(tid)) {
+        if let Some(cpu) = (0..MAX_CPUS).find(|&cpu| sched.cpu_state[cpu].current_thread == Some(tid)) {
             if cpu != home {
                 if cpu == Scheduler::current_cpu_id() {
                     set_need_resched();
                 } else {
-                    scheduler.send_resched_ipi_to_cpu(cpu);
+                    sched.send_resched_ipi_to_cpu(cpu);
                 }
             }
         }

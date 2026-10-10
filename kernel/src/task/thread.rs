@@ -776,7 +776,7 @@ pub struct CpuPin {
     pub inherited: bool,
 }
 
-/// `CpuPin` values minted since boot, by either constructor.
+/// `CpuPin` values minted since boot, by any of its constructors.
 ///
 /// Monotonic: it is never decremented, so it over-counts a pin that was built
 /// and then dropped or cleared, and it under-counts by 0. A reading of 0 is
@@ -784,7 +784,7 @@ pub struct CpuPin {
 /// hold `Some`, which is what `Scheduler::retain_cpu_affine_thread` reads it
 /// for: on that reading the guard answers "no constraint" from 1 relaxed load
 /// and 1 compare, instead of searching `self.threads` once per migration site.
-/// claim-lint:ok: 2 of 2 constructors of `CpuPin` increment this and 0
+/// claim-lint:ok: every constructor of `CpuPin` increments this and 0
 /// `CpuPin { .. }` literals exist in kernel/src outside the type's own
 /// definition, both counted by
 /// `tests/loopback_pump_structure.rs::every_cpu_pin_is_minted_by_a_counting_constructor`

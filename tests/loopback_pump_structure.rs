@@ -3329,9 +3329,23 @@ fn validate_every_cpu_pin_is_minted(sources: &[(String, String)]) -> Result<(), 
         .map(|(_, text)| text.as_str())
         .ok_or("kernel/src/task/thread.rs is not among the kernel sources")?;
 
-    for constructor in ["per_cpu_worker", "hold_pen"] {
-        let body = function_body(thread_rs, constructor)
-            .ok_or_else(|| format!("kernel/src/task/thread.rs defines no CpuPin::{constructor}"))?;
+    // Every function of `impl CpuPin` that builds a `Self { .. }` is a
+    // constructor, however many there are and whatever they are called.
+    let impl_at = code_text_offset(thread_rs, "impl CpuPin")
+        .ok_or("kernel/src/task/thread.rs has no impl CpuPin block")?;
+    let (impl_open, impl_close) = braced_block_span(thread_rs, &code_mask(thread_rs), impl_at)
+        .ok_or("the impl CpuPin block in kernel/src/task/thread.rs does not close")?;
+    let constructors: Vec<FunctionSpan> = function_spans(thread_rs)
+        .into_iter()
+        .filter(|span| span.open > impl_open && span.close < impl_close)
+        .filter(|span| compact_code(&thread_rs[span.open..=span.close]).contains("Self{"))
+        .collect();
+    if constructors.is_empty() {
+        return Err("impl CpuPin builds no pin, so the constructor census found nothing to check".into());
+    }
+    for span in constructors {
+        let constructor = &span.name;
+        let body = &thread_rs[span.open..=span.close];
         if !compact_code(body).contains("CPU_PINS_STAMPED.fetch_add(1,Ordering::Relaxed)") {
             return Err(format!(
                 "CpuPin::{constructor} builds a pin without counting it, so a thread can carry \
@@ -3356,7 +3370,7 @@ fn validate_every_cpu_pin_is_minted(sources: &[(String, String)]) -> Result<(), 
                 continue;
             }
             // Two `CpuPin {` openings are not literals: the type's own
-            // definition, and the `impl` block that holds the 2 constructors.
+            // definition, and the `impl` block that holds the constructors.
             let before = masked[..offset].trim_end();
             if before.ends_with("struct") || before.ends_with("impl") {
                 continue;
@@ -3390,6 +3404,24 @@ fn cpu_pin_mint_validator_rejects_an_uncounted_constructor() {
     let mutated = thread_rs
         .1
         .replacen("CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);", "", 1);
+    assert_ne!(mutated, thread_rs.1, "fixture mutation must apply");
+    thread_rs.1 = mutated;
+    assert!(validate_every_cpu_pin_is_minted(&sources).is_err());
+}
+
+#[test]
+fn cpu_pin_mint_validator_rejects_an_uncounted_user_affinity_pin() {
+    let mut sources = kernel_sources();
+    let thread_rs = sources
+        .iter_mut()
+        .find(|(path, _)| path == "kernel/src/task/thread.rs")
+        .expect("find the thread source fixture");
+    let at = thread_rs.1.find("pub fn user_affinity(").expect("find CpuPin::user_affinity");
+    let (head, tail) = thread_rs.1.split_at(at);
+    let mutated = format!(
+        "{head}{}",
+        tail.replacen("CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);", "", 1)
+    );
     assert_ne!(mutated, thread_rs.1, "fixture mutation must apply");
     thread_rs.1 = mutated;
     assert!(validate_every_cpu_pin_is_minted(&sources).is_err());
