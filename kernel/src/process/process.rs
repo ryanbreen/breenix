@@ -555,6 +555,9 @@ impl Process {
         self.exit_code = Some(exit_code);
         // An exited row's queued realtime signals are never delivered.
         self.signals.release_queued();
+        // A POSIX timer signal due for this thread and not yet queued goes
+        // to another thread of the process.
+        self.itimers.posix.release_due(&self.signals.thread);
         // Record at the terminated-state transition so fault and signal deaths
         // count too. The guard above makes this exactly once per process. This
         // is safe under PROCESS_MANAGER: record_exit allocates/logs nothing and
@@ -587,6 +590,9 @@ impl Process {
         self.exit_code = Some(exit_code);
         // An exited row's queued realtime signals are never delivered.
         self.signals.release_queued();
+        // A POSIX timer signal due for this thread and not yet queued goes
+        // to another thread of the process.
+        self.itimers.posix.release_due(&self.signals.thread);
         // Record at the terminated-state transition so fault and signal deaths
         // count too. The guard above makes this exactly once per process. This
         // is safe under PROCESS_MANAGER: record_exit allocates/logs nothing and

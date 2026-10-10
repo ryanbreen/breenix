@@ -5231,6 +5231,21 @@ fn dispatch_thread_locked(
     }
 }
 
+/// Start charging user CPU time to the thread `frame` returns to, when it
+/// returns to EL0. Every ERET path calls this after its last kernel work, the
+/// TTBR0 install and TLB invalidation included: the IRQ return in boot.S and
+/// the syscall return in syscall_entry.S just before they restore registers,
+/// and the inline dispatch before `aarch64_enter_exception_frame`. Everything
+/// the kernel did before this point, the signal check and the reschedule
+/// included, was system time (`crate::task::thread::resume_user_time`).
+/// Called with IRQs masked; takes no lock.
+#[no_mangle]
+pub extern "C" fn aarch64_resume_user_time(frame: &Aarch64ExceptionFrame) {
+    if (frame.spsr & 0xF) == 0 {
+        crate::task::thread::resume_user_time();
+    }
+}
+
 // =============================================================================
 // Main entry point — single lock hold architecture
 // =============================================================================
@@ -6597,6 +6612,9 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         }
     }
     cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame (non-idle ERET)
+    // The dispatched thread's address space is installed above, so a frame
+    // returning to EL0 starts its user time here.
+    aarch64_resume_user_time(frame);
     unsafe {
         aarch64_enter_exception_frame(frame as *const Aarch64ExceptionFrame);
     }

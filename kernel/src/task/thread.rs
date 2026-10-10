@@ -496,19 +496,46 @@ pub enum TimerPop {
     WakeTimeCleared,
 }
 
-/// CPU time of one process, in timer ticks: what every copy of every thread it
-/// has had was charged, and what the children it has waited for used. Shared
-/// by the rows of a thread group, so each thread reads the same totals.
-/// Atomic so the scheduler charges it without the process manager lock.
+/// CPU time of one process: what every copy of every thread it has had was
+/// charged, and what the children it has waited for used. Shared by the rows
+/// of a thread group, so each thread reads the same totals. Atomic so the
+/// scheduler charges it without the process manager lock.
+///
+/// Two clocks are kept. Timer ticks (`own`, `children`) feed /proc and the CPU
+/// resource limit. Nanoseconds split between user and system mode, stamped at
+/// kernel entry and exit (`Thread::switch_timer_mode`), feed getrusage, times,
+/// the CPU-time clocks and timers, and ITIMER_VIRTUAL and ITIMER_PROF.
 #[derive(Default)]
 pub struct CpuAccount {
     own: AtomicU64,
     children: AtomicU64,
     pub user_ns: AtomicU64,
     pub system_ns: AtomicU64,
+    children_user_ns: AtomicU64,
+    children_system_ns: AtomicU64,
 }
 
 impl CpuAccount {
+    /// User and system nanoseconds charged so far.
+    pub fn split_ns(&self) -> (u64, u64) {
+        (self.user_ns.load(Ordering::Relaxed), self.system_ns.load(Ordering::Relaxed))
+    }
+
+    /// User and system nanoseconds of the children waited for.
+    pub fn children_split_ns(&self) -> (u64, u64) {
+        (
+            self.children_user_ns.load(Ordering::Relaxed),
+            self.children_system_ns.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Add a waited-for child's user and system time, its own and its
+    /// children's, in nanoseconds.
+    pub fn add_children_ns(&self, user_ns: u64, system_ns: u64) {
+        self.children_user_ns.fetch_add(user_ns, Ordering::Relaxed);
+        self.children_system_ns.fetch_add(system_ns, Ordering::Relaxed);
+    }
+
     pub fn charge(&self, ticks: u64) {
         self.own.fetch_add(ticks, Ordering::Relaxed);
     }
@@ -740,9 +767,16 @@ pub struct CpuPin {
     pub cpu: usize,
     /// Whether the pin exists because the work itself is CPU-local.
     pub per_cpu_worker: bool,
+    /// The CPUs the thread may run on, as sched_getaffinity reports them;
+    /// `cpu` is one of them.
+    pub allowed: u64,
+    /// Whether a child created by fork or clone inherits the pin: a CPU
+    /// affinity sched_setaffinity set is inherited, as on Linux; a per-CPU
+    /// worker's or a hold pen's is not.
+    pub inherited: bool,
 }
 
-/// `CpuPin` values minted since boot, by either constructor.
+/// `CpuPin` values minted since boot, by any of its constructors.
 ///
 /// Monotonic: it is never decremented, so it over-counts a pin that was built
 /// and then dropped or cleared, and it under-counts by 0. A reading of 0 is
@@ -750,7 +784,7 @@ pub struct CpuPin {
 /// hold `Some`, which is what `Scheduler::retain_cpu_affine_thread` reads it
 /// for: on that reading the guard answers "no constraint" from 1 relaxed load
 /// and 1 compare, instead of searching `self.threads` once per migration site.
-/// claim-lint:ok: 2 of 2 constructors of `CpuPin` increment this and 0
+/// claim-lint:ok: every constructor of `CpuPin` increments this and 0
 /// `CpuPin { .. }` literals exist in kernel/src outside the type's own
 /// definition, both counted by
 /// `tests/loopback_pump_structure.rs::every_cpu_pin_is_minted_by_a_counting_constructor`
@@ -763,12 +797,34 @@ pub struct CpuPin {
 pub static CPU_PINS_STAMPED: AtomicU64 = AtomicU64::new(0);
 
 impl CpuPin {
+    /// The pin a child of a thread holding `pin` starts with.
+    pub fn for_child(pin: Option<CpuPin>) -> Option<CpuPin> {
+        pin.filter(|pin| pin.inherited)
+    }
+
     /// A pin whose work lives in `cpu`'s per-CPU state.
     pub fn per_cpu_worker(cpu: usize) -> Self {
         CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);
         Self {
             cpu,
             per_cpu_worker: true,
+            allowed: 1 << cpu,
+            inherited: false,
+        }
+    }
+
+    /// The pin sched_setaffinity sets on a user thread allowed to run only on
+    /// the CPUs in `allowed`: it runs on `cpu`, one of them, and is placed
+    /// there and on no other CPU, as a per-CPU worker is, so a wake held for
+    /// a CPU that stopped dispatching waits for it rather than migrating.
+    /// Allowed several CPUs but not all, the thread still runs on the one.
+    pub fn user_affinity(cpu: usize, allowed: u64) -> Self {
+        CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);
+        Self {
+            cpu,
+            per_cpu_worker: true,
+            allowed,
+            inherited: true,
         }
     }
 
@@ -784,6 +840,8 @@ impl CpuPin {
         Self {
             cpu,
             per_cpu_worker: false,
+            allowed: 1 << cpu,
+            inherited: false,
         }
     }
 }
@@ -842,9 +900,13 @@ impl Thread {
             }
         }
         if old != 0 {
+            let ran = now.saturating_sub(old >> 1).saturating_mul(1000);
+            let user = old & 1 != 0;
+            let own = if user { &self.signals.user_ns } else { &self.signals.system_ns };
+            own.fetch_add(ran, Ordering::Relaxed);
             if let Some(account) = &self.cpu_account {
-                let counter = if old & 1 != 0 { &account.user_ns } else { &account.system_ns };
-                counter.fetch_add(now.saturating_sub(old >> 1).saturating_mul(1000), Ordering::Relaxed);
+                let counter = if user { &account.user_ns } else { &account.system_ns };
+                counter.fetch_add(ran, Ordering::Relaxed);
             }
         }
     }
@@ -924,7 +986,7 @@ impl Thread {
 /// terminating the thread, and the thread dies at its return to user mode
 /// with the lock released. A thread already claimed by a kill enters no
 /// section, and must not take the lock either: see `try_enter`.
-pub struct KillCustody(Option<&'static AtomicU64>, bool);
+pub struct KillCustody(Option<&'static AtomicU64>);
 
 impl KillCustody {
     /// Open a section for the running thread. `None` means a kill has claimed
@@ -938,7 +1000,7 @@ impl KillCustody {
         #[cfg(target_arch = "aarch64")]
         let thread = crate::per_cpu_aarch64::current_thread();
         let Some(thread) = thread else {
-            return Some(KillCustody(None, false));
+            return Some(KillCustody(None));
         };
         let thread: &'static Thread = thread;
         let word = &thread.kill_custody;
@@ -946,7 +1008,7 @@ impl KillCustody {
             (count & KILL_CLAIMED == 0).then_some(count + 1)
         })
         .ok()
-        .map(|_| KillCustody(Some(word), false))
+        .map(|_| KillCustody(Some(word)))
     }
 
     /// Open the section a syscall runs in, from syscall entry to the start of
@@ -960,11 +1022,10 @@ impl KillCustody {
     /// be withdrawn. Called with the syscall's preempt_disable() in force.
     pub fn enter_syscall() -> Self {
         loop {
-            if let Some(mut custody) = Self::try_enter() {
+            if let Some(custody) = Self::try_enter() {
                 if let Some(thread) = current_cpu_thread() {
                     thread.switch_timer_mode(false);
                 }
-                custody.1 = true;
                 return custody;
             }
             crate::per_cpu::preempt_enable();
@@ -974,13 +1035,64 @@ impl KillCustody {
     }
 }
 
+/// Charge the calling thread's CPU time to user mode from here on, if it was
+/// being charged to system mode. The return to user mode calls this last,
+/// after the signal check and delivery, so the work of returning is system
+/// time; `KillCustody::enter_syscall` started charging system time.
+/// A thread that has exited is left alone: its clock was stopped when it was
+/// terminated, and a fault that killed it may still return through here.
+pub fn resume_user_time() {
+    if let Some(thread) = current_cpu_thread() {
+        if thread.state != ThreadState::Terminated && !thread.signals.in_user.load(Ordering::Relaxed) {
+            thread.switch_timer_mode(true);
+        }
+    }
+}
+
+/// Charge the calling thread's CPU time to system mode from here on, if it was
+/// being charged to user mode: an exception taken from user mode.
+pub fn enter_kernel_time() {
+    if let Some(thread) = current_cpu_thread() {
+        if thread.state != ThreadState::Terminated && thread.signals.in_user.load(Ordering::Relaxed) {
+            thread.switch_timer_mode(false);
+        }
+    }
+}
+
+/// Charges an interrupt or fault taken from user mode to system time while
+/// its handler runs, and resumes user time when the handler returns there.
+/// For handlers that return straight to the interrupted context; a return
+/// path that may dispatch another thread resumes user time itself.
+pub struct TrapTime(bool);
+
+impl TrapTime {
+    /// `from_user`: the trap interrupted user mode.
+    pub fn enter(from_user: bool) -> Self {
+        if from_user {
+            enter_kernel_time();
+        }
+        TrapTime(from_user)
+    }
+}
+
+impl Drop for TrapTime {
+    fn drop(&mut self) {
+        if self.0 {
+            resume_user_time();
+        }
+    }
+}
+
+/// The calling thread's own user and system nanoseconds, charged up to now
+/// first. None from a kernel thread.
+pub fn current_thread_cpu_split_ns() -> Option<(u64, u64)> {
+    let thread = current_cpu_thread()?;
+    thread.charge_timer_cpu();
+    Some(thread.signals.cpu_split_ns())
+}
+
 impl Drop for KillCustody {
     fn drop(&mut self) {
-        if self.1 {
-            if let Some(thread) = current_cpu_thread() {
-                thread.switch_timer_mode(true);
-            }
-        }
         if let Some(word) = self.0 {
             word.fetch_sub(1, Ordering::Release);
         }

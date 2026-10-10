@@ -180,15 +180,39 @@ fn note_dispatch_guard_unavailable() {
 // REMOVED: NEXT_PAGE_TABLE is no longer needed since CR3 switching happens
 // immediately during context switch, not deferred to interrupt return
 
+/// Resumes user CPU time when `check_need_resched_and_switch` returns, for the
+/// thread its frame then returns to, if that is Ring 3.
+struct ReturnUserTime(*const InterruptStackFrame);
+
+impl Drop for ReturnUserTime {
+    fn drop(&mut self) {
+        // SAFETY: the frame is the caller's and outlives the function this
+        // guard lives in, which rewrites it in place.
+        if (unsafe { &*self.0 }.code_segment.0 & 3) == 3 {
+            crate::task::thread::resume_user_time();
+        }
+    }
+}
+
 /// Check if rescheduling is needed and perform context switch if necessary
 ///
 /// This is called from the assembly interrupt return path and is the
 /// CORRECT place to handle context switching (not in the interrupt handler).
+///
+/// An interrupt taken from Ring 3 is system time from here, and a return to
+/// Ring 3 is user time from the end of this function, the last work before the
+/// IRETQ, for whichever thread the frame now returns to: the interrupted one,
+/// one this switch dispatched, or a pause or sigsuspend that `switch_to_thread`
+/// resumes straight into user mode.
 #[no_mangle]
 pub extern "C" fn check_need_resched_and_switch(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
+    if (interrupt_frame.code_segment.0 & 3) == 3 {
+        crate::task::thread::enter_kernel_time();
+    }
+    let _user_time = ReturnUserTime(interrupt_frame as *const InterruptStackFrame);
     crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());
     // This entry is a later interrupt than the one that last switched this
     // CPU, so the CPU is off that switch's outgoing stack; it also takes any

@@ -1737,8 +1737,15 @@ impl ProcessManager {
         // account, so only a group leader's reap carries the account.
         let leader = row.thread_group_id.map_or(true, |group| group == pid.as_u64());
         let child_ticks = if leader { row.cpu.ticks() + row.cpu.children_ticks() } else { 0 };
+        let (child_user, child_system) = if leader {
+            let ((user, system), (c_user, c_system)) = (row.cpu.split_ns(), row.cpu.children_split_ns());
+            (user.saturating_add(c_user), system.saturating_add(c_system))
+        } else {
+            (0, 0)
+        };
         if let Some(reaper_row) = self.processes.live_row(&reaper) {
             reaper_row.cpu.add_children(child_ticks);
+            reaper_row.cpu.add_children_ns(child_user, child_system);
         }
         crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_RESIDENT);
         let evicted = self.remove_row_joined(pid);
@@ -2178,7 +2185,7 @@ impl ProcessManager {
         // Scheduler expiries may have parked their process-directed bit
         // on a blocking thread before an accepting thread entered sigwait.
         for row in self.group_rows_mut(group) {
-            row.signals.collect_timer_signals();
+            row.signals.collect_timer_signals(&row.itimers);
         }
         loop {
             let source = self.group_rows(group).find_map(|p| {
@@ -2191,17 +2198,15 @@ impl ProcessManager {
             };
             // Make room on the target first, so that an instance taken off
             // the source is never lost; without memory it stays where it is.
-            if crate::signal::types::is_realtime(sig)
-                && !self.get_process_mut(pid).unwrap().signals.reserve_instance()
-            {
+            if !self.get_process_mut(pid).unwrap().signals.reserve_instance() {
                 break;
             }
             let row = self.get_process_mut(source).unwrap();
-            let Some((info, seq)) = row.signals.take_process_directed(sig) else {
+            let Some(moved) = row.signals.take_process_directed(sig) else {
                 continue;
             };
             let target = self.get_process_mut(pid).unwrap();
-            target.signals.accept_moved(sig, info, seq);
+            target.signals.accept_moved(moved, sig);
         }
     }
 
@@ -3056,6 +3061,9 @@ impl ProcessManager {
         // No stack copy needed - CoW will handle it on first write.
         child_thread.context.sp_el0 = parent_context.sp_el0;
 
+        // A child starts with its parent's CPU affinity.
+        child_thread.cpu_affinity = crate::task::thread::CpuPin::for_child(parent_thread.cpu_affinity);
+
         // Set the kernel stack pointer to the TOP of the child's (freshly
         // scrubbed, see kernel_stack.rs) kernel stack. This is a clean,
         // context-authoritative frame top, not a mid-stack resume point —
@@ -3236,6 +3244,8 @@ impl ProcessManager {
         // No stack copy needed - CoW will handle it on first write.
         let child_rsp = userspace_rsp.unwrap_or(parent_thread.context.rsp);
         child_thread.context.rsp = child_rsp;
+        // A child starts with its parent's CPU affinity.
+        child_thread.cpu_affinity = crate::task::thread::CpuPin::for_child(parent_thread.cpu_affinity);
 
         // Update child's instruction pointer to return to the instruction after fork syscall.
         // The return RIP comes from RCX which was saved by the syscall instruction; if it is
@@ -3514,16 +3524,13 @@ impl ProcessManager {
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
                 kill_custody: core::sync::atomic::AtomicU64::new(0),
-                // A pin is not inherited, on either child-creation path. A
+                // A per-CPU worker's or hold pen's pin is not inherited: a
                 // `per_cpu_worker` pin is a claim about servicing one CPU's
                 // per-CPU state and a child services none of it; a hold-pen pin
                 // says the parent is parked in a staging pen the child was
-                // never put in. `sys_clone` already writes the empty state, so
-                // both paths now agree rather than disagreeing by cfg.
-                // claim-lint:ok: 14 of 15 `Thread` build sites in kernel/src carry
-                // `cpu_affinity: None` after this change, counted by grep over
-                // kernel/src in this round; the 15th is the `Clone` impl.
-                cpu_affinity: None,
+                // never put in. A CPU affinity sched_setaffinity set is, on
+                // both child-creation paths (`CpuPin::for_child`).
+                cpu_affinity: crate::task::thread::CpuPin::for_child(parent_thread.cpu_affinity),
             };
 
             // CoW fork: Child uses the same stack virtual addresses as the parent.
@@ -3815,6 +3822,10 @@ impl ProcessManager {
         // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
         // SIG_IGN handlers are preserved
         process.signals.exec_reset();
+        // exec deletes the caller's POSIX timers, and the signals they sent
+        // that are still pending; interval timers survive.
+        process.itimers.posix.clear();
+        process.signals.drop_timer_signals();
         process.has_exec = true;
         // Reset mmap state for the new address space
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
@@ -4259,6 +4270,10 @@ impl ProcessManager {
 
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
+        // exec deletes the caller's POSIX timers, and the signals they sent
+        // that are still pending; interval timers survive.
+        process.itimers.posix.clear();
+        process.signals.drop_timer_signals();
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
@@ -4642,6 +4657,10 @@ impl ProcessManager {
         process.heap_end = heap_base;
 
         process.signals.exec_reset();
+        // exec deletes the caller's POSIX timers, and the signals they sent
+        // that are still pending; interval timers survive.
+        process.itimers.posix.clear();
+        process.signals.drop_timer_signals();
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
@@ -4983,6 +5002,10 @@ impl ProcessManager {
 
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
+        // exec deletes the caller's POSIX timers, and the signals they sent
+        // that are still pending; interval timers survive.
+        process.itimers.posix.clear();
+        process.signals.drop_timer_signals();
         process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();

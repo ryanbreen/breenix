@@ -745,6 +745,12 @@ irq_handler:
     str x1, [sp, #256]       // frame.spsr = 0x5
     ldr x1, [sp, #8]          // Re-restore x1 from frame
 1:
+    // A frame returning to EL0 starts its thread's user CPU time here, after
+    // the dispatch above installed its address space. Every register is
+    // restored from the frame below, so the call may clobber them.
+    mov x0, sp
+    bl aarch64_resume_user_time
+    ldr x16, [sp, #248]      // x16 = frame.elr, admitted above
     msr elr_el1, x16
     ldr x16, [sp, #256]      // x16 = frame.spsr
     bic x16, x16, #0xC0      // Clear DAIF.I+F — never ERET with IRQs/FIQs masked

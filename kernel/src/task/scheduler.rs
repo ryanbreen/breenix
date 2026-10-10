@@ -2768,7 +2768,11 @@ impl Scheduler {
 
                 if will_add {
                     let cpu = Self::current_cpu_id();
-                    self.per_cpu_queues[cpu].push_back(current_id);
+                    // A thread pinned to another CPU (sched_setaffinity) is
+                    // queued there instead, by the migration guard.
+                    if !self.retain_cpu_affine_thread(current_id, cpu) {
+                        self.per_cpu_queues[cpu].push_back(current_id);
+                    }
                     if published_ready {
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     }
@@ -3463,12 +3467,16 @@ impl Scheduler {
         // can still run keeps this CPU, exactly as the same-thread branch below
         // keeps a user thread that is alone. Switching it to idle instead would
         // leave it off the CPU until this CPU's next tick, with nothing else
-        // running in its place (#1172).
+        // running in its place (#1172). A thread pinned to another CPU
+        // (sched_setaffinity) does not keep this one: it is switched out, and
+        // the requeue after its context is saved queues it on its own CPU.
         if should_requeue_old
             && next_thread_id == self.cpu_state[current_cpu].idle_thread
             && self.cpu_state[current_cpu].current_thread.is_some_and(|tid| {
-                self.get_thread(tid)
-                    .is_some_and(|t| t.privilege == super::thread::ThreadPrivilege::User)
+                self.get_thread(tid).is_some_and(|t| {
+                    t.privilege == super::thread::ThreadPrivilege::User
+                        && t.cpu_affinity.map_or(true, |pin| pin.cpu == current_cpu)
+                })
             })
         {
             let current_id = self.cpu_state[current_cpu].current_thread.unwrap_or(0);
@@ -4931,6 +4939,15 @@ impl Scheduler {
         }
     }
 
+    /// Charge the open run interval of every thread charged to `account`.
+    fn charge_account_threads(&self, account: &alloc::sync::Arc<super::thread::CpuAccount>) {
+        for thread in self.threads.iter() {
+            if thread.cpu_account.as_ref().is_some_and(|a| alloc::sync::Arc::ptr_eq(a, account)) {
+                thread.charge_timer_cpu();
+            }
+        }
+    }
+
     /// Register an armed group from a timer syscall or exec publication.
     pub fn register_signal_timers(&mut self, timers: &alloc::sync::Arc<crate::signal::IntervalTimers>, cpu: &alloc::sync::Arc<super::thread::CpuAccount>) {
         if timers.is_active() && !self.signal_timer_groups.iter().any(|(old, _)| old.ptr_eq(&alloc::sync::Arc::downgrade(timers))) {
@@ -4954,11 +4971,43 @@ impl Scheduler {
         if let Some(thread) = self.current_thread_mut() {
             thread.charge_timer_cpu();
         }
+        crate::signal::timers::retry_job_control();
+        // A process whose every thread has exited keeps its row until it is
+        // reaped, but its timers stop: none of them may expire or keep the
+        // CPU-time pass below running for a process that no longer runs.
+        for index in 0..self.signal_timer_groups.len() {
+            let Some(group) = self.signal_timer_groups[index].0.upgrade() else { continue; };
+            let alive = self.threads.iter().any(|t| {
+                t.state != ThreadState::Terminated
+                    && t.signal_timers.as_ref().is_some_and(|timers| alloc::sync::Arc::ptr_eq(timers, &group))
+            });
+            if !alive {
+                group.disarm_all();
+            }
+        }
         self.signal_timer_groups.retain(|(timers, cpu)| cpu.strong_count() != 0 && timers.upgrade().is_some_and(|t| t.is_active()));
+        // A timer counting CPU time reads the account its threads are charged
+        // to, so the threads running on the other CPUs are charged too.
+        let counts_cpu = self.signal_timer_groups.iter().any(|(timers, _)| {
+            timers.upgrade().is_some_and(|t| t.virtual_timer.is_active() || t.prof.is_active() || t.posix.counts_cpu())
+        });
+        if counts_cpu {
+            for cpu in 0..MAX_CPUS {
+                if let Some(tid) = self.cpu_state[cpu].current_thread {
+                    if let Some(thread) = self.get_thread(tid) {
+                        thread.charge_timer_cpu();
+                    }
+                }
+            }
+        }
         for index in 0..self.signal_timer_groups.len() {
             let (Some(group), Some(cpu)) = (self.signal_timer_groups[index].0.upgrade(), self.signal_timer_groups[index].1.upgrade()) else { continue; };
-            let user = cpu.user_ns.load(Ordering::Relaxed) / 1000;
-            let system = cpu.system_ns.load(Ordering::Relaxed) / 1000;
+            let (user_ns, system_ns) = cpu.split_ns();
+            if self.expire_posix_timers(&group, user_ns.saturating_add(system_ns)) {
+                self.wake_posix_timer_recipients(&group);
+            }
+            let user = user_ns / 1000;
+            let system = system_ns / 1000;
             let pending = [
                 (group.real.expire(wall), crate::signal::constants::SIGALRM),
                 (group.virtual_timer.expire(user), crate::signal::constants::SIGVTALRM),
@@ -4983,6 +5032,51 @@ impl Scheduler {
                     }
                 }
             }
+        }
+    }
+
+    /// Expire `group`'s POSIX timers, given its process's CPU time. Each
+    /// newly generated signal goes to the thread SIGEV_THREAD_ID names, or to
+    /// a thread of the process that has it unblocked or waits for it, else to
+    /// any. Returns true when a signal became due.
+    fn expire_posix_timers(&self, group: &alloc::sync::Arc<crate::signal::IntervalTimers>, process_cpu: u64) -> bool {
+        if !group.posix.is_active() {
+            return false;
+        }
+        let now = crate::signal::timers::Now::read(process_cpu);
+        let member = |t: &&Box<Thread>| t.state != ThreadState::Terminated
+            && t.signal_timers.as_ref().is_some_and(|timers| alloc::sync::Arc::ptr_eq(timers, group));
+        group.posix.expire(&now, |thread, sig| {
+            let bit = crate::signal::constants::sig_mask(sig);
+            let accepts = |t: &&Box<Thread>| {
+                (!t.signals.blocked.load(Ordering::Relaxed) | t.signals.wait_set.load(Ordering::Acquire)) & bit != 0
+            };
+            let chosen = match thread {
+                Some(tid) => self.threads.iter().filter(member).find(|t| t.id == tid),
+                None => self.threads.iter().filter(member).find(accepts).or_else(|| self.threads.iter().find(member)),
+            };
+            chosen.map(|t| &*t.signals)
+        })
+    }
+
+    /// Wake the threads of `group`'s process that a POSIX timer signal just
+    /// became due for and that have it unblocked or wait for it.
+    fn wake_posix_timer_recipients(&mut self, group: &alloc::sync::Arc<crate::signal::IntervalTimers>) {
+        let mut index = 0;
+        while index < self.threads.len() {
+            let thread = &self.threads[index];
+            index += 1;
+            let due = thread.signals.posix_pending.load(Ordering::Acquire);
+            let accepted = (!thread.signals.blocked.load(Ordering::Relaxed) | thread.signals.wait_set.load(Ordering::Acquire)) & due;
+            if accepted == 0
+                || thread.state == ThreadState::Terminated
+                || !thread.signal_timers.as_ref().is_some_and(|timers| alloc::sync::Arc::ptr_eq(timers, group))
+            {
+                continue;
+            }
+            let id = thread.id;
+            self.unblock_for_signal(id);
+            self.unblock_for_child_exit(id);
         }
     }
 
@@ -5623,10 +5717,10 @@ impl Scheduler {
     ///
     /// The cost at a site on a kernel that has stamped no pin is 1 relaxed load
     /// and 1 compare, not a thread lookup. `CPU_PINS_STAMPED` counts the
-    /// `CpuPin` values both constructors have built, so a 0 reading says 0
+    /// `CpuPin` values its constructors have built, so a 0 reading says 0
     /// threads carry a pin and the guard has nothing to decide -- the same
     /// shape `deliver_pinned_wakes_for_this_cpu` uses to skip its own scan.
-    /// claim-lint:ok: 2 of 2 `CpuPin` constructors increment that counter,
+    /// claim-lint:ok: every `CpuPin` constructor increments that counter,
     /// pinned by
     /// `tests/loopback_pump_structure.rs::every_cpu_pin_is_minted_by_a_counting_constructor`
     fn retain_cpu_affine_thread(&mut self, thread_id: u64, taking_cpu: usize) -> bool {
@@ -7190,6 +7284,108 @@ pub fn process_cpu_ticks() -> Option<u64> {
         }
         Some(account.ticks())
     }).flatten()
+}
+
+/// The calling process's CPU time in nanoseconds, user and system together,
+/// with every running thread of it charged first: the counters
+/// CLOCK_PROCESS_CPUTIME_ID and the process CPU-time timers read. No
+/// process-manager lock is needed for this query.
+pub fn process_cpu_ns() -> Option<u64> {
+    with_scheduler(|scheduler| {
+        let account = scheduler.current_thread()?.cpu_account.clone()?;
+        scheduler.charge_account_threads(&account);
+        let (user, system) = account.split_ns();
+        Some(user.saturating_add(system))
+    })
+    .flatten()
+}
+
+/// The CPU the caller runs on.
+pub fn current_cpu() -> usize {
+    Scheduler::current_cpu_id()
+}
+
+/// How many CPUs can schedule, as placement counts them. Lock-free.
+pub fn online_cpus() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        (crate::arch_impl::aarch64::smp::cpus_online() as usize).clamp(1, MAX_CPUS)
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        (crate::arch_impl::x86_64::smp::cpus_online() as usize).clamp(1, MAX_CPUS)
+    }
+}
+
+/// sched_setaffinity's placement of thread `tid`: `pin` keeps it on the CPU
+/// the pin names, `None` lets it run anywhere. A queued thread moves to the
+/// pinned CPU's queue now; a running one moves when it is next switched out,
+/// which for the caller is its return to user mode. A wake held for the CPU
+/// the old pin named is placed now: only that pin's CPU delivers it, so once
+/// the pin changes nothing else would. False when the scheduler has no such
+/// thread.
+pub fn set_user_affinity(tid: u64, pin: Option<super::thread::CpuPin>) -> bool {
+    with_scheduler(|sched| {
+        let Some(old) = sched.get_thread(tid).map(|thread| thread.cpu_affinity) else {
+            return false;
+        };
+        let held = old.is_some_and(|old| sched.pinned_wake_is_waiting_here(tid, old.cpu));
+        if let Some(thread) = sched.get_thread_mut(tid) {
+            thread.cpu_affinity = pin;
+        }
+        if held {
+            let here = Scheduler::current_cpu_id();
+            if !sched.retain_cpu_affine_thread(tid, here) {
+                sched.per_cpu_queues[here].push_back(tid);
+            }
+        }
+        let Some(pin) = pin else {
+            return true;
+        };
+        let home = pin.cpu;
+        let queued_elsewhere = sched
+            .per_cpu_queues
+            .iter()
+            .enumerate()
+            .any(|(cpu, queue)| cpu != home && queue.contains(&tid));
+        if queued_elsewhere {
+            for queue in sched.per_cpu_queues.iter_mut() {
+                queue.retain(|&id| id != tid);
+            }
+            sched.per_cpu_queues[home].push_back(tid);
+            sched.send_resched_ipi_to_cpu(home);
+        }
+        if let Some(cpu) = (0..MAX_CPUS).find(|&cpu| sched.cpu_state[cpu].current_thread == Some(tid)) {
+            if cpu != home {
+                if cpu == Scheduler::current_cpu_id() {
+                    set_need_resched();
+                } else {
+                    sched.send_resched_ipi_to_cpu(cpu);
+                }
+            }
+        }
+        true
+    })
+    .unwrap_or(false)
+}
+
+/// Charge the open run interval of every thread that shares `account` to its
+/// user and system time, so a read of the account that follows includes the
+/// time its threads running on other CPUs have used. Called without the
+/// process-manager lock held.
+pub fn charge_account_cpu(account: &alloc::sync::Arc<super::thread::CpuAccount>) {
+    with_scheduler(|scheduler| scheduler.charge_account_threads(account));
+}
+
+/// `charge_account_cpu` for the caller's own process, found from the calling
+/// thread rather than the process table, so it needs no process-manager lock
+/// and is called before that lock is taken.
+pub fn charge_current_process_cpu() {
+    with_scheduler(|scheduler| {
+        if let Some(account) = scheduler.current_thread().and_then(|thread| thread.cpu_account.clone()) {
+            scheduler.charge_account_threads(&account);
+        }
+    });
 }
 
 /// Charge a process's running threads before reading its shared CPU account.

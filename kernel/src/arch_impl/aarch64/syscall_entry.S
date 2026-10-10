@@ -34,6 +34,7 @@
 /* External Rust functions */
 .extern rust_syscall_handler_aarch64
 .extern check_need_resched_and_switch_arm64
+.extern aarch64_resume_user_time
 .extern trace_eret_to_el0
 
 .equ KERNEL_VIRT_BASE, 0xFFFF000000000000
@@ -268,11 +269,12 @@ syscall_entry_from_el0:
      * DEFERRED_REQUEUE until the next timer tick on THIS CPU.
      *
      * Order:
-     * 1. Restore system registers (SPSR, ELR) from frame
-     * 2. Restore x2-x30 from frame (skip x0/x1 for now)
-     * 3. Do TTBR0 switch using x0/x1 as scratch (they're not restored yet)
-     * 4. Restore x0/x1 from frame (still valid - frame not deallocated)
-     * 5. Deallocate frame and ERET
+     * 1. Do TTBR0 switch using x0/x1 as scratch (nothing is restored yet)
+     * 2. Start user CPU time for a return to EL0 (aarch64_resume_user_time)
+     * 3. Restore system registers (SPSR, ELR) from frame
+     * 4. Restore x2-x30 from frame (skip x0/x1 for now)
+     * 5. Restore x0/x1 from frame (still valid - frame not deallocated)
+     * 6. Deallocate frame and ERET
      */
 
     /* Read ELR from exception frame */
@@ -313,6 +315,56 @@ syscall_entry_from_el0:
     str x1, [sp, #256]       /* frame.spsr = 0x5 (EL1h) */
     str x10, [sp, #248]      /* frame.elr = idle_loop_arm64 */
 .Lsvc_elr_ok:
+    /*
+     * Check if TTBR0 switch is needed (for context switch).
+     * Read next_cr3 from per-CPU data at offset 64.
+     * Every register is restored from the frame below, so x0/x1 are scratch.
+     */
+    mrs x0, tpidr_el1
+    cbz x0, .Lno_ttbr_switch
+
+    ldr x1, [x0, #64]           /* next_cr3 offset = 64 */
+    cbz x1, .Lrestore_saved_ttbr
+
+    /* Clear next_cr3 BEFORE switching (avoid accessing after switch) */
+    str xzr, [x0, #64]
+
+    /* Perform TTBR0 switch with full TLB invalidation */
+    dsb ishst
+    msr ttbr0_el1, x1
+    isb
+    tlbi vmalle1is
+    dsb ish
+    isb
+    b .Lafter_ttbr_check
+
+.Lrestore_saved_ttbr:
+    /* No context switch - restore original process TTBR0 */
+    ldr x1, [x0, #80]           /* saved_process_cr3 offset = 80 */
+    cbz x1, .Lafter_ttbr_check
+    /* An unchanged root needs neither an install nor a broadcast TLB flush.
+     * PTE mutations invalidate their translations at the mutation site. */
+    mrs x0, ttbr0_el1
+    cmp x0, x1
+    b.eq .Lafter_ttbr_check
+    dsb ishst
+    msr ttbr0_el1, x1
+    isb
+    tlbi vmalle1is
+    dsb ish
+    isb
+
+.Lafter_ttbr_check:
+.Lno_ttbr_switch:
+
+    /*
+     * A frame returning to EL0 starts its thread's user CPU time here, after
+     * the TTBR0 install and TLB invalidation above: they are system time.
+     * The call clobbers caller-saved registers, all restored below.
+     */
+    mov x0, sp
+    bl aarch64_resume_user_time
+    ldr x10, [sp, #248]      /* x10 = frame.elr, admitted above */
     msr elr_el1, x10
 
     /* Read SPSR from exception frame */
@@ -364,48 +416,6 @@ syscall_entry_from_el0:
 
     /* Restore x2, x3 - skip x0/x1 for now */
     ldp x2, x3, [sp, #16]
-
-    /*
-     * Check if TTBR0 switch is needed (for context switch).
-     * Read next_cr3 from per-CPU data at offset 64.
-     * Use x0/x1 as scratch since they haven't been restored yet.
-     */
-    mrs x0, tpidr_el1
-    cbz x0, .Lno_ttbr_switch
-
-    ldr x1, [x0, #64]           /* next_cr3 offset = 64 */
-    cbz x1, .Lrestore_saved_ttbr
-
-    /* Clear next_cr3 BEFORE switching (avoid accessing after switch) */
-    str xzr, [x0, #64]
-
-    /* Perform TTBR0 switch with full TLB invalidation */
-    dsb ishst
-    msr ttbr0_el1, x1
-    isb
-    tlbi vmalle1is
-    dsb ish
-    isb
-    b .Lafter_ttbr_check
-
-.Lrestore_saved_ttbr:
-    /* No context switch - restore original process TTBR0 */
-    ldr x1, [x0, #80]           /* saved_process_cr3 offset = 80 */
-    cbz x1, .Lafter_ttbr_check
-    /* An unchanged root needs neither an install nor a broadcast TLB flush.
-     * PTE mutations invalidate their translations at the mutation site. */
-    mrs x0, ttbr0_el1
-    cmp x0, x1
-    b.eq .Lafter_ttbr_check
-    dsb ishst
-    msr ttbr0_el1, x1
-    isb
-    tlbi vmalle1is
-    dsb ish
-    isb
-
-.Lafter_ttbr_check:
-.Lno_ttbr_switch:
 
     /*
      * Clear PREEMPT_ACTIVE before restoring x0/x1.
