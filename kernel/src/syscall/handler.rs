@@ -304,6 +304,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             // included, is delivered as on every other syscall return.
             drop(custody);
             check_and_deliver_signals_on_syscall_return(frame);
+            crate::task::thread::resume_user_time();
             // Perform cleanup that normally happens after result handling
             let kernel_stack_top = crate::per_cpu::kernel_stack_top();
             if kernel_stack_top != 0 {
@@ -591,6 +592,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     // yield() would never receive the signal (it would only get delivered on timer
     // interrupt, which might not fire for several milliseconds).
     check_and_deliver_signals_on_syscall_return(frame);
+    crate::task::thread::resume_user_time();
 
     // CRITICAL FIX: Update TSS.RSP0 before returning to userspace
     // When userspace triggers an interrupt (like int3), the CPU switches to kernel
