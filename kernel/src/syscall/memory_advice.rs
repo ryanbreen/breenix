@@ -168,6 +168,10 @@ fn populate_page(
         }
         return Ok(Population::Resident);
     }
+    // A page mmap is still installing is left to it.
+    if crate::memory::anon_map::reserved_and_absent(table, &process.vmas, address) {
+        return Ok(Population::Retry);
+    }
     let vma = vma.ok_or(ENOMEM as u64)?;
     if vma.backing.is_some() {
         use crate::memory::file_map::{Access, FaultOutcome};
@@ -360,14 +364,6 @@ pub fn sys_munlockall() -> SyscallResult {
         p.memory_locks.clear();
         Ok(())
     })())
-}
-
-/// Charge at VMA publication, under its existing PM section.
-pub(crate) fn publish_future(process: &mut Process, start: u64, end: u64) -> Result<bool, u64> {
-    prepare_future(process, process.memory_locks.additional(start, end))
-        .map_err(|_| super::errno::EAGAIN as u64)?;
-    record_future(process, start, end);
-    Ok(process.memory_locks.future && !process.memory_locks.onfault)
 }
 
 pub fn sys_madvise(addr: u64, length: u64, advice: u64) -> SyscallResult {

@@ -36,10 +36,13 @@ where
         let Some((pid, owner)) = guard.as_ref().and_then(|m| m.find_process_by_cr3(root)) else {
             return FaultOutcome::NotFile;
         };
-        let Some(prot) = anonymous_protection(&owner.vmas, address) else {
+        let Some(table) = owner.page_table.as_deref() else {
             return FaultOutcome::NotFile;
         };
-        let Some(table) = owner.page_table.as_deref() else {
+        if reserved_and_absent(table, &owner.vmas, address) {
+            return FaultOutcome::Resolved;
+        }
+        let Some(prot) = anonymous_protection(&owner.vmas, address) else {
             return FaultOutcome::NotFile;
         };
         if table.translate(page.start_address()).is_some() && permitted(prot, access) {
@@ -116,6 +119,19 @@ where
         let _ = super::frame_allocator::deallocate_leaf_frame(frame);
     }
     outcome
+}
+
+/// Whether `address` lies in a VMA whose pages `map_prepared_frames` is still
+/// installing, in a page it has not installed yet: the access is retried until
+/// it has.
+pub(crate) fn reserved_and_absent(
+    table: &super::process_memory::ProcessPageTable,
+    vmas: &[super::vma::Vma],
+    address: u64,
+) -> bool {
+    vmas.iter()
+        .any(|v| v.reservation != 0 && v.contains(VirtAddr::new(address)))
+        && table.translate(VirtAddr::new(address)).is_none()
 }
 
 fn anonymous_protection(vmas: &[super::vma::Vma], address: u64) -> Option<Protection> {
@@ -236,6 +252,9 @@ pub(crate) fn prepare_write(
             .find(|v| v.contains(VirtAddr::new(address)));
         if vma.is_some_and(|v| !v.prot.contains(Protection::WRITE)) {
             return Err(PrepareWriteError::Fault);
+        }
+        if reserved_and_absent(table, &owner.vmas, address) {
+            return Err(PrepareWriteError::Retry);
         }
         if table.translate(VirtAddr::new(address)).is_none() {
             if vma.is_none() {

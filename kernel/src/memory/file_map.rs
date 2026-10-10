@@ -32,7 +32,7 @@ use super::arch_stub::{Page, PageTableFlags, PhysFrame, Size4KiB, VirtAddr};
 use crate::fs::ext2::{live_inode::FileHandle, Ext2Fs};
 use crate::memory::{
     process_memory::{ProcessPageTable, Revoked, COW_FLAG},
-    vma::{Protection, Vma},
+    vma::{MmapFlags, Protection, Vma},
 };
 use crate::process::{Process, ProcessId, ProcessManager};
 use alloc::vec::Vec;
@@ -1234,6 +1234,13 @@ pub(crate) fn fork_vmas(
         .try_reserve(vmas.len())
         .map_err(|_| "Out of memory for child VMAs")?;
     for parent in vmas {
+        // Another thread is still installing this shared mapping's pages, and
+        // the child would not share the ones installed after the fork. A
+        // private mapping's pages not yet installed are zero, as the child's
+        // first touch of them makes them.
+        if parent.reservation != 0 && !parent.flags.contains(MmapFlags::PRIVATE) {
+            return Err("Shared mapping still being installed");
+        }
         let mut child = Vma::new(parent.start, parent.end, parent.prot, parent.flags);
         if let Some(binding) = &parent.backing {
             child.backing = Some(binding.fork(pid, pt)?);

@@ -25,3 +25,22 @@ pub(crate) unsafe fn sync_user_page(page_va: u64) {
         options(nostack, preserves_flags)
     );
 }
+
+/// SCTLR_EL1 bits that let EL0 read CTR_EL0 (UCT) and run DC CVAU, DC CVAC,
+/// DC CIVAC and IC IVAU (UCI) instead of trapping to EL1.
+const SCTLR_UCT: u64 = 1 << 15;
+const SCTLR_UCI: u64 = 1 << 26;
+
+/// Let EL0 make code it wrote executable on the calling CPU, as Linux does: a
+/// JIT or a C library's `__clear_cache` reads the cache line sizes from
+/// CTR_EL0, then cleans each data line with DC CVAU and invalidates each
+/// instruction line with IC IVAU. SCTLR_EL1 is per CPU and the bits reset to
+/// trapping, so every CPU runs this as it comes up.
+pub fn grant_el0_cache_maintenance() {
+    unsafe {
+        let mut sctlr: u64;
+        core::arch::asm!("mrs {}, sctlr_el1", out(reg) sctlr, options(nomem, nostack));
+        sctlr |= SCTLR_UCT | SCTLR_UCI;
+        core::arch::asm!("msr sctlr_el1, {}", "isb", in(reg) sctlr, options(nomem, nostack));
+    }
+}

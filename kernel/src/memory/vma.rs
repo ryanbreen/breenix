@@ -50,6 +50,12 @@ impl Protection {
     pub fn from_bits_truncate(bits: u32) -> Self {
         Self(bits)
     }
+
+    /// The protection `bits` name, or None if they include a bit that is not
+    /// PROT_READ, PROT_WRITE or PROT_EXEC.
+    pub fn from_bits(bits: u32) -> Option<Self> {
+        (bits & !(Self::READ.0 | Self::WRITE.0 | Self::EXEC.0) == 0).then_some(Self(bits))
+    }
 }
 
 /// Memory mapping flags (MAP_* constants from mmap)
@@ -63,6 +69,7 @@ impl MmapFlags {
     pub const FIXED: Self = Self(0x10);
     pub const ANONYMOUS: Self = Self(0x20);
     pub const POPULATE: Self = Self(0x8000);
+    pub const FIXED_NOREPLACE: Self = Self(0x10_0000);
 
     #[allow(dead_code)]
     pub fn empty() -> Self {
@@ -99,6 +106,10 @@ pub struct Vma {
     pub flags: MmapFlags,
     /// The file side of a file-backed mapping.
     pub backing: Option<super::file_map::Binding>,
+    /// Nonzero while `map_prepared_frames` is still installing this VMA's
+    /// pages: the token of that call. Faults and kernel copies into a page it
+    /// has not installed yet retry, and the pieces a split leaves keep it.
+    pub reservation: u64,
 }
 
 impl Vma {
@@ -110,6 +121,15 @@ impl Vma {
             prot,
             flags,
             backing: None,
+            reservation: 0,
+        }
+    }
+
+    /// `[start, end)` of this anonymous VMA, as a split leaves it.
+    pub fn piece(&self, start: VirtAddr, end: VirtAddr) -> Self {
+        Self {
+            reservation: self.reservation,
+            ..Self::new(start, end, self.prot, self.flags)
         }
     }
 
