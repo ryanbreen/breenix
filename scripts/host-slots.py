@@ -569,7 +569,8 @@ def exec_x86_work(argv):
     partition = x86_cpu_partition()
     if partition is not None:
         os.environ['BREENIX_SLOT_SESSION'] = f'work-{os.getpid()}'
-        pin_gate_work(partition, Slots().snapshot(), process_table())
+        cpus = pin_gate_work(partition, Slots().snapshot(), process_table())
+        os.sched_setaffinity(0, cpus)
     os.execvp(argv[0], argv)
 
 
