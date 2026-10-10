@@ -4442,7 +4442,7 @@ impl Scheduler {
     /// A generated, deliverable signal must reach its recipient at the next
     /// return to user mode, including a busy remote CPU. Interruptible sleepers
     /// receive the same bounded promotion as an already-expired sleep deadline.
-    fn expedite_signal_recipient(&mut self, thread_id: u64) {
+    pub(crate) fn expedite_signal_recipient(&mut self, thread_id: u64) {
         if let Some(cpu) = self.cpu_state.iter().position(|s| s.current_thread == Some(thread_id)) {
             if cpu == Self::current_cpu_id() {
                 set_need_resched();
