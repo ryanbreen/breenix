@@ -595,17 +595,21 @@ impl ProcessManager {
             return Err("Process page table not available for stack mapping");
         }
 
-        // This constructor supplies no arguments or environment. Reserve
-        // argc, argv NULL, envp NULL and the AT_NULL pair, aligned to 16 bytes.
-        // Starting at stack_top - 16 instead leaves envp outside the mapping.
-        let initial_rsp = stack_top.as_u64() - 48;
-        Self::write_bytes_to_stack(
+        // No arguments or environment, but the runtime still needs the ELF
+        // auxiliary vector to discover program headers and initialize TLS.
+        let initial_rsp = Self::setup_argv_on_stack(
             process
                 .page_table
                 .as_ref()
                 .ok_or("Process page table not available for argv setup")?,
-            initial_rsp,
-            &[0; 48],
+            stack_top.as_u64(),
+            &[],
+            &[],
+            loaded_elf.phdr_vaddr,
+            loaded_elf.phnum,
+            loaded_elf.phentsize,
+            loaded_elf.entry_point.as_u64(),
+            &process.cred,
         )?;
 
         // Create the main thread
