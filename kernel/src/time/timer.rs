@@ -122,6 +122,13 @@ pub fn init() {
 #[inline]
 pub fn timer_interrupt() {
     #[cfg(target_arch = "x86_64")]
+    if crate::signal::types::tmpdiag::DQ_WATCH.load(Ordering::Relaxed) {
+        let cpu = { use crate::arch_impl::PerCpuOps; crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize }.min(3);
+        if crate::signal::types::tmpdiag::IRQS[cpu].fetch_add(1, Ordering::Relaxed) == 0 {
+            crate::signal::types::tmpdiag::IRQ_FIRST[cpu].store(crate::signal::monotonic_micros(), Ordering::Relaxed);
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
     {
         // LAPIC periodic interrupts coalesce while IF is clear or the vCPU is
         // descheduled. Count elapsed periods, retaining fractional cycles in

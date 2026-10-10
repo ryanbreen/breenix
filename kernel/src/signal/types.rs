@@ -1424,6 +1424,8 @@ pub mod tmpdiag {
     pub static HK_RECLAIM_LONGEST_START: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
     pub static HK_THREADS_LONGEST_START: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
     pub static UNPARK_STATE: AtomicU64 = AtomicU64::new(0);
+    pub static IRQS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub static IRQ_FIRST: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
     pub static RING: [AtomicU64; 96] = [const { AtomicU64::new(0) }; 96];
     pub fn ring_push(t: u64, next: u64, old: u64) {
         use core::sync::atomic::Ordering::Relaxed;

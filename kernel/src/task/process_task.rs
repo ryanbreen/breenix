@@ -1138,7 +1138,7 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
         use core::sync::atomic::Ordering::Relaxed;
         use crate::signal::types::tmpdiag::*;
         if !DQ_WATCH.swap(true, Relaxed) {
-            for c in 0..4 { HK_RECLAIM_MAX[c].store(0, Relaxed); HK_THREADS_MAX[c].store(0, Relaxed); HK_ITER[c].store(0, Relaxed); }
+            for c in 0..4 { IRQS[c].store(0, Relaxed); IRQ_FIRST[c].store(0, Relaxed); HK_RECLAIM_MAX[c].store(0, Relaxed); HK_THREADS_MAX[c].store(0, Relaxed); HK_ITER[c].store(0, Relaxed); }
             RING_IDX.store(0, Relaxed);
             DQ_US.store(crate::signal::monotonic_micros(), Relaxed);
         }
@@ -1211,6 +1211,9 @@ pub fn drain_deferred_fault_sigsegv_exits() {
                 let _ = write!(ring, " {}:{}<-{}", RING[(k*3) as usize].load(Relaxed) as i64 - dq_queued as i64, RING[(k*3+1) as usize].load(Relaxed), RING[(k*3+2) as usize].load(Relaxed));
             }
             if done - dq_queued > 5000 {
+                log::info!("[TMPDIAG-DEFER3] irqs={:?} irq_first_rel={:?}",
+                    [IRQS[0].load(Relaxed), IRQS[1].load(Relaxed), IRQS[2].load(Relaxed), IRQS[3].load(Relaxed)],
+                    [IRQ_FIRST[0].load(Relaxed) as i64 - dq_queued as i64, IRQ_FIRST[1].load(Relaxed) as i64 - dq_queued as i64, IRQ_FIRST[2].load(Relaxed) as i64 - dq_queued as i64, IRQ_FIRST[3].load(Relaxed) as i64 - dq_queued as i64]);
                 log::info!("[TMPDIAG-DEFER2] unpark_loc(me*10000+queued*1000+current*100+state)={} hk_iter={:?} hk_reclaim_max={:?} hk_reclaim_start_rel={:?} hk_threads_max={:?} hk_threads_start_rel={:?}",
                     UNPARK_STATE.load(Relaxed),
                     [HK_ITER[0].load(Relaxed), HK_ITER[1].load(Relaxed), HK_ITER[2].load(Relaxed), HK_ITER[3].load(Relaxed)],
