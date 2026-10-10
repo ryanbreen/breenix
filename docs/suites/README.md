@@ -546,15 +546,17 @@ when it cannot be read, skip below two and start one thread per processor, at mo
 assumes four. Each thread pins itself to its own processor with sched_setaffinity and the
 threads make a thousand rendezvous within 750 ms before they measure, which threads taking
 turns on one processor cannot do. The scheduling cases that compare SCHED_FIFO threads pin
-both to processor 0.
+both to processor 0; `mutex/prio-inherit` also needs two processors, so its threads can take
+their priorities on processor 1 before they move to processor 0.
 
 Where POSIX leaves a behaviour to the implementation, the case title begins `Linux policy:`
 and measures what Linux does: pthread_join of the caller returns EDEADLK and of a detached
-thread EINVAL (both "may fail" errors in POSIX), detached threads that ended give back their
+thread EINVAL (current POSIX makes both undefined behaviour), detached threads that ended give back their
 memory, a thread gets the stack size it asked for and no more (POSIX makes it a minimum), so
 `lifecycle/guard-overflow` faults within the stack and guard it asked for, a thread started
 normally is SCHED_OTHER with priority 0, a new attribute object is
-PTHREAD_INHERIT_SCHED, an unprivileged pthread_setschedparam to SCHED_FIFO returns EPERM,
+PTHREAD_INHERIT_SCHED, an unprivileged pthread_setschedparam to SCHED_FIFO with RLIMIT_RTPRIO
+at 0 returns EPERM,
 and sched_yield hands one processor between two SCHED_OTHER threads. The zero-filled
 PTHREAD_MUTEX_INITIALIZER and PTHREAD_COND_INITIALIZER are the Linux ABI's, and so is the
 thread pointer `tls/thread-pointer` checks (TPIDR_EL0 on ARM64, the FS base on x86-64), which

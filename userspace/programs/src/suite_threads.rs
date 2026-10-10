@@ -28,7 +28,7 @@ use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, value,
 use libbreenix::syscall::raw;
 use std::cell::{Cell, UnsafeCell};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering::SeqCst};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering::Relaxed, Ordering::SeqCst};
 use std::sync::Arc;
 
 #[cfg(target_arch = "x86_64")]
@@ -37,10 +37,12 @@ mod nr {
     pub const MUNMAP: u64 = 11;
     pub const RT_SIGACTION: u64 = 13;
     pub const RT_SIGPROCMASK: u64 = 14;
+    pub const SIGALTSTACK: u64 = 131;
     pub const NANOSLEEP: u64 = 35;
     pub const WAIT4: u64 = 61;
     pub const KILL: u64 = 62;
     pub const SETUID: u64 = 105;
+    pub const PRLIMIT64: u64 = 302;
     pub const RT_SIGPENDING: u64 = 127;
     pub const SCHED_SETPARAM: u64 = 142;
     pub const SCHED_GETPARAM: u64 = 143;
@@ -63,10 +65,12 @@ mod nr {
     pub const MUNMAP: u64 = 215;
     pub const RT_SIGACTION: u64 = 134;
     pub const RT_SIGPROCMASK: u64 = 135;
+    pub const SIGALTSTACK: u64 = 132;
     pub const NANOSLEEP: u64 = 101;
     pub const WAIT4: u64 = 260;
     pub const KILL: u64 = 129;
     pub const SETUID: u64 = 146;
+    pub const PRLIMIT64: u64 = 261;
     pub const RT_SIGPENDING: u64 = 136;
     pub const SCHED_SETPARAM: u64 = 118;
     pub const SCHED_SETSCHEDULER: u64 = 119;
@@ -99,7 +103,9 @@ const SIGUSR1: i32 = 10;
 const SIGSEGV: i32 = 11;
 const SIGUSR2: i32 = 12;
 const SIGTERM: i32 = 15;
+const SA_SIGINFO: u64 = 4;
 const SA_RESTORER: u64 = 0x0400_0000;
+const SA_ONSTACK: u64 = 0x0800_0000;
 const SIG_BLOCK: i32 = 0;
 const SIG_UNBLOCK: i32 = 1;
 
@@ -520,7 +526,7 @@ struct Board {
     step_len: AtomicU32,
     words: [AtomicI64; 16],
     msg: UnsafeCell<[u8; 256]>,
-    step: UnsafeCell<[u8; 160]>,
+    step: [AtomicU8; 160],
 }
 const RUNNING: u32 = 0;
 const PASSED: u32 = 1;
@@ -544,12 +550,12 @@ fn put_text(buf: &UnsafeCell<[u8; 256]>, len: &AtomicU32, text: &str) {
     len.store(n as u32, SeqCst);
 }
 
-/// Say what the trial is doing now, for the message if it never finishes.
+/// Say what the trial is doing now, for the message if it never finishes. Any of a trial's
+/// threads may call it; the bytes are atomic, so two at once only garble the message.
 fn step(text: &str) {
     let Some(b) = board() else { return };
-    let n = text.len().min(159);
-    // SAFETY: as in put_text; a torn step only garbles the message.
-    unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), (*b.step.get()).as_mut_ptr(), n) };
+    let n = text.len().min(b.step.len());
+    for (cell, &byte) in b.step.iter().zip(&text.as_bytes()[..n]) { cell.store(byte, Relaxed); }
     b.step_len.store(n as u32, SeqCst);
 }
 
@@ -563,8 +569,8 @@ impl Board {
         text_of(unsafe { &*self.msg.get() }, self.msg_len.load(SeqCst))
     }
     fn last_step(&self) -> String {
-        // SAFETY: as above.
-        let s = text_of(unsafe { &*self.step.get() }, self.step_len.load(SeqCst));
+        let bytes: Vec<u8> = self.step.iter().map(|cell| cell.load(Relaxed)).collect();
+        let s = text_of(&bytes, self.step_len.load(SeqCst));
         if s.is_empty() { String::new() } else { format!(" (last step: {s})") }
     }
     fn word(&self, i: usize) -> i64 { self.words[i].load(SeqCst) }
@@ -628,16 +634,20 @@ impl Proc {
         }
     }
 
-    /// Kill the process and reap it, waiting up to a second.
-    fn stop(&mut self) {
-        if self.reaped { return; }
-        let _ = sc(nr::KILL, &[self.pid as u64, SIGKILL as u64]);
+    /// Kill the process and reap it, waiting up to a second. Fails if the kill is refused,
+    /// wait4 fails, or the process is not reaped within the second.
+    fn stop(&mut self) -> CaseResult {
+        if self.reaped { return Ok(()); }
+        let k = sc(nr::KILL, &[self.pid as u64, SIGKILL as u64]);
+        if k != 0 { return fail(format!("kill(SIGKILL) of the case's process {} returned {}", self.pid, shown(k))); }
         let mut status = 0;
         let start = now_ms();
-        while now_ms().saturating_sub(start) < 1000 {
-            if sc(nr::WAIT4, &[self.pid as u64, &mut status as *mut i32 as u64, WNOHANG as u64, 0]) != 0 {
-                self.reaped = true;
-                return;
+        loop {
+            let r = sc(nr::WAIT4, &[self.pid as u64, &mut status as *mut i32 as u64, WNOHANG as u64, 0]);
+            if r == self.pid as i64 { self.reaped = true; return Ok(()); }
+            if r != 0 && r != -(EINTR as i64) { return fail(format!("wait4 for the case's process {} returned {}", self.pid, shown(r))); }
+            if now_ms().saturating_sub(start) >= 1000 {
+                return fail(format!("the case's process {} was not reaped within a second of SIGKILL", self.pid));
             }
             nap();
         }
@@ -653,7 +663,7 @@ impl Proc {
         loop {
             let state = self.board.state.load(SeqCst);
             if state != RUNNING {
-                self.stop();
+                self.stop()?;
                 return match state {
                     PASSED => Ok(()),
                     SKIPPED => Err(CaseError::Skip(self.board.msg())),
@@ -669,8 +679,8 @@ impl Proc {
                 }
             }
             if now_ms().saturating_sub(start) >= ms {
-                self.stop();
-                return fail(format!("the case did not finish within {ms} ms{}", self.board.last_step()));
+                let stopped = self.stop().err().map(|e| format!("; {}", text(e))).unwrap_or_default();
+                return fail(format!("the case did not finish within {ms} ms{}{stopped}", self.board.last_step()));
             }
             nap();
         }
@@ -678,7 +688,7 @@ impl Proc {
 }
 
 impl Drop for Proc {
-    fn drop(&mut self) { self.stop(); }
+    fn drop(&mut self) { let _ = self.stop(); }
 }
 
 /// Run `body` as a trial with all the time the case has left.
@@ -971,14 +981,14 @@ fn team<T: Send + 'static>(
     Ok(out)
 }
 
-/// A u64 several threads update under a lock the case is testing, so a lock that does not
-/// exclude loses updates.
-struct Racy(UnsafeCell<u64>);
-// SAFETY: the races are the measurement; the reads and writes are volatile.
-unsafe impl Sync for Racy {}
+/// A u64 several threads update under a lock the case is testing with a separate load and
+/// store, so a lock that does not exclude loses updates. The accesses are relaxed atomics:
+/// a broken lock lets them interleave, which is the measurement, without a data race.
+struct Racy(AtomicU64);
 impl Racy {
-    fn get(&self) -> u64 { unsafe { core::ptr::read_volatile(self.0.get()) } }
-    fn set(&self, v: u64) { unsafe { core::ptr::write_volatile(self.0.get(), v) } }
+    fn new() -> Racy { Racy(AtomicU64::new(0)) }
+    fn get(&self) -> u64 { self.0.load(Relaxed) }
+    fn set(&self, v: u64) { self.0.store(v, Relaxed) }
 }
 
 // ---------------------------------------------------------------------------
@@ -1303,10 +1313,50 @@ fn dive(top: usize) -> u64 {
     dive(top) + core::hint::black_box(page[0] as u64)
 }
 
+/// Board words of `guard-overflow`: how deep the thread got (0), that it started or the
+/// error its sigaltstack returned (1), the address and thread its SIGSEGV handler saw (2, 5),
+/// the diving thread's ID (6), that the handler ran (7) and the thread's stack top (8).
+const DIVE_DEPTH: usize = 0;
+const DIVE_STARTED: usize = 1;
+const FAULT_ADDR: usize = 2;
+const FAULT_TID: usize = 5;
+const DIVER_TID: usize = 6;
+const FAULT_SEEN: usize = 7;
+const DIVE_TOP: usize = 8;
+
+/// The SIGSEGV handler of `guard-overflow`, run on the faulting thread's alternate stack: it
+/// records the faulting address and thread, restores the default action and returns, so the
+/// access faults again and the default action ends the process.
+extern "C" fn on_overflow(_sig: i32, info: *const u8, _ctx: *mut u8) {
+    if let Some(b) = board() {
+        if !info.is_null() {
+            // SAFETY: the kernel passes a siginfo_t, whose si_addr is at offset 16 on both ABIs.
+            let addr = unsafe { core::ptr::read_unaligned(info.add(16) as *const u64) };
+            b.words[FAULT_ADDR].store(addr as i64, SeqCst);
+        }
+        b.words[FAULT_TID].store(gettid(), SeqCst);
+        b.words[FAULT_SEEN].store(1, SeqCst);
+    }
+    let dfl = Sigaction { handler: 0, flags: 0, restorer: 0, mask: 0 };
+    sc(nr::RT_SIGACTION, &[SIGSEGV as u64, &dfl as *const Sigaction as u64, 0, 8]);
+}
+
 extern "C" fn rt_dive(_: *mut u8) -> *mut u8 {
     let x = 0u64;
-    if let Some(b) = board() { b.words[1].store(1, SeqCst); }
-    let _ = dive(core::hint::black_box(&x) as *const u64 as usize);
+    let Some(b) = board() else { return null_mut() };
+    const ALT: usize = 64 * KIB;
+    let alt = match mmap_anon(ALT, MAP_PRIVATE_ANON) {
+        Ok(p) => p,
+        Err(_) => { b.words[DIVE_STARTED].store(-12, SeqCst); return null_mut(); }
+    };
+    let stack: [u64; 3] = [alt as u64, 0, ALT as u64];
+    let r = sc(nr::SIGALTSTACK, &[stack.as_ptr() as u64, 0]);
+    if r != 0 { b.words[DIVE_STARTED].store(r.min(-1), SeqCst); return null_mut(); }
+    let top = core::hint::black_box(&x) as *const u64 as usize;
+    b.words[DIVE_TOP].store(top as i64, SeqCst);
+    b.words[DIVER_TID].store(gettid(), SeqCst);
+    b.words[DIVE_STARTED].store(1, SeqCst);
+    let _ = dive(top);
     null_mut()
 }
 
@@ -1314,20 +1364,40 @@ fn lc_guard_overflow() -> CaseResult {
     const STACK: usize = 256 * KIB;
     const GUARD: usize = 64 * KIB;
     let mut p = spawn_proc(|| {
+        let act = Sigaction {
+            handler: on_overflow as usize as u64,
+            flags: SA_SIGINFO | SA_ONSTACK | SA_RESTORER,
+            restorer: restore_rt as usize as u64,
+            mask: 0,
+        };
+        sys0("rt_sigaction(SIGSEGV)", sc(nr::RT_SIGACTION, &[SIGSEGV as u64, &act as *const Sigaction as u64, 0, 8]))?;
         let a = new_attr()?;
         rc("pthread_attr_setstacksize(256 KiB)", pthread_attr_setstacksize(a.p(), STACK)?)?;
         rc("pthread_attr_setguardsize(64 KiB)", pthread_attr_setguardsize(a.p(), GUARD)?)?;
         create_attr(a, rt_dive, null_mut())?;
         sleep_ms(3000);
+        let b = board().ok_or("no board")?;
+        let started = b.word(DIVE_STARTED);
+        if started < 0 { return err(format!("giving the overflowing thread an alternate signal stack failed with {}", shown(started))); }
         err("the thread recursed for 3 s without a fault")
     })?;
     let status = p.wait(5000);
     if p.board.state.load(SeqCst) == FAILED { return fail(p.board.msg()); }
     let Some(status) = status else { return fail("the process overflowing a thread's stack was still running after 5 s") };
-    let deep = p.board.word(0) as usize / KIB;
+    let b = p.board;
+    let deep = b.word(DIVE_DEPTH) as usize / KIB;
     value("depth", deep as i64, "kb", Some((128, ((STACK + GUARD) / KIB) as i64)));
-    check(p.board.word(1) == 1, "the thread never started")?;
+    check(b.word(DIVE_STARTED) == 1, "the thread never started")?;
     check(status & 0x7f == SIGSEGV, &format!("the process overflowing a thread's 256 KiB stack {}, not killed by SIGSEGV", status_text(status)))?;
+    check(b.word(FAULT_SEEN) == 1, "the process was killed by SIGSEGV but its handler, on the thread's alternate stack, never ran, so the fault is not placed")?;
+    let (faulted, diver) = (b.word(FAULT_TID), b.word(DIVER_TID));
+    check(faulted == diver, &format!("the SIGSEGV was taken in thread {faulted}, not in thread {diver}, which was overflowing its stack"))?;
+    let (top, addr) = (b.word(DIVE_TOP) as u64, b.word(FAULT_ADDR) as u64);
+    let below = top.checked_sub(addr).map(|d| d as usize / KIB);
+    check(
+        below.is_some_and(|kb| (128..=(STACK + GUARD) / KIB).contains(&kb)),
+        &format!("the fault was at {addr:#x}, which is not between 128 KiB and the 256 KiB stack plus its 64 KiB guard below the thread's stack top {top:#x}"),
+    )?;
     check(deep <= (STACK + GUARD) / KIB, &format!("the thread ran {deep} KiB deep in a 256 KiB stack with a 64 KiB guard before the fault"))?;
     check(deep >= 128, &format!("the thread faulted only {deep} KiB into a 256 KiB stack"))
 }
@@ -1336,23 +1406,30 @@ fn lc_many_threads() -> CaseResult {
     // _POSIX_THREAD_THREADS_MAX: the fewest threads per process POSIX allows a system.
     const N: usize = 64;
     trial(|| {
-        let started = Arc::new(AtomicU32::new(0));
+        // Each thread counts itself in `alive` and stays until the case has seen all N in at
+        // once; one that gives up waiting counts itself out before it returns, so `alive`
+        // reaching N means N threads were live together.
+        let alive = Arc::new(AtomicU32::new(0));
+        let seen = Arc::new(AtomicU32::new(0));
         let mut threads = Vec::new();
         for i in 0..N {
-            let s = started.clone();
-            threads.push(spawn(&format!("thread {i}"), move || -> usize {
-                s.fetch_add(1, SeqCst);
+            let (a, s) = (alive.clone(), seen.clone());
+            threads.push(spawn(&format!("thread {i}"), move || -> Option<usize> {
+                a.fetch_add(1, SeqCst);
                 let t0 = now_ms();
-                while s.load(SeqCst) < N as u32 && now_ms() - t0 < 4000 { nap(); }
-                i * 7 + 1
+                while s.load(SeqCst) == 0 && now_ms() - t0 < 4000 { nap(); }
+                if s.load(SeqCst) == 0 { a.fetch_sub(1, SeqCst); return None; }
+                Some(i * 7 + 1)
             })?);
         }
-        let alive = until(4000, || started.load(SeqCst) == N as u32);
-        value("alive-at-once", started.load(SeqCst) as i64, "", Some((N as i64, N as i64)));
-        check(alive, &format!("only {} of {N} threads were running at once", started.load(SeqCst)))?;
+        let all = until(4000, || alive.load(SeqCst) == N as u32);
+        if all { seen.store(1, SeqCst); }
+        let most = alive.load(SeqCst);
+        value("alive-at-once", if all { N as i64 } else { most as i64 }, "", Some((N as i64, N as i64)));
+        check(all, &format!("only {most} of {N} threads were running at once"))?;
         for (i, th) in threads.into_iter().enumerate() {
             let v = th.wait(3000)?;
-            check(v == i * 7 + 1, &format!("thread {i} returned {v}, not its own {}", i * 7 + 1))?;
+            check(v == Some(i * 7 + 1), &format!("thread {i} returned {v:?}, not its own {}", i * 7 + 1))?;
         }
         Ok(())
     })
@@ -1399,18 +1476,49 @@ fn lc_exit_from_thread() -> CaseResult {
     check(status == 5 << 8, &format!("after a thread called exit(5) the process {}", status_text(status)))
 }
 
+/// Board words for a process's spinning threads: the count of those that started, and one
+/// heartbeat word per thread from HEARTBEAT on.
+const STARTED: usize = 3;
+const HEARTBEAT: usize = 4;
+
+/// Start `n` threads that count themselves in on the board and then, for up to 10 s, keep
+/// bumping a heartbeat word of their own. Waits up to 2 s for all of them to be beating.
+fn heartbeat_threads(n: usize) -> CaseResult {
+    let b = board().ok_or("no board")?;
+    for i in 0..n {
+        spawn(&format!("spinner {i}"), move || {
+            let Some(b) = board() else { return };
+            b.words[STARTED].fetch_add(1, SeqCst);
+            let t0 = now_ms();
+            while now_ms() - t0 < 10_000 { b.words[HEARTBEAT + i].fetch_add(1, SeqCst); }
+        })?;
+    }
+    let beating = || b.word(STARTED) == n as i64 && (0..n).all(|i| b.word(HEARTBEAT + i) > 0);
+    check(until(2000, beating), &format!("{} of {n} threads started within 2 s", b.word(STARTED)))
+}
+
+/// After a process with `n` heartbeat threads has been reaped: every thread had started, and
+/// none still runs, so no heartbeat word moves over 200 ms. The board page is shared with
+/// this process, so a thread that outlived its process would still be seen beating.
+fn heartbeats_stopped(b: &Board, n: usize) -> CaseResult {
+    check(b.word(STARTED) == n as i64, &format!("only {} of the process's {n} threads had started", b.word(STARTED)))?;
+    let before: Vec<i64> = (0..n).map(|i| b.word(HEARTBEAT + i)).collect();
+    sleep_ms(200);
+    let running = (0..n).filter(|&i| b.word(HEARTBEAT + i) != before[i]).count();
+    value("threads-still-running", running as i64, "", Some((0, 0)));
+    check(running == 0, &format!("{running} of the process's {n} threads were still running 200 ms after it was reaped"))
+}
+
 fn lc_exit_from_main() -> CaseResult {
     let mut p = spawn_proc(|| {
-        for i in 0..3 {
-            spawn(&format!("spinner {i}"), || { let t0 = now_ms(); while now_ms() - t0 < 10_000 { core::hint::spin_loop(); } })?;
-        }
-        sleep_ms(100);
+        heartbeat_threads(3)?;
         Err(c_exit(3))
     })?;
-    let status = p.wait(2000);
+    let status = p.wait(3000);
     if p.board.state.load(SeqCst) == FAILED { return fail(p.board.msg()); }
-    let Some(status) = status else { return fail("2 s after the main thread called exit(3) with three threads running, the process was still running") };
-    check(status == 3 << 8, &format!("after the main thread called exit(3) the process {}", status_text(status)))
+    let Some(status) = status else { return fail("the process was still running 3 s after its main thread started three spinning threads and called exit(3)") };
+    check(status == 3 << 8, &format!("after the main thread called exit(3) the process {}", status_text(status)))?;
+    heartbeats_stopped(p.board, 3)
 }
 
 /// The most rounds `exit-tid-word` makes (it stops at the first change it finds), the pages
@@ -1447,7 +1555,7 @@ fn lc_exit_tid_word() -> CaseResult {
         }
         if p.board.state.load(SeqCst) == FAILED { return fail(p.board.msg()); }
         sleep_ms(50);
-        p.stop();
+        p.stop()?;
         let len = TID_PAGES * 4096;
         let mem = mmap_anon(len, MAP_PRIVATE_ANON)?;
         // SAFETY: a fresh private mapping of len bytes, unmapped below.
@@ -1576,7 +1684,7 @@ fn mx_contention() -> CaseResult {
     let n = team_size()?;
     trial(move || {
         let m = new_mutex(None, false)?;
-        let counter = Arc::new(Racy(UnsafeCell::new(0)));
+        let counter = Arc::new(Racy::new());
         let c = counter.clone();
         let contended = team(n, move |i| -> Result<u64, String> {
             let mut contended = 0;
@@ -1801,44 +1909,69 @@ fn mx_prio_inherit() -> CaseResult {
         let m = obj();
         rc("pthread_mutex_init", pthread_mutex_init(m.p(), a.p())?)?;
         let lo = fifo_min()?;
-        // All three on processor 0: a low-priority owner, a high-priority waiter and a
-        // middle-priority spinner. Only inheritance lets the owner run past the spinner.
+        // Three threads meet on processor 0: a low-priority owner, a high-priority waiter and
+        // a middle-priority spinner. The case's own thread runs on processor 1, and each
+        // thread starts there and takes its priority before it moves to processor 0. The
+        // owner takes the mutex and sleeps holding it; the waiter blocks on it; the spinner
+        // computes for 500 ms; then the case tells the owner to finish, which takes it 20 ms
+        // of computing. Only inheritance lets the owner run past the spinner to do that.
+        let cpus = processors()?;
+        if cpus < 2 { return Err(CaseError::Skip(format!("{cpus} processor online; the case needs 2"))); }
+        pin_to(1).map_err(CaseError::Fail)?;
         let owned = Arc::new(AtomicU32::new(0));
-        let o = owned.clone();
+        let waiting = Arc::new(AtomicU32::new(0));
+        let spinning = Arc::new(AtomicU32::new(0));
+        let go_at = Arc::new(AtomicI64::new(0));
+        let (o, g) = (owned.clone(), go_at.clone());
         let low = spawn("the low-priority owner", move || -> CaseResult {
-            pin_to(0).map_err(CaseError::Fail)?;
             set_sched(SCHED_FIFO, lo + 1)?;
+            pin_to(0).map_err(CaseError::Fail)?;
             lock(m)?;
             o.store(1, SeqCst);
             let t0 = now_ms();
-            while o.load(SeqCst) != 2 && now_ms() - t0 < 3000 { core::hint::spin_loop(); }
-            unlock(m)
+            while g.load(SeqCst) == 0 && now_ms() - t0 < 3000 { nap(); }
+            let told = g.load(SeqCst) != 0;
+            let t = mono();
+            while mono() - t < 20 * MS { core::hint::spin_loop(); }
+            unlock(m)?;
+            check(told, "the owner held the mutex for 3 s without being told to finish")
         })?;
         check(until(1000, || owned.load(SeqCst) == 1), "the low-priority thread did not take the mutex")?;
+        let w = waiting.clone();
         let high = spawn("the high-priority waiter", move || -> Result<i64, CaseError> {
-            pin_to(0).map_err(CaseError::Fail)?;
             set_sched(SCHED_FIFO, lo + 3)?;
-            let t0 = mono();
-            lock(m)?;
-            let waited = mono() - t0;
-            unlock(m)?;
-            Ok(waited)
-        })?;
-        sleep_ms(20);
-        let o2 = owned.clone();
-        let mid = spawn("the middle-priority spinner", move || -> CaseResult {
             pin_to(0).map_err(CaseError::Fail)?;
+            let r = pthread_mutex_trylock(m.p())?;
+            if r == 0 {
+                unlock(m)?;
+                return err("the mutex was free when the high-priority thread came to take it, so it had nothing to wait for");
+            }
+            want("pthread_mutex_trylock while the low-priority thread holds the mutex", r, EBUSY)?;
+            w.store(1, SeqCst);
+            lock(m)?;
+            let got = mono();
+            unlock(m)?;
+            Ok(got)
+        })?;
+        check(until(1000, || waiting.load(SeqCst) == 1 || high.finished()), "the high-priority thread did not come to the mutex within a second")?;
+        sleep_ms(20);
+        let sp = spinning.clone();
+        let mid = spawn("the middle-priority spinner", move || -> CaseResult {
             set_sched(SCHED_FIFO, lo + 2)?;
-            o2.store(2, SeqCst);
+            pin_to(0).map_err(CaseError::Fail)?;
+            sp.store(1, SeqCst);
             let t0 = now_ms();
             while now_ms() - t0 < 500 { core::hint::spin_loop(); }
             Ok(())
         })?;
-        let waited = high.wait(4000)??;
+        check(until(1000, || spinning.load(SeqCst) == 1 || mid.finished()), "the middle-priority thread did not start computing on processor 0 within a second")?;
+        go_at.store(mono(), SeqCst);
+        let got = high.wait(4000)??;
         mid.wait(3000)??;
         low.wait(3000)??;
+        let waited = got - go_at.load(SeqCst);
         value("waited", waited / 1000, "us", Some((0, 200_000)));
-        check(waited <= 200 * MS, &format!("the high-priority thread waited {} ms behind a 500 ms middle-priority spinner", waited / MS))
+        check(waited <= 200 * MS, &format!("the high-priority thread got the mutex {} ms after its owner was told to finish, behind a 500 ms middle-priority spinner", waited / MS))
     })
 }
 
@@ -1866,42 +1999,65 @@ fn mx_futex_eagain() -> CaseResult {
     })
 }
 
+/// Threads waiting on a futex word: how many have been woken, and the first unexpected
+/// return any of them got from FUTEX_WAIT (0 if none).
+struct FutexWaiters { back: Arc<AtomicU32>, bad: Arc<AtomicI64> }
+
+impl FutexWaiters {
+    /// How many waiters FUTEX_WAIT has returned 0 to; fails if any got an error other than
+    /// EINTR or EAGAIN, which is not a wakeup.
+    fn woken(&self) -> Result<u32, CaseError> {
+        let bad = self.bad.load(SeqCst);
+        if bad != 0 { return err(format!("a waiter's FUTEX_WAIT returned {}", shown(bad))); }
+        Ok(self.back.load(SeqCst))
+    }
+    /// Wait up to `ms` for `n` waiters to have been woken.
+    fn reach(&self, ms: u64, n: u32) -> Result<bool, CaseError> {
+        let reached = until(ms, || self.back.load(SeqCst) >= n || self.bad.load(SeqCst) != 0);
+        self.woken()?;
+        Ok(reached)
+    }
+}
+
 /// Start `n` threads that each FUTEX_WAIT on `word` while it holds 0, and wait until all
-/// have said they are about to; returns how many have returned so far, as it changes.
-fn futex_waiters(word: &'static AtomicU32, n: usize, op: u64) -> Result<Arc<AtomicU32>, CaseError> {
+/// have said they are about to. A waiter counts as woken only when FUTEX_WAIT returned 0.
+fn futex_waiters(word: &'static AtomicU32, n: usize, op: u64) -> Result<FutexWaiters, CaseError> {
     let ready = Arc::new(AtomicU32::new(0));
     let back = Arc::new(AtomicU32::new(0));
+    let bad = Arc::new(AtomicI64::new(0));
     for i in 0..n {
-        let (r, b) = (ready.clone(), back.clone());
+        let (r, b, e) = (ready.clone(), back.clone(), bad.clone());
         spawn(&format!("futex waiter {i}"), move || {
             r.fetch_add(1, SeqCst);
             while word.load(SeqCst) == 0 {
                 let ret = futex(word, op, 0, 0, 0, 0);
-                if ret == 0 { break; }
-                if ret != -(EINTR as i64) && ret != -(EAGAIN as i64) { break; }
+                if ret == 0 { b.fetch_add(1, SeqCst); return; }
+                if ret != -(EINTR as i64) && ret != -(EAGAIN as i64) {
+                    let _ = e.compare_exchange(0, ret, SeqCst, SeqCst);
+                    return;
+                }
             }
-            b.fetch_add(1, SeqCst);
         })?;
     }
     check(until(1000, || ready.load(SeqCst) == n as u32), "the waiters did not start within a second")?;
     sleep_ms(100);
-    Ok(back)
+    Ok(FutexWaiters { back, bad })
 }
 
 fn mx_futex_wake_count() -> CaseResult {
     trial(|| {
         let word = leak(AtomicU32::new(0));
         let back = futex_waiters(word, 3, FUTEX_WAIT)?;
-        check(back.load(SeqCst) == 0, "a FUTEX_WAIT returned before any wake")?;
+        check(back.woken()? == 0, "a FUTEX_WAIT returned before any wake")?;
         let r = futex(word, FUTEX_WAKE, 1, 0, 0, 0);
         check(r == 1, &format!("FUTEX_WAKE of 1 with three waiters returned {}", shown(r)))?;
         sleep_ms(100);
-        let woke = back.load(SeqCst);
+        let woke = back.woken()?;
         value("woken-by-one", woke as i64, "", Some((1, 1)));
         check(woke == 1, &format!("FUTEX_WAKE of 1 let {woke} of three waiters return"))?;
         let r = futex(word, FUTEX_WAKE, 10, 0, 0, 0);
         check(r == 2, &format!("FUTEX_WAKE of 10 with two waiters left returned {}", shown(r)))?;
-        check(until(1000, || back.load(SeqCst) == 3), "the last two waiters did not return within a second")
+        check(back.reach(1000, 3)?, "the last two waiters did not return within a second")
     })
 }
 
@@ -1925,7 +2081,7 @@ fn mx_futex_private() -> CaseResult {
         let back = futex_waiters(word, 1, FUTEX_WAIT | FUTEX_PRIVATE)?;
         let r = futex(word, FUTEX_WAKE | FUTEX_PRIVATE, 1, 0, 0, 0);
         check(r == 1, &format!("FUTEX_WAKE_PRIVATE with one FUTEX_WAIT_PRIVATE waiter returned {}", shown(r)))?;
-        check(until(1000, || back.load(SeqCst) == 1), "the FUTEX_WAIT_PRIVATE waiter did not return within a second")
+        check(back.reach(1000, 1)?, "the FUTEX_WAIT_PRIVATE waiter did not return within a second")
     })
 }
 
@@ -2037,7 +2193,19 @@ fn cv_wait_releases() -> CaseResult {
     trial(|| {
         let s = shared(None, None)?;
         let w = waiter(&s)?;
-        rc("pthread_mutex_trylock while the other thread waits on the condition", pthread_mutex_trylock(s.m.p())?)?;
+        // The waiter says it is waiting just before pthread_cond_wait releases the mutex, so
+        // trylock may find the mutex held for a moment; it must get it within a second.
+        let mut last = EBUSY;
+        let mut failed = None;
+        until(1000, || match pthread_mutex_trylock(s.m.p()) {
+            Ok(0) => { last = 0; true }
+            Ok(EBUSY) => false,
+            Ok(r) => { last = r; true }
+            Err(e) => { failed = Some(e); true }
+        });
+        if let Some(e) = failed { return Err(e); }
+        if last == EBUSY { return fail("pthread_mutex_trylock still returned EBUSY a second after the other thread began waiting on the condition, so pthread_cond_wait did not release the mutex"); }
+        rc("pthread_mutex_trylock while the other thread waits on the condition", last)?;
         s.flag.store(1, SeqCst);
         signal(s.c)?;
         unlock(s.m)?;
@@ -2308,8 +2476,11 @@ fn cv_queue() -> CaseResult {
         let m = new_mutex(None, false)?;
         let not_full = new_cond(None)?;
         let not_empty = new_cond(None)?;
-        let queue = Arc::new((Racy(UnsafeCell::new(0)), Racy(UnsafeCell::new(0)), [const { AtomicU64::new(0) }; 8], AtomicU32::new(0)));
+        let queue = Arc::new((Racy::new(), Racy::new(), [const { AtomicU64::new(0) }; 8], AtomicU32::new(0)));
+        // How many times each item was taken, indexed by item.
+        let taken: Arc<Vec<AtomicU32>> = Arc::new((0..=ITEMS).map(|_| AtomicU32::new(0)).collect());
         let q = queue.clone();
+        let tk = taken.clone();
         let got = team(n, move |i| -> Result<(u64, u64), String> {
             let e = text;
             let (head, tail, slots, done) = (&q.0, &q.1, &q.2, &q.3);
@@ -2344,6 +2515,10 @@ fn cv_queue() -> CaseResult {
                 head.set(head.get() + 1);
                 signal(not_full).map_err(e)?;
                 unlock(m).map_err(e)?;
+                match tk.get(item as usize) {
+                    Some(t) if item != 0 => { t.fetch_add(1, SeqCst); }
+                    _ => return Err(format!("consumer {i} took item {item}, which the producer never queued")),
+                }
                 count += 1;
                 sum += item;
             }
@@ -2353,7 +2528,10 @@ fn cv_queue() -> CaseResult {
         let sum: u64 = got.iter().map(|g| g.1).sum();
         value("items", count as i64, "", Some((ITEMS as i64, ITEMS as i64)));
         check(count == ITEMS, &format!("the consumers took {count} of {ITEMS} items"))?;
-        check(sum == ITEMS * (ITEMS + 1) / 2, "the consumers took some items twice and missed others")
+        let missed = (1..=ITEMS).filter(|&k| taken[k as usize].load(SeqCst) == 0).count();
+        let twice = (1..=ITEMS).filter(|&k| taken[k as usize].load(SeqCst) > 1).count();
+        check(missed == 0 && twice == 0, &format!("the consumers missed {missed} items and took {twice} more than once"))?;
+        check(sum == ITEMS * (ITEMS + 1) / 2, &format!("the items the consumers took add up to {sum}, not {}", ITEMS * (ITEMS + 1) / 2))
     })
 }
 
@@ -2436,11 +2614,12 @@ fn cv_futex_requeue() -> CaseResult {
         let r = futex(word, FUTEX_CMP_REQUEUE | FUTEX_PRIVATE, 1, i32::MAX as u64, target as *const AtomicU32 as u64, 0);
         check(r == 3, &format!("FUTEX_CMP_REQUEUE of three waiters (wake 1, move the rest) returned {}, expected 3", shown(r)))?;
         sleep_ms(100);
-        check(back.load(SeqCst) == 1, &format!("FUTEX_CMP_REQUEUE woke {} waiters, expected 1", back.load(SeqCst)))?;
+        let woke = back.woken()?;
+        check(woke == 1, &format!("FUTEX_CMP_REQUEUE woke {woke} waiters, expected 1"))?;
         word.store(1, SeqCst);
         let r = futex(target, FUTEX_WAKE | FUTEX_PRIVATE, 10, 0, 0, 0);
         check(r == 2, &format!("FUTEX_WAKE on the second word returned {}, expected the 2 moved waiters", shown(r)))?;
-        check(until(1000, || back.load(SeqCst) == 3), "the moved waiters did not return within a second")
+        check(back.reach(1000, 3)?, "the moved waiters did not return within a second")
     })
 }
 
@@ -2596,7 +2775,7 @@ fn rw_contention() -> CaseResult {
     let n = team_size()?;
     trial(move || {
         let rw = new_rwlock()?;
-        let pair = Arc::new((Racy(UnsafeCell::new(0)), Racy(UnsafeCell::new(0))));
+        let pair = Arc::new((Racy::new(), Racy::new()));
         let p = pair.clone();
         let got = team(n, move |i| -> Result<(u64, u64), String> {
             let e = text;
@@ -2678,9 +2857,13 @@ fn br_holds() -> CaseResult {
         sleep_ms(200);
         check(back.load(SeqCst) == 0, &format!("{} of three threads passed a barrier of four before the fourth arrived", back.load(SeqCst)))?;
         step("in pthread_barrier_wait as the fourth thread");
-        let mut serials = (pthread_barrier_wait(b.p())? == PTHREAD_BARRIER_SERIAL_THREAD) as u32;
+        let mut returns = vec![pthread_barrier_wait(b.p())?];
         check(until(1000, || back.load(SeqCst) == 3), "the three waiting threads did not pass within a second of the fourth arriving")?;
-        for th in threads { serials += (th.wait(1000)?? == PTHREAD_BARRIER_SERIAL_THREAD) as u32; }
+        for th in threads { returns.push(th.wait(1000)??); }
+        if let Some(&r) = returns.iter().find(|&&r| r != 0 && r != PTHREAD_BARRIER_SERIAL_THREAD) {
+            return fail(format!("pthread_barrier_wait returned {}, neither 0 nor PTHREAD_BARRIER_SERIAL_THREAD", rc_text(r)));
+        }
+        let serials = returns.iter().filter(|&&r| r == PTHREAD_BARRIER_SERIAL_THREAD).count();
         check(serials == 1, &format!("{serials} of four threads got PTHREAD_BARRIER_SERIAL_THREAD"))
     })
 }
@@ -2829,11 +3012,13 @@ fn tls_per_thread() -> CaseResult {
     })
 }
 
-static DTOR_CALLS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+static DTOR_CALLS: [AtomicU32; 3] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
 static DTOR_VALUE: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 static DTOR_TID: AtomicI64 = AtomicI64::new(0);
 static DTOR_SEES: AtomicUsize = AtomicUsize::new(1);
-static KEYS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+static KEYS: [AtomicU32; 3] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
+/// How many calls `dtor0_again` makes before it stops setting its value again.
+static DTOR_AGAIN_LIMIT: AtomicU32 = AtomicU32::new(0);
 
 unsafe extern "C" fn dtor0(v: *mut u8) {
     DTOR_VALUE[0].store(v as usize, SeqCst);
@@ -2845,16 +3030,25 @@ unsafe extern "C" fn dtor1(v: *mut u8) {
     DTOR_VALUE[1].store(v as usize, SeqCst);
     DTOR_CALLS[1].fetch_add(1, SeqCst);
 }
-/// Gives key 1 a value, so its destructor must run in a later round.
-unsafe extern "C" fn dtor0_sets_key1(v: *mut u8) {
-    DTOR_VALUE[0].store(v as usize, SeqCst);
-    let _ = pthread_setspecific(KEYS[1].load(SeqCst), 0xb2usize as *const u8);
-    DTOR_CALLS[0].fetch_add(1, SeqCst);
+/// The destructor of all three keys of `destructor-rounds`, told apart by the value: the
+/// middle key's value 0xa1 makes it give the lowest and highest keys values 0xb0 and 0xb2,
+/// and those values count calls for the lowest (0) and highest (2) keys.
+unsafe extern "C" fn dtor_rounds(v: *mut u8) {
+    match v as usize {
+        0xa1 => {
+            let _ = pthread_setspecific(KEYS[0].load(SeqCst), 0xb0usize as *const u8);
+            let _ = pthread_setspecific(KEYS[2].load(SeqCst), 0xb2usize as *const u8);
+            DTOR_CALLS[1].fetch_add(1, SeqCst);
+        }
+        0xb0 => { DTOR_CALLS[0].fetch_add(1, SeqCst); }
+        0xb2 => { DTOR_CALLS[2].fetch_add(1, SeqCst); }
+        _ => {}
+    }
 }
-/// Gives its own key a value again, up to ten calls.
+/// Gives its own key a value again until it has been called DTOR_AGAIN_LIMIT times.
 unsafe extern "C" fn dtor0_again(_v: *mut u8) {
     let n = DTOR_CALLS[0].fetch_add(1, SeqCst) + 1;
-    if n < 10 { let _ = pthread_setspecific(KEYS[0].load(SeqCst), (n as usize + 1) as *const u8); }
+    if n < DTOR_AGAIN_LIMIT.load(SeqCst) { let _ = pthread_setspecific(KEYS[0].load(SeqCst), (n as usize + 1) as *const u8); }
 }
 
 /// Wait for destructor `i` to have been called `n` times, then a further 100 ms in case it
@@ -2905,28 +3099,36 @@ fn tls_destructor_cleared() -> CaseResult {
 }
 
 fn tls_destructor_rounds() -> CaseResult {
+    // Three keys; the middle one's destructor gives the lowest and the highest values. A
+    // round visiting keys upwards or downwards reaches one of those before the middle key,
+    // so its destructor can only run in a later round.
     trial(|| {
-        let a = new_key(Some(dtor0_sets_key1))?;
-        let b = new_key(Some(dtor1))?;
-        KEYS[0].store(a, SeqCst);
-        KEYS[1].store(b, SeqCst);
-        spawn("the thread", move || set(a, 0xa1))?.wait(2000)??;
-        dtor_settled(0, 1)?;
+        let mut keys = [new_key(Some(dtor_rounds))?, new_key(Some(dtor_rounds))?, new_key(Some(dtor_rounds))?];
+        keys.sort_unstable();
+        for (slot, &k) in KEYS.iter().zip(&keys) { slot.store(k, SeqCst); }
+        let mid = keys[1];
+        spawn("the thread", move || set(mid, 0xa1))?.wait(2000)??;
         dtor_settled(1, 1)?;
-        let v = DTOR_VALUE[1].load(SeqCst);
-        check(v == 0xb2, &format!("the second key's destructor was passed {v:#x}, not the 0xb2 the first key's destructor set"))
+        let reached = until(1000, || DTOR_CALLS[0].load(SeqCst) >= 1 && DTOR_CALLS[2].load(SeqCst) >= 1);
+        sleep_ms(100);
+        let (low, high) = (DTOR_CALLS[0].load(SeqCst), DTOR_CALLS[2].load(SeqCst));
+        check(reached && low == 1 && high == 1, &format!(
+            "values the middle key's destructor set for the lowest and highest keys were destroyed {low} and {high} times, not once each"
+        ))
     })
 }
 
 fn tls_destructor_iterations() -> CaseResult {
     trial(|| {
         let reported = sysconf(SC_THREAD_DESTRUCTOR_ITERATIONS)?;
-        let rounds = reported.max(POSIX_DESTRUCTOR_ITERATIONS).min(10) as u32;
+        let rounds = reported.max(POSIX_DESTRUCTOR_ITERATIONS);
+        let Ok(rounds) = u32::try_from(rounds) else { return fail(format!("sysconf(_SC_THREAD_DESTRUCTOR_ITERATIONS) returned {reported}")) };
+        DTOR_AGAIN_LIMIT.store(rounds, SeqCst);
         let k = new_key(Some(dtor0_again))?;
         KEYS[0].store(k, SeqCst);
         spawn("the thread", move || set(k, 1))?.wait(2000)??;
         let calls = dtor_settled(0, rounds)?;
-        value("calls", calls as i64, "", Some((rounds as i64, 10)));
+        value("calls", calls as i64, "", Some((rounds as i64, rounds as i64)));
         check(calls >= rounds, &format!("a destructor that kept setting its value was called {calls} times, fewer than PTHREAD_DESTRUCTOR_ITERATIONS ({rounds})"))
     })
 }
@@ -2972,13 +3174,16 @@ fn tls_key_delete() -> CaseResult {
 
 fn tls_keys_max() -> CaseResult {
     trial(|| {
-        let n = sysconf(SC_THREAD_KEYS_MAX)?.clamp(POSIX_KEYS_MAX, 1024) as usize;
-        let mut keys = Vec::new();
+        let reported = sysconf(SC_THREAD_KEYS_MAX)?;
+        let n = reported.max(POSIX_KEYS_MAX);
+        let Ok(n) = usize::try_from(n) else { return fail(format!("sysconf(_SC_THREAD_KEYS_MAX) returned {reported}")) };
+        let mut keys = Vec::with_capacity(n);
+        let mut given = std::collections::HashSet::with_capacity(n);
         for i in 0..n {
             let mut key = u32::MAX;
             let r = pthread_key_create(&mut key, None)?;
             if r != 0 { return fail(format!("pthread_key_create number {} of {n} returned {}", i + 1, rc_text(r))); }
-            if keys.contains(&key) { return fail(format!("pthread_key_create gave key {key} twice")); }
+            if !given.insert(key) { return fail(format!("pthread_key_create gave key {key} twice")); }
             keys.push(key);
         }
         for (i, &k) in keys.iter().enumerate() { set(k, i + 1)?; }
@@ -3029,14 +3234,28 @@ fn thread_pointer() -> Result<u64, CaseError> {
 }
 
 fn tls_thread_pointer() -> CaseResult {
+    // Three threads read their thread pointers and stay until all three have, so the four
+    // pointers compared belong to threads that are all live at once.
+    const N: u32 = 3;
     trial(|| {
         let main = thread_pointer()?;
         check(main != 0, "the main thread's thread pointer is 0")?;
+        let read = Arc::new(AtomicU32::new(0));
+        let mut threads = Vec::new();
+        for i in 0..N {
+            let r = read.clone();
+            threads.push(spawn(&format!("thread {i}"), move || -> Result<u64, CaseError> {
+                let tp = thread_pointer();
+                r.fetch_add(1, SeqCst);
+                check(until(2000, || r.load(SeqCst) == N), "the threads did not all read their thread pointers within 2 s")?;
+                tp
+            })?);
+        }
         let mut seen = vec![main];
-        for i in 0..3 {
-            let tp = spawn(&format!("thread {i}"), thread_pointer)?.wait(2000)??;
+        for (i, th) in threads.into_iter().enumerate() {
+            let tp = th.wait(3000)??;
             check(tp != 0, &format!("new thread {i}'s thread pointer is 0"))?;
-            check(!seen.contains(&tp), &format!("new thread {i}'s thread pointer {tp:#x} is another thread's"))?;
+            check(!seen.contains(&tp), &format!("new thread {i}'s thread pointer {tp:#x} is that of another thread live at the same time"))?;
             seen.push(tp);
         }
         Ok(())
@@ -3389,22 +3608,21 @@ fn sg_default_whole_process() -> CaseResult {
 
 fn sg_sigkill_threads() -> CaseResult {
     let mut p = spawn_proc(|| {
-        for i in 0..4 {
-            spawn(&format!("spinner {i}"), || { let t0 = now_ms(); while now_ms() - t0 < 10_000 { core::hint::spin_loop(); } })?;
-        }
+        heartbeat_threads(4)?;
         if let Some(b) = board() { b.words[0].store(1, SeqCst); }
         sleep_ms(8000);
         Ok(())
     })?;
-    if !until(2000, || p.board.word(0) == 1) {
-        return fail(format!("the process did not start its four threads within 2 s{}", p.board.last_step()));
+    if !until(3000, || p.board.word(0) == 1 || p.board.state.load(SeqCst) != RUNNING) {
+        return fail(format!("the process did not start its four threads within 3 s{}", p.board.last_step()));
     }
-    sleep_ms(50);
+    if p.board.state.load(SeqCst) == FAILED { return fail(p.board.msg()); }
     sys0("kill(SIGKILL)", sc(nr::KILL, &[p.pid as u64, SIGKILL as u64]))?;
     let t0 = mono();
     let Some(status) = p.wait(1000) else { return fail("a process with four spinning threads was still running a second after SIGKILL") };
     value("ended", (mono() - t0) / 1000, "us", Some((0, 1_000_000)));
-    check(status & 0x7f == SIGKILL, &format!("after SIGKILL the process {}", status_text(status)))
+    check(status & 0x7f == SIGKILL, &format!("after SIGKILL the process {}", status_text(status)))?;
+    heartbeats_stopped(p.board, 4)
 }
 
 fn sg_tgkill() -> CaseResult {
@@ -3523,8 +3741,13 @@ fn sc_setschedparam_thread() -> CaseResult {
 }
 
 fn sc_setschedparam_eperm() -> CaseResult {
+    // An unprivileged thread may still take SCHED_FIFO up to its RLIMIT_RTPRIO, so the case
+    // sets that limit to 0 before giving up its user ID.
+    const RLIMIT_RTPRIO: u64 = 14;
     trial_ms(3000, || {
         let prio = fifo_min()? + 1;
+        let zero: [u64; 2] = [0, 0];
+        sys0("prlimit64(RLIMIT_RTPRIO, 0)", sc(nr::PRLIMIT64, &[0, RLIMIT_RTPRIO, zero.as_ptr() as u64, 0]))?;
         sys0(&format!("setuid({USER_A})"), sc(nr::SETUID, &[USER_A as u64]))?;
         let param = prio;
         want("pthread_setschedparam(SCHED_FIFO) by an unprivileged thread", pthread_setschedparam(me()?, SCHED_FIFO, &param)?, EPERM)?;
@@ -3619,7 +3842,9 @@ fn yield_pair(fifo: bool) -> CaseResult {
                 pin_to(0).map_err(CaseError::Fail)?;
                 if fifo { set_sched(SCHED_FIFO, prio)?; }
                 ready.fetch_add(1, SeqCst);
-                while ready.load(SeqCst) < 2 { rc("sched_yield", sched_yield()?)?; }
+                // Sleep, not yield, until both are ready: a SCHED_FIFO thread yielding keeps
+                // processor 0 from the other until it has taken SCHED_FIFO too.
+                check(until(2000, || ready.load(SeqCst) >= 2), "the other thread did not get ready on processor 0 within 2 s")?;
                 let t0 = mono();
                 loop {
                     let t = turn.load(SeqCst);
@@ -3644,54 +3869,66 @@ fn yield_pair(fifo: bool) -> CaseResult {
 fn sc_yield_other() -> CaseResult { yield_pair(false) }
 fn sc_yield_fifo() -> CaseResult { yield_pair(true) }
 
-/// On processor 0, thread A (SCHED_FIFO `prio`) computes for 300 ms while thread B
-/// (SCHED_FIFO `prio_b`) wakes 50 ms in; returns how long after A started B ran, and how
-/// long A computed.
-fn fifo_race(prio_b_offset: i32) -> Result<(i64, i64), CaseError> {
+/// What `fifo_race` saw, each on CLOCK_MONOTONIC: when B went to sleep, its deadline and
+/// when it ran again, and when A started and stopped computing.
+struct Race { b_slept: i64, b_deadline: i64, b_woke: i64, a_start: i64, a_end: i64 }
+
+/// On processor 0, thread B (SCHED_FIFO at `prio + prio_b_offset`) goes to sleep until a
+/// deadline 150 ms ahead; thread A (SCHED_FIFO at `prio`) starts computing 50 ms before that
+/// deadline and computes for 300 ms, so B's deadline passes while A computes.
+fn fifo_race(prio_b_offset: i32) -> Result<Race, CaseError> {
     let prio = fifo_min()? + 1;
-    let t0 = Arc::new(AtomicI64::new(0));
-    let b_ready = Arc::new(AtomicU32::new(0));
-    let (t0b, rb) = (t0.clone(), b_ready.clone());
-    let b = spawn("thread B", move || -> Result<i64, CaseError> {
+    let deadline = Arc::new(AtomicI64::new(0));
+    let db = deadline.clone();
+    let b = spawn("thread B", move || -> Result<(i64, i64, i64), CaseError> {
         pin_to(0).map_err(CaseError::Fail)?;
         set_sched(SCHED_FIFO, prio + prio_b_offset)?;
-        rb.store(1, SeqCst);
-        check(until(2000, || t0b.load(SeqCst) != 0), "thread A never started")?;
-        let start = t0b.load(SeqCst);
-        let wake = start + 50 * MS;
-        let left = wake - mono();
-        if left > 0 { let t = ts(left); let _ = sc(nr::NANOSLEEP, &[t.as_ptr() as u64, 0]); }
-        Ok(mono() - start)
+        let slept = mono();
+        let wake = slept + 150 * MS;
+        db.store(wake, SeqCst);
+        let t = ts(wake - mono());
+        let _ = sc(nr::NANOSLEEP, &[t.as_ptr() as u64, 0]);
+        Ok((slept, wake, mono()))
     })?;
-    let (t0a, ra) = (t0.clone(), b_ready.clone());
-    let a = spawn("thread A", move || -> Result<i64, CaseError> {
+    let da = deadline.clone();
+    let a = spawn("thread A", move || -> Result<(i64, i64), CaseError> {
         pin_to(0).map_err(CaseError::Fail)?;
         set_sched(SCHED_FIFO, prio)?;
-        check(until(2000, || ra.load(SeqCst) == 1), "thread B never got ready")?;
+        check(until(2000, || da.load(SeqCst) != 0), "thread B never went to sleep")?;
+        let wake = da.load(SeqCst);
+        while mono() < wake - 50 * MS { nap(); }
         let start = mono();
-        t0a.store(start, SeqCst);
         while mono() - start < 300 * MS { core::hint::spin_loop(); }
-        Ok(mono() - start)
+        Ok((start, mono()))
     })?;
-    let a_ran = a.wait(4000)??;
-    let b_at = b.wait(4000)??;
-    Ok((b_at, a_ran))
+    let (a_start, a_end) = a.wait(4000)??;
+    let (b_slept, b_deadline, b_woke) = b.wait(4000)??;
+    let race = Race { b_slept, b_deadline, b_woke, a_start, a_end };
+    check(
+        race.b_slept < race.a_start && race.a_start < race.b_deadline && race.b_deadline < race.a_end,
+        &format!(
+            "thread B slept from {} ms to a deadline at {} ms, and thread A computed from {} ms to {} ms, so the deadline did not fall while A computed",
+            race.b_slept / MS, race.b_deadline / MS, race.a_start / MS, race.a_end / MS
+        ),
+    )?;
+    Ok(race)
 }
 
 fn sc_fifo_no_preempt() -> CaseResult {
     trial(|| {
-        let (b_at, a_ran) = fifo_race(0)?;
-        value("waited", b_at / 1000, "us", None);
-        check(b_at >= a_ran, &format!("a SCHED_FIFO thread waking 50 ms in ran {} ms in, before the equal-priority thread computing on its processor stopped at {} ms", b_at / MS, a_ran / MS))
+        let r = fifo_race(0)?;
+        value("waited", (r.b_woke - r.b_deadline) / 1000, "us", None);
+        check(r.b_woke >= r.a_end, &format!(
+            "a SCHED_FIFO thread whose sleep ended {} ms into an equal-priority thread's computing on its processor ran {} ms in, before that thread stopped at {} ms",
+            (r.b_deadline - r.a_start) / MS, (r.b_woke - r.a_start) / MS, (r.a_end - r.a_start) / MS
+        ))
     })
 }
 
 fn sc_fifo_preempt() -> CaseResult {
     trial(|| {
-        let (b_at, a_ran) = fifo_race(1)?;
-        let late = b_at - 50 * MS;
-        value("late", late / 1000, "us", Some((0, LATE_MS * 1000)));
-        check(late <= LATE_MS * MS, &format!("a higher-priority SCHED_FIFO thread waking 50 ms in ran {} ms in, while a lower-priority thread computed on its processor for {} ms", b_at / MS, a_ran / MS))
+        let r = fifo_race(1)?;
+        on_time("the higher-priority SCHED_FIFO thread's nanosleep, while a lower-priority thread computed on its processor,", r.b_woke, r.b_deadline)
     })
 }
 
@@ -3861,7 +4098,7 @@ static SUITE: Suite = suite("threads", "Threads", &[
         case("setschedparam-fifo", "pthread_setschedparam to SCHED_FIFO reads back through pthread_getschedparam", sc_setschedparam_fifo),
         case("setschedparam-rr", "pthread_setschedparam to SCHED_RR reads back and sched_rr_get_interval gives a quantum", sc_setschedparam_rr),
         case("setschedparam-thread", "pthread_setschedparam of another thread changes what that thread reports", sc_setschedparam_thread),
-        case("setschedparam-eperm", "Linux policy: an unprivileged thread's pthread_setschedparam to SCHED_FIFO returns EPERM", sc_setschedparam_eperm),
+        case("setschedparam-eperm", "Linux policy: an unprivileged thread's pthread_setschedparam to SCHED_FIFO returns EPERM when RLIMIT_RTPRIO is 0", sc_setschedparam_eperm),
         case("setschedprio", "pthread_setschedprio changes the thread's priority", sc_setschedprio),
         case("inherit-sched", "A thread created with PTHREAD_INHERIT_SCHED takes its creator's SCHED_FIFO priority", sc_inherit_sched),
         case("explicit-sched", "A thread created with PTHREAD_EXPLICIT_SCHED runs with the attribute's SCHED_RR priority", sc_explicit_sched),

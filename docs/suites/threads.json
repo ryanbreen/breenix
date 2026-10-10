@@ -547,7 +547,7 @@
         },
         {
           "id": "setschedparam-eperm",
-          "title": "Linux policy: an unprivileged thread's pthread_setschedparam to SCHED_FIFO returns EPERM"
+          "title": "Linux policy: an unprivileged thread's pthread_setschedparam to SCHED_FIFO returns EPERM when RLIMIT_RTPRIO is 0"
         },
         {
           "id": "setschedprio",
