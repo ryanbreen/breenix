@@ -23,6 +23,8 @@
 
 #![no_std]
 
+mod alloc_cache;
+
 use libbreenix::types::Fd;
 use libbreenix::error::Error;
 use core::slice;
@@ -1293,7 +1295,19 @@ pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
         return core::ptr::null_mut();
     }
 
-    let total_size = size + ALLOC_HEADER_SIZE;
+    let class = alloc_cache::class(size);
+    if let Some(class) = class {
+        let ptr = alloc_cache::take(class);
+        if !ptr.is_null() {
+            *(ptr.sub(ALLOC_HEADER_SIZE) as *mut usize) = size;
+            return ptr;
+        }
+    }
+    let capacity = class.map_or(size, alloc_cache::capacity);
+    let Some(total_size) = capacity.checked_add(ALLOC_HEADER_SIZE) else {
+        ERRNO = ENOMEM;
+        return core::ptr::null_mut();
+    };
     let ptr = mmap(
         core::ptr::null_mut(),
         total_size,
@@ -1307,7 +1321,7 @@ pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
         core::ptr::null_mut()
     } else {
         *(ptr as *mut usize) = size;
-        *((ptr as *mut usize).add(1)) = 0;
+        *((ptr as *mut usize).add(1)) = class.map_or(0, alloc_cache::marker);
         ptr.add(ALLOC_HEADER_SIZE)
     }
 }
@@ -1322,6 +1336,12 @@ pub unsafe extern "C" fn free(ptr: *mut u8) {
     let size = *(header as *const usize);
     let base_ptr_field = *((header as *const usize).add(1));
 
+    if let Some(class) = alloc_cache::marked_class(base_ptr_field) {
+        if !alloc_cache::put(class, ptr) {
+            munmap(header, alloc_cache::capacity(class) + ALLOC_HEADER_SIZE);
+        }
+        return;
+    }
     let header_addr = header as usize;
     if base_ptr_field != 0 && base_ptr_field <= header_addr {
         let base_ptr = base_ptr_field as *mut u8;
@@ -1342,8 +1362,7 @@ pub unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut u8 {
     };
     let ptr = malloc(total);
     if !ptr.is_null() {
-        // malloc via mmap already returns zero-initialized memory,
-        // but be explicit for correctness
+        // Cached malloc blocks retain their previous contents.
         core::ptr::write_bytes(ptr, 0, total);
     }
     ptr
@@ -1361,6 +1380,11 @@ pub unsafe extern "C" fn realloc(ptr: *mut u8, size: usize) -> *mut u8 {
     }
 
     let old_size = get_alloc_size(ptr);
+    let marker = *((ptr.sub(ALLOC_HEADER_SIZE) as *const usize).add(1));
+    if alloc_cache::marked_class(marker).is_some_and(|class| size <= alloc_cache::capacity(class)) {
+        *(ptr.sub(ALLOC_HEADER_SIZE) as *mut usize) = size;
+        return ptr;
+    }
     let new_ptr = malloc(size);
 
     if !new_ptr.is_null() {
