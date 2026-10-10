@@ -66,12 +66,28 @@ use spin::Mutex;
 /// Published under the scheduler lock; the timer IRQ reads only this scalar.
 static NEXT_TIMER_CHECK_NS: AtomicU64 = AtomicU64::new(u64::MAX);
 
-/// Whether a sleep or signal timer needs a scheduling pass, without locking
-/// or walking any queue in interrupt context.
+/// Whether a sleep or signal timer needs a scheduling pass on this CPU,
+/// without locking or walking any queue in interrupt context.
+///
+/// One CPU claims a due deadline: it moves the published check a tick later,
+/// and its pass (`wake_expired_timers`) publishes the real next one, or the
+/// next tick lets another CPU claim it. Every busy CPU used to reschedule on
+/// the same due timer, so each expiring entry preempted the computing thread
+/// on every busy CPU at once.
 #[inline]
 pub fn timer_deadline_due() -> bool {
     let deadline = NEXT_TIMER_CHECK_NS.load(Ordering::Acquire);
-    deadline != u64::MAX && crate::signal::monotonic_nanos() >= deadline
+    if deadline == u64::MAX {
+        return false;
+    }
+    let now = crate::signal::monotonic_nanos();
+    if now < deadline {
+        return false;
+    }
+    let retry = now.saturating_add(crate::time::timer::MS_PER_TICK * 1_000_000);
+    NEXT_TIMER_CHECK_NS
+        .compare_exchange(deadline, retry, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 /// Exit-batch identity carried by teardown-attributed expedite evidence.
