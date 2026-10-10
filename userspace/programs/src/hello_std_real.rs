@@ -850,8 +850,14 @@ fn main() {
             eprintln!("ERROR: pthread_attr_getstack() returned {}, expected 0", result);
             all_stubs_ok = false;
         }
-        if stacksize == 0 {
-            eprintln!("ERROR: pthread_attr_getstack() of the calling thread reported a 0-byte stack");
+        // The calling thread's live stack lies within the bounds reported.
+        let live = core::hint::black_box(&stacksize) as *const usize as usize;
+        let low = stackaddr as usize;
+        if stackaddr.is_null() || live < low || live - low >= stacksize {
+            eprintln!(
+                "ERROR: pthread_attr_getstack() reported {:#x}+{:#x}, which does not hold the live stack address {:#x}",
+                low, stacksize, live
+            );
             all_stubs_ok = false;
         }
 

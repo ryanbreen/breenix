@@ -231,9 +231,12 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
     };
     #[cfg(target_arch = "x86_64")]
     let (tp, data) = {
-        // x86 TLS variant II: static TLS immediately precedes the thread pointer.
-        let data = rounded(block, align).unwrap();
-        (data + rounded(TLS_SIZE, align).unwrap(), data)
+        // x86 TLS variant II: the linker places static TLS at TP minus its
+        // size rounded to the segment's own alignment. TP is aligned for both
+        // that segment and the control words above it.
+        let image = rounded(TLS_SIZE, TLS_ALIGN).unwrap();
+        let tp = rounded(block + image, align).unwrap();
+        (tp, tp - image)
     };
     if TLS_FILE != 0 {
         core::ptr::copy_nonoverlapping(TLS_IMAGE, data as *mut u8, TLS_FILE);
@@ -299,6 +302,32 @@ unsafe fn ehdr_start() -> usize {
     p
 }
 
+/// The initial thread's stack as the kernel lays it out: the 16 AT_RANDOM
+/// bytes end at its top (else the page holding the environment's terminator
+/// does), and it grows down to RLIMIT_STACK within the kernel's 2 MiB growth
+/// ceiling. Nothing below it is reserved as a guard.
+unsafe fn initial_stack(random: usize, env_end: usize) -> Attr {
+    const RLIMIT_STACK: u64 = 3;
+    const GROWTH_CEILING: usize = 2 * 1024 * 1024;
+    let top = if random != 0 {
+        rounded(random + 16, PAGE).unwrap()
+    } else {
+        rounded(env_end + 8, PAGE).unwrap()
+    };
+    let mut limit = [0u64; 2];
+    let r = raw::syscall4(nr::PRLIMIT64, 0, RLIMIT_STACK, 0, limit.as_mut_ptr() as u64) as i64;
+    let size = if r < 0 {
+        GROWTH_CEILING
+    } else {
+        (limit[0].min(GROWTH_CEILING as u64) as usize & !(PAGE - 1)).min(top)
+    };
+    let mut a = Attr::new();
+    a.stack = (top - size) as *mut u8;
+    a.size = size;
+    a.guard = 0;
+    a
+}
+
 /// Read the executable's PT_TLS template from its program headers, set up the
 /// initial thread's descriptor and TLS, and install its thread pointer. No
 /// compiler TLS is accessed before this runs from libc's process entry.
@@ -309,11 +338,13 @@ pub unsafe fn startup(envp: *const *const u8) {
     }
     let mut aux = e.add(1) as *const usize;
     let (mut phdr, mut count, mut stride) = (0usize, 0usize, 0usize);
+    let mut random = 0usize;
     while *aux != 0 {
         match *aux {
             3 => phdr = *aux.add(1),
             4 => stride = *aux.add(1),
             5 => count = *aux.add(1),
+            25 => random = *aux.add(1),
             _ => {}
         }
         aux = aux.add(2);
@@ -363,6 +394,7 @@ pub unsafe fn startup(envp: *const *const u8) {
     if t.is_null() {
         super::exit_group(127);
     }
+    (*t).attr = initial_stack(random, e as usize);
     let id = tid();
     (*t).id.store(id, Relaxed);
     (*t).clear.store(id, Relaxed);
@@ -451,6 +483,9 @@ unsafe fn current() -> *mut Thread {
     }
     p = alloc_thread(0, 0);
     if !p.is_null() {
+        // Its stack is its creator's; no bounds are known to report.
+        (*p).attr.size = 0;
+        (*p).attr.guard = 0;
         (*p).id.store(id, Relaxed);
         // Its creator owns its exit notification; the word reads it running.
         (*p).clear.store(id, Relaxed);
@@ -617,6 +652,17 @@ pub unsafe extern "C" fn pthread_create(
     (*p).next = HEAD;
     HEAD = p;
     REGISTRY.unlock();
+    // `entry` starts as if called: AArch64 keeps SP 16-byte aligned, and the
+    // AMD64 ABI wants RSP+8 aligned at function entry, below a return
+    // address slot (zero, ending backtraces).
+    #[cfg(target_arch = "aarch64")]
+    let sp = top & !15;
+    #[cfg(target_arch = "x86_64")]
+    let sp = {
+        let sp = (top & !15) - 8;
+        *(sp as *mut usize) = 0;
+        sp
+    };
     let flags = CLONE_VM
         | CLONE_FS
         | CLONE_FILES
@@ -628,7 +674,7 @@ pub unsafe extern "C" fn pthread_create(
     let r = raw::syscall6(
         nr::CLONE,
         flags,
-        (top & !15) as u64,
+        sp as u64,
         entry as *const () as u64,
         p as u64,
         &(*p).clear as *const AtomicU32 as u64,
@@ -648,7 +694,6 @@ pub unsafe extern "C" fn pthread_create(
         };
     }
     (*p).id.store(r as u32, Relaxed);
-    *out = p as usize;
     if explicit {
         let result = raw::syscall3(
             nr::SCHED_SETSCHEDULER,
@@ -675,9 +720,12 @@ pub unsafe extern "C" fn pthread_create(
         (*p).ready.store(1, Release);
         wake(&(*p).ready, 1);
     }
-    // From here a detached thread that has ended may be reclaimed at once.
+    *out = p as usize;
+    // From here a detached thread that has ended may be reclaimed at once,
+    // including one a join handed back while this call still used it.
     REGISTRY.lock();
     (*p).creating = false;
+    reap();
     REGISTRY.unlock();
     0
 }
@@ -703,6 +751,13 @@ pub unsafe extern "C" fn pthread_join(handle: usize, value: *mut *mut u8) -> i32
         *value = (*p).result;
     }
     REGISTRY.lock();
+    if (*p).creating {
+        // The thread published itself and ended before pthread_create
+        // finished with its descriptor; that call reclaims it as detached.
+        (*p).state = 1;
+        REGISTRY.unlock();
+        return 0;
+    }
     unlink(p);
     REGISTRY.unlock();
     free_thread(p);
@@ -1097,6 +1152,11 @@ unsafe fn deadline_wait(p: &AtomicU32, value: u32, deadline: *const i64, clock: 
     let t = core::ptr::read_unaligned(deadline as *const [i64; 2]);
     if !valid_time(&t) {
         return EINVAL;
+    }
+    // A deadline before either clock's epoch has passed already; the kernel
+    // rejects negative seconds.
+    if t[0] < 0 {
+        return ETIMEDOUT;
     }
     // FUTEX_WAIT_BITSET takes an absolute deadline on CLOCK_MONOTONIC, or on
     // CLOCK_REALTIME (following clock changes) with FUTEX_CLOCK_REALTIME.
