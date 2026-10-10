@@ -2573,6 +2573,12 @@ pub fn handle_interrupt() {
         let ci_entry = port_read(abar, port, PORT_CI);
         let active_entry = PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
         if is == 0 && (active_entry & !ci_entry) == 0 {
+            // Parallels can leave the global status latched after PORT_IS
+            // clears. Acknowledge it even without a slot completion, or the
+            // wired interrupt retriggers indefinitely and starves the caller.
+            if (hba_is & (1 << port)) != 0 {
+                ack_port_interrupt(abar, port, 0);
+            }
             continue;
         }
         if is != 0 {
