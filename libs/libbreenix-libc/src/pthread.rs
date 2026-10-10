@@ -1138,6 +1138,13 @@ unsafe fn mutex_take(m: *mut Mutex, attempt: bool, deadline: *const i64) -> i32 
         }
         match (*m).owner.compare_exchange(0, id, Acquire, Relaxed) {
             Ok(_) => {
+                // A recovering owner can mark the mutex unrecoverable between
+                // our initial check and acquisition. Never admit that race.
+                if (*m).recovery.load(Acquire) == 2 {
+                    (*m).owner.store(0, Release);
+                    wake(&(*m).owner, u32::MAX);
+                    return ENOTRECOVERABLE;
+                }
                 (*m).depth = 1;
                 if (*m).kind & ROBUST != 0 {
                     let t = current();
@@ -1246,7 +1253,12 @@ pub unsafe extern "C" fn pthread_mutex_unlock(m: *mut u8) -> i32 {
     }
     (*m).depth = 0;
     (*m).owner.store(0, Release);
-    wake(&(*m).owner, 1);
+    let count = if (*m).recovery.load(Relaxed) == 2 {
+        u32::MAX
+    } else {
+        1
+    };
+    wake(&(*m).owner, count);
     0
 }
 #[no_mangle]
