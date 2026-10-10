@@ -3361,12 +3361,19 @@ pub(crate) fn end_thread_group_peers(exit_code: i32) {
 
 /// sys_set_tid_address - Store TID address for thread exit notification
 ///
-/// Minimal implementation: just return the current thread ID.
-pub fn sys_set_tid_address(_tidptr: u64) -> SyscallResult {
-    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-        return SyscallResult::Ok(thread_id);
-    }
-    SyscallResult::Ok(0)
+/// Records `tidptr` as the calling thread's clear_child_tid word, which the
+/// exit path zeroes and wakes, exactly as CLONE_CHILD_CLEARTID does; 0 stops
+/// the notification. Returns the caller's thread ID.
+pub fn sys_set_tid_address(tidptr: u64) -> SyscallResult {
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Ok(0);
+    };
+    crate::process::with_process_manager(|manager| {
+        if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+            process.clear_child_tid = (tidptr != 0).then_some(tidptr);
+        }
+    });
+    SyscallResult::Ok(thread_id)
 }
 
 /// sys_dup2 - Duplicate a file descriptor to a specific number
