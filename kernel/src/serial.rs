@@ -23,6 +23,178 @@ static SERIAL_INPUT_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
 static SERIAL_WAKER: AtomicWaker = AtomicWaker::new();
 
 static SERIAL1_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static SERIAL2_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Kernel log bytes not yet written to COM2.
+///
+/// At 115200 baud the UART takes 87 us a byte, so the strand census's
+/// 330-byte line keeps COM2 busy for 29 ms, and the x86 gate's emulation
+/// stretches that to about 60 ms. Written under SERIAL2 with interrupts
+/// masked, that line held its CPU for the whole time: a wake sent there,
+/// the thread it had just switched away from, and any CPU logging behind it
+/// (some while holding the scheduler or process-manager lock) all waited.
+/// Lines are appended here instead, whole and under a lock held only for
+/// the copy, and one printer at a time writes them out (`drain_log`),
+/// waiting on the UART with interrupts as its caller had them.
+const LOG_RING_BYTES: usize = 64 * 1024;
+
+struct LogRing {
+    bytes: [u8; LOG_RING_BYTES],
+    head: usize,
+    len: usize,
+    dropped: u64,
+}
+
+impl LogRing {
+    fn push(&mut self, byte: u8) -> bool {
+        if self.len == LOG_RING_BYTES {
+            return false;
+        }
+        self.bytes[(self.head + self.len) % LOG_RING_BYTES] = byte;
+        self.len += 1;
+        true
+    }
+
+    fn pop(&mut self, out: &mut [u8]) -> usize {
+        let n = out.len().min(self.len);
+        for slot in &mut out[..n] {
+            *slot = self.bytes[self.head];
+            self.head = (self.head + 1) % LOG_RING_BYTES;
+        }
+        self.len -= n;
+        n
+    }
+}
+
+static LOG_RING: Mutex<LogRing> = Mutex::new(LogRing {
+    bytes: [0; LOG_RING_BYTES],
+    head: 0,
+    len: 0,
+    dropped: 0,
+});
+
+/// Held by the one context writing the kernel log to COM2.
+static LOG_PRINTER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Appends one formatted line to the log ring, which its caller holds; the
+/// flag says whether the caller also holds the printer role.
+struct RingWriter<'a>(&'a mut LogRing, bool);
+
+impl fmt::Write for RingWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for byte in s.bytes() {
+            // uart_16550::send translates backspace and DEL to BS SPACE BS.
+            let wire: &[u8] = if byte == 0x08 || byte == 0x7f { &[0x08, b' ', 0x08] } else { core::slice::from_ref(&byte) };
+            for &b in wire {
+                if !self.0.push(b) && !(make_room(self.0, self.1) && self.0.push(b)) {
+                    self.0.dropped += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A full ring, with the printer role held by the caller or by no one: write
+/// one burst out from under the ring lock. With another printer active the
+/// byte is dropped instead, and counted.
+fn make_room(ring: &mut LogRing, printer_held: bool) -> bool {
+    use core::sync::atomic::Ordering;
+    if !printer_held
+        && LOG_PRINTER
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+    {
+        return false;
+    }
+    let mut chunk = [0u8; 16];
+    let n = ring.pop(&mut chunk[..log_burst()]);
+    write_log_burst(&chunk[..n]);
+    if !printer_held {
+        LOG_PRINTER.store(false, Ordering::Release);
+    }
+    n != 0
+}
+
+fn log_burst() -> usize {
+    if SERIAL2_FIFO.load(core::sync::atomic::Ordering::Relaxed) { 16 } else { 1 }
+}
+
+/// Wait for COM2's transmitter to empty, then write `bytes`, at most one FIFO.
+fn write_log_burst(bytes: &[u8]) {
+    use x86_64::instructions::port::Port;
+    // SAFETY: COM2's status and data ports; only the printer writes COM2.
+    unsafe {
+        let mut status = Port::<u8>::new(COM2_PORT + 5);
+        let mut data = Port::<u8>::new(COM2_PORT);
+        while status.read() & 0x20 == 0 {
+            core::hint::spin_loop();
+        }
+        for &byte in bytes {
+            data.write(byte);
+        }
+    }
+}
+
+/// Write the log ring to COM2 until it is empty, unless another context is
+/// already doing so: that printer takes this caller's bytes too.
+///
+/// The UART wait runs with interrupts as the caller had them, and no lock is
+/// held across it; the ring lock is taken, with interrupts masked, only to take
+/// each FIFO's worth. An interrupt on this CPU that logs meanwhile finds the
+/// printer busy and only appends.
+fn drain_log() {
+    use core::sync::atomic::Ordering;
+    loop {
+        if LOG_PRINTER
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        write_ring();
+        LOG_PRINTER.store(false, Ordering::Release);
+        // A line appended after the last take saw the printer busy and left.
+        if crate::arch_without_interrupts(|| LOG_RING.lock().len) == 0 {
+            return;
+        }
+    }
+}
+
+/// Write the ring out until it is empty. The caller holds the printer role.
+fn write_ring() {
+    loop {
+        let mut chunk = [0u8; 16];
+        let n = crate::arch_without_interrupts(|| LOG_RING.lock().pop(&mut chunk[..log_burst()]));
+        if n == 0 {
+            return;
+        }
+        write_log_burst(&chunk[..n]);
+    }
+}
+
+/// Write out whatever the kernel log still holds, whoever holds the printer
+/// role, from a context about to stop the machine: a panic, or a debug-exit
+/// write that ends QEMU, after which a line still in the ring is lost.
+/// Bounded: a ring lock this CPU holds is left alone.
+pub fn flush_log() {
+    const ATTEMPTS: u32 = 1 << 20;
+    crate::arch_without_interrupts(|| {
+        for _ in 0..ATTEMPTS {
+            if let Some(mut ring) = LOG_RING.try_lock() {
+                let mut chunk = [0u8; 16];
+                loop {
+                    let n = ring.pop(&mut chunk[..log_burst()]);
+                    if n == 0 {
+                        return;
+                    }
+                    write_log_burst(&chunk[..n]);
+                }
+            }
+            core::hint::spin_loop();
+        }
+    });
+}
 
 pub fn init() {
     // Initialize the serial port for output only (no interrupts yet)
@@ -35,6 +207,11 @@ pub fn init() {
 
     // Initialize COM2 for kernel log output
     init_port(&mut SERIAL2.lock(), COM2_PORT);
+    let fifo = unsafe {
+        use x86_64::instructions::port::Port;
+        Port::<u8>::new(COM2_PORT + 2).read() & 0xc0 == 0xc0
+    };
+    SERIAL2_FIFO.store(fifo, core::sync::atomic::Ordering::Relaxed);
 
     // Don't enable interrupts here - wait until after IDT is set up
 }
@@ -321,30 +498,46 @@ macro_rules! serial_println {
 
 /// Print to the log serial port (COM2).
 /// This is used for kernel log output to separate it from user I/O on COM1.
+///
+/// The line goes into the log ring whole, then `drain_log` writes it out
+/// unless another context is already writing the ring.
+///
+/// A caller that can be preempted takes the printer role before it appends,
+/// waiting for it if need be, and writes its own line. A context that cannot
+/// wait on the UART, holding a lock or with interrupts masked, may find the
+/// role free and write what is in the ring, and this keeps a long line from a
+/// preemptible thread, the strand census's 330 bytes, out of what it writes.
 #[doc(hidden)]
 pub fn _log_print(args: fmt::Arguments) {
     use core::fmt::Write;
+    use core::sync::atomic::Ordering;
 
-    // CRITICAL: Check if interrupts are currently enabled BEFORE disabling
-    // We must NOT re-enable interrupts if they were disabled by syscall entry
-    let irq_enabled = crate::arch_interrupts_enabled();
-
-    // Disable interrupts while holding the lock
-    unsafe {
-        crate::arch_disable_interrupts();
-    }
-
-    SERIAL2
-        .lock()
-        .write_fmt(args)
-        .expect("Printing to log serial failed");
-
-    // Only re-enable if they were enabled before
-    if irq_enabled {
-        unsafe {
-            crate::arch_enable_interrupts();
+    let preemptible = crate::per_cpu::is_initialized()
+        && crate::arch_interrupts_enabled()
+        && crate::per_cpu::preempt_count() == 0;
+    if preemptible {
+        while LOG_PRINTER
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            // The printer may be a thread this one preempted on this CPU.
+            crate::task::scheduler::yield_current();
+            core::hint::spin_loop();
         }
     }
+    crate::arch_without_interrupts(|| {
+        let mut ring = LOG_RING.lock();
+        if ring.dropped != 0 {
+            let dropped = core::mem::take(&mut ring.dropped);
+            let _ = write!(RingWriter(&mut ring, preemptible), "[log: {} bytes dropped]\n", dropped);
+        }
+        let _ = RingWriter(&mut ring, preemptible).write_fmt(args);
+    });
+    if preemptible {
+        write_ring();
+        LOG_PRINTER.store(false, Ordering::Release);
+    }
+    drain_log();
 }
 
 /// Macros for writing to the log serial port (COM2).
