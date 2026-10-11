@@ -37,7 +37,7 @@ class HostSlotsTest(unittest.TestCase):
                 process.communicate()
         self.temporary.cleanup()
 
-    def launch(self, script, bypass=False, miss_first_snapshot=False, temporary_directory=None):
+    def launch(self, script, bypass=False, miss_first_snapshot=False, temporary_directory=None, settings=None):
         # Only tests inject a directory and disable observational VM discovery.
         # Production's fixed directory has no environment override.
         program = f'''import importlib.util, sys
@@ -46,6 +46,8 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.SLOT_DIR = m.Path({str(self.root / 'locks')!r})
 m.mac_vms = lambda: []
 m.WAIT_MESSAGE_SECONDS = 0.2
+for name, value in {settings or {}!r}.items():
+    setattr(m, name, value)
 if {miss_first_snapshot!r}:
     original_snapshot = m.Slots.snapshot
     def missed_snapshot(self):
@@ -178,7 +180,7 @@ sys.stdin.readline()
         first = self.launch(command)
         self.line_matching(first, 'READY')
         second = self.launch(self.request('acquire', 'x86-boot') + '; echo READY; read -r release')
-        self.line_matching(second, 'waiting for x86-boot:')
+        self.line_matching(second, 'before x86-boot:')
         # Allow discovery of the detached stand-in, then kill the foreground handle.
         deadline = time.monotonic() + 5
         while not child_pid.exists() and time.monotonic() < deadline:
@@ -221,7 +223,7 @@ sys.stdin.readline()
         first = self.launch(command)
         self.line_matching(first, 'READY')
         second = self.launch(command, bypass=True)
-        self.line_matching(second, 'waiting for x86-boot:')
+        self.line_matching(second, 'before x86-boot:')
         mac = self.launch(self.request('acquire', 'mac-boot') + '; echo READY; read -r release')
         self.line_matching(mac, 'READY')
         bypass = self.launch(self.request('acquire', 'mac-boot') + '; echo READY', bypass=True)
@@ -234,8 +236,8 @@ sys.stdin.readline()
         first = self.launch(command)
         self.line_matching(first, 'READY')
         second = self.launch(command)
-        self.line_matching(second, 'waiting for x86-boot:')
-        self.assertIn('held=', self.line_matching(second, 'waiting for x86-boot:'))
+        self.line_matching(second, 'before x86-boot:')
+        self.assertIn('held=', self.line_matching(second, 'before x86-boot:'))
 
     def test_supervisor_works_with_a_long_nested_tmpdir(self):
         directory = self.root / ('nested-' + 'x' * 100)
@@ -281,15 +283,248 @@ sys.stdin.readline()
         self.line_matching(first, 'READY')
         record = self.root / 'record'
         second = self.launch(self.request('acquire', 'x86-boot') + f'; cp "$BREENIX_SLOT_RECORD" {record}')
-        self.line_matching(second, 'waiting for x86-boot:')
+        self.line_matching(second, 'before x86-boot:')
         first.stdin.write(b'release\n'); first.stdin.flush()
         self.assertEqual(first.wait(timeout=10), 0)
         self.assertEqual(second.wait(timeout=10), 0)
         context = json.loads(record.read_text())
         self.assertGreater(context['queue_wait_seconds'], 0)
-        self.assertEqual(context['observed_running'][0]['resource'], 'x86-boot')
+        # The running boot holds every build lease, so those are what the second boot waited on.
+        self.assertEqual(context['observed_running'][0]['resource'], 'x86-build')
+        self.assertEqual(context['observed_running'][0]['reason'], 'x86-boot running')
+        self.assertGreater(context['exclusive_wait_seconds'], 0)
         self.assertEqual(len(context['load_at_enqueue']), 3)
         self.assertEqual(len(context['load_at_acquire']), 3)
+
+    def test_boot_holds_every_build_lease_until_it_ends(self):
+        boot = self.launch(self.request('acquire', 'x86-boot') + '; echo READY; read -r release; '
+                           + self.request('release', 'x86-boot') + '; echo RELEASED; read -r done')
+        self.line_matching(boot, 'READY')
+        build = self.launch(self.request('acquire', 'x86-build') + '; echo BUILDING; read -r done')
+        self.assertIn('x86-boot running', self.line_matching(build, 'waiting for x86-build:'))
+        boot.stdin.write(b'release\n'); boot.stdin.flush()
+        self.line_matching(boot, 'RELEASED')
+        self.line_matching(build, 'BUILDING')
+        for process in (boot, build):
+            process.stdin.write(b'done\n'); process.stdin.flush()
+            self.assertEqual(process.wait(timeout=10), 0)
+
+    def test_boot_waits_for_running_build_then_holds_both(self):
+        build = self.launch(self.request('acquire', 'x86-build') + '; echo BUILDING; read -r done')
+        self.line_matching(build, 'BUILDING')
+        boot = self.launch(self.request('acquire', 'x86-boot') + '; echo BOOTING; read -r done')
+        self.line_matching(boot, 'waiting for every x86-build lease before x86-boot:')
+        build.stdin.write(b'done\n'); build.stdin.flush()
+        self.assertEqual(build.wait(timeout=10), 0)
+        self.line_matching(boot, 'BOOTING')
+        later = self.launch(self.request('acquire', 'x86-build') + '; echo LATER')
+        self.line_matching(later, 'waiting for x86-build:')
+        boot.stdin.write(b'done\n'); boot.stdin.flush()
+        self.assertEqual(boot.wait(timeout=10), 0)
+        self.line_matching(later, 'LATER')
+        self.assertEqual(later.wait(timeout=10), 0)
+
+    def test_session_holding_a_build_lease_can_take_the_boot(self):
+        # Historical gates hold a build lease while they ask for the boot.
+        session = self.launch(self.request('acquire', 'x86-build') + '; ' + self.request('acquire', 'x86-boot') + '; echo BOOTING')
+        self.line_matching(session, 'BOOTING')
+        self.assertEqual(session.wait(timeout=10), 0)
+
+    def write_manifest(self, sensitive):
+        manifest = self.root / 'suite.json'
+        manifest.write_text(json.dumps({'id': 'suite', 'timingSensitive': sensitive}))
+        return manifest
+
+    def test_timing_sensitive_boot_waits_for_quiet_host(self):
+        serial = self.root / 'serial.log'
+        serial.write_text('')
+        manifest = self.write_manifest(True)
+        quiet = {'QUIET_LOAD_FRACTION': 1000.0, 'QUIET_SAMPLES': 2, 'QUIET_SAMPLE_SECONDS': 0.2}
+        session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
+                              f'{sys.executable} {HELPER} quiet {manifest}; '
+                              f'{sys.executable} {HELPER} serial {serial}; echo BOOTING; '
+                              f'echo "SUITE suite DONE passed=1 failed=0 skipped=0 total=1" >> {serial}; sleep 1.5; '
+                              + self.request('release', 'mac-boot'), settings=quiet)
+        self.line_matching(session, 'quiet host:')
+        self.line_matching(session, 'BOOTING')
+        self.assertEqual(session.wait(timeout=10), 0)
+        record = json.loads(serial.with_name(serial.name + '.host-slots.jsonl').read_text())
+        self.assertEqual(record['quiet']['required'], True)
+        self.assertEqual(record['quiet']['met'], True)
+        for key in ('load_at_acquire', 'load_at_start', 'load_at_verdict', 'load_at_release'):
+            self.assertEqual(len(record[key]), 3, key)
+
+    def test_busy_host_boots_after_the_cap_recorded_as_not_quiet(self):
+        serial = self.root / 'serial.log'
+        serial.write_text('')
+        manifest = self.write_manifest(True)
+        busy = {'QUIET_LOAD_FRACTION': -1.0, 'QUIET_SAMPLE_SECONDS': 0.2, 'QUIET_MAX_WAIT_SECONDS': 1.0}
+        session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
+                              f'{sys.executable} {HELPER} quiet {manifest}; '
+                              f'{sys.executable} {HELPER} serial {serial}; echo BOOTING', settings=busy)
+        self.line_matching(session, 'waiting for a quiet host')
+        self.line_matching(session, 'host NOT quiet')
+        self.line_matching(session, 'BOOTING')
+        self.assertEqual(session.wait(timeout=10), 0)
+        record = json.loads(serial.with_name(serial.name + '.host-slots.jsonl').read_text())
+        self.assertEqual(record['quiet']['met'], False)
+        self.assertGreaterEqual(record['quiet']['wait_seconds'], 1.0)
+        self.assertEqual(len(record['load_at_release']), 3)
+        self.assertNotIn('load_at_verdict', record)  # The serial printed no DONE line.
+
+    def test_nested_acquire_shares_the_boot_record(self):
+        serial = self.root / 'serial.log'
+        serial.write_text('')
+        manifest = self.write_manifest(True)
+        quiet = {'QUIET_LOAD_FRACTION': 1000.0, 'QUIET_SAMPLES': 1, 'QUIET_SAMPLE_SECONDS': 0.2}
+        session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; {sys.executable} {HELPER} serial {serial}; '
+                              f'{sys.executable} {HELPER} acquire mac-boot; {sys.executable} {HELPER} quiet {manifest}; echo BOOTING',
+                              settings=quiet)
+        self.line_matching(session, 'BOOTING')
+        self.assertEqual(session.wait(timeout=10), 0)
+        lines = serial.with_name(serial.name + '.host-slots.jsonl').read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])['quiet']['met'], True)
+
+    def test_suite_that_is_not_timing_sensitive_does_not_wait(self):
+        manifest = self.write_manifest(False)
+        busy = {'QUIET_LOAD_FRACTION': -1.0, 'QUIET_SAMPLE_SECONDS': 0.2, 'QUIET_MAX_WAIT_SECONDS': 60.0}
+        record = self.root / 'record'
+        session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
+                              f'{sys.executable} {HELPER} quiet {manifest}; '
+                              f'cp "$BREENIX_SLOT_RECORD" {record}; echo BOOTING', settings=busy)
+        self.line_matching(session, 'BOOTING', timeout=5)
+        self.assertEqual(session.wait(timeout=10), 0)
+        self.assertEqual(json.loads(record.read_text())['quiet'], {'required': False})
+
+    def test_two_sessions_holding_build_leases_both_take_the_boot(self):
+        # Historical gates each hold one of the two build leases, then ask for the boot,
+        # which needs both: each gives its own up while it waits.
+        command = (self.request('acquire', 'x86-build') + '; echo HAVE; read -r go; '
+                   + self.request('acquire', 'x86-boot') + '; echo BOOTING; read -r done')
+        first, second = self.launch(command), self.launch(command)
+        self.line_matching(first, 'HAVE')
+        self.line_matching(second, 'HAVE')
+        for process in (first, second):
+            process.stdin.write(b'go\n'); process.stdin.flush()
+        winner = None
+        deadline = time.monotonic() + 15
+        while winner is None and time.monotonic() < deadline:
+            for process in (first, second):
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    if selector.select(timeout=0.1) and b'BOOTING' in os.read(process.stdout.fileno(), 65536):
+                        winner = process
+                        break
+        self.assertIsNotNone(winner, 'neither session took the boot: deadlock')
+        loser = second if winner is first else first
+        winner.stdin.write(b'done\n'); winner.stdin.flush()
+        self.assertEqual(winner.wait(timeout=10), 0)
+        self.line_matching(loser, 'BOOTING', timeout=15)
+        loser.stdin.write(b'done\n'); loser.stdin.flush()
+        self.assertEqual(loser.wait(timeout=10), 0)
+
+    def test_boot_requests_queue_for_builds_and_boot_in_one_order(self):
+        # A-boot, B-boot, B-build, A-build queued separately let B hold every build lease
+        # behind A's boot ticket. One enqueue per request orders both queues alike.
+        first, second = slots.Slots(self.root / 'locks'), slots.Slots(self.root / 'locks')
+        try:
+            first.enqueue('x86-build', 'x86-boot')
+            second.enqueue('x86-build', 'x86-boot')
+            for resource in ('x86-build', 'x86-boot'):
+                queue = sorted((self.root / 'locks').glob(f'{resource}-wait-*'))
+                self.assertEqual(queue, [first.tickets[resource][0], second.tickets[resource][0]])
+            identity = {'worktree': 'w', 'commit': 'c'}
+            self.assertFalse(second.try_acquire_all('x86-build', identity, 'x86-boot running'))
+            self.assertTrue(first.try_acquire_all('x86-build', identity, 'x86-boot running'))
+            self.assertIsNotNone(first.try_acquire('x86-boot', identity))
+            first.release('x86-boot')
+            self.assertTrue(second.try_acquire_all('x86-build', identity, 'x86-boot running'))
+            self.assertIsNotNone(second.try_acquire('x86-boot', identity))
+        finally:
+            first.close()
+            second.close()
+
+    def test_environment_overrides_the_quiet_policy(self):
+        self.assertEqual(slots.quiet_policy({}), {})
+        self.assertEqual(slots.quiet_policy({'BREENIX_QUIET': '0', 'BREENIX_QUIET_MAX_LOAD': '12',
+                                             'BREENIX_QUIET_MAX_WAIT': '2700', 'BREENIX_QUIET_MAX_GAP_MS': '8'}),
+                         {'required': False, 'max_load': 12.0, 'max_wait_seconds': 2700.0, 'max_gap_ms': 8.0})
+        for bad in ({'BREENIX_QUIET': 'yes'}, {'BREENIX_QUIET_MAX_LOAD': '-1'}, {'BREENIX_QUIET_MAX_WAIT': 'nan'}):
+            with self.assertRaises(ValueError):
+                slots.quiet_policy(bad)
+
+    def test_invocation_overrides_reach_the_wait(self):
+        manifest = self.write_manifest(True)
+        busy = {'QUIET_LOAD_FRACTION': -1.0, 'QUIET_SAMPLES': 1, 'QUIET_SAMPLE_SECONDS': 0.2, 'QUIET_MAX_WAIT_SECONDS': 60.0}
+        record = self.root / 'record'
+        skipped = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
+                              f'BREENIX_QUIET=0 {sys.executable} {HELPER} quiet {manifest}; '
+                              f'cp "$BREENIX_SLOT_RECORD" {record}; echo BOOTING', settings=busy)
+        self.line_matching(skipped, 'BOOTING', timeout=5)
+        self.assertEqual(skipped.wait(timeout=10), 0)
+        self.assertEqual(json.loads(record.read_text())['quiet'], {'required': False})
+        loose = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
+                            f'BREENIX_QUIET_MAX_LOAD=100000 {sys.executable} {HELPER} quiet {manifest}; '
+                            f'cp "$BREENIX_SLOT_RECORD" {record}; echo BOOTING', settings=busy)
+        self.line_matching(loose, 'BOOTING', timeout=5)
+        self.assertEqual(loose.wait(timeout=10), 0)
+        quiet = json.loads(record.read_text())['quiet']
+        self.assertEqual((quiet['met'], quiet['threshold']), (True, 100000.0))
+        capped = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
+                             f'BREENIX_QUIET_MAX_WAIT=0.5 {sys.executable} {HELPER} quiet {manifest}; echo BOOTING', settings=busy)
+        self.line_matching(capped, 'host NOT quiet', timeout=5)
+        self.assertEqual(capped.wait(timeout=10), 0)
+
+    def test_every_boot_records_its_start_and_verdict_before_release(self):
+        serial = self.root / 'serial.log'
+        serial.write_text('PROBE DONE passed=16 failed=0\n')  # An earlier boot's line.
+        sidecar = serial.with_name(serial.name + '.host-slots.jsonl')
+        session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; {sys.executable} {HELPER} serial {serial}; '
+                              f'{sys.executable} {HELPER} quiet; sleep 1; '
+                              f'echo "kernel::test_exec:     -> Userspace will emit PROBE DONE" >> {serial}; sleep 1; '
+                              f'cp {sidecar} {self.root}/before-done; '
+                              f'echo "PROBE DONE passed=16 failed=0" >> {serial}; echo SHOWN; read -r stop')
+        self.line_matching(session, 'SHOWN')
+        before = json.loads((self.root / 'before-done').read_text())
+        self.assertEqual(before['quiet'], {'required': False})
+        self.assertEqual(len(before['load_at_start']), 3)
+        self.assertNotIn('load_at_verdict', before)
+        deadline = time.monotonic() + 10
+        while 'load_at_verdict' not in sidecar.read_text() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        record = json.loads(sidecar.read_text())
+        self.assertEqual(len(record['load_at_verdict']), 3)
+        self.assertNotIn('load_at_release', record)  # The launcher still shows the result.
+        session.stdin.write(b'stop\n'); session.stdin.flush()
+        self.assertEqual(session.wait(timeout=10), 0)
+        self.assertEqual(len(json.loads(sidecar.read_text())['load_at_release']), 3)
+
+    def test_quiet_under_an_older_supervisor_is_skipped_not_fatal(self):
+        session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
+                              f'BREENIX_SLOT_OPERATIONS= {sys.executable} {HELPER} quiet && echo BOOTING')
+        self.line_matching(session, 'predates boot-start records')
+        self.line_matching(session, 'BOOTING')
+        self.assertEqual(session.wait(timeout=10), 0)
+
+    def test_boot_without_a_start_request_records_no_start_load(self):
+        record = self.root / 'record'
+        session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; cp "$BREENIX_SLOT_RECORD" {record}')
+        self.assertEqual(session.wait(timeout=10), 0)
+        self.assertNotIn('load_at_start', json.loads(record.read_text()))
+
+    def test_linux_quiet_needs_short_vcpu_gaps(self):
+        with mock.patch.object(slots.sys, 'platform', 'linux'), \
+                mock.patch.object(slots, 'vcpu_gap_ms', lambda seconds: 25.0), \
+                mock.patch.object(slots.os, 'getloadavg', lambda: (0.0, 0.0, 0.0)):
+            self.assertEqual(slots.host_sample({}), {'load': 0.0, 'vcpu_gap_ms': 25.0, 'quiet': False})
+            self.assertTrue(slots.host_sample({'max_gap_ms': 30})['quiet'])
+        with mock.patch.object(slots.sys, 'platform', 'darwin'):
+            self.assertNotIn('vcpu_gap_ms', slots.host_sample({}))
+
+    @unittest.skipUnless(hasattr(os, 'sched_setaffinity'), 'Linux only')
+    def test_vcpu_gap_sampler_reports_a_gap(self):
+        self.assertGreaterEqual(slots.vcpu_gap_ms(0.05), 0.0)
 
     def test_zombie_only_process_group_cleanup_succeeds(self):
         # Keep the zombie's parent outside its group so the group persists.

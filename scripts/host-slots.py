@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import selectors
 import shutil
 import signal
@@ -17,7 +18,32 @@ import time
 # Never checkout-relative or configurable by a launcher's environment.
 SLOT_DIR = Path('/tmp/breenix-host-slots')
 RESOURCES = {'x86-build': 2, 'x86-boot': 1, 'mac-boot': 1}
+# An x86 boot shares its VM with the build leases. Builds there left the gate guest's
+# vCPU threads waiting on the VM's run queue for up to ~100 ms despite the boot's higher
+# priority (#1368), so a boot first holds every build lease, then its boot lease, and
+# keeps both until it ends. A boot request queues for both in one step, so every queue
+# orders two boots the same way, and a session that holds a build lease gives it up
+# while it waits for all of them, so two such sessions never wait on each other.
+EXCLUDES = {'x86-boot': 'x86-build'}
 WAIT_MESSAGE_SECONDS = 60
+# A guest's vCPUs are host threads. A busy host leaves them unscheduled for tens of
+# milliseconds while the guest charges that time as running, and timing cases fail
+# (#1368). A boot of a timing-sensitive suite therefore waits, holding its lease, until
+# the host is quiet: the 1-minute load average at or below half the CPUs and, on Linux,
+# no CPU leaving a lowest-priority spinner unscheduled for longer than QUIET_MAX_GAP_MS
+# during a short burst. Inside the x86 gate VM that burst is the only view of the
+# physical host: halted vCPUs accrue no steal, and the VM's load average omits the
+# host's work. Breenix boots wait for other projects; they never limit them. The
+# launcher's environment can override the policy for one invocation (quiet_policy).
+QUIET_LOAD_FRACTION = 0.5
+QUIET_MAX_GAP_MS = 10.0
+QUIET_BURST_SECONDS = 0.5
+QUIET_SAMPLES = 3
+QUIET_SAMPLE_SECONDS = 5
+QUIET_MAX_WAIT_SECONDS = 2700
+# A boot's verdict is the first of these lines its serial prints; the record's
+# load_at_verdict is sampled then, not when a launcher showing the result lets go.
+DONE_LINE = re.compile(rb'^(?:SUITE \S+ DONE passed=|PROBE DONE\b|USERSPACE TEST REPORT DONE\b|RUN PATH DONE\b)')
 VMRUN = '/Applications/VMware Fusion.app/Contents/Public/vmrun'
 
 
@@ -51,6 +77,8 @@ class Slots:
         self.directory = Path(directory if directory is not None else SLOT_DIR)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.held = {}
+        self.held_number = {}
+        self.held_all = {}
         self.tickets = {}
 
     def path(self, resource, number):
@@ -80,13 +108,17 @@ class Slots:
                             holders.append(holder)
             return holders
 
-    def enqueue(self, resource):
+    def enqueue(self, *resources):
+        # One critical section for all of a request's tickets: two requests queue for
+        # every resource they share in the same order.
         with (self.directory / 'metadata.lock').open('a+') as state:
             fcntl.flock(state, fcntl.LOCK_EX)
-            path = self.directory / f'{resource}-wait-{time.monotonic_ns():020d}-{os.getpid()}'
-            handle = path.open('x+')
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            self.tickets[resource] = (path, handle)
+            stamp = f'{time.monotonic_ns():020d}-{os.getpid()}'
+            for resource in resources:
+                path = self.directory / f'{resource}-wait-{stamp}'
+                handle = path.open('x+')
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                self.tickets[resource] = (path, handle)
 
     def dequeue(self, resource):
         ticket = self.tickets.pop(resource, None)
@@ -97,7 +129,7 @@ class Slots:
     def try_acquire(self, resource, identity):
         with (self.directory / 'metadata.lock').open('a+') as state:
             fcntl.flock(state, fcntl.LOCK_EX)
-            if resource in self.held:
+            if resource in self.held or resource in self.held_all:
                 return {'resource': resource}  # Nested launchers share the lease.
             ticket = self.tickets.get(resource)
             for path in sorted(self.directory.glob(f'{resource}-wait-*')):
@@ -124,20 +156,175 @@ class Slots:
                 temporary.write_text(json.dumps(holder) + '\n')
                 temporary.replace(path.with_suffix('.json'))
                 self.held[resource] = handle
+                self.held_number[resource] = number
                 self.dequeue(resource)
                 return holder
             return None
 
+    def try_acquire_all(self, resource, identity, reason):
+        """Hold every slot of `resource`, after the requests queued before this one.
+
+        Slots are taken as they come free and kept, so requests queued later wait.
+        Returns True once this session holds them all.
+        """
+        with (self.directory / 'metadata.lock').open('a+') as state:
+            fcntl.flock(state, fcntl.LOCK_EX)
+            # Waiting while holding one slot deadlocks with a second session that holds
+            # another: give this session's slot up and take it back in queue order.
+            self.held_number.pop(resource, None)
+            own = self.held.pop(resource, None)
+            if own is not None:
+                own.close()
+            ticket = self.tickets.get(resource)
+            for path in sorted(self.directory.glob(f'{resource}-wait-*')):
+                if ticket and path == ticket[0]:
+                    break
+                with path.open('a+') as waiter:
+                    try:
+                        fcntl.flock(waiter, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        return False
+                    path.unlink(missing_ok=True)
+            handles = self.held_all.setdefault(resource, {})
+            for number in range(1, RESOURCES[resource] + 1):
+                if number in handles:
+                    continue
+                path = self.path(resource, number)
+                handle = path.open('a+')
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    handle.close()
+                    continue
+                holder = dict(identity, resource=resource, slot=number, started=time.time(), pid=os.getpid(), reason=reason)
+                temporary = path.with_suffix(f'.{os.getpid()}.tmp')
+                temporary.write_text(json.dumps(holder) + '\n')
+                temporary.replace(path.with_suffix('.json'))
+                handles[number] = handle
+            if len(handles) < RESOURCES[resource]:
+                return False
+            self.dequeue(resource)
+            return True
+
+    def release_all(self, resource):
+        for handle in self.held_all.pop(resource, {}).values():
+            handle.close()
+
     def release(self, resource):
+        self.held_number.pop(resource, None)
         handle = self.held.pop(resource, None)
         if handle is not None:
             handle.close()  # Also happens automatically on process death, including SIGKILL.
+        if resource in EXCLUDES:
+            self.release_all(EXCLUDES[resource])
 
     def close(self):
         for resource in list(self.tickets):
             self.dequeue(resource)
         for resource in list(self.held):
             self.release(resource)
+        for resource in list(self.held_all):
+            self.release_all(resource)
+
+
+def quiet_threshold():
+    return round((os.cpu_count() or 1) * QUIET_LOAD_FRACTION, 2)
+
+
+def timing_sensitive(manifest):
+    """A suite manifest marks a suite whose cases measure time with timingSensitive."""
+    try:
+        return json.loads(Path(manifest).read_text()).get('timingSensitive') is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def quiet_policy(environ):
+    """One invocation's overrides of the quiet-host policy, from the launcher's environment.
+
+    BREENIX_QUIET=1 waits whatever the manifests say and BREENIX_QUIET=0 never waits;
+    BREENIX_QUIET_MAX_LOAD, BREENIX_QUIET_MAX_GAP_MS and BREENIX_QUIET_MAX_WAIT replace
+    the load threshold, the Linux vCPU gap threshold and the cap in seconds.
+    """
+    policy = {}
+    mode = environ.get('BREENIX_QUIET', '')
+    if mode not in ('', '0', '1'):
+        raise ValueError(f'BREENIX_QUIET must be 0 or 1, not {mode!r}')
+    if mode:
+        policy['required'] = mode == '1'
+    for name, key in (('BREENIX_QUIET_MAX_LOAD', 'max_load'), ('BREENIX_QUIET_MAX_GAP_MS', 'max_gap_ms'),
+                      ('BREENIX_QUIET_MAX_WAIT', 'max_wait_seconds')):
+        if environ.get(name):
+            value = float(environ[name])
+            if not value >= 0:
+                raise ValueError(f'{name} must be a number of at least 0, not {environ[name]!r}')
+            policy[key] = value
+    return policy
+
+
+def cpu_counters():
+    """Linux's aggregate CPU ticks: (all, steal), or None where /proc/stat is absent."""
+    try:
+        fields = [int(v) for v in Path('/proc/stat').read_text().split('\n', 1)[0].split()[1:9]]
+    except (OSError, ValueError):
+        return None
+    return sum(fields), fields[7]
+
+
+def vcpu_gap_ms(seconds):
+    """Longest time any CPU left a lowest-priority spinner pinned to it unscheduled.
+
+    In a VM this is how long the physical host keeps the VM's vCPUs waiting, the stall a
+    guest charges as running (#1368). Linux only: it needs sched_setaffinity.
+    """
+    readers = []
+    for cpu in sorted(os.sched_getaffinity(0)):
+        read, write = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            worst = 0
+            try:
+                os.close(read)
+                os.sched_setaffinity(0, {cpu})
+                os.nice(19)
+                now = time.monotonic_ns
+                last = now()
+                end = last + int(seconds * 1e9)
+                while last < end:
+                    sample = now()
+                    worst = max(worst, sample - last)
+                    last = sample
+                os.write(write, str(worst).encode())
+            finally:
+                os._exit(0)
+        os.close(write)
+        readers.append((pid, read))
+    worst = 0
+    for pid, read in readers:
+        with os.fdopen(read, 'rb') as stream:
+            data = stream.read()
+        os.waitpid(pid, 0)
+        worst = max(worst, int(data or 0))
+    return round(worst / 1e6, 1)
+
+
+def host_sample(policy, burst=True):
+    """The host state a boot is judged and recorded by: 1-minute load, plus the vCPU gap on Linux."""
+    sample = {'load': os.getloadavg()[0]}
+    if burst and sys.platform.startswith('linux'):
+        sample['vcpu_gap_ms'] = vcpu_gap_ms(QUIET_BURST_SECONDS)
+    sample['quiet'] = sample['load'] <= policy.get('max_load', quiet_threshold()) and \
+        sample.get('vcpu_gap_ms', 0) <= policy.get('max_gap_ms', QUIET_MAX_GAP_MS)
+    return sample
+
+
+def describe(holders):
+    """Name each distinct holder once, with why it holds the lease when it says."""
+    names = {}
+    for h in holders:
+        reason = f" ({h['reason']})" if h.get('reason') else ''
+        names.setdefault(f"worktree={h['worktree']} commit={h['commit']}{reason}", h['held_seconds'])
+    return '; '.join(f'{name} held={held:.1f}s' for name, held in names.items())
 
 
 def write_header(record, serial, context=None):
@@ -281,6 +468,134 @@ def supervise_worker(argv, parent):
         if targets.intersection(refresh()):
             raise RuntimeError('QEMU did not stop; keeping boot lease until cleanup')
 
+    records = []
+    bypassed = set()
+
+    def context(count):
+        return ''.join(json.dumps(entry, sort_keys=True) + '\n' for entry in records[:count]).encode()
+
+    def save_records():
+        Path(record).write_bytes(context(len(records)))
+
+    def admit(request):
+        records.append(dict(request['result']))
+        save_records()
+        request['client'].sendall(b'{}\n')
+        request['client'].close()
+
+    def open_boot(before=None):
+        """The newest boot record without a release, among the first `before` records."""
+        for index in range(min(len(records), len(records) if before is None else before) - 1, -1, -1):
+            entry = records[index]
+            if entry['resource'].endswith('boot') and 'load_at_release' not in entry:
+                return index
+        return None
+
+    def publish(index):
+        save_records()
+        for serial, (count, _, _) in serials.items():
+            if index < count:
+                write_header(record, serial, context(count))
+
+    counters = {}
+
+    def start_boot(request):
+        # Every launcher asks just before it starts its VM: record the host it starts
+        # on, and whether a quiet host was required and found, in the open boot record.
+        index = open_boot()
+        if index is None:
+            print('[host-slot] boot start: no boot lease is held; nothing recorded', file=sys.stderr, flush=True)
+        else:
+            entry = records[index]
+            sample = request.get('sample') or host_sample(request['policy'])
+            entry['load_at_start'] = os.getloadavg()
+            if 'vcpu_gap_ms' in sample:
+                entry['vcpu_gap_ms_at_start'] = sample['vcpu_gap_ms']
+            entry['quiet'] = request.get('quiet_record', {'required': False})
+            if cpu_counters() is not None:
+                counters[index] = cpu_counters()
+            publish(index)
+        request['client'].sendall(b'{}\n')
+        request['client'].close()
+
+    def boot_verdict(index):
+        # The serial printed its DONE line: the host the boot ran on until its verdict.
+        entry = records[index]
+        entry['load_at_verdict'] = os.getloadavg()
+        if index in counters and cpu_counters() is not None:
+            (total, steal), (total_now, steal_now) = counters[index], cpu_counters()
+            entry['steal_percent_during_boot'] = round(100 * (steal_now - steal) / max(1, total_now - total), 2)
+        publish(index)
+
+    def watch_serials():
+        for serial, (count, offset, partial) in list(serials.items()):
+            try:
+                with open(serial, 'rb') as stream:
+                    size = os.fstat(stream.fileno()).st_size
+                    if size < offset:
+                        offset, partial = 0, b''  # The launcher truncated it for a new boot.
+                    stream.seek(offset)
+                    data = stream.read(1 << 22)
+            except OSError:
+                continue
+            lines = (partial + data).split(b'\n')
+            serials[serial] = (count, offset + len(data), lines.pop()[-4096:])
+            if any(DONE_LINE.match(line.strip(b'\r')) for line in lines):
+                index = open_boot(count)
+                if index is not None:
+                    boot_verdict(index)
+
+    def register(serial):
+        try:
+            offset = Path(serial).stat().st_size  # Earlier boots' lines are not this boot's.
+        except OSError:
+            offset = 0
+        serials[serial] = (len(records), offset, b'')
+
+    def release_boot(resource):
+        # The lease ends, which for Parallels and VMware can be long after the verdict.
+        for index in range(len(records) - 1, -1, -1):
+            entry = records[index]
+            if entry['resource'] == resource and 'load_at_release' not in entry:
+                entry['load_at_release'] = os.getloadavg()
+                publish(index)
+                return
+
+    def quiet_host(request):
+        # Holding the lease, wait until QUIET_SAMPLES samples QUIET_SAMPLE_SECONDS apart
+        # all show a quiet host (host_sample), or until the cap.
+        now = time.monotonic()
+        if now < request['next_sample']:
+            return False
+        policy = request['policy']
+        sample = host_sample(policy)
+        request['next_sample'] = time.monotonic() + QUIET_SAMPLE_SECONDS
+        request['quiet_samples'] = request['quiet_samples'] + 1 if sample['quiet'] else 0
+        waited = now - request['quiet_since']
+        met = request['quiet_samples'] >= QUIET_SAMPLES
+        threshold = policy.get('max_load', quiet_threshold())
+        cap = policy.get('max_wait_seconds', QUIET_MAX_WAIT_SECONDS)
+        shown = f'load={sample["load"]:.2f} (needs <= {threshold})' + (
+            f' vcpu_gap={sample["vcpu_gap_ms"]}ms (needs <= {policy.get("max_gap_ms", QUIET_MAX_GAP_MS)}ms)'
+            if 'vcpu_gap_ms' in sample else '')
+        if met or waited >= cap:
+            request['sample'] = sample
+            request['quiet_record'] = {'required': True, 'met': met, 'threshold': threshold,
+                                       'wait_seconds': round(waited, 3), 'policy': policy}
+            if 'vcpu_gap_ms' in sample:
+                request['quiet_record']['max_gap_ms'] = policy.get('max_gap_ms', QUIET_MAX_GAP_MS)
+            if met:
+                print(f'[host-slot] quiet host: {shown}; waited={waited:.1f}s', file=sys.stderr, flush=True)
+            else:
+                print(f'[host-slot] host NOT quiet after {waited:.0f}s ({shown}); booting anyway, recorded as not quiet', file=sys.stderr, flush=True)
+            return True
+        if waited >= request['next_message']:
+            print(f'[host-slot] waiting for a quiet host before booting: {shown} '
+                  f'for {QUIET_SAMPLES} samples {QUIET_SAMPLE_SECONDS}s apart; waited={waited:.1f}s of at most {cap:.0f}s',
+                  file=sys.stderr, flush=True)
+            request['next_message'] = waited + WAIT_MESSAGE_SECONDS
+        return False
+
     def forward(number, frame):
         nonlocal received_signal
         received_signal = number
@@ -298,7 +613,10 @@ def supervise_worker(argv, parent):
             server.bind(session)
             server.listen()
             selector.register(server, selectors.EVENT_READ)
-            env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record)
+            # Run Inspector supervises a gate with its own helper, which can predate the
+            # tested checkout's: name the operations newer than the first supervisor.
+            env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record,
+                       BREENIX_SLOT_OPERATIONS='quiet')
             child = subprocess.Popen(argv, env=env, start_new_session=True)
             try:
                 forwarded_signal = None
@@ -331,15 +649,31 @@ def supervise_worker(argv, parent):
                             resource = request['resource']
                             if resource not in RESOURCES:
                                 raise ValueError(f'unknown resource {resource}')
-                            slots.enqueue(resource)
+                            if resource in slots.held or resource in slots.held_all or resource in bypassed:
+                                # A nested launcher shares the lease: the same boot, so no second record.
+                                client.sendall(b'{}\n')
+                                client.close()
+                                continue
+                            slots.enqueue(*filter(None, (EXCLUDES.get(resource), resource)))
                             pending = {'client': client, 'resource': resource,
                                        'since': time.monotonic(), 'next_message': 0,
                                        'load_at_enqueue': os.getloadavg(), 'observed': [],
+                                       'exclusive': EXCLUDES.get(resource),
                                        'bypass': resource == 'mac-boot' and os.environ.get('BREENIX_BOOT_NO_QUEUE') == '1'}
+                        elif operation == 'quiet':
+                            if pending is not None:
+                                raise RuntimeError('overlapping requests from one launcher')
+                            policy = request.get('policy', {})
+                            required = policy.get('required', any(timing_sensitive(m) for m in request['manifests']))
+                            pending = {'client': client, 'resource': 'quiet', 'next_message': 0,
+                                       'required': required, 'policy': policy,
+                                       'quiet_since': time.monotonic(), 'quiet_samples': 0, 'next_sample': 0}
                         else:
                             if operation == 'release':
                                 if request['resource'].endswith('boot'):
                                     stop_qemu()
+                                    release_boot(request['resource'])
+                                bypassed.discard(request['resource'])
                                 slots.release(request['resource'])
                             elif operation == 'cargo-home':
                                 home = isolated_cargo_home(request['source'], request['directory'])
@@ -351,16 +685,38 @@ def supervise_worker(argv, parent):
                                 stop_qemu()
                             elif operation == 'vm':
                                 stop_commands.append(request['stop'])
-                                serials[request['serial']] = Path(record).read_bytes()
+                                register(request['serial'])
                             elif operation == 'serial':
-                                serials[request['serial']] = Path(record).read_bytes()
+                                register(request['serial'])
                             else:
                                 raise ValueError(f'unknown operation {operation}')
                             client.sendall(b'{}\n')
                             client.close()
+                    watch_serials()
                     if pending is None:
                         continue
+                    if pending['resource'] == 'quiet':
+                        if pending['required'] and not quiet_host(pending):
+                            continue
+                        start_boot(pending)
+                        pending = None
+                        continue
                     resource = pending['resource']
+                    if pending['exclusive'] and 'exclusive_wait_seconds' not in pending:
+                        waited = time.monotonic() - pending['since']
+                        if not slots.try_acquire_all(pending['exclusive'], identity, f'{resource} running'):
+                            for entry in slots.snapshot():
+                                if entry.get('resource') == pending['exclusive'] and not any(
+                                        all(old.get(k) == entry.get(k) for k in ('pid', 'resource', 'started', 'slot'))
+                                        for old in pending['observed']):
+                                    pending['observed'].append(entry)
+                            if waited >= pending['next_message']:
+                                description = describe(h for h in slots.snapshot() if h.get('resource') == pending['exclusive']) or 'earlier queued request'
+                                print(f'[host-slot] waiting for every {pending["exclusive"]} lease before {resource}: {description}; waited={waited:.1f}s', file=sys.stderr, flush=True)
+                                pending['next_message'] = waited + WAIT_MESSAGE_SECONDS
+                            continue
+                        pending['exclusive_wait_seconds'] = round(waited, 3)
+                        pending['next_message'] = 0
                     holders = slots.snapshot()
                     external = (mac_vms() if resource == 'mac-boot' else [{'vm': 'qemu-system-x86_64', 'pid': pid} for pid in command_output(['pgrep', '-f', '^([^ ]*/)?qemu-system-x86_64( |$)']).splitlines()] if resource == 'x86-boot' else []) if resource not in slots.held and not any(h.get('resource') == resource for h in holders) else []
                     bypass = pending['bypass']
@@ -380,8 +736,7 @@ def supervise_worker(argv, parent):
                     waited = time.monotonic() - pending['since']
                     if holder is None:
                         if waited >= pending['next_message']:
-                            blockers = [h for h in holders if h.get('resource') == resource]
-                            description = '; '.join(f"worktree={h['worktree']} commit={h['commit']} held={h['held_seconds']:.1f}s" for h in blockers )
+                            description = describe(h for h in holders if h.get('resource') == resource)
                             if external:
                                 description = 'unqueued VM ' + json.dumps(external, sort_keys=True)
                             if not description:
@@ -389,16 +744,16 @@ def supervise_worker(argv, parent):
                             print(f'[host-slot] waiting for {resource}: {description}; waited={waited:.1f}s', file=sys.stderr, flush=True)
                             pending['next_message'] = waited + WAIT_MESSAGE_SECONDS
                         continue
-                    result = {'resource': resource, 'queue_wait_seconds': round(waited, 3),
-                              'bypass': bypass, 'load_at_enqueue': pending['load_at_enqueue'],
-                              'load_at_acquire': os.getloadavg(), 'observed_running': pending['observed'],
-                              'running_at_acquire': observed, **identity}
-                    with open(record, 'a') as output:
-                        output.write(json.dumps(result, sort_keys=True) + '\n')
+                    pending['result'] = {'resource': resource, 'queue_wait_seconds': round(waited, 3),
+                                         **({'exclusive': pending['exclusive'], 'exclusive_wait_seconds': pending['exclusive_wait_seconds']} if pending['exclusive'] else {}),
+                                         'bypass': bypass, 'load_at_enqueue': pending['load_at_enqueue'],
+                                         'load_at_acquire': os.getloadavg(), 'observed_running': pending['observed'],
+                                         'running_at_acquire': observed, **identity}
                     print(f'[host-slot] {"BYPASS" if bypass else "acquired"} {resource}; waited={waited:.1f}s load={os.getloadavg()}', file=sys.stderr, flush=True)
                     slots.dequeue(resource)
-                    pending['client'].sendall(b'{}\n')
-                    pending['client'].close()
+                    if bypass:
+                        bypassed.add(resource)
+                    admit(pending)
                     pending = None
             finally:
                 # Clean descendants before releasing any lease, even if the shell was killed.
@@ -417,8 +772,12 @@ def supervise_worker(argv, parent):
                     signal_tree(signal.SIGKILL)
                     child.wait()
                     stop_qemu()
-                for serial, context in serials.items():
-                    write_header(record, serial, context)
+                watch_serials()
+                for resource in RESOURCES:
+                    if resource.endswith('boot'):
+                        release_boot(resource)
+                for serial, (count, _, _) in serials.items():
+                    write_header(record, serial, context(count))
                 if pending is not None:
                     pending['client'].close()
                 for home in cargo_homes:
@@ -429,7 +788,7 @@ def supervise_worker(argv, parent):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'vm', 'serial', 'header', 'cargo-home', 'quiesce'))
+    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'quiet', 'vm', 'serial', 'header', 'cargo-home', 'quiesce'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     values = args.arguments
@@ -440,6 +799,12 @@ def main():
         return supervise(values[1:] if values[0] == '--' else values)
     if args.operation in ('acquire', 'release'):
         send_request({'operation': args.operation, 'resource': values[0]})
+    elif args.operation == 'quiet':
+        if 'quiet' not in os.environ.get('BREENIX_SLOT_OPERATIONS', '').split(','):
+            print('[host-slot] the supervising helper predates boot-start records: no quiet-host wait, start not recorded',
+                  file=sys.stderr, flush=True)
+            return 0
+        send_request({'operation': 'quiet', 'manifests': values, 'policy': quiet_policy(os.environ)})
     elif args.operation == 'vm':
         send_request({'operation': 'vm', 'serial': values[0], 'stop': values[1:]})
     elif args.operation == 'serial':

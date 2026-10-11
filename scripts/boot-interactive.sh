@@ -182,6 +182,13 @@ cp "$DISK" "$WRITABLE"
 source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
 qemu_host_lock_acquire
 
+# Records the boot's start; a timing-sensitive suite first waits for a quiet host
+# (docs/boot-path.md, "Shared host slots").
+if [ "$MODE" = suite ]; then
+    host_slot_quiet "$ROOT/docs/suites/$SUITE.json"
+else
+    host_slot_quiet
+fi
 # Vigil shows the boot while it runs and scores it when it ends (does nothing without Vigil).
 VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG")
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"

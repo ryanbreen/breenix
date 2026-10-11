@@ -109,6 +109,35 @@ Historical gates hold both leases for their whole run. Launchers sourcing
 `docker/qemu/lib/qemu-host-lock.sh` also enroll in the host queue; on Linux they
 hold a build lease until boot admission. Mac builds remain unrestricted.
 
+A guest's vCPUs are host threads, and a guest charges the time a busy host leaves them
+unscheduled as running, so timing cases fail on a loaded host. An x86 boot therefore first
+holds every build lease (after builds queued before it, ahead of those queued after it),
+then its boot lease, and keeps both until it ends: no build runs in the gate VM during a
+boot. A boot request queues for both in one step, and a session holding a build lease
+(a historical gate) gives it up while it waits for all of them, so two boots never wait on
+each other.
+
+Every launcher calls `host_slot_quiet`, with the manifests of the suites it runs, just
+before it starts its VM: `scripts/boot-interactive.sh`, each VM path of `run.sh`, and
+`docker/qemu/run-x86-gate.sh` before each boot, which also covers Run Inspector. When a
+manifest is `timingSensitive`, the launcher first waits, holding its lease, for a quiet
+host: three samples five seconds apart with the 1-minute load average at or below half the
+CPUs and, on Linux, no CPU leaving a lowest-priority spinner unscheduled for more than
+10 ms during a half-second burst. Inside the x86 gate VM that burst is how other work on
+the physical host shows: halted vCPUs accrue no steal, and the VM's load average omits the
+host's work. After 45 minutes the boot starts anyway and is recorded as not quiet. Only
+Breenix boots wait; nothing limits other work on either host. For one invocation,
+`BREENIX_QUIET=1` or `0` forces or skips the wait, and `BREENIX_QUIET_MAX_LOAD`,
+`BREENIX_QUIET_MAX_GAP_MS` and `BREENIX_QUIET_MAX_WAIT` (seconds) replace the thresholds
+and the cap.
+
+Each boot's record in its `*.host-slots.jsonl` sidecar carries the load at enqueue, at
+acquisition, at the VM's start, at the verdict (the serial's first `SUITE <id> DONE`,
+`PROBE DONE`, `USERSPACE TEST REPORT DONE` or `RUN PATH DONE` line, updated by later
+ones) and at release, and whether a quiet host was required and found. On Linux it also
+carries the vCPU gap at the start and the steal time from the start to the verdict: the
+physical host's contention as the gate VM saw it.
+
 Use `scripts/boot-interactive.sh` or `run.sh` for a Mac boot. The shared helper
 queues QEMU, Parallels and VMware behind one Mac lease. VM deployment and the
 suite panel are part of that lifetime. Stop the run to stop its VM and free the

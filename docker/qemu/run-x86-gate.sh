@@ -324,6 +324,16 @@ for i in $(seq 1 "$COUNT"); do
   OUTDIR="$BREENIX_GATE_TMP/breenix_gate_$i"
   rm -rf "$OUTDIR"; mkdir -p "$OUTDIR"
   host_slot_serial "$OUTDIR/serial_kernel.log" || exit 1
+  # Suites print their DONE line on COM1: the supervisor records the verdict's load from it.
+  host_slot_serial "$OUTDIR/serial_user.log" || exit 1
+  # Records the boot's start; a timing-sensitive suite first waits for a quiet host,
+  # on the VM's own load and on how long the physical host leaves the VM's vCPUs
+  # unscheduled (docs/boot-path.md, "Shared host slots").
+  QUIET_MANIFESTS=()
+  [ -z "$SUITE" ] || for suite_id in "${SUITES[@]}"; do QUIET_MANIFESTS+=("$REPO_DIR/docs/suites/$suite_id.json"); done
+  phase_start quiet-host-wait
+  host_slot_quiet ${QUIET_MANIFESTS[@]+"${QUIET_MANIFESTS[@]}"} || { phase_end 1; exit 1; }
+  phase_end
   # BREENIX_NET_MODE=none: the qemu-uefi binary hardcodes a SLIRP hostfwd on
   # host port 2323; disabling networking avoids lingering port state between
   # runs and is not needed for these boot markers.

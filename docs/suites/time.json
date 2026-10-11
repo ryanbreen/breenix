@@ -4,6 +4,7 @@
   "area": "Time & timers",
   "summary": "Clocks, sleeps, POSIX timers, alarm and the interval timers keep and measure time as POSIX requires, on every target.",
   "binary": "/sbin/suite-time",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "clocks",
