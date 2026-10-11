@@ -423,8 +423,25 @@ const PM_OUT: usize = 24;
 static PM_OUT_N: AtomicU64 = AtomicU64::new(0);
 static PM_OUT_LOC: [AtomicU64; PM_OUT] = [const { AtomicU64::new(0) }; PM_OUT];
 static PM_OUT_US: [AtomicU64; PM_OUT] = [const { AtomicU64::new(0) }; PM_OUT];
+static PRINTED: [AtomicU64; CPUS] = [const { AtomicU64::new(0) }; CPUS];
+static SD_WAIT: [AtomicU64; CPUS] = [const { AtomicU64::new(0) }; CPUS];
+static PM_PRINTED0: AtomicU64 = AtomicU64::new(0);
+static PM_SD0: AtomicU64 = AtomicU64::new(0);
+static PM_OUT_X: [AtomicU64; PM_OUT] = [const { AtomicU64::new(0) }; PM_OUT];
+pub fn printed(n: usize) {
+    if crate::per_cpu::is_initialized() {
+        PRINTED[cpu()].fetch_add(n as u64, Relaxed);
+    }
+}
+pub fn sd_wait(start: u64) {
+    SD_WAIT[cpu()].fetch_add(us(tsc().saturating_sub(start)), Relaxed);
+}
 pub fn pm_acquired(loc: &'static core::panic::Location<'static>) {
     PM_LOC.store(loc as *const _ as u64, Relaxed);
+    if crate::per_cpu::is_initialized() {
+        PM_PRINTED0.store(PRINTED[cpu()].load(Relaxed), Relaxed);
+        PM_SD0.store(SD_WAIT[cpu()].load(Relaxed), Relaxed);
+    }
     PM_TS.store(tsc(), Relaxed);
 }
 pub fn pm_released() {
@@ -440,6 +457,9 @@ pub fn pm_released() {
         if k < PM_OUT {
             PM_OUT_LOC[k].store(PM_LOC.load(Relaxed), Relaxed);
             PM_OUT_US[k].store(d | (cpu() as u64) << 48, Relaxed);
+            let printed = PRINTED[cpu()].load(Relaxed).wrapping_sub(PM_PRINTED0.load(Relaxed));
+            let sd = SD_WAIT[cpu()].load(Relaxed).wrapping_sub(PM_SD0.load(Relaxed));
+            PM_OUT_X[k].store(printed.min(0xffff_ffff) | sd.min(0xffff_ffff) << 32, Relaxed);
         }
     }
 }
@@ -457,6 +477,7 @@ pub fn report_pm(out: &mut alloc::string::String) {
         }
         // SAFETY: a &'static Location stored by pm_acquired.
         let loc = unsafe { &*loc };
-        let _ = writeln!(out, "WAKELAT pm-long us={} cpu={} at={}:{}", v & 0xffff_ffff_ffff, v >> 48, loc.file(), loc.line());
+        let x = PM_OUT_X[k].load(Relaxed);
+        let _ = writeln!(out, "WAKELAT pm-long us={} cpu={} printed={} shootdown_us={} at={}:{}", v & 0xffff_ffff_ffff, v >> 48, x & 0xffff_ffff, x >> 32, loc.file(), loc.line());
     }
 }

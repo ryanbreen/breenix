@@ -304,6 +304,7 @@ mod shootdown {
 
             IN_FLIGHT.store(false, Ordering::Release);
             crate::task::wakelat::shootdown_done(wl);
+            crate::task::wakelat::sd_wait(wl);
         });
     }
 

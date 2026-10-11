@@ -116,6 +116,7 @@ fn log_burst() -> usize {
 
 /// Wait for COM2's transmitter to empty, then write `bytes`, at most one FIFO.
 fn write_log_burst(bytes: &[u8]) {
+    crate::task::wakelat::printed(bytes.len());
     use x86_64::instructions::port::Port;
     // SAFETY: COM2's status and data ports; only the printer writes COM2.
     unsafe {
