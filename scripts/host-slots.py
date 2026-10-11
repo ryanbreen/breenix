@@ -239,7 +239,7 @@ def quiet_threshold():
 
 
 def timing_sensitive(manifest):
-    """A suite manifest marks a suite whose cases measure time with timingSensitive."""
+    """timingSensitive marks clock reads, time measurements or concurrency cases."""
     try:
         return json.loads(Path(manifest).read_text()).get('timingSensitive') is True
     except (OSError, ValueError, AttributeError):

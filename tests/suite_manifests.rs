@@ -504,13 +504,16 @@ fn uses_time_or_concurrency(tokens: proc_macro2::TokenStream) -> bool {
         proc_macro2::TokenTree::Group(group) => uses_time_or_concurrency(group.stream()),
         proc_macro2::TokenTree::Ident(ident) => matches!(ident.to_string().as_str(),
             "CLOCK_GETTIME" | "clock_gettime" | "now_monotonic" | "sleep_ms"
-            | "nanosleep" | "pthread_create" | "spawn"),
+            | "nanosleep" | "clock_nanosleep" | "pthread_create" | "spawn"
+            | "poll" | "select" | "ppoll" | "alarm" | "setitimer"
+            | "sched_yield" | "fork" | "POLL" | "SELECT" | "PPOLL"
+            | "ALARM" | "SETITIMER" | "CLOCK_NANOSLEEP" | "SCHED_YIELD" | "FORK"),
         _ => false,
     })
 }
 
 #[test]
-fn suites_using_time_or_concurrency_require_quiet_admission() {
+fn suites_using_time_or_concurrency_require_timing_metadata() {
     let root = repo_root();
     let mut checked = 0;
     for entry in fs::read_dir(root.join("docs/suites")).unwrap() {
@@ -525,7 +528,7 @@ fn suites_using_time_or_concurrency_require_quiet_admission() {
         if uses_time_or_concurrency(tokens) {
             checked += 1;
             assert_eq!(manifest.get("timingSensitive"), Some(&Value::Bool(true)),
-                "{id}: cases use clocks or concurrency; set timingSensitive=true for quiet-host admission");
+                "{id}: cases use clocks or concurrency; set timingSensitive=true for x86 quiet-host admission");
         }
     }
     assert!(checked > 0, "no timing-sensitive suite was checked");
@@ -536,6 +539,11 @@ fn timing_classification_ignores_comments_and_literals() {
     assert!(!uses_time_or_concurrency(
         "// now_monotonic\nfn case() { let text = \"pthread_create\"; }".parse().unwrap()
     ));
+    for name in ["poll", "select", "ppoll", "alarm", "setitimer",
+                 "clock_nanosleep", "sched_yield", "fork"] {
+        assert!(uses_time_or_concurrency(format!("fn case() {{ {name}(); }}").parse().unwrap()));
+        assert!(uses_time_or_concurrency(format!("fn case() {{ sc(nr::{}, &[]); }}", name.to_uppercase()).parse().unwrap()));
+    }
     for source in ["fn case() { time::now_monotonic(); }",
                    "fn case() { sc(nr::CLOCK_GETTIME, &[]); }",
                    "fn case() { std::thread::spawn(|| {}); }"] {

@@ -584,9 +584,9 @@ pub fn _log_print(args: fmt::Arguments) {
     }
 }
 
-/// Append a complete COM2 record without waiting for the UART. The caller
-/// must arrange to drain it; overflow uses the same accounting as normal logs.
-/// Interrupts are masked only while formatting into the existing fixed ring.
+/// Append a COM2 record without waiting for the UART, dropping the whole
+/// record when it does not fit. The caller arranges delivery via the drainers.
+/// Interrupts are masked while formatting into the existing fixed ring.
 pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
     use core::fmt::Write;
     crate::arch_without_interrupts(|| {
@@ -595,14 +595,22 @@ pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
             let dropped = core::mem::take(&mut ring.dropped);
             let _ = write!(RingWriter(&mut ring), "[log: {} bytes dropped]\n", dropped);
         }
+        let start_len = ring.len;
+        let start_pushed = ring.pushed;
+        let start_dropped = ring.dropped;
         let _ = RingWriter(&mut ring).write_fmt(args);
+        if ring.dropped != start_dropped {
+            // Roll back the prefix too: a census consumer needs a whole record.
+            ring.dropped += ring.pushed - start_pushed;
+            ring.len = start_len;
+            ring.pushed = start_pushed;
+        }
         ring.pushed
     })
 }
 
-/// Try one FIFO burst, never waiting for UART readiness, then report whether
-/// bytes remain. Thread-context housekeeping sleeps between calls so a busy
-/// UART cannot occupy its processor for the duration of a record.
+/// Try one FIFO burst without polling UART readiness, then report whether
+/// bytes remain. Thread-context housekeeping sleeps between calls.
 pub(crate) fn drain_log_once() -> bool {
     let _ = write_burst();
     crate::arch_without_interrupts(|| LOG_RING.lock().len != 0)

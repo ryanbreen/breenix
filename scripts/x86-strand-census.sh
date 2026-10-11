@@ -3,10 +3,10 @@
 #
 # #568 round 2 found a blocking poll thread that was saved and then stopped
 # running. #775 removed the formatted save/restore records from the dispatch
-# path and put the same state transitions in a fixed atomic ledger. Three
+# path and put the same state transitions in a fixed atomic ledger. Two
 # contexts emit that ledger at most once per second from ordinary thread
-# context with interrupts enabled -- the scheduler's idle loop, the loopback
-# pump, and the `kstrandd` census kthread -- and the syscall completion path
+# context with interrupts enabled -- the loopback pump and the `kstrandd`
+# census kthread -- and the syscall completion path
 # emits one final snapshot outside the limiter. The newest snapshot in the
 # capture is the source of truth, so a wedged userspace thread does not have
 # to resume or exit to make its state observable.
@@ -18,8 +18,9 @@
 #
 # INPUT CONTRACT
 #   * Snapshots are written on COM2, the kernel-log channel
-#     (kernel/src/task/dispatch_strand_census.rs uses `log_serial_println!`;
-#     kernel/src/serial.rs:17-19 reserves COM1 for user I/O). The KERNEL serial
+#     (kernel/src/task/dispatch_strand_census.rs uses `enqueue_log` for
+#     heartbeats and `_log_print` for explicit snapshots; kernel/src/serial.rs
+#     reserves COM1 for user I/O). The KERNEL serial
 #     capture MUST therefore be among the arguments; the `Added thread` name
 #     records are on the same channel. Passing the COM1 capture as well is
 #     harmless, and is what all three in-repo callers do.

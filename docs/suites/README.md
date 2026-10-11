@@ -30,10 +30,11 @@ as `_`, and reads the `static` that `main` calls `.run()` on, so comments, disab
 calls outside that table do not count.
 
 A suite whose cases read clocks, measure time or exercise concurrency adds
-`"timingSensitive": true`. All current suites do, including smoke's monotonic-clock case.
+`"timingSensitive": true`, including smoke for its monotonic-clock case.
 `tests/suite_manifests.rs` checks this admission policy as well as manifest shape.
-Before a boot of such a suite starts its VM, the boot tooling waits for a quiet host, as
-"Shared host slots" in `docs/boot-path.md` describes.
+Before such a suite boots in the x86 gate VM, its launcher waits for a quiet host, as
+"Shared host slots" in `docs/boot-path.md` describes. Mac boots record host load at
+start and verdict without waiting for it to fall.
 
 ## Serial lines
 
