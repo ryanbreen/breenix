@@ -5836,6 +5836,16 @@ impl Scheduler {
         }
     }
 
+    /// x86_64: whether this CPU has a thread queued to run, or a pinned wake
+    /// held for it.
+    #[cfg(target_arch = "x86_64")]
+    pub fn has_queued_work_here(&self) -> bool {
+        let cpu = Self::current_cpu_id();
+        cpu < MAX_CPUS
+            && (!self.per_cpu_queues[cpu].is_empty()
+                || PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) != 0)
+    }
+
     /// Get the total ready queue length across all CPUs (for tracing)
     pub fn ready_queue_length(&self) -> usize {
         self.per_cpu_queues.iter().map(|q| q.len()).sum()
