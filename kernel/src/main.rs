@@ -811,6 +811,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     {
         log::info!("=== KTHREAD_TEST_ONLY: All kthread tests passed ===");
         log::info!("KTHREAD_TEST_ONLY_COMPLETE");
+        kernel::serial::flush_log();
         unsafe {
             use x86_64::instructions::port::Port;
             let mut port = Port::new(0xf4);
@@ -827,6 +828,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         log::info!("=== WORKQUEUE_TEST_ONLY: All workqueue tests passed ===");
         log::info!("WORKQUEUE_TEST_ONLY_COMPLETE");
         // Exit QEMU with success code
+        kernel::serial::flush_log();
         unsafe {
             use x86_64::instructions::port::Port;
             let mut port = Port::new(0xf4);
@@ -843,6 +845,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         kernel::task::kthread_tests::test_kthread_stress();
         log::info!("=== KTHREAD_STRESS_TEST: All stress tests passed ===");
         log::info!("KTHREAD_STRESS_TEST_COMPLETE");
+        kernel::serial::flush_log();
         unsafe {
             use x86_64::instructions::port::Port;
             let mut port = Port::new(0xf4);
@@ -952,6 +955,7 @@ fn dns_test_only_main() -> ! {
             Err(e) => {
                 log::error!("DNS_TEST_ONLY: Failed to create dns_test: {}", e);
                 // Exit with error
+                kernel::serial::flush_log();
                 unsafe {
                     use x86_64::instructions::port::Port;
                     let mut port = Port::new(0xf4);
@@ -997,6 +1001,7 @@ fn blocking_recv_test_main() -> ! {
                 "BLOCKING_RECV_TEST: Failed to load blocking_recv_test: {}",
                 e
             );
+            kernel::serial::flush_log();
             unsafe {
                 use x86_64::instructions::port::Port;
                 let mut port = Port::new(0xf4);
@@ -1022,6 +1027,7 @@ fn blocking_recv_test_main() -> ! {
                     "BLOCKING_RECV_TEST: Failed to create blocking_recv_test: {}",
                     e
                 );
+                kernel::serial::flush_log();
                 unsafe {
                     use x86_64::instructions::port::Port;
                     let mut port = Port::new(0xf4);
@@ -1065,6 +1071,7 @@ fn nonblock_eagain_test_main() -> ! {
                 "NONBLOCK_EAGAIN_TEST: Failed to load nonblock_eagain_test: {}",
                 e
             );
+            kernel::serial::flush_log();
             unsafe {
                 use x86_64::instructions::port::Port;
                 let mut port = Port::new(0xf4);
@@ -1090,6 +1097,7 @@ fn nonblock_eagain_test_main() -> ! {
                     "NONBLOCK_EAGAIN_TEST: Failed to create nonblock_eagain_test: {}",
                     e
                 );
+                kernel::serial::flush_log();
                 unsafe {
                     use x86_64::instructions::port::Port;
                     let mut port = Port::new(0xf4);
@@ -2664,7 +2672,7 @@ fn panic(info: &PanicInfo) -> ! {
     // Try to output panic info if possible
     serial_println!("KERNEL PANIC: {}", info);
     log::error!("KERNEL PANIC: {}", info);
-    kernel::serial::flush_log_for_panic();
+    kernel::serial::flush_log();
 
     // Failure-capture PR-4: the bounded, lock-free BXCAP record.
     //

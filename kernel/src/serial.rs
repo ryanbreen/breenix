@@ -164,9 +164,11 @@ fn drain_log() {
     }
 }
 
-/// Write out whatever the kernel log still holds, from a panic, whoever holds
-/// the printer role. Bounded: a ring lock this CPU holds is left alone.
-pub fn flush_log_for_panic() {
+/// Write out whatever the kernel log still holds, whoever holds the printer
+/// role, from a context about to stop the machine: a panic, or a debug-exit
+/// write that ends QEMU, after which a line still in the ring is lost.
+/// Bounded: a ring lock this CPU holds is left alone.
+pub fn flush_log() {
     const ATTEMPTS: u32 = 1 << 20;
     crate::arch_without_interrupts(|| {
         for _ in 0..ATTEMPTS {
