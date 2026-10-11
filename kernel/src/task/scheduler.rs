@@ -1736,16 +1736,60 @@ pub fn note_x86_interrupt_return(cpu: usize) {
         return;
     }
     crate::arch_impl::x86_64::smp::credit_ticks(cpu, crate::per_cpu::running_idle_thread());
-    if LEAVING_STACK[cpu].load(Ordering::Relaxed) != 0 {
-        LEAVING_STACK[cpu].store(0, Ordering::Release);
-        let waiters = LEAVING_STACK_WAITERS[cpu].swap(0, Ordering::AcqRel);
-        for waiter in (0..MAX_CPUS).filter(|&waiter| waiters & (1 << waiter) != 0) {
-            request_resched_x86(waiter);
-        }
+    let leaving = LEAVING_STACK[cpu].load(Ordering::Relaxed);
+    if leaving != 0 {
+        release_leaving_stack(cpu, leaving);
     }
     if RESCHED_REQUESTED[cpu].swap(false, Ordering::AcqRel) {
         crate::per_cpu::set_need_resched(true);
     }
+}
+
+/// x86_64: clear this CPU's `LEAVING_STACK` entry if it still names
+/// `thread_id`, and ask the CPUs that passed over that thread to pick again.
+#[cfg(target_arch = "x86_64")]
+fn release_leaving_stack(cpu: usize, thread_id: u64) {
+    if LEAVING_STACK[cpu]
+        .compare_exchange(thread_id, 0, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let waiters = LEAVING_STACK_WAITERS[cpu].swap(0, Ordering::AcqRel);
+    for waiter in (0..MAX_CPUS).filter(|&waiter| waiters & (1 << waiter) != 0) {
+        request_resched_x86(waiter);
+    }
+}
+
+/// x86_64: the idle loop's release of the thread this CPU last switched away
+/// from. The idle loop runs on the idle thread's own kernel stack
+/// (`setup_idle_return`), so the CPU is off the outgoing thread's: checked
+/// here against the stack pointer, since a missing idle stack falls back to
+/// another. Until now the entry was released only at the CPU's next
+/// interrupt, and an idle CPU whose housekeeping masked interrupts, waiting on
+/// shootdown acknowledgements, kept the thread from every other CPU for that
+/// long: up to 35 ms under the x86 gate.
+#[cfg(target_arch = "x86_64")]
+pub fn release_outgoing_stack_from_idle() {
+    let cpu = current_cpu_id_raw();
+    if cpu >= MAX_CPUS || LEAVING_STACK[cpu].load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let rsp: u64;
+    // SAFETY: reads the stack pointer.
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
+    }
+    with_scheduler(|scheduler| {
+        let idle = scheduler.cpu_state[cpu].idle_thread;
+        let leaving = LEAVING_STACK[cpu].load(Ordering::Acquire);
+        let on_idle_stack = scheduler.get_thread(idle).is_some_and(|thread| {
+            rsp > thread.stack_bottom.as_u64() && rsp <= thread.stack_top.as_u64()
+        });
+        if leaving != 0 && leaving != idle && on_idle_stack {
+            release_leaving_stack(cpu, leaving);
+        }
+    });
 }
 
 /// x86_64: the scheduling entry of an idle CPU, made without the process

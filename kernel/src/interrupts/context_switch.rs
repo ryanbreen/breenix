@@ -1952,6 +1952,7 @@ pub fn idle_loop() -> ! {
         // which was up to 35 ms under the x86 gate, so placement takes this
         // CPU for a busy one meanwhile, and what was queued here regardless is
         // dispatched as soon as it ends.
+        crate::task::scheduler::release_outgoing_stack_from_idle();
         crate::task::scheduler::set_idle_housekeeping(true);
         crate::task::process_task::reclaim_deferred_process_resources();
         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
