@@ -119,13 +119,15 @@ each other.
 
 Every launcher calls `host_slot_quiet`, with the manifests of the suites it runs, just
 before it starts its VM: `scripts/boot-interactive.sh`, each VM path of `run.sh`, and
-`docker/qemu/run-x86-gate.sh` before each boot, which also covers Run Inspector. When a
-manifest is `timingSensitive`, the launcher first waits, holding its lease, for a quiet
-host: three samples five seconds apart with the 1-minute load average at or below half the
+`docker/qemu/run-x86-gate.sh` before each boot, which also covers Run Inspector. On a
+Linux host (the x86 gate VM), when a manifest is `timingSensitive`, the launcher first
+waits, holding its lease, for a quiet host: three samples five seconds apart with the 1-minute load average at or below half the
 CPUs and, on Linux, no CPU leaving a lowest-priority spinner unscheduled for more than
 10 ms during a half-second burst. Inside the x86 gate VM that burst is how other work on
 the physical host shows: halted vCPUs accrue no steal, and the VM's load average omits the
-host's work. After 45 minutes the boot starts anyway and is recorded as not quiet. Only
+host's work. After 45 minutes the boot starts anyway and is recorded as not quiet. Mac
+boots never wait: the wait held the Mac's single boot lease behind other projects' work
+and measured no smaller guest stalls (#1376, #1383), so they only record their load. Only
 Breenix boots wait; nothing limits other work on either host. For one invocation,
 `BREENIX_QUIET=1` or `0` forces or skips the wait, and `BREENIX_QUIET_MAX_LOAD`,
 `BREENIX_QUIET_MAX_GAP_MS` and `BREENIX_QUIET_MAX_WAIT` (seconds) replace the thresholds

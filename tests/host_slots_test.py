@@ -339,7 +339,7 @@ sys.stdin.readline()
         serial = self.root / 'serial.log'
         serial.write_text('')
         manifest = self.write_manifest(True)
-        quiet = {'QUIET_LOAD_FRACTION': 1000.0, 'QUIET_SAMPLES': 2, 'QUIET_SAMPLE_SECONDS': 0.2}
+        quiet = {'QUIET_WAITS_ON_THIS_HOST': True, 'QUIET_LOAD_FRACTION': 1000.0, 'QUIET_SAMPLES': 2, 'QUIET_SAMPLE_SECONDS': 0.2}
         session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
                               f'{sys.executable} {HELPER} quiet {manifest}; '
                               f'{sys.executable} {HELPER} serial {serial}; echo BOOTING; '
@@ -358,7 +358,7 @@ sys.stdin.readline()
         serial = self.root / 'serial.log'
         serial.write_text('')
         manifest = self.write_manifest(True)
-        busy = {'QUIET_LOAD_FRACTION': -1.0, 'QUIET_SAMPLE_SECONDS': 0.2, 'QUIET_MAX_WAIT_SECONDS': 1.0}
+        busy = {'QUIET_WAITS_ON_THIS_HOST': True, 'QUIET_LOAD_FRACTION': -1.0, 'QUIET_SAMPLE_SECONDS': 0.2, 'QUIET_MAX_WAIT_SECONDS': 1.0}
         session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
                               f'{sys.executable} {HELPER} quiet {manifest}; '
                               f'{sys.executable} {HELPER} serial {serial}; echo BOOTING', settings=busy)
@@ -376,7 +376,7 @@ sys.stdin.readline()
         serial = self.root / 'serial.log'
         serial.write_text('')
         manifest = self.write_manifest(True)
-        quiet = {'QUIET_LOAD_FRACTION': 1000.0, 'QUIET_SAMPLES': 1, 'QUIET_SAMPLE_SECONDS': 0.2}
+        quiet = {'QUIET_WAITS_ON_THIS_HOST': True, 'QUIET_LOAD_FRACTION': 1000.0, 'QUIET_SAMPLES': 1, 'QUIET_SAMPLE_SECONDS': 0.2}
         session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; {sys.executable} {HELPER} serial {serial}; '
                               f'{sys.executable} {HELPER} acquire mac-boot; {sys.executable} {HELPER} quiet {manifest}; echo BOOTING',
                               settings=quiet)
@@ -385,6 +385,21 @@ sys.stdin.readline()
         lines = serial.with_name(serial.name + '.host-slots.jsonl').read_text().splitlines()
         self.assertEqual(len(lines), 1)
         self.assertEqual(json.loads(lines[0])['quiet']['met'], True)
+
+    def test_a_host_that_does_not_wait_boots_a_timing_sensitive_suite_at_once(self):
+        manifest = self.write_manifest(True)
+        busy = {'QUIET_WAITS_ON_THIS_HOST': False, 'QUIET_LOAD_FRACTION': -1.0, 'QUIET_SAMPLE_SECONDS': 0.2,
+                'QUIET_MAX_WAIT_SECONDS': 60.0}
+        record = self.root / 'record'
+        session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
+                              f'{sys.executable} {HELPER} quiet {manifest}; '
+                              f'cp "$BREENIX_SLOT_RECORD" {record}; echo BOOTING', settings=busy)
+        self.line_matching(session, 'BOOTING', timeout=5)
+        self.assertEqual(session.wait(timeout=10), 0)
+        self.assertEqual(json.loads(record.read_text())['quiet'], {'required': False})
+
+    def test_only_linux_hosts_wait_by_default(self):
+        self.assertEqual(slots.QUIET_WAITS_ON_THIS_HOST, sys.platform != 'darwin')
 
     def test_suite_that_is_not_timing_sensitive_does_not_wait(self):
         manifest = self.write_manifest(False)
@@ -456,7 +471,8 @@ sys.stdin.readline()
 
     def test_invocation_overrides_reach_the_wait(self):
         manifest = self.write_manifest(True)
-        busy = {'QUIET_LOAD_FRACTION': -1.0, 'QUIET_SAMPLES': 1, 'QUIET_SAMPLE_SECONDS': 0.2, 'QUIET_MAX_WAIT_SECONDS': 60.0}
+        busy = {'QUIET_WAITS_ON_THIS_HOST': True, 'QUIET_LOAD_FRACTION': -1.0, 'QUIET_SAMPLES': 1, 'QUIET_SAMPLE_SECONDS': 0.2,
+                'QUIET_MAX_WAIT_SECONDS': 60.0}
         record = self.root / 'record'
         skipped = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
                               f'BREENIX_QUIET=0 {sys.executable} {HELPER} quiet {manifest}; '
