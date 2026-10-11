@@ -80,16 +80,18 @@ fn read_rtc_raw_with(mut read: impl FnMut(u8) -> u8) -> Result<RTCTime, &'static
     let frequency = super::tsc::frequency_hz();
     let started = super::tsc::read_tsc_serialized();
     let timeout = frequency / 100; // 10 ms stabilization retry window.
+    let mut attempts = 0;
     loop {
+        attempts += 1;
         let raw = crate::arch_without_interrupts(|| {
             let mut cache = CMOS_LOCK.lock();
             let before = super::tsc::read_tsc_serialized();
             let budget = frequency / 2;
             let raw = match cache.as_ref() {
                 Some(cached) if before.wrapping_sub(cached.sampled_tsc) < budget => {
-                    cmos::seconds(&mut read).and_then(|second| {
+                    cmos::live_time(&mut read).and_then(|(second, minute)| {
                         let age = super::tsc::read_tsc_serialized().wrapping_sub(cached.sampled_tsc);
-                        cmos::advance_cached(cached.raw, second, age, budget)
+                        cmos::advance_cached(cached.raw, second, minute, age, budget)
                             .or_else(|| cmos::snapshot(&mut read))
                     })
                 }
@@ -112,7 +114,9 @@ fn read_rtc_raw_with(mut read: impl FnMut(u8) -> u8) -> Result<RTCTime, &'static
         if let Some(raw) = raw {
             return Ok(decode_rtc(raw));
         }
-        if super::tsc::read_tsc_serialized().wrapping_sub(started) >= timeout {
+        if cmos::retry_exhausted(
+            super::tsc::read_tsc_serialized().wrapping_sub(started), timeout, attempts,
+        ) {
             return Err("RTC did not stabilize");
         }
         core::hint::spin_loop();
@@ -264,59 +268,15 @@ impl DateTime {
     }
 }
 
-#[allow(dead_code)]
-fn rtc_time_to_datetime(rtc: &RTCTime) -> DateTime {
-    DateTime {
-        year: rtc.year,
-        month: rtc.month,
-        day: rtc.day,
-        hour: rtc.hour,
-        minute: rtc.minute,
-        second: rtc.second,
-    }
-}
-
 #[cfg(target_arch = "x86_64")]
 pub fn read_rtc_time() -> Result<u64, &'static str> {
     read_rtc_raw().map(|time| rtc_to_unix_timestamp(&time))
 }
 
-/// Read the current date and time from the RTC
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-pub fn read_datetime() -> DateTime {
-    match read_rtc_raw() {
-        Ok(time) => rtc_time_to_datetime(&time),
-        Err(_) => DateTime::from_unix_timestamp(0),
-    }
-}
-
 /// Initialize RTC and cache boot time
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
-    let mut result = Err("RTC did not stabilize");
-    // Two bounded startup samples expose cold/warm port costs without adding
-    // profiling work or output to RTC_RD_TIME's polling path.
-    for mode in ["cold", "warm"] {
-        let before = super::tsc::read_tsc_serialized();
-        let mut reads = 0u64;
-        let mut port_cycles = 0u64;
-        let mut uip_waits = 0u64;
-        result = read_rtc_raw_with(|reg| {
-            let start = super::tsc::read_tsc_serialized();
-            let value = read_rtc_register(reg);
-            port_cycles += super::tsc::read_tsc_serialized() - start;
-            reads += 1;
-            if reg == 0x0a && value & 0x80 != 0 { uip_waits += 1; }
-            value
-        }).map(|time| rtc_to_unix_timestamp(&time));
-        let elapsed = super::tsc::read_tsc_serialized() - before;
-        let hz = super::tsc::frequency_hz();
-        log::info!("RTC_COST mode={} reads={} port_accesses={} port_ns={} total_ns={} uip_waits={}",
-            mode, reads, 2 * reads, port_cycles * 1_000_000_000 / hz,
-            elapsed * 1_000_000_000 / hz, uip_waits);
-    }
-    match result {
+    match read_rtc_time() {
         Ok(timestamp) => {
             BOOT_WALL_TIME.store(timestamp, Ordering::Relaxed);
             let dt = DateTime::from_unix_timestamp(timestamp);

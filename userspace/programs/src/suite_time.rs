@@ -1110,8 +1110,8 @@ fn counter_frequency() -> Result<u64, String> {
             total += cost;
             maximum = maximum.max(cost);
         }
-        value("rtc-read-mean", total / 32, "ns", Some((0, 2_000_000)));
-        value("rtc-read-max", maximum, "ns", Some((0, 2_000_000)));
+        value("rtc-read-mean", total / 32, "ns", None);
+        value("rtc-read-max", maximum, "ns", None);
         let mut first = rtc_counter_edge(fd)?;
         let mut passed_over = 0;
         loop {

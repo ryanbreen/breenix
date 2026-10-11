@@ -1,6 +1,7 @@
 //! A CMOS calendar snapshot guarded against the RTC's asynchronous update.
 
 const SECONDS: u8 = 0x00;
+const MINUTES: u8 = 0x02;
 const STATUS_A: u8 = 0x0a;
 const STATUS_B: u8 = 0x0b;
 const UIP: u8 = 0x80;
@@ -17,7 +18,7 @@ pub(crate) fn snapshot(mut read: impl FnMut(u8) -> u8) -> Option<[u8; 7]> {
     }
     let time = [
         second,
-        read(0x02),
+        read(MINUTES),
         read(0x04),
         read(0x07),
         read(0x08),
@@ -30,27 +31,31 @@ pub(crate) fn snapshot(mut read: impl FnMut(u8) -> u8) -> Option<[u8; 7]> {
     Some(time)
 }
 
-/// A live seconds sample. Reading seconds on both sides of UIP rejects an
-/// ongoing update as well as one completed while the caller was paused.
-pub(crate) fn seconds(mut read: impl FnMut(u8) -> u8) -> Option<u8> {
+/// Sample live seconds and minutes between seconds/UIP checks.
+pub(crate) fn live_time(mut read: impl FnMut(u8) -> u8) -> Option<(u8, u8)> {
     let second = read(SECONDS);
+    if read(STATUS_A) & UIP != 0 {
+        return None;
+    }
+    let minute = read(MINUTES);
     if read(STATUS_A) & UIP != 0 || read(SECONDS) != second {
         return None;
     }
-    Some(second)
+    Some((second, minute))
 }
 
-/// Reuse calendar fields only within the same RTC minute and for a short
-/// observation gap. Seconds are always read from CMOS, never extrapolated
-/// from the processor counter. A minute/date rollover or a long pause needs
-/// a full guarded snapshot. RTC writes must invalidate the driver's cache.
+/// Reuse the calendar when the live minute matches and the observation gap
+/// is short. Seconds come from CMOS rather than the processor counter.
+/// A changed minute or skipped/backwards second requests a full snapshot.
+/// RTC writes must invalidate the driver's cache.
 pub(crate) fn advance_cached(
     mut raw: [u8; 7],
     second: u8,
+    minute: u8,
     age: u64,
     budget: u64,
 ) -> Option<[u8; 7]> {
-    if budget == 0 || age >= budget {
+    if minute != raw[1] || budget == 0 || age >= budget {
         return None;
     }
     let decode = |value: u8| {
@@ -69,7 +74,7 @@ pub(crate) fn advance_cached(
     Some(raw)
 }
 
-/// Preserve the PM bit before BCD conversion; 12 AM is zero, 12 PM is twelve.
+/// Preserve the PM bit before BCD conversion; 12 AM maps to 0, 12 PM to 12.
 pub(crate) fn decode_hour(raw: u8, status_b: u8) -> u8 {
     let pm = raw & 0x80 != 0;
     let hour = raw & 0x7f;
@@ -83,6 +88,11 @@ pub(crate) fn decode_hour(raw: u8, status_b: u8) -> u8 {
     } else {
         hour % 12 + if pm { 12 } else { 0 }
     }
+}
+
+/// A deschedule after one rejected sample should leave room to retry.
+pub(crate) fn retry_exhausted(elapsed: u64, timeout: u64, attempts: u32) -> bool {
+    elapsed >= timeout && attempts >= 8
 }
 
 #[cfg(test)]
@@ -110,33 +120,47 @@ mod tests {
     fn cached_calendar_tracks_live_seconds_but_never_crosses_a_minute() {
         let mut raw = OLD;
         raw[0] = 0x09;
-        let next = advance_cached(raw, 0x10, 1, 10).unwrap();
+        let next = advance_cached(raw, 0x10, raw[1], 1, 10).unwrap();
         assert_eq!(next[0], 0x10);
         assert_eq!(next[1..], raw[1..]);
-        assert_eq!(advance_cached(OLD, NEW[0], 1, 10), None);
-        assert_eq!(advance_cached(raw, 0x08, 1, 10), None);
-        assert_eq!(advance_cached(raw, 0x11, 1, 10), None);
-        assert_eq!(advance_cached(raw, raw[0], 10, 10), None);
-        assert_eq!(advance_cached(raw, raw[0], 1, 0), None);
+        assert_eq!(advance_cached(OLD, NEW[0], NEW[1], 1, 10), None);
+        assert_eq!(advance_cached(raw, 0x08, raw[1], 1, 10), None);
+        assert_eq!(advance_cached(raw, 0x11, raw[1], 1, 10), None);
+        assert_eq!(advance_cached(raw, raw[0], raw[1], 10, 10), None);
+        assert_eq!(advance_cached(raw, raw[0], raw[1], 1, 0), None);
         raw[6] |= 0x04;
         raw[0] = 9;
-        assert_eq!(advance_cached(raw, 10, 1, 10).unwrap()[0], 10);
+        assert_eq!(advance_cached(raw, 10, raw[1], 1, 10).unwrap()[0], 10);
         raw[0] = 59;
-        assert_eq!(advance_cached(raw, 0, 1, 10), None);
+        assert_eq!(advance_cached(raw, 0, raw[1], 1, 10), None);
     }
 
     #[test]
-    fn live_seconds_reject_uip_and_completed_updates() {
-        assert_eq!(seconds(|reg| register(OLD, reg)), Some(OLD[0]));
+    fn changed_minute_rejects_a_cache_even_when_tsc_and_seconds_match() {
+        let raw = [0x10, 0x20, 0x12, 0x10, 0x10, 0x26, 0x02];
+        assert_eq!(advance_cached(raw, 0x10, 0x21, 0, 10), None);
+        assert_eq!(advance_cached(raw, 0x11, 0x22, 1, 10), None);
+    }
+
+    #[test]
+    fn retries_need_both_elapsed_deadline_and_minimum_attempts() {
+        assert!(!retry_exhausted(100, 10, 1));
+        assert!(!retry_exhausted(9, 10, 8));
+        assert!(retry_exhausted(10, 10, 8));
+    }
+
+    #[test]
+    fn live_time_rejects_uip_and_completed_updates() {
+        assert_eq!(live_time(|reg| register(OLD, reg)), Some((OLD[0], OLD[1])));
         assert_eq!(
-            seconds(|reg| if reg == STATUS_A { UIP } else { OLD[0] }),
+            live_time(|reg| if reg == STATUS_A { UIP } else { OLD[0] }),
             None
         );
         let mut accesses = 0;
         assert_eq!(
-            seconds(|reg| {
+            live_time(|reg| {
                 accesses += 1;
-                register(if accesses < 3 { OLD } else { NEW }, reg)
+                register(if accesses < 5 { OLD } else { NEW }, reg)
             }),
             None
         );
@@ -204,8 +228,8 @@ mod tests {
 
     #[test]
     fn completed_rollover_at_every_read_boundary_never_returns_a_torn_date() {
-        // Even if UIP was entirely missed, a completed update at any port
-        // boundary can return only the old date, the new date, or a retry.
+        // Exercise 11 read boundaries around a completed year rollover,
+        // including updates whose UIP indication is missed.
         for boundary in 0..=10 {
             let mut accesses = 0;
             let result = snapshot(|reg| {
