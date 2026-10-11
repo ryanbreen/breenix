@@ -330,7 +330,9 @@ pub fn ev_on(cpu: usize, kind: u64, arg: u64) {
 }
 
 pub fn ev(kind: u64, arg: u64) {
-    ev_on(cpu(), kind, arg);
+    if crate::per_cpu::is_initialized() {
+        ev_on(cpu(), kind, arg);
+    }
 }
 
 const SNAPS: usize = 6;
