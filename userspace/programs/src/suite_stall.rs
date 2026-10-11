@@ -1,7 +1,11 @@
 //! Scratch stall measurement (never merged). Before a one-case suite, it runs thirty
 //! 300 ms burns on one thread, then one burner pinned to each CPU for 30 s, and prints
-//! every gap of 4 ms or more between consecutive monotonic clock reads at once, with
-//! how much of the gap the thread's CPU-time clock charged.
+//! every gap of 4 ms or more between consecutive thread CPU-time reads, with how much of
+//! the gap that clock charged. Each CPU-time read sits between two monotonic reads, so
+//! the wall time between two CPU-time reads is known to within SKEW_NS at each end; a
+//! sample whose bracket is wider (a stall inside it) does not end an interval, which
+//! runs on to the next tight sample. A charged stall therefore lands in one interval
+//! with its charge, never in the wall delta of one and the CPU delta of the next.
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use libbreenix::process::{self, ForkResult};
@@ -30,6 +34,7 @@ const CLOCK_PROCESS_CPUTIME_ID: i32 = 2;
 const CLOCK_THREAD_CPUTIME_ID: i32 = 3;
 const GAP_NS: i64 = 4_000_000;
 const PINNED_NS: i64 = 30_000_000_000;
+const SKEW_NS: i64 = 200_000;
 
 fn sc(n: u64, args: &[u64]) -> i64 {
     let a = |i: usize| args.get(i).copied().unwrap_or(0);
@@ -95,29 +100,44 @@ fn burns() {
     }
 }
 
+/// The thread's CPU time, between two monotonic reads.
+fn sample() -> (i64, i64, i64) {
+    let before = clock_ns(CLOCK_MONOTONIC);
+    let cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID);
+    (before, cpu, clock_ns(CLOCK_MONOTONIC))
+}
+
 fn pinned(cpu: u32, ready: Arc<AtomicU32>, total: u32, phase: Arc<AtomicI64>) -> (String, Vec<(i64, i64, i64)>) {
     let mut gaps_seen = Vec::with_capacity(4096);
     if !pin_to(cpu) { ready.fetch_add(1, Ordering::SeqCst); return (format!("STALL CPU cpu={cpu} pin=failed"), gaps_seen); }
     if ready.fetch_add(1, Ordering::SeqCst) + 1 == total { phase.store(clock_ns(CLOCK_MONOTONIC), Ordering::SeqCst); }
     while ready.load(Ordering::SeqCst) < total {}
-    let start = clock_ns(CLOCK_MONOTONIC);
-    let (mut m, mut c) = (start, clock_ns(CLOCK_THREAD_CPUTIME_ID));
+    let (mut a, mut c, mut b) = sample();
+    let start = a;
     let (mut iterations, mut worst, mut gaps, mut charged_gaps, mut worst_uncharged) = (0u64, 0i64, 0u32, 0u32, 0i64);
+    let (mut wide, mut widest) = (0u32, 0i64);
     loop {
-        let (m1, c1) = (clock_ns(CLOCK_MONOTONIC), clock_ns(CLOCK_THREAD_CPUTIME_ID));
+        let (a1, c1, b1) = sample();
         iterations += 1;
-        let (gap, charged) = (m1 - m, c1 - c);
+        if b1 - a1 > SKEW_NS {
+            wide += 1;
+            widest = widest.max(b1 - a1);
+            if b1 - start >= PINNED_NS { break; }
+            continue;
+        }
+        // Between the two CPU-time reads: at least a1 - b, at most b1 - a.
+        let (gap, charged) = ((a1 - b + b1 - a) / 2, c1 - c);
         if gap > worst { worst = gap; }
         if gap >= GAP_NS {
             gaps += 1;
             if charged * 2 >= gap { charged_gaps += 1; } else { worst_uncharged = worst_uncharged.max(gap); }
-            if gaps_seen.len() < gaps_seen.capacity() { gaps_seen.push((m, gap, charged)); }
+            if gaps_seen.len() < gaps_seen.capacity() { gaps_seen.push((b, gap, charged)); }
         }
-        m = m1;
-        c = c1;
-        if m - start >= PINNED_NS { break; }
+        (a, c, b) = (a1, c1, b1);
+        if b - start >= PINNED_NS { break; }
     }
-    (format!("STALL CPU cpu={cpu} iterations={iterations} max_gap_us={} gaps={gaps} charged_gaps={charged_gaps} max_uncharged_us={}", worst / 1000, worst_uncharged / 1000), gaps_seen)
+    (format!("STALL CPU cpu={cpu} iterations={iterations} max_gap_us={} gaps={gaps} charged_gaps={charged_gaps} max_uncharged_us={} skew_bound_us={} wide_samples={wide} widest_us={}",
+             worst / 1000, worst_uncharged / 1000, SKEW_NS / 1000, widest / 1000), gaps_seen)
 }
 
 fn measured() -> CaseResult { Ok(()) }
