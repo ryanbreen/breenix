@@ -2112,9 +2112,12 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
     // claim-lint:ok: "entirely inside this lock" is a statement about these two
     // functions, both reached from the call below; the one callee that
     // escapes the no-logging property is #756.
+    // Declared before the guard: an abandoned child is released after the PM
+    // unlock.
+    let mut abandoned = None;
     let mut manager_guard = crate::process::manager();
     let fork_result = match *manager_guard {
-        Some(ref mut manager) => manager.finish_fork(fork, copied, parent_context),
+        Some(ref mut manager) => manager.finish_fork(fork, copied, parent_context, &mut abandoned),
         None => Err("Process manager not available"),
     };
 

@@ -169,6 +169,15 @@ pub(crate) struct ForkCopy {
     claim: crate::memory::fork_copy::CopyClaim,
 }
 
+/// A fork that published no child: its child table, file bindings and row.
+/// The caller drops it after it releases PROCESS_MANAGER, since releasing the
+/// leaves of a large child table walks the whole table.
+pub(crate) struct AbandonedFork {
+    _child_page_table: crate::memory::process_memory::UnpublishedPageTable,
+    _vmas: Vec<crate::memory::vma::Vma>,
+    _child_process: Process,
+}
+
 impl ForkCopy {
     /// Share the parent's pages with the child, write-protecting the parent's
     /// writable private ones. Called without PROCESS_MANAGER, with interrupts
@@ -2971,7 +2980,7 @@ impl ProcessManager {
     /// End a fork's copy under PROCESS_MANAGER: give up the claim on the
     /// parent's address space and, if the copy succeeded and the parent is
     /// not being killed, hand back the child row ready to complete. A failed
-    /// or abandoned fork's child table and bindings are released here.
+    /// or abandoned fork's child table, bindings and row go to `abandoned`.
     ///
     /// A parent whose group is exiting, by a group exit or a fatal signal
     /// that arrived during the copy, gets no child, as a clone in a dying
@@ -2980,6 +2989,7 @@ impl ProcessManager {
         &mut self,
         fork: ForkCopy,
         copied: Result<(), &'static str>,
+        abandoned: &mut Option<AbandonedFork>,
     ) -> Result<(ProcessId, ProcessId, Thread, Process), &'static str> {
         let ForkCopy {
             parent_pid,
@@ -2992,13 +3002,21 @@ impl ProcessManager {
             ..
         } = fork;
         drop(claim);
-        copied?;
-        let parent = self
-            .processes
-            .live_row(&parent_pid)
-            .ok_or("Parent process not found")?;
-        if parent.group_exit_code.is_some() {
-            return Err("Parent process is exiting");
+        let refusal = match (copied, self.processes.live_row(&parent_pid)) {
+            (Err(error), _) => Some(error),
+            (Ok(()), None) => Some("Parent process not found"),
+            (Ok(()), Some(parent)) if parent.group_exit_code.is_some() => {
+                Some("Parent process is exiting")
+            }
+            (Ok(()), Some(_)) => None,
+        };
+        if let Some(error) = refusal {
+            *abandoned = Some(AbandonedFork {
+                _child_page_table: child_page_table,
+                _vmas: vmas,
+                _child_process: child_process,
+            });
+            return Err(error);
         }
         child_process.vmas = vmas;
         child_process.page_table = Some(child_page_table.publish());
@@ -3035,9 +3053,10 @@ impl ProcessManager {
         fork: ForkCopy,
         copied: Result<(), &'static str>,
         parent_context: crate::task::thread::CpuContext,
+        abandoned: &mut Option<AbandonedFork>,
     ) -> Result<ProcessId, &'static str> {
         let (parent_pid, child_pid, parent_thread, child_process) =
-            self.end_fork_copy(fork, copied)?;
+            self.end_fork_copy(fork, copied, abandoned)?;
         self.complete_fork(
             parent_pid,
             child_pid,
@@ -3058,12 +3077,13 @@ impl ProcessManager {
         fork: ForkCopy,
         copied: Result<(), &'static str>,
         parent_context: crate::task::thread::CpuContext,
+        abandoned: &mut Option<AbandonedFork>,
     ) -> Result<ProcessId, &'static str> {
         // NOTE: No logging in this function — it runs under PM lock which disables
         // interrupts on ARM64. Acquiring the logger lock here can deadlock if another
         // thread was preempted while holding it. Use tracing events instead.
         let (parent_pid, child_pid, parent_thread, child_process) =
-            self.end_fork_copy(fork, copied)?;
+            self.end_fork_copy(fork, copied, abandoned)?;
         self.complete_fork_aarch64(
             parent_pid,
             child_pid,
@@ -5660,6 +5680,7 @@ impl ProcessManager {
         );
         let mut fork = self.begin_fork(parent_pid, child_page_table)?;
         let copied = fork.copy();
-        self.finish_fork(fork, copied, parent_context)
+        let mut abandoned = None;
+        self.finish_fork(fork, copied, parent_context, &mut abandoned)
     }
 }

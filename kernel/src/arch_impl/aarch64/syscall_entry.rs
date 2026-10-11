@@ -1195,10 +1195,12 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     // it up (`memory::fork_copy`).
     let copied = fork.copy();
 
-    // Phase 4: publish the child under the PM lock (NO logging inside).
+    // Phase 4: publish the child under the PM lock (NO logging inside). An
+    // abandoned child, declared before the guard, is released after the unlock.
+    let mut abandoned = None;
     let mut manager_guard = crate::process::manager();
     let fork_result = if let Some(ref mut manager) = *manager_guard {
-        manager.finish_fork(fork, copied, parent_context)
+        manager.finish_fork(fork, copied, parent_context, &mut abandoned)
     } else {
         Err("Process manager not available")
     };
