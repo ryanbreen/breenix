@@ -2497,8 +2497,8 @@ impl ProcessManager {
     /// the address space moved.
     ///
     /// Called under PROCESS_MANAGER from every exit path before it releases a
-    /// row's address space. Dropping its final lifetime token can free that
-    /// token's allocation; the page-table transfer takes no other lock.
+    /// row's address space. Replacing the heir's metadata and dropping the
+    /// final lifetime token can free their allocations.
     pub(crate) fn hand_off_address_space(&mut self, pid: ProcessId) -> bool {
         let moved = self.transfer_address_space(pid);
         if let Some(row) = self.processes.live_row_mut(&pid) {
