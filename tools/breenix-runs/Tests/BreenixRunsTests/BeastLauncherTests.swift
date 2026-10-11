@@ -23,17 +23,6 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertTrue(request.arguments.last!.contains("BREENIX_BOOT_SUITE=files-io,directories,processes"))
     }
 
-    func testReserveHelperWrapsTheInVMGateOnTheHost() {
-        let paths = BeastPaths(clonePath: "/root/breenix-20261011T155618Z-x86_64-gate-1c01")
-        let plain = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: paths)
-        let wrapped = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: paths, reserveHelperBase64: "cmVzZXJ2ZQ==")
-        let helper = "/tmp/breenix-20261011T155618Z-x86_64-gate-1c01-x86-reserve.py"
-        XCTAssertEqual(wrapped.arguments.last,
-            "printf %s cmVzZXJ2ZQ== | base64 -d > \(helper) && exec sudo -n python3 \(helper) --remove-self --instance breenix-x86 -- "
-            + plain.arguments.last!)
-        XCTAssertEqual(Array(wrapped.arguments.dropLast()), Array(plain.arguments.dropLast()))
-    }
-
     func testPersistentTreePreparationAndCleanupKeepRunEvidencePrivate() {
         var paths = BeastPaths(clonePath: "/root/run")
         paths.laneKey = String(repeating: "a", count: 64)

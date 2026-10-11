@@ -102,7 +102,6 @@ public struct BeastLauncher {
     public var slotHelperBase64: String?
     public var vigilScript: URL?
     public var treeHelperBase64: String?
-    public var reserveHelperBase64: String?
     var makeSignals: (ProcessRunner) -> X86LaunchSignals = { X86LaunchSignals(runner: $0) }
     public var serialStreaming: X86SerialStreaming
 
@@ -113,7 +112,6 @@ public struct BeastLauncher {
         pathsTemplate: BeastPaths = BeastPaths(clonePath: ""),
         slotHelperBase64: String? = nil,
         treeHelperBase64: String? = nil,
-        reserveHelperBase64: String? = nil,
         vigilScript: URL? = nil,
         serialStreaming: X86SerialStreaming = SSHSerialStreaming()
     ) {
@@ -125,7 +123,6 @@ public struct BeastLauncher {
         self.pathsTemplate = pathsTemplate
         self.slotHelperBase64 = slotHelperBase64
         self.treeHelperBase64 = treeHelperBase64
-        self.reserveHelperBase64 = reserveHelperBase64
         self.vigilScript = vigilScript
         self.serialStreaming = serialStreaming
     }
@@ -154,8 +151,7 @@ public struct BeastLauncher {
             suite: options.suite,
             fullBackstopSecs: fullBackstopSecs,
             slotHelperBase64: slotHelperBase64,
-            treeHelperBase64: treeHelperBase64,
-            reserveHelperBase64: reserveHelperBase64
+            treeHelperBase64: treeHelperBase64
         )
     }
 

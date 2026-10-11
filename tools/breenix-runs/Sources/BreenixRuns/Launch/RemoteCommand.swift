@@ -86,7 +86,7 @@ public enum RemoteCommand {
         return ids.allSatisfy(isSuiteID) && Set(ids).count == ids.count
     }
 
-    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, treeHelperBase64: String? = nil, reserveHelperBase64: String? = nil) -> Plan {
+    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, treeHelperBase64: String? = nil) -> Plan {
         Plan(
             sha: sha,
             boots: boots,
@@ -94,7 +94,7 @@ public enum RemoteCommand {
             timeoutSecs: timeoutSecs,
             paths: paths,
             prepareClone: prepareCloneRequest(sha: sha, paths: paths, treeHelperBase64: treeHelperBase64),
-            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs, slotHelperBase64: slotHelperBase64, reserveHelperBase64: reserveHelperBase64),
+            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs, slotHelperBase64: slotHelperBase64),
             pullEvidence: pullEvidenceRequest(paths: paths),
             removeClone: removeCloneRequest(paths: paths)
         )
@@ -130,9 +130,7 @@ public enum RemoteCommand {
     // production kernel running /sbin/suite-<id>, with a QMP socket in gate-tmp for its screen.
     // An id that is not one never reaches the shell: the request fails the gate instead of
     // quietly running the ordinary one (BeastLauncher refuses such an id before this).
-    // With `reserveHelperBase64`, scripts/x86-host-reserve.py runs on the host around the
-    // in-VM gate and reserves host CPU time for the VM's vCPUs during each boot phase (#1368).
-    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, reserveHelperBase64: String? = nil) -> ProcessRequest {
+    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil) -> ProcessRequest {
         // Explicit opt-in test/profile features; never interpolate unchecked shell text.
         let features = ProcessInfo.processInfo.environment["BREENIX_GATE_KERNEL_FEATURES"] ?? ""
         guard features.isEmpty || features.range(of: "^[a-zA-Z0-9_-]+(,[a-zA-Z0-9_-]+)*$", options: .regularExpression) != nil else {
@@ -180,13 +178,7 @@ public enum RemoteCommand {
             + (paths.fresh ? " BREENIX_GATE_FRESH=1" : "")
             + featureEnv + profileEnv + suiteEnv + slotIdentity
             + " " + launch
-        guard let reserveHelperBase64 else {
-            return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
-        }
-        let reserveHelper = "/tmp/" + URL(fileURLWithPath: paths.clonePath).lastPathComponent + "-x86-reserve.py"
-        return sshRequest(paths: paths, remote: "printf %s \(reserveHelperBase64) | base64 -d > \(reserveHelper)"
-            + " && exec sudo -n python3 \(reserveHelper) --remove-self --instance \(paths.container) -- "
-            + incusBashLC(paths: paths, script: script))
+        return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }
 
     /// Nonblocking output keeps the heartbeat deadline active under backpressure.
