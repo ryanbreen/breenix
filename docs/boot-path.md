@@ -113,7 +113,11 @@ A guest's vCPUs are host threads, and a guest charges the time a busy host leave
 unscheduled as running, so timing cases fail on a loaded host. An x86 boot therefore first
 holds every build lease (after builds queued before it, ahead of those queued after it),
 then its boot lease, and keeps both until it ends: no build runs in the gate VM during a
-boot. On the Mac, before a boot of a suite whose manifest is `timingSensitive` starts its
+boot. Other work on the gate VM's host stalls the guest the same way, so the Run Inspector
+launcher runs `scripts/x86-host-reserve.py` on that host around the gate: from the gate's
+`phase=boot started` line to its `phase=boot ended` line, the VM's vCPU threads hold a
+SCHED_DEADLINE reservation of 95 ms in every 100 ms, which preempts all ordinary host work,
+and the helper's `[x86-reserve]` lines in the gate output record it. On the Mac, before a boot of a suite whose manifest is `timingSensitive` starts its
 VM, the launcher waits, holding its lease, until the 1-minute load average has stayed at or
 below half the host's CPUs for three samples five seconds apart; after an hour it boots
 anyway and records the host as not quiet. Only Breenix boots wait; other work on the host

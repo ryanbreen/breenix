@@ -473,6 +473,7 @@ func main() -> Int32 {
                     pathsTemplate: BeastPaths(host: runArgs.host, clonePath: ""),
                     slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString(),
                     treeHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/gate-tree.py")).base64EncodedString(),
+                    reserveHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/x86-host-reserve.py")).base64EncodedString(),
                     vigilScript: root.appendingPathComponent("scripts/vigil-record.sh")
                 )
                 var options = BeastLaunchOptions(
