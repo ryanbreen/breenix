@@ -1854,7 +1854,7 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
-        flush_tlb, get_current_thread_id, place_below_hint, prot_to_page_flags, PAGE_SIZE,
+        flush_new_mapping, get_current_thread_id, place_below_hint, prot_to_page_flags, PAGE_SIZE,
     };
 
     let buffer_id = cmd.p1 as u32;
@@ -2045,7 +2045,7 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
         if let Err(_) = page_table.map_page(page, frame, page_flags) {
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
-        flush_tlb(VirtAddr::new(page_addr));
+        flush_new_mapping(VirtAddr::new(page_addr));
     }
 
     // Create new VMA
@@ -2107,7 +2107,7 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
-        flush_tlb, get_current_thread_id, place_below_hint, prot_to_page_flags, PAGE_SIZE,
+        flush_new_mapping, get_current_thread_id, place_below_hint, prot_to_page_flags, PAGE_SIZE,
     };
 
     let buffer_id = cmd.p1 as u32;
@@ -2178,7 +2178,7 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
         if let Err(_) = page_table.map_page(page, frame, page_flags) {
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
-        flush_tlb(VirtAddr::new(page_addr));
+        flush_new_mapping(VirtAddr::new(page_addr));
     }
 
     // Create VMA
@@ -2220,7 +2220,7 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
-        flush_tlb, get_current_thread_id, place_below_hint, prot_to_page_flags, PAGE_SIZE,
+        flush_new_mapping, get_current_thread_id, place_below_hint, prot_to_page_flags, PAGE_SIZE,
     };
 
     let out_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
@@ -2303,7 +2303,7 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
         if let Err(_) = page_table.map_page(page, frame, page_flags) {
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
-        flush_tlb(VirtAddr::new(page_addr));
+        flush_new_mapping(VirtAddr::new(page_addr));
     }
 
     // Create VMA
@@ -3046,7 +3046,7 @@ fn fbmmap(width_out: u64) -> SyscallResult {
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
-        cleanup_mapped_pages, flush_tlb, get_current_thread_id, place_below_hint,
+        cleanup_mapped_pages, flush_new_mapping, get_current_thread_id, place_below_hint,
         prot_to_page_flags, round_up_to_page, PAGE_SIZE,
     };
     #[cfg(target_arch = "x86_64")]
@@ -3258,7 +3258,7 @@ fn fbmmap(width_out: u64) -> SyscallResult {
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
 
-        flush_tlb(current_page.start_address());
+        flush_new_mapping(current_page.start_address());
         mapped_pages.push((current_page, *frame));
 
         if current_page >= end_page {
@@ -3286,6 +3286,7 @@ fn fbmmap(width_out: u64) -> SyscallResult {
         mapping_size,
         whole_screen,
     });
+    drop(manager_guard);
 
     // The pointer was validated before mapping.
     if width_out != 0 {
