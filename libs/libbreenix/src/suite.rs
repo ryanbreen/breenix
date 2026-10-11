@@ -501,6 +501,7 @@ fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut
     let mut last = monotonic_ns();
     let mut still = 0;
     let mut drawn = last;
+    let mut dumped = limit_ms < 5000;
     loop {
         let mut status = 0;
         match process::waitpid(pid, &mut status, WNOHANG) {
@@ -510,6 +511,10 @@ fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut
         }
         let now = monotonic_ns();
         let ms = ms_since(start);
+        if !dumped && ms >= 7000 {
+            dumped = true;
+            scratch_dump(pid, "at7s", 0);
+        }
         if ms >= limit_ms {
             return Waited::TimedOut(ms);
         }
@@ -532,9 +537,45 @@ fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut
     }
 }
 
+
+/// Scratch (never merged): print /proc status for `pid` and its descendants.
+fn scratch_dump(pid: i32, why: &str, depth: u32) {
+    let path = std::format!("/proc/{pid}/status");
+    let mut line = std::format!("SCRATCH {why} pid={pid}");
+    let mut children: Vec<i32> = Vec::new();
+    match fs::open(&path, 0) {
+        Ok(fd) => {
+            let mut buf = [0u8; 2048];
+            let n = fs::read(fd, &mut buf).unwrap_or(0);
+            let _ = io::close(fd);
+            let text = core::str::from_utf8(&buf[..n]).unwrap_or("");
+            for l in text.lines() {
+                for key in ["Name:", "PPid:", "State:", "Children:", "CpuTimeUs:"] {
+                    if let Some(rest) = l.strip_prefix(key) {
+                        let _ = write!(line, " {}{}", key, rest.trim());
+                        if key == "Children:" {
+                            children = rest.split_whitespace().filter_map(|c| c.parse().ok()).collect();
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let _ = write!(line, " unreadable={e:?}");
+        }
+    }
+    emit(&line);
+    if depth < 3 {
+        for child in children {
+            scratch_dump(child, why, depth + 1);
+        }
+    }
+}
+
 /// Kill a child that has run too long and reap it. Returns a note for the FAIL
 /// message when it could not be reaped.
 fn stop_child(pid: i32) -> &'static str {
+    scratch_dump(pid, "timeout", 0);
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
     }
