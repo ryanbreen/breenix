@@ -155,7 +155,9 @@ fn mutation_is_green_red_green_with_default_and_one_job() {
                 );
             }
             if fail {
-                assert_eq!(stderr, format!("GATE_PREFLIGHT: FAIL (1 of 3 structure suite(s) red: bravo_structure -- per-suite logs under {})\n", fixture.1.borrow().display()));
+                // The preflight reports its log directory canonically (/private/var, not the /var alias).
+                let logs = fs::canonicalize(&*fixture.1.borrow()).unwrap();
+                assert_eq!(stderr, format!("GATE_PREFLIGHT: FAIL (1 of 3 structure suite(s) red: bravo_structure -- per-suite logs under {})\n", logs.display()));
             } else {
                 assert!(stderr.is_empty(), "{stderr}");
             }
