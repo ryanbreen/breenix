@@ -1411,6 +1411,27 @@ fn an_page_by_page() -> CaseResult {
     check(freed == pages as i64, &format!("after touching all 4096 pages, unmapping the mapping gave back {freed} resident pages"))
 }
 
+fn an_fault_order() -> CaseResult {
+    let pages = 8192;
+    let len = pages * PAGE;
+    let up = anon(len)?;
+    let t0 = mono();
+    for i in 0..pages { poke(at(up, i * PAGE), 1); }
+    let ascending = mono() - t0;
+    unmap(up, len)?;
+    let down = anon(len)?;
+    let t0 = mono();
+    for i in (0..pages).rev() { poke(at(down, i * PAGE), 1); }
+    let descending = mono() - t0;
+    unmap(down, len)?;
+    value("ascending", ascending / pages as i64, "ns", None);
+    value("descending", descending / pages as i64, "ns", Some((0, 3 * ascending / pages as i64)));
+    check(descending <= 3 * ascending, &format!(
+        "the first touch of each page cost {} ns from the highest page down against {} ns from the lowest page up, more than 3 times as much",
+        descending / pages as i64, ascending / pages as i64
+    ))
+}
+
 fn an_churn() -> CaseResult {
     let rounds = 100;
     let before = mem_free_kb()?;
@@ -1819,6 +1840,39 @@ fn sh_private_cow_many() -> CaseResult {
     ])?;
     check(heard, "the parent heard nothing from the child")?;
     check(kept.is_none(), &format!("the parent's copy changed at byte {} when the child wrote its own", kept.unwrap_or(0)))
+}
+
+fn sh_private_cow_spread() -> CaseResult {
+    let pages = 8192;
+    let len = pages * PAGE;
+    let p = anon(len)?;
+    for i in 0..pages { poke(at(p, i * PAGE), 1); }
+    let (to_child_r, to_child_w) = pipe()?;
+    let mut child = Child::start(|| {
+        close(to_child_w);
+        if recv(to_child_r, 2 * WAIT_MS) != Some(1) { return 1; }
+        0
+    })?;
+    close(to_child_r);
+    let (groups, group) = (8, 32);
+    let (mut top, mut bottom) = (0, 0);
+    for g in 0..groups {
+        let t0 = mono();
+        for i in 0..group { poke(at(p, (pages - 1 - g * group - i) * PAGE), 2); }
+        let t1 = mono();
+        for i in 0..group { poke(at(p, (g * group + i) * PAGE), 2); }
+        top += t1 - t0;
+        bottom += mono() - t1;
+    }
+    send(to_child_w, 1);
+    child.finish("the child", &["the child heard nothing from the parent"])?;
+    let n = (groups * group) as i64;
+    value("top", top / n, "ns", None);
+    value("bottom", bottom / n, "ns", Some((0, 3 * top / n)));
+    check(bottom <= 3 * top, &format!(
+        "a copy-on-write break cost {} ns in the lowest pages of the mapping against {} ns in its highest pages, more than 3 times as much",
+        bottom / n, top / n
+    ))
 }
 
 fn sh_file_child_sees() -> CaseResult {
@@ -2483,6 +2537,7 @@ static SUITE: Suite = suite(
             case("remap-zero", "A page mapped with MAP_FIXED into the hole a munmap left reads as zero, not the old contents", an_remap_zero),
             case("sparse", "Linux policy: touching one byte every 1 MiB of a 256 MiB anonymous mapping makes about 256 pages resident, not 65536", an_sparse),
             case("page-by-page", "Each page of a 16 MiB anonymous mapping, touched in order, keeps its own contents, and unmapping it gives back all 4096 pages as resident", an_page_by_page),
+            case("fault-order", "The first touch of each page of a 32 MiB anonymous mapping costs at most 3 times as much from the highest page down as from the lowest page up", an_fault_order),
             case("churn", "Mapping, touching and unmapping 1 MiB 100 times leaves free memory within 4 MiB of where it was and the resident set no larger", an_churn),
             case("many", "1000 one-page anonymous mappings exist at once at distinct addresses, each keeping its own contents, and all unmap", an_many),
             case("unmap-cpus", "With two to four processors, worker threads pinned one to each other processor and reading a page the case's thread has just unmapped raise SIGSEGV with SEGV_MAPERR at the byte read every time and never read the old page", an_unmap_cpus),
@@ -2518,6 +2573,7 @@ static SUITE: Suite = suite(
             case("private-child-isolated", "After fork, a child's stores to a MAP_PRIVATE anonymous page are not seen by the parent", sh_private_child_isolated),
             case("private-parent-isolated", "After fork, the parent's stores to a MAP_PRIVATE anonymous page are not seen by the child", sh_private_parent_isolated),
             case("private-cow-many", "After fork, parent and child each rewrite all 64 pages of a MAP_PRIVATE mapping and each sees only its own stores", sh_private_cow_many),
+            case("private-cow-spread", "After fork, a copy-on-write break in the lowest pages of a 32 MiB MAP_PRIVATE mapping costs at most 3 times one in its highest pages", sh_private_cow_spread),
             case("file-child-sees", "A child's store into a MAP_SHARED file mapping inherited across fork is seen through the parent's mapping and by read()", sh_file_child_sees),
             case("file-independent", "Two processes that each map the same file MAP_SHARED see each other's stores", sh_file_independent),
             case("file-msync-read", "Stores into a MAP_SHARED mapping of a sparse file are on disk when msync(MS_SYNC) returns: the file has the disk blocks they need (st_blocks), and read() returns them", sh_file_msync_read),
