@@ -1940,13 +1940,15 @@ fn check_and_deliver_signals_for_current_thread(
 /// Simple idle loop - made pub for exception handlers that need to jump to idle
 pub fn idle_loop() -> ! {
     loop {
-        // This loop writes nothing to a serial port. Placement treats a CPU
+        // This loop prints no line of its own. Placement treats a CPU
         // running its idle thread as free and queues a woken thread there,
         // while a serial line is written with interrupts masked for as long as
         // the port takes to accept it: about 60 ms for the ~300-byte strand
         // census line under the x86 gate's emulation. A thread queued on an
         // idle CPU writing that line waited for it, and `kstrandd`, a kernel
-        // thread a busy CPU is seen running, emits the census instead.
+        // thread a busy CPU is seen running, emits the census instead. It
+        // does write out what is left in the kernel log ring (below), one
+        // FIFO at a time with interrupts masked only for the port writes.
         //
         // The housekeeping below holds preemption off for as long as it runs,
         // which was up to 35 ms under the x86 gate, so placement takes this
@@ -1970,6 +1972,10 @@ pub fn idle_loop() -> ! {
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
         crate::task::scheduler::set_idle_housekeeping(false);
+        // Lines logged by callers that could not wait on the UART, holding a
+        // lock or with interrupts masked, are written out here, until this
+        // CPU has something to run.
+        crate::serial::drain_log_while(|| !crate::task::scheduler::is_need_resched());
         // Reclamation can wake a waiter. Check with interrupts masked so a
         // wakeup cannot slip between the check and the atomic enable/halt.
         // A reschedule raised while the housekeeping above could not switch
