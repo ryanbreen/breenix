@@ -6,7 +6,7 @@
 use libbreenix::syscall::raw;
 use libbreenix::process::{self, ForkResult};
 use libbreenix::suite::{case, category, suite, CaseResult, Suite};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 
 #[cfg(target_arch = "x86_64")]
@@ -95,9 +95,10 @@ fn burns() {
     }
 }
 
-fn pinned(cpu: u32, ready: Arc<AtomicU32>, total: u32) -> String {
-    if !pin_to(cpu) { ready.fetch_add(1, Ordering::SeqCst); return format!("STALL CPU cpu={cpu} pin=failed"); }
-    ready.fetch_add(1, Ordering::SeqCst);
+fn pinned(cpu: u32, ready: Arc<AtomicU32>, total: u32, phase: Arc<AtomicI64>) -> (String, Vec<(i64, i64, i64)>) {
+    let mut gaps_seen = Vec::with_capacity(4096);
+    if !pin_to(cpu) { ready.fetch_add(1, Ordering::SeqCst); return (format!("STALL CPU cpu={cpu} pin=failed"), gaps_seen); }
+    if ready.fetch_add(1, Ordering::SeqCst) + 1 == total { phase.store(clock_ns(CLOCK_MONOTONIC), Ordering::SeqCst); }
     while ready.load(Ordering::SeqCst) < total {}
     let start = clock_ns(CLOCK_MONOTONIC);
     let (mut m, mut c) = (start, clock_ns(CLOCK_THREAD_CPUTIME_ID));
@@ -110,16 +111,13 @@ fn pinned(cpu: u32, ready: Arc<AtomicU32>, total: u32) -> String {
         if gap >= GAP_NS {
             gaps += 1;
             if charged * 2 >= gap { charged_gaps += 1; } else { worst_uncharged = worst_uncharged.max(gap); }
-            say(&format!("STALL GAP cpu={cpu} t_ms={} gap_us={} charged_us={} rt_ms={}", (m - start) / 1_000_000, gap / 1000, charged / 1000, clock_ns(CLOCK_REALTIME) / 1_000_000));
-            m = clock_ns(CLOCK_MONOTONIC);
-            c = clock_ns(CLOCK_THREAD_CPUTIME_ID);
-        } else {
-            m = m1;
-            c = c1;
+            if gaps_seen.len() < gaps_seen.capacity() { gaps_seen.push((m, gap, charged)); }
         }
+        m = m1;
+        c = c1;
         if m - start >= PINNED_NS { break; }
     }
-    format!("STALL CPU cpu={cpu} iterations={iterations} max_gap_us={} gaps={gaps} charged_gaps={charged_gaps} max_uncharged_us={}", worst / 1000, worst_uncharged / 1000)
+    (format!("STALL CPU cpu={cpu} iterations={iterations} max_gap_us={} gaps={gaps} charged_gaps={charged_gaps} max_uncharged_us={}", worst / 1000, worst_uncharged / 1000), gaps_seen)
 }
 
 fn measured() -> CaseResult { Ok(()) }
@@ -131,17 +129,25 @@ static SUITE: Suite = suite("stall", "Stall (scratch)", &[
 ]);
 
 fn measure() {
-    say(&format!("STALL BEGIN rt_ms={}", clock_ns(CLOCK_REALTIME) / 1_000_000));
+    say(&format!("STALL BEGIN mono_us={} rt_ms={}", clock_ns(CLOCK_MONOTONIC) / 1000, clock_ns(CLOCK_REALTIME) / 1_000_000));
     burns();
     let total = 4;
     let ready = Arc::new(AtomicU32::new(0));
+    let phase = Arc::new(AtomicI64::new(0));
     let threads: Vec<_> = (0..total).map(|cpu| {
-        let r = ready.clone();
-        std::thread::spawn(move || pinned(cpu, r, total))
+        let (r, p) = (ready.clone(), phase.clone());
+        std::thread::spawn(move || pinned(cpu, r, total, p))
     }).collect();
+    let mut results = Vec::new();
     for t in threads {
-        let line = t.join().unwrap_or_else(|_| "STALL CPU panicked".to_string());
-        say(&line);
+        results.push(t.join().unwrap_or_else(|_| ("STALL CPU panicked".to_string(), Vec::new())));
+    }
+    say(&format!("STALL PINNED mono_us={}", phase.load(Ordering::SeqCst) / 1000));
+    for (cpu, (line, gaps)) in results.iter().enumerate() {
+        for (at, gap, charged) in gaps {
+            say(&format!("STALL GAP cpu={cpu} mono_us={} gap_us={} charged_us={}", at / 1000, gap / 1000, charged / 1000));
+        }
+        say(line);
     }
     say(&format!("STALL END rt_ms={}", clock_ns(CLOCK_REALTIME) / 1_000_000));
 }
