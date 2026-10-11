@@ -1016,17 +1016,19 @@ fn resolve_stale_translation(
     addr: VirtAddr,
     needed: x86_64::structures::paging::PageTableFlags,
 ) -> bool {
-    use x86_64::structures::paging::{PageTable, PageTableFlags};
+    use crate::memory::process_memory::{descriptor_entry, descriptors};
+    use x86_64::structures::paging::PageTableFlags;
 
-    let phys_offset = crate::memory::physical_memory_offset();
     let mut table_phys = cr3 & !0xfff;
     for level in (0..4).rev() {
         let index = ((addr.as_u64() >> (12 + 9 * level)) & 0x1FF) as usize;
         // SAFETY: `table_phys` is a page-table frame of the faulting address
         // space, reached from its root through present entries, and the
-        // physical-memory window maps it.
-        let table: &PageTable = unsafe { &*(phys_offset + table_phys).as_ptr::<PageTable>() };
-        let entry = &table[index];
+        // physical-memory window maps it. Each descriptor is read in one
+        // access, since a fork may be lowering it meanwhile without the lock
+        // (`memory::fork_copy`).
+        let table = unsafe { descriptors(x86_64::PhysAddr::new(table_phys)) };
+        let entry = descriptor_entry(table[index].load(core::sync::atomic::Ordering::Relaxed));
         let flags = entry.flags();
         if !flags.contains(needed) || (level > 0 && flags.contains(PageTableFlags::HUGE_PAGE)) {
             return false;

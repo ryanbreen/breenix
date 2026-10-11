@@ -1073,6 +1073,19 @@ impl MapState {
                     super::fork_copy::wait(root);
                     continue;
                 }
+                // A binding with no live table may be a fork's child, copied
+                // but not yet published: wait, with both locks released, for
+                // the fork to publish or abandon it, then run this section
+                // again, so a child that appears keeps no revoked page.
+                if live_table(manager, rec).is_none() && super::fork_copy::forming(rec.space) {
+                    let space = rec.space;
+                    drop(inner);
+                    drop(guard);
+                    while super::fork_copy::forming(space) {
+                        core::hint::spin_loop();
+                    }
+                    continue;
+                }
                 if let Some(pt) = live_table(manager, rec) {
                     let end = rec.page(stop - 1).start_address().as_u64() + PAGE_SIZE;
                     let mut from = rec.page(low).start_address().as_u64();

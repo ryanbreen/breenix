@@ -564,6 +564,7 @@ impl BitAndAssign for PageTableFlags {
 /// - L0-L2: Can be table descriptors (point to next level) or block descriptors
 /// - L3: Always page descriptors (point to 4KB pages)
 #[derive(Copy, Clone, Eq, PartialEq)]
+#[repr(transparent)]
 pub struct PageTableEntry {
     entry: u64,
 }

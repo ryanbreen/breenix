@@ -7,10 +7,6 @@ use super::SyscallResult;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_arch = "x86_64")]
-use x86_64::structures::paging::Translate;
-#[cfg(target_arch = "x86_64")]
-use x86_64::VirtAddr;
 
 /// Architecture-conditional reset_quantum helper.
 /// Same pattern as syscall/socket.rs.
@@ -105,17 +101,16 @@ fn copy_string_from_user(user_ptr: u64, max_len: usize) -> Result<Vec<u8>, &'sta
         return Err("invalid userspace address");
     }
 
-    let mapper = unsafe { crate::memory::paging::get_mapper() };
+    // Each byte is read through the fault-handling user copy, which returns
+    // EFAULT for an unmapped byte; the tables are not walked in software,
+    // since a fork of this address space may be lowering their descriptors
+    // without the lock (`memory::fork_copy`).
     let mut buffer = Vec::new();
 
     for offset in 0..max_len {
         let addr = user_ptr
             .checked_add(offset as u64)
             .ok_or("userspace address overflow")?;
-
-        if mapper.translate_addr(VirtAddr::new(addr)).is_none() {
-            return Err("unmapped userspace address");
-        }
 
         let mut byte = 0u8;
         super::userptr::read_user_bytes(&mut byte, addr, 1)
@@ -2095,7 +2090,8 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
     // PM lock, so every CPU keeps dispatching, and with interrupts enabled; a
     // syscall otherwise runs with them masked from the INT 0x80 gate.
     // Preemption stays disabled, as for the whole syscall, so this CPU holds
-    // the parent's claim until Window 4 gives it up.
+    // the parent's claim until the copy gives it up, before Window 4 takes
+    // the lock (`memory::fork_copy`).
     let interrupts_were_enabled = x86_64::instructions::interrupts::are_enabled();
     x86_64::instructions::interrupts::enable();
     let copied = fork.copy();

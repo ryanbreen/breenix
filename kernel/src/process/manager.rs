@@ -164,29 +164,42 @@ pub(crate) struct ForkCopy {
     /// The parent's table. Only the parent's own row can free or replace it,
     /// by exiting or exec'ing, and that row's thread is this fork, inside a
     /// syscall a kill leaves to finish (`KillCustody`); a CLONE_VM sibling's
-    /// row does not own it. The claim keeps every other change off it.
+    /// row does not own it. The claim keeps every other change off it while
+    /// `copy`, its only user, reads it.
     parent_page_table: *const ProcessPageTable,
     claim: crate::memory::fork_copy::CopyClaim,
 }
 
-/// A fork that published no child: its child table, file bindings and row.
-/// The caller drops it after it releases PROCESS_MANAGER, since releasing the
-/// leaves of a large child table walks the whole table.
+/// A fork child's address space until its row is inserted: the table, still
+/// in unpublished custody, and its file bindings.
+pub(crate) struct ForkChildMemory {
+    page_table: crate::memory::process_memory::UnpublishedPageTable,
+    vmas: Vec<crate::memory::vma::Vma>,
+}
+
+/// A fork that published no child: its child table and file bindings, and its
+/// row if it got as far as building one. The caller drops it after it
+/// releases PROCESS_MANAGER, since releasing the leaves of a large child table
+/// walks the whole table.
 pub(crate) struct AbandonedFork {
-    _child_page_table: crate::memory::process_memory::UnpublishedPageTable,
-    _vmas: Vec<crate::memory::vma::Vma>,
-    _child_process: Process,
+    _memory: ForkChildMemory,
+    _child_process: Option<Process>,
 }
 
 impl ForkCopy {
     /// Share the parent's pages with the child, write-protecting the parent's
-    /// writable private ones. Called without PROCESS_MANAGER, with interrupts
-    /// enabled and preemption disabled, as `CopyClaim::take` requires.
+    /// writable private ones, then give the claim on the parent's address
+    /// space up (`CopyClaim::end_copy`). Called without PROCESS_MANAGER, with
+    /// interrupts enabled and preemption disabled, as `CopyClaim::take`
+    /// requires.
     pub(crate) fn copy(&mut self) -> Result<(), &'static str> {
         // SAFETY: see `parent_page_table`.
         let parent = unsafe { &*self.parent_page_table };
-        super::fork::setup_cow_pages_with_vmas(parent, &mut self.child_page_table, &self.vmas)
-            .map(|_| ())
+        let copied =
+            super::fork::setup_cow_pages_with_vmas(parent, &mut self.child_page_table, &self.vmas)
+                .map(|_| ());
+        self.claim.end_copy();
+        copied
     }
 }
 
@@ -2894,6 +2907,7 @@ impl ProcessManager {
                 return_rip,
                 None, // No parent context - will use parent_thread.context
                 child_process,
+                &mut None,
             )
         }
     }
@@ -2965,6 +2979,7 @@ impl ProcessManager {
 
         // SAFETY: the table is the parent row's, read under this guard.
         let root = unsafe { (*parent_page_table).level_4_frame().start_address().as_u64() };
+        let child_space = child_page_table.address_space();
         Ok(ForkCopy {
             parent_pid,
             child_pid,
@@ -2973,14 +2988,16 @@ impl ProcessManager {
             vmas,
             child_page_table,
             parent_page_table,
-            claim: crate::memory::fork_copy::CopyClaim::take(root),
+            claim: crate::memory::fork_copy::CopyClaim::take(root, child_space),
         })
     }
 
-    /// End a fork's copy under PROCESS_MANAGER: give up the claim on the
-    /// parent's address space and, if the copy succeeded and the parent is
-    /// not being killed, hand back the child row ready to complete. A failed
-    /// or abandoned fork's child table, bindings and row go to `abandoned`.
+    /// End a fork's copy under PROCESS_MANAGER: if the copy succeeded and the
+    /// parent is not being killed, hand back the child row and its address
+    /// space, still unpublished, ready to complete. A failed or abandoned
+    /// fork's child table, bindings and row go to `abandoned`. The claim, whose
+    /// copy has ended (`ForkCopy::copy`), goes back to the caller to drop once
+    /// the child is published or abandoned.
     ///
     /// A parent whose group is exiting, by a group exit or a fatal signal
     /// that arrived during the copy, gets no child, as a clone in a dying
@@ -2990,18 +3007,24 @@ impl ProcessManager {
         fork: ForkCopy,
         copied: Result<(), &'static str>,
         abandoned: &mut Option<AbandonedFork>,
-    ) -> Result<(ProcessId, ProcessId, Thread, Process), &'static str> {
+    ) -> (
+        crate::memory::fork_copy::CopyClaim,
+        Result<(ProcessId, ProcessId, Thread, Process, ForkChildMemory), &'static str>,
+    ) {
         let ForkCopy {
             parent_pid,
             child_pid,
             parent_thread,
-            mut child_process,
+            child_process,
             vmas,
             child_page_table,
             claim,
             ..
         } = fork;
-        drop(claim);
+        let memory = ForkChildMemory {
+            page_table: child_page_table,
+            vmas,
+        };
         let refusal = match (copied, self.processes.live_row(&parent_pid)) {
             (Err(error), _) => Some(error),
             (Ok(()), None) => Some("Parent process not found"),
@@ -3012,15 +3035,38 @@ impl ProcessManager {
         };
         if let Some(error) = refusal {
             *abandoned = Some(AbandonedFork {
-                _child_page_table: child_page_table,
-                _vmas: vmas,
-                _child_process: child_process,
+                _memory: memory,
+                _child_process: Some(child_process),
             });
-            return Err(error);
+            return (claim, Err(error));
         }
-        child_process.vmas = vmas;
-        child_process.page_table = Some(child_page_table.publish());
-        Ok((parent_pid, child_pid, parent_thread, child_process))
+        (
+            claim,
+            Ok((parent_pid, child_pid, parent_thread, child_process, memory)),
+        )
+    }
+
+    /// Give a fork's child address space, still unpublished, to `abandoned`
+    /// when completing the child failed before its row took the table.
+    fn abandon_unpublished(
+        memory: Option<ForkChildMemory>,
+        abandoned: &mut Option<AbandonedFork>,
+    ) {
+        if let Some(memory) = memory {
+            *abandoned = Some(AbandonedFork {
+                _memory: memory,
+                _child_process: None,
+            });
+        }
+    }
+
+    /// Publish a fork child's address space in its row, just before the row
+    /// is inserted. The fixtures that publish the table themselves pass none.
+    fn publish_child_memory(child_process: &mut Process, memory: &mut Option<ForkChildMemory>) {
+        if let Some(memory) = memory.take() {
+            child_process.vmas = memory.vmas;
+            child_process.page_table = Some(memory.page_table.publish());
+        }
     }
 
     /// Finish a fork whose copy has run (`begin_fork`, `ForkCopy::copy`),
@@ -3055,9 +3101,10 @@ impl ProcessManager {
         parent_context: crate::task::thread::CpuContext,
         abandoned: &mut Option<AbandonedFork>,
     ) -> Result<ProcessId, &'static str> {
-        let (parent_pid, child_pid, parent_thread, child_process) =
-            self.end_fork_copy(fork, copied, abandoned)?;
-        self.complete_fork(
+        let (_claim, ended) = self.end_fork_copy(fork, copied, abandoned);
+        let (parent_pid, child_pid, parent_thread, child_process, memory) = ended?;
+        let mut memory = Some(memory);
+        let completed = self.complete_fork(
             parent_pid,
             child_pid,
             &parent_thread,
@@ -3065,7 +3112,10 @@ impl ProcessManager {
             Some(parent_context.rip),
             Some(parent_context),
             child_process,
-        )
+            &mut memory,
+        );
+        Self::abandon_unpublished(memory, abandoned);
+        completed
     }
 
     /// Finish a fork whose copy has run (`begin_fork`, `ForkCopy::copy`), on
@@ -3082,15 +3132,19 @@ impl ProcessManager {
         // NOTE: No logging in this function — it runs under PM lock which disables
         // interrupts on ARM64. Acquiring the logger lock here can deadlock if another
         // thread was preempted while holding it. Use tracing events instead.
-        let (parent_pid, child_pid, parent_thread, child_process) =
-            self.end_fork_copy(fork, copied, abandoned)?;
-        self.complete_fork_aarch64(
+        let (_claim, ended) = self.end_fork_copy(fork, copied, abandoned);
+        let (parent_pid, child_pid, parent_thread, child_process, memory) = ended?;
+        let mut memory = Some(memory);
+        let completed = self.complete_fork_aarch64(
             parent_pid,
             child_pid,
             &parent_thread,
             parent_context,
             child_process,
-        )
+            &mut memory,
+        );
+        Self::abandon_unpublished(memory, abandoned);
+        completed
     }
 
     /// Complete the fork operation for ARM64 after page table is created
@@ -3108,6 +3162,7 @@ impl ProcessManager {
         parent_thread: &Thread,
         parent_context: crate::task::thread::CpuContext,
         mut child_process: Process,
+        memory: &mut Option<ForkChildMemory>,
     ) -> Result<ProcessId, &'static str> {
         use crate::memory::arch_stub::VirtAddr;
 
@@ -3231,7 +3286,10 @@ impl ProcessManager {
             parent.children.push(child_pid);
         }
 
-        // Insert the child process into the process table
+        // Insert the child process into the process table, its address space
+        // published in it only now: a failure above leaves the table in
+        // unpublished custody, released after the PM unlock.
+        Self::publish_child_memory(&mut child_process, memory);
         crate::task::exit_tally::record_start();
         self.processes.insert(child_pid, child_process);
 
@@ -3280,6 +3338,7 @@ impl ProcessManager {
         return_rip: Option<u64>,
         parent_context_override: Option<crate::task::thread::CpuContext>,
         mut child_process: Process,
+        memory: &mut Option<ForkChildMemory>,
     ) -> Result<ProcessId, &'static str> {
         // CoW fork: The child's stack pages are already shared via setup_cow_pages().
         // We use the parent's stack virtual addresses directly. When the child writes
@@ -3423,7 +3482,10 @@ impl ProcessManager {
             parent.children.push(child_pid);
         }
 
-        // Insert the child process into the process table
+        // Insert the child process into the process table, its address space
+        // published in it only now: a failure above leaves the table in
+        // unpublished custody, released after the PM unlock.
+        Self::publish_child_memory(&mut child_process, memory);
         crate::task::exit_tally::record_start();
         self.processes.insert(child_pid, child_process);
 

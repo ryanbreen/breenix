@@ -1191,8 +1191,8 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
 
     // Phase 3: copy the parent's page tables into the child's without the PM
     // lock, with interrupts enabled as in the rest of the syscall. Preemption
-    // stays disabled, so this CPU holds the parent's claim until phase 4 gives
-    // it up (`memory::fork_copy`).
+    // stays disabled, so this CPU holds the parent's claim until the copy
+    // gives it up, before phase 4 takes the lock (`memory::fork_copy`).
     let copied = fork.copy();
 
     // Phase 4: publish the child under the PM lock (NO logging inside). An
