@@ -138,6 +138,10 @@ gate_structure_preflight() {
         return 1
     }
 
+    # Export a canonical TMPDIR: trailing separators and macOS /var aliases
+    # must not give nested runners different names for the same directory.
+    log_dir="$(cd "$log_dir" && pwd -P)" || return 1
+
     # BSD and GNU xargs both support -P; /bin/bash on macOS is still 3.2.
     # Pass paths through the environment instead of interpolating shell code.
     local jobs="${BREENIX_STRUCTURE_JOBS-}"

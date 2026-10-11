@@ -289,7 +289,9 @@ def supervise_worker(argv, parent):
     for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(number, forward)
 
-    with tempfile.TemporaryDirectory(prefix='breenix-slots-') as temporary:
+    # Unix socket paths are bounded (104 bytes on macOS). Nested test/build
+    # TMPDIRs can exceed that limit; keep this private IPC endpoint short.
+    with tempfile.TemporaryDirectory(prefix='breenix-slots-', dir='/tmp') as temporary:
         session = str(Path(temporary) / 'control.sock')
         record = str(Path(temporary) / 'queue.jsonl')
         with socket.socket(socket.AF_UNIX) as server, selectors.DefaultSelector() as selector:
