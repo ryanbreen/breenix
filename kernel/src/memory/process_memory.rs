@@ -1422,15 +1422,14 @@ impl ProcessPageTable {
     /// descriptor changes in one store and keeps its frame: a walker sees the
     /// page before or after, never unmapped. Neither the tables nor their
     /// custody records change, which is why this takes `&self`. Every lowered
-    /// page's translations are flushed from every CPU before this returns,
-    /// whether it returns an error or not.
+    /// page's translations are flushed from every CPU, once, before this
+    /// returns, whether it returns an error or not.
     pub(crate) fn share_user_leaves<F>(&self, mut f: F) -> Result<(), &'static str>
     where
         F: FnMut(VirtAddr, PhysAddr, PageTableFlags) -> Result<Option<PageTableFlags>, &'static str>,
     {
         let phys_offset = crate::memory::physical_memory_offset();
         let table_at = |phys: PhysAddr| (phys_offset + phys.as_u64()).as_mut_ptr::<PageTable>();
-        #[cfg(target_arch = "x86_64")]
         let mut lowered = false;
         let mut result = Ok(());
 
@@ -1502,22 +1501,19 @@ impl ProcessPageTable {
                             break 'walk;
                         }
                         entry.set_addr(entry.addr(), flags);
-                        // x86_64: every other online CPU answers a flush by
-                        // NMI, so the parent's translations are dropped once
-                        // below, as Linux flushes once at the end of a fork's
-                        // copy. ARM64 broadcasts each page's invalidation.
-                        #[cfg(target_arch = "x86_64")]
-                        {
-                            lowered = true;
-                        }
-                        #[cfg(not(target_arch = "x86_64"))]
-                        crate::memory::tlb::flush_page(virt);
+                        lowered = true;
                     }
                 }
             }
         }
 
-        #[cfg(target_arch = "x86_64")]
+        // The translations are dropped once for the whole table, as Linux
+        // flushes once at the end of a fork's copy: on x86_64 every other
+        // online CPU answers a flush by NMI, and on ARM64 a broadcast
+        // invalidation per page cost the first fork of a 48 MB process about
+        // 100 ms. Until then another CPU may still write through a stale
+        // writable entry, which is a write racing the fork, as on Linux; the
+        // forking thread itself writes no user memory before this returns.
         if lowered {
             crate::memory::tlb::flush_all();
         }
