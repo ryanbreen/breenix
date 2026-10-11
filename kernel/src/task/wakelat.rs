@@ -286,6 +286,7 @@ pub fn report(out: &mut alloc::string::String) {
     report_snapshots(out);
     report_phases(out);
     report_pm(out);
+    report_pm_waits(out);
     let tn = TL_N.swap(0, Relaxed).max(1);
     let _ = write!(out, "WAKELAT timer-late n={} avg_us={} max_us={} hist", tn, TL_SUM.swap(0, Relaxed) / tn, TL_MAX.swap(0, Relaxed));
     hist(out, &TL_HIST);
@@ -479,5 +480,43 @@ pub fn report_pm(out: &mut alloc::string::String) {
         let loc = unsafe { &*loc };
         let x = PM_OUT_X[k].load(Relaxed);
         let _ = writeln!(out, "WAKELAT pm-long us={} cpu={} printed={} shootdown_us={} at={}:{}", v & 0xffff_ffff_ffff, v >> 48, x & 0xffff_ffff, x >> 32, loc.file(), loc.line());
+    }
+}
+
+// Blocking PM acquisitions that waited long: (waiter site, holder site at start, wait).
+const PW_OUT: usize = 24;
+static PW_N: AtomicU64 = AtomicU64::new(0);
+static PW_MAX: AtomicU64 = AtomicU64::new(0);
+static PW_WAITER: [AtomicU64; PW_OUT] = [const { AtomicU64::new(0) }; PW_OUT];
+static PW_HOLDER: [AtomicU64; PW_OUT] = [const { AtomicU64::new(0) }; PW_OUT];
+static PW_US: [AtomicU64; PW_OUT] = [const { AtomicU64::new(0) }; PW_OUT];
+pub fn pm_wait_start() -> (u64, u64) {
+    (tsc(), PM_LOC.load(Relaxed))
+}
+pub fn pm_wait_done(start: (u64, u64), waiter: &'static core::panic::Location<'static>) {
+    let d = us(tsc().saturating_sub(start.0));
+    max(&PW_MAX, d);
+    if d >= 3000 {
+        let k = PW_N.fetch_add(1, Relaxed) as usize;
+        if k < PW_OUT {
+            PW_WAITER[k].store(waiter as *const _ as u64, Relaxed);
+            PW_HOLDER[k].store(start.1, Relaxed);
+            PW_US[k].store(d, Relaxed);
+        }
+    }
+}
+pub fn report_pm_waits(out: &mut alloc::string::String) {
+    use core::fmt::Write;
+    let _ = writeln!(out, "WAKELAT pm-wait max_us={}", PW_MAX.swap(0, Relaxed));
+    let n = PW_N.swap(0, Relaxed).min(PW_OUT as u64) as usize;
+    for k in 0..n {
+        let w = PW_WAITER[k].load(Relaxed) as *const core::panic::Location<'static>;
+        let h = PW_HOLDER[k].load(Relaxed) as *const core::panic::Location<'static>;
+        if w.is_null() || h.is_null() {
+            continue;
+        }
+        // SAFETY: &'static Locations stored above.
+        let (w, h) = unsafe { (&*w, &*h) };
+        let _ = writeln!(out, "WAKELAT pm-wait us={} waiter={}:{} holder={}:{}", PW_US[k].load(Relaxed), w.file(), w.line(), h.file(), h.line());
     }
 }

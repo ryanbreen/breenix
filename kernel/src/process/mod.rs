@@ -376,7 +376,9 @@ pub fn manager() -> ProcessManagerGuard {
         if preempt_braked {
             crate::per_cpu::preempt_disable();
         }
+        let wl = crate::task::wakelat::pm_wait_start();
         let guard = PROCESS_MANAGER.lock();
+        crate::task::wakelat::pm_wait_done(wl, core::panic::Location::caller());
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
