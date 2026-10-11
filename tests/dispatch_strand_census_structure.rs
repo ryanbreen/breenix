@@ -270,7 +270,7 @@ fn the_snapshot_is_emitted_on_the_kernel_log_channel() {
     // the replacement must not move the diagnostic onto it.
     let census = read("kernel/src/task/dispatch_strand_census.rs");
     assert!(
-        census.contains("crate::log_serial_println!"),
+        census.contains("crate::serial::enqueue_log(args)") && census.contains("crate::serial::_log_print(args)"),
         "the census snapshot is not emitted on the kernel-log channel"
     );
     assert!(

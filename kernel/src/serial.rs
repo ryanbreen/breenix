@@ -560,7 +560,6 @@ macro_rules! serial_println {
 /// (`drain_log_while`). Until an idle loop drains the log every caller waits.
 #[doc(hidden)]
 pub fn _log_print(args: fmt::Arguments) {
-    use core::fmt::Write;
     use core::sync::atomic::Ordering;
 
     let may_wait = !LOG_IDLE_DRAIN.load(Ordering::Acquire)
@@ -577,7 +576,20 @@ pub fn _log_print(args: fmt::Arguments) {
             drain_until(target);
         }
     }
-    let end = crate::arch_without_interrupts(|| {
+    let end = enqueue_log(args);
+    if may_wait {
+        drain_until(end);
+    } else {
+        let _ = write_burst();
+    }
+}
+
+/// Append a complete COM2 record without waiting for the UART. The caller
+/// must arrange to drain it; overflow uses the same accounting as normal logs.
+/// Interrupts are masked only while formatting into the existing fixed ring.
+pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
+    use core::fmt::Write;
+    crate::arch_without_interrupts(|| {
         let mut ring = LOG_RING.lock();
         if ring.dropped != 0 {
             let dropped = core::mem::take(&mut ring.dropped);
@@ -585,12 +597,15 @@ pub fn _log_print(args: fmt::Arguments) {
         }
         let _ = RingWriter(&mut ring).write_fmt(args);
         ring.pushed
-    });
-    if may_wait {
-        drain_until(end);
-    } else {
-        let _ = write_burst();
-    }
+    })
+}
+
+/// Try one FIFO burst, never waiting for UART readiness, then report whether
+/// bytes remain. Thread-context housekeeping sleeps between calls so a busy
+/// UART cannot occupy its processor for the duration of a record.
+pub(crate) fn drain_log_once() -> bool {
+    let _ = write_burst();
+    crate::arch_without_interrupts(|| LOG_RING.lock().len != 0)
 }
 
 /// Macros for writing to the log serial port (COM2).

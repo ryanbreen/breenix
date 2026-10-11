@@ -5,9 +5,10 @@
 //! kernel context saved, whether its most recent save/restore event was a
 //! restore, and whether it later exited.  Keep exactly those facts in a fixed
 //! atomic ledger so the hot path adds no lock, allocation, or formatting.  The
-//! scheduler's idle loop, the loopback pump and the `kstrandd` census kthread
-//! emit rate-limited snapshots with interrupts enabled, where the COM2
-//! kernel-log lock is legal.
+//! loopback pump and the `kstrandd` census kthread queue rate-limited snapshots
+//! with interrupts enabled. `kstrandd` drains COM2 one FIFO burst per timer wake,
+//! sleeping between bursts so UART time does not occupy a processor. Completion
+//! snapshots keep the normal COM2 log path.
 
 use core::{
     fmt,
@@ -210,6 +211,11 @@ impl fmt::Display for TidList<'_> {
 /// claim-lint:ok: the three call sites are pinned by
 /// tests/dispatch_strand_census_structure.rs.
 ///
+/// Periodic snapshots only enqueue their formatted record. `kstrandd` drains
+/// one FIFO burst per wake and blocks between bursts. Completion and explicit
+/// boot-test snapshots use the normal log path, which drains synchronously when
+/// the caller may wait; otherwise it leaves delivery to idle housekeeping.
+///
 /// The snapshot goes to COM2 because that is the channel the three removed
 /// `log::info!`/`log::debug!` dispatch records used, and because COM1 is the
 /// interactive user console (kernel/src/serial.rs). Every in-repo consumer is
@@ -232,6 +238,10 @@ impl fmt::Display for TidList<'_> {
 /// tests/x86_gate_verdict_test.rs.
 /// claim-lint:ok: #775 ruling R125 fixes the permitted emission call sites.
 pub(crate) fn report_snapshot() {
+    snapshot(false);
+}
+
+fn snapshot(deferred: bool) {
     let mut threads_saved_blocked = 0u64;
     let mut stranded = 0u64;
     let mut stranded_tids = [0u64; STRANDED_TID_CAPACITY];
@@ -253,7 +263,14 @@ pub(crate) fn report_snapshot() {
     let tid_overflow = stranded.saturating_sub(stranded_tid_count as u64);
     let seq = SNAPSHOT_SEQ.fetch_add(1, Ordering::Release) + 1;
 
-    crate::log_serial_println!(
+    let emit = |args| {
+        if deferred {
+            crate::serial::enqueue_log(args);
+        } else {
+            crate::serial::_log_print(args);
+        }
+    };
+    emit(format_args!("{}\n", format_args!(
         "[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}]",
         seq,
         crate::time::get_ticks(),
@@ -264,7 +281,7 @@ pub(crate) fn report_snapshot() {
         tid_overflow,
         OVERFLOW_EVENTS.load(Ordering::Acquire),
         FactFields(fact_counts()),
-    );
+    )));
 }
 
 fn monotonic_now_ns() -> u64 {
@@ -307,12 +324,14 @@ pub(crate) fn report_heartbeat_if_due() {
         .compare_exchange(last, now.max(1), Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        report_snapshot();
+        snapshot(true);
     }
 }
 
-/// The `kstrandd` census kthread: sleep, then offer a snapshot to the shared
-/// limiter.
+/// The `kstrandd` census kthread offers a snapshot to the shared limiter and
+/// writes at most one ready FIFO burst before blocking on the scheduler timer.
+/// While COM2 has pending bytes it wakes after 1 ms; otherwise after 1 second.
+/// UART throughput affects delivery latency, not the time this thread holds a CPU.
 ///
 /// This is the one emission context that does not need some other subsystem
 /// to act first: `loopback_pump_fn` runs only when loopback traffic wakes it.
@@ -352,12 +371,13 @@ pub(crate) fn report_heartbeat_if_due() {
 /// they share one `AtomicU64` compare-exchange.
 fn census_thread_fn() {
     loop {
-        sleep_one_interval();
         report_heartbeat_if_due();
+        let pending = crate::serial::drain_log_once();
+        sleep_one_interval(if pending { 1_000_000 } else { HEARTBEAT_INTERVAL_NS });
     }
 }
 
-/// Block on the scheduler's timer heap for one heartbeat interval.
+/// Block on the scheduler's timer heap for the heartbeat or UART-drain interval.
 ///
 /// `kloopbackd` next door sleeps on `Scheduler::block_current()`, which has no
 /// timer wake at all: it stays blocked until loopback traffic unblocks it. The
@@ -377,7 +397,7 @@ fn census_thread_fn() {
 /// claim-lint:ok: the 4 boots and the fault signature are recorded in the
 /// round-4 notes and in
 /// docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
-fn sleep_one_interval() {
+fn sleep_one_interval(interval_ns: u64) {
     use super::thread::ThreadState;
 
     let Some(tid) = super::scheduler::current_thread_id() else {
@@ -386,7 +406,7 @@ fn sleep_one_interval() {
         crate::arch_halt_with_interrupts();
         return;
     };
-    let wake_at = monotonic_now_ns().saturating_add(HEARTBEAT_INTERVAL_NS);
+    let wake_at = monotonic_now_ns().saturating_add(interval_ns);
     super::scheduler::with_scheduler(|scheduler| {
         if scheduler.get_thread(tid).is_some() {
             scheduler.block_current_for_timer(wake_at);

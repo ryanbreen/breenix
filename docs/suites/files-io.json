@@ -4,6 +4,7 @@
   "area": "Files & I/O",
   "summary": "Passing every case demonstrates the listed POSIX file access, descriptor, offset, metadata, pipe, mapping and synchronization behaviors.",
   "binary": "/sbin/suite-files-io",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "open",
