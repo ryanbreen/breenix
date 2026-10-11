@@ -4,6 +4,7 @@
 //! how much of the gap the thread's CPU-time clock charged.
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
+use libbreenix::process::{self, ForkResult};
 use libbreenix::suite::{case, category, suite, CaseResult, Suite};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -129,7 +130,7 @@ static SUITE: Suite = suite("stall", "Stall (scratch)", &[
     ]),
 ]);
 
-fn main() {
+fn measure() {
     say(&format!("STALL BEGIN rt_ms={}", clock_ns(CLOCK_REALTIME) / 1_000_000));
     burns();
     let total = 4;
@@ -143,5 +144,17 @@ fn main() {
         say(&line);
     }
     say(&format!("STALL END rt_ms={}", clock_ns(CLOCK_REALTIME) / 1_000_000));
+}
+
+fn main() {
+    // PID 1 may not create threads, so a child process measures.
+    match process::fork() {
+        Ok(ForkResult::Child) => { measure(); process::exit(0) }
+        Ok(ForkResult::Parent(pid)) => {
+            let mut status = 0;
+            let _ = process::waitpid(pid.raw() as i32, &mut status, 0);
+        }
+        Err(_) => say("STALL fork failed"),
+    }
     SUITE.run()
 }
