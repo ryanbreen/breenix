@@ -2212,7 +2212,7 @@ fn kernel_main_continue() -> ! {
         for name in ["hello_musl", "env_musl_test", "uname_musl_test",
                      "rlimit_musl_test", "identity_musl_test"] {
             let binary = userspace_test::get_test_binary(name);
-            process::creation::create_user_process(String::from(name), &binary)
+            process::creation::create_user_process(alloc::string::String::from(name), &binary)
                 .unwrap_or_else(|error| panic!("cannot start canonical test {}: {}", name, error));
         }
         log::info!("Boot test program registration complete");
