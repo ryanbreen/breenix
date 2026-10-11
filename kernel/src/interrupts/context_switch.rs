@@ -1947,6 +1947,12 @@ pub fn idle_loop() -> ! {
         // census line under the x86 gate's emulation. A thread queued on an
         // idle CPU writing that line waited for it, and `kstrandd`, a kernel
         // thread a busy CPU is seen running, emits the census instead.
+        //
+        // The housekeeping below holds preemption off for as long as it runs,
+        // which was up to 35 ms under the x86 gate, so placement takes this
+        // CPU for a busy one meanwhile, and what was queued here regardless is
+        // dispatched as soon as it ends.
+        crate::task::scheduler::set_idle_housekeeping(true);
         crate::task::process_task::reclaim_deferred_process_resources();
         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
         // from a context that exists AFTER every userspace thread is gone and
@@ -1962,6 +1968,7 @@ pub fn idle_loop() -> ! {
         crate::task::scheduler::reclaim_terminated_threads();
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
+        crate::task::scheduler::set_idle_housekeeping(false);
         // Reclamation can wake a waiter. Check with interrupts masked so a
         // wakeup cannot slip between the check and the atomic enable/halt.
         // A reschedule raised while the housekeeping above could not switch
@@ -1973,7 +1980,10 @@ pub fn idle_loop() -> ! {
         // the x86 gate's nested virtualization, with the woken thread queued
         // here meanwhile.
         x86_64::instructions::interrupts::disable();
-        if crate::task::scheduler::is_need_resched() {
+        if crate::task::scheduler::is_need_resched()
+            || crate::task::scheduler::has_queued_work_here()
+        {
+            crate::task::scheduler::set_need_resched();
             // SAFETY: the reschedule vector's gate is the timer entry, which
             // saves and restores every register; it returns here with
             // interrupts masked, as they are now.

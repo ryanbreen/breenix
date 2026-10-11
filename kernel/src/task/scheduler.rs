@@ -1689,6 +1689,31 @@ pub fn note_scheduling_epoch(cpu_id: usize) {
 #[cfg(target_arch = "x86_64")]
 static LEAVING_STACK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
+/// x86_64: set while a CPU's idle loop runs its housekeeping, the process and
+/// thread reclamation, with preemption held off. A thread queued on that CPU
+/// meanwhile waits for the housekeeping to end, which under the x86 gate took
+/// up to 35 ms: root releases waiting on every other CPU's shootdown
+/// acknowledgement and the process-manager lock. Placement and stealing treat
+/// the CPU as busy until then.
+#[cfg(target_arch = "x86_64")]
+static IDLE_HOUSEKEEPING: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+
+/// x86_64: mark this CPU's idle housekeeping as running or done.
+#[cfg(target_arch = "x86_64")]
+pub fn set_idle_housekeeping(active: bool) {
+    let cpu = current_cpu_id_raw();
+    if cpu < MAX_CPUS {
+        IDLE_HOUSEKEEPING[cpu].store(active, Ordering::Release);
+    }
+}
+
+/// x86_64: whether a thread is queued on this CPU, or a pinned wake held for
+/// it. Takes the scheduler lock.
+#[cfg(target_arch = "x86_64")]
+pub fn has_queued_work_here() -> bool {
+    with_scheduler(|scheduler| scheduler.has_queued_work_here()).unwrap_or(false)
+}
+
 /// x86_64: CPUs to send a reschedule IPI when this CPU clears its
 /// `LEAVING_STACK` entry: they passed over the thread it names. Bit `n` is CPU `n`.
 #[cfg(target_arch = "x86_64")]
@@ -6371,9 +6396,15 @@ impl Scheduler {
 
     /// Whether `cpu` is running its idle thread or is committed to switching to
     /// it, so a thread queued there runs as soon as that CPU is woken.
+    ///
+    /// x86_64: not while its idle loop runs housekeeping, which holds
+    /// preemption off (`set_idle_housekeeping`).
     fn cpu_is_idle(&self, cpu: usize) -> bool {
         let state = &self.cpu_state[cpu];
-        state.pending_next.or(state.current_thread) == Some(state.idle_thread)
+        let idle = state.pending_next.or(state.current_thread) == Some(state.idle_thread);
+        #[cfg(target_arch = "x86_64")]
+        let idle = idle && !IDLE_HOUSEKEEPING[cpu].load(Ordering::Acquire);
+        idle
     }
 
     /// Threads `cpu` already has to run: its queue, plus the thread it is
