@@ -334,6 +334,7 @@ finish_vm_boot() {
         "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
+        sweep_vmware_bundles
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
@@ -903,18 +904,25 @@ if [ "$VMWARE" = true ]; then
     VM_NAME="breenix-$(date +%s)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     echo "VM name: $VM_NAME"
-    # Delete earlier boots' VM bundles, which nothing else removed (one per boot, about 100 MB each): only
-    # breenix-<epoch> bundles that are not running and were last written more than 30 minutes ago, so a caller still
-    # scoring a just-stopped VM's data disk keeps it. Never a named VM. In the background, so it never holds up this boot.
-    (
+    # Delete earlier boots' VM bundles, which nothing else removes (one per boot, about 100 MB each): only
+    # breenix-<epoch> bundles that are not running and were created more than 30 minutes ago, so a caller still
+    # scoring a just-stopped VM's data disk keeps it. Age comes from the epoch in the name, because VMware Fusion
+    # rewrites files in every bundle its library lists, so file times never age. Never a named VM. Runs in the
+    # background at launch and again from finish_vm_boot, so a burst of boots leaves at most its last half hour.
+    sweep_vmware_bundles() {
+        local now old_bundle old_name old_vmx
+        now=$(date +%s)
         for old_bundle in "$VM_MACHINES"/breenix-[0-9]*.vmwarevm; do
             [ -d "$old_bundle" ] && [ "$old_bundle" != "$VM_BUNDLE" ] || continue
-            old_vmx="$old_bundle/$(basename "$old_bundle" .vmwarevm).vmx"
-            [ -z "$(find "$old_bundle" -maxdepth 1 -mmin -30 -print -quit 2>/dev/null)" ] || continue
+            old_name=$(basename "$old_bundle" .vmwarevm)
+            [ $((now - ${old_name#breenix-})) -gt 1800 ] || continue
+            old_vmx="$old_bundle/$old_name.vmx"
             "$VMRUN" list 2>/dev/null | grep -qxF "$old_vmx" && continue
+            # deleteVM also drops the VM from Fusion's library; a bare rm leaves a dead library entry behind.
             "$VMRUN" deleteVM "$old_vmx" >/dev/null 2>&1 || rm -rf "$old_bundle"
         done
-    ) &
+    }
+    sweep_vmware_bundles &
 
     # Create VM bundle
     mkdir -p "$VM_BUNDLE"
