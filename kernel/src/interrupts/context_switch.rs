@@ -1947,7 +1947,7 @@ pub fn idle_loop() -> ! {
         // census line under the x86 gate's emulation. A thread queued on an
         // idle CPU writing that line waited for it, and `kstrandd`, a kernel
         // thread a busy CPU is seen running, emits the census instead.
-        crate::task::process_task::reclaim_deferred_process_resources();
+        crate::task::process_task::reclaim_deferred_process_resources_while_idle();
         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
         // from a context that exists AFTER every userspace thread is gone and
         // after the drain above has had passes to run; the idle loop is the only
