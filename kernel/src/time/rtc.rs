@@ -75,11 +75,16 @@ fn read_rtc_raw() -> Result<RTCTime, &'static str> {
 
 #[cfg(target_arch = "x86_64")]
 fn read_rtc_raw_with(mut read: impl FnMut(u8) -> u8) -> Result<RTCTime, &'static str> {
-    for _ in 0..100 {
+    // UIP can cover a millisecond-scale update. A count bound can expire too
+    // soon on physical CMOS, whose port accesses are much faster than KVM's.
+    let frequency = super::tsc::frequency_hz();
+    let started = super::tsc::read_tsc_serialized();
+    let timeout = frequency / 100; // 10 ms stabilization retry window.
+    loop {
         let raw = crate::arch_without_interrupts(|| {
             let mut cache = CMOS_LOCK.lock();
             let before = super::tsc::read_tsc_serialized();
-            let budget = super::tsc::frequency_hz() / 2;
+            let budget = frequency / 2;
             let raw = match cache.as_ref() {
                 Some(cached) if before.wrapping_sub(cached.sampled_tsc) < budget => {
                     cmos::seconds(&mut read).and_then(|second| {
@@ -107,9 +112,11 @@ fn read_rtc_raw_with(mut read: impl FnMut(u8) -> u8) -> Result<RTCTime, &'static
         if let Some(raw) = raw {
             return Ok(decode_rtc(raw));
         }
+        if super::tsc::read_tsc_serialized().wrapping_sub(started) >= timeout {
+            return Err("RTC did not stabilize");
+        }
         core::hint::spin_loop();
     }
-    Err("RTC did not stabilize")
 }
 
 #[cfg(target_arch = "x86_64")]
