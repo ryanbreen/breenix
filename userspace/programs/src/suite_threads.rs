@@ -4519,16 +4519,72 @@ fn tw_storm() -> CaseResult {
     wl_dump("storm");
     Ok(())
 }
+fn rep_mx_futex_timeout() -> CaseResult {
+    for k in 0..10 {
+        if let Err(e) = mx_futex_timeout() { return fail(format!("iteration {k}: {}", text(e))); }
+    }
+    Ok(())
+}
+fn rep_cv_timedwait_monotonic() -> CaseResult {
+    let r = (|| {
+        for k in 0..10 {
+            if let Err(e) = cv_timedwait_monotonic() { return fail(format!("iteration {k}: {}", text(e))); }
+        }
+        Ok(())
+    })();
+    wl_dump("tw");
+    r
+}
+fn rep_cv_timedwait_monotonic_set() -> CaseResult {
+    for k in 0..10 {
+        if let Err(e) = cv_timedwait_monotonic_set() { return fail(format!("iteration {k}: {}", text(e))); }
+    }
+    Ok(())
+}
+fn rep_cv_futex_bitset() -> CaseResult {
+    for k in 0..10 {
+        if let Err(e) = cv_futex_bitset() { return fail(format!("iteration {k}: {}", text(e))); }
+    }
+    Ok(())
+}
+fn rep_rw_timedwrlock() -> CaseResult {
+    for k in 0..10 {
+        if let Err(e) = rw_timedwrlock() { return fail(format!("iteration {k}: {}", text(e))); }
+    }
+    Ok(())
+}
 static SCRATCH: Suite = suite("threads", "Threads", &[
-    category("scratch", "scratch", &[
-        case("barrier-cpus", "scratch", br_cpus_stat),
-        case("tw-a", "scratch", tw_rep),
-        case("tw-b", "scratch", tw_rep),
-        case("tw-c", "scratch", tw_rep),
-        case("storm-a", "scratch", tw_storm),
-        case("storm-b", "scratch", tw_storm),
-        case("storm-c", "scratch", tw_storm),
-        case("barrier-cpus-2", "scratch", br_cpus_stat),
+    category("timed", "scratch timed-wait lateness", &[
+        case("mx_futex_timeout-0", "scratch", rep_mx_futex_timeout),
+        case("cv_timedwait_monotonic-0", "scratch", rep_cv_timedwait_monotonic),
+        case("cv_timedwait_monotonic_set-0", "scratch", rep_cv_timedwait_monotonic_set),
+        case("cv_futex_bitset-0", "scratch", rep_cv_futex_bitset),
+        case("rw_timedwrlock-0", "scratch", rep_rw_timedwrlock),
+        case("mx_futex_timeout-1", "scratch", rep_mx_futex_timeout),
+        case("cv_timedwait_monotonic-1", "scratch", rep_cv_timedwait_monotonic),
+        case("cv_timedwait_monotonic_set-1", "scratch", rep_cv_timedwait_monotonic_set),
+        case("cv_futex_bitset-1", "scratch", rep_cv_futex_bitset),
+        case("rw_timedwrlock-1", "scratch", rep_rw_timedwrlock),
+        case("mx_futex_timeout-2", "scratch", rep_mx_futex_timeout),
+        case("cv_timedwait_monotonic-2", "scratch", rep_cv_timedwait_monotonic),
+        case("cv_timedwait_monotonic_set-2", "scratch", rep_cv_timedwait_monotonic_set),
+        case("cv_futex_bitset-2", "scratch", rep_cv_futex_bitset),
+        case("rw_timedwrlock-2", "scratch", rep_rw_timedwrlock),
+        case("mx_futex_timeout-3", "scratch", rep_mx_futex_timeout),
+        case("cv_timedwait_monotonic-3", "scratch", rep_cv_timedwait_monotonic),
+        case("cv_timedwait_monotonic_set-3", "scratch", rep_cv_timedwait_monotonic_set),
+        case("cv_futex_bitset-3", "scratch", rep_cv_futex_bitset),
+        case("rw_timedwrlock-3", "scratch", rep_rw_timedwrlock),
+        case("mx_futex_timeout-4", "scratch", rep_mx_futex_timeout),
+        case("cv_timedwait_monotonic-4", "scratch", rep_cv_timedwait_monotonic),
+        case("cv_timedwait_monotonic_set-4", "scratch", rep_cv_timedwait_monotonic_set),
+        case("cv_futex_bitset-4", "scratch", rep_cv_futex_bitset),
+        case("rw_timedwrlock-4", "scratch", rep_rw_timedwrlock),
+        case("mx_futex_timeout-5", "scratch", rep_mx_futex_timeout),
+        case("cv_timedwait_monotonic-5", "scratch", rep_cv_timedwait_monotonic),
+        case("cv_timedwait_monotonic_set-5", "scratch", rep_cv_timedwait_monotonic_set),
+        case("cv_futex_bitset-5", "scratch", rep_cv_futex_bitset),
+        case("rw_timedwrlock-5", "scratch", rep_rw_timedwrlock),
     ]),
 ]);
 

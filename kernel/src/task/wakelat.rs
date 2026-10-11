@@ -285,6 +285,7 @@ pub fn report(out: &mut alloc::string::String) {
     }
     report_snapshots(out);
     report_phases(out);
+    report_pm(out);
     let tn = TL_N.swap(0, Relaxed).max(1);
     let _ = write!(out, "WAKELAT timer-late n={} avg_us={} max_us={} hist", tn, TL_SUM.swap(0, Relaxed) / tn, TL_MAX.swap(0, Relaxed));
     hist(out, &TL_HIST);
@@ -410,5 +411,52 @@ pub fn report_phases(out: &mut alloc::string::String) {
         let _ = write!(out, "WAKELAT reclaim-phase{} max_us={} hist", k, PH_MAX[k].swap(0, Relaxed));
         hist(out, &PH_HIST[k]);
         let _ = writeln!(out);
+    }
+}
+
+// Process-manager lock holds.
+static PM_TS: AtomicU64 = AtomicU64::new(0);
+static PM_LOC: AtomicU64 = AtomicU64::new(0);
+static PM_MAX: AtomicU64 = AtomicU64::new(0);
+static PM_HIST: [AtomicU64; NB] = [const { AtomicU64::new(0) }; NB];
+const PM_OUT: usize = 24;
+static PM_OUT_N: AtomicU64 = AtomicU64::new(0);
+static PM_OUT_LOC: [AtomicU64; PM_OUT] = [const { AtomicU64::new(0) }; PM_OUT];
+static PM_OUT_US: [AtomicU64; PM_OUT] = [const { AtomicU64::new(0) }; PM_OUT];
+pub fn pm_acquired(loc: &'static core::panic::Location<'static>) {
+    PM_LOC.store(loc as *const _ as u64, Relaxed);
+    PM_TS.store(tsc(), Relaxed);
+}
+pub fn pm_released() {
+    let start = PM_TS.swap(0, Relaxed);
+    if start == 0 {
+        return;
+    }
+    let d = us(tsc().saturating_sub(start));
+    max(&PM_MAX, d);
+    PM_HIST[bucket(d)].fetch_add(1, Relaxed);
+    if d >= 3000 {
+        let k = PM_OUT_N.fetch_add(1, Relaxed) as usize;
+        if k < PM_OUT {
+            PM_OUT_LOC[k].store(PM_LOC.load(Relaxed), Relaxed);
+            PM_OUT_US[k].store(d | (cpu() as u64) << 48, Relaxed);
+        }
+    }
+}
+pub fn report_pm(out: &mut alloc::string::String) {
+    use core::fmt::Write;
+    let _ = write!(out, "WAKELAT pm-hold max_us={} hist", PM_MAX.swap(0, Relaxed));
+    hist(out, &PM_HIST);
+    let _ = writeln!(out);
+    let n = PM_OUT_N.swap(0, Relaxed).min(PM_OUT as u64) as usize;
+    for k in 0..n {
+        let loc = PM_OUT_LOC[k].load(Relaxed) as *const core::panic::Location<'static>;
+        let v = PM_OUT_US[k].load(Relaxed);
+        if loc.is_null() {
+            continue;
+        }
+        // SAFETY: a &'static Location stored by pm_acquired.
+        let loc = unsafe { &*loc };
+        let _ = writeln!(out, "WAKELAT pm-long us={} cpu={} at={}:{}", v & 0xffff_ffff_ffff, v >> 48, loc.file(), loc.line());
     }
 }

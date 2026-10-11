@@ -198,7 +198,9 @@ impl core::ops::DerefMut for ProcessManagerGuard {
 pub static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
 #[inline(always)]
+#[track_caller]
 fn note_process_manager_lock_acquired() {
+    crate::task::wakelat::pm_acquired(core::panic::Location::caller());
     let (cpu, tid) = current_process_manager_owner_identity();
     PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(cpu, Ordering::Release);
@@ -207,6 +209,7 @@ fn note_process_manager_lock_acquired() {
 
 #[inline(always)]
 fn note_process_manager_lock_released() {
+    crate::task::wakelat::pm_released();
     PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
 }
@@ -348,6 +351,7 @@ pub fn init() {
 /// thread that has been switched out. `try_manager()` and
 /// `with_process_manager()` already hold the lock with interrupts masked,
 /// which gives them the same property.
+#[track_caller]
 pub fn manager() -> ProcessManagerGuard {
     // #821. Recorded BEFORE the acquisition, so a call that wedges on a lock
     // this CPU already owns, and so does not return, is still counted.
@@ -547,6 +551,7 @@ where
 /// PROCESS_MANAGER through the blocking `with_process_manager`. `spin::Mutex`
 /// is not reentrant, so the CPU waits on a lock it already owns. The mask makes
 /// this accessor differ from `manager()` only in whether it blocks.
+#[track_caller]
 pub fn try_manager() -> Option<TryProcessManagerGuard> {
     #[cfg(target_arch = "aarch64")]
     {
@@ -612,6 +617,7 @@ const INTERRUPT_RETURN_PM_POLL_US: u64 = 200;
 /// next release, and the bound keeps the interrupt the holder may need from
 /// waiting longer than that.
 #[cfg(target_arch = "x86_64")]
+#[track_caller]
 pub fn poll_manager() -> Option<TryProcessManagerGuard> {
     if process_manager_held_on_current_cpu() {
         return None;
