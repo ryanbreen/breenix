@@ -4070,14 +4070,21 @@ pub fn sys_sync() -> SyscallResult {
             let guard = mount.read();
             guard.as_ref().map(|fs| fs.dirty_handles()).transpose()
         };
-        if let (Ok(Some(handles)), Some(buffer)) = (handles, bytes.as_mut()) {
+        if let (Ok(Some(handles)), Some(buffer)) = (&handles, bytes.as_mut()) {
             for handle in handles {
-                let _ = crate::memory::file_map::sync_range_with_buffer(&handle, 0, u64::MAX, buffer);
+                let _ = crate::memory::file_map::stage_range_with_buffer(handle, 0, u64::MAX, buffer);
             }
         }
-        let guard = mount.read();
+        // Exclude snapshots between the barrier and dirty-custody completion.
+        let guard = mount.write();
         if let Some(fs) = guard.as_ref() {
-            let _ = fs.sync();
+            if fs.sync().is_ok() {
+                if let Ok(Some(handles)) = &handles {
+                    for handle in handles {
+                        handle.object.map.complete_writeback(0, u64::MAX);
+                    }
+                }
+            }
         }
     }
     SyscallResult::Ok(0)

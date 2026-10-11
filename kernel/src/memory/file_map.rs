@@ -77,9 +77,30 @@ pub(crate) fn sync_range(
 
 pub(crate) fn sync_range_with_buffer(
     handle: &FileHandle,
+    first: u64,
+    last: u64,
+    bytes: &mut [u8],
+) -> Result<(), &'static str> {
+    write_range_with_buffer(handle, first, last, bytes, true)
+}
+
+/// Global sync stages each inode, then flushes once under the mount write guard
+/// before completing their clean candidates. Per-file sync retains its barrier.
+pub(crate) fn stage_range_with_buffer(
+    handle: &FileHandle,
+    first: u64,
+    last: u64,
+    bytes: &mut [u8],
+) -> Result<(), &'static str> {
+    write_range_with_buffer(handle, first, last, bytes, false)
+}
+
+fn write_range_with_buffer(
+    handle: &FileHandle,
     mut first: u64,
     last: u64,
     bytes: &mut [u8],
+    flush: bool,
 ) -> Result<(), &'static str> {
     let range_first = first;
     loop {
@@ -93,7 +114,7 @@ pub(crate) fn sync_range_with_buffer(
                     .object
                     .map
                     .writeback(fs, ino, first, last, WRITEBACK_PAGES, bytes)?;
-            if next.is_none() || next.is_some_and(|next| next >= last) {
+            if flush && (next.is_none() || next.is_some_and(|next| next >= last)) {
                 let result = fs.sync();
                 if result.is_err() { handle.object.map.request_writeback(); }
                 result?;
@@ -713,7 +734,7 @@ impl MapState {
     /// Called only after a successful device flush under the mount guard.
     /// A new write fault changes gen; writable snapshots never earn a clean
     /// candidate because stores can continue without another fault.
-    fn complete_writeback(&self, first: u64, last: u64) {
+    pub(crate) fn complete_writeback(&self, first: u64, last: u64) {
         let mut inner = self.inner.lock();
         if inner.writable_shared == 0 {
             for (_, page) in inner.pages.entries.iter_mut().filter(|(index, _)| *index >= first && *index < last) {
