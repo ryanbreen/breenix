@@ -319,6 +319,26 @@ impl LiveInodes {
             .collect()
     }
 
+    /// Capture the current cohort for a settled accounting observation.
+    /// Reserve the table's upper bound while locked: last-handle drops can
+    /// publish pending flags without taking this lock.
+    pub fn pending_snapshot(&self) -> Result<alloc::vec::Vec<Arc<LiveInode>>, &'static str> {
+        let table = self.table.lock();
+        let mut objects = alloc::vec::Vec::new();
+        objects.try_reserve(table.objects.len()).map_err(|_| "No memory for ext2 accounting")?;
+        objects.extend(table.objects.values()
+            .filter(|object| object.unused() && object.pending.load(Ordering::Acquire))
+            .cloned());
+        Ok(objects)
+    }
+
+    /// A captured Arc may outlive completed reclamation and inode reuse.
+    pub fn is_pending(&self, object: &Arc<LiveInode>) -> bool {
+        object.unused() && object.pending.load(Ordering::Acquire)
+            && self.table.lock().objects.get(&object.key.inode)
+                .is_some_and(|entry| Arc::ptr_eq(entry, object))
+    }
+
     pub fn remove(&self, object: &Arc<LiveInode>) {
         let mut table = self.table.lock();
         if object.unused()

@@ -567,14 +567,14 @@ pub fn read_file(path: &str) -> Result<String, i32> {
 // Content Generators for Standard Entries
 // =============================================================================
 
-/// Snapshot mounted ext2 counters and their persisted counterparts under a
-/// read guard. Disk failures are returned to the reader instead of hidden.
+/// Settle queued orphan reclamation before snapshotting allocation counters
+/// and their persisted counterparts. Failures reach the reader.
 fn generate_ext2() -> Result<String, i32> {
     use crate::fs::ext2::{self, Ext2BlockGroupDesc, Ext2Superblock};
     use core::fmt::Write;
     let mut text = String::new();
     for home in [false, true] {
-        let guard = if home { ext2::home_fs_read() } else { ext2::root_fs_read() };
+        let guard = ext2::accounting_fs_write(home).map_err(|_| 5)?;
         let name = if home { "home" } else { "root" };
         if let Some(fs) = guard.as_ref() {
             let disk = Ext2Superblock::read_from(fs.device.as_ref()).map_err(|_| 5)?;

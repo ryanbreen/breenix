@@ -208,15 +208,32 @@ impl Ext2Fs {
         if evictions.len() == live_inode::EVICTION_BATCH && self.live_inodes.evictions_pending() {
             outcome = outcome.merge(Finalize::More);
         }
-        if budget == 0 { return outcome.merge(Finalize::More); }
+        let objects = self.live_inodes.pending(self.finalization_cursor);
+        outcome = outcome.merge(self.finalize_orphans(&objects, &mut budget));
+        if matches!(outcome, Finalize::Idle)
+            && !self.live_inodes.pending(self.finalization_cursor).is_empty()
+        {
+            outcome = Finalize::More;
+        }
+        outcome
+    }
+
+    /// Advance only this captured cohort, preserving the transition budget.
+    fn finalize_orphans(
+        &mut self,
+        objects: &[alloc::sync::Arc<live_inode::LiveInode>],
+        budget: &mut usize,
+    ) -> Finalize {
+        if *budget == 0 { return Finalize::More; }
+        let mut outcome = Finalize::Idle;
         let mut ready = Vec::new();
         let mut barrier = false;
-        for object in self.live_inodes.pending(self.finalization_cursor) {
-            if !object.unused() { continue; }
-            match self.stage_orphan(&object) {
+        for object in objects {
+            if !self.live_inodes.is_pending(object) { continue; }
+            match self.stage_orphan(object) {
                 Ok(needs_barrier) => {
                     barrier |= needs_barrier;
-                    ready.push(object);
+                    ready.push(object.clone());
                 }
                 Err(reclaim::ReclaimError::Retry) => outcome = Finalize::Retry,
                 Err(reclaim::ReclaimError::Abandon(reason)) => {
@@ -233,23 +250,15 @@ impl Ext2Fs {
             if !object.unused() {
                 continue;
             }
-            if budget == 0 {
+            if *budget == 0 {
                 return outcome.merge(Finalize::More);
             }
             self.finalization_cursor = object.key.inode;
-            match self.reclaim_orphan(&object, &mut budget) {
+            match self.reclaim_orphan(&object, budget) {
                 Ok(true) | Err(reclaim::ReclaimError::Abandon(_)) => {}
                 Ok(false) => return outcome.merge(Finalize::More),
                 Err(reclaim::ReclaimError::Retry) => outcome = Finalize::Retry,
             }
-        }
-        if matches!(outcome, Finalize::Idle)
-            && !self
-                .live_inodes
-                .pending(self.finalization_cursor)
-                .is_empty()
-        {
-            return outcome.merge(Finalize::More);
         }
         outcome
     }
@@ -2683,6 +2692,40 @@ fn fs_write_raw(home: bool) -> Ext2WriteGuard {
 
 fn fs_write(home: bool) -> Ext2WriteGuard {
     fs_write_raw(home)
+}
+
+/// Settle the orphan cohort present at an allocation-counter observation.
+/// Later removals do not extend this operation. Each pass keeps the normal
+/// bitmap-transition budget, and pauses happen without the mount guard.
+/// The returned guard excludes reclamation while counters and their disk
+/// counterparts are read. I/O errors retain custody and reach the reader.
+pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
+    let mut guard = fs_write_raw(home);
+    let pin = guard.as_ref().map(|fs| fs.mount_pin);
+    let objects = guard.as_ref().map(|fs| fs.live_inodes.pending_snapshot())
+        .transpose()?.unwrap_or_default();
+    loop {
+        let result = if let Some(fs) = guard.as_mut() {
+            if let Some(pin) = pin { pin.verify(fs)?; }
+            let mut budget = RECLAIM_BUDGET;
+            fs.finalize_orphans(&objects, &mut budget)
+        } else {
+            if pin.is_some() { return Err("ext2 mount changed during accounting"); }
+            Finalize::Idle
+        };
+        match result {
+            Finalize::Idle => return Ok(guard),
+            Finalize::Retry => {
+                writeback::request();
+                return Err("Failed to settle ext2 allocation counters");
+            }
+            Finalize::More => {
+                drop(guard);
+                writeback::pause(1_000_000);
+                guard = fs_write_raw(home);
+            }
+        }
+    }
 }
 
 /// Check if the root filesystem is mounted
