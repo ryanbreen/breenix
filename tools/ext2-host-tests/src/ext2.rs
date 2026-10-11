@@ -99,7 +99,7 @@ mod reclaim_checks {
         }
     }
     #[test]
-    fn directory_last_link_releases_inode_bitmap() {
+    fn orphan_directory_releases_inode_bitmap() {
         let data = Arc::new(Mutex::new(vec![0; 512 * 4096]));
         let mut sb = Ext2Superblock::from_bytes(&[0; 1024]).unwrap();
         sb.s_blocks_count = 512;
@@ -111,17 +111,24 @@ mod reclaim_checks {
         group.bg_inode_table = 8;
         group.bg_inode_bitmap = 4;
         group.bg_free_inodes_count = 127;
+        group.bg_used_dirs_count = 1;
         data.lock().unwrap()[4 * 4096] = 1;
         let mut fs = Ext2Fs { device: Box::new(Disk { data: data.clone(),
             fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group] };
         let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
         inode.i_mode = EXT2_S_IFDIR | 0o700;
+        // remove_directory commits the namespace and zero-link inode before
+        // handing it to the finalizer; exercise that finalizer here.
+        inode.i_links_count = 0;
         fs.write_inode(1, &inode).unwrap();
-        assert_eq!(inode::reclaim_directory_inode(fs.device.as_ref(), 1,
-            &fs.superblock, &mut fs.block_groups).unwrap(), 0);
+        let mut progress = reclaim::Reclaim::prepare(&fs, 1)
+            .unwrap_or_else(|_| panic!("zero-link directory was not accepted"));
+        assert!(matches!(progress.finish(&mut fs, 1, &mut 128), Ok(true)));
         assert_eq!(data.lock().unwrap()[4 * 4096], 0);
         let free = fs.block_groups[0].bg_free_inodes_count;
         assert_eq!(free, 128);
+        let directories = fs.block_groups[0].bg_used_dirs_count;
+        assert_eq!(directories, 0);
         let links = fs.read_inode(1).unwrap().i_links_count;
         assert_eq!(links, 0);
     }
