@@ -249,6 +249,17 @@ fn wait_delivery() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// SCRATCH: the highest vector in service on this CPU, 0 for none.
+pub fn in_service_top() -> u32 {
+    for bank in (0..8u32).rev() {
+        let bits = read(0x100 + bank * 16);
+        if bits != 0 {
+            return bank * 32 + 31 - bits.leading_zeros();
+        }
+    }
+    0
+}
+
 /// Read-only snapshot for a slow device request; never acknowledges an IRQ.
 pub fn vector_pending_state(vector: u8) -> (bool, bool) {
     let bank = u32::from(vector / 32) * 16;

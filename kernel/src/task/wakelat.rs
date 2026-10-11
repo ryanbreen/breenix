@@ -104,6 +104,7 @@ pub fn ready(tid: u64, path: usize, target: usize, target_idle: bool, target_cur
     R_INFO[i].store(info, Relaxed);
     R_TID[i].store(tid, Relaxed);
     R_TS[i].store(tsc(), Relaxed);
+    ev_on(t, E_READY, tid << 8 | path as u64);
 }
 
 /// Thread `tid` runs again on this CPU.
@@ -147,6 +148,9 @@ pub fn ran(tid: u64, site: u64) {
         S_DISP[path].fetch_add(sp, Relaxed);
         N_SEG[path].fetch_add(1, Relaxed);
     }
+    if total >= 1200 && total < 20000 {
+        snapshot(me, start, tid << 24 | total.min(0xff_ffff));
+    }
     if total >= 2000 {
         let k = OUT_N.fetch_add(1, Relaxed) as usize;
         if k < OUT {
@@ -164,17 +168,20 @@ pub fn ran(tid: u64, site: u64) {
 pub fn ipi_sent(target: usize) {
     if target < CPUS {
         IPI_TS[target].store(tsc(), Relaxed);
+        ev_on(target, E_IPI_IN, (cpu() as u64) << 8);
     }
 }
 
-pub fn irq_entry(cpu: usize) {
+pub fn irq_entry(cpu: usize, vector: u64) {
     if cpu < CPUS {
         IRQ_TS[cpu].store(tsc(), Relaxed);
+        ev_on(cpu, E_IRQ, vector);
     }
 }
 
 pub fn halt(on: bool) {
     HALTED[cpu()].store(on as u64, Relaxed);
+    ev(if on { E_HALT_IN } else { E_HALT_OUT }, 0);
 }
 
 pub fn wake_entry() {
@@ -183,6 +190,7 @@ pub fn wake_entry() {
 
 pub fn reclaim(on: bool) -> u64 {
     RECLAIM[cpu()].store(on as u64, Relaxed);
+    ev(if on { E_RECLAIM_IN } else { E_RECLAIM_OUT }, 0);
     tsc()
 }
 
@@ -275,6 +283,7 @@ pub fn report(out: &mut alloc::string::String) {
             c & 0xffff, (c >> 16) & 0xffff, (c >> 32) & 0xffff, (c >> 48) & 0xff, c >> 56
         );
     }
+    report_snapshots(out);
     let tn = TL_N.swap(0, Relaxed).max(1);
     let _ = write!(out, "WAKELAT timer-late n={} avg_us={} max_us={} hist", tn, TL_SUM.swap(0, Relaxed) / tn, TL_MAX.swap(0, Relaxed));
     hist(out, &TL_HIST);
@@ -287,4 +296,99 @@ pub fn report(out: &mut alloc::string::String) {
     let _ = write!(out, "\nWAKELAT shootdown n={} max_us={} hist", SD_N.swap(0, Relaxed), SD_MAX.swap(0, Relaxed));
     hist(out, &SD_HIST);
     let _ = writeln!(out);
+}
+
+// ---------------------------------------------------------------------------
+// Per-CPU event ring, snapshotted for slow wakes.
+pub const E_IRQ: u64 = 1; // arg: in-service vector
+pub const E_HALT_IN: u64 = 2; // arg: tid (0 idle)
+pub const E_HALT_OUT: u64 = 3;
+pub const E_DISPATCH: u64 = 4; // arg: tid
+pub const E_IPI_IN: u64 = 5; // arg: sender cpu << 8 | vector
+pub const E_READY: u64 = 6; // arg: tid << 8 | path
+pub const E_RECLAIM_IN: u64 = 7;
+pub const E_RECLAIM_OUT: u64 = 8;
+pub const E_LOG_IN: u64 = 9; // arg: COM port
+pub const E_LOG_OUT: u64 = 10;
+pub const E_LEAVE_SET: u64 = 11; // arg: tid
+pub const E_LEAVE_CLR: u64 = 12; // arg: tid
+pub const E_PASSOVER: u64 = 13; // arg: tid << 8 | owner cpu
+pub const E_IDLE_PASS: u64 = 14;
+pub const E_SWITCH: u64 = 15; // arg: old << 32 | new
+const RING: usize = 128;
+static RING_POS: [AtomicU64; CPUS] = [const { AtomicU64::new(0) }; CPUS];
+static RING_TS: [[AtomicU64; RING]; CPUS] = [const { [const { AtomicU64::new(0) }; RING] }; CPUS];
+static RING_EV: [[AtomicU64; RING]; CPUS] = [const { [const { AtomicU64::new(0) }; RING] }; CPUS];
+
+pub fn ev_on(cpu: usize, kind: u64, arg: u64) {
+    if cpu >= CPUS {
+        return;
+    }
+    let k = RING_POS[cpu].fetch_add(1, Relaxed) as usize % RING;
+    RING_TS[cpu][k].store(tsc(), Relaxed);
+    RING_EV[cpu][k].store(kind | arg << 8, Relaxed);
+}
+
+pub fn ev(kind: u64, arg: u64) {
+    ev_on(cpu(), kind, arg);
+}
+
+const SNAPS: usize = 6;
+const SNAP_LEN: usize = 48;
+static SNAP_N: AtomicU64 = AtomicU64::new(0);
+static SNAP_HDR: [AtomicU64; SNAPS] = [const { AtomicU64::new(0) }; SNAPS];
+static SNAP_START: [AtomicU64; SNAPS] = [const { AtomicU64::new(0) }; SNAPS];
+static SNAP_TS: [[AtomicU64; SNAP_LEN]; SNAPS] = [const { [const { AtomicU64::new(0) }; SNAP_LEN] }; SNAPS];
+static SNAP_EV: [[AtomicU64; SNAP_LEN]; SNAPS] = [const { [const { AtomicU64::new(0) }; SNAP_LEN] }; SNAPS];
+
+/// Copy `cpu`'s events in [start, now] (the last SNAP_LEN) into a snapshot.
+pub fn snapshot(cpu: usize, start: u64, hdr: u64) {
+    if cpu >= CPUS {
+        return;
+    }
+    let s = SNAP_N.fetch_add(1, Relaxed) as usize;
+    if s >= SNAPS {
+        return;
+    }
+    let pos = RING_POS[cpu].load(Relaxed) as usize;
+    let mut picked = [(0u64, 0u64); SNAP_LEN];
+    let mut n = 0;
+    for back in 1..=RING.min(pos) {
+        let k = (pos - back) % RING;
+        let ts = RING_TS[cpu][k].load(Relaxed);
+        if ts < start && us(start - ts) > 1000 {
+            break;
+        }
+        if n < SNAP_LEN {
+            picked[n] = (ts, RING_EV[cpu][k].load(Relaxed));
+            n += 1;
+        }
+    }
+    SNAP_HDR[s].store(hdr | (cpu as u64) << 56, Relaxed);
+    SNAP_START[s].store(start, Relaxed);
+    for i in 0..SNAP_LEN {
+        let (ts, e) = if i < n { picked[n - 1 - i] } else { (0, 0) };
+        SNAP_TS[s][i].store(ts, Relaxed);
+        SNAP_EV[s][i].store(e, Relaxed);
+    }
+}
+
+pub fn report_snapshots(out: &mut alloc::string::String) {
+    use core::fmt::Write;
+    let n = SNAP_N.swap(0, Relaxed).min(SNAPS as u64) as usize;
+    for s in 0..n {
+        let hdr = SNAP_HDR[s].load(Relaxed);
+        let start = SNAP_START[s].load(Relaxed);
+        let _ = write!(out, "WAKELAT snap{} cpu={} tid={} us={} ev:", s, hdr >> 56, (hdr >> 24) & 0xffff_ffff, hdr & 0xff_ffff);
+        for i in 0..SNAP_LEN {
+            let ts = SNAP_TS[s][i].load(Relaxed);
+            if ts == 0 {
+                continue;
+            }
+            let e = SNAP_EV[s][i].load(Relaxed);
+            let rel = if ts >= start { us(ts - start) as i64 } else { -(us(start - ts) as i64) };
+            let _ = write!(out, " {}:{}/{:x}", rel, e & 0xff, e >> 8);
+        }
+        let _ = writeln!(out);
+    }
 }

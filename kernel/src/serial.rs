@@ -146,6 +146,7 @@ fn drain_log() {
         {
             return;
         }
+        crate::task::wakelat::ev(crate::task::wakelat::E_LOG_IN, 2);
         loop {
             let mut chunk = [0u8; 16];
             let n = crate::arch_without_interrupts(|| LOG_RING.lock().pop(&mut chunk[..log_burst()]));
@@ -154,6 +155,7 @@ fn drain_log() {
             }
             write_log_burst(&chunk[..n]);
         }
+        crate::task::wakelat::ev(crate::task::wakelat::E_LOG_OUT, 2);
         LOG_PRINTER.store(false, Ordering::Release);
         // A line appended after the last take saw the printer busy and left.
         if crate::arch_without_interrupts(|| LOG_RING.lock().len) == 0 {
@@ -271,6 +273,7 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
         crate::arch_disable_interrupts();
     }
 
+    crate::task::wakelat::ev(crate::task::wakelat::E_LOG_IN, 1);
     let mut serial = SERIAL1.lock();
     if SERIAL1_FIFO.load(core::sync::atomic::Ordering::Relaxed) {
         // THRE means the 16550 transmit FIFO is empty, so all sixteen slots
@@ -314,6 +317,7 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
         }
     }
     drop(serial);
+    crate::task::wakelat::ev(crate::task::wakelat::E_LOG_OUT, 1);
 
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled

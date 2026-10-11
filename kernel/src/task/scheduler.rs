@@ -1710,9 +1710,10 @@ pub fn note_x86_interrupt_return(cpu: usize) {
     if cpu >= MAX_CPUS {
         return;
     }
-    super::wakelat::irq_entry(cpu);
+    super::wakelat::irq_entry(cpu, crate::arch_impl::x86_64::apic::in_service_top() as u64);
     crate::arch_impl::x86_64::smp::credit_ticks(cpu, crate::per_cpu::running_idle_thread());
     if LEAVING_STACK[cpu].load(Ordering::Relaxed) != 0 {
+        super::wakelat::ev(super::wakelat::E_LEAVE_CLR, LEAVING_STACK[cpu].load(Ordering::Relaxed));
         LEAVING_STACK[cpu].store(0, Ordering::Release);
         let waiters = LEAVING_STACK_WAITERS[cpu].swap(0, Ordering::AcqRel);
         for waiter in (0..MAX_CPUS).filter(|&waiter| waiters & (1 << waiter) != 0) {
@@ -1744,6 +1745,7 @@ pub fn note_x86_interrupt_return(cpu: usize) {
 #[cfg(target_arch = "x86_64")]
 pub fn x86_idle_pass() -> bool {
     let cpu = current_cpu_id_raw();
+    super::wakelat::ev(super::wakelat::E_IDLE_PASS, 0);
     let mut scheduler_lock = lock_scheduler();
     let Some(scheduler) = scheduler_lock.as_mut() else {
         return false;
@@ -1764,8 +1766,12 @@ pub fn x86_idle_pass() -> bool {
 /// x86_64: the other CPU that may still be on `thread_id`'s kernel stack.
 #[cfg(target_arch = "x86_64")]
 fn x86_stack_owner_elsewhere(thread_id: u64, cpu: usize) -> Option<usize> {
-    (0..MAX_CPUS)
-        .find(|&other| other != cpu && LEAVING_STACK[other].load(Ordering::Acquire) == thread_id)
+    let owner = (0..MAX_CPUS)
+        .find(|&other| other != cpu && LEAVING_STACK[other].load(Ordering::Acquire) == thread_id);
+    if let Some(owner) = owner {
+        super::wakelat::ev(super::wakelat::E_PASSOVER, thread_id << 8 | owner as u64);
+    }
+    owner
 }
 
 /// x86_64: bring this CPU back through `check_need_resched_and_switch` as
@@ -2710,6 +2716,7 @@ impl Scheduler {
             }
         }
         thread.set_running();
+        super::wakelat::ev(super::wakelat::E_DISPATCH, thread.id());
         super::wakelat::ran(thread.id(), 1);
         thread.run_start_ticks = crate::time::get_cpu_ticks();
     }
@@ -3332,6 +3339,7 @@ impl Scheduler {
         // `iretq`; no other CPU dispatches the thread before then.
         #[cfg(target_arch = "x86_64")]
         LEAVING_STACK[current_cpu].store(old_thread_id, Ordering::Release);
+        super::wakelat::ev(super::wakelat::E_LEAVE_SET, old_thread_id);
 
         // Track context switches for soft lockup detection
         CONTEXT_SWITCH_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
