@@ -559,6 +559,10 @@ pub fn arch_halt_while_blocked() {
     })
     .unwrap_or(false);
     if !blocked {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(tid) = per_cpu::current_thread_id_lock_free() {
+            task::wakelat::ran(tid, 3);
+        }
         // SAFETY: every caller would have halted with interrupts enabled.
         unsafe { arch_enable_interrupts() };
         return;
@@ -567,7 +571,14 @@ pub fn arch_halt_while_blocked() {
     // is not a park.
     per_cpu::note_wait_loop_park();
     #[cfg(target_arch = "x86_64")]
-    x86_64::instructions::interrupts::enable_and_hlt();
+    {
+        task::wakelat::halt(true);
+        x86_64::instructions::interrupts::enable_and_hlt();
+        task::wakelat::halt(false);
+        if let Some(tid) = per_cpu::current_thread_id_lock_free() {
+            task::wakelat::ran(tid, 2);
+        }
+    }
     #[cfg(target_arch = "aarch64")]
     // SAFETY: WFI with IRQs masked wakes on a pending interrupt, which the
     // unmask then takes.

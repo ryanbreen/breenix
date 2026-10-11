@@ -1977,7 +1977,9 @@ pub fn idle_loop() -> ! {
         // This atomically enables interrupts and halts, preventing race conditions
         // where interrupts might be disabled when we enter this loop.
         // Without this, if interrupts are disabled, HLT would hang forever.
+        crate::task::wakelat::halt(true);
         x86_64::instructions::interrupts::enable_and_hlt();
+        crate::task::wakelat::halt(false);
     }
 }
 
