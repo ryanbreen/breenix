@@ -4,7 +4,7 @@
 //! before consuming a fresh kernel-stack-pool slot with NO process-manager
 //! guard live across either drain call, and must never install the child
 //! into the scheduler while holding the process-manager lock.
-//! claim-lint:ok: 6 of 6 assertions carry a delete mutation below, and 10 of 10
+//! claim-lint:ok: 6 of 6 assertions carry a delete mutation below, and 8 of 8
 //! tests in this file pass at the bytes this ships at.
 //!
 //! #745's other fix, putting the parent's page table back into its row before
