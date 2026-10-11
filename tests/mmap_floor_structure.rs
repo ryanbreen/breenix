@@ -354,19 +354,32 @@ fn census_diff(actual: &Census, anchors: &[(&str, &str, usize)]) -> Vec<String> 
     diff
 }
 
-/// The six producer sites #742's own fix-notes enumerate: `sys_mmap`'s
-/// non-`MAP_FIXED` hint-descent floor plus its `MAP_FIXED` region-escape
-/// check (both in one function, hence count 2), and the five
-/// `graphics.rs` siblings the issue's own grep found beyond the two named
-/// in #742's text.
+// MAP_FIXED still checks its own floor. Descending allocation moved to
+// memory_common::place_below_hint in 6d795512; every former producer must
+// delegate to that helper, whose floor refusal is checked below.
 const FLOOR_ANCHORS: &[(&str, &str, usize)] = &[
-    ("kernel/src/syscall/mmap.rs", "sys_mmap", 2),
+    ("kernel/src/syscall/mmap.rs", "sys_mmap", 1),
+    ("kernel/src/syscall/memory_common.rs", "place_below_hint", 1),
+];
+const DESCENT_ANCHORS: &[(&str, &str, usize)] = &[
+    ("kernel/src/syscall/mmap.rs", "sys_mmap", 1),
     ("kernel/src/syscall/graphics.rs", "handle_create_window_buffer", 1),
     ("kernel/src/syscall/graphics.rs", "handle_resize_window_buffer", 1),
     ("kernel/src/syscall/graphics.rs", "handle_map_window_buffer", 1),
     ("kernel/src/syscall/graphics.rs", "handle_map_compositor_texture", 1),
     ("kernel/src/syscall/graphics.rs", "fbmmap", 1),
 ];
+
+fn shared_descent_refuses_below_floor(source: &str) -> bool {
+    let bodies = module_function_bodies(source);
+    let Some(bodies) = bodies.get("place_below_hint") else { return false; };
+    if bodies.len() != 1 { return false; }
+    let body = normalized_code(bodies[0]).replace(' ', "");
+    body.contains("letstart=round_down_to_page(top.checked_sub(length)?);")
+        && body.contains("ifstart<crate::memory::vma::MMAP_REGION_START{returnNone;}")
+        && body.find("returnNone;") < body.find("process.mmap_hint=start;")
+        && body.contains("process.mmap_hint=start;returnSome(start);")
+}
 
 /// The five `mmap_hint` seed sites: the struct-literal init in
 /// `Process::new` (grouped under the bare name `new` -- `process.rs` has
@@ -383,6 +396,7 @@ const SEED_ANCHORS: &[(&str, &str, usize)] = &[
 fn floor_census() -> Census {
     let mut census = file_census("kernel/src/syscall/mmap.rs", &[FLOOR_NEEDLE]);
     census.extend(file_census("kernel/src/syscall/graphics.rs", &[FLOOR_NEEDLE]));
+    census.extend(file_census("kernel/src/syscall/memory_common.rs", &[FLOOR_NEEDLE]));
     census
 }
 
@@ -395,6 +409,17 @@ fn seed_census() -> Census {
 
 #[test]
 fn mmap_floor_producers_match_the_pinned_census() {
+    let mut descent = file_census("kernel/src/syscall/mmap.rs", &["place_below_hint("]);
+    descent.extend(file_census("kernel/src/syscall/graphics.rs", &["place_below_hint("]));
+    assert_eq!(census_diff(&descent, DESCENT_ANCHORS), Vec::<String>::new());
+    let common = repo_text("kernel/src/syscall/memory_common.rs");
+    assert!(shared_descent_refuses_below_floor(&common));
+    let mmap = repo_text("kernel/src/syscall/mmap.rs");
+    let bodies = module_function_bodies(&mmap);
+    let hint = normalized_code(bodies["free_hint"][0]).replace(' ', "");
+    assert!(hint.contains("start>=crate::memory::vma::MMAP_REGION_START"));
+    assert!(hint.contains("end<=crate::memory::vma::MMAP_REGION_END"));
+    assert!(hint.contains("!range_is_mapped(process,start,end)") && hint.contains(".then_some(start)"));
     let diff = census_diff(&floor_census(), FLOOR_ANCHORS);
     assert!(
         diff.is_empty(),
@@ -437,6 +462,10 @@ fn neither_census_is_empty() {
 
 #[test]
 fn a_reintroduced_literal_floor_reddens_the_census() {
+    let common = repo_text("kernel/src/syscall/memory_common.rs");
+    let mutated = common.replace("crate::memory::vma::MMAP_REGION_START", "0x1000_0000");
+    assert_ne!(mutated, common);
+    assert!(!shared_descent_refuses_below_floor(&mutated));
     // #742's exact regression shape: a site drifts from the named constant
     // back onto the stale hardcoded floor.
     let planted = r#"
@@ -462,6 +491,10 @@ pub fn sys_mmap(addr: u64, length: u64) -> SyscallResult {
 
 #[test]
 fn a_deleted_floor_check_reddens_the_census() {
+    let common = repo_text("kernel/src/syscall/memory_common.rs");
+    let mutated = common.replace("return None;", "return Some(start);");
+    assert_ne!(mutated, common);
+    assert!(!shared_descent_refuses_below_floor(&mutated));
     // The other half of the same regression: the comparison is removed
     // entirely (e.g. "simplified away"), not merely re-literalized.
     let planted = r#"

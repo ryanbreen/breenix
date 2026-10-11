@@ -1,0 +1,21 @@
+[package]
+name = "coreproof-userspace-fixtures"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+libbreenix = { path = "../../../libs/libbreenix" }
+
+[profile.release]
+panic = "abort"
+
+[[bin]]
+name = "simple_exit"
+path = "simple_exit.rs"
+
+[[bin]]
+name = "hello_time"
+path = "hello_time.rs"

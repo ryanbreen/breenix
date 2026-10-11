@@ -3243,7 +3243,13 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
                 .credentials_after_exec(pid, Default::default())
                 .ok_or("Process not found")?;
             let mut prepared = Some(crate::process::manager::ProcessManager::prepare_exec_image(
-                pid, elf, Some("exec_detach_oracle"), &argv, &[], Default::default(), cred,
+                pid,
+                elf,
+                Some("exec_detach_oracle"),
+                &argv,
+                &[],
+                Default::default(),
+                cred,
             )?);
             manager
                 .exec_process_with_argv(pid, &mut prepared, closes)

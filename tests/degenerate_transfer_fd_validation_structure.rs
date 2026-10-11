@@ -360,13 +360,16 @@ fn the_validator_reports_ebadf_from_the_descriptor_table() {
         .expect("missing validate_fd_for_degenerate_transfer");
     let compact = compact_code(body);
     assert!(
-        compact.contains("process.fd_table.get(fd).is_some()"),
+        compact.contains("matchprocess.fd_table.get(fd){"),
         "the validator does not consult the calling process's descriptor table"
     );
     assert!(
-        compact.contains("Err(super::errno::EBADFasu64)"),
+        compact.contains("None=>Err(super::errno::EBADFasu64)"),
         "the validator does not report EBADF for an absent descriptor"
     );
+    assert!(compact.contains("Some(entry)ifmatches!(entry.kind,crate::ipc::FdKind::RegularFile(_))&&!(ifwrite{entry.writable()}else{entry.readable()})=>{Err(super::errno::EBADFasu64)}"),
+        "degenerate transfers must still enforce the requested access mode");
+    assert!(compact.contains("Some(_)=>Ok(())"));
     assert!(
         compact.contains("crate::arch_without_interrupts("),
         "the validator takes the process-manager lock without masking interrupts"

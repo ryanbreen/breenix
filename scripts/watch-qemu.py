@@ -114,8 +114,8 @@ def main():
         stop(process)
     if reason == "fatal":
         return 1
-    if args.mode in ("probe", "tests") and reason == "done":
-        serial = args.serial.read_bytes().decode("utf-8", errors="replace")
+    if args.mode in ("probe", "tests"):
+        serial = args.serial.read_bytes().decode("utf-8", errors="replace") if args.serial.exists() else ""
         result = DONE["completion"](serial, args.mode, args.suite)
         print(f"{'PASS' if result and result[0] else 'FAIL'}: {result[1] if result else 'no completion record'}", flush=True)
         return 0 if result and result[0] else 1

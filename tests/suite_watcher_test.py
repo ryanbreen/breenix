@@ -194,11 +194,23 @@ class SuiteWatcherTest(unittest.TestCase):
                     process.kill()
                 process.wait()
 
-    def test_probe_retains_idle_exit(self):
-        result, elapsed = self.replay(b"PROBE DONE passed=16 failed=0\n", idle=1, mode="probe")
+    def test_probe_done_stops_before_idle(self):
+        result, elapsed = self.replay(b"PROBE DONE passed=16 failed=0\n", idle=5, mode="probe")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("No serial output", result.stdout)
-        self.assertGreaterEqual(elapsed, 1)
+        self.assertIn("PASS: PROBE DONE passed=16 failed=0", result.stdout)
+        self.assertIn("completed; stopping", result.stdout)
+        self.assertNotIn("No serial output", result.stdout)
+        self.assertGreaterEqual(elapsed, 2.4)
+        self.assertLess(elapsed, 4)
+
+    def test_probe_and_testing_missing_done_idle_and_fail(self):
+        for mode in ("probe", "tests"):
+            with self.subTest(mode=mode):
+                result, _ = self.replay(b"unfinished boot\n", idle=1, mode=mode)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("No serial output", result.stdout)
+                self.assertIn("FAIL: no completion record", result.stdout)
+                self.assertNotIn("PASS:", result.stdout)
 
 
 if __name__ == "__main__":

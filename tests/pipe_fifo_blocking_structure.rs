@@ -208,7 +208,7 @@ fn queue_wake_copy_and_threshold_mutations_are_detected() {
 }
 
 #[test]
-fn poll_and_transfer_share_one_readiness_predicate() {
+fn poll_requires_atomic_write_space_or_reports_a_closed_reader() {
     let pipe = read("kernel/src/ipc/pipe.rs");
     assert_eq!(
         compact(&function(&pipe, "has_write_space")),
@@ -225,10 +225,8 @@ fn poll_and_transfer_share_one_readiness_predicate() {
             .filter(|(names, _)| names.iter().any(|name| name == family))
             .collect();
         assert_eq!(found.len(), 1, "readiness census lost {family}");
-        assert!(contains(&found[0].1, "has_write_space(1)"));
-        assert!(contains(&found[0].1, "!pipe.has_readers()"));
-        assert!(contains(&found[0].1, "POLLERR"));
-        assert!(!contains(&found[0].1, "space()"));
+        assert!(contains(&found[0].1, "pipe.space()>=super::pipe::PIPE_BUF||!pipe.has_readers()"));
+        assert!(contains(&found[0].1, "if!pipe.has_readers(){revents|=events::POLLERR;}"));
     }
 }
 
@@ -251,11 +249,12 @@ fn prepared_sleep_owns_no_guard_and_cleans_up_eintr() {
     assert_eq!(body.matches("preempt_enable()").count(), 1);
     assert_eq!(body.matches("preempt_disable()").count(), 1);
     assert!(
-        body.find("check_signals_for_eintr()").unwrap() < body.find("with_scheduler(").unwrap()
+        body.find("check_signals_for_restartable_wait()").unwrap() < body.find("with_scheduler(").unwrap()
     );
     assert!(body.contains("ThreadState::BlockedOnIO"));
     assert!(body.find("preempt_disable()").unwrap() < body.find("take_waiter(").unwrap());
-    assert!(body.rfind("finish_wait()").unwrap() < body.rfind("errno::EINTR").unwrap());
+    assert!(body.rfind("finish_wait_for(tid)").unwrap() < body.rfind("Some(error)=>Err(error)").unwrap());
+    assert!(body.contains("ifletSome(error)=crate::syscall::check_signals_for_restartable_wait(){breakSome(error);}"));
     assert!(body.contains("PrepareOutcome::Mismatch=>{queue.finish_wait();returnOk(());}"));
     assert!(body
         .contains("PrepareOutcome::PublishFailed=>{queue.finish_wait();returnErr(errno::ESRCH);}"));
@@ -346,11 +345,14 @@ fn dup_exec_and_row_drop_keep_cleanup_outside_pm() {
     ));
     let mut callers = Vec::new();
     all_function_bodies(&lex(&read("kernel/src/syscall/handlers.rs")), &mut callers);
+    all_function_bodies(&lex(&read("kernel/src/arch_impl/aarch64/syscall_entry.rs")), &mut callers);
     let execs: Vec<_> = callers
         .iter()
         .filter(|(_, body)| contains(body, "DeferredFdCloses::default()"))
         .collect();
-    assert_eq!(execs.len(), 3, "exec cleanup owner census changed");
+    assert_eq!(execs.len(), 2, "each architecture must own exec cleanup outside PM");
+    let owners: BTreeSet<_> = execs.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(owners, BTreeSet::from(["sys_execv_with_frame", "sys_exec_aarch64"]));
     for (name, body) in execs {
         let body = compact(body);
         assert!(
@@ -385,7 +387,7 @@ fn dup_exec_and_row_drop_keep_cleanup_outside_pm() {
     }
     for path in [
         "kernel/src/task/process_task.rs",
-        "kernel/src/syscall/handlers.rs",
+        "kernel/src/syscall/wait.rs",
     ] {
         let mut funcs = Vec::new();
         all_function_bodies(&lex(&read(path)), &mut funcs);
@@ -896,7 +898,8 @@ fn aggregate_writev(source: &str) -> bool {
                 .replace(' ', "")
                 .as_str(),
         )
-        && body.find("write_pipe(") < body.find("handlers::sys_write(")
+        && body.contains("handlers::write_vector(fd,iov.iov_base,iov.iov_len,total==0)")
+        && body.find("write_pipe(") < body.find("handlers::write_vector(")
 }
 
 #[test]
@@ -908,7 +911,7 @@ fn writev_aggregate_atomicity_rejects_per_iovec_mutation() {
     );
     let mutation = source.replace(
         "return super::blocking_io::write_pipe(&buffer, &gathered, nonblocking);",
-        "for vector in &vectors { handlers::sys_write(fd, vector.iov_base, vector.iov_len); }",
+        "for vector in &vectors { handlers::write_vector(fd, vector.iov_base, vector.iov_len, true); }",
     );
     assert_ne!(mutation, source);
     assert!(

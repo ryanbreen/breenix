@@ -35,7 +35,7 @@
         },
         {
           "id": "rate-counter",
-          "title": "CLOCK_MONOTONIC advances at the rate of the processor's counter over 2 seconds (ARM64 CNTVCT_EL0, x86-64 the TSC at its CPUID frequency)"
+          "title": "CLOCK_MONOTONIC advances at the rate of the processor's counter over at least 2 seconds (ARM64 CNTVCT_EL0 at CNTFRQ_EL0; x86-64 the TSC at a frequency measured against the RTC's seconds through /dev/rtc0)"
         },
         {
           "id": "counter-cpus",

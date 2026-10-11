@@ -4104,7 +4104,8 @@ const ROW_STATE_MENTIONS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const QUARANTINE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn handle_sync_exception", 4),
-    ("kernel/src/syscall/signal.rs", "fn send_signal_to_process", 1),
+    ("kernel/src/arch_impl/aarch64/exception.rs", "fn end_process_for_el0_fault", 1),
+    ("kernel/src/syscall/signal.rs", "fn kill_process_now", 1),
 ];
 #[rustfmt::skip]
 const KERNEL_STACK_MUTATIONS: &[(&str, &str, usize)] = &[
@@ -4195,7 +4196,8 @@ const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
     // context; they queue the deferred SIGSEGV exit the fault-exit kernel
     // thread runs.
     ("kernel/src/process/mod.rs", "fn exit_process_by_pid", 1),
-    ("kernel/src/syscall/signal.rs", "fn send_signal_to_process", 1),
+    ("kernel/src/arch_impl/aarch64/exception.rs", "fn end_process_for_el0_fault", 1),
+    ("kernel/src/syscall/signal.rs", "fn kill_process_now", 1),
 ];
 #[rustfmt::skip]
 const EXIT_PROCESS_LOCKED_CALLS: &[(&str, &str, usize)] = &[
@@ -4472,7 +4474,6 @@ const INIT_GROUP_REFUSAL_CONSULTATIONS: &[(&str, &str, usize)] = &[
 const DESIGNATED_INIT_READS: &[(&str, &str, usize)] = &[
     ("kernel/src/main_aarch64.rs", "#[cfg(target_arch=aarch64)] fn launch_init_from_elf", 1),
     ("kernel/src/syscall/clone.rs", "fn refuses_init_group_clone", 1),
-    ("kernel/src/syscall/signal.rs", "fn check_target_exists", 1),
     ("kernel/src/syscall/signal.rs", "fn send_signal_to_all_processes", 1),
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 10),
@@ -5921,7 +5922,7 @@ fn validate_futex_queue_value_type(sources: &[(String, String)]) -> Result<(), V
     check(
         &mut failures,
         "FutexTable must hold the queues by key and the queue each waiter is on",
-        table.contains("queues: BTreeMap<FutexKey, VecDeque<Waiter>>, queued_on: BTreeMap<u64, FutexKey>, }"),
+        table.starts_with("struct FutexTable { queues: BTreeMap<FutexKey, VecDeque<Waiter>>, queued_on: BTreeMap<u64, FutexKey>, pi: BTreeMap<FutexKey, PiState>, pi_waiting: BTreeMap<u64, FutexKey>, pi_owned: BTreeMap<u64, alloc::vec::Vec<FutexKey>>, pi_granted: BTreeSet<u64>, }"),
     );
     check(
         &mut failures,
@@ -8103,7 +8104,7 @@ fn validate_deferred_reclaim_drain_sites(
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
-/// The interrupt-return hook may stamp one epoch and do nothing before it.
+/// The interrupt-return hook accounts user time, then stamps one epoch before scheduling.
 fn validate_x86_epoch_stamp_is_minimal(sources: &[(String, String)]) -> Result<(), ()> {
     let context_switch = source(sources, "kernel/src/interrupts/context_switch.rs");
     let body = function_body(context_switch, "check_need_resched_and_switch");
@@ -8113,17 +8114,25 @@ fn validate_x86_epoch_stamp_is_minimal(sources: &[(String, String)]) -> Result<(
         return Err(());
     }
     let prefix = &body[..stamps[0]];
-    let prefix_mask = code_mask(prefix);
-    if ["log::", "serial_println!", "format!", "Vec::", "alloc::"]
-        .iter()
-        .any(|forbidden| !code_offsets(prefix, &prefix_mask, forbidden).is_empty())
-        || !call_offsets(prefix, &prefix_mask, "lock").is_empty()
-    {
-        return Err(());
+    let thread = source(sources, "kernel/src/task/thread.rs");
+    let guard = item_body_for_path(context_switch, "impl Drop for ReturnUserTime::fn drop").ok_or(())?;
+    let mut accounting = vec![prefix, guard];
+    for name in ["enter_kernel_time", "resume_user_time", "switch_timer_mode", "update_timer_cpu", "current_cpu_thread"] {
+        accounting.push(function_body(thread, name));
+    }
+    for body in accounting {
+        let mask = code_mask(body);
+        if ["log::", "serial_println!", "format!", "Vec::", "alloc::"]
+            .iter()
+            .any(|forbidden| !code_offsets(body, &mask, forbidden).is_empty())
+            || !call_offsets(body, &mask, "lock").is_empty()
+        {
+            return Err(());
+        }
     }
     let statements = block_statements(body).ok_or(())?;
     if !normalized_code(statements)
-        .starts_with("crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());")
+        .starts_with("if (interrupt_frame.code_segment.0 & 3) == 3 { crate::task::thread::enter_kernel_time(); } let _user_time = ReturnUserTime(interrupt_frame as *const InterruptStackFrame); crate::task::scheduler::note_scheduling_epoch(crate::per_cpu::cpu_id());")
     {
         return Err(());
     }
