@@ -452,8 +452,17 @@ const PRODUCTION_RECLAIM_FRAME_BUDGET: u32 = 16;
 /// dispatch latency for memory, as the uncapped drain did.
 const PRESSURED_PASS_SELECTION_CAP: u32 = 4;
 
-/// Whether fewer than half of the usable frames are free: unallocated at the
-/// frontier or on the free list.
+/// Receipts queued for reclamation beyond which passes complete whole
+/// receipts. A queued receipt keeps its process row and its page table's
+/// per-page custody records on the kernel heap until it completes (a forked
+/// process's leaf records alone take 96 KiB), so a backlog that grows with a
+/// forking suite's exits empties the heap while most frames are still free.
+const RECEIPT_BACKLOG_PRESSURE: usize = 8;
+
+/// Whether fewer than half of the usable frames are free (unallocated at the
+/// frontier or on the free list), or more than `RECEIPT_BACKLOG_PRESSURE`
+/// receipts wait. The backlog, not the heap's fill, is the measure: device
+/// buffers such as a GPU framebuffer also live on the heap.
 fn memory_pressure() -> bool {
     let stats = crate::memory::frame_allocator::memory_stats();
     let total = (stats.total_bytes / 4096) as usize;
@@ -461,6 +470,8 @@ fn memory_pressure() -> bool {
         .saturating_sub(stats.allocated_frames)
         .saturating_add(stats.free_list_frames);
     available < total / 2
+        || crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().len())
+            > RECEIPT_BACKLOG_PRESSURE
 }
 
 /// Injected nested refusals observed by `boot_prove_nested_drain_refusal`.
@@ -911,6 +922,10 @@ impl ProcessScheduler {
     /// SERIAL and framebuffer locks) creates an unbreakable deadlock.
     pub fn handle_thread_exit(thread_id: u64, exit_code: i32) {
         crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_EXIT);
+        // The priority-inheritance futexes it owns pass to their waiters, and
+        // one it is blocked on stops counting it. Before PM: the futex table
+        // is never taken under it.
+        crate::syscall::futex::pi_thread_exit(thread_id);
         // Capture the claimer before taking PM. This is a separate scheduler-only
         // acquisition; no scheduler state is consulted while PM is live.
         let report_claimer = scheduler::current_thread_id().unwrap_or(thread_id);
