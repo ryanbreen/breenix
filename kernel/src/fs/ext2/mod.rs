@@ -614,6 +614,7 @@ impl Ext2Fs {
         }
 
         let mode_before = inode.i_mode;
+        let times_before = (inode.i_mtime, inode.i_ctime);
         if unprivileged {
             let kill = 0o4000 | if inode.i_mode & 0o0010 != 0 { 0o2000 } else { 0 };
             inode.i_mode &= !kill;
@@ -636,8 +637,8 @@ impl Ext2Fs {
             offset,
             data,
         ) } else {
-            write_file_range(self.device.as_ref(), &mut inode, &self.superblock,
-                &mut self.block_groups, offset, data).map(|_| true)
+            file::write_file_range_tracked(self.device.as_ref(), &mut inode, &self.superblock,
+                &mut self.block_groups, offset, data)
         };
         if written == Err(crate::block::BlockError::MetadataPublishFailed) {
             // The bitmap may have landed only in part. Do not publish inode
@@ -684,7 +685,9 @@ impl Ext2Fs {
         persisted?;
         linked?;
 
-        if !changed && mode_before == inode.i_mode && !counts_changed {
+        if !changed && mode_before == inode.i_mode
+            && times_before == (inode.i_mtime, inode.i_ctime) && !counts_changed
+        {
             if let (Some(object), Some(epoch)) = (object, previous_epoch) {
                 object.map.restore_disk_epoch(epoch);
             }
@@ -702,6 +705,10 @@ impl Ext2Fs {
         if let Some(object) = self.live_inodes.get(inode_num) {
             object.map.note_disk_write(self.durable_epoch());
         }
+        self.write_inode_disk(inode_num, inode)
+    }
+
+    fn write_inode_disk(&self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
         inode
             .write_to(
                 self.device.as_ref(),
@@ -923,7 +930,9 @@ impl Ext2Fs {
         let now = crate::time::current_unix_time() as u32;
         if inode.needs_atime_update() {
             inode.i_atime = now;
-            self.write_inode(inode_num, &inode)?;
+            // Relatime changes no mapped bytes or addressing. It must not
+            // invalidate a snapshot's existing data durability certificate.
+            self.write_inode_disk(inode_num, &inode)?;
         }
         Ok(())
     }

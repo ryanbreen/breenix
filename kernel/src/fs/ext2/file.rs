@@ -799,7 +799,20 @@ pub fn write_file_range<B: BlockDevice + ?Sized>(
     offset: u64,
     data: &[u8],
 ) -> Result<(), BlockError> {
-    write_file_range_batched(device, inode, superblock, block_groups, offset, data, false).map(|_| ())
+    write_file_range_tracked(device, inode, superblock, block_groups, offset, data).map(|_| ())
+}
+
+/// Report whether bytes or addressing changed while still applying ordinary
+/// write timestamp semantics, even when the supplied bytes were identical.
+pub(super) fn write_file_range_tracked<B: BlockDevice + ?Sized>(
+    device: &B,
+    inode: &mut Ext2Inode,
+    superblock: &Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+    offset: u64,
+    data: &[u8],
+) -> Result<bool, BlockError> {
+    write_file_range_batched(device, inode, superblock, block_groups, offset, data, false)
 }
 
 /// Mapped writeback may visit a still-writable page more than once. Compare
@@ -827,11 +840,11 @@ fn write_file_range_batched<B: BlockDevice + ?Sized>(
     block_groups: &mut [super::Ext2BlockGroupDesc],
     offset: u64,
     data: &[u8],
-    skip_unchanged: bool,
+    mapped_writeback: bool,
 ) -> Result<bool, BlockError> {
     if data.is_empty() { return Ok(false); }
     let metadata = MetadataBatch::new(device, superblock, block_groups)?;
-    let result = write_file_range_impl(&metadata, device, inode, superblock, block_groups, offset, data, skip_unchanged);
+    let result = write_file_range_impl(&metadata, device, inode, superblock, block_groups, offset, data, mapped_writeback);
     metadata.publish()?;
     result
 }
@@ -844,7 +857,7 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
     block_groups: &mut [super::Ext2BlockGroupDesc],
     offset: u64,
     data: &[u8],
-    skip_unchanged: bool,
+    mapped_writeback: bool,
 ) -> Result<bool, BlockError> {
     if data.is_empty() {
         return Ok(false);
@@ -903,7 +916,7 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
             // Every byte of a new block must be initialized before its pointer
             // becomes visible, including bytes outside a partial write.
             block_buf[..block_size].fill(0);
-        } else if start_in_block != 0 || end_in_block != block_size || skip_unchanged {
+        } else {
             if let Err(e) = read_ext2_block(
                 data_device,
                 physical_block,
@@ -914,7 +927,7 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
             }
         }
 
-        if skip_unchanged && !allocated
+        if !allocated
             && block_buf[start_in_block..end_in_block] == data[data_pos..data_pos + bytes_to_write]
         {
             data_pos += bytes_to_write;
@@ -973,6 +986,7 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
     // Update inode size if we extended the file
     let current_size = inode.size();
     if end_offset > current_size {
+        changed = true;
         // Update i_size (lower 32 bits)
         unsafe {
             let size_ptr = core::ptr::addr_of_mut!(inode.i_size);
@@ -982,7 +996,7 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
     }
 
     // Update modification and change timestamps
-    if !skip_unchanged || changed { inode.update_timestamps(false, true, true); }
+    if !mapped_writeback || changed { inode.update_timestamps(false, true, true); }
 
     Ok(changed)
 }
@@ -1391,6 +1405,29 @@ mod tests {
         let times = (inode.i_mtime, inode.i_ctime);
         assert_eq!(times, (1, 1));
         assert!(!write_mapped_file_range(&dev, &mut inode, &sb, &mut [], 13, b"changed").unwrap());
+        assert_eq!(dev.io.lock().1, 1);
+        let stored = dev.bytes.lock();
+        assert_eq!(&stored[20 * 4096 + 13..20 * 4096 + 20], b"changed");
+        assert_eq!(stored[20 * 4096 + 12], 0xa5);
+        assert_eq!(stored[20 * 4096 + 20], 0xa5);
+    }
+
+    #[test]
+    fn identical_normal_writes_preserve_write_timestamp_semantics() {
+        let (dev, sb) = disk(4096);
+        let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
+        inode.i_block[0] = 20;
+        inode.i_size = 4096;
+        inode.i_blocks = 8;
+        inode.i_mtime = 7;
+        inode.i_ctime = 7;
+        assert!(!write_file_range_tracked(&dev, &mut inode, &sb, &mut [], 0, &[0xa5; 4096]).unwrap());
+        assert_eq!(dev.io.lock().1, 0);
+        let times = (inode.i_mtime, inode.i_ctime);
+        assert_eq!(times, (1, 1));
+        write_file_range(&dev, &mut inode, &sb, &mut [], 13, &[0xa5; 37]).unwrap();
+        assert_eq!(dev.io.lock().1, 0);
+        assert!(write_file_range_tracked(&dev, &mut inode, &sb, &mut [], 13, b"changed").unwrap());
         assert_eq!(dev.io.lock().1, 1);
         let stored = dev.bytes.lock();
         assert_eq!(&stored[20 * 4096 + 13..20 * 4096 + 20], b"changed");
