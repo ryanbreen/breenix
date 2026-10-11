@@ -605,6 +605,9 @@ if [ "$PARALLELS" = true ]; then
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
     prlctl set "$PARALLELS_VM" --memsize 8192
     prlctl set "$PARALLELS_VM" --cpus 8
+    # Firmware currently supplies UTC with an unspecified UEFI TimeZone.
+    # Keep Tools time synchronization in UTC too, independent of the host zone.
+    prlctl set "$PARALLELS_VM" --time-sync on --disable-timezone-sync on
     # Disable auto-suspend: default is "suspend" which halts the VM when Parallels
     # detects no display activity. Breenix runs headless/serial; we want it to
     # stay running until explicitly stopped.
@@ -1007,6 +1010,8 @@ mks.enable3d = "TRUE"
 
 vmci0.present = "TRUE"
 
+# The guest treats an unspecified UEFI TimeZone as a UTC RTC contract.
+rtc.diffFromUTC = "0"
 tools.syncTime = "FALSE"
 floppy0.present = "FALSE"
 hpet0.present = "TRUE"

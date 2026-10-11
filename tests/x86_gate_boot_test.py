@@ -15,12 +15,12 @@ DONE = '[ INFO] kernel::syscall::handlers: USERSPACE TEST REPORT DONE\n'
 
 
 class BootOutcomes(unittest.TestCase):
-    def run_gate(self, serial, poll, times, deadline='10'):
+    def run_gate(self, serial, poll, times, deadline='10', offset=0, report_clock=True):
         with tempfile.TemporaryDirectory() as directory:
             kernel = Path(directory) / 'kernel'
             user = Path(directory) / 'user'
             kernel.write_text(serial)
-            user.write_text(f'[clock] UTC epoch={int(time.time())} source=CMOS\n')
+            user.write_text(f'[clock] UTC epoch={int(time.time()) + offset} source=CMOS\n' if report_clock else '')
             process = Mock(returncode=7)
             process.poll.return_value = poll
             with patch.object(gate.sys, 'argv', ['gate', str(kernel), str(user), 'launcher']), \
@@ -35,6 +35,12 @@ class BootOutcomes(unittest.TestCase):
 
     def test_completion_with_interleaved_prefix(self):
         self.assertEqual(self.run_gate('noise' + COMPLETE + DONE, None, [0, 2, 2]), 0)
+
+    def test_completed_boot_with_local_clock_fails(self):
+        self.assertEqual(self.run_gate(COMPLETE + DONE, None, [0, 2, 2], offset=3600), 3)
+
+    def test_completed_boot_without_epoch_fails(self):
+        self.assertEqual(self.run_gate(COMPLETE + DONE, None, [0, 2, 2], report_clock=False), 3)
 
     def test_late_completion_is_scored_after_report(self):
         self.assertEqual(self.run_gate(COMPLETE + DONE, None, [0, 11, 11]), 2)

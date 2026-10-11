@@ -273,6 +273,17 @@ pub fn read_rtc_time() -> Result<u64, &'static str> {
     read_rtc_raw().map(|time| rtc_to_unix_timestamp(&time))
 }
 
+/// Emit the UTC boot sample on the console, including production ARM64 boots
+/// which do not install a logger. Called only during RTC initialization.
+fn report_boot_time(timestamp: u64, source: &str) {
+    let dt = DateTime::from_unix_timestamp(timestamp);
+    crate::serial_println!(
+        "[clock] Boot time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
+    );
+    crate::serial_println!("[clock] UTC epoch={} source={}", timestamp, source);
+}
+
 /// Initialize RTC and cache boot time
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
@@ -289,7 +300,7 @@ pub fn init() {
                 dt.minute,
                 dt.second
             );
-            crate::serial_println!("[clock] UTC epoch={} source=CMOS", timestamp);
+            report_boot_time(timestamp, "CMOS");
         }
         Err(e) => {
             log::error!("Failed to initialize RTC: {}", e);
@@ -369,7 +380,7 @@ pub fn init() {
                 dt.minute,
                 dt.second
             );
-            crate::serial_println!("[clock] UTC epoch={} source=UEFI", loader_time);
+            report_boot_time(loader_time, "UEFI");
         } else {
             log::warn!("No RTC available (PL031 absent, UEFI GetTime not provided)");
             BOOT_WALL_TIME.store(0, Ordering::Relaxed);
@@ -389,7 +400,7 @@ pub fn init() {
                 dt.minute,
                 dt.second
             );
-            crate::serial_println!("[clock] UTC epoch={} source=PL031", timestamp);
+            report_boot_time(timestamp, "PL031");
         }
         Err(e) => {
             log::error!("Failed to initialize PL031 RTC: {}", e);

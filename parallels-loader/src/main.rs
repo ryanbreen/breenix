@@ -22,8 +22,8 @@ static mut PAGE_TABLES: PageTableStorage = PageTableStorage::new();
 /// HardwareConfig - static so it survives ExitBootServices.
 static mut HW_CONFIG: HardwareConfig = unsafe { core::mem::zeroed() };
 
-struct Su(u64, u8);
-impl core::fmt::Write for Su {
+struct LoaderSerial(u64, u8);
+impl core::fmt::Write for LoaderSerial {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for c in s.bytes() {
             unsafe {
@@ -185,7 +185,7 @@ fn main() -> Status {
     // Log RAM regions and entry address to serial for VMware debugging
     {
         use core::fmt::Write;
-        let mut u = Su(config.uart_base_phys, config.uart_type);
+        let mut u = LoaderSerial(config.uart_base_phys, config.uart_type);
         let _ = writeln!(u, "[ram] {} regions:", config.ram_region_count);
         for i in 0..config.ram_region_count as usize {
             if i >= config.ram_regions.len() {
@@ -242,19 +242,24 @@ fn main() -> Status {
                 time.second(),
             );
             use core::fmt::Write;
-            let mut u = Su(config.uart_base_phys, config.uart_type);
+            let mut u = LoaderSerial(config.uart_base_phys, config.uart_type);
             let _ = writeln!(u, "UEFI GetTime source: timezone={} daylight={} raw_epoch={}",
                 time.time_zone().unwrap_or(2047), time.daylight().bits(), ts);
-            config.boot_wall_time_utc = ts;
+            match arm64_boot_contract::uefi_time::utc_epoch(
+                ts, time.time_zone().unwrap_or(2047), time.daylight().bits(),
+            ) {
+                Ok(utc) => config.boot_wall_time_utc = utc,
+                Err(why) => log::warn!("UEFI wall clock unavailable: {}", why),
+            }
             log::info!(
-                "UEFI time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC (unix={})",
+                "UEFI time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} (utc_unix={})",
                 time.year(),
                 time.month(),
                 time.day(),
                 time.hour(),
                 time.minute(),
                 time.second(),
-                ts
+                config.boot_wall_time_utc
             );
         }
         Err(e) => {

@@ -58,7 +58,7 @@ def main():
                     return 2
                 clock_ok, clock_reason = clock.verdict()
                 print(clock_reason, flush=True)
-                return 0 if clock_ok else 1
+                return 0 if clock_ok else 3
             if process.poll() is not None:
                 print(f'GATE: FAIL (full boot exited before USERSPACE TEST COMPLETE; status={process.returncode})', flush=True)
                 return 1
