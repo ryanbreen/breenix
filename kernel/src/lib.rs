@@ -548,16 +548,32 @@ pub fn arch_halt_with_interrupts() {
 /// state is read again here with interrupts masked; an interrupt arriving after
 /// that read ends the halt, through `sti; hlt` on x86 and, on ARM64, a WFI with
 /// IRQs masked, which ends when one is pending and takes it as they unmask.
+///
+/// On x86 a thread switches only on an interrupt return, so a waiter that
+/// halted here with another thread queued on its CPU held the CPU until the
+/// next interrupt: the next tick, up to 5 ms, or an IPI meant for someone
+/// else. In the threads suite's barrier that made one cross-CPU handoff in
+/// four cost 1-10 ms, a woken worker queued behind a thread that had run and
+/// blocked again (#1357). With a thread queued here, the waiter enters the
+/// reschedule gate at once instead, which switches it out exactly as a tick
+/// taken in the halt would.
 pub fn arch_halt_while_blocked() {
     // SAFETY: interrupts are masked only for the state read, and every path
     // below unmasks them before returning.
     unsafe { arch_disable_interrupts() };
-    let blocked = task::scheduler::with_scheduler(|scheduler| {
+    let current_blocked = |scheduler: &mut task::scheduler::Scheduler| {
         scheduler
             .current_thread_mut()
             .is_some_and(|thread| thread.state.is_blocked())
+    };
+    #[cfg(target_arch = "x86_64")]
+    let (blocked, queued) = task::scheduler::with_scheduler(|scheduler| {
+        let blocked = current_blocked(scheduler);
+        (blocked, blocked && scheduler.has_queued_work_here())
     })
-    .unwrap_or(false);
+    .unwrap_or((false, false));
+    #[cfg(not(target_arch = "x86_64"))]
+    let blocked = task::scheduler::with_scheduler(current_blocked).unwrap_or(false);
     if !blocked {
         // SAFETY: every caller would have halted with interrupts enabled.
         unsafe { arch_enable_interrupts() };
@@ -567,7 +583,21 @@ pub fn arch_halt_while_blocked() {
     // is not a park.
     per_cpu::note_wait_loop_park();
     #[cfg(target_arch = "x86_64")]
-    x86_64::instructions::interrupts::enable_and_hlt();
+    {
+        if queued && per_cpu::preempt_count() == 0 {
+            task::scheduler::set_need_resched();
+            // SAFETY: the reschedule vector's gate is the timer entry, which
+            // saves and restores every register; a software interrupt enters
+            // it from here as the tick would from the halt. The thread
+            // resumes after it, with interrupts as they were, masked.
+            unsafe {
+                core::arch::asm!("int {vector}", vector = const interrupts::RESCHEDULE_VECTOR);
+                arch_enable_interrupts();
+            }
+            return;
+        }
+        x86_64::instructions::interrupts::enable_and_hlt();
+    }
     #[cfg(target_arch = "aarch64")]
     // SAFETY: WFI with IRQs masked wakes on a pending interrupt, which the
     // unmask then takes.
