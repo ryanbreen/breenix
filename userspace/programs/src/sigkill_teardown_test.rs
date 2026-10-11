@@ -18,8 +18,7 @@ const CLONE_FLAGS: u64 = 0x0000_0100 | 0x0000_0400 | 0x0020_0000 | 0x0100_0000;
 
 static SIGCHLD_RECEIVED: AtomicBool = AtomicBool::new(false);
 
-/// Children of this test that spin in userspace until killed. `fail()` and
-/// `skip()` kill what is still listed here: a victim left spinning outlives the test
+/// Children of this test that spin in userspace until killed. `fail()` kills what is still listed here: a victim left spinning outlives the test
 /// and keeps its CPU busy for the rest of the boot.
 static LIVE_VICTIMS: [AtomicI32; 4] = [const { AtomicI32::new(0) }; 4];
 
@@ -58,14 +57,6 @@ fn kill_live_victims() {
             }
         }
     }
-}
-
-/// The per-PID evidence is kept only by a `boot_tests` kernel; any other kernel
-/// answers `unavailable: 1`, and the test cannot measure the teardown there.
-fn skip(reason: &str) -> ! {
-    kill_live_victims();
-    println!("SIGKILL_TEARDOWN_TEST: SKIP: {reason}");
-    std::process::exit(0);
 }
 
 extern "C" fn sigchld_handler(_signal: i32) {
@@ -117,7 +108,7 @@ fn evidence(pid: i32) -> Evidence {
     let contents = std::fs::read_to_string(path)
         .unwrap_or_else(|_| fail("could not read per-PID teardown evidence"));
     if contents.lines().any(|line| line.trim() == "unavailable: 1") {
-        skip("this kernel does not keep per-PID teardown evidence (boot_tests only)");
+        fail("this kernel does not keep per-PID teardown evidence");
     }
     Evidence {
         defer: parse_value(&contents, "defer"),

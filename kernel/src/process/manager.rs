@@ -212,34 +212,22 @@ impl ProcessManager {
     fn find_live_clone_vm_sibling_holding_cr3(
         &self,
         pid: ProcessId,
-        thread_group_id: u64,
         old_cr3: u64,
     ) -> Option<(ProcessId, u64)> {
-        self.processes
-            .iter()
-            .find_map(|(&candidate_pid, candidate)| {
-                if candidate_pid == pid || candidate.is_terminated() {
-                    return None;
-                }
-
-                let candidate_thread_group_id = candidate.thread_group_id?;
-                if candidate_thread_group_id != thread_group_id {
-                    return None;
-                }
-
-                if candidate.inherited_cr3 != Some(old_cr3) {
-                    return None;
-                }
-
-                if let Some(thread) = candidate.main_thread.as_ref() {
-                    if thread.state == crate::task::thread::ThreadState::Terminated {
-                        return None;
-                    }
-                    Some((candidate_pid, thread.id))
-                } else {
-                    Some((candidate_pid, 0))
-                }
-            })
+        let owners = self.processes.live_row(&pid)?.address_space_lifetime.as_ref()?;
+        if alloc::sync::Arc::strong_count(owners) == 1 {
+            return None;
+        }
+        self.processes.iter().find_map(|(&candidate_pid, candidate)| {
+            if candidate_pid == pid || candidate.is_terminated()
+                || candidate.cr3_value() != Some(old_cr3)
+                || !candidate.address_space_lifetime.as_ref()
+                    .is_some_and(|peer| alloc::sync::Arc::ptr_eq(owners, peer))
+            {
+                return None;
+            }
+            Some((candidate_pid, candidate.main_thread.as_ref().map_or(0, |thread| thread.id)))
+        })
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -2502,6 +2490,14 @@ impl ProcessManager {
     /// Called under PROCESS_MANAGER from every exit path before it releases a
     /// row's address space; it neither allocates nor takes another lock.
     pub(crate) fn hand_off_address_space(&mut self, pid: ProcessId) -> bool {
+        let moved = self.transfer_address_space(pid);
+        if let Some(row) = self.processes.live_row_mut(&pid) {
+            row.address_space_lifetime.take();
+        }
+        moved
+    }
+
+    fn transfer_address_space(&mut self, pid: ProcessId) -> bool {
         let Some(root) = self
             .processes
             .live_row(&pid)
@@ -2518,6 +2514,12 @@ impl ProcessManager {
                     && !row.is_terminated()
                     && row.page_table.is_none()
                     && row.inherited_cr3 == Some(root)
+                    && self.processes.live_row(&pid).and_then(|from| {
+                        Some(alloc::sync::Arc::ptr_eq(
+                            from.address_space_lifetime.as_ref()?,
+                            row.address_space_lifetime.as_ref()?,
+                        ))
+                    }) == Some(true)
             })
             .map(|(&peer, _)| peer)
         else {
@@ -3823,24 +3825,23 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
         // points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3, thread_group_id) = {
+        let (thread_id, old_cr3) = {
             let process = self.processes.live_row(&pid).ok_or("Process not found")?;
             let old_cr3 = process.cr3_value();
-            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
             let main_thread = process
                 .main_thread
                 .as_ref()
                 .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3, thread_group_id)
+            (main_thread.id, old_cr3)
         };
 
         // #721 K5: refuse to retire this address space while a live CLONE_VM sibling
         // still holds the same CR3 — matches exec_process_with_argv (#721 B2) and
         // aarch64's own exec_process, same relative position (right after
-        // old_cr3/thread_group_id capture, before any fallible page-table work).
+        // old_cr3 capture, before any fallible page-table work).
         if let Some(old_cr3) = old_cr3 {
             if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
+                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
             {
                 log::warn!(
                     "exec_process: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
@@ -4067,6 +4068,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
+        process.address_space_lifetime = Some(alloc::sync::Arc::new(()));
         process.thread_group_id = None;
 
         // Replace the stack
@@ -4376,15 +4378,14 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
         // points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3, thread_group_id) = {
+        let (thread_id, old_cr3) = {
             let process = self.processes.live_row(&pid).ok_or("Process not found")?;
             let old_cr3 = process.cr3_value();
-            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
             let main_thread = process
                 .main_thread
                 .as_ref()
                 .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3, thread_group_id)
+            (main_thread.id, old_cr3)
         };
         // The identity the new image runs with. The prepared stack reports the
         // credentials decided before it was built; if a set*id call or a
@@ -4403,11 +4404,11 @@ impl ProcessManager {
 
         // #721 B2: refuse to retire this address space while a live CLONE_VM sibling still
         // holds the same CR3 — matches aarch64's exec_process_with_argv, same relative
-        // position (right after old_cr3/thread_group_id capture, before any fallible
+        // position (right after old_cr3 capture, before any fallible
         // page-table work; #721 precheck K5).
         if let Some(old_cr3) = old_cr3 {
             if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
+                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
             {
                 log::warn!(
                     "exec_process_with_argv: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
@@ -4516,6 +4517,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
+        process.address_space_lifetime = Some(alloc::sync::Arc::new(()));
         process.thread_group_id = None;
         process.cred = cred;
         let new_cr3 = process
@@ -4776,15 +4778,14 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while TTBR0_EL1
         // still points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3, thread_group_id) = {
+        let (thread_id, old_cr3) = {
             let process = self.processes.live_row(&pid).ok_or("Process not found")?;
             let old_cr3 = process.cr3_value();
-            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
             let main_thread = process
                 .main_thread
                 .as_ref()
                 .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3, thread_group_id)
+            (main_thread.id, old_cr3)
         };
         // The identity the new image runs with. The prepared stack reports the
         // credentials decided before it was built; if a set*id call or a
@@ -4803,7 +4804,7 @@ impl ProcessManager {
 
         if let Some(old_cr3) = old_cr3 {
             if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
+                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
             {
                 log::warn!(
                     "exec_process_with_argv [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
@@ -4911,6 +4912,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
+        process.address_space_lifetime = Some(alloc::sync::Arc::new(()));
         process.thread_group_id = None;
         process.cred = cred;
         let new_ttbr0 = process
@@ -5060,20 +5062,19 @@ impl ProcessManager {
 
         // Keep the live table installed until every fallible construction step
         // has succeeded. A failed exec must leave TTBR0 custody unchanged.
-        let (thread_id, old_cr3, thread_group_id) = {
+        let (thread_id, old_cr3) = {
             let process = self.processes.live_row(&pid).ok_or("Process not found")?;
             let old_cr3 = process.cr3_value();
-            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
             let main_thread = process
                 .main_thread
                 .as_ref()
                 .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3, thread_group_id)
+            (main_thread.id, old_cr3)
         };
 
         if let Some(old_cr3) = old_cr3 {
             if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
+                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
             {
                 log::warn!(
                     "exec_process [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
@@ -5268,6 +5269,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
+        process.address_space_lifetime = Some(alloc::sync::Arc::new(()));
         process.thread_group_id = None;
         let new_ttbr0 = process
             .page_table

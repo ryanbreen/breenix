@@ -1,11 +1,9 @@
 //! Runtime proof that exec detaches a former CLONE_VM process cleanly.
 //!
-//! ARM64 first proves that a live CLONE_VM sibling prevents exec. Both
-//! architectures then release that sibling, exec, and exercise both futex
+//! Both architectures first prove that a live CLONE_VM sibling prevents exec. They then release that sibling, exec, and exercise both futex
 //! entry points with keys derived from the post-exec thread group.
 
 use libbreenix::errno::Errno;
-#[cfg(target_arch = "aarch64")]
 use libbreenix::error::Error;
 use libbreenix::memory;
 use libbreenix::process;
@@ -400,7 +398,6 @@ fn second_stage_argv() -> [*const u8; 3] {
     [ARG0.as_ptr(), SECOND_STAGE_ARG.as_ptr(), ptr::null()]
 }
 
-#[cfg(target_arch = "aarch64")]
 unsafe fn probe_live_sibling_exec() {
     let argv = second_stage_argv();
     match process::execv(PROGRAM, argv.as_ptr()) {
@@ -413,11 +410,6 @@ unsafe fn probe_live_sibling_exec() {
         }
         Ok(infallible) => match infallible {},
     }
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn probe_live_sibling_exec() {
-    raw_msg(b"CLONEVM_EXEC_TEST: SKIP live-sibling probe (no x86 guard, see #468)\n");
 }
 
 unsafe fn second_stage() -> ! {

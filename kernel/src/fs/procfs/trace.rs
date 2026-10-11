@@ -261,7 +261,7 @@ pub fn generate_counters() -> String {
 /// Reading the file before a kill registers that PID in the provider's fixed,
 /// lock-free tally table; a later read returns only that PID's deltas.
 pub fn generate_teardown_pid(pid: u64) -> String {
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(all(any(feature = "boot_tests", feature = "testing"), target_arch = "aarch64"))]
     {
         let Some(evidence) = crate::tracing::providers::teardown::teardown_pid_evidence(pid) else {
             return String::from("capacity_exhausted: 1\n");
@@ -285,7 +285,7 @@ pub fn generate_teardown_pid(pid: u64) -> String {
         );
     }
 
-    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    #[cfg(not(all(any(feature = "boot_tests", feature = "testing"), target_arch = "aarch64")))]
     {
         let _ = pid;
         String::from("unavailable: 1\n")

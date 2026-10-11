@@ -336,6 +336,7 @@ pub fn sys_clone_thread(
     child_process.sid = parent.sid;
     child_process.parent = Some(parent_pid);
     child_process.inherited_cr3 = Some(parent_cr3);
+    child_process.address_space_lifetime = parent.address_space_lifetime.clone();
     child_process.thread_group_id = Some(parent_tg_id);
     // A thread shares its process's record locks (POSIX fcntl).
     child_process.lock_owner = parent_lock_owner;

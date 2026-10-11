@@ -2085,7 +2085,8 @@ fn load_test_binaries_from_ext2() {
             let (inode_num, resolved_path) = match found_entry {
                 Some(entry) => entry,
                 None => {
-                    // Binary not present in any search path - skip silently
+                    serial_println!("[test] Failed to load {}: not found in any test directory", name);
+                    failed += 1;
                     continue;
                 }
             };

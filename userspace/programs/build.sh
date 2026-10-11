@@ -397,6 +397,12 @@ else
 fi
 
 echo ""
+# The canonical testing profile includes these real musl C binaries too.
+# Build them on every invocation; never carry an unbuilt/stale ELF into a disk.
+if [ "$ARCH" = aarch64 ]; then
+    make -C "$PROJECT_ROOT/userspace/c-programs" install
+fi
+
 echo "========================================"
 echo "  STD BUILD COMPLETE ($ARCH)"
 echo "  Installed: $INSTALLED binaries"
