@@ -2652,4 +2652,30 @@ static SUITE: Suite = suite(
     ],
 );
 
-fn main() { SUITE.run() }
+
+// SCRATCH (never merged): forcing cases for #1352.
+fn wl_dump(tag: &str) {
+    if let Ok(text) = std::fs::read_to_string("/proc/trace/counters") {
+        for line in text.lines().filter(|l| l.starts_with("WAKELAT")) {
+            libbreenix::suite::scratch_line(&format!("SCRATCH {tag} {line}"));
+        }
+    }
+}
+fn tm_periodic_stat() -> CaseResult {
+    wl_dump("pre-periodic");
+    let r = tm_periodic();
+    libbreenix::suite::scratch_line(&format!("SCRATCH periodic ok={}", r.is_ok()));
+    wl_dump("periodic");
+    r
+}
+static SCRATCH: Suite = suite(
+    "time", "Time & timers", &[
+        category("scratch", "scratch", &[
+            case("p01", "s", tm_periodic_stat), case("p02", "s", tm_periodic_stat), case("p03", "s", tm_periodic_stat),
+            case("p04", "s", tm_periodic_stat), case("p05", "s", tm_periodic_stat), case("p06", "s", tm_periodic_stat),
+            case("p07", "s", tm_periodic_stat), case("p08", "s", tm_periodic_stat), case("p09", "s", tm_periodic_stat),
+            case("p10", "s", tm_periodic_stat), case("p11", "s", tm_periodic_stat), case("p12", "s", tm_periodic_stat),
+        ]),
+    ]);
+
+fn main() { let _ = &SUITE; SCRATCH.run() }

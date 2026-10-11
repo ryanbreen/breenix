@@ -24,6 +24,7 @@ pub mod thread;
 pub mod user_dispatch;
 pub mod userspace_completion;
 pub mod waitqueue;
+pub mod wakelat;
 
 // Architecture-specific context switching
 // Note: context.rs contains x86_64 assembly - ARM64 uses separate implementation

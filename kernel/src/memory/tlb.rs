@@ -258,6 +258,7 @@ mod shootdown {
             if targets == 0 {
                 return;
             }
+            let wl = crate::task::wakelat::tsc();
 
             // Waiting here with interrupts masked is safe: the holder's NMI
             // still reaches this CPU and is answered.
@@ -302,6 +303,7 @@ mod shootdown {
             }
 
             IN_FLIGHT.store(false, Ordering::Release);
+            crate::task::wakelat::shootdown_done(wl);
         });
     }
 

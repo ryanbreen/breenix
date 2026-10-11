@@ -1735,6 +1735,7 @@ pub fn note_x86_interrupt_return(cpu: usize) {
     if cpu >= MAX_CPUS {
         return;
     }
+    super::wakelat::irq_entry(cpu, crate::arch_impl::x86_64::apic::in_service_top() as u64);
     crate::arch_impl::x86_64::smp::credit_ticks(cpu, crate::per_cpu::running_idle_thread());
     let leaving = LEAVING_STACK[cpu].load(Ordering::Relaxed);
     if leaving != 0 {
@@ -1755,6 +1756,7 @@ fn release_leaving_stack(cpu: usize, thread_id: u64) {
     {
         return;
     }
+    super::wakelat::ev(super::wakelat::E_LEAVE_CLR, thread_id);
     let waiters = LEAVING_STACK_WAITERS[cpu].swap(0, Ordering::AcqRel);
     for waiter in (0..MAX_CPUS).filter(|&waiter| waiters & (1 << waiter) != 0) {
         request_resched_x86(waiter);
@@ -1814,6 +1816,7 @@ pub fn release_outgoing_stack_from_idle() {
 #[cfg(target_arch = "x86_64")]
 pub fn x86_idle_pass() -> bool {
     let cpu = current_cpu_id_raw();
+    super::wakelat::ev(super::wakelat::E_IDLE_PASS, 0);
     let mut scheduler_lock = lock_scheduler();
     let Some(scheduler) = scheduler_lock.as_mut() else {
         return false;
@@ -1834,8 +1837,12 @@ pub fn x86_idle_pass() -> bool {
 /// x86_64: the other CPU that may still be on `thread_id`'s kernel stack.
 #[cfg(target_arch = "x86_64")]
 fn x86_stack_owner_elsewhere(thread_id: u64, cpu: usize) -> Option<usize> {
-    (0..MAX_CPUS)
-        .find(|&other| other != cpu && LEAVING_STACK[other].load(Ordering::Acquire) == thread_id)
+    let owner = (0..MAX_CPUS)
+        .find(|&other| other != cpu && LEAVING_STACK[other].load(Ordering::Acquire) == thread_id);
+    if let Some(owner) = owner {
+        super::wakelat::ev(super::wakelat::E_PASSOVER, thread_id << 8 | owner as u64);
+    }
+    owner
 }
 
 /// x86_64: bring this CPU back through `check_need_resched_and_switch` as
@@ -1920,6 +1927,7 @@ fn send_vector_x86(cpu: usize, vector: u8) {
         0,
         (((cpu as u32) & 0xFFFF) << 16) | ((current_cpu_id_raw() as u32) & 0xFFFF),
     );
+    super::wakelat::ipi_sent(cpu);
     let _ = apic::send_ipi(apic_id, apic::Ipi::Fixed(vector));
 }
 
@@ -2779,6 +2787,8 @@ impl Scheduler {
             }
         }
         thread.set_running();
+        super::wakelat::ev(super::wakelat::E_DISPATCH, thread.id());
+        super::wakelat::ran(thread.id(), 1);
         thread.run_start_ticks = crate::time::get_cpu_ticks();
     }
 
@@ -3400,6 +3410,7 @@ impl Scheduler {
         // `iretq`; no other CPU dispatches the thread before then.
         #[cfg(target_arch = "x86_64")]
         LEAVING_STACK[current_cpu].store(old_thread_id, Ordering::Release);
+        super::wakelat::ev(super::wakelat::E_LEAVE_SET, old_thread_id);
 
         // Track context switches for soft lockup detection
         CONTEXT_SWITCH_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -4438,6 +4449,12 @@ impl Scheduler {
                     && !already_queued
                 {
                     if let Some(target) = self.find_target_cpu_for_wakeup(thread_id) {
+                        #[cfg(target_arch = "x86_64")]
+                        {
+                            let idle = self.cpu_is_idle(target);
+                            let path = if idle { super::wakelat::P_UNB_QUEUED_IDLE } else { super::wakelat::P_UNB_QUEUED_BUSY };
+                            super::wakelat::ready(thread_id, path, target, idle, self.cpu_state[target].current_thread.unwrap_or(0));
+                        }
                         #[cfg(feature = "coreproof_component_a")]
                         crate::proof_point!(UnblockBeforeEnqueue);
                         self.per_cpu_queues[target].push_back(thread_id);
@@ -4448,9 +4465,13 @@ impl Scheduler {
                         // Send IPI to wake an idle CPU so it can pick up the unblocked thread
                         self.send_resched_ipi();
                     } else {
+                        super::wakelat::ready(thread_id, super::wakelat::P_UNB_HELD, Self::current_cpu_id(), false, 0);
                         self.hold_pinned_wake_for_home(thread_id);
                     }
                 } else if is_current_on_any_cpu || is_in_deferred {
+                    if let Some(c) = current_cpu {
+                        super::wakelat::ready(thread_id, super::wakelat::P_UNB_CURRENT, c, false, thread_id);
+                    }
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                     #[cfg(target_arch = "aarch64")]
                     if let Some(target) = current_cpu {
@@ -5263,6 +5284,18 @@ impl Scheduler {
                 } else if already_queued {
                     ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
+                if published_ready {
+                    use super::wakelat as wl;
+                    let here = Self::current_cpu_id();
+                    let (path, target) = if let Some(c) = wake.current_cpu {
+                        (wl::P_IO_CURRENT, c)
+                    } else if let Some(t) = wake.enqueued_target {
+                        (wl::P_IO_QUEUED, t)
+                    } else {
+                        (wl::P_IO_HELD, here)
+                    };
+                    wl::ready(tid, path, target, self.cpu_is_idle(target), self.cpu_state[target].current_thread.unwrap_or(0));
+                }
                 // Request a reschedule for buffered ISR wakes too, on both
                 // arches. The completion interrupt's own request is consumed
                 // by the schedule() pass that drains the buffer, and that pass
@@ -5528,6 +5561,7 @@ impl Scheduler {
     pub fn wake_expired_timers(&mut self) {
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
+        super::wakelat::timer_pass();
 
         self.wake_signal_timers();
 
@@ -5545,6 +5579,7 @@ impl Scheduler {
             if !self.timer_entry_live(wake_time, tid) {
                 continue; // Stale entry — thread already woken or terminated
             }
+            super::wakelat::timer_late(now_ns.saturating_sub(wake_time));
 
             // SMP safety: Don't add to ready_queue if thread is currently
             // running on any CPU. Same protection as unblock() — a thread
@@ -5588,6 +5623,7 @@ impl Scheduler {
                 // syscall halt loop. Wake its hardware wait, as unblock does,
                 // while leaving the thread exclusively current on that CPU.
                 if let Some(cpu) = (0..MAX_CPUS).find(|&cpu| self.cpu_state[cpu].current_thread == Some(tid)) {
+                    super::wakelat::ready(tid, super::wakelat::P_TIMER_CURRENT, cpu, false, tid);
                     #[cfg(target_arch = "aarch64")]
                     self.send_resched_ipi_to_cpu(cpu);
                     #[cfg(target_arch = "x86_64")]
@@ -5691,6 +5727,7 @@ impl Scheduler {
                         }
                         // Discovery must preempt even a busy destination;
                         // otherwise its remaining quantum delays this deadline.
+                        super::wakelat::ready(tid, super::wakelat::P_TIMER_QUEUED, target, self.cpu_is_idle(target), self.cpu_state[target].current_thread.unwrap_or(0));
                         self.send_resched_ipi_to_cpu(target);
                         ENQUEUE_TIMER_WAKE.fetch_add(1, Ordering::Relaxed);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
