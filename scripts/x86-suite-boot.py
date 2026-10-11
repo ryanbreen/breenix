@@ -93,7 +93,7 @@ def main():
     try:
         while child.poll() is None and current < len(suites):
             data = read()
-            clock.observe(data[1].decode(errors="replace"))
+            clock.observe(data[0].decode(errors="replace"))
             suite = suites[current]
             user = data[0][offsets[0]:].decode(errors='replace').replace('\r', '')
             done = re.search(rf'^SUITE {suite} DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+$', user, re.M)

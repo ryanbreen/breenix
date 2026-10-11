@@ -49,7 +49,7 @@ def main():
     try:
         while True:
             text = kernel_log.read_text(errors='replace') if kernel_log.exists() else ''
-            clock.observe(text)
+            clock.observe(user_log.read_text(errors='replace') if user_log.exists() else '')
             if COMPLETE.search(text) and REPORT_DONE.search(text):
                 elapsed = time.monotonic() - started
                 print(f'[gate] full boot completed after {elapsed:.1f}s', flush=True)

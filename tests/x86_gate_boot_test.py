@@ -19,8 +19,8 @@ class BootOutcomes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             kernel = Path(directory) / 'kernel'
             user = Path(directory) / 'user'
-            kernel.write_text(f'[clock] UTC epoch={int(time.time())} source=CMOS\n' + serial)
-            user.write_text('')
+            kernel.write_text(serial)
+            user.write_text(f'[clock] UTC epoch={int(time.time())} source=CMOS\n')
             process = Mock(returncode=7)
             process.poll.return_value = poll
             with patch.object(gate.sys, 'argv', ['gate', str(kernel), str(user), 'launcher']), \
