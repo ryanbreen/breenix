@@ -174,7 +174,7 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
     allocate_block_inner(device, superblock, block_groups, true)
 }
 
-/// The caller initializes every byte before linking this data block, and
+/// The caller initializes the full block before linking this data block, and
 /// releases it if initialization fails. Indirect blocks still use zeroing.
 pub(super) fn allocate_data_block<B: BlockDevice + ?Sized>(
     device: &B,

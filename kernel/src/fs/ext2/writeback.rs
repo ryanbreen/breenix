@@ -67,6 +67,16 @@ fn service() {
         let mut more = false;
         let mut retry = false;
         if PENDING.swap(false, Ordering::AcqRel) {
+            for home in [false, true] {
+                let mut guard = super::fs_write_raw(home);
+                if let Some(fs) = guard.as_mut() {
+                    match fs.finalize_writeback() {
+                        super::Finalize::Idle => {}
+                        super::Finalize::More => more = true,
+                        super::Finalize::Retry => retry = true,
+                    }
+                }
+            }
             if ORPHANS.swap(false, Ordering::AcqRel) {
                 // No mount, inode, map or process lock is held while waiting.
                 pause(ORPHAN_COMMIT_NS);
@@ -77,7 +87,7 @@ fn service() {
             for home in [false, true] {
                 let mut guard = super::fs_write_raw(home);
                 if let Some(fs) = guard.as_mut() {
-                    match fs.finalize_inactive() {
+                    match fs.finalize_pending_orphans() {
                         super::Finalize::Idle => {}
                         super::Finalize::More => more = true,
                         super::Finalize::Retry => retry = true,

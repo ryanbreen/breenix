@@ -647,9 +647,9 @@ pub fn write_file<B: BlockDevice + ?Sized>(
     write_file_range(device, inode, superblock, block_groups, 0, data)
 }
 
-/// Private to one write under the filesystem's exclusive mount guard. There
-/// is no background or durable cache: publish drains every staged sector before
-/// returning, without issuing a FLUSH. The enclosing sync supplies durability.
+/// Private to one write under the filesystem's exclusive mount guard.
+/// Publish writes the staged sectors before returning successfully, without
+/// issuing a FLUSH. The enclosing sync supplies device-cache durability.
 struct MetadataBatch<'a, B: BlockDevice + ?Sized> {
     device: &'a B,
     sectors: spin::Mutex<Vec<(u64, [u8; 512])>>,
@@ -668,7 +668,9 @@ impl<'a, B: BlockDevice + ?Sized> MetadataBatch<'a, B> {
             let start = group.bg_block_bitmap as u64 * sectors_per_block;
             bitmaps.push((start, start + sectors_per_block));
         }
-        Ok(Self { device, sectors: spin::Mutex::new(Vec::new()), bitmaps, failed: core::sync::atomic::AtomicBool::new(false) })
+        let mut sectors = Vec::new();
+        sectors.try_reserve_exact(Self::LIMIT).map_err(|_| BlockError::IoError)?;
+        Ok(Self { device, sectors: spin::Mutex::new(sectors), bitmaps, failed: core::sync::atomic::AtomicBool::new(false) })
     }
 
     fn bitmap(&self, sector: u64) -> bool {
@@ -681,8 +683,8 @@ impl<'a, B: BlockDevice + ?Sized> MetadataBatch<'a, B> {
         }
         // Do not hold even this private lock over device completion waits.
         let mut sectors = core::mem::take(&mut *self.sectors.lock());
-        // Publish allocation bits before references to them, including references
-        // crossing block groups whose bitmap has a higher physical address.
+        // Submit staged allocation bits before staged references in this batch.
+        // Device-cache durability and ordering still require the enclosing barrier.
         sectors.sort_unstable_by_key(|(sector, _)| (!self.bitmap(*sector), *sector));
         let mut bytes = [0u8; 4096];
         let mut at = 0;
@@ -702,6 +704,8 @@ impl<'a, B: BlockDevice + ?Sized> MetadataBatch<'a, B> {
                     BlockError::MetadataPublishFailed
                 })?;
         }
+        sectors.clear();
+        *self.sectors.lock() = sectors;
         Ok(())
     }
 
@@ -757,8 +761,6 @@ impl<B: BlockDevice + ?Sized> BlockDevice for MetadataBatch<'_, B> {
         };
         if needed > Self::LIMIT { self.publish()?; }
         let mut sectors = self.sectors.lock();
-        let added = (0..count).filter(|i| !sectors.iter().any(|(number, _)| *number == start + *i as u64)).count();
-        sectors.try_reserve(added).map_err(|_| BlockError::IoError)?;
         for i in 0..count {
             let sector = start + i as u64;
             let input = &bytes[i * 512..(i + 1) * 512];
@@ -945,7 +947,7 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
             write_ext2_block(data_device, physical_block, block_size, &block_buf[..block_size])
         {
             if allocated {
-            let _ = super::block_group::free_block(device, physical_block, superblock, block_groups);
+                let _ = super::block_group::free_block(device, physical_block, superblock, block_groups);
             }
             return Err(e);
         }
@@ -959,8 +961,8 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
                 logical_block,
                 physical_block,
             ) {
-                // Release the data block only when the tree provably does
-                // not reference it; a pointer write that failed may still
+                // Release the data block when a successful tree lookup
+                // finds no reference to it; a pointer write that failed may still
                 // have landed.
                 if let Ok(None) = get_block_num(device, inode, superblock, logical_block) {
                     let _ = super::block_group::free_block(
@@ -1077,6 +1079,7 @@ pub(super) struct TailBatch {
     pub blocks: Vec<u32>,
     pub edits: Vec<(u32, Vec<u32>)>,
     pub pointers: [u32; 15],
+    pub complete: bool,
 }
 
 /// Detach at most `limit` allocations from the tail of a block tree. Nothing
@@ -1092,6 +1095,7 @@ pub(super) fn take_tail_blocks<B: BlockDevice + ?Sized>(
         blocks: Vec::with_capacity(limit),
         edits: Vec::new(),
         pointers,
+        complete: false,
     };
     let mut budget = limit;
     let fanout = superblock.block_size() as u64 / 4;
@@ -1106,6 +1110,7 @@ pub(super) fn take_tail_blocks<B: BlockDevice + ?Sized>(
                 if index < 12 { index as u64 } else { firsts[index - 12] },
                 keep, &mut budget, &mut batch)?;
     }
+    batch.complete = budget != 0;
     Ok(batch)
 }
 
@@ -1317,6 +1322,21 @@ mod tests {
         assert_eq!(batch.publish(), Err(BlockError::MetadataPublishFailed));
         assert_eq!(*dev.writes.lock(), [160]);
         assert_eq!(dev.disk.io.lock().1, 0);
+    }
+
+    #[test]
+    fn metadata_batch_retains_reserved_storage_across_publications() {
+        let (dev, sb) = disk(4096);
+        let batch = MetadataBatch::new(&dev, &sb, &[]).unwrap();
+        let storage = batch.sectors.lock().as_ptr();
+        for sector in 0..256 {
+            batch.write_block(sector, &[sector as u8; 512]).unwrap();
+        }
+        batch.publish().unwrap();
+        let sectors = batch.sectors.lock();
+        assert!(sectors.is_empty());
+        assert_eq!(sectors.as_ptr(), storage);
+        assert!(sectors.capacity() >= MetadataBatch::<Disk>::LIMIT);
     }
 
     fn allocation_disk() -> (Disk, Ext2Superblock, super::super::Ext2BlockGroupDesc) {

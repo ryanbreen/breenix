@@ -793,7 +793,7 @@ impl VirtioBlockDevice {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
         let request_guard = self.request_gate.lock()?;
-        // The request gate serializes this check with every write and flush.
+        // This check uses the request gate shared by write and flush submission.
         if !self.writes_pending.load(Ordering::Acquire) { return Ok(()); }
         let token = self.prepare_completion_wait();
         let (header_phys, header_virt) = self.dma_buffers.header;

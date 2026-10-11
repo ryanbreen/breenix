@@ -771,9 +771,10 @@ impl MapState {
         Ok(snapshot.last().map(|(index, _, _)| index + 1))
     }
 
-    /// Called only after a successful device flush under the mount guard.
-    /// A new write fault changes gen; writable snapshots never earn a clean
-    /// candidate because stores can continue without another fault.
+    /// Called under the mount guard after a successful barrier or an epoch
+    /// check establishing that this snapshot already matches durable bytes.
+    /// A new write fault changes gen. Shared writable mappings retain dirty
+    /// custody because stores can continue without another fault.
     pub(crate) fn complete_writeback(&self, first: u64, last: u64) {
         let mut inner = self.inner.lock();
         if inner.writable_shared == 0 {

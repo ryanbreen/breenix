@@ -69,7 +69,7 @@ pub struct Ext2Fs {
     pub mount_id: usize,
     pub mount_pin: live_inode::MountPin,
     live_inodes: live_inode::LiveInodes,
-    orphan_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
+    orphan_reclaims: alloc::collections::BTreeMap<u32, Option<reclaim::Reclaim>>,
     finalization_cursor: u32,
     /// The last inode the cache service reached with budget left; the next
     /// pass starts after it.
@@ -178,10 +178,8 @@ impl Ext2Fs {
         self.live_inodes.pin(self.mount_pin, inode_num, size)
     }
 
-    /// Advance queued orphans whose last observer has left, within one budget
-    /// of bitmap transitions, so the write guard is released between passes
-    /// however large the orphans are.
-    fn finalize_inactive(&mut self) -> Finalize {
+    /// Service mapped data and failed shrinks before the orphan commit window.
+    fn finalize_writeback(&mut self) -> Finalize {
         let mut budget = RECLAIM_BUDGET;
         let mut outcome = self.finalize_shrinks(&mut budget);
         let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
@@ -208,8 +206,15 @@ impl Ext2Fs {
         if evictions.len() == live_inode::EVICTION_BATCH && self.live_inodes.evictions_pending() {
             outcome = outcome.merge(Finalize::More);
         }
+        outcome
+    }
+
+    /// Orphan passes stage at most 128 blocks in tails of at most 64 blocks,
+    /// visit at most 32 inodes, and release at most 128 bitmap allocations.
+    fn finalize_pending_orphans(&mut self) -> Finalize {
+        let mut budget = RECLAIM_BUDGET;
         let objects = self.live_inodes.pending(self.finalization_cursor);
-        outcome = outcome.merge(self.finalize_orphans(&objects, &mut budget));
+        let mut outcome = self.finalize_orphans(&objects, &mut budget);
         if matches!(outcome, Finalize::Idle)
             && !self.live_inodes.pending(self.finalization_cursor).is_empty()
         {
@@ -227,10 +232,20 @@ impl Ext2Fs {
         if *budget == 0 { return Finalize::More; }
         let mut outcome = Finalize::Idle;
         let mut ready = Vec::new();
+        if ready.try_reserve_exact(objects.len().min(32)).is_err() {
+            return Finalize::Retry;
+        }
         let mut barrier = false;
+        let mut staging_budget = RECLAIM_BUDGET;
+        let mut visited = 0;
         for object in objects {
             if !self.live_inodes.is_pending(object) { continue; }
-            match self.stage_orphan(object) {
+            if staging_budget == 0 || visited == 32 {
+                outcome = outcome.merge(Finalize::More);
+                break;
+            }
+            visited += 1;
+            match self.stage_orphan(object, &mut staging_budget) {
                 Ok(needs_barrier) => {
                     barrier |= needs_barrier;
                     ready.push(object.clone());
@@ -238,7 +253,8 @@ impl Ext2Fs {
                 Err(reclaim::ReclaimError::Retry) => outcome = Finalize::Retry,
                 Err(reclaim::ReclaimError::Abandon(reason)) => {
                     log::warn!("ext2: leaving orphan inode {} allocated: {}", object.key.inode, reason);
-                    self.live_inodes.remove(&object);
+                    self.orphan_reclaims.remove(&object.key.inode);
+                    self.live_inodes.remove(object);
                 }
             }
         }
@@ -259,6 +275,9 @@ impl Ext2Fs {
                 Ok(false) => return outcome.merge(Finalize::More),
                 Err(reclaim::ReclaimError::Retry) => outcome = Finalize::Retry,
             }
+        }
+        if objects.iter().any(|object| self.live_inodes.is_pending(object)) {
+            outcome = outcome.merge(Finalize::More);
         }
         outcome
     }
@@ -290,17 +309,20 @@ impl Ext2Fs {
     fn stage_orphan(
         &mut self,
         object: &alloc::sync::Arc<live_inode::LiveInode>,
+        budget: &mut usize,
     ) -> Result<bool, reclaim::ReclaimError> {
         let ino = object.key.inode;
         if self.shrink_reclaims.contains_key(&ino) {
             return Err(reclaim::ReclaimError::Retry);
         }
-        let mut progress = match self.orphan_reclaims.remove(&ino) {
+        // Allocate the custody slot before staging can modify disk pointers.
+        self.orphan_reclaims.entry(ino).or_insert(None);
+        let mut progress = match self.orphan_reclaims.get_mut(&ino).and_then(Option::take) {
             Some(progress) => progress,
             None => reclaim::Reclaim::prepare(self, ino)?,
         };
-        let result = progress.stage(self, ino);
-        self.orphan_reclaims.insert(ino, progress);
+        let result = progress.stage(self, ino, budget);
+        *self.orphan_reclaims.get_mut(&ino).expect("reserved orphan custody") = Some(progress);
         result
     }
 
@@ -317,19 +339,23 @@ impl Ext2Fs {
         if self.shrink_reclaims.contains_key(&ino) {
             return Err(reclaim::ReclaimError::Retry);
         }
-        let prepared = match self.orphan_reclaims.remove(&ino) {
+        self.orphan_reclaims.entry(ino).or_insert(None);
+        let prepared = match self.orphan_reclaims.get_mut(&ino).and_then(Option::take) {
             Some(progress) => Ok(progress),
             None => reclaim::Reclaim::prepare(self, ino),
         };
         let result = prepared.and_then(|mut progress| {
             let result = progress.finish(self, ino, budget);
             if !matches!(result, Ok(true)) {
-                self.orphan_reclaims.insert(ino, progress);
+                *self.orphan_reclaims.get_mut(&ino).expect("reserved orphan custody") = Some(progress);
             }
             result
         });
         match &result {
-            Ok(true) => self.live_inodes.remove(object),
+            Ok(true) => {
+                self.orphan_reclaims.remove(&ino);
+                self.live_inodes.remove(object);
+            }
             Err(reclaim::ReclaimError::Abandon(reason)) => {
                 // The inode stays allocated on disk; stop retrying it.
                 log::warn!("ext2: leaving orphan inode {} allocated: {}", ino, reason);
@@ -1068,13 +1094,10 @@ impl Ext2Fs {
         )?;
         if links == 0 {
             handle.object.orphan.store(true, Ordering::Release);
-            // Like rmdir, unlink publishes the namespace change and leaves
-            // allocation reclamation to the last-observer handoff. It does
-            // not require a durability barrier before returning.
-            drop(handle);
-        } else {
-            drop(handle);
+            // The last observer queues reclamation; writers settle pending
+            // allocations under space pressure before trying new allocation.
         }
+        drop(handle);
 
         log::debug!("ext2: unlinked {} (inode {})", path, target_inode_num);
         Ok(())
@@ -2691,7 +2714,23 @@ fn fs_write_raw(home: bool) -> Ext2WriteGuard {
 }
 
 fn fs_write(home: bool) -> Ext2WriteGuard {
-    fs_write_raw(home)
+    let guard = fs_write_raw(home);
+    let pressure = guard.as_ref().is_some_and(|fs| {
+        let stats = fs.statfs();
+        stats.free_blocks <= (stats.blocks / 16).max(RECLAIM_BUDGET as u64)
+            || stats.free_inodes <= 32
+    });
+    if pressure {
+        drop(guard);
+        // Last-observer reclamation must not turn rm followed by allocation
+        // into ENOSPC solely because the background service has not run yet.
+        if let Ok(guard) = accounting_fs_write(home) { return guard; }
+        // Failed I/O keeps allocations quarantined; normal operations report
+        // their own errors rather than exposing those allocations for reuse.
+        fs_write_raw(home)
+    } else {
+        guard
+    }
 }
 
 /// Settle the orphan cohort present at an allocation-counter observation.
@@ -2704,17 +2743,25 @@ pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static
     let pin = guard.as_ref().map(|fs| fs.mount_pin);
     let objects = guard.as_ref().map(|fs| fs.live_inodes.pending_snapshot())
         .transpose()?.unwrap_or_default();
+    let mut cohort_at = 0;
     loop {
+        let cohort_end = (cohort_at + 32).min(objects.len());
         let result = if let Some(fs) = guard.as_mut() {
             if let Some(pin) = pin { pin.verify(fs)?; }
             let mut budget = RECLAIM_BUDGET;
-            fs.finalize_orphans(&objects, &mut budget)
+            fs.finalize_orphans(&objects[cohort_at..cohort_end], &mut budget)
         } else {
             if pin.is_some() { return Err("ext2 mount changed during accounting"); }
             Finalize::Idle
         };
         match result {
-            Finalize::Idle => return Ok(guard),
+            Finalize::Idle if cohort_end == objects.len() => return Ok(guard),
+            Finalize::Idle => {
+                cohort_at = cohort_end;
+                drop(guard);
+                writeback::pause(1_000_000);
+                guard = fs_write_raw(home);
+            }
             Finalize::Retry => {
                 writeback::request();
                 return Err("Failed to settle ext2 allocation counters");

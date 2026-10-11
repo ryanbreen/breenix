@@ -9,10 +9,8 @@ use crate::block::BlockDevice;
 use alloc::collections::BTreeSet;
 use spin::Mutex;
 
-/// Pointer detachments share a bounded batch. Bitmap releases still spend the
-/// caller's separate transition budget, so a large batch never monopolizes
-/// the mount guard while freeing allocations.
-const BATCH_BLOCKS: usize = 1024;
+/// Bound one tail snapshot; the caller also budgets staging across orphans.
+pub(super) const BATCH_BLOCKS: usize = 64;
 
 static QUARANTINE: Mutex<BTreeSet<(usize, bool, u32)>> = Mutex::new(BTreeSet::new());
 
@@ -104,21 +102,23 @@ impl Reclaim {
     /// Stage a bounded tail without freeing any bitmap bit. Multiple orphans
     /// can share the barrier between this phase and `finish`. Partial failures
     /// retain the tail and quarantine; a retry stages it again before freeing.
-    pub fn stage(&mut self, fs: &Ext2Fs, ino: u32) -> Result<bool, ReclaimError> {
+    pub fn stage(&mut self, fs: &Ext2Fs, ino: u32, budget: &mut usize) -> Result<bool, ReclaimError> {
         if self.tree_done { return Ok(false); }
         let key = device_key(fs.device.as_ref());
         if !self.free_inode {
             self.inode = fs.read_inode(ino).map_err(|_| ReclaimError::Retry)?;
         }
         if self.batch.is_none() {
+            if *budget == 0 { return Ok(false); }
             let tail = super::file::take_tail_blocks(
                 fs.device.as_ref(),
                 &fs.superblock,
                 self.inode.i_block,
-                BATCH_BLOCKS,
+                BATCH_BLOCKS.min(*budget),
                 self.keep,
             )
             .map_err(|_| ReclaimError::Retry)?;
+            *budget -= tail.blocks.len().max(1);
             let mut quarantine = QUARANTINE.lock();
             for block in &tail.blocks {
                 quarantine.insert((key, false, *block));
@@ -176,7 +176,9 @@ impl Reclaim {
     ) -> Result<bool, ReclaimError> {
         let key = device_key(fs.device.as_ref());
         while !self.tree_done {
-            self.stage(fs, ino)?;
+            if *budget == 0 { return Ok(false); }
+            let mut staging_budget = BATCH_BLOCKS;
+            self.stage(fs, ino, &mut staging_budget)?;
             let Self { batch, write_attempted, .. } = self;
             let batch = batch.as_mut().expect("reclamation batch staged");
             if !batch.published {
@@ -221,8 +223,9 @@ impl Reclaim {
                 quarantine.remove(&(key, false, *block));
             }
             drop(quarantine);
-            self.tree_done = batch.tail.blocks.is_empty();
+            self.tree_done = batch.tail.complete;
             self.batch = None;
+            if !self.tree_done && self.free_inode { return Ok(false); }
         }
         if !self.free_inode {
             // Rebuild from the retained tree rather than preserving historical

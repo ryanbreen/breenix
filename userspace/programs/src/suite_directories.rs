@@ -508,26 +508,15 @@ fn free_counts(fd: Fd) -> Result<(u64, u64), Error> {
     let s = fs::fstatfs(fd)?;
     Ok((s.f_ffree, s.f_bfree))
 }
-/// Free counts once nothing is releasing inodes or blocks: the same pair on
-/// five reads 20 ms apart, so an earlier case's deferred reclamation is not
-/// mistaken for this case's.
+/// Settle the captured orphan cohort before taking this case's baseline.
+/// An unchanged count for a short interval does not establish completion.
 fn settled_counts(fd: Fd) -> Result<(u64, u64), libbreenix::suite::CaseError> {
-    let mut last = free_counts(fd)?;
-    let mut same = 0;
-    for _ in 0..150 {
-        time::sleep_ms(20)?;
-        let now = free_counts(fd)?;
-        if now == last {
-            same += 1;
-            if same == 4 {
-                return Ok(now);
-            }
-        } else {
-            same = 0;
-            last = now;
-        }
-    }
-    Err("free counts never settled".into())
+    let counters = fs::open("/proc/breenix/ext2", O_RDONLY)?;
+    let mut buf = [0u8; 512];
+    let read = io::read(counters, &mut buf);
+    io::close(counters)?;
+    check(read? != 0, "missing ext2 allocation counters")?;
+    Ok(free_counts(fd)?)
 }
 fn listing() -> Result<Tree, libbreenix::suite::CaseError> {
     let f = Tree::new()?;

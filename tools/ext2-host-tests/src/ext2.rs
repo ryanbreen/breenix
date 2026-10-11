@@ -157,8 +157,8 @@ mod reclaim_checks {
         let (mut fs, data, flushes, _) = two_orphans();
         let mut a = reclaim::Reclaim::prepare(&fs, 1).ok().expect("first orphan");
         let mut b = reclaim::Reclaim::prepare(&fs, 2).ok().expect("second orphan");
-        assert!(a.stage(&fs, 1).ok().expect("stage first"));
-        assert!(b.stage(&fs, 2).ok().expect("stage second"));
+        assert!(a.stage(&fs, 1, &mut 128).ok().expect("stage first"));
+        assert!(b.stage(&fs, 2, &mut 128).ok().expect("stage second"));
         assert_eq!(allocated_pair(&data), (0x30, 3));
         for ino in 1..=2 {
             let pointers = fs.read_inode(ino).unwrap().i_block;
@@ -178,8 +178,8 @@ mod reclaim_checks {
         let (mut fs, data, flushes, fail_flush) = two_orphans();
         let mut a = reclaim::Reclaim::prepare(&fs, 1).ok().expect("first orphan");
         let mut b = reclaim::Reclaim::prepare(&fs, 2).ok().expect("second orphan");
-        a.stage(&fs, 1).ok().expect("stage first");
-        b.stage(&fs, 2).ok().expect("stage second");
+        a.stage(&fs, 1, &mut 128).ok().expect("stage first");
+        b.stage(&fs, 2, &mut 128).ok().expect("stage second");
         fail_flush.store(true, core::sync::atomic::Ordering::Relaxed);
         assert!(fs.sync().is_err());
         assert!(a.finish(&mut fs, 1, &mut 128).is_err());
@@ -194,6 +194,67 @@ mod reclaim_checks {
         assert_eq!(allocated_pair(&data), (0, 0));
         let counts = (fs.superblock.s_free_blocks_count, fs.superblock.s_free_inodes_count);
         assert_eq!(counts, (512, 128));
+    }
+
+    #[test]
+    fn orphan_staging_spends_the_shared_budget_before_detaching_more_blocks() {
+        let (mut fs, data, _, _) = two_orphans();
+        let mut inode = fs.read_inode(1).unwrap();
+        inode.i_block[12] = 30;
+        inode.i_size = 82 * 4096;
+        inode.i_blocks = 72 * 8;
+        fs.write_inode(1, &inode).unwrap();
+        {
+            let mut bytes = data.lock().unwrap();
+            for (i, block) in (40u32..110).enumerate() {
+                bytes[30 * 4096 + i * 4..30 * 4096 + i * 4 + 4]
+                    .copy_from_slice(&block.to_le_bytes());
+            }
+            for block in core::iter::once(30u32).chain(40..110) {
+                bytes[3 * 4096 + block as usize / 8] |= 1 << (block % 8);
+            }
+        }
+        fs.block_groups[0].bg_free_blocks_count = 439;
+        fs.superblock.s_free_blocks_count = 439;
+        let mut a = reclaim::Reclaim::prepare(&fs, 1).ok().unwrap();
+        let mut b = reclaim::Reclaim::prepare(&fs, 2).ok().unwrap();
+        let mut budget = 10;
+        assert!(a.stage(&fs, 1, &mut budget).ok().unwrap());
+        assert_eq!(budget, 0);
+        assert!(!b.stage(&fs, 2, &mut budget).ok().unwrap());
+        let b_pointer = fs.read_inode(2).unwrap().i_block[0];
+        assert_eq!(b_pointer, 21);
+        fs.sync().unwrap();
+        assert!(!a.finish(&mut fs, 1, &mut 128).ok().unwrap());
+        let free = fs.block_groups[0].bg_free_blocks_count;
+        assert_eq!(free, 449);
+        while !a.finish(&mut fs, 1, &mut 128).ok().unwrap() {}
+        assert!(b.finish(&mut fs, 2, &mut 128).ok().unwrap());
+        let free = fs.block_groups[0].bg_free_blocks_count;
+        assert_eq!(free, 512);
+    }
+
+    #[test]
+    fn pending_orphans_release_exhausted_space_for_the_next_allocation() {
+        let (mut fs, data, _, _) = two_orphans();
+        data.lock().unwrap()[3 * 4096..4 * 4096].fill(0xff);
+        fs.block_groups[0].bg_free_blocks_count = 0;
+        fs.superblock.s_free_blocks_count = 0;
+        assert_eq!(allocate_block(fs.device.as_ref(), &fs.superblock, &mut fs.block_groups),
+            Err("No free blocks available"));
+        let mut a = reclaim::Reclaim::prepare(&fs, 1).ok().unwrap();
+        let mut b = reclaim::Reclaim::prepare(&fs, 2).ok().unwrap();
+        let mut staging = 128;
+        a.stage(&fs, 1, &mut staging).ok().unwrap();
+        b.stage(&fs, 2, &mut staging).ok().unwrap();
+        fs.sync().unwrap();
+        assert!(a.finish(&mut fs, 1, &mut 128).ok().unwrap());
+        assert!(b.finish(&mut fs, 2, &mut 128).ok().unwrap());
+        let first = allocate_block(fs.device.as_ref(), &fs.superblock, &mut fs.block_groups).unwrap();
+        let second = allocate_block(fs.device.as_ref(), &fs.superblock, &mut fs.block_groups).unwrap();
+        assert_eq!((first, second), (20, 21));
+        let free = fs.block_groups[0].bg_free_blocks_count;
+        assert_eq!(free, 0);
     }
 
     #[test]
