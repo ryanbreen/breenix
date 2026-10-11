@@ -1940,13 +1940,22 @@ fn check_and_deliver_signals_for_current_thread(
 /// Simple idle loop - made pub for exception handlers that need to jump to idle
 pub fn idle_loop() -> ! {
     loop {
-        // This loop writes nothing to a serial port. Placement treats a CPU
+        // This loop prints no line of its own. Placement treats a CPU
         // running its idle thread as free and queues a woken thread there,
         // while a serial line is written with interrupts masked for as long as
         // the port takes to accept it: about 60 ms for the ~300-byte strand
         // census line under the x86 gate's emulation. A thread queued on an
         // idle CPU writing that line waited for it, and `kstrandd`, a kernel
-        // thread a busy CPU is seen running, emits the census instead.
+        // thread a busy CPU is seen running, emits the census instead. It
+        // does write out what is left in the kernel log ring (below), one
+        // FIFO at a time with interrupts masked only for the port writes.
+        //
+        // The housekeeping below holds preemption off for as long as it runs,
+        // which was up to 35 ms under the x86 gate, so placement takes this
+        // CPU for a busy one meanwhile, and what was queued here regardless is
+        // dispatched as soon as it ends.
+        crate::task::scheduler::release_outgoing_stack_from_idle();
+        crate::task::scheduler::set_idle_housekeeping(true);
         crate::task::process_task::reclaim_deferred_process_resources();
         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
         // from a context that exists AFTER every userspace thread is gone and
@@ -1962,16 +1971,32 @@ pub fn idle_loop() -> ! {
         crate::task::scheduler::reclaim_terminated_threads();
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
+        crate::task::scheduler::set_idle_housekeeping(false);
+        // Lines logged by callers that could not wait on the UART, holding a
+        // lock or with interrupts masked, are written out here, until this
+        // CPU has something to run.
+        crate::serial::drain_log_while(|| !crate::task::scheduler::is_need_resched());
         // Reclamation can wake a waiter. Check with interrupts masked so a
         // wakeup cannot slip between the check and the atomic enable/halt.
         // A reschedule raised while the housekeeping above could not switch
         // (it holds preemption off) is taken through the interrupt-return path
-        // by a self-IPI, which arrives as the halt enables interrupts. Going
-        // round the housekeeping again instead kept the CPU from halting, and
-        // a tick landing in the housekeeping again left the reschedule pending.
+        // now, by a software interrupt to the reschedule vector. Going round
+        // the housekeeping again instead kept the CPU from halting, and a tick
+        // landing in the housekeeping again left the reschedule pending. A
+        // self-IPI, which this used to send, took 200-500 us to arrive under
+        // the x86 gate's nested virtualization, with the woken thread queued
+        // here meanwhile.
         x86_64::instructions::interrupts::disable();
-        if crate::task::scheduler::is_need_resched() {
-            crate::task::scheduler::retry_after_interrupts_x86();
+        if crate::task::scheduler::is_need_resched()
+            || crate::task::scheduler::has_queued_work_here()
+        {
+            crate::task::scheduler::set_need_resched();
+            // SAFETY: the reschedule vector's gate is the timer entry, which
+            // saves and restores every register; it returns here with
+            // interrupts masked, as they are now.
+            unsafe {
+                core::arch::asm!("int {vector}", vector = const super::RESCHEDULE_VECTOR);
+            }
         }
         // CRITICAL: Use enable_and_hlt() instead of just hlt()
         // This atomically enables interrupts and halts, preventing race conditions

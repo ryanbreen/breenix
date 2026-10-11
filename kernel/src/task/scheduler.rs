@@ -1689,6 +1689,31 @@ pub fn note_scheduling_epoch(cpu_id: usize) {
 #[cfg(target_arch = "x86_64")]
 static LEAVING_STACK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
+/// x86_64: set while a CPU's idle loop runs its housekeeping, the process and
+/// thread reclamation, with preemption held off. A thread queued on that CPU
+/// meanwhile waits for the housekeeping to end, which under the x86 gate took
+/// up to 35 ms: root releases waiting on every other CPU's shootdown
+/// acknowledgement and the process-manager lock. Placement and stealing treat
+/// the CPU as busy until then.
+#[cfg(target_arch = "x86_64")]
+static IDLE_HOUSEKEEPING: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+
+/// x86_64: mark this CPU's idle housekeeping as running or done.
+#[cfg(target_arch = "x86_64")]
+pub fn set_idle_housekeeping(active: bool) {
+    let cpu = current_cpu_id_raw();
+    if cpu < MAX_CPUS {
+        IDLE_HOUSEKEEPING[cpu].store(active, Ordering::Release);
+    }
+}
+
+/// x86_64: whether a thread is queued on this CPU, or a pinned wake held for
+/// it. Takes the scheduler lock.
+#[cfg(target_arch = "x86_64")]
+pub fn has_queued_work_here() -> bool {
+    with_scheduler(|scheduler| scheduler.has_queued_work_here()).unwrap_or(false)
+}
+
 /// x86_64: CPUs to send a reschedule IPI when this CPU clears its
 /// `LEAVING_STACK` entry: they passed over the thread it names. Bit `n` is CPU `n`.
 #[cfg(target_arch = "x86_64")]
@@ -1711,16 +1736,62 @@ pub fn note_x86_interrupt_return(cpu: usize) {
         return;
     }
     crate::arch_impl::x86_64::smp::credit_ticks(cpu, crate::per_cpu::running_idle_thread());
-    if LEAVING_STACK[cpu].load(Ordering::Relaxed) != 0 {
-        LEAVING_STACK[cpu].store(0, Ordering::Release);
-        let waiters = LEAVING_STACK_WAITERS[cpu].swap(0, Ordering::AcqRel);
-        for waiter in (0..MAX_CPUS).filter(|&waiter| waiters & (1 << waiter) != 0) {
-            request_resched_x86(waiter);
-        }
+    let leaving = LEAVING_STACK[cpu].load(Ordering::Relaxed);
+    if leaving != 0 {
+        release_leaving_stack(cpu, leaving);
     }
     if RESCHED_REQUESTED[cpu].swap(false, Ordering::AcqRel) {
         crate::per_cpu::set_need_resched(true);
     }
+}
+
+/// x86_64: clear this CPU's `LEAVING_STACK` entry if it still names
+/// `thread_id`, and ask the CPUs that passed over that thread to pick again.
+#[cfg(target_arch = "x86_64")]
+fn release_leaving_stack(cpu: usize, thread_id: u64) {
+    if LEAVING_STACK[cpu]
+        .compare_exchange(thread_id, 0, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let waiters = LEAVING_STACK_WAITERS[cpu].swap(0, Ordering::AcqRel);
+    for waiter in (0..MAX_CPUS).filter(|&waiter| waiters & (1 << waiter) != 0) {
+        request_resched_x86(waiter);
+    }
+}
+
+/// x86_64: the idle loop's release of the thread this CPU last switched away
+/// from. The idle loop runs on the idle thread's own kernel stack
+/// (`setup_idle_return`, from `kernel_stack_top`), so the CPU is off the
+/// outgoing thread's: checked here against the stack pointer, since a missing
+/// idle stack falls back to another. `stack_top`/`stack_bottom` do not bound
+/// that stack: swapper/0 is built with a zero `stack_top`. Until now the entry was released only at the CPU's next
+/// interrupt, and an idle CPU whose housekeeping masked interrupts, waiting on
+/// shootdown acknowledgements, kept the thread from every other CPU for that
+/// long: up to 35 ms under the x86 gate.
+#[cfg(target_arch = "x86_64")]
+pub fn release_outgoing_stack_from_idle() {
+    let cpu = current_cpu_id_raw();
+    if cpu >= MAX_CPUS || LEAVING_STACK[cpu].load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let rsp: u64;
+    // SAFETY: reads the stack pointer.
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
+    }
+    with_scheduler(|scheduler| {
+        let idle = scheduler.cpu_state[cpu].idle_thread;
+        let leaving = LEAVING_STACK[cpu].load(Ordering::Acquire);
+        let on_idle_stack = scheduler
+            .get_thread(idle)
+            .and_then(|thread| thread.kernel_stack_top)
+            .is_some_and(|top| crate::memory::kernel_stack::kernel_stack_contains(top.as_u64(), rsp));
+        if leaving != 0 && leaving != idle && on_idle_stack {
+            release_leaving_stack(cpu, leaving);
+        }
+    });
 }
 
 /// x86_64: the scheduling entry of an idle CPU, made without the process
@@ -5836,6 +5907,16 @@ impl Scheduler {
         }
     }
 
+    /// x86_64: whether this CPU has a thread queued to run, or a pinned wake
+    /// held for it.
+    #[cfg(target_arch = "x86_64")]
+    pub fn has_queued_work_here(&self) -> bool {
+        let cpu = Self::current_cpu_id();
+        cpu < MAX_CPUS
+            && (!self.per_cpu_queues[cpu].is_empty()
+                || PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) != 0)
+    }
+
     /// Get the total ready queue length across all CPUs (for tracing)
     pub fn ready_queue_length(&self) -> usize {
         self.per_cpu_queues.iter().map(|q| q.len()).sum()
@@ -6324,9 +6405,15 @@ impl Scheduler {
 
     /// Whether `cpu` is running its idle thread or is committed to switching to
     /// it, so a thread queued there runs as soon as that CPU is woken.
+    ///
+    /// x86_64: not while its idle loop runs housekeeping, which holds
+    /// preemption off (`set_idle_housekeeping`).
     fn cpu_is_idle(&self, cpu: usize) -> bool {
         let state = &self.cpu_state[cpu];
-        state.pending_next.or(state.current_thread) == Some(state.idle_thread)
+        let idle = state.pending_next.or(state.current_thread) == Some(state.idle_thread);
+        #[cfg(target_arch = "x86_64")]
+        let idle = idle && !IDLE_HOUSEKEEPING[cpu].load(Ordering::Acquire);
+        idle
     }
 
     /// Threads `cpu` already has to run: its queue, plus the thread it is

@@ -406,7 +406,6 @@ static STACK_BITMAP: Mutex<[u64; BITMAP_SIZE]> = Mutex::new([0; BITMAP_SIZE]);
 /// slot reaches this check.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn is_kernel_stack_slot_live(stack_top: u64) -> bool {
-    let bottom = stack_top.saturating_sub(KERNEL_STACK_SIZE);
     let named_by_online_cpu = crate::per_cpu::is_initialized()
         && (0..crate::task::scheduler::MAX_CPUS)
             .filter(|&cpu| crate::arch_impl::x86_64::smp::is_cpu_online(cpu))
@@ -424,8 +423,14 @@ pub(crate) fn is_kernel_stack_slot_live(stack_top: u64) -> bool {
                     options(nomem, nostack, preserves_flags)
                 );
             }
-            rsp > bottom && rsp <= stack_top
+            kernel_stack_contains(stack_top, rsp)
         }
+}
+
+/// Whether `rsp` lies on the kernel stack whose top is `stack_top`.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn kernel_stack_contains(stack_top: u64, rsp: u64) -> bool {
+    rsp > stack_top.saturating_sub(KERNEL_STACK_SIZE) && rsp <= stack_top
 }
 
 #[cfg(target_arch = "x86_64")]
