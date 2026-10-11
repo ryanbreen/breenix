@@ -597,9 +597,9 @@ pub struct SchedPolicy {
     /// The rank of the highest priority ceiling of the PTHREAD_PRIO_PROTECT
     /// mutexes the thread holds (`sys_breenix_prio_ceiling`); 0 for none.
     pub ceiling: u8,
-    /// The thread is exiting and has left the priority-inheritance futexes
-    /// it owned (`futex::pi_thread_exit`): one it still names as owner is
-    /// treated as having lost its owner.
+    /// The thread is exiting, on its own way out of the kernel, and has left
+    /// the priority-inheritance futexes it owned (`futex::pi_thread_exit`):
+    /// one it still names as owner is treated as having lost its owner.
     pub pi_exited: bool,
 }
 

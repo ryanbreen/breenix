@@ -140,25 +140,42 @@ fn set(pid: u64, policy: Option<u8>, reset_on_fork: Option<bool>, param: u64) ->
 /// with `ceiling` 0. With `check` nonzero, a SCHED_FIFO or SCHED_RR caller
 /// whose own priority is above `check` gets EINVAL and nothing changes: a
 /// mutex with ceiling `check` may not be locked by it.
+///
+/// Running at a ceiling is running at a real-time priority, so it takes
+/// sched_setscheduler's permission: an unprivileged caller may rise only to
+/// its RLIMIT_RTPRIO, or no higher than its own real-time priority or the
+/// ceiling it already runs at, and gets EPERM otherwise. Lowering is always
+/// allowed.
 pub fn sys_breenix_prio_ceiling(ceiling: u64, check: u64) -> SyscallResult {
     if ceiling > RT_PRIORITY_MAX as u64 || check > RT_PRIORITY_MAX as u64 {
         return SyscallResult::Err(EINVAL as u64);
     }
-    let Some(me) = crate::task::scheduler::current_thread_id() else {
-        return SyscallResult::Err(ESRCH as u64);
+    let (me, _, rtprio) = match target(0) {
+        Ok(found) => found,
+        Err(e) => return SyscallResult::Err(e),
     };
-    let mut refused = false;
+    let mut refused = None;
     let rank = if ceiling == 0 { 0 } else { 1 + ceiling as u8 };
     crate::task::scheduler::update_sched_boost(me, |sched| {
-        refused = check != 0 && sched.is_realtime() && u64::from(sched.priority) > check;
-        if !refused {
+        let permitted = rtprio.map_or(true, |limit| {
+            ceiling <= limit
+                || rank <= sched.ceiling
+                || (sched.is_realtime() && ceiling <= u64::from(sched.priority))
+        });
+        refused = if check != 0 && sched.is_realtime() && u64::from(sched.priority) > check {
+            Some(EINVAL)
+        } else if !permitted {
+            Some(EPERM)
+        } else {
+            None
+        };
+        if refused.is_none() {
             sched.ceiling = rank;
         }
     });
-    if refused {
-        SyscallResult::Err(EINVAL as u64)
-    } else {
-        SyscallResult::Ok(0)
+    match refused {
+        Some(e) => SyscallResult::Err(e as u64),
+        None => SyscallResult::Ok(0),
     }
 }
 

@@ -96,15 +96,36 @@ fn rank_of(tid: u64) -> u8 {
     crate::task::scheduler::sched_policy(tid).map_or(0, |sched| sched.rank())
 }
 
-/// Whether thread `tid`, named as a priority-inheritance futex's owner, no
-/// longer runs: it is gone, has ended, or is exiting and has left its futexes.
-fn owner_gone(tid: u64) -> bool {
-    crate::task::scheduler::with_scheduler(|sched| {
-        sched
-            .get_thread(tid)
-            .map_or(true, |thread| thread.state == ThreadState::Terminated || thread.sched.pi_exited)
+/// What has become of a priority-inheritance futex's owner.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnerState {
+    Live,
+    /// Killed, but still current on a CPU: until that CPU switches away it
+    /// may still be running its critical section in user mode.
+    Dying,
+    /// It will never run user code again: gone, ended and off every CPU, or
+    /// left its futexes on its own way out (`pi_thread_exit`).
+    Gone,
+}
+
+/// How long a thread blocked on a futex whose owner is `Dying` waits before
+/// it looks again.
+const PI_DYING_RECHECK_NS: u64 = 1_000_000;
+
+fn owner_state(tid: u64) -> OwnerState {
+    crate::task::scheduler::with_scheduler(|sched| match sched.get_thread(tid) {
+        None => OwnerState::Gone,
+        Some(thread) if thread.sched.pi_exited => OwnerState::Gone,
+        Some(thread) if thread.state == ThreadState::Terminated => {
+            if sched.is_current_on_any_cpu(tid) {
+                OwnerState::Dying
+            } else {
+                OwnerState::Gone
+            }
+        }
+        Some(_) => OwnerState::Live,
     })
-    .unwrap_or(false)
+    .unwrap_or(OwnerState::Live)
 }
 
 /// The highest-ranked of `waiters`, the earliest of those sharing that rank.
@@ -253,7 +274,7 @@ impl FutexTable {
     /// to wake at `deadline`.
     fn pi_attempt(&mut self, key: FutexKey, uaddr: u64, me: u64, trylock: bool, deadline: Deadline) -> PiAttempt {
         loop {
-            let word = match read_word(uaddr) {
+            let word = match read_pi_word(uaddr) {
                 Ok(word) => word,
                 Err(e) => return PiAttempt::Failed(e),
             };
@@ -263,9 +284,13 @@ impl FutexTable {
             }
             let state = self.pi.get(&key);
             let others = state.is_some_and(|state| state.waiters.iter().any(|&tid| tid != me));
+            // A killed owner is current on its CPU until the exit IPI lands;
+            // it is not taken over until it has left, or it could still be
+            // inside its critical section.
+            let owner_state = if owner == 0 { OwnerState::Gone } else { owner_state(owner) };
             let died = if owner == 0 {
                 Some(word & FUTEX_OWNER_DIED)
-            } else if state.is_some_and(|state| state.owner == 0) || owner_gone(owner) {
+            } else if owner_state == OwnerState::Gone {
                 Some(FUTEX_OWNER_DIED)
             } else {
                 None
@@ -334,11 +359,19 @@ impl FutexTable {
             self.pi_waiting.insert(me, key);
             self.propagate(owner);
             let realtime = matches!(deadline, Deadline::Realtime(_));
+            // Nothing wakes the waiters when a dying owner leaves its CPU:
+            // they look again shortly.
+            let wake_ns = if owner_state == OwnerState::Dying {
+                let recheck = monotonic_ns().saturating_add(PI_DYING_RECHECK_NS);
+                Some(deadline.wake_ns().map_or(recheck, |at| at.min(recheck)))
+            } else {
+                deadline.wake_ns()
+            };
             let published = crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
                     thread.realtime_sleep = realtime;
                 }
-                sched.block_current_for_io_with_timeout(deadline.wake_ns())
+                sched.block_current_for_io_with_timeout(wake_ns)
             })
             .unwrap_or(false);
             if !published {
@@ -353,7 +386,7 @@ impl FutexTable {
     /// hand it to the highest-ranked waiter, or leave it free.
     fn pi_unlock(&mut self, key: FutexKey, uaddr: u64, me: u64) -> Result<(), u64> {
         loop {
-            let word = read_word(uaddr)?;
+            let word = read_pi_word(uaddr)?;
             if u64::from(word & FUTEX_TID_MASK) != me {
                 return Err(super::errno::EPERM as u64);
             }
@@ -575,6 +608,12 @@ fn read_word(uaddr: u64) -> Result<u32, u64> {
         .map_err(|_| super::errno::EFAULT as u64)
 }
 
+/// Read a priority-inheritance futex word in one access: a byte-wise copy
+/// could join two owners' thread IDs into a third.
+fn read_pi_word(uaddr: u64) -> Result<u32, u64> {
+    crate::syscall::userptr::read_user_u32(uaddr)
+}
+
 /// Read a timespec argument, EINVAL if it is not a valid one.
 fn read_timespec(ptr: u64) -> Result<crate::syscall::time::Timespec, u64> {
     let timeout = crate::syscall::userptr::copy_from_user::<crate::syscall::time::Timespec>(
@@ -662,7 +701,7 @@ fn futex_lock_pi(uaddr: u64, trylock: bool, deadline: Deadline, private: bool) -
     if uaddr == 0 || uaddr % 4 != 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-    if let Err(e) = read_word(uaddr) {
+    if let Err(e) = read_pi_word(uaddr) {
         return SyscallResult::Err(e);
     }
     let Some(me) = crate::task::scheduler::current_thread_id() else {
@@ -739,7 +778,7 @@ fn futex_unlock_pi(uaddr: u64, private: bool) -> SyscallResult {
     if uaddr == 0 || uaddr % 4 != 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-    if let Err(e) = read_word(uaddr) {
+    if let Err(e) = read_pi_word(uaddr) {
         return SyscallResult::Err(e);
     }
     let Some(me) = crate::task::scheduler::current_thread_id() else {
@@ -756,14 +795,17 @@ fn futex_unlock_pi(uaddr: u64, private: bool) -> SyscallResult {
 
 /// Thread `tid` is exiting: it leaves the priority-inheritance futex it is
 /// blocked on, and each one it owns passes to its highest-ranked waiter with
-/// FUTEX_OWNER_DIED set. A futex whose word still names it is treated as
-/// having lost its owner from now on.
+/// FUTEX_OWNER_DIED set. When `tid` is the caller, on its own way out, a
+/// futex whose word still names it is taken over from now on. A thread ended
+/// from elsewhere (a kill) may still be running in user mode on its CPU, so
+/// its futexes are taken over only once it has left that CPU.
 pub fn pi_thread_exit(tid: u64) {
+    let own_exit = crate::task::scheduler::current_thread_id() == Some(tid);
     with_table(|table| {
         table.pi_granted.remove(&tid);
         table.leave_pi(tid);
         crate::task::scheduler::update_sched_boost(tid, |sched| {
-            sched.pi_exited = true;
+            sched.pi_exited |= own_exit;
             sched.inherited = 0;
         });
         for key in table.pi_owned.remove(&tid).unwrap_or_default() {

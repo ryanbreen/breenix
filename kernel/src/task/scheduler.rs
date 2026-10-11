@@ -6353,6 +6353,13 @@ impl Scheduler {
             .unwrap_or(current_cpu)
     }
 
+    /// Whether thread `id` is some CPU's current thread. A thread killed from
+    /// another CPU stays current there, and may be in user mode, until that
+    /// CPU switches away.
+    pub fn is_current_on_any_cpu(&self, id: u64) -> bool {
+        self.cpu_state.iter().any(|cpu| cpu.current_thread == Some(id))
+    }
+
     /// Get a thread by ID (public for timer.rs)
     pub fn get_thread(&self, id: u64) -> Option<&Thread> {
         self.threads
