@@ -1966,12 +1966,20 @@ pub fn idle_loop() -> ! {
         // wakeup cannot slip between the check and the atomic enable/halt.
         // A reschedule raised while the housekeeping above could not switch
         // (it holds preemption off) is taken through the interrupt-return path
-        // by a self-IPI, which arrives as the halt enables interrupts. Going
-        // round the housekeeping again instead kept the CPU from halting, and
-        // a tick landing in the housekeeping again left the reschedule pending.
+        // now, by a software interrupt to the reschedule vector. Going round
+        // the housekeeping again instead kept the CPU from halting, and a tick
+        // landing in the housekeeping again left the reschedule pending. A
+        // self-IPI, which this used to send, took 200-500 us to arrive under
+        // the x86 gate's nested virtualization, with the woken thread queued
+        // here meanwhile.
         x86_64::instructions::interrupts::disable();
         if crate::task::scheduler::is_need_resched() {
-            crate::task::scheduler::retry_after_interrupts_x86();
+            // SAFETY: the reschedule vector's gate is the timer entry, which
+            // saves and restores every register; it returns here with
+            // interrupts masked, as they are now.
+            unsafe {
+                core::arch::asm!("int {vector}", vector = const super::RESCHEDULE_VECTOR);
+            }
         }
         // CRITICAL: Use enable_and_hlt() instead of just hlt()
         // This atomically enables interrupts and halts, preventing race conditions
