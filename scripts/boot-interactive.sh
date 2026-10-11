@@ -221,4 +221,4 @@ host_slot_header "$SERIAL_LOG"
 
 # Non-suite interactive modes retain their existing shell exit behavior; Vigil
 # still receives QEMU's status. Suites must propagate their scored verdict.
-if [ "$MODE" = suite ]; then exit "$code"; fi
+exit "$code"

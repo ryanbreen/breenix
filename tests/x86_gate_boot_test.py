@@ -3,6 +3,7 @@ import importlib.util
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -18,7 +19,7 @@ class BootOutcomes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             kernel = Path(directory) / 'kernel'
             user = Path(directory) / 'user'
-            kernel.write_text(serial)
+            kernel.write_text(f'[clock] UTC epoch={int(time.time())} source=CMOS\n' + serial)
             user.write_text('')
             process = Mock(returncode=7)
             process.poll.return_value = poll

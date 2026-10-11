@@ -22,6 +22,37 @@ static mut PAGE_TABLES: PageTableStorage = PageTableStorage::new();
 /// HardwareConfig - static so it survives ExitBootServices.
 static mut HW_CONFIG: HardwareConfig = unsafe { core::mem::zeroed() };
 
+struct Su(u64, u8);
+impl core::fmt::Write for Su {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for c in s.bytes() {
+            unsafe {
+                if c == b'\n' {
+                    if self.1 == 1 {
+                        let lsr = (self.0 + 5) as *const u8;
+                        while core::ptr::read_volatile(lsr) & 0x20 == 0 {
+                            core::hint::spin_loop();
+                        }
+                        core::ptr::write_volatile(self.0 as *mut u8, b'\r');
+                    } else {
+                        core::ptr::write_volatile(self.0 as *mut u32, b'\r' as u32);
+                    }
+                }
+                if self.1 == 1 {
+                    let lsr = (self.0 + 5) as *const u8;
+                    while core::ptr::read_volatile(lsr) & 0x20 == 0 {
+                        core::hint::spin_loop();
+                    }
+                    core::ptr::write_volatile(self.0 as *mut u8, c);
+                } else {
+                    core::ptr::write_volatile(self.0 as *mut u32, c as u32);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[entry]
 fn main() -> Status {
     uefi::helpers::init().unwrap();
@@ -154,36 +185,6 @@ fn main() -> Status {
     // Log RAM regions and entry address to serial for VMware debugging
     {
         use core::fmt::Write;
-        struct Su(u64, u8);
-        impl core::fmt::Write for Su {
-            fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                for c in s.bytes() {
-                    unsafe {
-                        if c == b'\n' {
-                            if self.1 == 1 {
-                                let lsr = (self.0 + 5) as *const u8;
-                                while core::ptr::read_volatile(lsr) & 0x20 == 0 {
-                                    core::hint::spin_loop();
-                                }
-                                core::ptr::write_volatile(self.0 as *mut u8, b'\r');
-                            } else {
-                                core::ptr::write_volatile(self.0 as *mut u32, b'\r' as u32);
-                            }
-                        }
-                        if self.1 == 1 {
-                            let lsr = (self.0 + 5) as *const u8;
-                            while core::ptr::read_volatile(lsr) & 0x20 == 0 {
-                                core::hint::spin_loop();
-                            }
-                            core::ptr::write_volatile(self.0 as *mut u8, c);
-                        } else {
-                            core::ptr::write_volatile(self.0 as *mut u32, c as u32);
-                        }
-                    }
-                }
-                Ok(())
-            }
-        }
         let mut u = Su(config.uart_base_phys, config.uart_type);
         let _ = writeln!(u, "[ram] {} regions:", config.ram_region_count);
         for i in 0..config.ram_region_count as usize {
@@ -240,6 +241,10 @@ fn main() -> Status {
                 time.minute(),
                 time.second(),
             );
+            use core::fmt::Write;
+            let mut u = Su(config.uart_base_phys, config.uart_type);
+            let _ = writeln!(u, "UEFI GetTime source: timezone={} daylight={} raw_epoch={}",
+                time.time_zone().unwrap_or(2047), time.daylight().bits(), ts);
             config.boot_wall_time_utc = ts;
             log::info!(
                 "UEFI time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC (unix={})",

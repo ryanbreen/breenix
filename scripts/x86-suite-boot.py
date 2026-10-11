@@ -11,6 +11,9 @@ import socket
 import subprocess
 import sys
 import time
+import runpy
+
+WallClockCheck = runpy.run_path(str(Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
 
 spec = importlib.util.spec_from_file_location('suite_verdict', Path(__file__).with_name('suite-verdict.py'))
 scorer = importlib.util.module_from_spec(spec)
@@ -68,6 +71,7 @@ def record(repo, out, suite, user, kernel, disk, started, ended, forced_failure=
 def main():
     repo, out, suites, timeout, command = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3].split(','), float(sys.argv[4]), sys.argv[5:]
     user_path, kernel_path = out / 'serial_user.log', out / 'serial_kernel.log'
+    clock = WallClockCheck(kernel_path)
     offsets = [0, 0]
     started = time.time()
     deadline = time.monotonic() + timeout
@@ -89,6 +93,7 @@ def main():
     try:
         while child.poll() is None and current < len(suites):
             data = read()
+            clock.observe(data[1].decode(errors="replace"))
             suite = suites[current]
             user = data[0][offsets[0]:].decode(errors='replace').replace('\r', '')
             done = re.search(rf'^SUITE {suite} DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+$', user, re.M)
@@ -119,7 +124,8 @@ def main():
                 if manifest.get('diskChecks'):
                     disk = directory / 'disk.img'
                     shutil.copyfile(repo / 'target/ext2.img', disk)
-                result = record(repo, out, suite, data[0][offsets[0]:], data[1][offsets[1]:], disk, started, time.time())
+                clock_ok, clock_reason = clock.verdict()
+                result = record(repo, out, suite, data[0][offsets[0]:], data[1][offsets[1]:], disk, started, time.time(), None if clock_ok else clock_reason)
                 results.append(result)
                 if disk:
                     disk.unlink()  # raw checks already recorded; avoid multi-GB evidence
@@ -154,7 +160,9 @@ def main():
             results.append(record(repo, out, suites[index], user, kernel, None, started, time.time(),
                                   forced_failure if index == current else None))
         (out / 'suite-results.json').write_text(json.dumps(results) + '\n')
-    return 0 if all(row['verdict'] == 'PASS' for row in results) else 1
+    clock_ok, clock_reason = clock.verdict()
+    print(clock_reason, flush=True)
+    return 0 if clock_ok and all(row['verdict'] == 'PASS' for row in results) else 1
 
 
 if __name__ == '__main__':

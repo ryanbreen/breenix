@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -48,6 +49,7 @@ class SequenceTests(unittest.TestCase):
                         output(('first', 'second', 'third')[self.index])
                         if self.index == 2: child.stopped = True
                 def close(self): pass
+            (out / 'serial_kernel.log').write_text(f'[clock] UTC epoch={int(time.time())} source=CMOS\n')
             child = Child([])
             with patch.object(sequence.subprocess, 'Popen', return_value=child), patch.object(sequence, 'QMP', QMP), \
                  patch.object(sequence.time, 'sleep'), patch.dict(os.environ, BREENIX_QMP_SOCKET='/fake', BREENIX_SUITE_HOLD='0'), \

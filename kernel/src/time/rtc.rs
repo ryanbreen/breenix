@@ -289,6 +289,7 @@ pub fn init() {
                 dt.minute,
                 dt.second
             );
+            crate::serial_println!("[clock] UTC epoch={} source=CMOS", timestamp);
         }
         Err(e) => {
             log::error!("Failed to initialize RTC: {}", e);
@@ -368,6 +369,7 @@ pub fn init() {
                 dt.minute,
                 dt.second
             );
+            crate::serial_println!("[clock] UTC epoch={} source=UEFI", loader_time);
         } else {
             log::warn!("No RTC available (PL031 absent, UEFI GetTime not provided)");
             BOOT_WALL_TIME.store(0, Ordering::Relaxed);
@@ -387,6 +389,7 @@ pub fn init() {
                 dt.minute,
                 dt.second
             );
+            crate::serial_println!("[clock] UTC epoch={} source=PL031", timestamp);
         }
         Err(e) => {
             log::error!("Failed to initialize PL031 RTC: {}", e);

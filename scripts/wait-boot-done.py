@@ -13,6 +13,8 @@ import re
 import runpy
 import time
 
+WallClockCheck = runpy.run_path(str(Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
+
 ROOT = Path(__file__).resolve().parents[1]
 FATAL = json.loads((ROOT / "docs/boot-path.json").read_text())["fatal"] + ["KERNEL PANIC:"]
 TESTS_DONE = "USERSPACE TEST REPORT DONE"
@@ -51,10 +53,13 @@ def main():
     parser.add_argument("--suite", default="")
     parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
+    clock = WallClockCheck(args.serial)
     deadline = time.monotonic() + args.timeout
     while True:
         try:
-            result = completion(args.serial.read_bytes().decode("utf-8", errors="replace"), args.mode, args.suite)
+            serial = args.serial.read_bytes().decode("utf-8", errors="replace")
+            clock.observe(serial)
+            result = completion(serial, args.mode, args.suite)
         except FileNotFoundError:
             result = None
         if result is not None:
@@ -64,6 +69,9 @@ def main():
                 manifest = json.loads((ROOT / f"docs/suites/{args.suite}.json").read_text())
                 verdict = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))["verdict"]
                 ok, reason = verdict(manifest, args.serial, [args.serial])
+            clock_ok, clock_reason = clock.verdict()
+            ok = ok and clock_ok
+            print(clock_reason)
             print(f"{'PASS' if ok else 'FAIL'}: {reason}")
             return 0 if ok else 1
         if time.monotonic() >= deadline:

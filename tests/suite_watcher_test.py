@@ -34,7 +34,7 @@ def finish(signum, frame):
     stopped.write_text('stopped')
     raise SystemExit(0)
 signal.signal(signal.SIGTERM, finish)
-data = source.read_bytes()
+data = ('[clock] UTC epoch=%d source=PL031\\n' % int(time.time())).encode() + source.read_bytes()
 with serial.open('wb') as output:
     cut = len(data) - 3 if delay else len(data)
     output.write(data[:cut]); output.flush()
@@ -66,7 +66,7 @@ class SuiteWatcherTest(unittest.TestCase):
             )
             elapsed = time.monotonic() - started
             self.assertTrue(stopped.exists(), result.stdout + result.stderr)
-            self.assertEqual(serial.read_bytes(), data + late)
+            self.assertTrue(serial.read_bytes().endswith(data + late))
             return result, elapsed
 
     def test_done_stops_before_idle_and_keeps_complete_serial(self):

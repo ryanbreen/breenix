@@ -11,6 +11,8 @@ import signal
 import subprocess
 import time
 
+WallClockCheck = runpy.run_path(str(Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
+
 ROOT = Path(__file__).resolve().parents[1]
 DONE = runpy.run_path(str(ROOT / "scripts/wait-boot-done.py"))
 VERDICT = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))
@@ -35,7 +37,7 @@ def label(mode, suite):
     return f"Suite {suite}" if mode == "suite" else "Boot probe" if mode == "probe" else "Testing boot"
 
 
-def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold):
+def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clock):
     last_size = 0
     started = last_output = time.monotonic()
     done_at = None
@@ -59,6 +61,7 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold):
             last_output = now
             if mode in COMPLETING_MODES:
                 text += decoder.decode(data)
+                clock.observe(text)
                 result = DONE["completion"](text, mode, suite)
                 if result is not None:
                     if result[1].startswith("fatal kernel output:"):
@@ -106,12 +109,17 @@ def main():
 
     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(signum, interrupted)
+    clock = WallClockCheck(args.serial)
     process = subprocess.Popen(command)
     try:
         reason = watch(process, args.serial, args.mode, args.suite, args.idle_exit,
-                       args.gate_timeout, args.suite_hold)
+                       args.gate_timeout, args.suite_hold, clock)
     finally:
         stop(process)
+    clock_ok, clock_reason = clock.verdict()
+    print(clock_reason, flush=True)
+    if args.mode in COMPLETING_MODES and not clock_ok:
+        return 1
     if reason == "fatal":
         return 1
     if args.mode in ("probe", "tests"):
