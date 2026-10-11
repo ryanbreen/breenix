@@ -37,7 +37,7 @@ class HostSlotsTest(unittest.TestCase):
                 process.communicate()
         self.temporary.cleanup()
 
-    def launch(self, script, bypass=False, miss_first_snapshot=False):
+    def launch(self, script, bypass=False, miss_first_snapshot=False, temporary_directory=None):
         # Only tests inject a directory and disable observational VM discovery.
         # Production's fixed directory has no environment override.
         program = f'''import importlib.util, sys
@@ -56,7 +56,8 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         process = subprocess.Popen([sys.executable, '-u', '-c', program, script],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT,
-                                   env=dict(os.environ, BREENIX_BOOT_NO_QUEUE='1' if bypass else '0'))
+                                   env=dict(os.environ, BREENIX_BOOT_NO_QUEUE='1' if bypass else '0',
+                                            TMPDIR=str(temporary_directory or tempfile.gettempdir())))
         self.processes.append(process)
         return process
 
@@ -235,6 +236,18 @@ sys.stdin.readline()
         second = self.launch(command)
         self.line_matching(second, 'waiting for x86-boot:')
         self.assertIn('held=', self.line_matching(second, 'waiting for x86-boot:'))
+
+    def test_supervisor_works_with_a_long_nested_tmpdir(self):
+        directory = self.root / ('nested-' + 'x' * 100)
+        directory.mkdir()
+        process = self.launch(self.request('acquire', 'x86-boot') +
+                              '; echo CONTROL=$BREENIX_SLOT_SESSION; exit 0',
+                              temporary_directory=directory)
+        output = self.line_matching(process, 'CONTROL=')
+        control = output.split('CONTROL=', 1)[1].splitlines()[0]
+        self.assertLess(len(os.fsencode(control)), 104)
+        self.assertFalse(control.startswith(str(directory)))
+        self.assertEqual(process.wait(timeout=10), 0)
 
     def test_supervisor_preserves_command_exit_status(self):
         process = self.launch(self.request('acquire', 'x86-boot') + '; exit 23')

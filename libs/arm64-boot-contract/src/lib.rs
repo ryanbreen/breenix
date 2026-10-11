@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod uefi_time;
+
 /// High-half direct-map base used by the ARM64 loader and kernel.
 pub const HHDM_BASE: u64 = 0xffff_0000_0000_0000;
 /// Start of the linked kernel RAM alias in the loader's L1[1] mapping.

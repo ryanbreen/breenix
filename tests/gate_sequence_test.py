@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -48,6 +49,7 @@ class SequenceTests(unittest.TestCase):
                         output(('first', 'second', 'third')[self.index])
                         if self.index == 2: child.stopped = True
                 def close(self): pass
+            (out / 'serial_user.log').write_text(f'[clock] UTC epoch={int(time.time())} source=CMOS\n')
             child = Child([])
             with patch.object(sequence.subprocess, 'Popen', return_value=child), patch.object(sequence, 'QMP', QMP), \
                  patch.object(sequence.time, 'sleep'), patch.dict(os.environ, BREENIX_QMP_SOCKET='/fake', BREENIX_SUITE_HOLD='0'), \
@@ -57,6 +59,28 @@ class SequenceTests(unittest.TestCase):
             self.assertEqual([row['verdict'] for row in rows], ['PASS', 'PASS', 'FAIL', 'NOT-RUN'])
             self.assertIn('third suite', rows[2]['reason'])
             self.assertNotIn('PANIC', (out / 'suite-first/serial_kernel.log').read_text())
+
+    def test_completed_suite_fails_on_missing_or_local_clock(self):
+        for offset in (None, -3600, 3600):
+            with self.subTest(offset=offset), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary)
+                (repo / 'docs/suites').mkdir(parents=True)
+                (repo / 'docs/suites/clock.json').write_text(json.dumps(dict(
+                    id='clock', categories=[dict(id='case', cases=[dict(id='one')])])))
+                clock = '' if offset is None else f'[clock] UTC epoch={int(time.time()) + offset} source=CMOS\n'
+                (repo / 'serial_user.log').write_text(clock + 'SUITE clock START cases=1\nSUITE clock CASE case/one PASS ms=1\nSUITE clock DONE passed=1 failed=0 skipped=0 total=1\nSUITE_SEQUENCE READY clock\n')
+                child = unittest.mock.Mock()
+                child.poll.return_value = None
+                qmp = unittest.mock.Mock()
+                with patch.object(sequence.subprocess, 'Popen', return_value=child), \
+                     patch.object(sequence, 'QMP', return_value=qmp), \
+                     patch.dict(os.environ, BREENIX_QMP_SOCKET='/fake', BREENIX_SUITE_HOLD='0'), \
+                     patch.object(sys, 'argv', ['boot', str(repo), str(repo), 'clock', '300', 'qemu']):
+                    self.assertEqual(sequence.main(), 1)
+                rows = json.loads((repo / 'suite-results.json').read_text())
+                self.assertEqual(rows[0]['verdict'], 'FAIL')
+                self.assertIn('UTC clock FAIL', rows[0]['reason'])
+                self.assertIn('SUITE clock DONE passed=1 failed=0', rows[0]['reason'])
 
     def test_completed_records_cannot_erase_a_missed_deadline(self):
         with tempfile.TemporaryDirectory() as temporary:

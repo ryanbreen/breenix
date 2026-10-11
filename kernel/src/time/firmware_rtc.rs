@@ -129,8 +129,12 @@ pub fn read() -> Result<DateTime, &'static str> {
             || time.hour > 23 || time.minute > 59 || time.second > 59 {
             return Err("Firmware GetTime returned an invalid date");
         }
-        Ok(DateTime { year: time.year, month: time.month, day: time.day,
-            hour: time.hour, minute: time.minute, second: time.second })
+        let local = DateTime { year: time.year, month: time.month, day: time.day,
+            hour: time.hour, minute: time.minute, second: time.second };
+        let utc = arm64_boot_contract::uefi_time::utc_epoch(
+            local.to_unix_timestamp(), time.timezone, time.daylight,
+        )?;
+        Ok(DateTime::from_unix_timestamp(utc))
     })
 }
 

@@ -97,6 +97,8 @@ fn main() {
         );
     }
     let mut qemu = Command::new("qemu-system-x86_64");
+    // CMOS has no time-zone metadata; the kernel consumes it as UTC.
+    qemu.args(["-rtc", "base=utc"]);
     // Verify UEFI image exists
     let uefi_img = PathBuf::from(env!("UEFI_IMAGE"));
     if !uefi_img.exists() {

@@ -34,7 +34,7 @@ def finish(signum, frame):
     stopped.write_text('stopped')
     raise SystemExit(0)
 signal.signal(signal.SIGTERM, finish)
-data = source.read_bytes()
+data = ('[clock] UTC epoch=%d source=PL031\\n' % (int(time.time()) + (int(sys.argv[6]) if len(sys.argv) > 6 else 0))).encode() + source.read_bytes()
 with serial.open('wb') as output:
     cut = len(data) - 3 if delay else len(data)
     output.write(data[:cut]); output.flush()
@@ -49,7 +49,7 @@ while True:
 
 
 class SuiteWatcherTest(unittest.TestCase):
-    def replay(self, data, idle=2, mode="suite", suite="directories", split=True, late=b"", deadline=30):
+    def replay(self, data, idle=2, mode="suite", suite="directories", split=True, late=b"", deadline=30, clock_offset=0):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             source, serial, stopped, late_source = (directory / name for name in ("source", "serial", "stopped", "late"))
@@ -61,12 +61,15 @@ class SuiteWatcherTest(unittest.TestCase):
                  "--serial", str(serial), "--mode", mode, "--suite", suite,
                  "--idle-exit", str(idle), "--gate-timeout", str(deadline),
                  "--suite-hold", "0", "--", sys.executable, "-c", REPLAY,
-                 str(source), str(serial), str(stopped), "0.4" if split else "0", str(late_source)],
+                 str(source), str(serial), str(stopped), "0.4" if split else "0", str(late_source), str(clock_offset)],
                 capture_output=True, text=True, timeout=10,
             )
             elapsed = time.monotonic() - started
             self.assertTrue(stopped.exists(), result.stdout + result.stderr)
-            self.assertEqual(serial.read_bytes(), data + late)
+            recorded = serial.read_bytes()
+            clock_line, body = recorded.split(b"\n", 1)
+            self.assertRegex(clock_line, rb"^\[clock\] UTC epoch=\d+ source=PL031$")
+            self.assertEqual(body, data + late)
             return result, elapsed
 
     def test_done_stops_before_idle_and_keeps_complete_serial(self):
@@ -76,6 +79,12 @@ class SuiteWatcherTest(unittest.TestCase):
         self.assertIn("completed; stopping", result.stdout)
         self.assertLess(elapsed, 4)
         self.assertGreaterEqual(elapsed, 2.4)
+
+    def test_completed_suite_with_local_clock_fails(self):
+        result, _ = self.replay(RECORDING, clock_offset=-3600)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("UTC clock FAIL", result.stdout)
+        self.assertIn("PASS: SUITE directories DONE", result.stdout)
 
     def test_missing_done_idles_and_fails(self):
         data = b"\n".join(line for line in RECORDING.split(b"\n")
@@ -149,6 +158,22 @@ class SuiteWatcherTest(unittest.TestCase):
         self.assertIn("before deadline", result.stdout)
         self.assertGreaterEqual(elapsed, 1)
         self.assertLess(elapsed, 2)
+
+    def test_interactive_modes_idle_without_a_clock_verdict(self):
+        for mode in ("shell", "desktop", "program"):
+            result, _ = self.replay(b"interactive output\n", idle=0.2, mode=mode, split=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("UTC clock", result.stdout)
+
+    def test_bad_clock_preserves_probe_and_testing_verdicts(self):
+        for mode, data, expected in (
+            ("probe", b"PROBE DONE passed=16 failed=0\n", "PASS: PROBE DONE passed=16 failed=0"),
+            ("tests", b"USERSPACE TEST REPORT DONE\n", "PASS: USERSPACE TEST REPORT DONE"),
+        ):
+            result, _ = self.replay(data, mode=mode, clock_offset=-3600)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn(expected, result.stdout)
+            self.assertIn("UTC clock FAIL", result.stdout)
 
     def test_shell_fatal_retains_idle_exit(self):
         result, elapsed = self.replay(b"!!! SOFT LOCKUP DETECTED !!! synthetic fault\n", idle=1, mode="shell")

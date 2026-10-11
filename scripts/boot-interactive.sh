@@ -195,7 +195,7 @@ exec 3<&0
 set +e
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- "$QEMU" \
-    -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
+    -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
@@ -219,6 +219,5 @@ echo "==> VM stopped (exit $code)"
 host_slot_header "$SERIAL_LOG"
 "$ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" "$code"
 
-# Non-suite interactive modes retain their existing shell exit behavior; Vigil
-# still receives QEMU's status. Suites must propagate their scored verdict.
-if [ "$MODE" = suite ]; then exit "$code"; fi
+# Propagate the watcher status; suite, probe and tests include a UTC verdict.
+exit "$code"

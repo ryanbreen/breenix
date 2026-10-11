@@ -333,6 +333,7 @@ for i in $(seq 1 "$COUNT"); do
   BOOT_START=$SECONDS
   boot_completed=true
   scoring_deadline_missed=false
+  utc_clock_failed=false
   if [ "$MODE" = full ]; then
     # Collect the final report even when the scoring deadline has elapsed.
     BREENIX_NET_MODE=none "${GUEST_PRIORITY[@]}" python3 "$REPO_DIR/scripts/x86-gate-boot.py" \
@@ -344,6 +345,8 @@ for i in $(seq 1 "$COUNT"); do
     boot_status=$?
     if [ "$boot_status" -eq 2 ]; then
       scoring_deadline_missed=true
+    elif [ "$boot_status" -eq 3 ]; then
+      utc_clock_failed=true
     elif [ "$boot_status" -ne 0 ]; then
       boot_completed=false
     fi
@@ -465,6 +468,10 @@ for i in $(seq 1 "$COUNT"); do
   if [ "$boot_completed" != true ]; then
     verdict_ok=false
     verdict_reason="full boot did not complete; see the backstop/launcher diagnosis above; $verdict_reason"
+  fi
+  if [ "$utc_clock_failed" = true ]; then
+    verdict_ok=false
+    verdict_reason="guest UTC epoch check failed (missing, duplicate or outside host bracket); $verdict_reason"
   fi
   if [ "$census_ok" = true ] && [ "$verdict_ok" = true ]; then
     echo "  Test $i: PASS"

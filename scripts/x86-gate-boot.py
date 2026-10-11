@@ -7,6 +7,9 @@ import signal
 import subprocess
 import sys
 import time
+import runpy
+
+WallClockCheck = runpy.run_path(str(pathlib.Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
 
 # The scoring deadline and the completion backstop serve different purposes.
 # Full mode reports a missed scoring deadline after collecting the final report.
@@ -40,18 +43,22 @@ def main():
     backstop = float(os.environ.get('BREENIX_FULL_BACKSTOP', str(max(1800, deadline))))
     if deadline <= 0 or backstop <= 0:
         raise ValueError('gate deadline and full backstop must be positive')
+    clock = WallClockCheck(user_log)
     process = subprocess.Popen(sys.argv[3:], start_new_session=True)
     started = time.monotonic()
     try:
         while True:
             text = kernel_log.read_text(errors='replace') if kernel_log.exists() else ''
+            clock.observe(user_log.read_text(errors='replace') if user_log.exists() else '')
             if COMPLETE.search(text) and REPORT_DONE.search(text):
                 elapsed = time.monotonic() - started
                 print(f'[gate] full boot completed after {elapsed:.1f}s', flush=True)
+                clock_ok, clock_reason = clock.verdict()
+                print(clock_reason, flush=True)
                 if elapsed > deadline:
                     print(f'GATE: FAIL (full boot completed beyond {deadline:g}s scoring deadline; #1068)', flush=True)
                     return 2
-                return 0
+                return 0 if clock_ok else 3
             if process.poll() is not None:
                 print(f'GATE: FAIL (full boot exited before USERSPACE TEST COMPLETE; status={process.returncode})', flush=True)
                 return 1
