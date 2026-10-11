@@ -367,7 +367,7 @@ fn the_validator_reports_ebadf_from_the_descriptor_table() {
         compact.contains("None=>Err(super::errno::EBADFasu64)"),
         "the validator does not report EBADF for an absent descriptor"
     );
-    assert!(compact.contains("ifwrite{entry.writable()}else{entry.readable()}"),
+    assert!(compact.contains("Some(entry)ifmatches!(entry.kind,crate::ipc::FdKind::RegularFile(_))&&!(ifwrite{entry.writable()}else{entry.readable()})=>{Err(super::errno::EBADFasu64)}"),
         "degenerate transfers must still enforce the requested access mode");
     assert!(compact.contains("Some(_)=>Ok(())"));
     assert!(

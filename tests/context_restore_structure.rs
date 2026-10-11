@@ -1526,12 +1526,16 @@ fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), St
     let no_cr3_mask = code_mask(no_cr3_arm);
     let normalized_arm = normalized_code(no_cr3_arm);
     let compact_arm = normalized_arm.replace(' ', "");
+    let diagnostic_guard = identifier_offsets(no_cr3_arm, &no_cr3_mask, "if")
+        .into_iter()
+        .filter_map(|offset| braced_block(no_cr3_arm, &no_cr3_mask, offset))
+        .find(|block| normalized_code(block).replace(' ', "").starts_with(
+            "if!USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true,Ordering::Relaxed){"
+        ))
+        .ok_or_else(|| "unavailable CR3 arm lacks the diagnostic one-shot guard".to_string())?;
     if !compact_arm.contains("USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add")
-        || !compact_arm.contains("USERSPACE_DISPATCH_NO_CR3_LOGGED.swap")
-        || !compact_arm.contains("DiagLine::new().text(")
-        || !compact_arm.contains(".number(thread_id)")
-        || !compact_arm.contains(".number(pid.as_u64())")
-        || !compact_arm.contains(".write();")
+        || diagnostic_guard.split_whitespace().collect::<String>() !=
+            "if!USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true,Ordering::Relaxed){DiagLine::new().text(\"[PMGUARD]no-cr3dispatchrefusedtid=\").number(thread_id).text(\"pid=\").number(pid.as_u64()).text(\"\\n\").write();}"
     {
         return Err("unavailable CR3 arm lacks the guarded atomic diagnostic line".to_string());
     }
@@ -3882,20 +3886,19 @@ fn clone_publication_lifecycle_is_closed() {
     );
     assert!(validate_clone_publication_lifecycle(&nonterminal_refusal).is_err());
 
-    let clone_mask = code_mask(&clone);
     let fd_start = clone.find("let parent_fds =").expect("descriptor snapshot");
     let fd_end = clone[fd_start..].find("\n    };")
         .map(|offset| fd_start + offset + "\n    };".len()).expect("descriptor assignment ends");
     let fd_arm = &clone[fd_start..fd_end];
-    assert!(braced_block(&clone, &clone_mask, fd_start).is_some());
     let without_fd_copy = clone.replacen(fd_arm, "", 1);
     let early_copy = without_fd_copy.replacen(
         "let kernel_stack =",
         &format!("{fd_arm}\n    let kernel_stack ="),
         1,
     );
-    assert!(
-        validate_clone_publication_lifecycle(&early_copy).is_err(),
+    assert_eq!(
+        validate_clone_publication_lifecycle(&early_copy),
+        Err("sys_clone fd references must be acquired after allocation and before publication".to_string()),
         "fd acquisition before fallible allocation escaped"
     );
     let late_copy = without_fd_copy.replacen(
@@ -3903,13 +3906,15 @@ fn clone_publication_lifecycle_is_closed() {
         &format!("manager.insert_process(child_pid, child_process);\n    {fd_arm}"),
         1,
     );
-    assert!(
-        validate_clone_publication_lifecycle(&late_copy).is_err(),
+    assert_eq!(
+        validate_clone_publication_lifecycle(&late_copy),
+        Err("sys_clone fd references must be acquired after allocation and before publication".to_string()),
         "fd acquisition after publication escaped"
     );
     let early_unlock = clone.replacen(fd_arm, &format!("drop(manager_guard);\n    {fd_arm}"), 1);
-    assert!(
-        validate_clone_publication_lifecycle(&early_unlock).is_err(),
+    assert_eq!(
+        validate_clone_publication_lifecycle(&early_unlock),
+        Err("sys_clone drops manager_guard between clone admission and child publication".to_string()),
         "fd acquisition outside PM escaped"
     );
     let foreign_parent = clone.replacen(
@@ -3917,8 +3922,9 @@ fn clone_publication_lifecycle_is_closed() {
         &fd_arm.replace("get_process(parent_pid)", "get_process(child_pid)"),
         1,
     );
-    assert!(
-        validate_clone_publication_lifecycle(&foreign_parent).is_err(),
+    assert_eq!(
+        validate_clone_publication_lifecycle(&foreign_parent),
+        Err("sys_clone must share/copy the admitted parent's fd table according to CLONE_FILES".to_string()),
         "foreign fd table acquisition escaped"
     );
     let fallible_after_copy = clone.replacen(
@@ -3926,8 +3932,9 @@ fn clone_publication_lifecycle_is_closed() {
         &format!("{fd_arm} return SyscallResult::Err(super::errno::ENOMEM as u64);"),
         1,
     );
-    assert!(
-        validate_clone_publication_lifecycle(&fallible_after_copy).is_err(),
+    assert_eq!(
+        validate_clone_publication_lifecycle(&fallible_after_copy),
+        Err("sys_clone has a fallible exit after copying descriptor references".to_string()),
         "fallible exit after fd acquisition escaped"
     );
 }

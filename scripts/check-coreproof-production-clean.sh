@@ -51,6 +51,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUILD_ROOT="$REPO_ROOT"
 
 MODE="scan"
 ELF=""
@@ -89,7 +90,7 @@ MARKER_NEEDLE='[COREPROOF:'
 
 build_kernel() {
     local target_dir="$1"; shift
-    ( cd "$REPO_ROOT" && CARGO_TARGET_DIR="$target_dir" cargo "${BUILD_ARGS[@]}" "$@" )
+    ( cd "$BUILD_ROOT" && CARGO_TARGET_DIR="$target_dir" cargo "${BUILD_ARGS[@]}" "$@" )
 }
 
 leg1_symbols() {
@@ -118,13 +119,35 @@ text_hash() {
 # forbids is worth nothing.
 # ---------------------------------------------------------------------------
 if [ "$MODE" = "prove" ]; then
-    DIRTY_DIR="$REPO_ROOT/target/coreproof-prove-dirty"
-    # coreproof enables boot_tests, whose registry embeds the ARM64 userspace
-    # fixture. Kernel build.rs deliberately leaves ARM64 userspace to launchers.
-    if ! "$REPO_ROOT/userspace/programs/build.sh" --arch aarch64; then
-        echo "CORE-PROOF PRODUCTION RATCHET ANTI-VACUITY: FAILED (userspace build failed)"
+    PROVE_TREE="$(mktemp -d "${TMPDIR:-/tmp}/breenix-coreproof-prove.XXXXXX")" || exit 1
+    trap 'rm -rf "$PROVE_TREE"' EXIT
+    # Scan a real coreproof kernel in a private source tree. Its boot_tests
+    # dependency embeds just these two ELFs; this scan never boots them. Small
+    # no_std fixtures avoid the forked std dependency and never touch a gate's
+    # userspace binaries, disk inputs or Cargo targets.
+    if ! ( cd "$REPO_ROOT" && git ls-files -z --cached --others --exclude-standard |
+        tar --null -T - -cf - ) | ( cd "$PROVE_TREE" && tar -xf - ); then
+        echo "CORE-PROOF PRODUCTION RATCHET ANTI-VACUITY: FAILED (staging failed)"
         exit 1
     fi
+    BUILD_ROOT="$PROVE_TREE"
+    DIRTY_DIR="$PROVE_TREE/target"
+    FIXTURE_DIR="$PROVE_TREE/target/fixtures"
+    if ! ( cd "$PROVE_TREE" && unset CARGO_ENCODED_RUSTFLAGS __CARGO_TESTS_ONLY_SRC_ROOT && \
+        CARGO_TARGET_DIR="$FIXTURE_DIR" \
+        RUSTFLAGS="-C link-arg=-T$PROVE_TREE/userspace/programs/linker.ld" \
+        cargo build --release \
+        --manifest-path "$PROVE_TREE/scripts/fixtures/coreproof-userspace/Cargo.toml" \
+        --target "$PROVE_TREE/aarch64-breenix.json" \
+        -Z build-std=core -Z build-std-features=compiler-builtins-mem ); then
+        echo "CORE-PROOF PRODUCTION RATCHET ANTI-VACUITY: FAILED (fixture build failed)"
+        exit 1
+    fi
+    mkdir -p "$PROVE_TREE/userspace/programs/aarch64"
+    for fixture in simple_exit hello_time; do
+        cp "$FIXTURE_DIR/aarch64-breenix/release/$fixture" \
+            "$PROVE_TREE/userspace/programs/aarch64/$fixture.elf" || exit 1
+    done
     echo "Building a coreproof-profile kernel to prove the scan can go red..."
     if ! build_kernel "$DIRTY_DIR" --features boot_tests,coreproof,coreproof_component_a; then
         echo "CORE-PROOF PRODUCTION RATCHET ANTI-VACUITY: FAILED (coreproof build failed)"

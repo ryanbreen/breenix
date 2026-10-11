@@ -1,5 +1,7 @@
 //! Console adaptation ownership, queue publication, producer and oracle ratchets.
 use std::fs;
+#[path = "blocking_fd_eagain_structure.rs"]
+mod parser;
 fn read(path: &str) -> String {
     fs::read_to_string(format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path)).unwrap()
 }
@@ -144,9 +146,10 @@ fn data_signal_and_immediate_controls_remain_observable() {
     let helper = compact(&read("kernel/src/syscall/blocking_io.rs"));
     assert!(helper.contains("ifletSome(error)=crate::syscall::check_signals_for_restartable_wait(){breakSome(error);}"));
     assert!(helper.contains("Some(error)=>Err(error)"));
-    let signals = compact(&read("kernel/src/syscall/mod.rs"));
-    let restartable = signals.split("pubfncheck_signals_for_restartable_wait()").nth(1).unwrap()
-        .split("///MatchtheIDT").next().unwrap();
+    let restartable = parser::compact(&parser::function(
+        &read("kernel/src/syscall/mod.rs"),
+        "check_signals_for_restartable_wait",
+    ));
     assert!(restartable.contains("true=>Some(errno::ERESTARTSYS)"));
     assert!(restartable.contains("false=>Some(errno::EINTR)"));
     assert!(helper.contains("queue.take_waiter(tid);queue.finish_wait_for(tid);"));

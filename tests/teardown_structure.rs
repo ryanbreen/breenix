@@ -5922,11 +5922,7 @@ fn validate_futex_queue_value_type(sources: &[(String, String)]) -> Result<(), V
     check(
         &mut failures,
         "FutexTable must hold the queues by key and the queue each waiter is on",
-        table.contains("queues: BTreeMap<FutexKey, VecDeque<Waiter>>, queued_on: BTreeMap<u64, FutexKey>,")
-            && table.contains("pi: BTreeMap<FutexKey, PiState>,")
-            && table.contains("pi_waiting: BTreeMap<u64, FutexKey>,")
-            && table.contains("pi_owned: BTreeMap<u64, alloc::vec::Vec<FutexKey>>,")
-            && table.contains("pi_granted: BTreeSet<u64>,"),
+        table.starts_with("struct FutexTable { queues: BTreeMap<FutexKey, VecDeque<Waiter>>, queued_on: BTreeMap<u64, FutexKey>, pi: BTreeMap<FutexKey, PiState>, pi_waiting: BTreeMap<u64, FutexKey>, pi_owned: BTreeMap<u64, alloc::vec::Vec<FutexKey>>, pi_granted: BTreeSet<u64>, }"),
     );
     check(
         &mut failures,
@@ -8118,13 +8114,21 @@ fn validate_x86_epoch_stamp_is_minimal(sources: &[(String, String)]) -> Result<(
         return Err(());
     }
     let prefix = &body[..stamps[0]];
-    let prefix_mask = code_mask(prefix);
-    if ["log::", "serial_println!", "format!", "Vec::", "alloc::"]
-        .iter()
-        .any(|forbidden| !code_offsets(prefix, &prefix_mask, forbidden).is_empty())
-        || !call_offsets(prefix, &prefix_mask, "lock").is_empty()
-    {
-        return Err(());
+    let thread = source(sources, "kernel/src/task/thread.rs");
+    let guard = item_body_for_path(context_switch, "impl Drop for ReturnUserTime::fn drop").ok_or(())?;
+    let mut accounting = vec![prefix, guard];
+    for name in ["enter_kernel_time", "resume_user_time", "switch_timer_mode", "update_timer_cpu", "current_cpu_thread"] {
+        accounting.push(function_body(thread, name));
+    }
+    for body in accounting {
+        let mask = code_mask(body);
+        if ["log::", "serial_println!", "format!", "Vec::", "alloc::"]
+            .iter()
+            .any(|forbidden| !code_offsets(body, &mask, forbidden).is_empty())
+            || !call_offsets(body, &mask, "lock").is_empty()
+        {
+            return Err(());
+        }
     }
     let statements = block_statements(body).ok_or(())?;
     if !normalized_code(statements)

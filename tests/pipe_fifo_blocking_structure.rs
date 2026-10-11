@@ -226,8 +226,7 @@ fn poll_requires_atomic_write_space_or_reports_a_closed_reader() {
             .collect();
         assert_eq!(found.len(), 1, "readiness census lost {family}");
         assert!(contains(&found[0].1, "pipe.space()>=super::pipe::PIPE_BUF||!pipe.has_readers()"));
-        assert!(contains(&found[0].1, "!pipe.has_readers()"));
-        assert!(contains(&found[0].1, "POLLERR"));
+        assert!(contains(&found[0].1, "if!pipe.has_readers(){revents|=events::POLLERR;}"));
     }
 }
 
@@ -912,7 +911,7 @@ fn writev_aggregate_atomicity_rejects_per_iovec_mutation() {
     );
     let mutation = source.replace(
         "return super::blocking_io::write_pipe(&buffer, &gathered, nonblocking);",
-        "for vector in &vectors { handlers::sys_write(fd, vector.iov_base, vector.iov_len); }",
+        "for vector in &vectors { handlers::write_vector(fd, vector.iov_base, vector.iov_len, true); }",
     );
     assert_ne!(mutation, source);
     assert!(
