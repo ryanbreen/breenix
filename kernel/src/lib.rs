@@ -268,6 +268,7 @@ pub fn exit_qemu(exit_code: QemuExitCode) {
     #[cfg(target_arch = "x86_64")]
     {
         use x86_64::instructions::port::Port;
+        serial::flush_log();
         unsafe {
             let mut port = Port::new(0xf4);
             port.write(exit_code as u32);
