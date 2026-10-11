@@ -28,13 +28,17 @@ where
     if crate::process::process_manager_held_on_current_cpu() {
         return FaultOutcome::NotFile;
     }
+    // A fork copying this address space keeps it unchanged until it is
+    // done (`fork_copy`): the access runs again and faults again, without
+    // taking the lock on each pass. The checks under the lock decide.
+    if super::fork_copy::copying(root) {
+        return FaultOutcome::Resolved;
+    }
     let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
     let snapshot = {
         let Some(guard) = acquire() else {
             return FaultOutcome::Resolved;
         };
-        // A fork copying this address space keeps it unchanged until it is
-        // done (`fork_copy`): the access runs again and faults again.
         if super::fork_copy::copying(root) {
             return FaultOutcome::Resolved;
         }

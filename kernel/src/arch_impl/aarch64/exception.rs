@@ -2784,6 +2784,12 @@ fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
     }
     let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
 
+    // The stack of an address space a fork is copying grows once the copy is
+    // done (`memory::fork_copy`): the access runs again and faults again,
+    // without taking the lock on each pass; the check under it decides.
+    if crate::memory::fork_copy::copying(page_table_phys) {
+        return true;
+    }
     let mut guard = crate::process::manager();
     let Some(pm) = guard.as_mut() else {
         return false;
@@ -2899,6 +2905,12 @@ fn handle_cow_fault_arm64(far: u64, iss: u32, from_el0: bool) -> bool {
 
     // Lock-free trace: CoW fault entry (pid unknown yet, page index from far)
     crate::tracing::providers::process::trace_cow_fault(0, (far >> 12) as u16);
+
+    // While a fork copies this address space the write is retried without
+    // taking the lock on each pass; the check under the lock decides.
+    if crate::memory::fork_copy::copying(page_table_phys) {
+        return true;
+    }
 
     // Acquire process manager lock (blocking, with interrupts disabled on ARM64).
     // This is safe because CoW faults from EL0 guarantee the current CPU doesn't

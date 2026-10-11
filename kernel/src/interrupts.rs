@@ -1306,6 +1306,12 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bo
         return false;
     }
 
+    // While a fork copies this address space the access is retried without
+    // taking the lock on each pass; the check under the lock decides.
+    if may_retry && crate::memory::fork_copy::copying(cr3) {
+        return true;
+    }
+
     // A holder on this CPU is the section this fault interrupted, which
     // cannot be waited for; no stack is grown on its behalf.
     let mut guard = match fault_manager(may_retry) {
