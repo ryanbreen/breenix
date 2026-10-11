@@ -4537,6 +4537,8 @@ static SCRATCH: Suite = suite("threads", "Threads", &[
         case("cv_timedwait_monotonic_set-5", "scratch", rep_cv_timedwait_monotonic_set),
         case("cv_futex_bitset-5", "scratch", rep_cv_futex_bitset),
         case("rw_timedwrlock-5", "scratch", rep_rw_timedwrlock),
+        case("barrier-cpus", "scratch", br_cpus),
+        case("barrier-cpus-2", "scratch", br_cpus),
     ]),
 ]);
 

@@ -76,8 +76,9 @@ static LOG_RING: Mutex<LogRing> = Mutex::new(LogRing {
 /// Held by the one context writing the kernel log to COM2.
 static LOG_PRINTER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-/// Appends one formatted line to the log ring, which its caller holds.
-struct RingWriter<'a>(&'a mut LogRing);
+/// Appends one formatted line to the log ring, which its caller holds; the
+/// flag says whether the caller also holds the printer role.
+struct RingWriter<'a>(&'a mut LogRing, bool);
 
 impl fmt::Write for RingWriter<'_> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
@@ -85,7 +86,7 @@ impl fmt::Write for RingWriter<'_> {
             // uart_16550::send translates backspace and DEL to BS SPACE BS.
             let wire: &[u8] = if byte == 0x08 || byte == 0x7f { &[0x08, b' ', 0x08] } else { core::slice::from_ref(&byte) };
             for &b in wire {
-                if !self.0.push(b) && !(make_room(self.0) && self.0.push(b)) {
+                if !self.0.push(b) && !(make_room(self.0, self.1) && self.0.push(b)) {
                     self.0.dropped += 1;
                 }
             }
@@ -94,19 +95,24 @@ impl fmt::Write for RingWriter<'_> {
     }
 }
 
-/// A full ring, with no printer: write one burst out from under the ring lock.
-/// With a printer active the byte is dropped instead, and counted.
-fn make_room(ring: &mut LogRing) -> bool {
-    if LOG_PRINTER
-        .compare_exchange(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed)
-        .is_err()
+/// A full ring, with the printer role held by the caller or by no one: write
+/// one burst out from under the ring lock. With another printer active the
+/// byte is dropped instead, and counted.
+fn make_room(ring: &mut LogRing, printer_held: bool) -> bool {
+    use core::sync::atomic::Ordering;
+    if !printer_held
+        && LOG_PRINTER
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
     {
         return false;
     }
     let mut chunk = [0u8; 16];
     let n = ring.pop(&mut chunk[..log_burst()]);
     write_log_burst(&chunk[..n]);
-    LOG_PRINTER.store(false, core::sync::atomic::Ordering::Release);
+    if !printer_held {
+        LOG_PRINTER.store(false, Ordering::Release);
+    }
     n != 0
 }
 
@@ -146,21 +152,24 @@ fn drain_log() {
         {
             return;
         }
-        crate::task::wakelat::ev(crate::task::wakelat::E_LOG_IN, 2);
-        loop {
-            let mut chunk = [0u8; 16];
-            let n = crate::arch_without_interrupts(|| LOG_RING.lock().pop(&mut chunk[..log_burst()]));
-            if n == 0 {
-                break;
-            }
-            write_log_burst(&chunk[..n]);
-        }
-        crate::task::wakelat::ev(crate::task::wakelat::E_LOG_OUT, 2);
+        write_ring();
         LOG_PRINTER.store(false, Ordering::Release);
         // A line appended after the last take saw the printer busy and left.
         if crate::arch_without_interrupts(|| LOG_RING.lock().len) == 0 {
             return;
         }
+    }
+}
+
+/// Write the ring out until it is empty. The caller holds the printer role.
+fn write_ring() {
+    loop {
+        let mut chunk = [0u8; 16];
+        let n = crate::arch_without_interrupts(|| LOG_RING.lock().pop(&mut chunk[..log_burst()]));
+        if n == 0 {
+            return;
+        }
+        write_log_burst(&chunk[..n]);
     }
 }
 
@@ -275,7 +284,6 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
         crate::arch_disable_interrupts();
     }
 
-    crate::task::wakelat::ev(crate::task::wakelat::E_LOG_IN, 1);
     let mut serial = SERIAL1.lock();
     if SERIAL1_FIFO.load(core::sync::atomic::Ordering::Relaxed) {
         // THRE means the 16550 transmit FIFO is empty, so all sixteen slots
@@ -319,7 +327,6 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
         }
     }
     drop(serial);
-    crate::task::wakelat::ev(crate::task::wakelat::E_LOG_OUT, 1);
 
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
@@ -494,18 +501,42 @@ macro_rules! serial_println {
 ///
 /// The line goes into the log ring whole, then `drain_log` writes it out
 /// unless another context is already writing the ring.
+///
+/// A caller that can be preempted takes the printer role before it appends,
+/// waiting for it if need be, and writes its own line. A context that cannot
+/// wait on the UART, holding a lock or with interrupts masked, may find the
+/// role free and write what is in the ring, and this keeps a long line from a
+/// preemptible thread, the strand census's 330 bytes, out of what it writes.
 #[doc(hidden)]
 pub fn _log_print(args: fmt::Arguments) {
     use core::fmt::Write;
+    use core::sync::atomic::Ordering;
 
+    let preemptible = crate::per_cpu::is_initialized()
+        && crate::arch_interrupts_enabled()
+        && crate::per_cpu::preempt_count() == 0;
+    if preemptible {
+        while LOG_PRINTER
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            // The printer may be a thread this one preempted on this CPU.
+            crate::task::scheduler::yield_current();
+            core::hint::spin_loop();
+        }
+    }
     crate::arch_without_interrupts(|| {
         let mut ring = LOG_RING.lock();
         if ring.dropped != 0 {
             let dropped = core::mem::take(&mut ring.dropped);
-            let _ = write!(RingWriter(&mut ring), "[log: {} bytes dropped]\n", dropped);
+            let _ = write!(RingWriter(&mut ring, preemptible), "[log: {} bytes dropped]\n", dropped);
         }
-        let _ = RingWriter(&mut ring).write_fmt(args);
+        let _ = RingWriter(&mut ring, preemptible).write_fmt(args);
     });
+    if preemptible {
+        write_ring();
+        LOG_PRINTER.store(false, Ordering::Release);
+    }
     drain_log();
 }
 
