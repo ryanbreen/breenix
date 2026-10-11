@@ -370,6 +370,20 @@ sys.stdin.readline()
         self.assertGreaterEqual(record['quiet']['wait_seconds'], 1.0)
         self.assertEqual(len(record['load_at_verdict']), 3)
 
+    def test_nested_acquire_shares_the_boot_record(self):
+        serial = self.root / 'serial.log'
+        serial.write_text('')
+        manifest = self.write_manifest(True)
+        quiet = {'QUIET_LOAD_FRACTION': 1000.0, 'QUIET_SAMPLES': 1, 'QUIET_SAMPLE_SECONDS': 0.2}
+        session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; {sys.executable} {HELPER} serial {serial}; '
+                              f'{sys.executable} {HELPER} acquire mac-boot; {sys.executable} {HELPER} quiet {manifest}; echo BOOTING',
+                              settings=quiet)
+        self.line_matching(session, 'BOOTING')
+        self.assertEqual(session.wait(timeout=10), 0)
+        lines = serial.with_name(serial.name + '.host-slots.jsonl').read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])['quiet']['met'], True)
+
     def test_suite_that_is_not_timing_sensitive_does_not_wait(self):
         manifest = self.write_manifest(False)
         busy = {'QUIET_LOAD_FRACTION': -1.0, 'QUIET_SAMPLE_SECONDS': 0.2, 'QUIET_MAX_WAIT_SECONDS': 60.0}

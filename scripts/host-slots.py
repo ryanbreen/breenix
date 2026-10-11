@@ -370,6 +370,7 @@ def supervise_worker(argv, parent):
             raise RuntimeError('QEMU did not stop; keeping boot lease until cleanup')
 
     records = []
+    bypassed = set()
 
     def context(count):
         return ''.join(json.dumps(entry, sort_keys=True) + '\n' for entry in records[:count]).encode()
@@ -491,6 +492,11 @@ def supervise_worker(argv, parent):
                             resource = request['resource']
                             if resource not in RESOURCES:
                                 raise ValueError(f'unknown resource {resource}')
+                            if resource in slots.held or resource in slots.held_all or resource in bypassed:
+                                # A nested launcher shares the lease: the same boot, so no second record.
+                                client.sendall(b'{}\n')
+                                client.close()
+                                continue
                             slots.enqueue(resource)
                             pending = {'client': client, 'resource': resource,
                                        'since': time.monotonic(), 'next_message': 0,
@@ -510,6 +516,7 @@ def supervise_worker(argv, parent):
                                 if request['resource'].endswith('boot'):
                                     stop_qemu()
                                     verdict(request['resource'])
+                                bypassed.discard(request['resource'])
                                 slots.release(request['resource'])
                             elif operation == 'cargo-home':
                                 home = isolated_cargo_home(request['source'], request['directory'])
@@ -586,6 +593,8 @@ def supervise_worker(argv, parent):
                                          'running_at_acquire': observed, **identity}
                     print(f'[host-slot] {"BYPASS" if bypass else "acquired"} {resource}; waited={waited:.1f}s load={os.getloadavg()}', file=sys.stderr, flush=True)
                     slots.dequeue(resource)
+                    if bypass:
+                        bypassed.add(resource)
                     admit(pending)
                     pending = None
             finally:
