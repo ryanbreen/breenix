@@ -613,7 +613,10 @@ def supervise_worker(argv, parent):
             server.bind(session)
             server.listen()
             selector.register(server, selectors.EVENT_READ)
-            env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record)
+            # Run Inspector supervises a gate with its own helper, which can predate the
+            # tested checkout's: name the operations newer than the first supervisor.
+            env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record,
+                       BREENIX_SLOT_OPERATIONS='quiet')
             child = subprocess.Popen(argv, env=env, start_new_session=True)
             try:
                 forwarded_signal = None
@@ -797,6 +800,10 @@ def main():
     if args.operation in ('acquire', 'release'):
         send_request({'operation': args.operation, 'resource': values[0]})
     elif args.operation == 'quiet':
+        if 'quiet' not in os.environ.get('BREENIX_SLOT_OPERATIONS', '').split(','):
+            print('[host-slot] the supervising helper predates boot-start records: no quiet-host wait, start not recorded',
+                  file=sys.stderr, flush=True)
+            return 0
         send_request({'operation': 'quiet', 'manifests': values, 'policy': quiet_policy(os.environ)})
     elif args.operation == 'vm':
         send_request({'operation': 'vm', 'serial': values[0], 'stop': values[1:]})

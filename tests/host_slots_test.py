@@ -500,6 +500,13 @@ sys.stdin.readline()
         self.assertEqual(session.wait(timeout=10), 0)
         self.assertEqual(len(json.loads(sidecar.read_text())['load_at_release']), 3)
 
+    def test_quiet_under_an_older_supervisor_is_skipped_not_fatal(self):
+        session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; '
+                              f'BREENIX_SLOT_OPERATIONS= {sys.executable} {HELPER} quiet && echo BOOTING')
+        self.line_matching(session, 'predates boot-start records')
+        self.line_matching(session, 'BOOTING')
+        self.assertEqual(session.wait(timeout=10), 0)
+
     def test_boot_without_a_start_request_records_no_start_load(self):
         record = self.root / 'record'
         session = self.launch(f'{sys.executable} {HELPER} acquire mac-boot; cp "$BREENIX_SLOT_RECORD" {record}')
