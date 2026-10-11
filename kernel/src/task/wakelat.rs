@@ -1,6 +1,5 @@
 //! SCRATCH (never merged): wake-to-run latency tracer for #1357/#1350/#1352.
 //! Lock-free stamps; read and reset through /proc/trace/counters.
-#![cfg(target_arch = "x86_64")]
 
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
@@ -72,12 +71,11 @@ static SD_HIST: [AtomicU64; NB] = [const { AtomicU64::new(0) }; NB];
 
 #[inline(always)]
 pub fn tsc() -> u64 {
-    crate::time::tsc::read_tsc()
+    crate::arch_read_timestamp()
 }
 
 fn us(cycles: u64) -> u64 {
-    let hz = crate::time::tsc::frequency_hz().max(1);
-    ((cycles as u128) * 1_000_000 / hz as u128) as u64
+    crate::arch_ticks_to_nanos(cycles) / 1000
 }
 
 fn bucket(v_us: u64) -> usize {
@@ -85,7 +83,7 @@ fn bucket(v_us: u64) -> usize {
 }
 
 fn cpu() -> usize {
-    crate::per_cpu::cpu_id().min(CPUS - 1)
+    crate::task::scheduler::current_cpu().min(CPUS - 1)
 }
 
 fn max(a: &AtomicU64, v: u64) {

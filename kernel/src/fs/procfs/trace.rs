@@ -254,7 +254,6 @@ pub fn generate_counters() -> String {
         output.push_str("# (no counters registered)\n");
     }
 
-    #[cfg(target_arch = "x86_64")]
     crate::task::wakelat::report(&mut output);
     output
 }
