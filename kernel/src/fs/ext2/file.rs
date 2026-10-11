@@ -647,6 +647,137 @@ pub fn write_file<B: BlockDevice + ?Sized>(
     write_file_range(device, inode, superblock, block_groups, 0, data)
 }
 
+/// Private to one write under the filesystem's exclusive mount guard. There
+/// is no background or durable cache: publish drains every staged sector before
+/// returning, without issuing a FLUSH. The enclosing sync supplies durability.
+struct MetadataBatch<'a, B: BlockDevice + ?Sized> {
+    device: &'a B,
+    sectors: spin::Mutex<Vec<(u64, [u8; 512])>>,
+    bitmaps: Vec<(u64, u64)>,
+    failed: core::sync::atomic::AtomicBool,
+}
+
+impl<'a, B: BlockDevice + ?Sized> MetadataBatch<'a, B> {
+    const LIMIT: usize = 128;
+
+    fn new(device: &'a B, superblock: &Ext2Superblock, groups: &[super::Ext2BlockGroupDesc]) -> Result<Self, BlockError> {
+        let mut bitmaps = Vec::new();
+        bitmaps.try_reserve_exact(groups.len()).map_err(|_| BlockError::IoError)?;
+        let sectors_per_block = superblock.block_size() as u64 / 512;
+        for group in groups {
+            let start = group.bg_block_bitmap as u64 * sectors_per_block;
+            bitmaps.push((start, start + sectors_per_block));
+        }
+        Ok(Self { device, sectors: spin::Mutex::new(Vec::new()), bitmaps, failed: core::sync::atomic::AtomicBool::new(false) })
+    }
+
+    fn bitmap(&self, sector: u64) -> bool {
+        self.bitmaps.iter().any(|(first, last)| sector >= *first && sector < *last)
+    }
+
+    fn publish(&self) -> Result<(), BlockError> {
+        if self.failed.load(core::sync::atomic::Ordering::Acquire) {
+            return Err(BlockError::MetadataPublishFailed);
+        }
+        // Do not hold even this private lock over device completion waits.
+        let mut sectors = core::mem::take(&mut *self.sectors.lock());
+        // Publish allocation bits before references to them, including references
+        // crossing block groups whose bitmap has a higher physical address.
+        sectors.sort_unstable_by_key(|(sector, _)| (!self.bitmap(*sector), *sector));
+        let mut bytes = [0u8; 4096];
+        let mut at = 0;
+        while at < sectors.len() {
+            let start = at;
+            at += 1;
+            while at < sectors.len() && at - start < 8 && sectors[at].0 == sectors[at - 1].0 + 1
+                && self.bitmap(sectors[at].0) == self.bitmap(sectors[start].0) {
+                at += 1;
+            }
+            for (slot, (_, data)) in sectors[start..at].iter().enumerate() {
+                bytes[slot * 512..(slot + 1) * 512].copy_from_slice(data);
+            }
+            self.device.write_blocks(sectors[start].0, at - start, &bytes[..(at - start) * 512])
+                .map_err(|_| {
+                    self.failed.store(true, core::sync::atomic::Ordering::Release);
+                    BlockError::MetadataPublishFailed
+                })?;
+        }
+        Ok(())
+    }
+
+    fn validate(&self, start: u64, count: usize, len: usize) -> Result<usize, BlockError> {
+        let bytes = count.checked_mul(self.block_size()).ok_or(BlockError::IoError)?;
+        if len < bytes { return Err(BlockError::IoError); }
+        if start.checked_add(count as u64).is_none_or(|end| end > self.num_blocks()) {
+            return Err(BlockError::OutOfBounds);
+        }
+        Ok(bytes)
+    }
+}
+
+impl<B: BlockDevice + ?Sized> BlockDevice for MetadataBatch<'_, B> {
+    fn identity(&self) -> usize { self.device.identity() }
+
+    fn read_block(&self, start: u64, bytes: &mut [u8]) -> Result<(), BlockError> {
+        self.read_blocks(start, 1, bytes)
+    }
+
+    fn read_blocks(&self, start: u64, count: usize, bytes: &mut [u8]) -> Result<(), BlockError> {
+        let len = self.validate(start, count, bytes.len())?;
+        if self.block_size() != 512 { return self.device.read_blocks(start, count, bytes); }
+        let cached = {
+            let sectors = self.sectors.lock();
+            (0..count).all(|i| sectors.iter().any(|(sector, _)| *sector == start + i as u64))
+        };
+        if !cached { self.device.read_blocks(start, count, &mut bytes[..len])?; }
+        let sectors = self.sectors.lock();
+        for i in 0..count {
+            if let Some((_, data)) = sectors.iter().find(|(sector, _)| *sector == start + i as u64) {
+                bytes[i * 512..(i + 1) * 512].copy_from_slice(data);
+            }
+        }
+        Ok(())
+    }
+
+    fn write_block(&self, start: u64, bytes: &[u8]) -> Result<(), BlockError> {
+        self.write_blocks(start, 1, bytes)
+    }
+
+    fn write_blocks(&self, start: u64, count: usize, bytes: &[u8]) -> Result<(), BlockError> {
+        let len = self.validate(start, count, bytes.len())?;
+        if self.block_size() != 512 { return self.device.write_blocks(start, count, &bytes[..len]); }
+        if count > Self::LIMIT {
+            self.publish()?;
+            return self.device.write_blocks(start, count, &bytes[..len]);
+        }
+        if self.failed.load(core::sync::atomic::Ordering::Acquire) { return Err(BlockError::MetadataPublishFailed); }
+        let needed = {
+            let sectors = self.sectors.lock();
+            sectors.len() + (0..count).filter(|i| !sectors.iter().any(|(number, _)| *number == start + *i as u64)).count()
+        };
+        if needed > Self::LIMIT { self.publish()?; }
+        let mut sectors = self.sectors.lock();
+        let added = (0..count).filter(|i| !sectors.iter().any(|(number, _)| *number == start + *i as u64)).count();
+        sectors.try_reserve(added).map_err(|_| BlockError::IoError)?;
+        for i in 0..count {
+            let sector = start + i as u64;
+            let input = &bytes[i * 512..(i + 1) * 512];
+            if let Some((_, data)) = sectors.iter_mut().find(|(number, _)| *number == sector) {
+                data.copy_from_slice(input);
+            } else {
+                let mut data = [0u8; 512];
+                data.copy_from_slice(input);
+                sectors.push((sector, data));
+            }
+        }
+        Ok(())
+    }
+
+    fn block_size(&self) -> usize { self.device.block_size() }
+    fn num_blocks(&self) -> u64 { self.device.num_blocks() }
+    fn flush(&self) -> Result<(), BlockError> { self.publish()?; self.device.flush() }
+}
+
 /// Write a portion of a file (for seek + write operations)
 ///
 /// # Arguments
@@ -668,7 +799,7 @@ pub fn write_file_range<B: BlockDevice + ?Sized>(
     offset: u64,
     data: &[u8],
 ) -> Result<(), BlockError> {
-    write_file_range_impl(device, inode, superblock, block_groups, offset, data, false)
+    write_file_range_batched(device, inode, superblock, block_groups, offset, data, false)
 }
 
 /// Mapped writeback may visit a still-writable page more than once. Compare
@@ -681,11 +812,31 @@ pub fn write_mapped_file_range<B: BlockDevice + ?Sized>(
     offset: u64,
     data: &[u8],
 ) -> Result<(), BlockError> {
-    write_file_range_impl(device, inode, superblock, block_groups, offset, data, true)
+    write_file_range_batched(device, inode, superblock, block_groups, offset, data, true)
 }
 
-fn write_file_range_impl<B: BlockDevice + ?Sized>(
+/// Allocation and indirect-pointer changes share a bounded, operation-local
+/// metadata batch. Data goes directly to the backend. Publish the metadata on
+/// both success and partial failure before the caller publishes the inode.
+fn write_file_range_batched<B: BlockDevice + ?Sized>(
     device: &B,
+    inode: &mut Ext2Inode,
+    superblock: &Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+    offset: u64,
+    data: &[u8],
+    skip_unchanged: bool,
+) -> Result<(), BlockError> {
+    if data.is_empty() { return Ok(()); }
+    let metadata = MetadataBatch::new(device, superblock, block_groups)?;
+    let result = write_file_range_impl(&metadata, device, inode, superblock, block_groups, offset, data, skip_unchanged);
+    metadata.publish()?;
+    result
+}
+
+fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
+    device: &B,
+    data_device: &D,
     inode: &mut Ext2Inode,
     superblock: &Ext2Superblock,
     block_groups: &mut [super::Ext2BlockGroupDesc],
@@ -716,43 +867,12 @@ fn write_file_range_impl<B: BlockDevice + ?Sized>(
             Ok(None) => {
                 // Sparse hole or no block allocated - allocate a new block
                 let new_block =
-                    match super::block_group::allocate_block(device, superblock, block_groups) {
+                    match super::block_group::allocate_data_block(device, superblock, block_groups) {
                         Ok(b) => b,
                         Err(_) => {
                             return Err(BlockError::IoError);
                         }
                     };
-
-                // Set the block pointer in the inode
-                if let Err(e) = set_block_num(
-                    device,
-                    inode,
-                    superblock,
-                    block_groups,
-                    logical_block,
-                    new_block,
-                ) {
-                    // Release the data block only when the tree provably does
-                    // not reference it; a pointer write that failed may still
-                    // have landed.
-                    if let Ok(None) = get_block_num(device, inode, superblock, logical_block) {
-                        let _ = super::block_group::free_block(
-                            device,
-                            new_block,
-                            superblock,
-                            block_groups,
-                        );
-                    }
-                    return Err(e);
-                }
-
-                // Update i_blocks count (in 512-byte sectors)
-                let sectors_per_block = (block_size / 512) as u32;
-                unsafe {
-                    let blocks_ptr = core::ptr::addr_of_mut!(inode.i_blocks);
-                    let current_blocks = core::ptr::read_unaligned(blocks_ptr);
-                    core::ptr::write_unaligned(blocks_ptr, current_blocks + sectors_per_block);
-                }
 
                 allocated = true;
                 new_block
@@ -777,9 +897,13 @@ fn write_file_range_impl<B: BlockDevice + ?Sized>(
         let bytes_to_write = end_in_block - start_in_block;
 
         // Read-modify-write if we're not writing a full block
-        if start_in_block != 0 || end_in_block != block_size || (skip_unchanged && !allocated) {
+        if allocated {
+            // Every byte of a new block must be initialized before its pointer
+            // becomes visible, including bytes outside a partial write.
+            block_buf[..block_size].fill(0);
+        } else if start_in_block != 0 || end_in_block != block_size || skip_unchanged {
             if let Err(e) = read_ext2_block(
-                device,
+                data_device,
                 physical_block,
                 block_size,
                 &mut block_buf[..block_size],
@@ -803,9 +927,44 @@ fn write_file_range_impl<B: BlockDevice + ?Sized>(
 
         // Write the block back
         if let Err(e) =
-            write_ext2_block(device, physical_block, block_size, &block_buf[..block_size])
+            write_ext2_block(data_device, physical_block, block_size, &block_buf[..block_size])
         {
+            if allocated {
+            let _ = super::block_group::free_block(device, physical_block, superblock, block_groups);
+            }
             return Err(e);
+        }
+        if allocated {
+            // Set the block pointer in the inode
+            if let Err(e) = set_block_num(
+                device,
+                inode,
+                superblock,
+                block_groups,
+                logical_block,
+                physical_block,
+            ) {
+                // Release the data block only when the tree provably does
+                // not reference it; a pointer write that failed may still
+                // have landed.
+                if let Ok(None) = get_block_num(device, inode, superblock, logical_block) {
+                    let _ = super::block_group::free_block(
+                        device,
+                        physical_block,
+                        superblock,
+                        block_groups,
+                    );
+                }
+                return Err(e);
+            }
+
+            // Update i_blocks count (in 512-byte sectors)
+            let sectors_per_block = (block_size / 512) as u32;
+            unsafe {
+                let blocks_ptr = core::ptr::addr_of_mut!(inode.i_blocks);
+                let current_blocks = core::ptr::read_unaligned(blocks_ptr);
+                core::ptr::write_unaligned(blocks_ptr, current_blocks + sectors_per_block);
+            }
         }
     }
 
@@ -1070,6 +1229,129 @@ mod tests {
         let sb = Ext2Superblock::from_bytes(&bytes).unwrap();
         (Disk { bytes: spin::Mutex::new(alloc::vec![0xa5; block_size * 512]),
                 io: spin::Mutex::new((0, 0)) }, sb)
+    }
+
+    struct OrderedDisk {
+        disk: Disk,
+        writes: spin::Mutex<Vec<u64>>,
+        fail: Option<u64>,
+    }
+    impl BlockDevice for OrderedDisk {
+        fn read_block(&self, sector: u64, bytes: &mut [u8]) -> Result<(), BlockError> { self.disk.read_block(sector, bytes) }
+        fn write_block(&self, sector: u64, bytes: &[u8]) -> Result<(), BlockError> { self.write_blocks(sector, 1, bytes) }
+        fn write_blocks(&self, sector: u64, count: usize, bytes: &[u8]) -> Result<(), BlockError> {
+            self.writes.lock().push(sector);
+            if self.fail == Some(sector) { return Err(BlockError::IoError); }
+            self.disk.write_blocks(sector, count, bytes)
+        }
+        fn block_size(&self) -> usize { 512 }
+        fn num_blocks(&self) -> u64 { self.disk.num_blocks() }
+        fn flush(&self) -> Result<(), BlockError> { self.disk.flush() }
+    }
+
+    #[test]
+    fn metadata_batch_reuses_reads_and_publishes_bitmap_before_pointers() {
+        let (disk, sb) = disk(4096);
+        let dev = OrderedDisk { disk, writes: spin::Mutex::new(Vec::new()), fail: None };
+        let mut group: super::super::Ext2BlockGroupDesc = unsafe { core::mem::zeroed() };
+        group.bg_block_bitmap = 20;
+        let batch = MetadataBatch::new(&dev, &sb, &[group]).unwrap();
+        assert_eq!(batch.identity(), dev.identity());
+        for byte in 0..64 {
+            write_ext2_block(&batch, 10, 4096, &[byte; 4096]).unwrap();
+            write_ext2_block(&batch, 20, 4096, &[byte + 1; 4096]).unwrap();
+        }
+        let mut bytes = [0; 4096];
+        read_ext2_block(&batch, 10, 4096, &mut bytes).unwrap();
+        assert_eq!(bytes, [63; 4096]);
+        assert_eq!(*dev.disk.io.lock(), (0, 0));
+        batch.publish().unwrap();
+        assert_eq!(*dev.writes.lock(), [160, 80]);
+        assert_eq!(dev.disk.io.lock().1, 2);
+        read_ext2_block(&dev, 20, 4096, &mut bytes).unwrap();
+        assert_eq!(bytes, [64; 4096]);
+    }
+
+    #[test]
+    fn metadata_batch_is_bounded_and_keeps_every_sector() {
+        let (dev, sb) = disk(4096);
+        let batch = MetadataBatch::new(&dev, &sb, &[]).unwrap();
+        for sector in 0..256 {
+            batch.write_block(sector, &[sector as u8; 512]).unwrap();
+            assert!(batch.sectors.lock().len() <= MetadataBatch::<Disk>::LIMIT);
+        }
+        batch.publish().unwrap();
+        for sector in 0..256 {
+            let mut bytes = [0; 512];
+            dev.read_block(sector, &mut bytes).unwrap();
+            assert_eq!(bytes, [sector as u8; 512]);
+        }
+        assert_eq!(dev.io.lock().1, 32);
+    }
+
+    #[test]
+    fn metadata_batch_stops_before_pointers_when_bitmap_publication_fails() {
+        let (disk, sb) = disk(4096);
+        let dev = OrderedDisk { disk, writes: spin::Mutex::new(Vec::new()), fail: Some(160) };
+        let mut group: super::super::Ext2BlockGroupDesc = unsafe { core::mem::zeroed() };
+        group.bg_block_bitmap = 20;
+        let batch = MetadataBatch::new(&dev, &sb, &[group]).unwrap();
+        write_ext2_block(&batch, 10, 4096, &[1; 4096]).unwrap();
+        write_ext2_block(&batch, 20, 4096, &[2; 4096]).unwrap();
+        assert_eq!(batch.publish(), Err(BlockError::MetadataPublishFailed));
+        assert_eq!(*dev.writes.lock(), [160]);
+        assert_eq!(dev.disk.io.lock().1, 0);
+    }
+
+    fn allocation_disk() -> (Disk, Ext2Superblock, super::super::Ext2BlockGroupDesc) {
+        let (dev, sb) = disk(4096);
+        let mut group: super::super::Ext2BlockGroupDesc = unsafe { core::mem::zeroed() };
+        group.bg_block_bitmap = 20;
+        group.bg_free_blocks_count = 472;
+        let mut bytes = dev.bytes.lock();
+        bytes.fill(0);
+        bytes[20 * 4096..20 * 4096 + 5].fill(0xff);
+        drop(bytes);
+        (dev, sb, group)
+    }
+
+    #[test]
+    fn allocating_a_writeback_batch_publishes_each_metadata_block_once() {
+        let (dev, sb, group) = allocation_disk();
+        let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
+        let bytes = alloc::vec![0x5c; 65 * 4096];
+        write_file_range(&dev, &mut inode, &sb, &mut [group], 0, &bytes).unwrap();
+        // 65 data blocks, one bitmap and one indirect block.
+        assert_eq!(dev.io.lock().1, 67);
+        assert_eq!(inode.size(), bytes.len() as u64);
+        let actual = read_file_range(&dev, &inode, &sb, 0, bytes.len()).unwrap();
+        assert_eq!(actual, bytes);
+    }
+
+    #[test]
+    fn file_write_reports_uncertain_allocation_metadata() {
+        let (disk, sb, group) = allocation_disk();
+        let dev = OrderedDisk { disk, writes: spin::Mutex::new(Vec::new()), fail: Some(160) };
+        let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
+        let result = write_file_range(&dev, &mut inode, &sb, &mut [group], 0, &[0x5c; 4096]);
+        assert_eq!(result, Err(BlockError::MetadataPublishFailed));
+        assert_eq!(*dev.writes.lock(), [40 * 8, 160]);
+    }
+
+    #[test]
+    fn failed_data_initialization_keeps_the_hole_and_releases_allocation() {
+        let (disk, sb, group) = allocation_disk();
+        let dev = OrderedDisk { disk, writes: spin::Mutex::new(Vec::new()), fail: Some(320) };
+        let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
+        inode.i_size = 4096;
+        let mut groups = [group];
+        assert_eq!(write_file_range(&dev, &mut inode, &sb, &mut groups, 0, &[0x5c; 4096]), Err(BlockError::IoError));
+        let block = inode.i_block[0];
+        let blocks = inode.i_blocks;
+        let free = groups[0].bg_free_blocks_count;
+        assert_eq!((block, blocks, free), (0, 0, 472));
+        assert_eq!(read_file_range(&dev, &inode, &sb, 0, 4096).unwrap(), [0; 4096]);
+        assert_eq!(dev.disk.bytes.lock()[20 * 4096 + 5], 0);
     }
 
     #[test]

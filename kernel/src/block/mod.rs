@@ -54,6 +54,9 @@ pub fn disk(index: usize) -> Option<alloc::boxed::Box<dyn BlockDevice>> {
 /// but filesystems may use 1024, 2048, or 4096 byte blocks).
 #[allow(dead_code)] // Part of public block device API, will be used by ext2 filesystem
 pub trait BlockDevice: Send + Sync {
+    /// Stable allocation-quarantine identity, retained by operation-local wrappers.
+    fn identity(&self) -> usize { self as *const Self as *const () as usize }
+
     /// Read a block into the provided buffer
     ///
     /// # Arguments
@@ -144,6 +147,8 @@ pub enum BlockError {
     DeviceNotReady,
     /// Operation timed out
     Timeout,
+    /// Deferred allocation metadata could not be published; inode links must not be published.
+    MetadataPublishFailed,
 }
 
 impl fmt::Display for BlockError {
@@ -153,6 +158,7 @@ impl fmt::Display for BlockError {
             BlockError::OutOfBounds => write!(f, "block number out of bounds"),
             BlockError::DeviceNotReady => write!(f, "device not ready"),
             BlockError::Timeout => write!(f, "operation timed out"),
+            BlockError::MetadataPublishFailed => write!(f, "allocation metadata publication failed"),
         }
     }
 }

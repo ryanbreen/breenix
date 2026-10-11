@@ -17,7 +17,7 @@ const SHRINK_BATCH_BLOCKS: usize = 1024;
 static QUARANTINE: Mutex<BTreeSet<(usize, bool, u32)>> = Mutex::new(BTreeSet::new());
 
 fn device_key<B: BlockDevice + ?Sized>(device: &B) -> usize {
-    device as *const B as *const () as usize
+    device.identity()
 }
 
 pub(super) fn quarantined<B: BlockDevice + ?Sized>(device: &B, inode: bool, number: u32) -> bool {

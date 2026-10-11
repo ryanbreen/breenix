@@ -634,6 +634,12 @@ impl Ext2Fs {
             offset,
             data,
         );
+        if written == Err(crate::block::BlockError::MetadataPublishFailed) {
+            // The bitmap may have landed only in part. Do not publish inode
+            // pointers or build another allocation on an uncertain bitmap.
+            self.fail_writes();
+            return Err("Failed to publish allocation metadata");
+        }
         let free_after: u32 = self
             .block_groups
             .iter()
