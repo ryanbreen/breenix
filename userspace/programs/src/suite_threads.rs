@@ -4490,15 +4490,44 @@ fn tw_rep() -> CaseResult {
     wl_dump("tw");
     Ok(())
 }
+/// Timed waits with six process exits landing 150-240 ms into each 200 ms wait.
+fn tw_storm() -> CaseResult {
+    wl_dump("pre-storm");
+    for i in 0..10u64 {
+        let storm = spawn("the exit storm", move || -> Result<(), CaseError> {
+            sleep_ms(150 + 10 * i);
+            let mut pids = Vec::new();
+            for _ in 0..6 {
+                match process::fork() {
+                    Ok(ForkResult::Child) => exit_group(0),
+                    Ok(ForkResult::Parent(pid)) => pids.push(pid.raw() as i32),
+                    Err(e) => return err(format!("fork failed: {e}")),
+                }
+            }
+            for pid in pids {
+                let mut status = 0;
+                let _ = process::waitpid(pid, &mut status, 0);
+            }
+            Ok(())
+        })?;
+        let r = cv_timedwait_monotonic();
+        let _ = storm.wait(3000);
+        let ok = r.is_ok();
+        let msg = r.err().map(text).unwrap_or_default();
+        libbreenix::suite::scratch_line(&format!("SCRATCH storm iter={i} ok={ok} {msg}"));
+    }
+    wl_dump("storm");
+    Ok(())
+}
 static SCRATCH: Suite = suite("threads", "Threads", &[
     category("scratch", "scratch", &[
         case("barrier-cpus", "scratch", br_cpus_stat),
         case("tw-a", "scratch", tw_rep),
         case("tw-b", "scratch", tw_rep),
         case("tw-c", "scratch", tw_rep),
-        case("tw-d", "scratch", tw_rep),
-        case("tw-e", "scratch", tw_rep),
-        case("tw-f", "scratch", tw_rep),
+        case("storm-a", "scratch", tw_storm),
+        case("storm-b", "scratch", tw_storm),
+        case("storm-c", "scratch", tw_storm),
         case("barrier-cpus-2", "scratch", br_cpus_stat),
     ]),
 ]);
