@@ -8,14 +8,7 @@ use super::SyscallResult;
 use alloc::collections::{BTreeMap, VecDeque};
 use spin::Mutex;
 
-use crate::arch_impl::traits::CpuOps;
 use crate::task::thread::ThreadState;
-
-#[cfg(target_arch = "aarch64")]
-type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
-
-#[cfg(target_arch = "x86_64")]
-type Cpu = crate::arch_impl::x86_64::cpu::X86Cpu;
 
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::VirtAddr;
@@ -418,7 +411,7 @@ fn futex_wait_until(
         }
         crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
-        Cpu::halt_with_interrupts();
+        crate::arch_halt_while_blocked();
         crate::per_cpu::preempt_disable();
     };
     finish_wait(thread_id);
@@ -785,7 +778,7 @@ fn futex_wait(
 
                 crate::per_cpu::preempt_enable();
                 crate::task::scheduler::yield_current();
-                Cpu::halt_with_interrupts();
+                crate::arch_halt_while_blocked();
                 crate::per_cpu::preempt_disable();
             }
 

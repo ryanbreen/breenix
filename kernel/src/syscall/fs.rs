@@ -3,14 +3,7 @@
 //! Implements: open, lseek, fstat, getdents64
 
 use super::SyscallResult;
-use crate::arch_impl::traits::CpuOps;
 use crate::ipc::fd::FdKind;
-
-// Architecture-specific CPU type for interrupt control
-#[cfg(target_arch = "x86_64")]
-type Cpu = crate::arch_impl::x86_64::X86Cpu;
-#[cfg(target_arch = "aarch64")]
-type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 
 /// Open flags (POSIX compatible)
 pub const O_RDONLY: u32 = 0;
@@ -3371,7 +3364,7 @@ fn handle_fifo_open(
 
                     crate::per_cpu::preempt_enable();
                     crate::task::scheduler::yield_current();
-                    Cpu::halt_with_interrupts();
+                    crate::arch_halt_while_blocked();
                     crate::per_cpu::preempt_disable();
 
                     // Check if we were unblocked (thread state changed from Blocked)

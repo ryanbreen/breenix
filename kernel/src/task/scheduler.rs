@@ -66,12 +66,28 @@ use spin::Mutex;
 /// Published under the scheduler lock; the timer IRQ reads only this scalar.
 static NEXT_TIMER_CHECK_NS: AtomicU64 = AtomicU64::new(u64::MAX);
 
-/// Whether a sleep or signal timer needs a scheduling pass, without locking
-/// or walking any queue in interrupt context.
+/// Whether a sleep or signal timer needs a scheduling pass on this CPU,
+/// without locking or walking any queue in interrupt context.
+///
+/// One CPU claims a due deadline: it moves the published check a tick later,
+/// and its pass (`wake_expired_timers`) publishes the real next one, or the
+/// next tick lets another CPU claim it. Every busy CPU used to reschedule on
+/// the same due timer, so each expiring entry preempted the computing thread
+/// on every busy CPU at once.
 #[inline]
 pub fn timer_deadline_due() -> bool {
     let deadline = NEXT_TIMER_CHECK_NS.load(Ordering::Acquire);
-    deadline != u64::MAX && crate::signal::monotonic_nanos() >= deadline
+    if deadline == u64::MAX {
+        return false;
+    }
+    let now = crate::signal::monotonic_nanos();
+    if now < deadline {
+        return false;
+    }
+    let retry = now.saturating_add(crate::time::timer::MS_PER_TICK * 1_000_000);
+    NEXT_TIMER_CHECK_NS
+        .compare_exchange(deadline, retry, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 /// Exit-batch identity carried by teardown-attributed expedite evidence.
@@ -5236,7 +5252,22 @@ impl Scheduler {
 
     /// Recompute the next check where timer state is already serialized.
     /// Expiry discovery must not wait for a busy CPU's 50 ms quantum.
-    fn publish_timer_deadline(&self) {
+    ///
+    /// Entries at the top of the heap whose waits have ended are dropped
+    /// first, so the published deadline is a live one. Waits a wake ends early
+    /// leave their entries behind, and on Parallels a processes suite left
+    /// over 6,000 in the heap: 4,758 of them expired in one 300 ms window
+    /// against 1 live entry, and each expiry made a busy CPU take a
+    /// scheduling pass that sent its computing thread behind the CPU's other
+    /// queued threads.
+    fn publish_timer_deadline(&mut self) {
+        while let Some(&Reverse((wake_time, tid))) = self.timer_heap.peek() {
+            if self.timer_entry_live(wake_time, tid) {
+                break;
+            }
+            self.timer_heap.pop();
+            self.note_timer_pop(wake_time, tid);
+        }
         let now = crate::signal::timers::Now::read(0);
         let mut deadline = self.timer_heap.peek().map_or(u64::MAX, |entry| entry.0.0);
         for (group, _) in &self.signal_timer_groups {
@@ -5387,6 +5418,42 @@ impl Scheduler {
 
     /// Wake expired sleep and I/O deadlines from the min-heap. Stale entries
     /// are validated against the thread's current wait before they can wake it.
+    /// Record what popping the heap entry (`wake_time`, `tid`) saw, before
+    /// anything is decided with it, against the wait whose deadline the entry
+    /// carries. A popped entry for the current wait whose wake_time_ns has
+    /// already been cleared makes the pop a no-op, and a timed wait that was
+    /// relying on it stays blocked with its deadline in the past. That is the
+    /// fact the futex timed-wait record needs (#608 F4). An entry with any
+    /// other deadline was left by an earlier wait and is only counted.
+    fn note_timer_pop(&mut self, wake_time: u64, tid: u64) {
+        if let Some(thread) = self.get_thread_mut(tid) {
+            let wake_time_set = thread.wake_time_ns == Some(wake_time);
+            if let Some(record) = thread.timer_pop.as_mut() {
+                if record.deadline_ns == wake_time {
+                    record.own_entry = if wake_time_set {
+                        TimerPop::WakeTimeSet
+                    } else {
+                        TimerPop::WakeTimeCleared
+                    };
+                } else {
+                    record.stale_entries = record.stale_entries.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    /// Whether the heap entry (`wake_time`, `tid`) still times out a wait:
+    /// its thread is in a timed wait with that deadline. A completed wait
+    /// leaves its old heap entry behind, and it cannot expire a subsequent
+    /// wait on the same thread.
+    fn timer_entry_live(&self, wake_time: u64, tid: u64) -> bool {
+        self.get_thread(tid).is_some_and(|thread| {
+            (matches!(thread.state, ThreadState::BlockedOnTimer)
+                || (thread.state == ThreadState::BlockedOnIO && thread.wake_time_ns.is_some()))
+                && thread.wake_time_ns == Some(wake_time)
+        })
+    }
+
     pub fn wake_expired_timers(&mut self) {
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
@@ -5399,44 +5466,12 @@ impl Scheduler {
                 break; // All remaining entries are in the future
             }
             self.timer_heap.pop();
-
-            // Record what this pop saw before deciding anything with it,
-            // against the wait whose deadline the entry carries. A popped
-            // entry for the current wait whose wake_time_ns has already been
-            // cleared makes the pop a no-op, and a timed wait that was relying
-            // on it stays blocked with its deadline in the past. That is the
-            // fact the futex timed-wait record needs (#608 F4). An entry with
-            // any other deadline was left by an earlier wait and is only
-            // counted.
-            if let Some(thread) = self.get_thread_mut(tid) {
-                let wake_time_set = thread.wake_time_ns == Some(wake_time);
-                if let Some(record) = thread.timer_pop.as_mut() {
-                    if record.deadline_ns == wake_time {
-                        record.own_entry = if wake_time_set {
-                            TimerPop::WakeTimeSet
-                        } else {
-                            TimerPop::WakeTimeCleared
-                        };
-                    } else {
-                        record.stale_entries = record.stale_entries.saturating_add(1);
-                    }
-                }
-            }
+            self.note_timer_pop(wake_time, tid);
 
             // Validate: thread might have been woken already (by ISR, signal, etc.)
             // or terminated. Only process if still in a timed-wait state with a
             // wake_time set.
-            let is_timed_wait = if let Some(thread) = self.get_thread(tid) {
-                (matches!(thread.state, ThreadState::BlockedOnTimer)
-                    || (thread.state == ThreadState::BlockedOnIO && thread.wake_time_ns.is_some()))
-                    // A completed wait leaves its old heap entry behind. It
-                    // cannot expire a subsequent wait on the same thread.
-                    && thread.wake_time_ns == Some(wake_time)
-            } else {
-                false
-            };
-
-            if !is_timed_wait {
+            if !self.timer_entry_live(wake_time, tid) {
                 continue; // Stale entry — thread already woken or terminated
             }
 

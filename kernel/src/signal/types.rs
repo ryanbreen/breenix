@@ -634,11 +634,21 @@ impl SignalState {
     }
 
     /// PM held and the row is not stopped: a false hint is published only
-    /// after checking all PM-owned pending state. Timer writers have their
-    /// own atomics and never rely on this hint.
+    /// after checking all PM-owned pending state. A pending signal the mask
+    /// blocks is no return work; every mask change that unblocks one sets
+    /// the hint again. Timer writers have their own atomics and never rely
+    /// on this hint.
     pub fn clear_quiet_return_hint(&self) {
-        if self.pending == 0 {
+        if self.pending & !self.blocked() == 0 {
             self.thread.return_work.store(false, Ordering::Release);
+        }
+    }
+
+    /// A mask change left a pending signal unblocked: the next return to
+    /// user mode must check it.
+    fn note_unblocked_pending(&self) {
+        if self.pending & !self.blocked() != 0 {
+            self.thread.return_work.store(true, Ordering::Release);
         }
     }
 
@@ -934,6 +944,7 @@ impl SignalState {
     #[inline]
     pub fn unblock_signals(&mut self, mask: u64) {
         self.thread.blocked.fetch_and(!mask, Ordering::Relaxed);
+        self.note_unblocked_pending();
     }
 
     /// Set the blocked signal mask
@@ -943,6 +954,7 @@ impl SignalState {
         self.thread
             .blocked
             .store(mask & !UNCATCHABLE_SIGNALS, Ordering::Relaxed);
+        self.note_unblocked_pending();
     }
 
     /// Fork the signal state for a child process

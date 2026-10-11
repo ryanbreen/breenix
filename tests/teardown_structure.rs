@@ -7484,7 +7484,7 @@ fn validate_process_page_table_retire_site(
     let reclaim_present = process_task.contains("fn reclaim_bounded(&mut self)") || process_task.contains("fn reclaim_bounded(&mut self, frame_budget: u32)");
     let drain_present = process_task.contains("fn reclaim_deferred_process_resources_for_pass(");
     if !reclaim_present {
-        failures.push("missing fn reclaim_bounded(&mut self)".to_owned());
+        failures.push("missing fn reclaim_bounded (with or without a frame budget)".to_owned());
     }
     if !drain_present {
         failures.push("missing fn reclaim_deferred_process_resources_for_pass".to_owned());

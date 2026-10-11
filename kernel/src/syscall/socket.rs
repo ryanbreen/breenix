@@ -760,7 +760,7 @@ pub fn sys_recvfrom(
 
             crate::per_cpu::preempt_enable();
             crate::task::scheduler::yield_current();
-            Cpu::halt_with_interrupts();
+            crate::arch_halt_while_blocked();
             crate::per_cpu::preempt_disable();
 
             // Check if we were unblocked (thread state changed from Blocked)
@@ -1134,7 +1134,7 @@ fn sys_accept_tcp(
             // Still blocked - yield and wait for interrupt (timer or NIC)
             crate::per_cpu::preempt_enable();
             crate::task::scheduler::yield_current();
-            Cpu::halt_with_interrupts();
+            crate::arch_halt_while_blocked();
             crate::per_cpu::preempt_disable();
         }
 
@@ -1303,7 +1303,7 @@ fn sys_accept_unix(
             // Still blocked - yield and wait for interrupt
             crate::per_cpu::preempt_enable();
             crate::task::scheduler::yield_current();
-            Cpu::halt_with_interrupts();
+            crate::arch_halt_while_blocked();
             crate::per_cpu::preempt_disable();
         }
 
@@ -1611,7 +1611,7 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             // Still blocked - yield and wait for interrupt (timer or NIC)
             crate::per_cpu::preempt_enable();
             crate::task::scheduler::yield_current();
-            Cpu::halt_with_interrupts();
+            crate::arch_halt_while_blocked();
             crate::per_cpu::preempt_disable();
         }
 

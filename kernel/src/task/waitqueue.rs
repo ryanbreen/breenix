@@ -332,18 +332,7 @@ pub(crate) fn halt_blocked_current() {
     if others_ready {
         crate::task::scheduler::yield_current();
     }
-    x86_64::instructions::interrupts::disable();
-    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-        sched
-            .current_thread_mut()
-            .is_some_and(|thread| thread.state.is_blocked())
-    })
-    .unwrap_or(false);
-    if still_blocked {
-        crate::arch_halt_with_interrupts();
-    } else {
-        x86_64::instructions::interrupts::enable();
-    }
+    crate::arch_halt_while_blocked();
 }
 
 /// Sleep the current prepared waiter until the scheduler wake path makes it

@@ -14,15 +14,6 @@ use crate::process::{manager, ProcessId};
 use crate::signal::constants::*;
 use crate::signal::types::{SigInfo, SignalAction, StackT};
 
-// Architecture-specific imports
-use crate::arch_impl::traits::CpuOps;
-
-#[cfg(target_arch = "x86_64")]
-type Cpu = crate::arch_impl::x86_64::X86Cpu;
-
-#[cfg(target_arch = "aarch64")]
-type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
-
 /// Userspace address limit - addresses must be below this to be valid userspace (x86_64)
 #[cfg(target_arch = "x86_64")]
 const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
@@ -888,17 +879,6 @@ pub fn sys_sigreturn() -> SyscallResult {
     SyscallResult::Err(38) // ENOSYS
 }
 
-/// pause() - Wait until a signal is delivered (legacy version without frame access)
-///
-/// This version is kept for backward compatibility but should not be used.
-/// Use sys_pause_with_frame() instead for proper signal delivery.
-#[allow(dead_code)]
-pub fn sys_pause() -> SyscallResult {
-    let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(3); };
-    wait_for_signal(tid);
-    SyscallResult::Err(4)
-}
-
 /// Publish before checking pending, with preemption disabled until both are
 /// complete. Wakes may be stale or spurious; only signal eligibility ends a wait.
 /// Resume the syscall's kernel frame, then deliver on its normal user return.
@@ -916,7 +896,7 @@ fn wait_for_signal(thread_id: u64) {
         }
         crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
-        Cpu::halt_with_interrupts();
+        crate::arch_halt_while_blocked();
         crate::per_cpu::preempt_disable();
     }
     finish_signal_wait(thread_id);
@@ -1827,7 +1807,7 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
         }
         crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
-        Cpu::halt_with_interrupts();
+        crate::arch_halt_while_blocked();
         crate::per_cpu::preempt_disable();
     };
     finish_signal_wait(tid);

@@ -444,11 +444,17 @@ pub fn sys_clone_thread(
     // scheduler has it. The creator is still in this syscall, so its row is
     // live and the group's address space with it: the thread cannot have run
     // on a released one in between.
+    //
+    // Once spawned, the thread may also have run and exited by itself on
+    // another CPU, which ends its row too. That row carries no
+    // `group_exit_code`, which only a kill sets. Killing it again marked it
+    // with SIGKILL and status 0, and the signal took the whole group with
+    // status 0 while its creator was still running (#1349).
     let child_ended = crate::process::with_process_manager(|manager| {
         manager
             .get_process(child_pid)
-            .map_or(Some(0), |child| match child.state {
-                crate::process::ProcessState::Terminated(code) => Some(code),
+            .map_or(Some(0), |child| match (child.state, child.group_exit_code) {
+                (crate::process::ProcessState::Terminated(code), Some(_)) => Some(code),
                 _ => None,
             })
     })

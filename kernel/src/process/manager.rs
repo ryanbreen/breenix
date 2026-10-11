@@ -595,17 +595,21 @@ impl ProcessManager {
             return Err("Process page table not available for stack mapping");
         }
 
-        // This constructor supplies no arguments or environment. Reserve
-        // argc, argv NULL, envp NULL and the AT_NULL pair, aligned to 16 bytes.
-        // Starting at stack_top - 16 instead leaves envp outside the mapping.
-        let initial_rsp = stack_top.as_u64() - 48;
-        Self::write_bytes_to_stack(
+        // No arguments or environment, but the runtime still needs the ELF
+        // auxiliary vector to discover program headers and initialize TLS.
+        let initial_rsp = Self::setup_argv_on_stack(
             process
                 .page_table
                 .as_ref()
                 .ok_or("Process page table not available for argv setup")?,
-            initial_rsp,
-            &[0; 48],
+            stack_top.as_u64(),
+            &[],
+            &[],
+            loaded_elf.phdr_vaddr,
+            loaded_elf.phnum,
+            loaded_elf.phentsize,
+            loaded_elf.entry_point.as_u64(),
+            &process.cred,
         )?;
 
         // Create the main thread
@@ -1099,15 +1103,22 @@ impl ProcessManager {
             return Err("Process page table not available for stack mapping");
         };
 
-        let initial_sp = VirtAddr::new(user_stack_top - 48);
-        Self::write_bytes_to_stack(
+        // No arguments or environment, but the runtime still needs the ELF
+        // auxiliary vector to discover program headers and initialize TLS.
+        let initial_sp = VirtAddr::new(Self::setup_argv_on_stack(
             process
                 .page_table
                 .as_ref()
                 .ok_or("Process page table unavailable")?,
-            initial_sp.as_u64(),
-            &[0; 48],
-        )?;
+            user_stack_top,
+            &[],
+            &[],
+            loaded_elf.phdr_vaddr,
+            loaded_elf.phnum,
+            loaded_elf.phentsize,
+            loaded_elf.entry_point,
+            &process.cred,
+        )?);
 
         // Create the main thread with USERSPACE stack top
         crate::serial_println!("manager.create_process [ARM64]: Creating main thread");
@@ -3981,6 +3992,20 @@ impl ProcessManager {
             )?;
         }
 
+        // The no-argument exec path needs the same startup ABI as argv exec,
+        // including the program headers used by the runtime to initialize TLS.
+        let initial_rsp = Self::setup_argv_on_stack(
+            &new_page_table,
+            USER_STACK_TOP,
+            &[],
+            &[],
+            loaded_elf.phdr_vaddr,
+            loaded_elf.phnum,
+            loaded_elf.phentsize,
+            new_entry_point,
+            &self.processes.live_row(&pid).ok_or("Process not found")?.cred,
+        )?;
+
         // For now, we'll use a dummy stack object since we manually mapped the stack
         // In the future, we should refactor stack allocation to support mapping into specific page tables
         let new_stack = crate::memory::stack::allocate_stack_with_privilege(
@@ -4087,7 +4112,7 @@ impl ProcessManager {
 
             // Reset the CPU context for the new program
             thread.context.rip = new_entry_point;
-            thread.context.rsp = new_stack_top.as_u64();
+            thread.context.rsp = initial_rsp;
             thread.context.rflags = 0x202; // Enable interrupts
             thread.stack_top = new_stack_top;
             thread.stack_bottom = stack_bottom;

@@ -538,6 +538,44 @@ pub fn arch_halt_with_interrupts() {
     }
 }
 
+/// Halt a waiting thread until its wake: return at once if the current thread
+/// has left its blocked state, else wait for the next interrupt.
+///
+/// A syscall wait loop checks its blocked state and then halts. With
+/// interrupts enabled between the two, the wake IPI a waker sends while the
+/// thread is still current was taken before the halt, and the halt then lasted
+/// until the next tick (5 ms on x86) with the thread runnable (#1349). The
+/// state is read again here with interrupts masked; an interrupt arriving after
+/// that read ends the halt, through `sti; hlt` on x86 and, on ARM64, a WFI with
+/// IRQs masked, which ends when one is pending and takes it as they unmask.
+pub fn arch_halt_while_blocked() {
+    // SAFETY: interrupts are masked only for the state read, and every path
+    // below unmasks them before returning.
+    unsafe { arch_disable_interrupts() };
+    let blocked = task::scheduler::with_scheduler(|scheduler| {
+        scheduler
+            .current_thread_mut()
+            .is_some_and(|thread| thread.state.is_blocked())
+    })
+    .unwrap_or(false);
+    if !blocked {
+        // SAFETY: every caller would have halted with interrupts enabled.
+        unsafe { arch_enable_interrupts() };
+        return;
+    }
+    // Counted only when the halt happens: a wake that already ended the wait
+    // is not a park.
+    per_cpu::note_wait_loop_park();
+    #[cfg(target_arch = "x86_64")]
+    x86_64::instructions::interrupts::enable_and_hlt();
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: WFI with IRQs masked wakes on a pending interrupt, which the
+    // unmask then takes.
+    unsafe {
+        core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
+    }
+}
+
 /// Read the CPU timestamp counter (raw ticks).
 #[inline(always)]
 pub fn arch_read_timestamp() -> u64 {

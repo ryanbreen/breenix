@@ -34,8 +34,6 @@ pub(crate) mod blocking_io;
 #[cfg(feature = "boot_tests")]
 pub mod blocking_io_oracle;
 pub mod clone;
-#[cfg(target_arch = "x86_64")]
-pub(crate) mod dispatcher;
 pub mod epoll;
 pub mod fifo;
 pub mod fs;

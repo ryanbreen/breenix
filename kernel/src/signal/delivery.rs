@@ -353,6 +353,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // mappings or print before the parent can observe this death.
             // The normal exit worker publishes status and defers reclamation.
             if crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
+                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
                 crate::task::scheduler::terminate_thread(thread_id);
                 return DeliverResult::DeferredExit;
             }
@@ -1351,7 +1352,7 @@ pub fn hold_stopped_thread_on_syscall_return() {
             Some(true) => {
                 crate::per_cpu::preempt_enable();
                 crate::task::scheduler::yield_current();
-                crate::arch_halt_with_interrupts();
+                crate::arch_halt_while_blocked();
                 crate::per_cpu::preempt_disable();
             }
             Some(false) => break,

@@ -51,7 +51,7 @@ fn park(deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
         }
         crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
-        crate::arch_halt_with_interrupts();
+        crate::arch_halt_while_blocked();
         crate::per_cpu::preempt_disable();
     }
     crate::task::scheduler::with_scheduler(|s| {
