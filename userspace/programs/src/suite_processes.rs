@@ -22,7 +22,7 @@ use libbreenix::signal::{
     self, Sigaction, StackT, SA_ONSTACK, SA_RESTART, SIGCHLD, SIGCONT, SIGHUP, SIGKILL, SIGSEGV,
     SIGQUIT, SIGSTOP, SIGTERM, SIGUSR1, SIGUSR2, SIGXCPU, SIGXFSZ, SIG_IGN,
 };
-use libbreenix::suite::{case, case_ms_left, category, check, fail, skip, suite, CaseError, CaseResult, Suite};
+use libbreenix::suite::{case, case_ms_left, category, check, fail, skip, suite, value, CaseError, CaseResult, Suite};
 use libbreenix::syscall::raw;
 use libbreenix::time;
 use libbreenix::types::Fd;
@@ -174,7 +174,9 @@ fn repeat_wait(any_child: bool, caught: bool, delayed: bool) -> CaseResult {
     }
     let count = if delayed { 1 } else { 256 };
     let parent = process::getpid()?.raw() as i32;
+    let mut heap_min_kb = u64::MAX;
     for iteration in 0..count {
+        if iteration % 8 == 0 { heap_min_kb = heap_min_kb.min(kernel_heap_free_kb()?); }
         match process::fork()? {
             ForkResult::Child => {
                 if delayed { wait_until_parked(parent); }
@@ -195,6 +197,7 @@ fn repeat_wait(any_child: bool, caught: bool, delayed: bool) -> CaseResult {
             }
         }
     }
+    if !delayed { value("heap-min-free", heap_min_kb as i64, "kb", None); }
     Ok(())
 }
 
