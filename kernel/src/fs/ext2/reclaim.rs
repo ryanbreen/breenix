@@ -9,15 +9,13 @@ use crate::block::BlockDevice;
 use alloc::collections::BTreeSet;
 use spin::Mutex;
 
-/// Allocations detached and released per batch.
-const BATCH_BLOCKS: usize = 64;
-/// Synchronous shrink amortizes metadata publication over a larger bounded batch.
-const SHRINK_BATCH_BLOCKS: usize = 1024;
+/// Bound one tail snapshot; the caller also budgets staging across orphans.
+pub(super) const BATCH_BLOCKS: usize = 64;
 
 static QUARANTINE: Mutex<BTreeSet<(usize, bool, u32)>> = Mutex::new(BTreeSet::new());
 
 fn device_key<B: BlockDevice + ?Sized>(device: &B) -> usize {
-    device as *const B as *const () as usize
+    device.identity()
 }
 
 pub(super) fn quarantined<B: BlockDevice + ?Sized>(device: &B, inode: bool, number: u32) -> bool {
@@ -36,6 +34,7 @@ pub(super) enum ReclaimError {
 struct Batch {
     tail: TailBatch,
     published: bool,
+    staged_epoch: Option<u64>,
     next: usize,
 }
 
@@ -100,6 +99,72 @@ impl Reclaim {
         }
     }
 
+    /// Stage a bounded tail without freeing any bitmap bit. Multiple orphans
+    /// can share the barrier between this phase and `finish`. Partial failures
+    /// retain the tail and quarantine; a retry stages it again before freeing.
+    pub fn stage(&mut self, fs: &Ext2Fs, ino: u32, budget: &mut usize) -> Result<bool, ReclaimError> {
+        if self.tree_done { return Ok(false); }
+        let key = device_key(fs.device.as_ref());
+        if !self.free_inode {
+            self.inode = fs.read_inode(ino).map_err(|_| ReclaimError::Retry)?;
+        }
+        if self.batch.is_none() {
+            if *budget == 0 { return Ok(false); }
+            let tail = super::file::take_tail_blocks(
+                fs.device.as_ref(),
+                &fs.superblock,
+                self.inode.i_block,
+                BATCH_BLOCKS.min(*budget),
+                self.keep,
+            )
+            .map_err(|_| ReclaimError::Retry)?;
+            *budget -= tail.blocks.len().max(1);
+            let mut quarantine = QUARANTINE.lock();
+            for block in &tail.blocks {
+                quarantine.insert((key, false, *block));
+            }
+            drop(quarantine);
+            self.batch = Some(Batch {
+                tail,
+                published: false,
+                staged_epoch: None,
+                next: 0,
+            });
+        }
+        let Self { inode, batch, .. } = self;
+        let batch = batch.as_mut().expect("reclamation batch staged");
+        let old_pointers = inode.i_block;
+        if !batch.published && batch.staged_epoch.is_none()
+            && (!self.inode_published
+                || !batch.tail.blocks.is_empty()
+                || batch.tail.pointers != old_pointers
+                || !batch.tail.edits.is_empty())
+        {
+            // No bitmap bit is freed until no disk pointer names it.
+            super::file::write_pointer_blocks(
+                fs.device.as_ref(),
+                fs.superblock.block_size(),
+                &batch.tail.edits,
+            )
+            .map_err(|_| ReclaimError::Retry)?;
+            let mut published = *inode;
+            published.i_block = batch.tail.pointers;
+            let sectors = (fs.superblock.block_size() / 512) as u32;
+            published.i_blocks = published
+                .i_blocks
+                .saturating_sub(batch.tail.blocks.len() as u32 * sectors);
+            published
+                .write_to(fs.device.as_ref(), ino, &fs.superblock, &fs.block_groups)
+                .map_err(|_| ReclaimError::Retry)?;
+            // The mount guard excludes barriers during these writes.
+            // Any later successful barrier certifies the whole detachment.
+            batch.staged_epoch = Some(fs.durable_epoch());
+            *inode = published;
+            self.inode_published = true;
+        }
+        Ok(batch.staged_epoch == Some(fs.durable_epoch()) && !batch.published)
+    }
+
     /// Advance reclamation by at most `budget` bitmap transitions. Returns
     /// `Ok(true)` after the suffix counts persist, and for an orphan after its
     /// inode allocation is released as well.
@@ -110,73 +175,18 @@ impl Reclaim {
         budget: &mut usize,
     ) -> Result<bool, ReclaimError> {
         let key = device_key(fs.device.as_ref());
-        if !self.free_inode {
-            // Namespace and timestamp changes may occur while a failed shrink
-            // awaits retry. Preserve them when publishing subsequent batches.
-            self.inode = fs.read_inode(ino).map_err(|_| ReclaimError::Retry)?;
-        }
         while !self.tree_done {
-            if self.batch.is_none() {
-                let tail = super::file::take_tail_blocks(
-                    fs.device.as_ref(),
-                    &fs.superblock,
-                    self.inode.i_block,
-                    if self.free_inode {
-                        BATCH_BLOCKS
-                    } else {
-                        SHRINK_BATCH_BLOCKS
-                    },
-                    self.keep,
-                )
-                .map_err(|_| ReclaimError::Retry)?;
-                let mut quarantine = QUARANTINE.lock();
-                for block in &tail.blocks {
-                    quarantine.insert((key, false, *block));
-                }
-                drop(quarantine);
-                self.batch = Some(Batch {
-                    tail,
-                    published: false,
-                    next: 0,
-                });
-            }
-            let Self {
-                inode,
-                batch,
-                write_attempted,
-                ..
-            } = self;
+            if *budget == 0 { return Ok(false); }
+            let mut staging_budget = BATCH_BLOCKS;
+            self.stage(fs, ino, &mut staging_budget)?;
+            let Self { batch, write_attempted, .. } = self;
             let batch = batch.as_mut().expect("reclamation batch staged");
-            let old_pointers = inode.i_block;
-            if !batch.published
-                && (!self.inode_published
-                    || !batch.tail.blocks.is_empty()
-                    || batch.tail.pointers != old_pointers
-                    || !batch.tail.edits.is_empty())
-            {
-                // No bitmap bit is freed until no disk pointer names it.
-                super::file::write_pointer_blocks(
-                    fs.device.as_ref(),
-                    fs.superblock.block_size(),
-                    &batch.tail.edits,
-                )
-                .map_err(|_| ReclaimError::Retry)?;
-                let mut published = *inode;
-                published.i_block = batch.tail.pointers;
-                let sectors = (fs.superblock.block_size() / 512) as u32;
-                published.i_blocks = published
-                    .i_blocks
-                    .saturating_sub(batch.tail.blocks.len() as u32 * sectors);
-                published
-                    .write_to(fs.device.as_ref(), ino, &fs.superblock, &fs.block_groups)
-                    .map_err(|_| ReclaimError::Retry)?;
-                // A device may reorder cached writes, so the detached
-                // pointers, and the name removal and zero-link inode written
-                // before the handoff, are made durable before any bitmap bit
-                // they guarded can persist as free.
-                fs.device.flush().map_err(|_| ReclaimError::Retry)?;
-                *inode = published;
-                self.inode_published = true;
+            if !batch.published {
+                if batch.staged_epoch == Some(fs.durable_epoch()) {
+                    // Cached writes may reorder. Detachments must be durable
+                    // before the allocation bitmap can expose their blocks.
+                    fs.sync().map_err(|_| ReclaimError::Retry)?;
+                }
                 batch.published = true;
             }
             while let Some(&block) = batch.tail.blocks.get(batch.next) {
@@ -213,8 +223,9 @@ impl Reclaim {
                 quarantine.remove(&(key, false, *block));
             }
             drop(quarantine);
-            self.tree_done = batch.tail.blocks.is_empty();
+            self.tree_done = batch.tail.complete;
             self.batch = None;
+            if !self.tree_done && self.free_inode { return Ok(false); }
         }
         if !self.free_inode {
             // Rebuild from the retained tree rather than preserving historical

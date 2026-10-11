@@ -54,6 +54,9 @@ pub fn disk(index: usize) -> Option<alloc::boxed::Box<dyn BlockDevice>> {
 /// but filesystems may use 1024, 2048, or 4096 byte blocks).
 #[allow(dead_code)] // Part of public block device API, will be used by ext2 filesystem
 pub trait BlockDevice: Send + Sync {
+    /// Stable allocation-quarantine identity, retained by operation-local wrappers.
+    fn identity(&self) -> usize { self as *const Self as *const () as usize }
+
     /// Read a block into the provided buffer
     ///
     /// # Arguments
@@ -102,6 +105,19 @@ pub trait BlockDevice: Send + Sync {
     /// Returns `BlockError::IoError` if the write operation fails
     fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError>;
 
+
+    /// Write consecutive blocks, using one command per sector unless the
+    /// backend supplies a native multi-block implementation.
+    fn write_blocks(&self, start_block: u64, block_count: usize, buf: &[u8]) -> Result<(), BlockError> {
+        let block_size = self.block_size();
+        let byte_count = block_count.checked_mul(block_size).ok_or(BlockError::IoError)?;
+        if buf.len() < byte_count { return Err(BlockError::IoError); }
+        for i in 0..block_count {
+            self.write_block(start_block + i as u64, &buf[i * block_size..(i + 1) * block_size])?;
+        }
+        Ok(())
+    }
+
     /// Get the block size in bytes
     ///
     /// This is the native block size for this device. For raw sector devices,
@@ -131,6 +147,8 @@ pub enum BlockError {
     DeviceNotReady,
     /// Operation timed out
     Timeout,
+    /// Deferred allocation metadata could not be published; inode links must not be published.
+    MetadataPublishFailed,
 }
 
 impl fmt::Display for BlockError {
@@ -140,6 +158,7 @@ impl fmt::Display for BlockError {
             BlockError::OutOfBounds => write!(f, "block number out of bounds"),
             BlockError::DeviceNotReady => write!(f, "device not ready"),
             BlockError::Timeout => write!(f, "operation timed out"),
+            BlockError::MetadataPublishFailed => write!(f, "allocation metadata publication failed"),
         }
     }
 }

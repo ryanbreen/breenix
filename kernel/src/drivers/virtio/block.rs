@@ -182,6 +182,7 @@ struct VirtioBlkReq {
 
 /// Sector size in bytes
 pub const SECTOR_SIZE: usize = 512;
+const DMA_DATA_SIZE: usize = 4096;
 
 /// Cached DMA buffers for I/O operations
 /// These are allocated once and reused to prevent frame exhaustion
@@ -309,6 +310,8 @@ pub struct VirtioBlockDevice {
     /// Disk capacity in sectors
     capacity: u64,
     flush_supported: bool,
+    max_transfer_bytes: usize,
+    writes_pending: AtomicBool,
     /// Number of completed operations (for stats)
     ops_completed: AtomicU64,
     /// Cached DMA buffers (protected by queue mutex)
@@ -401,6 +404,15 @@ impl VirtioBlockDevice {
                 )
             };
 
+        // SIZE_MAX bounds a single data descriptor when negotiated. The cached
+        // DMA buffer is one physically contiguous page on either transport.
+        let size_max = match &device {
+            BlockTransport::Legacy(d) => if d.read_device_features() & features::SIZE_MAX != 0 { d.read_config_u32(8) } else { 0 },
+            BlockTransport::Modern(d) => if d.device_features() & features::SIZE_MAX as u64 != 0 { d.read_config_u32(8) } else { 0 },
+        };
+        let max_transfer_bytes = if size_max == 0 { DMA_DATA_SIZE } else { DMA_DATA_SIZE.min(size_max as usize) } / SECTOR_SIZE * SECTOR_SIZE;
+        if max_transfer_bytes == 0 { return Err("VirtIO maximum segment smaller than a sector"); }
+
         log::info!(
             "VirtIO block: capacity {} sectors ({} MiB)",
             capacity,
@@ -410,7 +422,7 @@ impl VirtioBlockDevice {
         // Pre-allocate DMA buffers for I/O operations
         // These are reused for all read/write operations to prevent frame exhaustion
         let header_buf = Self::alloc_dma_buffer(16)?;
-        let data_buf = Self::alloc_dma_buffer(SECTOR_SIZE)?;
+        let data_buf = Self::alloc_dma_buffer(DMA_DATA_SIZE)?;
         let status_buf = Self::alloc_dma_buffer(1)?;
 
         let dma_buffers = DmaBuffers {
@@ -433,6 +445,8 @@ impl VirtioBlockDevice {
             completed_status: AtomicU32::new(NO_COMPLETED_STATUS),
             capacity,
             flush_supported,
+            max_transfer_bytes,
+            writes_pending: AtomicBool::new(true),
             ops_completed: AtomicU64::new(0),
             dma_buffers,
         })
@@ -561,46 +575,33 @@ impl VirtioBlockDevice {
         Ok((desc as u16, status as u8))
     }
 
-    /// Read multiple contiguous sectors into a buffer.
-    ///
-    /// Buffer size must be a multiple of SECTOR_SIZE (512 bytes).
-    /// This is a simple loop-based implementation that calls read_sector()
-    /// for each sector. While less efficient than scatter-gather, it's
-    /// simple, uses tested code, and provides acceptable performance.
-    #[allow(dead_code)] // Part of public block device API
+    /// Read consecutive sectors in page-sized DMA requests.
     pub fn read_sectors(&self, start_sector: u64, buffer: &mut [u8]) -> Result<(), &'static str> {
-        // Validate buffer size
-        if buffer.is_empty() {
-            return Err("Buffer is empty");
+        self.validate_transfer(start_sector, buffer.len())?;
+        let mut sector = start_sector;
+        for chunk in buffer.chunks_mut(self.max_transfer_bytes) {
+            self.read_chunk(sector, chunk)?;
+            sector += (chunk.len() / SECTOR_SIZE) as u64;
         }
-        if buffer.len() % SECTOR_SIZE != 0 {
-            return Err("Buffer size must be multiple of 512");
+        Ok(())
+    }
+
+    /// Write consecutive sectors in page-sized DMA requests.
+    pub fn write_sectors(&self, start_sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
+        self.validate_transfer(start_sector, buffer.len())?;
+        let mut sector = start_sector;
+        for chunk in buffer.chunks(self.max_transfer_bytes) {
+            self.write_chunk(sector, chunk)?;
+            sector += (chunk.len() / SECTOR_SIZE) as u64;
         }
+        Ok(())
+    }
 
-        // Calculate number of sectors
-        let num_sectors = buffer.len() / SECTOR_SIZE;
-
-        // Check sector range
-        if start_sector >= self.capacity {
-            return Err("Start sector out of range");
+    fn validate_transfer(&self, sector: u64, len: usize) -> Result<(), &'static str> {
+        if len == 0 || len % SECTOR_SIZE != 0 { return Err("Buffer size must be a nonzero multiple of 512"); }
+        if sector.checked_add((len / SECTOR_SIZE) as u64).is_none_or(|end| end > self.capacity) {
+            return Err("Sector out of range");
         }
-        if start_sector
-            .checked_add(num_sectors as u64)
-            .ok_or("Sector overflow")?
-            > self.capacity
-        {
-            return Err("Sector range exceeds disk capacity");
-        }
-
-        // Read each sector
-        for i in 0..num_sectors {
-            let sector = start_sector + i as u64;
-            let offset = i * SECTOR_SIZE;
-            let sector_buffer = &mut buffer[offset..offset + SECTOR_SIZE];
-
-            self.read_sector(sector, sector_buffer)?;
-        }
-
         Ok(())
     }
 
@@ -609,6 +610,11 @@ impl VirtioBlockDevice {
     /// This is an asynchronous operation. The data will be available after
     /// the device signals completion via interrupt.
     pub fn read_sector(&self, sector: u64, buffer: &mut [u8]) -> Result<(), &'static str> {
+        if buffer.len() < SECTOR_SIZE { return Err("Buffer too small"); }
+        self.read_chunk(sector, &mut buffer[..SECTOR_SIZE])
+    }
+
+    fn read_chunk(&self, sector: u64, buffer: &mut [u8]) -> Result<(), &'static str> {
         if buffer.len() < SECTOR_SIZE {
             return Err("Buffer too small");
         }
@@ -642,7 +648,7 @@ impl VirtioBlockDevice {
 
             let buffers = [
                 (header_phys, 16, false),              // Header: device reads
-                (data_phys, SECTOR_SIZE as u32, true), // Data: device writes
+                (data_phys, buffer.len() as u32, true), // Data: device writes
                 (status_phys, 1, true),                // Status: device writes
             ];
 
@@ -680,7 +686,7 @@ impl VirtioBlockDevice {
                 core::ptr::copy_nonoverlapping(
                     data_virt as *const u8,
                     buffer.as_mut_ptr(),
-                    SECTOR_SIZE,
+                    buffer.len(),
                 );
             }
 
@@ -700,6 +706,11 @@ impl VirtioBlockDevice {
     /// Submit a write request
     #[allow(dead_code)] // Part of public block device API
     pub fn write_sector(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
+        if buffer.len() < SECTOR_SIZE { return Err("Buffer too small"); }
+        self.write_chunk(sector, &buffer[..SECTOR_SIZE])
+    }
+
+    fn write_chunk(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
         if buffer.len() < SECTOR_SIZE {
             return Err("Buffer too small");
         }
@@ -725,12 +736,12 @@ impl VirtioBlockDevice {
                 core::ptr::write_volatile(&mut (*header).reserved, 0);
                 core::ptr::write_volatile(&mut (*header).sector, sector);
                 core::ptr::write_volatile(status_virt as *mut u8, 0xff);
-                core::ptr::copy_nonoverlapping(buffer.as_ptr(), data_virt as *mut u8, SECTOR_SIZE);
+                core::ptr::copy_nonoverlapping(buffer.as_ptr(), data_virt as *mut u8, buffer.len());
             }
 
             let buffers = [
                 (header_phys, 16, false),               // Header: device reads
-                (data_phys, SECTOR_SIZE as u32, false), // Data: device reads
+                (data_phys, buffer.len() as u32, false), // Data: device reads
                 (status_phys, 1, true),                 // Status: device writes
             ];
 
@@ -742,6 +753,7 @@ impl VirtioBlockDevice {
         }
 
         core::sync::atomic::fence(Ordering::SeqCst);
+        self.writes_pending.store(true, Ordering::Release);
         self.device.notify_queue(0);
 
         if let Err(e) = self.wait_for_completion(completion_token, request_type::OUT) {
@@ -781,6 +793,8 @@ impl VirtioBlockDevice {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
         let request_guard = self.request_gate.lock()?;
+        // This check uses the request gate shared by write and flush submission.
+        if !self.writes_pending.load(Ordering::Acquire) { return Ok(()); }
         let token = self.prepare_completion_wait();
         let (header_phys, header_virt) = self.dma_buffers.header;
         let (status_phys, status_virt) = self.dma_buffers.status;
@@ -821,6 +835,7 @@ impl VirtioBlockDevice {
         if status != status_code::OK {
             return Err("Device flush failed");
         }
+        self.writes_pending.store(false, Ordering::Release);
         self.ops_completed.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

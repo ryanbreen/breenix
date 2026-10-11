@@ -36,7 +36,7 @@ use crate::memory::{
 };
 use crate::process::{Process, ProcessId, ProcessManager};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::{
@@ -77,11 +77,33 @@ pub(crate) fn sync_range(
 
 pub(crate) fn sync_range_with_buffer(
     handle: &FileHandle,
-    mut first: u64,
+    first: u64,
     last: u64,
     bytes: &mut [u8],
 ) -> Result<(), &'static str> {
-    let mut wrote = false;
+    write_range_with_buffer(handle, first, last, bytes, true)
+}
+
+/// Global sync stages each inode, then flushes once under the mount write guard
+/// before completing their clean candidates. Per-file sync retains its barrier.
+pub(crate) fn stage_range_with_buffer(
+    handle: &FileHandle,
+    first: u64,
+    last: u64,
+    bytes: &mut [u8],
+) -> Result<(), &'static str> {
+    write_range_with_buffer(handle, first, last, bytes, false)
+}
+
+fn write_range_with_buffer(
+    handle: &FileHandle,
+    mut first: u64,
+    last: u64,
+    bytes: &mut [u8],
+    flush: bool,
+) -> Result<(), &'static str> {
+    let _sync = SyncMaps::new(core::slice::from_ref(handle));
+    let range_first = first;
     loop {
         let next = {
             let mut guard = crate::fs::ext2::write_mount(handle.object.mount)?;
@@ -93,19 +115,47 @@ pub(crate) fn sync_range_with_buffer(
                     .object
                     .map
                     .writeback(fs, ino, first, last, WRITEBACK_PAGES, bytes)?;
-            if next.is_none() && !wrote {
-                fs.sync()?;
+            if flush && (next.is_none() || next.is_some_and(|next| next >= last)) {
+                let result = fs.sync();
+                if result.is_err() { handle.object.map.request_writeback(); }
+                result?;
+                handle.object.map.complete_writeback(range_first, last);
             }
             next
         };
         let Some(next) = next else {
             return Ok(());
         };
-        wrote = true;
         if next >= last {
             return Ok(());
         }
         first = next;
+    }
+}
+
+/// A foreground traversal keeps the service from taking an intermediate
+/// barrier between its bounded batches. The last caller restores its wake.
+pub(crate) struct SyncMaps<'a> {
+    handles: &'a [FileHandle],
+}
+
+impl<'a> SyncMaps<'a> {
+    pub(crate) fn new(handles: &'a [FileHandle]) -> Self {
+        for handle in handles {
+            handle.object.map.syncers.fetch_add(1, Ordering::AcqRel);
+        }
+        Self { handles }
+    }
+}
+
+impl Drop for SyncMaps<'_> {
+    fn drop(&mut self) {
+        for handle in self.handles {
+            let map = &handle.object.map;
+            if map.syncers.fetch_sub(1, Ordering::AcqRel) == 1 && map.writeback_pending() {
+                crate::fs::ext2::request_map_eviction();
+            }
+        }
     }
 }
 
@@ -126,6 +176,8 @@ pub struct MapState {
     dirty: AtomicBool,
     writeback_pending: AtomicBool,
     writeback_requests: AtomicU64,
+    disk_epoch: AtomicU64,
+    syncers: AtomicUsize,
 }
 
 #[derive(Debug)]
@@ -320,6 +372,9 @@ struct CachePage {
     frame: PhysFrame,
     dirty: bool,
     gen: u64,
+    /// A snapshot taken with no writable binding, written but not yet flushed.
+    /// Kept on the page so a multi-batch sync needs no growing snapshot list.
+    written_gen: Option<u64>,
 }
 
 impl CachePage {
@@ -329,6 +384,7 @@ impl CachePage {
             frame,
             dirty: false,
             gen: 0,
+            written_gen: None,
         })
     }
 
@@ -510,7 +566,7 @@ impl MapInner {
 }
 
 impl MapState {
-    pub fn new(size: u64) -> Self {
+    pub fn new(size: u64, durable_epoch: u64) -> Self {
         Self {
             inner: Mutex::new(MapInner {
                 mapped_size: size,
@@ -526,7 +582,18 @@ impl MapState {
             dirty: AtomicBool::new(false),
             writeback_pending: AtomicBool::new(false),
             writeback_requests: AtomicU64::new(0),
+            disk_epoch: AtomicU64::new(durable_epoch),
+            syncers: AtomicUsize::new(0),
         }
+    }
+
+    /// Called under the mount write guard before I/O; failures retain custody.
+    pub(crate) fn note_disk_write(&self, epoch: u64) -> u64 {
+        self.disk_epoch.swap(epoch, Ordering::AcqRel)
+    }
+
+    pub(crate) fn restore_disk_epoch(&self, epoch: u64) {
+        self.disk_epoch.store(epoch, Ordering::Release);
     }
 
     fn refresh(&self, inner: &MapInner) {
@@ -591,8 +658,8 @@ impl MapState {
         Ok(())
     }
 
-    /// One bounded snapshot, contiguous writes, then a device flush. Errors
-    /// leave the snapshot dirty. No PTEs are changed here.
+    /// Write one bounded snapshot. The caller flushes the completed traversal
+    /// before clearing dirty custody. No PTEs are changed here.
     pub(crate) fn writeback(
         &self,
         fs: &mut Ext2Fs,
@@ -648,6 +715,12 @@ impl MapState {
         if snapshot.is_empty() {
             return Ok(None);
         }
+        {
+            let mut inner = self.inner.lock();
+            for (index, _, _) in &snapshot {
+                if let Some(page) = inner.pages.get_mut(*index) { page.written_gen = None; }
+            }
+        }
         fs.check_shrink(ino)?;
         let size = fs.read_inode(ino)?.size();
         let mut cursor = 0;
@@ -684,19 +757,32 @@ impl MapState {
                 return Err("Short mapped writeback");
             }
         }
-        fs.sync()?;
         let mut inner = self.inner.lock();
         if writable == 0 && inner.writable_shared == 0 {
             for (index, _, gen) in &snapshot {
                 if let Some(page) = inner.pages.get_mut(*index) {
                     if page.gen == *gen {
-                        page.dirty = false;
+                        page.written_gen = Some(*gen);
                     }
                 }
             }
         }
         self.refresh(&inner);
         Ok(snapshot.last().map(|(index, _, _)| index + 1))
+    }
+
+    /// Called under the mount guard after a successful barrier or an epoch
+    /// check establishing that this snapshot already matches durable bytes.
+    /// A new write fault changes gen. Shared writable mappings retain dirty
+    /// custody because stores can continue without another fault.
+    pub(crate) fn complete_writeback(&self, first: u64, last: u64) {
+        let mut inner = self.inner.lock();
+        if inner.writable_shared == 0 {
+            for (_, page) in inner.pages.entries.iter_mut().filter(|(index, _)| *index >= first && *index < last) {
+                if page.written_gen == Some(page.gen) { page.dirty = false; }
+            }
+        }
+        self.refresh(&inner);
     }
 
     /// The service processes at most the remaining page budget and resumes
@@ -709,7 +795,7 @@ impl MapState {
         ino: u32,
         budget: &mut usize,
     ) -> Result<bool, &'static str> {
-        if !self.writeback_pending() {
+        if !self.writeback_pending() || self.syncers.load(Ordering::Acquire) != 0 {
             return Ok(false);
         }
         if *budget == 0 {
@@ -733,6 +819,15 @@ impl MapState {
         };
         let mut bytes = writeback_buffer()?;
         let next = self.writeback(fs, ino, first, u64::MAX, *budget, &mut bytes)?;
+        if let Some(end) = next {
+            // An identical snapshot of already durable bytes must not flush
+            // pending writes belonging to another inode. Mount guards serialize
+            // the epoch check with writes and successful barriers.
+            if self.disk_epoch.load(Ordering::Acquire) == fs.durable_epoch() {
+                fs.sync()?;
+            }
+            self.complete_writeback(first, end);
+        }
         *budget -= count;
         let mut inner = self.inner.lock();
         let next = next.unwrap_or(u64::MAX);

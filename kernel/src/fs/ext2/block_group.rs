@@ -146,22 +146,8 @@ impl Ext2BlockGroupDesc {
             buffer[offset..offset + descriptor_size].copy_from_slice(desc_bytes);
         }
 
-        // Write the buffer back to device
-        for i in 0..ext2_blocks_needed {
-            let ext2_block_num = bgdt_block + i;
-
-            // Convert ext2 block to device block(s)
-            let device_blocks_per_ext2_block = block_size / device_block_size;
-            let start_device_block = ext2_block_num * device_blocks_per_ext2_block;
-
-            for j in 0..device_blocks_per_ext2_block {
-                device.write_block(
-                    (start_device_block + j) as u64,
-                    &buffer[(i * block_size + j * device_block_size)
-                        ..(i * block_size + (j + 1) * device_block_size)],
-                )?;
-            }
-        }
+        let sectors = buffer.len() / device_block_size;
+        device.write_blocks((bgdt_block * block_size / device_block_size) as u64, sectors, &buffer)?;
 
         Ok(())
     }
@@ -184,6 +170,25 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
     device: &B,
     superblock: &Ext2Superblock,
     block_groups: &mut [Ext2BlockGroupDesc],
+) -> Result<u32, &'static str> {
+    allocate_block_inner(device, superblock, block_groups, true)
+}
+
+/// The caller initializes the full block before linking this data block, and
+/// releases it if initialization fails. Indirect blocks still use zeroing.
+pub(super) fn allocate_data_block<B: BlockDevice + ?Sized>(
+    device: &B,
+    superblock: &Ext2Superblock,
+    block_groups: &mut [Ext2BlockGroupDesc],
+) -> Result<u32, &'static str> {
+    allocate_block_inner(device, superblock, block_groups, false)
+}
+
+fn allocate_block_inner<B: BlockDevice + ?Sized>(
+    device: &B,
+    superblock: &Ext2Superblock,
+    block_groups: &mut [Ext2BlockGroupDesc],
+    zero: bool,
 ) -> Result<u32, &'static str> {
     let block_size = superblock.block_size();
     let blocks_per_group = superblock.s_blocks_per_group;
@@ -248,24 +253,26 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
                     );
                 }
 
-                // Zero out the newly allocated block. Nothing references it
-                // yet, so a failure hands the block back to the bitmap.
-                let zero_buf = [0u8; 4096]; // Max block size
-                if let Err(_) =
-                    write_ext2_block(device, global_block, block_size, &zero_buf[..block_size])
-                {
-                    bitmap_buf[byte_index] &= !(1 << bit_index);
-                    if write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
-                        .is_ok()
+                if zero {
+                    // Zero out the newly allocated block. Nothing references it
+                    // yet, so a failure hands the block back to the bitmap.
+                    let zero_buf = [0u8; 4096]; // Max block size
+                    if let Err(_) =
+                        write_ext2_block(device, global_block, block_size, &zero_buf[..block_size])
                     {
-                        unsafe {
-                            core::ptr::write_unaligned(
-                                core::ptr::addr_of_mut!(bg.bg_free_blocks_count),
-                                free_blocks,
-                            );
+                        bitmap_buf[byte_index] &= !(1 << bit_index);
+                        if write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
+                            .is_ok()
+                        {
+                            unsafe {
+                                core::ptr::write_unaligned(
+                                    core::ptr::addr_of_mut!(bg.bg_free_blocks_count),
+                                    free_blocks,
+                                );
+                            }
                         }
+                        return Err("Failed to zero allocated block");
                     }
-                    return Err("Failed to zero allocated block");
                 }
 
                 return Ok(global_block);

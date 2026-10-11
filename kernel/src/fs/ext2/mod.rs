@@ -69,7 +69,7 @@ pub struct Ext2Fs {
     pub mount_id: usize,
     pub mount_pin: live_inode::MountPin,
     live_inodes: live_inode::LiveInodes,
-    orphan_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
+    orphan_reclaims: alloc::collections::BTreeMap<u32, Option<reclaim::Reclaim>>,
     finalization_cursor: u32,
     /// The last inode the cache service reached with budget left; the next
     /// pass starts after it.
@@ -178,10 +178,8 @@ impl Ext2Fs {
         self.live_inodes.pin(self.mount_pin, inode_num, size)
     }
 
-    /// Advance queued orphans whose last observer has left, within one budget
-    /// of bitmap transitions, so the write guard is released between passes
-    /// however large the orphans are.
-    fn finalize_inactive(&mut self) -> Finalize {
+    /// Service mapped data and failed shrinks before the orphan commit window.
+    fn finalize_writeback(&mut self) -> Finalize {
         let mut budget = RECLAIM_BUDGET;
         let mut outcome = self.finalize_shrinks(&mut budget);
         let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
@@ -208,27 +206,78 @@ impl Ext2Fs {
         if evictions.len() == live_inode::EVICTION_BATCH && self.live_inodes.evictions_pending() {
             outcome = outcome.merge(Finalize::More);
         }
-        for object in self.live_inodes.pending(self.finalization_cursor) {
+        outcome
+    }
+
+    /// Orphan passes stage at most 128 blocks in tails of at most 64 blocks,
+    /// visit at most 32 inodes, and release at most 128 bitmap allocations.
+    fn finalize_pending_orphans(&mut self) -> Finalize {
+        let mut budget = RECLAIM_BUDGET;
+        let objects = self.live_inodes.pending(self.finalization_cursor);
+        let mut outcome = self.finalize_orphans(&objects, &mut budget);
+        if matches!(outcome, Finalize::Idle)
+            && !self.live_inodes.pending(self.finalization_cursor).is_empty()
+        {
+            outcome = Finalize::More;
+        }
+        outcome
+    }
+
+    /// Advance only this captured cohort, preserving the transition budget.
+    fn finalize_orphans(
+        &mut self,
+        objects: &[alloc::sync::Arc<live_inode::LiveInode>],
+        budget: &mut usize,
+    ) -> Finalize {
+        if *budget == 0 { return Finalize::More; }
+        let mut outcome = Finalize::Idle;
+        let mut ready = Vec::new();
+        if ready.try_reserve_exact(objects.len().min(32)).is_err() {
+            return Finalize::Retry;
+        }
+        let mut barrier = false;
+        let mut staging_budget = RECLAIM_BUDGET;
+        let mut visited = 0;
+        for object in objects {
+            if !self.live_inodes.is_pending(object) { continue; }
+            if staging_budget == 0 || visited == 32 {
+                outcome = outcome.merge(Finalize::More);
+                break;
+            }
+            visited += 1;
+            match self.stage_orphan(object, &mut staging_budget) {
+                Ok(needs_barrier) => {
+                    barrier |= needs_barrier;
+                    ready.push(object.clone());
+                }
+                Err(reclaim::ReclaimError::Retry) => outcome = Finalize::Retry,
+                Err(reclaim::ReclaimError::Abandon(reason)) => {
+                    log::warn!("ext2: leaving orphan inode {} allocated: {}", object.key.inode, reason);
+                    self.orphan_reclaims.remove(&object.key.inode);
+                    self.live_inodes.remove(object);
+                }
+            }
+        }
+        if barrier && self.sync().is_err() {
+            // No staged orphan may expose a free bit after a failed barrier.
+            return Finalize::Retry;
+        }
+        for object in ready {
             if !object.unused() {
                 continue;
             }
-            if budget == 0 {
+            if *budget == 0 {
                 return outcome.merge(Finalize::More);
             }
             self.finalization_cursor = object.key.inode;
-            match self.reclaim_orphan(&object, &mut budget) {
+            match self.reclaim_orphan(&object, budget) {
                 Ok(true) | Err(reclaim::ReclaimError::Abandon(_)) => {}
                 Ok(false) => return outcome.merge(Finalize::More),
                 Err(reclaim::ReclaimError::Retry) => outcome = Finalize::Retry,
             }
         }
-        if matches!(outcome, Finalize::Idle)
-            && !self
-                .live_inodes
-                .pending(self.finalization_cursor)
-                .is_empty()
-        {
-            return outcome.merge(Finalize::More);
+        if objects.iter().any(|object| self.live_inodes.is_pending(object)) {
+            outcome = outcome.merge(Finalize::More);
         }
         outcome
     }
@@ -256,6 +305,27 @@ impl Ext2Fs {
         outcome
     }
 
+    /// Retain each detachment until the shared barrier and bitmap phase finish.
+    fn stage_orphan(
+        &mut self,
+        object: &alloc::sync::Arc<live_inode::LiveInode>,
+        budget: &mut usize,
+    ) -> Result<bool, reclaim::ReclaimError> {
+        let ino = object.key.inode;
+        if self.shrink_reclaims.contains_key(&ino) {
+            return Err(reclaim::ReclaimError::Retry);
+        }
+        // Allocate the custody slot before staging can modify disk pointers.
+        self.orphan_reclaims.entry(ino).or_insert(None);
+        let mut progress = match self.orphan_reclaims.get_mut(&ino).and_then(Option::take) {
+            Some(progress) => progress,
+            None => reclaim::Reclaim::prepare(self, ino)?,
+        };
+        let result = progress.stage(self, ino, budget);
+        *self.orphan_reclaims.get_mut(&ino).expect("reserved orphan custody") = Some(progress);
+        result
+    }
+
     /// Release an unobserved orphan's blocks and inode under the write guard,
     /// spending at most `budget` bitmap transitions. Returns `Ok(false)` when
     /// the budget ran out first; that and a retryable failure keep the staged
@@ -269,19 +339,23 @@ impl Ext2Fs {
         if self.shrink_reclaims.contains_key(&ino) {
             return Err(reclaim::ReclaimError::Retry);
         }
-        let prepared = match self.orphan_reclaims.remove(&ino) {
+        self.orphan_reclaims.entry(ino).or_insert(None);
+        let prepared = match self.orphan_reclaims.get_mut(&ino).and_then(Option::take) {
             Some(progress) => Ok(progress),
             None => reclaim::Reclaim::prepare(self, ino),
         };
         let result = prepared.and_then(|mut progress| {
             let result = progress.finish(self, ino, budget);
             if !matches!(result, Ok(true)) {
-                self.orphan_reclaims.insert(ino, progress);
+                *self.orphan_reclaims.get_mut(&ino).expect("reserved orphan custody") = Some(progress);
             }
             result
         });
         match &result {
-            Ok(true) => self.live_inodes.remove(object),
+            Ok(true) => {
+                self.orphan_reclaims.remove(&ino);
+                self.live_inodes.remove(object);
+            }
             Err(reclaim::ReclaimError::Abandon(reason)) => {
                 // The inode stays allocated on disk; stop retrying it.
                 log::warn!("ext2: leaving orphan inode {} allocated: {}", ino, reason);
@@ -540,7 +614,7 @@ impl Ext2Fs {
         offset: u64,
         bytes: &[u8],
     ) -> Result<usize, &'static str> {
-        self.write_file_range_disk(ino, offset, bytes, true)
+        self.write_file_range_disk(ino, offset, bytes, true, true)
     }
 
     /// Write data to a file at the specified offset
@@ -573,7 +647,7 @@ impl Ext2Fs {
         if let Some(object) = &mapped {
             object.map.prepare_write(offset, data.len())?;
         }
-        let result = self.write_file_range_disk(inode_num, offset, data, unprivileged);
+        let result = self.write_file_range_disk(inode_num, offset, data, unprivileged, false);
         if let Some(object) = mapped {
             object.map.transition(object.size.load(Ordering::Acquire));
             match result {
@@ -591,6 +665,7 @@ impl Ext2Fs {
         offset: u64,
         data: &[u8],
         unprivileged: bool,
+        mapped: bool,
     ) -> Result<usize, &'static str> {
         self.check_shrink(inode_num)?;
         if data.is_empty() {
@@ -612,6 +687,8 @@ impl Ext2Fs {
             return Err("Not a regular file");
         }
 
+        let mode_before = inode.i_mode;
+        let times_before = (inode.i_mtime, inode.i_ctime);
         if unprivileged {
             let kill = 0o4000 | if inode.i_mode & 0o0010 != 0 { 0o2000 } else { 0 };
             inode.i_mode &= !kill;
@@ -624,21 +701,33 @@ impl Ext2Fs {
             .iter()
             .map(|group| group.bg_free_blocks_count as u32)
             .sum();
-        let written = write_file_range(
+        let object = self.live_inodes.get(inode_num);
+        let previous_epoch = object.as_ref().map(|object| object.map.note_disk_write(self.durable_epoch()));
+        let written = if mapped { file::write_mapped_file_range(
             self.device.as_ref(),
             &mut inode,
             &self.superblock,
             &mut self.block_groups,
             offset,
             data,
-        );
+        ) } else {
+            file::write_file_range_tracked(self.device.as_ref(), &mut inode, &self.superblock,
+                &mut self.block_groups, offset, data)
+        };
+        if written == Err(crate::block::BlockError::MetadataPublishFailed) {
+            // The bitmap may have landed only in part. Do not publish inode
+            // pointers or build another allocation on an uncertain bitmap.
+            self.fail_writes();
+            return Err("Failed to publish allocation metadata");
+        }
         let free_after: u32 = self
             .block_groups
             .iter()
             .map(|group| group.bg_free_blocks_count as u32)
             .sum();
         let mut persisted = Ok(());
-        if free_before != free_after || self.superblock.s_free_blocks_count != free_after {
+        let counts_changed = free_before != free_after || self.superblock.s_free_blocks_count != free_after;
+        if counts_changed {
             self.superblock.s_free_blocks_count = free_after;
             persisted = self
                 .superblock
@@ -666,10 +755,17 @@ impl Ext2Fs {
                 &self.block_groups,
             )
             .map_err(|_| "Failed to write inode");
-        written.map_err(|_| "Failed to write file data")?;
+        let changed = written.map_err(|_| "Failed to write file data")?;
         persisted?;
         linked?;
 
+        if !changed && mode_before == inode.i_mode
+            && times_before == (inode.i_mtime, inode.i_ctime) && !counts_changed
+        {
+            if let (Some(object), Some(epoch)) = (object, previous_epoch) {
+                object.map.restore_disk_epoch(epoch);
+            }
+        }
         self.live_inodes.publish_size(inode_num, inode.size());
         Ok(data.len())
     }
@@ -680,6 +776,13 @@ impl Ext2Fs {
     /// * `inode_num` - The inode number to write
     /// * `inode` - The modified inode data
     pub fn write_inode(&mut self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
+        if let Some(object) = self.live_inodes.get(inode_num) {
+            object.map.note_disk_write(self.durable_epoch());
+        }
+        self.write_inode_disk(inode_num, inode)
+    }
+
+    fn write_inode_disk(&self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
         inode
             .write_to(
                 self.device.as_ref(),
@@ -792,9 +895,13 @@ impl Ext2Fs {
 
     /// Synchronize this filesystem's synchronous data and metadata writes.
     pub fn sync(&self) -> Result<(), &'static str> {
-        self.device
-            .flush()
-            .map_err(|_| "Failed to flush filesystem")
+        self.device.flush().map_err(|_| "Failed to flush filesystem")?;
+        self.live_inodes.record_durable();
+        Ok(())
+    }
+
+    pub(crate) fn durable_epoch(&self) -> u64 {
+        self.live_inodes.durable_epoch()
     }
 
     /// Bound addressing by the sector counter and LARGE_FILE feature.
@@ -897,7 +1004,9 @@ impl Ext2Fs {
         let now = crate::time::current_unix_time() as u32;
         if inode.needs_atime_update() {
             inode.i_atime = now;
-            self.write_inode(inode_num, &inode)?;
+            // Relatime changes no mapped bytes or addressing. It must not
+            // invalidate a snapshot's existing data durability certificate.
+            self.write_inode_disk(inode_num, &inode)?;
         }
         Ok(())
     }
@@ -985,25 +1094,10 @@ impl Ext2Fs {
         )?;
         if links == 0 {
             handle.object.orphan.store(true, Ordering::Release);
-            // With no descriptor observing it, reclaim the inode now under
-            // this guard; otherwise its last observer queues it on close.
-            // A large orphan's remainder, or a retryable failure, goes to
-            // the finalizer so unlink holds the guard for one budget only.
-            match handle.release_sole() {
-                Ok(object) => {
-                    let mut budget = RECLAIM_BUDGET;
-                    if matches!(
-                        self.reclaim_orphan(&object, &mut budget),
-                        Ok(false) | Err(reclaim::ReclaimError::Retry)
-                    ) {
-                        object.defer();
-                    }
-                }
-                Err(handle) => drop(handle),
-            }
-        } else {
-            drop(handle);
+            // The last observer queues reclamation; writers settle pending
+            // allocations under space pressure before trying new allocation.
         }
+        drop(handle);
 
         log::debug!("ext2: unlinked {} (inode {})", path, target_inode_num);
         Ok(())
@@ -2620,7 +2714,65 @@ fn fs_write_raw(home: bool) -> Ext2WriteGuard {
 }
 
 fn fs_write(home: bool) -> Ext2WriteGuard {
-    fs_write_raw(home)
+    let guard = fs_write_raw(home);
+    let pressure = guard.as_ref().is_some_and(|fs| {
+        let stats = fs.statfs();
+        stats.free_blocks <= (stats.blocks / 16).max(RECLAIM_BUDGET as u64)
+            || stats.free_inodes <= 32
+    });
+    if pressure {
+        drop(guard);
+        // Last-observer reclamation must not turn rm followed by allocation
+        // into ENOSPC solely because the background service has not run yet.
+        if let Ok(guard) = accounting_fs_write(home) { return guard; }
+        // Failed I/O keeps allocations quarantined; normal operations report
+        // their own errors rather than exposing those allocations for reuse.
+        fs_write_raw(home)
+    } else {
+        guard
+    }
+}
+
+/// Settle the orphan cohort present at an allocation-counter observation.
+/// Later removals do not extend this operation. Each pass keeps the normal
+/// bitmap-transition budget, and pauses happen without the mount guard.
+/// The returned guard excludes reclamation while counters and their disk
+/// counterparts are read. I/O errors retain custody and reach the reader.
+pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
+    let mut guard = fs_write_raw(home);
+    let pin = guard.as_ref().map(|fs| fs.mount_pin);
+    let objects = guard.as_ref().map(|fs| fs.live_inodes.pending_snapshot())
+        .transpose()?.unwrap_or_default();
+    let mut cohort_at = 0;
+    loop {
+        let cohort_end = (cohort_at + 32).min(objects.len());
+        let result = if let Some(fs) = guard.as_mut() {
+            if let Some(pin) = pin { pin.verify(fs)?; }
+            let mut budget = RECLAIM_BUDGET;
+            fs.finalize_orphans(&objects[cohort_at..cohort_end], &mut budget)
+        } else {
+            if pin.is_some() { return Err("ext2 mount changed during accounting"); }
+            Finalize::Idle
+        };
+        match result {
+            Finalize::Idle if cohort_end == objects.len() => return Ok(guard),
+            Finalize::Idle => {
+                cohort_at = cohort_end;
+                drop(guard);
+                writeback::pause(1_000_000);
+                guard = fs_write_raw(home);
+            }
+            Finalize::Retry => {
+                writeback::request();
+                return Err("Failed to settle ext2 allocation counters");
+            }
+            Finalize::More => {
+                drop(guard);
+                writeback::pause(1_000_000);
+                guard = fs_write_raw(home);
+            }
+        }
+    }
 }
 
 /// Check if the root filesystem is mounted

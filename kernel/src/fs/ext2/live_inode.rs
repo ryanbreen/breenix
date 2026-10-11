@@ -66,7 +66,7 @@ impl LiveInode {
     /// Queue this orphan for the finalizer service.
     pub(super) fn defer(&self) {
         self.pending.store(true, Ordering::Release);
-        super::writeback::request();
+        super::writeback::request_orphan();
     }
 
     pub(super) fn publish_size(&self, size: u64) {
@@ -172,16 +172,27 @@ impl Table {
 
 pub(super) struct LiveInodes {
     table: Mutex<Table>,
+    durable_epoch: AtomicU64,
 }
 
 impl LiveInodes {
     pub fn new() -> Self {
         Self {
+            durable_epoch: AtomicU64::new(0),
             table: Mutex::new(Table {
                 objects: BTreeMap::new(),
                 prune_cursor: 0,
             }),
         }
+    }
+
+    pub fn durable_epoch(&self) -> u64 {
+        self.durable_epoch.load(Ordering::Acquire)
+    }
+
+    /// All preceding writes are durable after a successful mount barrier.
+    pub fn record_durable(&self) {
+        self.durable_epoch.fetch_add(1, Ordering::Release);
     }
 
     /// Caller holds the selected filesystem guard through path lookup and pin.
@@ -206,7 +217,7 @@ impl LiveInodes {
                 mount,
                 size: AtomicU64::new(size),
                 size_epoch: AtomicU64::new(0),
-                map: crate::memory::file_map::MapState::new(size),
+                map: crate::memory::file_map::MapState::new(size, self.durable_epoch()),
                 external_handles: AtomicUsize::new(0),
                 pending: AtomicBool::new(false),
                 orphan: AtomicBool::new(false),
@@ -306,6 +317,26 @@ impl LiveInodes {
             .take(32)
             .cloned()
             .collect()
+    }
+
+    /// Capture the current cohort for a settled accounting observation.
+    /// Reserve the table's upper bound while locked: last-handle drops can
+    /// publish pending flags without taking this lock.
+    pub fn pending_snapshot(&self) -> Result<alloc::vec::Vec<Arc<LiveInode>>, &'static str> {
+        let table = self.table.lock();
+        let mut objects = alloc::vec::Vec::new();
+        objects.try_reserve(table.objects.len()).map_err(|_| "No memory for ext2 accounting")?;
+        objects.extend(table.objects.values()
+            .filter(|object| object.unused() && object.pending.load(Ordering::Acquire))
+            .cloned());
+        Ok(objects)
+    }
+
+    /// A captured Arc may outlive completed reclamation and inode reuse.
+    pub fn is_pending(&self, object: &Arc<LiveInode>) -> bool {
+        object.unused() && object.pending.load(Ordering::Acquire)
+            && self.table.lock().objects.get(&object.key.inode)
+                .is_some_and(|entry| Arc::ptr_eq(entry, object))
     }
 
     pub fn remove(&self, object: &Arc<LiveInode>) {
