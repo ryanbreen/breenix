@@ -511,10 +511,7 @@ fn sys_exit_aarch64(
         // This call first pivots to the neutral per-CPU scheduler stack. Its
         // trampoline marks this thread Terminated only after that pivot and
         // immediately dispatches a successor.
-        super::context_switch::schedule_terminated_from_exit(
-            thread_id,
-            if report_exit { None } else { pid_for_log },
-        );
+        super::context_switch::schedule_terminated_from_exit(thread_id);
     }
 
     panic!("AArch64 sys_exit invoked without a current scheduler thread");

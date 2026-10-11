@@ -988,13 +988,7 @@ impl ProcessScheduler {
                         } else {
                             #[cfg(target_arch = "aarch64")]
                             let receipt =
-                                if let Some(reclaim) = if exit_code < 0 {
-                                    // Fatal exits retain an epoch-fenced receipt even
-                                    // after the syscall has left its userspace root.
-                                    Some(defer_process_resources(process))
-                                } else {
-                                    defer_live_process_resources(process)
-                                } {
+                                if let Some(reclaim) = defer_live_process_resources(process) {
                                     drop(process.stack.take());
                                     Some(crate::process::RetirementReceipt::from_reclaim(reclaim))
                                 } else {
@@ -1274,13 +1268,6 @@ pub fn drain_deferred_fault_sigsegv_exits() {
         .flatten();
         if let Some(pid) = pid {
             crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
-            #[cfg(target_arch = "x86_64")]
-            {
-                scheduler::with_scheduler(|scheduler| scheduler.terminate_process_threads(pid.as_u64()));
-                scheduler::Scheduler::send_exit_expedite_sgi(
-                    pid.as_u64(), scheduler::GroupBatchId::for_single_victim(pid.as_u64()),
-                );
-            }
         }
         ProcessScheduler::handle_thread_exit(tid, exit_code);
     }
@@ -1298,13 +1285,6 @@ pub fn drain_deferred_fault_sigsegv_exits() {
             .flatten();
             if let Some(pid) = pid {
                 crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
-                #[cfg(target_arch = "x86_64")]
-                {
-                    scheduler::with_scheduler(|scheduler| scheduler.terminate_process_threads(pid.as_u64()));
-                    scheduler::Scheduler::send_exit_expedite_sgi(
-                        pid.as_u64(), scheduler::GroupBatchId::for_single_victim(pid.as_u64()),
-                    );
-                }
             }
             ProcessScheduler::handle_thread_exit(tid, exit_code);
         }

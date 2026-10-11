@@ -77,6 +77,10 @@ pub fn sys_clone_thread(
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
 
+    if flags & CLONE_THREAD != 0 && flags & CLONE_SIGHAND == 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+
     if child_stack == 0 || fn_ptr == 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }

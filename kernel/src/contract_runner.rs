@@ -224,8 +224,8 @@ pub fn test_all_processes() -> (usize, usize) {
         None => None,
     };
 
-    // Try to get process manager (try_manager returns Option<MutexGuard<Option<ProcessManager>>>)
-    if let Some(manager_guard) = crate::process::try_manager() {
+    {
+        let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
             let processes = manager.all_processes();
             let process_count = processes.len();
@@ -298,9 +298,6 @@ pub fn test_all_processes() -> (usize, usize) {
             log::error!("  [FAIL] Process manager not initialized");
             failed += 1;
         }
-    } else {
-        log::error!("  [FAIL] Process manager not available (locked)");
-        failed += 1;
     }
 
     (passed, failed)

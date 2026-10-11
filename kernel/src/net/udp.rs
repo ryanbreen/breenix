@@ -117,19 +117,33 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
         payload.len()
     );
 
-    // The binding belongs to the socket, not the PID that called bind. A
-    // parent closing its descriptor after fork must not strand the child's
-    // receive queue. Weak lookup avoids keeping closed sockets alive.
+    // The registry identifies the socket, rather than a descriptor's original
+    // PID: fork/dup may leave the only descriptor in another process. Borrow
+    // under PM so close cannot drop the last reference on this IRQ path.
     if let Some(Some((_, handle))) = crate::socket::SOCKET_REGISTRY.try_lookup_udp(header.dst_port) {
-        if let Some(endpoint) = crate::socket::SOCKET_REGISTRY.try_udp_endpoint(header.dst_port) {
-            if let Some(socket) = endpoint.try_lock() {
-                if socket.handle != handle { return; }
-                socket.enqueue_packet(crate::socket::udp::UdpPacket {
-                    src_addr: ip.src_ip,
-                    src_port: header.src_port,
-                    data: payload.to_vec(),
-                });
-            };
-        }
+        crate::process::with_process_manager(|manager| {
+            for (_, process) in manager.iter_processes() {
+                for fd in 0..crate::ipc::fd::MAX_FDS {
+                    let Some(entry) = process.fd_table.get(fd as i32) else { continue };
+                    if let crate::ipc::fd::FdKind::UdpSocket(endpoint) = &entry.kind {
+                        let delivered = crate::socket::udp::with_locked_masked(endpoint, |socket| {
+                            if socket.handle == handle {
+                                socket.enqueue_packet(crate::socket::udp::UdpPacket {
+                                    src_addr: ip.src_ip,
+                                    src_port: header.src_port,
+                                    data: payload.to_vec(),
+                                });
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                        if delivered {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
     }
 }

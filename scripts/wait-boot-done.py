@@ -39,9 +39,13 @@ def completion(serial, mode, suite):
         for line in lines:
             if re.search(r"\bSKIP\b", line):
                 return False, f"skipped test: {line}"
-            loaded = re.fullmatch(r"\[test\] Loaded (\d+)/(\d+) test binaries \((\d+) failed, (\d+) not found\)", line)
-            if loaded and (loaded[1] != loaded[2] or int(loaded[3]) or int(loaded[4])):
-                return False, f"unloaded test programs: {line}"
+        loaded_lines = [line for line in lines if line.startswith("[test] Loaded ")
+                        and "test binaries" in line]
+        if len(loaded_lines) != 1:
+            return False, "expected exactly one test-binary loader summary"
+        loaded = re.fullmatch(r"\[test\] Loaded (\d+)/(\d+) test binaries \((\d+) failed, (\d+) not found\)", loaded_lines[0])
+        if not loaded or tuple(map(int, loaded.groups())) != (len(canonical), len(canonical), 0, 0):
+            return False, f"unloaded test programs: {loaded_lines[0]}"
         for line in tally:
             failures = re.search(r"failed=\[(.*?)\]", line)
             if failures:

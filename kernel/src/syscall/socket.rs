@@ -299,7 +299,6 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                         socket.bind(pid, addr.addr, addr.port_host())
                     }) {
                         Ok(actual_port) => {
-                            crate::socket::SOCKET_REGISTRY.register_udp_endpoint(actual_port, &socket_ref);
                             log::info!(
                                 "UDP socket bound to port {} (requested: {})",
                                 actual_port,

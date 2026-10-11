@@ -7,7 +7,7 @@ pub mod udp;
 pub mod unix;
 
 use alloc::collections::BTreeMap;
-use alloc::sync::{Arc, Weak};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
@@ -60,8 +60,6 @@ pub fn udp_ports_lookup_refused() -> u64 {
 pub struct SocketRegistry {
     /// UDP port bindings: port -> (pid, socket_handle)
     udp_ports: spin::Mutex<alloc::collections::BTreeMap<u16, (ProcessId, SocketHandle)>>,
-    /// Weak endpoints follow a socket across fork/dup and do not keep it open.
-    udp_endpoints: Mutex<BTreeMap<u16, Weak<Mutex<udp::UdpSocket>>>>,
     /// Next ephemeral port to try (simple rotating counter)
     next_ephemeral: spin::Mutex<u16>,
 }
@@ -72,7 +70,6 @@ impl SocketRegistry {
         SocketRegistry {
             udp_ports: spin::Mutex::new(alloc::collections::BTreeMap::new()),
             next_ephemeral: spin::Mutex::new(EPHEMERAL_PORT_START),
-            udp_endpoints: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -155,26 +152,12 @@ impl SocketRegistry {
         })
     }
 
-    /// Publish the bound endpoint while the descriptor keeps it alive.
-    pub fn register_udp_endpoint(&self, port: u16, socket: &Arc<Mutex<udp::UdpSocket>>) {
-        crate::arch_without_interrupts(|| {
-            self.udp_endpoints.lock().insert(port, Arc::downgrade(socket));
-        });
-    }
-
-    /// IRQ delivery never waits on a registry writer and never consults a PID.
-    pub fn try_udp_endpoint(&self, port: u16) -> Option<Arc<Mutex<udp::UdpSocket>>> {
-        let endpoints = self.udp_endpoints.try_lock()?;
-        endpoints.get(&port)?.upgrade()
-    }
-
     /// Unbind a UDP port.
     /// #908: UdpSocket::Drop reaches this through both masked Process::terminate
     /// and unmasked close_extracted_fds; masking here protects both callers.
     pub fn unbind_udp(&self, port: u16) {
         self.with_udp_ports_masked(|ports| {
             ports.remove(&port);
-            self.udp_endpoints.lock().remove(&port);
         });
     }
 

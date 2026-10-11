@@ -5,6 +5,8 @@ Run directly or with unittest discovery; guest behavior is checked by real boots
 """
 
 import json
+import re
+import runpy
 from pathlib import Path
 import signal
 import subprocess
@@ -20,6 +22,10 @@ CASES = [f"{category['id']}/{case['id']}" for category in MANIFEST["categories"]
 RECORDING = (f"SUITE directories START cases={len(CASES)}\n" +
              "".join(f"SUITE directories CASE {case} PASS ms=0\n" for case in CASES) +
              f"SUITE directories DONE passed={len(CASES)} failed=0 skipped=0 total={len(CASES)}\n").encode()
+
+CANONICAL_COUNT = len(re.findall(r'^    "([^"]+)",',
+    (ROOT / "kernel/src/boot/test_list.rs").read_text(), re.MULTILINE))
+LOADER = f"[test] Loaded {CANONICAL_COUNT}/{CANONICAL_COUNT} test binaries (0 failed, 0 not found)\n".encode()
 
 # The stand-in writes serial in pieces and can append a separate late record.
 # Its TERM handler writes a sentinel so each test checks that it was reaped.
@@ -53,6 +59,8 @@ class SuiteWatcherTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             source, serial, stopped, late_source = (directory / name for name in ("source", "serial", "stopped", "late"))
+            if mode == "tests" and b"[test] Loaded " not in data:
+                data = LOADER + data
             source.write_bytes(data)
             late_source.write_bytes(late)
             started = time.monotonic()
@@ -176,10 +184,10 @@ class SuiteWatcherTest(unittest.TestCase):
             self.assertIn("UTC clock FAIL", result.stdout)
 
     def test_testing_completion_rejects_a_failed_canonical_program(self):
-        data = b"TEST_TALLY: exited=2 nonzero=1 failed=[identity_musl_test:1] started=2\nUSERSPACE TEST REPORT DONE\n"
+        data = b"TEST_TALLY: exited=2 nonzero=1 failed=[clonevm_exec_test:1] started=2\nUSERSPACE TEST REPORT DONE\n"
         result, _ = self.replay(data, mode="tests")
         self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertIn("canonical test failed: identity_musl_test:1", result.stdout)
+        self.assertIn("canonical test failed: clonevm_exec_test:1", result.stdout)
 
     def test_testing_completion_rejects_unknown_child_exit(self):
         data = b"TEST_TALLY: exited=2 nonzero=1 failed=[dns_test_child_18:-9] started=2\nUSERSPACE TEST REPORT DONE\n"
@@ -202,6 +210,16 @@ class SuiteWatcherTest(unittest.TestCase):
                      b"[test] Loaded 73/78 test binaries (0 failed, 5 not found)\n"):
             result, _ = self.replay(line + b"USERSPACE TEST REPORT DONE\n", mode="tests")
             self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_testing_loader_summary_is_mandatory_and_unique(self):
+        completion = runpy.run_path(str(ROOT / "scripts/wait-boot-done.py"))["completion"]
+        done = "TEST_TALLY: exited=1 nonzero=0 failed=[] started=1\nUSERSPACE TEST REPORT DONE\n"
+        for loader in ("", LOADER.decode() * 2,
+                       f"[test] Loaded {CANONICAL_COUNT-1}/{CANONICAL_COUNT-1} test binaries (0 failed, 0 not found)\n"):
+            with self.subTest(loader=loader):
+                result = completion(loader + done, "tests", "")
+                self.assertIsNotNone(result)
+                self.assertFalse(result[0], result)
 
     def test_shell_fatal_retains_idle_exit(self):
         result, elapsed = self.replay(b"!!! SOFT LOCKUP DETECTED !!! synthetic fault\n", idle=1, mode="shell")

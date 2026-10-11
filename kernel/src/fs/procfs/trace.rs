@@ -270,9 +270,10 @@ pub fn generate_teardown_pid(pid: u64) -> String {
         let tick_period = crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT
             .load(Ordering::Acquire);
         #[cfg(target_arch = "x86_64")]
-        let tick_period = crate::time::tsc::frequency_hz() / 1000;
+        let tick_period = crate::time::tsc::frequency_hz() * crate::time::timer::MS_PER_TICK / 1000;
         return format!(
-            "pid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
+            "online_cpus: {}\npid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
+            crate::task::scheduler::online_cpus(),
             pid,
             evidence.defer_count,
             evidence.reclaim_count,

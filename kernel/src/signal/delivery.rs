@@ -1570,13 +1570,6 @@ fn exit_on_syscall_return(exit_code: i32) -> ! {
         .flatten();
         if let Some(pid) = row {
             terminate_thread_group_peers(pid, exit_code);
-            crate::task::scheduler::with_scheduler(|scheduler| {
-                scheduler.terminate_process_threads(pid.as_u64());
-            });
-            crate::task::scheduler::Scheduler::send_exit_expedite_sgi(
-                pid.as_u64(),
-                crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()),
-            );
         }
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
     }

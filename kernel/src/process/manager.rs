@@ -214,12 +214,21 @@ impl ProcessManager {
         pid: ProcessId,
         old_cr3: u64,
     ) -> Option<(ProcessId, u64)> {
-        let owners = self.processes.live_row(&pid)?.address_space_lifetime.as_ref()?;
+        let caller = self.processes.live_row(&pid)?;
+        // A non-thread CLONE_VM child borrows its parent's root. Exec gives
+        // it a new root without retiring the parent's table (vfork/spawn).
+        if caller.page_table.is_none() && caller.thread_group_id.is_none() {
+            return None;
+        }
+        let owners = caller.address_space_lifetime.as_ref()?;
         if alloc::sync::Arc::strong_count(owners) == 1 {
             return None;
         }
         self.processes.iter().find_map(|(&candidate_pid, candidate)| {
             if candidate_pid == pid || candidate.is_terminated()
+                || candidate.main_thread.as_ref().is_some_and(|thread| {
+                    thread.state == crate::task::thread::ThreadState::Terminated
+                })
                 || candidate.cr3_value() != Some(old_cr3)
                 || !candidate.address_space_lifetime.as_ref()
                     .is_some_and(|peer| alloc::sync::Arc::ptr_eq(owners, peer))
@@ -2488,7 +2497,8 @@ impl ProcessManager {
     /// the address space moved.
     ///
     /// Called under PROCESS_MANAGER from every exit path before it releases a
-    /// row's address space; it neither allocates nor takes another lock.
+    /// row's address space. Dropping its final lifetime token can free that
+    /// token's allocation; the page-table transfer takes no other lock.
     pub(crate) fn hand_off_address_space(&mut self, pid: ProcessId) -> bool {
         let moved = self.transfer_address_space(pid);
         if let Some(row) = self.processes.live_row_mut(&pid) {
@@ -3989,6 +3999,10 @@ impl ProcessManager {
         .map_err(|_| "Failed to create stack object")?;
 
         // Re-borrow the process for the remaining updates.
+        let new_address_space_lifetime = alloc::sync::Arc::new(
+            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+        );
+
         // Preparation and reservations succeeded; publication below has no error return.
         let process = self
             .processes
@@ -4068,7 +4082,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
-        process.address_space_lifetime = Some(alloc::sync::Arc::new(super::process::AddressSpaceLifetime { id: pid.as_u64() }));
+        process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
 
         // Replace the stack
@@ -4456,6 +4470,10 @@ impl ProcessManager {
         let new_entry_point = loaded_elf.entry_point;
 
         // Re-borrow the process for the remaining updates.
+        let new_address_space_lifetime = alloc::sync::Arc::new(
+            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+        );
+
         // Preparation and reservations succeeded; publication below has no error return.
         let process = self
             .processes
@@ -4517,7 +4535,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
-        process.address_space_lifetime = Some(alloc::sync::Arc::new(super::process::AddressSpaceLifetime { id: pid.as_u64() }));
+        process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.cred = cred;
         let new_cr3 = process
@@ -4851,6 +4869,10 @@ impl ProcessManager {
         #[cfg(target_arch = "aarch64")]
         let new_entry_point = loaded_elf.entry_point;
 
+        let new_address_space_lifetime = alloc::sync::Arc::new(
+            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+        );
+
         // Preparation and reservations succeeded; publication below has no error return.
         let process = self
             .processes
@@ -4912,7 +4934,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
-        process.address_space_lifetime = Some(alloc::sync::Arc::new(super::process::AddressSpaceLifetime { id: pid.as_u64() }));
+        process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.cred = cred;
         let new_ttbr0 = process
@@ -5202,6 +5224,10 @@ impl ProcessManager {
             stack_top.as_u64()
         );
 
+        let new_address_space_lifetime = alloc::sync::Arc::new(
+            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+        );
+
         // All fallible construction is complete; only now supersede the live
         // address space and transfer the unpublished table into the Process.
         let process = self
@@ -5269,7 +5295,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
-        process.address_space_lifetime = Some(alloc::sync::Arc::new(super::process::AddressSpaceLifetime { id: pid.as_u64() }));
+        process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         let new_ttbr0 = process
             .page_table

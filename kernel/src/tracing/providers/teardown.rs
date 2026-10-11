@@ -215,6 +215,7 @@ fn hold_exit_kick_test_publisher(pid: u64) {
 pub(crate) struct KickSlot {
     pub(crate) pid: AtomicU64,
     pub(crate) at: AtomicU64,
+    sender_cpu: AtomicU64,
     pub(crate) state: AtomicU64,
 }
 
@@ -242,6 +243,7 @@ impl KickSlot {
         Self {
             pid: AtomicU64::new(0),
             at: AtomicU64::new(0),
+            sender_cpu: AtomicU64::new(u64::MAX),
             state: AtomicU64::new(0),
         }
     }
@@ -285,6 +287,7 @@ impl KickSlot {
             && self.pid.load(Ordering::Relaxed) != pid;
         self.pid.store(pid, Ordering::Relaxed);
         self.at.store(at, Ordering::Relaxed);
+        self.sender_cpu.store(crate::task::scheduler::current_cpu() as u64, Ordering::Relaxed);
         self.state
             .store(reservation.generation << 2, Ordering::Release);
         KickPublishResult::Published {
@@ -306,7 +309,18 @@ impl KickSlot {
     }
 
     #[inline(always)]
+    pub(crate) fn observe_from_peer(&self, expected_pid: u64) -> Option<KickObservation> {
+        self.observe_inner(expected_pid, true)
+    }
+
+    #[cfg(feature = "boot_tests")]
+    #[inline(always)]
     pub(crate) fn observe(&self, expected_pid: u64) -> Option<KickObservation> {
+        self.observe_inner(expected_pid, false)
+    }
+
+    #[inline(always)]
+    fn observe_inner(&self, expected_pid: u64, require_peer: bool) -> Option<KickObservation> {
         let first_state = self.state.load(Ordering::Acquire);
         if first_state >> 2 == 0 || first_state & (EXIT_KICK_LOCK | EXIT_KICK_OBSERVED_BIT) != 0 {
             return None;
@@ -314,8 +328,10 @@ impl KickSlot {
 
         let pid = self.pid.load(Ordering::Relaxed);
         let at = self.at.load(Ordering::Relaxed);
+        let sender_cpu = self.sender_cpu.load(Ordering::Relaxed);
         let second_state = self.state.load(Ordering::Acquire);
-        if second_state != first_state || pid != expected_pid {
+        if second_state != first_state || pid != expected_pid
+            || (require_peer && sender_cpu == crate::task::scheduler::current_cpu() as u64) {
             return None;
         }
 

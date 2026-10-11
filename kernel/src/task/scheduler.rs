@@ -108,10 +108,13 @@ impl GroupBatchId {
 
 #[inline(always)]
 fn observe_exit_kick(thread_pid: u64) -> bool {
+    if online_cpus() <= 1 {
+        return true;
+    }
     use crate::tracing::providers::teardown::{EXIT_KICK_BUCKETS, EXIT_KICK_SLOTS};
 
     let slot = &EXIT_KICK_SLOTS[thread_pid as usize % EXIT_KICK_BUCKETS];
-    if let Some(observation) = slot.observe(thread_pid) {
+    if let Some(observation) = slot.observe_from_peer(thread_pid) {
         let interval = crate::tracing::trace_timestamp().wrapping_sub(observation.at);
         crate::tracing::providers::teardown::record_exit_kick_observed(thread_pid, interval);
         true
@@ -4570,6 +4573,9 @@ impl Scheduler {
     /// to every other online CPU. This is intentionally separate from the two
     /// generic wakeup helpers and must be called with no lock held.
     pub fn send_exit_expedite_sgi(victim_pid: u64, batch: GroupBatchId) {
+        if online_cpus() <= 1 {
+            return;
+        }
         use crate::tracing::providers::teardown::{
             KickPublishResult, EXIT_KICK_BUCKETS, EXIT_KICK_PUBLISHED, EXIT_KICK_SLOTS,
         };
@@ -4589,11 +4595,6 @@ impl Scheduler {
                 crate::tracing::providers::teardown::record_exit_kick_collision(bucket);
             }
         }
-        // The historical field is named sgi_sent; on x86 its hardware
-        // equivalent is the reschedule IPI through the existing APIC vector.
-        crate::trace_count!(crate::tracing::providers::teardown::EXIT_SGI_SENT);
-        crate::tracing::providers::teardown::record_exit_sgi_sent(victim_pid, batch.as_u64());
-
         let current_cpu = Self::current_cpu_id();
         #[cfg(target_arch = "aarch64")]
         {
@@ -4611,6 +4612,9 @@ impl Scheduler {
                 request_resched_x86(cpu);
             }
         }
+        // One request may send to several peers; account only after the sends.
+        crate::trace_count!(crate::tracing::providers::teardown::EXIT_SGI_SENT);
+        crate::tracing::providers::teardown::record_exit_sgi_sent(victim_pid, batch.as_u64());
     }
 
     /// Block current thread until a signal is delivered

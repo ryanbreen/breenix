@@ -56,7 +56,7 @@ const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
 
 /// Key for futex wait queues. A private futex, and any futex outside a shared
 /// mapping, is (address_space_id, virtual address): threads sharing an address
-/// space (CLONE_VM) share the thread group id. A futex in a shared mapping is
+/// space (CLONE_VM) share the address-space id independently of thread groups. A futex in a shared mapping is
 /// (`SHARED_FUTEX`, physical address), which every process mapping the page
 /// reaches.
 type FutexKey = (u64, u64);

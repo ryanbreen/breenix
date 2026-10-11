@@ -1,49 +1,76 @@
-# Build the canonical C tests with a real musl toolchain for each target.
-# MUSL_CC may select an equivalent installed compiler.
+# Build C programs with musl libc for Breenix (aarch64)
+#
+# Prerequisites:
+#   - Homebrew LLVM (clang, llvm-ar, llvm-ranlib) at /opt/homebrew/opt/llvm/bin/
+#   - LLD linker at /opt/homebrew/Cellar/lld@20/20.1.8/bin/ld.lld
+#   - musl libc installed at third-party/musl-install/
+#   - compiler-rt builtins at third-party/compiler-rt-builtins/
+#
+# Build:
+#   make                # build hello_musl.elf
+#   make install        # copy to userspace/programs/aarch64/
+#   make clean
 
-BREENIX_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
+BREENIX_ROOT := $(shell cd ../.. && pwd)
 
-# Use the installed musl cross toolchain, including its CRT and builtins.
-ARCH ?= aarch64
-MUSL_CC ?= $(if $(filter x86_64,$(ARCH)),musl-gcc,aarch64-linux-musl-gcc)
-BUILD_DIR := build/$(ARCH)
-CFLAGS := -O2 -Wall -Wextra -Werror
-LDFLAGS := -static -no-pie -Wl,--build-id=none -Wl,-Ttext-segment=0x40000000
+# Toolchain
+LLVM := /opt/homebrew/opt/llvm/bin
+CC := $(LLVM)/clang
+AR := $(LLVM)/llvm-ar
+LLD := /opt/homebrew/Cellar/lld@20/20.1.8/bin/ld.lld
+CLANG_INCLUDE := $(shell $(CC) --target=aarch64-linux-musl -print-resource-dir)/include
+
+# musl libc
+MUSL_INSTALL := $(BREENIX_ROOT)/third-party/musl-install
+MUSL_LIB := $(MUSL_INSTALL)/lib
+MUSL_INCLUDE := $(MUSL_INSTALL)/include
+
+# compiler-rt builtins (for 128-bit float operations)
+RT_LIB := $(BREENIX_ROOT)/third-party/compiler-rt-builtins
+
+# Breenix linker script
+LINKER_SCRIPT := $(BREENIX_ROOT)/userspace/programs/linker-aarch64-musl.ld
+
+# Compiler flags
+CFLAGS := --target=aarch64-linux-musl -ffreestanding -O2 -nostdinc -isystem $(MUSL_INCLUDE)
+
+# Linker flags
+LDFLAGS := -T $(LINKER_SCRIPT) --static \
+	$(MUSL_LIB)/crt1.o $(MUSL_LIB)/crti.o \
+	-L$(MUSL_LIB) -lc \
+	-L$(RT_LIB) -lcompiler_rt_builtins \
+	$(MUSL_LIB)/crtn.o
 
 # Output directory
-INSTALL_DIR := $(BREENIX_ROOT)/userspace/programs$(if $(filter aarch64,$(ARCH)),/aarch64,)
+AARCH64_DIR := $(BREENIX_ROOT)/userspace/programs/aarch64
 
 # Programs
 PROGRAMS := hello_musl env_musl_test uname_musl_test rlimit_musl_test identity_musl_test
 
 .PHONY: all install clean
 
-all: $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(PROGRAMS)))
+all: $(addsuffix .elf,$(PROGRAMS))
 
-$(BUILD_DIR):
-	mkdir -p "$@"
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR)
-	$(MUSL_CC) $(CFLAGS) -c $< -o $@
+hello_musl.elf: hello.o
+	$(LLD) $(LDFLAGS) $< -o $@
 
-$(BUILD_DIR)/hello_musl.elf: $(BUILD_DIR)/hello.o Makefile
-	$(MUSL_CC) $(LDFLAGS) $< -o $@
+env_musl_test.elf: env_test.o
+	$(LLD) $(LDFLAGS) $< -o $@
 
-$(BUILD_DIR)/env_musl_test.elf: $(BUILD_DIR)/env_test.o Makefile
-	$(MUSL_CC) $(LDFLAGS) $< -o $@
+uname_musl_test.elf: uname_test.o
+	$(LLD) $(LDFLAGS) $< -o $@
 
-$(BUILD_DIR)/uname_musl_test.elf: $(BUILD_DIR)/uname_test.o Makefile
-	$(MUSL_CC) $(LDFLAGS) $< -o $@
+rlimit_musl_test.elf: rlimit_test.o
+	$(LLD) $(LDFLAGS) $< -o $@
 
-$(BUILD_DIR)/rlimit_musl_test.elf: $(BUILD_DIR)/rlimit_test.o Makefile
-	$(MUSL_CC) $(LDFLAGS) $< -o $@
-
-$(BUILD_DIR)/identity_musl_test.elf: $(BUILD_DIR)/identity_test.o Makefile
-	$(MUSL_CC) $(LDFLAGS) $< -o $@
+identity_musl_test.elf: identity_test.o
+	$(LLD) $(LDFLAGS) $< -o $@
 
 install: all
-	mkdir -p "$(INSTALL_DIR)"
-	for prog in $(PROGRAMS); do cp $(BUILD_DIR)/$$prog.elf $(INSTALL_DIR)/$$prog.elf; done
+	for prog in $(PROGRAMS); do cp $$prog.elf $(AARCH64_DIR)/$$prog.elf; done
 
 clean:
-	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.elf
+	rm -f *.o *.elf
