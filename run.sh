@@ -1011,6 +1011,8 @@ mks.enable3d = "TRUE"
 vmci0.present = "TRUE"
 
 # The guest treats an unspecified UEFI TimeZone as a UTC RTC contract.
+# Fusion ARM's firmware clock needs startInUTC; diffFromUTC controls CMOS.
+rtc.startInUTC = "TRUE"
 rtc.diffFromUTC = "0"
 tools.syncTime = "FALSE"
 floppy0.present = "FALSE"
