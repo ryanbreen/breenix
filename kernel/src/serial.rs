@@ -107,6 +107,7 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
         crate::arch_disable_interrupts();
     }
 
+    crate::task::wakelat::ev(crate::task::wakelat::E_LOG_IN, 1);
     let mut serial = SERIAL1.lock();
     if SERIAL1_FIFO.load(core::sync::atomic::Ordering::Relaxed) {
         // THRE means the 16550 transmit FIFO is empty, so all sixteen slots
@@ -150,6 +151,7 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
         }
     }
     drop(serial);
+    crate::task::wakelat::ev(crate::task::wakelat::E_LOG_OUT, 1);
 
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
@@ -334,10 +336,12 @@ pub fn _log_print(args: fmt::Arguments) {
         crate::arch_disable_interrupts();
     }
 
+    crate::task::wakelat::ev(crate::task::wakelat::E_LOG_IN, 2);
     SERIAL2
         .lock()
         .write_fmt(args)
         .expect("Printing to log serial failed");
+    crate::task::wakelat::ev(crate::task::wakelat::E_LOG_OUT, 2);
 
     // Only re-enable if they were enabled before
     if irq_enabled {
