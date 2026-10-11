@@ -68,7 +68,7 @@ MARKER_NEEDLE='[FSFAULT:'
 
 build_kernel() {
     local target_dir="$1"; shift
-    ( cd "$REPO_ROOT" && CARGO_TARGET_DIR="$target_dir" cargo "${BUILD_ARGS[@]}" "$@" ) >/dev/null 2>&1
+    ( cd "$REPO_ROOT" && CARGO_TARGET_DIR="$target_dir" cargo "${BUILD_ARGS[@]}" "$@" )
 }
 
 leg1_symbols() {
@@ -82,7 +82,9 @@ leg2_strings() {
 if [ "$MODE" = "prove" ]; then
     DIRTY_DIR="$REPO_ROOT/target/fs-fault-prove-dirty"
     echo "Building an fs_fault_inject kernel to prove the scan can go red..."
-    if ! build_kernel "$DIRTY_DIR" --features boot_tests,fs_fault_inject; then
+    # The leg is independently feature-gated; boot_tests also embeds userspace
+    # fixtures, which are unrelated to scanning the fault-injection symbols.
+    if ! build_kernel "$DIRTY_DIR" --features fs_fault_inject; then
         echo "FS-FAULT PRODUCTION RATCHET ANTI-VACUITY: FAILED (fs_fault_inject build failed)"
         exit 1
     fi

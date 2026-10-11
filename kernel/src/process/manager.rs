@@ -2328,7 +2328,7 @@ impl ProcessManager {
     /// with `CLONE_VM` share a group id (`thread_group_id`, or the leader's own
     /// pid), and together they are one POSIX process.
     pub fn thread_group_peers(&self, pid: ProcessId) -> Vec<ProcessId> {
-        let Some(process) = self.processes.get(&pid) else {
+        let Some(process) = self.processes.live_row(&pid) else {
             return Vec::new();
         };
         let group = process.thread_group_id.unwrap_or(pid.as_u64());

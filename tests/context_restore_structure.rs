@@ -1528,10 +1528,12 @@ fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), St
     let compact_arm = normalized_arm.replace(' ', "");
     if !compact_arm.contains("USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add")
         || !compact_arm.contains("USERSPACE_DISPATCH_NO_CR3_LOGGED.swap")
-        || identifier_offsets(no_cr3_arm, &no_cr3_mask, "raw_serial_str").is_empty()
-        || identifier_offsets(no_cr3_arm, &no_cr3_mask, "raw_serial_u64").len() < 2
+        || !compact_arm.contains("DiagLine::new().text(")
+        || !compact_arm.contains(".number(thread_id)")
+        || !compact_arm.contains(".number(pid.as_u64())")
+        || !compact_arm.contains(".write();")
     {
-        return Err("unavailable CR3 arm lacks the guarded raw breadcrumb".to_string());
+        return Err("unavailable CR3 arm lacks the guarded atomic diagnostic line".to_string());
     }
 
     let with_thread_mut_source = identifier_offsets(no_cr3_arm, &no_cr3_mask, "with_thread_mut")
@@ -2211,11 +2213,10 @@ fn valid_blocked_syscall_no_cr3_arm() -> &'static str {
             None => {
                 USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
                 if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
-                    raw_serial_str("[PMGUARD] no-cr3 dispatch refused tid=");
-                    raw_serial_u64(thread_id);
-                    raw_serial_str(" pid=");
-                    raw_serial_u64(pid.as_u64());
-                    raw_serial_str("\n");
+                    DiagLine::new()
+                        .text("[PMGUARD] no-cr3 dispatch refused tid=")
+                        .number(thread_id).text(" pid=")
+                        .number(pid.as_u64()).text("\n").write();
                 }
                 if let Some(ref mut thread) = process.main_thread {
                     thread.set_terminated();
@@ -2416,32 +2417,18 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
     }
     let insert = insert_calls[0];
 
-    let cwd_clones = call_offsets(clone_body, &clone_mask, "clone")
-        .into_iter()
-        .filter(|offset| {
-            let prefix = &clone_body[..*offset];
-            let prefix_mask = &clone_mask[..*offset];
-            identifier_offsets(prefix, prefix_mask, "cwd")
-                .last()
-                .is_some_and(|cwd| normalized_code(&clone_body[*cwd..*offset]) == "cwd.")
-        })
-        .collect::<Vec<_>>();
+    // CLONE_FS shares the CWD cell; without it clone snapshots an independent cell.
+    let cwd_copies = call_offsets(clone_body, &clone_mask, "copy")
+        .into_iter().filter(|offset| clone_body[..*offset].trim_end().ends_with("cwd.")).collect::<Vec<_>>();
+    let cwd_shares = call_offsets(clone_body, &clone_mask, "share")
+        .into_iter().filter(|offset| clone_body[..*offset].trim_end().ends_with("cwd.")).collect::<Vec<_>>();
     let fd_table_clones = call_offsets(clone_body, &clone_mask, "clone")
-        .into_iter()
-        .filter(|offset| {
-            let prefix = &clone_body[..*offset];
-            let prefix_mask = &clone_mask[..*offset];
-            identifier_offsets(prefix, prefix_mask, "fd_table")
-                .last()
-                .is_some_and(|fd_table| {
-                    normalized_code(&clone_body[*fd_table..*offset]) == "fd_table."
-                })
-        })
+        .into_iter().filter(|offset| clone_body[..*offset].trim_end().ends_with("parent_fds."))
         .collect::<Vec<_>>();
-    if cwd_clones.len() != 1 || fd_table_clones.len() != 1 {
+    if cwd_copies.len() != 1 || cwd_shares.len() != 1 || fd_table_clones.len() != 1 {
         return Err(format!(
-            "sys_clone must copy parent cwd and fd_table exactly once, found cwd={} fd_table={}",
-            cwd_clones.len(),
+            "sys_clone must share/copy cwd and copy fd_table exactly once, found cwd-copy={} cwd-share={} fd_table={}",
+            cwd_copies.len(), cwd_shares.len(),
             fd_table_clones.len()
         ));
     }
@@ -2452,26 +2439,35 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
     let parent_state_block = braced_block(clone_body, &clone_mask, parent_state_binding)
         .ok_or_else(|| "sys_clone parent-state copy block is not brace balanced".to_string())?;
     let parent_state_end = parent_state_binding + parent_state_block.len();
-    if !(parent_state_binding..parent_state_end).contains(&cwd_clones[0]) {
+    if ![cwd_copies[0], cwd_shares[0]].iter()
+        .all(|offset| (parent_state_binding..parent_state_end).contains(offset))
+        || !compact_code(parent_state_block).contains(
+            "ifflags&CLONE_FS!=0{process.cwd.share()}else{process.cwd.copy()}"
+        )
+    {
         return Err("sys_clone cwd read escaped the parent-state copy block".to_string());
     }
     // #813: acquiring descriptor references is delayed until fallible setup is
     // finished. It remains in the SAME admission-to-publication PM transaction,
     // checked below, and derives the table from the admitted parent.
     let fd_clone = fd_table_clones[0];
-    let fd_copy_arm = identifier_offsets(clone_body, &clone_mask, "if")
-        .into_iter()
-        .find_map(|if_offset| {
-            let block = braced_block(clone_body, &clone_mask, if_offset)?;
-            let open = block.find('{')?;
-            (normalized_code(&block[..open]).replace(' ', "") == "ifflags&CLONE_FILES!=0"
-                && (if_offset..if_offset + block.len()).contains(&fd_clone))
-            .then_some(block)
-        })
-        .ok_or_else(|| "sys_clone fd copy must be guarded by CLONE_FILES".to_string())?;
-    let fd_copy = normalized_code(fd_copy_arm).replace(' ', "");
-    if !fd_copy.contains("child_process.fd_table=manager.get_process(parent_pid).expect(") {
-        return Err("sys_clone fd copy does not derive from the admitted parent".to_string());
+    let fd_start = clone_body.find("let parent_fds =")
+        .ok_or("sys_clone has no admitted parent descriptor snapshot")?;
+    let branch_start = clone_body[fd_start..].find("if flags & CLONE_FILES != 0 {")
+        .map(|offset| fd_start + offset).ok_or("missing CLONE_FILES branch")?;
+    let share_arm = braced_block(clone_body, &clone_mask, branch_start)
+        .ok_or("unbalanced CLONE_FILES branch")?;
+    let copy_start = branch_start + share_arm.len();
+    let copy_arm = braced_block(clone_body, &clone_mask, copy_start)
+        .ok_or("missing independent descriptor copy branch")?;
+    let fd_end = copy_start + copy_arm.len();
+    let fd_copy_arm = &clone_body[fd_start..fd_end];
+    let fd_copy = compact_code(fd_copy_arm);
+    if !fd_copy.contains("letparent_fds=&manager.get_process(parent_pid).expect(")
+        || !fd_copy.contains(".fd_table;")
+        || !fd_copy.contains("child_process.fd_table=ifflags&CLONE_FILES!=0{parent_fds.share()}else{parent_fds.clone()}")
+    {
+        return Err("sys_clone must share/copy the admitted parent's fd table according to CLONE_FILES".to_string());
     }
     let stack_allocations = call_offsets(clone_body, &clone_mask, "alloc_kernel_stack");
     if stack_allocations.len() != 1
@@ -2748,16 +2744,20 @@ fn validate_exec_sibling_guard_census(manager: &str) -> Result<(), String> {
                 sibling_guard_calls.len()
             ));
         }
-        let allocation = code_offsets(body, &body_mask, "UnpublishedPageTable::new(");
-        if allocation.len() != 1 {
-            return Err(format!(
-                "{arch} {name} must allocate one UnpublishedPageTable, found {}",
-                allocation.len()
-            ));
+        // argv images are prepared before taking PM; the sibling guard must
+        // precede consuming that image and retiring the old root on both arches.
+        let boundary = if name == "exec_process_with_argv" {
+            code_offsets(body, &body_mask, "prepared.take()")
+        } else {
+            code_offsets(body, &body_mask, "UnpublishedPageTable::new(")
+        };
+        let retire = code_offsets(body, &body_mask, "process.page_table.take()");
+        if boundary.len() != 1 || retire.len() != 1 {
+            return Err(format!("{arch} {name} lacks its unique image/retirement boundaries"));
         }
-        if sibling_guard_calls[0] >= allocation[0] {
+        if sibling_guard_calls[0] >= boundary[0] || boundary[0] >= retire[0] {
             return Err(format!(
-                "{arch} {name} checks live CLONE_VM siblings after allocating its new address space"
+                "{arch} {name} must guard live CLONE_VM siblings before consuming an image and retiring its root"
             ));
         }
         let guard_arm = identifier_offsets(body, &body_mask, "if")
@@ -3883,10 +3883,11 @@ fn clone_publication_lifecycle_is_closed() {
     assert!(validate_clone_publication_lifecycle(&nonterminal_refusal).is_err());
 
     let clone_mask = code_mask(&clone);
-    let fd_start = clone
-        .find("if flags & CLONE_FILES != 0 {")
-        .expect("descriptor copy arm");
-    let fd_arm = braced_block(&clone, &clone_mask, fd_start).expect("balanced descriptor copy arm");
+    let fd_start = clone.find("let parent_fds =").expect("descriptor snapshot");
+    let fd_end = clone[fd_start..].find("\n    };")
+        .map(|offset| fd_start + offset + "\n    };".len()).expect("descriptor assignment ends");
+    let fd_arm = &clone[fd_start..fd_end];
+    assert!(braced_block(&clone, &clone_mask, fd_start).is_some());
     let without_fd_copy = clone.replacen(fd_arm, "", 1);
     let early_copy = without_fd_copy.replacen(
         "let kernel_stack =",
@@ -3921,8 +3922,8 @@ fn clone_publication_lifecycle_is_closed() {
         "foreign fd table acquisition escaped"
     );
     let fallible_after_copy = clone.replacen(
-        ".fd_table.clone();",
-        ".fd_table.clone(); return SyscallResult::Err(super::errno::ENOMEM as u64);",
+        fd_arm,
+        &format!("{fd_arm} return SyscallResult::Err(super::errno::ENOMEM as u64);"),
         1,
     );
     assert!(
@@ -5096,8 +5097,8 @@ fn validate_interrupt_return_scheduler_acquisitions(source: &str) -> Result<(), 
     let check = function_body(source, "check_need_resched_and_switch")
         .ok_or_else(|| "missing fn check_need_resched_and_switch".to_string())?;
     let pair_start = check
-        .find("let (blocked_in_syscall, old_thread_is_user) =")
-        .ok_or_else(|| "old-thread fields are not read as one pair".to_string())?;
+        .find("let (blocked_in_syscall, old_thread_is_user, old_thread_terminated) =")
+        .ok_or_else(|| "old-thread fields are not read in one acquisition".to_string())?;
     let pair_end = check[pair_start..]
         .find("if from_userspace {")
         .map(|offset| pair_start + offset)
@@ -5109,6 +5110,7 @@ fn validate_interrupt_return_scheduler_acquisitions(source: &str) -> Result<(), 
         != 1
         || !pair.contains("thread.blocked_in_syscall")
         || !pair.contains("thread.privilege == ThreadPrivilege::User")
+        || !pair.contains("thread.state == crate::task::thread::ThreadState::Terminated")
     {
         return Err("old-thread fields require more than one scheduler acquisition".to_string());
     }
@@ -5331,7 +5333,7 @@ fn validate_save_failure_rollback(source: &str) -> Result<(), String> {
     let body = function_body(source, "check_need_resched_and_switch")
         .ok_or_else(|| "missing fn check_need_resched_and_switch".to_string())?;
     let pair_start = body
-        .find("let (blocked_in_syscall, old_thread_is_user) =")
+        .find("let (blocked_in_syscall, old_thread_is_user, old_thread_terminated) =")
         .ok_or_else(|| "missing old-thread field binding before save region".to_string())?;
     let save_start = body[pair_start..]
         .find("if from_userspace {")
@@ -5386,9 +5388,13 @@ fn interrupt_return_reads_old_thread_once_and_lazily_checks_saved_cs() {
 fn interrupt_return_validator_rejects_unconditional_saved_frame_lookup() {
     let synthetic = r#"
         fn check_need_resched_and_switch(old_thread_id: u64) {
-            let (blocked_in_syscall, old_thread_is_user) =
+            let (blocked_in_syscall, old_thread_is_user, old_thread_terminated) =
                 scheduler::with_thread_mut(old_thread_id, |thread| {
-                    (thread.blocked_in_syscall, thread.privilege == ThreadPrivilege::User)
+                    (
+                        thread.blocked_in_syscall,
+                        thread.privilege == ThreadPrivilege::User,
+                        thread.state == crate::task::thread::ThreadState::Terminated,
+                    )
                 });
             if from_userspace {}
         }
@@ -5407,7 +5413,10 @@ fn interrupt_return_validator_rejects_unconditional_saved_frame_lookup() {
             }
         }
     "#;
-    assert!(validate_interrupt_return_scheduler_acquisitions(synthetic).is_err());
+    assert_eq!(
+        validate_interrupt_return_scheduler_acquisitions(synthetic),
+        Err("saved-frame lookup is not lazy inside the non-idle user branch".to_string())
+    );
 }
 
 #[test]
@@ -5527,7 +5536,7 @@ fn every_save_failure_rolls_back_the_committed_dispatch() {
 fn save_failure_rollback_validator_rejects_unpaired_return() {
     let synthetic = r#"
         fn check_need_resched_and_switch() {
-            let (blocked_in_syscall, old_thread_is_user) = current_thread_fields();
+            let (blocked_in_syscall, old_thread_is_user, old_thread_terminated) = current_thread_fields();
             if from_userspace {
                 if save_failed {
                     return;
@@ -5543,7 +5552,7 @@ fn save_failure_rollback_validator_rejects_unpaired_return() {
 fn save_failure_rollback_validator_rejects_rollback_after_return() {
     let synthetic = r#"
         fn check_need_resched_and_switch() {
-            let (blocked_in_syscall, old_thread_is_user) = current_thread_fields();
+            let (blocked_in_syscall, old_thread_is_user, old_thread_terminated) = current_thread_fields();
             if from_userspace {
                 if save_failed {
                     return;

@@ -89,7 +89,7 @@ MARKER_NEEDLE='[COREPROOF:'
 
 build_kernel() {
     local target_dir="$1"; shift
-    ( cd "$REPO_ROOT" && CARGO_TARGET_DIR="$target_dir" cargo "${BUILD_ARGS[@]}" "$@" ) >/dev/null 2>&1
+    ( cd "$REPO_ROOT" && CARGO_TARGET_DIR="$target_dir" cargo "${BUILD_ARGS[@]}" "$@" )
 }
 
 leg1_symbols() {
@@ -119,6 +119,12 @@ text_hash() {
 # ---------------------------------------------------------------------------
 if [ "$MODE" = "prove" ]; then
     DIRTY_DIR="$REPO_ROOT/target/coreproof-prove-dirty"
+    # coreproof enables boot_tests, whose registry embeds the ARM64 userspace
+    # fixture. Kernel build.rs deliberately leaves ARM64 userspace to launchers.
+    if ! "$REPO_ROOT/userspace/programs/build.sh" --arch aarch64; then
+        echo "CORE-PROOF PRODUCTION RATCHET ANTI-VACUITY: FAILED (userspace build failed)"
+        exit 1
+    fi
     echo "Building a coreproof-profile kernel to prove the scan can go red..."
     if ! build_kernel "$DIRTY_DIR" --features boot_tests,coreproof,coreproof_component_a; then
         echo "CORE-PROOF PRODUCTION RATCHET ANTI-VACUITY: FAILED (coreproof build failed)"

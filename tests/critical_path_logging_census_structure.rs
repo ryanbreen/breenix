@@ -659,7 +659,6 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/per_cpu_aarch64.rs", "fn init", 5),
     ("kernel/src/per_cpu_aarch64.rs", "fn set_kernel_cr3", 1),
     ("kernel/src/syscall/handler.rs", "fn rust_syscall_handler", 2),
-    ("kernel/src/syscall/time.rs", "fn sys_clock_settime", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(target_arch=aarch64,feature=boot_tests))] fn emit_pin_guard_oracle", 3),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(target_arch=x86_64,feature=boot_tests))] fn emit_pin_guard_oracle", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn test_schedule_does_not_duplicate_ready_queue", 2),
@@ -673,16 +672,11 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "fn init", 1),
     ("kernel/src/task/scheduler.rs", "fn init_with_current", 1),
     ("kernel/src/task/scheduler.rs", "fn note_scheduler_publication", 1),
-    ("kernel/src/task/scheduler.rs", "fn switch_to_idle", 3),
+    ("kernel/src/task/scheduler.rs", "fn switch_to_idle", 1),
     ("kernel/src/task/scheduler.rs", "impl ExecSchedCommit::fn apply", 4),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn add_thread_as_current", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn add_thread_inner", 1),
-    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_child_exit", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn dump_thread_placement", 3),
-    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn schedule", 5),
-    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn unblock", 1),
-    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn unblock_for_child_exit", 1),
-    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn unblock_for_signal", 1),
 ];
 
 /// The one call the narrow denylist misses: `crate::serial_print!` (no
@@ -707,7 +701,10 @@ const ESCAPED_SITE: (&str, &str, usize) = (
 /// pinned as its own number so a PR that moves rows around without changing
 /// the total -- or changes the total without saying so -- fails on the number
 /// the plan is written in, not only on the per-row diff.
-const CRITICAL_PATH_LOG_TOTAL: usize = 108;
+// Routine scheduler lines were removed by 3cdadb58 and 3bc5e91b;
+// clock_settime's diagnostic was removed by 8aae5ba0. Restoring any of
+// those calls is still an unexpected census entry.
+const CRITICAL_PATH_LOG_TOTAL: usize = 96;
 
 fn wider_anchors() -> Vec<(&'static str, &'static str, usize)> {
     let mut anchors = CRITICAL_PATH_LOG_ANCHORS.to_vec();

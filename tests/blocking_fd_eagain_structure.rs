@@ -384,7 +384,9 @@ fn inspect(
                     "drop",
                     "clone",
                     "current_thread_id",
-                    "check_signals_for_eintr",
+                    "check_signals_for_restartable_wait",
+                    // SIGPIPE publication returns unit, not a syscall result.
+                    "raise_sigpipe",
                     "with_scheduler",
                     "yield_current",
                     "arch_halt_while_blocked",
@@ -526,6 +528,12 @@ fn parser_tracks_renames_negation_formatting_and_extracted_errors() {
 
 #[test]
 fn repaired_families_have_no_blocking_eagain_exit() {
+    let signals = read("kernel/src/syscall/signal.rs");
+    assert!(signals.contains("pub(crate) fn raise_sigpipe() {"));
+    let publish = function(&signals, "raise_sigpipe");
+    assert!(contains(&publish, "signals.set_pending(SIGPIPE)"));
+    assert!(!contains(&publish, "Err("));
+    assert!(!contains(&publish, "EAGAIN"));
     let handlers = read("kernel/src/syscall/handlers.rs");
     let nodes = lex(&handlers);
     let compacted = compact(&nodes);
