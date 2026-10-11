@@ -109,6 +109,18 @@ Historical gates hold both leases for their whole run. Launchers sourcing
 `docker/qemu/lib/qemu-host-lock.sh` also enroll in the host queue; on Linux they
 hold a build lease until boot admission. Mac builds remain unrestricted.
 
+A guest's vCPUs are host threads, and a guest charges the time a busy host leaves them
+unscheduled as running, so timing cases fail on a loaded host. An x86 boot therefore first
+holds every build lease (after builds queued before it, ahead of those queued after it),
+then its boot lease, and keeps both until it ends: no build runs in the gate VM during a
+boot. On the Mac, before a boot of a suite whose manifest is `timingSensitive` starts its
+VM, the launcher waits, holding its lease, until the 1-minute load average has stayed at or
+below half the host's CPUs for three samples five seconds apart; after an hour it boots
+anyway and records the host as not quiet. Only Breenix boots wait; other work on the host
+is never limited. Each boot's record in its `*.host-slots.jsonl` sidecar carries the load
+at enqueue, at acquisition, at the VM's start and at the verdict, and whether a quiet host
+was required and found.
+
 Use `scripts/boot-interactive.sh` or `run.sh` for a Mac boot. The shared helper
 queues QEMU, Parallels and VMware behind one Mac lease. VM deployment and the
 suite panel are part of that lifetime. Stop the run to stop its VM and free the

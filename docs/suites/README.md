@@ -29,6 +29,10 @@ parses the suite's source, `userspace/programs/src/suite_<id>.rs` with `-` in th
 as `_`, and reads the `static` that `main` calls `.run()` on, so comments, disabled code and
 calls outside that table do not count.
 
+A suite whose cases measure time adds `"timingSensitive": true` (time, threads and
+processes do). Before a Mac boot of such a suite starts its VM, the boot tooling waits for a
+quiet host, as "Shared host slots" in `docs/boot-path.md` describes.
+
 ## Serial lines
 
 The suite's stdout, one line each, in this shape:

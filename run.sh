@@ -652,6 +652,8 @@ if [ "$PARALLELS" = true ]; then
     # Serial port must be explicitly connected or it stays disconnected
     prlctl set "$PARALLELS_VM" --device-set serial0 --connect 2>/dev/null || true
 
+    # A timing-sensitive suite waits for a quiet host first (docs/boot-path.md, "Shared host slots").
+    [ -z "$SUITE" ] || host_slot_quiet "$BREENIX_ROOT/docs/suites/$SUITE.json"
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
@@ -1023,6 +1025,8 @@ VMXEOF
 
     echo "  VMX: $VMX_FILE ($(wc -c < "$VMX_FILE") bytes)"
 
+    # A timing-sensitive suite waits for a quiet host first (docs/boot-path.md, "Shared host slots").
+    [ -z "$SUITE" ] || host_slot_quiet "$BREENIX_ROOT/docs/suites/$SUITE.json"
     echo ""
     echo "--- Starting VM ---"
     vmware_network_summary

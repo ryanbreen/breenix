@@ -4,6 +4,7 @@
   "area": "Threads",
   "summary": "Threads are created, joined and detached, and mutexes, condition variables, rwlocks, barriers, once, thread-specific data, per-thread signals and scheduling parameters behave as POSIX requires, through Breenix's own C library, on every target.",
   "binary": "/sbin/suite-threads",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "lifecycle",

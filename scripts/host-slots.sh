@@ -8,6 +8,8 @@ host_slots_start() {
 }
 host_slot_acquire() { python3 "$HOST_SLOTS_HELPER" acquire "$1"; }
 host_slot_release() { python3 "$HOST_SLOTS_HELPER" release "$1"; }
+# Before a suite boot starts its VM: waits for a quiet host when the manifest is timingSensitive.
+host_slot_quiet() { python3 "$HOST_SLOTS_HELPER" quiet "$1"; }
 host_slot_vm() { python3 "$HOST_SLOTS_HELPER" vm "$@"; }
 host_slot_serial() { python3 "$HOST_SLOTS_HELPER" serial "$1"; }
 host_slot_header() { python3 "$HOST_SLOTS_HELPER" header "$1"; }

@@ -17,7 +17,22 @@ import time
 # Never checkout-relative or configurable by a launcher's environment.
 SLOT_DIR = Path('/tmp/breenix-host-slots')
 RESOURCES = {'x86-build': 2, 'x86-boot': 1, 'mac-boot': 1}
+# An x86 boot shares its VM with the build leases. Builds there left the gate guest's
+# vCPU threads waiting on the VM's run queue for up to ~100 ms despite the boot's higher
+# priority (#1368), so a boot first holds every build lease, then its boot lease, and
+# keeps both until it ends. Taking builds before the boot keeps one lock order with
+# launchers that hold a build lease while asking for the boot.
+EXCLUDES = {'x86-boot': 'x86-build'}
 WAIT_MESSAGE_SECONDS = 60
+# A guest's vCPUs are host threads. A busy host leaves them unscheduled for tens of
+# milliseconds while the guest charges that time as running, and timing cases fail
+# (#1368). A boot of a timing-sensitive suite therefore waits, holding its lease, until
+# the 1-minute load average has stayed at or below half the host's CPUs. It waits for
+# other projects; it never limits them.
+QUIET_LOAD_FRACTION = 0.5
+QUIET_SAMPLES = 3
+QUIET_SAMPLE_SECONDS = 5
+QUIET_MAX_WAIT_SECONDS = 3600
 VMRUN = '/Applications/VMware Fusion.app/Contents/Public/vmrun'
 
 
@@ -51,6 +66,8 @@ class Slots:
         self.directory = Path(directory if directory is not None else SLOT_DIR)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.held = {}
+        self.held_number = {}
+        self.held_all = {}
         self.tickets = {}
 
     def path(self, resource, number):
@@ -97,7 +114,7 @@ class Slots:
     def try_acquire(self, resource, identity):
         with (self.directory / 'metadata.lock').open('a+') as state:
             fcntl.flock(state, fcntl.LOCK_EX)
-            if resource in self.held:
+            if resource in self.held or resource in self.held_all:
                 return {'resource': resource}  # Nested launchers share the lease.
             ticket = self.tickets.get(resource)
             for path in sorted(self.directory.glob(f'{resource}-wait-*')):
@@ -124,20 +141,91 @@ class Slots:
                 temporary.write_text(json.dumps(holder) + '\n')
                 temporary.replace(path.with_suffix('.json'))
                 self.held[resource] = handle
+                self.held_number[resource] = number
                 self.dequeue(resource)
                 return holder
             return None
 
+    def try_acquire_all(self, resource, identity, reason):
+        """Hold every slot of `resource`, after the requests queued before this one.
+
+        Slots are taken as they come free and kept, so requests queued later wait.
+        Returns True once this session holds them all (a slot it already holds counts).
+        """
+        with (self.directory / 'metadata.lock').open('a+') as state:
+            fcntl.flock(state, fcntl.LOCK_EX)
+            ticket = self.tickets.get(resource)
+            for path in sorted(self.directory.glob(f'{resource}-wait-*')):
+                if ticket and path == ticket[0]:
+                    break
+                with path.open('a+') as waiter:
+                    try:
+                        fcntl.flock(waiter, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        return False
+                    path.unlink(missing_ok=True)
+            handles = self.held_all.setdefault(resource, {})
+            own = self.held_number.get(resource) if resource in self.held else None
+            for number in range(1, RESOURCES[resource] + 1):
+                if number == own or number in handles:
+                    continue
+                path = self.path(resource, number)
+                handle = path.open('a+')
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    handle.close()
+                    continue
+                holder = dict(identity, resource=resource, slot=number, started=time.time(), pid=os.getpid(), reason=reason)
+                temporary = path.with_suffix(f'.{os.getpid()}.tmp')
+                temporary.write_text(json.dumps(holder) + '\n')
+                temporary.replace(path.with_suffix('.json'))
+                handles[number] = handle
+            if len(handles) + (own is not None) < RESOURCES[resource]:
+                return False
+            self.dequeue(resource)
+            return True
+
+    def release_all(self, resource):
+        for handle in self.held_all.pop(resource, {}).values():
+            handle.close()
+
     def release(self, resource):
+        self.held_number.pop(resource, None)
         handle = self.held.pop(resource, None)
         if handle is not None:
             handle.close()  # Also happens automatically on process death, including SIGKILL.
+        if resource in EXCLUDES:
+            self.release_all(EXCLUDES[resource])
 
     def close(self):
         for resource in list(self.tickets):
             self.dequeue(resource)
         for resource in list(self.held):
             self.release(resource)
+        for resource in list(self.held_all):
+            self.release_all(resource)
+
+
+def quiet_threshold():
+    return round((os.cpu_count() or 1) * QUIET_LOAD_FRACTION, 2)
+
+
+def timing_sensitive(manifest):
+    """A suite manifest marks a suite whose cases measure time with timingSensitive."""
+    try:
+        return json.loads(Path(manifest).read_text()).get('timingSensitive') is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def describe(holders):
+    """Name each distinct holder once, with why it holds the lease when it says."""
+    names = {}
+    for h in holders:
+        reason = f" ({h['reason']})" if h.get('reason') else ''
+        names.setdefault(f"worktree={h['worktree']} commit={h['commit']}{reason}", h['held_seconds'])
+    return '; '.join(f'{name} held={held:.1f}s' for name, held in names.items())
 
 
 def write_header(record, serial, context=None):
@@ -281,6 +369,78 @@ def supervise_worker(argv, parent):
         if targets.intersection(refresh()):
             raise RuntimeError('QEMU did not stop; keeping boot lease until cleanup')
 
+    records = []
+
+    def context(count):
+        return ''.join(json.dumps(entry, sort_keys=True) + '\n' for entry in records[:count]).encode()
+
+    def save_records():
+        Path(record).write_bytes(context(len(records)))
+
+    def admit(request):
+        result = dict(request['result'])
+        if request['resource'].endswith('boot'):
+            # Until the launcher asks for a quiet host, the boot starts with its lease.
+            result.update(load_at_start=os.getloadavg(), quiet={'required': False})
+        records.append(result)
+        save_records()
+        request['client'].sendall(b'{}\n')
+        request['client'].close()
+
+    def start_boot(request):
+        # The launcher starts its VM now: record the load it starts under, and
+        # whether the host was quiet, in the open boot record.
+        for entry in reversed(records):
+            if entry['resource'].endswith('boot') and 'load_at_verdict' not in entry:
+                entry['load_at_start'] = os.getloadavg()
+                entry['quiet'] = request.get('quiet_record', {'required': request['required']})
+                save_records()
+                break
+        else:
+            print('[host-slot] quiet: no boot lease is held; nothing recorded', file=sys.stderr, flush=True)
+        request['client'].sendall(b'{}\n')
+        request['client'].close()
+
+    def verdict(resource):
+        # The boot has ended: record the load at its verdict, in the boot's own record
+        # and in the sidecars of the serials registered while it ran.
+        for index in range(len(records) - 1, -1, -1):
+            entry = records[index]
+            if entry['resource'] == resource and 'load_at_verdict' not in entry:
+                entry['load_at_verdict'] = os.getloadavg()
+                save_records()
+                for serial, count in serials.items():
+                    if index < count:
+                        write_header(record, serial, context(count))
+                return
+
+    def quiet_host(request):
+        # Holding the lease, wait until QUIET_SAMPLES samples QUIET_SAMPLE_SECONDS apart
+        # all show a 1-minute load at or below quiet_threshold(), or until the cap.
+        now = time.monotonic()
+        if now < request['next_sample']:
+            return False
+        request['next_sample'] = now + QUIET_SAMPLE_SECONDS
+        load = os.getloadavg()[0]
+        threshold = quiet_threshold()
+        request['quiet_samples'] = request['quiet_samples'] + 1 if load <= threshold else 0
+        waited = now - request['quiet_since']
+        met = request['quiet_samples'] >= QUIET_SAMPLES
+        if met or waited >= QUIET_MAX_WAIT_SECONDS:
+            request['quiet_record'] = {'required': True, 'met': met, 'threshold': threshold,
+                                       'wait_seconds': round(waited, 3)}
+            if met:
+                print(f'[host-slot] quiet host: load={load:.2f} <= {threshold}; waited={waited:.1f}s', file=sys.stderr, flush=True)
+            else:
+                print(f'[host-slot] host NOT quiet after {waited:.0f}s (load={load:.2f} > {threshold}); booting anyway, recorded as not quiet', file=sys.stderr, flush=True)
+            return True
+        if waited >= request['next_message']:
+            print(f'[host-slot] waiting for a quiet host before booting: load={load:.2f}, needs <= {threshold} '
+                  f'(half of {os.cpu_count()} CPUs) for {QUIET_SAMPLES} samples {QUIET_SAMPLE_SECONDS}s apart; waited={waited:.1f}s',
+                  file=sys.stderr, flush=True)
+            request['next_message'] = waited + WAIT_MESSAGE_SECONDS
+        return False
+
     def forward(number, frame):
         nonlocal received_signal
         received_signal = number
@@ -335,11 +495,21 @@ def supervise_worker(argv, parent):
                             pending = {'client': client, 'resource': resource,
                                        'since': time.monotonic(), 'next_message': 0,
                                        'load_at_enqueue': os.getloadavg(), 'observed': [],
+                                       'exclusive': EXCLUDES.get(resource),
                                        'bypass': resource == 'mac-boot' and os.environ.get('BREENIX_BOOT_NO_QUEUE') == '1'}
+                            if pending['exclusive']:
+                                slots.enqueue(pending['exclusive'])
+                        elif operation == 'quiet':
+                            if pending is not None:
+                                raise RuntimeError('overlapping requests from one launcher')
+                            pending = {'client': client, 'resource': 'quiet', 'next_message': 0,
+                                       'required': timing_sensitive(request['manifest']),
+                                       'quiet_since': time.monotonic(), 'quiet_samples': 0, 'next_sample': 0}
                         else:
                             if operation == 'release':
                                 if request['resource'].endswith('boot'):
                                     stop_qemu()
+                                    verdict(request['resource'])
                                 slots.release(request['resource'])
                             elif operation == 'cargo-home':
                                 home = isolated_cargo_home(request['source'], request['directory'])
@@ -351,16 +521,37 @@ def supervise_worker(argv, parent):
                                 stop_qemu()
                             elif operation == 'vm':
                                 stop_commands.append(request['stop'])
-                                serials[request['serial']] = Path(record).read_bytes()
+                                serials[request['serial']] = len(records)
                             elif operation == 'serial':
-                                serials[request['serial']] = Path(record).read_bytes()
+                                serials[request['serial']] = len(records)
                             else:
                                 raise ValueError(f'unknown operation {operation}')
                             client.sendall(b'{}\n')
                             client.close()
                     if pending is None:
                         continue
+                    if pending['resource'] == 'quiet':
+                        if pending['required'] and not quiet_host(pending):
+                            continue
+                        start_boot(pending)
+                        pending = None
+                        continue
                     resource = pending['resource']
+                    if pending['exclusive'] and 'exclusive_wait_seconds' not in pending:
+                        waited = time.monotonic() - pending['since']
+                        if not slots.try_acquire_all(pending['exclusive'], identity, f'{resource} running'):
+                            for entry in slots.snapshot():
+                                if entry.get('resource') == pending['exclusive'] and not any(
+                                        all(old.get(k) == entry.get(k) for k in ('pid', 'resource', 'started', 'slot'))
+                                        for old in pending['observed']):
+                                    pending['observed'].append(entry)
+                            if waited >= pending['next_message']:
+                                description = describe(h for h in slots.snapshot() if h.get('resource') == pending['exclusive']) or 'earlier queued request'
+                                print(f'[host-slot] waiting for every {pending["exclusive"]} lease before {resource}: {description}; waited={waited:.1f}s', file=sys.stderr, flush=True)
+                                pending['next_message'] = waited + WAIT_MESSAGE_SECONDS
+                            continue
+                        pending['exclusive_wait_seconds'] = round(waited, 3)
+                        pending['next_message'] = 0
                     holders = slots.snapshot()
                     external = (mac_vms() if resource == 'mac-boot' else [{'vm': 'qemu-system-x86_64', 'pid': pid} for pid in command_output(['pgrep', '-f', '^([^ ]*/)?qemu-system-x86_64( |$)']).splitlines()] if resource == 'x86-boot' else []) if resource not in slots.held and not any(h.get('resource') == resource for h in holders) else []
                     bypass = pending['bypass']
@@ -380,8 +571,7 @@ def supervise_worker(argv, parent):
                     waited = time.monotonic() - pending['since']
                     if holder is None:
                         if waited >= pending['next_message']:
-                            blockers = [h for h in holders if h.get('resource') == resource]
-                            description = '; '.join(f"worktree={h['worktree']} commit={h['commit']} held={h['held_seconds']:.1f}s" for h in blockers )
+                            description = describe(h for h in holders if h.get('resource') == resource)
                             if external:
                                 description = 'unqueued VM ' + json.dumps(external, sort_keys=True)
                             if not description:
@@ -389,16 +579,14 @@ def supervise_worker(argv, parent):
                             print(f'[host-slot] waiting for {resource}: {description}; waited={waited:.1f}s', file=sys.stderr, flush=True)
                             pending['next_message'] = waited + WAIT_MESSAGE_SECONDS
                         continue
-                    result = {'resource': resource, 'queue_wait_seconds': round(waited, 3),
-                              'bypass': bypass, 'load_at_enqueue': pending['load_at_enqueue'],
-                              'load_at_acquire': os.getloadavg(), 'observed_running': pending['observed'],
-                              'running_at_acquire': observed, **identity}
-                    with open(record, 'a') as output:
-                        output.write(json.dumps(result, sort_keys=True) + '\n')
+                    pending['result'] = {'resource': resource, 'queue_wait_seconds': round(waited, 3),
+                                         **({'exclusive': pending['exclusive'], 'exclusive_wait_seconds': pending['exclusive_wait_seconds']} if pending['exclusive'] else {}),
+                                         'bypass': bypass, 'load_at_enqueue': pending['load_at_enqueue'],
+                                         'load_at_acquire': os.getloadavg(), 'observed_running': pending['observed'],
+                                         'running_at_acquire': observed, **identity}
                     print(f'[host-slot] {"BYPASS" if bypass else "acquired"} {resource}; waited={waited:.1f}s load={os.getloadavg()}', file=sys.stderr, flush=True)
                     slots.dequeue(resource)
-                    pending['client'].sendall(b'{}\n')
-                    pending['client'].close()
+                    admit(pending)
                     pending = None
             finally:
                 # Clean descendants before releasing any lease, even if the shell was killed.
@@ -417,8 +605,11 @@ def supervise_worker(argv, parent):
                     signal_tree(signal.SIGKILL)
                     child.wait()
                     stop_qemu()
-                for serial, context in serials.items():
-                    write_header(record, serial, context)
+                for resource in RESOURCES:
+                    if resource.endswith('boot'):
+                        verdict(resource)
+                for serial, count in serials.items():
+                    write_header(record, serial, context(count))
                 if pending is not None:
                     pending['client'].close()
                 for home in cargo_homes:
@@ -429,7 +620,7 @@ def supervise_worker(argv, parent):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'vm', 'serial', 'header', 'cargo-home', 'quiesce'))
+    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'quiet', 'vm', 'serial', 'header', 'cargo-home', 'quiesce'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     values = args.arguments
@@ -440,6 +631,8 @@ def main():
         return supervise(values[1:] if values[0] == '--' else values)
     if args.operation in ('acquire', 'release'):
         send_request({'operation': args.operation, 'resource': values[0]})
+    elif args.operation == 'quiet':
+        send_request({'operation': 'quiet', 'manifest': values[0]})
     elif args.operation == 'vm':
         send_request({'operation': 'vm', 'serial': values[0], 'stop': values[1:]})
     elif args.operation == 'serial':
