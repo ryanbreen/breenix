@@ -250,7 +250,7 @@ pub fn map_prepared_frames(
     let mut complete = true;
     let mut next = 0usize;
     loop {
-        let mut manager_guard = crate::process::manager();
+        let mut manager_guard = crate::process::manager_for_address_space(thread_id);
         let Some(process) = manager_guard
             .as_mut()
             .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
@@ -342,7 +342,7 @@ pub fn map_prepared_frames(
 fn unmap_reservation(thread_id: u64, root: u64, token: u64, start: u64, count: usize) {
     let mut unmapped = 0usize;
     loop {
-        let mut manager_guard = crate::process::manager();
+        let mut manager_guard = crate::process::manager_for_address_space(thread_id);
         let Some(process) = manager_guard
             .as_mut()
             .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))

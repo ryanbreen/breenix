@@ -130,7 +130,7 @@ pub fn sys_mmap(
     // then fails gives the address back.
     let mut previous_hint = None;
     let (start_addr, end_addr, root) = {
-        let mut manager_guard = crate::process::manager();
+        let mut manager_guard = crate::process::manager_for_address_space(current_thread_id);
         let manager = match *manager_guard {
             Some(ref mut m) => m,
             None => {
@@ -277,7 +277,7 @@ pub fn sys_mmap(
     }
 
     if is_private && !flags.contains(MmapFlags::POPULATE) {
-        let mut guard = crate::process::manager();
+        let mut guard = crate::process::manager_for_address_space(current_thread_id);
         let Some((_, process)) = guard
             .as_mut()
             .and_then(|m| m.find_address_space_by_thread_mut(current_thread_id))
@@ -339,7 +339,7 @@ pub fn sys_mmap(
 /// A failed mmap that took the address below `hint` gives it back, unless a
 /// later mmap has already moved the hint on.
 fn restore_mmap_hint(thread_id: u64, start: u64, hint: u64) {
-    let mut manager_guard = crate::process::manager();
+    let mut manager_guard = crate::process::manager_for_address_space(thread_id);
     if let Some((_, process)) = manager_guard
         .as_mut()
         .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
@@ -549,7 +549,7 @@ fn map_file(
         object.map.abandon_population();
         errno
     };
-    let mut manager_guard = crate::process::manager();
+    let mut manager_guard = crate::process::manager_for_address_space(thread_id);
     let Some((pid, process)) = manager_guard
         .as_mut()
         .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
@@ -655,7 +655,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         }
     };
 
-    let mut manager_guard = crate::process::manager();
+    let mut manager_guard = crate::process::manager_for_address_space(current_thread_id);
     let manager = match *manager_guard {
         Some(ref mut m) => m,
         None => {
@@ -810,7 +810,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
         }
     };
 
-    let mut manager_guard = crate::process::manager();
+    let mut manager_guard = crate::process::manager_for_address_space(current_thread_id);
     let manager = match *manager_guard {
         Some(ref mut m) => m,
         None => {

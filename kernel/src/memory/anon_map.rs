@@ -28,11 +28,20 @@ where
     if crate::process::process_manager_held_on_current_cpu() {
         return FaultOutcome::NotFile;
     }
+    // A fork copying this address space keeps it unchanged until it is
+    // done (`fork_copy`): the access runs again and faults again, without
+    // taking the lock on each pass. The checks under the lock decide.
+    if super::fork_copy::copying(root) {
+        return FaultOutcome::Resolved;
+    }
     let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
     let snapshot = {
         let Some(guard) = acquire() else {
             return FaultOutcome::Resolved;
         };
+        if super::fork_copy::copying(root) {
+            return FaultOutcome::Resolved;
+        }
         let Some((pid, owner)) = guard.as_ref().and_then(|m| m.find_process_by_cr3(root)) else {
             return FaultOutcome::NotFile;
         };
@@ -68,6 +77,12 @@ where
             }
             return FaultOutcome::NotFile;
         };
+        if super::fork_copy::copying(root) {
+            if let Some(frame) = frame {
+                let _ = super::frame_allocator::deallocate_leaf_frame(frame);
+            }
+            return FaultOutcome::Resolved;
+        }
         let outcome = match manager.get_process_mut(snapshot.0) {
             Some(owner) => {
                 let prot = anonymous_protection(&owner.vmas, address);

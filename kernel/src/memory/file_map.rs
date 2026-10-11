@@ -1061,6 +1061,31 @@ impl MapState {
             };
             let stop = high.min(low + REVOKE_WINDOW);
             if low < stop {
+                // A fork copying the binding's address space keeps it
+                // unchanged until it is done (`fork_copy`): wait for the copy
+                // with both locks released, then run this section again.
+                let copied_root = live_table(manager, rec)
+                    .map(|pt| pt.level_4_frame().start_address().as_u64())
+                    .filter(|&root| super::fork_copy::copying(root));
+                if let Some(root) = copied_root {
+                    drop(inner);
+                    drop(guard);
+                    super::fork_copy::wait(root);
+                    continue;
+                }
+                // A binding with no live table may be a fork's child, copied
+                // but not yet published: wait, with both locks released, for
+                // the fork to publish or abandon it, then run this section
+                // again, so a child that appears keeps no revoked page.
+                if live_table(manager, rec).is_none() && super::fork_copy::forming(rec.space) {
+                    let space = rec.space;
+                    drop(inner);
+                    drop(guard);
+                    while super::fork_copy::forming(space) {
+                        core::hint::spin_loop();
+                    }
+                    continue;
+                }
                 if let Some(pt) = live_table(manager, rec) {
                     let end = rec.page(stop - 1).start_address().as_u64() + PAGE_SIZE;
                     let mut from = rec.page(low).start_address().as_u64();
@@ -1744,6 +1769,11 @@ pub(crate) fn handle_fault(
     access: Access,
     user_thread: Option<u64>,
 ) -> FaultOutcome {
+    // A fork copying this address space keeps it unchanged until it is done
+    // (`fork_copy`): the access runs again and faults again.
+    if super::fork_copy::copying(root) {
+        return FaultOutcome::Resolved;
+    }
     let outcome = match manager.find_process_by_cr3_mut(root) {
         Some((_, owner)) => resolve_fault(owner, address, access),
         None => return FaultOutcome::NotFile,

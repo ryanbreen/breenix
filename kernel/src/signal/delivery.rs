@@ -330,6 +330,15 @@ fn write_signal_stack(
             .as_deref_mut()
             .ok_or(PrepareWriteError::Fault)?
     };
+    // A fork copying this address space keeps it unchanged until it is done
+    // (`memory::fork_copy`). The signal stays pending for the next return to
+    // user mode, as for a mapping still being populated.
+    if owner
+        .cr3_value()
+        .is_some_and(crate::memory::fork_copy::copying)
+    {
+        return Err(PrepareWriteError::Retry);
+    }
     crate::memory::anon_map::prepare_write(owner, addr, bytes.len())?;
     let table = owner
         .page_table

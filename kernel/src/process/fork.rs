@@ -22,10 +22,10 @@ use crate::task::thread::Thread;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
 #[cfg(target_arch = "x86_64")]
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::VirtAddr;
 
 #[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB, VirtAddr};
+use crate::memory::arch_stub::{Page, PageTableFlags, PhysFrame, Size4KiB, VirtAddr};
 
 /// Copy all mapped user pages from parent to child
 ///
@@ -149,7 +149,7 @@ fn is_in_shared_vma(virt_addr: VirtAddr, vmas: &[Vma]) -> bool {
 /// Returns the number of pages set up for sharing.
 #[allow(dead_code)]
 pub fn setup_cow_pages(
-    parent_page_table: &mut ProcessPageTable,
+    parent_page_table: &ProcessPageTable,
     child_page_table: &mut ProcessPageTable,
 ) -> Result<usize, &'static str> {
     // No VMAs provided — treat all pages as MAP_PRIVATE (legacy behavior)
@@ -161,41 +161,23 @@ pub fn setup_cow_pages(
 /// Pages in MAP_SHARED VMAs are shared directly (same physical frame,
 /// writable in both processes). All other pages use CoW.
 ///
-/// Called unconditionally from both architectures' production fork paths
-/// (`ProcessManager::fork_process_with_parent_context` on x86_64,
-/// `ProcessManager::fork_process_aarch64` on aarch64) as of #745 -- no
-/// longer dead on any build configuration.
+/// Called from both architectures' production fork path, `ForkCopy::copy`
+/// under `sys_fork`, so it is dead on no build configuration (#745).
+///
+/// The parent's table is walked once and each writable private page is
+/// write-protected in place as it is shared (`share_user_leaves`). A fork
+/// calls this holding the parent's copy claim (`memory::fork_copy`), not
+/// PROCESS_MANAGER.
 pub fn setup_cow_pages_with_vmas(
-    parent_page_table: &mut ProcessPageTable,
+    parent_page_table: &ProcessPageTable,
     child_page_table: &mut ProcessPageTable,
     vmas: &[Vma],
 ) -> Result<usize, &'static str> {
     let mut pages_shared = 0;
-    let mut cow_error: Option<&'static str> = None;
-    // x86_64: whether a parent page lost its write permission, so the parent's
-    // translations are flushed once below rather than page by page.
-    #[cfg(target_arch = "x86_64")]
-    let mut parent_write_protected = false;
-
-    // NOTE: No logging in this function — called from fork under PM lock which
-    // disables interrupts on ARM64. Logger lock contention = permanent deadlock.
-
-    // First pass: collect all pages we need to process
-    // (We can't modify parent while iterating, so we collect first)
-    let mut pages_to_share: alloc::vec::Vec<(VirtAddr, PhysAddr, PageTableFlags)> =
-        alloc::vec::Vec::new();
-
-    parent_page_table.walk_mapped_pages(|virt_addr, phys_addr, flags| {
+    parent_page_table.share_user_leaves(|virt_addr, phys_addr, flags| {
         // Only process user-accessible pages
-        if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-            pages_to_share.push((virt_addr, phys_addr, flags));
-        }
-    })?;
-
-    // Second pass: set up CoW for each page
-    for (virt_addr, phys_addr, flags) in pages_to_share {
-        if cow_error.is_some() {
-            break;
+        if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+            return Ok(None);
         }
 
         // ARM64 WORKAROUND: Skip huge pages (2MB blocks) from boot page tables.
@@ -204,7 +186,7 @@ pub fn setup_cow_pages_with_vmas(
         #[cfg(target_arch = "aarch64")]
         if flags.contains(PageTableFlags::HUGE_PAGE) {
             pages_shared += 1;
-            continue;
+            return Ok(None);
         }
 
         let page = Page::<Size4KiB>::containing_address(virt_addr);
@@ -213,68 +195,33 @@ pub fn setup_cow_pages_with_vmas(
         // MAP_SHARED pages: share directly with full write permissions preserved.
         // Both parent and child write to the SAME physical frame — no CoW.
         if is_in_shared_vma(virt_addr, vmas) {
-            if let Err(_e) = child_page_table.map_page(page, frame, flags) {
-                cow_error = Some("Failed to share MAP_SHARED page");
-                continue;
-            }
+            child_page_table
+                .map_page(page, frame, flags)
+                .map_err(|_| "Failed to share MAP_SHARED page")?;
             pages_shared += 1;
-            continue;
+            return Ok(None);
         }
 
         if flags.contains(PageTableFlags::WRITABLE) {
-            // Writable page - needs CoW protection
+            // Writable page - needs CoW protection in both tables. The child
+            // maps the frame first; the walk then write-protects the parent's
+            // descriptor and flushes the parent's translations of it.
             let cow_flags = make_cow_flags(flags);
-
-            // Mark parent page as CoW (read-only + COW flag)
-            if let Err(_e) = parent_page_table.update_page_flags(page, cow_flags) {
-                cow_error = Some("Failed to mark parent page as CoW");
-                continue;
-            }
-
-            // CRITICAL: Flush the TLB entry for this page in the parent's address space
-            // Without this, the parent's TLB may still have the old WRITABLE entry,
-            // allowing writes without triggering page faults. This causes memory
-            // corruption since parent and child would write to the same physical frame.
-            // Every CPU running a thread of the parent must lose it, not only
-            // this one. On x86_64 every other online CPU answers each flush by
-            // NMI, so the flush is made once for the whole address space after
-            // this loop, as Linux flushes once at the end of a fork's copy.
-            #[cfg(target_arch = "x86_64")]
-            {
-                parent_write_protected = true;
-            }
-            #[cfg(not(target_arch = "x86_64"))]
-            crate::memory::tlb::flush_page(virt_addr);
-
-            // Map same frame in child with CoW flags
-            if let Err(_e) = child_page_table.map_page(page, frame, cow_flags) {
-                cow_error = Some("Failed to map CoW page in child");
-                continue;
-            }
-        } else {
-            // Read-only page (e.g., code) - share directly without CoW flag
-            // These pages can never be written, so no fault handling needed
-            if let Err(_e) = child_page_table.map_page(page, frame, flags) {
-                cow_error = Some("Failed to share read-only page");
-                continue;
-            }
+            child_page_table
+                .map_page(page, frame, cow_flags)
+                .map_err(|_| "Failed to map CoW page in child")?;
+            pages_shared += 1;
+            return Ok(Some(cow_flags));
         }
 
+        // Read-only page (e.g., code) - share directly without CoW flag
+        // These pages can never be written, so no fault handling needed
+        child_page_table
+            .map_page(page, frame, flags)
+            .map_err(|_| "Failed to share read-only page")?;
         pages_shared += 1;
-    }
-
-    // Before any return, error included: no page this call write-protected may
-    // keep a writable translation on any CPU. The forking thread is in the
-    // kernel and writes no user memory until then.
-    #[cfg(target_arch = "x86_64")]
-    if parent_write_protected {
-        crate::memory::tlb::flush_all();
-    }
-
-    if let Some(err) = cow_error {
-        return Err(err);
-    }
-
+        Ok(None)
+    })?;
     Ok(pages_shared)
 }
 

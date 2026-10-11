@@ -58,7 +58,7 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
     // freed and prepared again. `prepared` holds the page they start at.
     let mut prepared: Option<(u64, alloc::vec::Vec<PhysFrame<Size4KiB>>)> = None;
     loop {
-        let mut manager_guard = crate::process::manager();
+        let mut manager_guard = crate::process::manager_for_address_space(current_thread_id);
         let Some((pid, process)) = manager_guard
             .as_mut()
             .and_then(|manager| manager.find_address_space_by_thread_mut(current_thread_id))

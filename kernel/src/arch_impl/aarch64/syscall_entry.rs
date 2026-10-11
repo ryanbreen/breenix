@@ -1169,19 +1169,42 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     };
     crate::serial_line::Line::new().char(b'4'); // Fork: page table allocated
 
-    // Phase 2: Fork under PM lock (NO logging inside — interrupts disabled by PM lock)
+    // Phase 2: take what the fork needs from the parent under the PM lock and
+    // claim the parent's address space for the copy (NO logging inside —
+    // interrupts disabled by PM lock).
     crate::serial_line::Line::new().char(b'5'); // Fork phase 2: PM lock
-    let mut manager_guard = crate::process::manager();
-    crate::serial_line::Line::new().char(b'6'); // Fork: PM lock acquired
-    let fork_result = if let Some(ref mut manager) = *manager_guard {
-        if !crate::process::limits::fork_allowed(manager, parent_pid) {
-            return (-11_i64) as u64;
+    let fork = {
+        let mut manager_guard = crate::process::manager();
+        crate::serial_line::Line::new().char(b'6'); // Fork: PM lock acquired
+        if let Some(ref mut manager) = *manager_guard {
+            if !crate::process::limits::fork_allowed(manager, parent_pid) {
+                return (-11_i64) as u64;
+            }
+            manager.begin_fork(parent_pid, child_page_table)
+        } else {
+            Err("Process manager not available")
         }
-        manager.fork_process_aarch64(parent_pid, parent_context, child_page_table.publish())
+    };
+    let Ok(mut fork) = fork else {
+        return (-12_i64) as u64; // -ENOMEM
+    };
+
+    // Phase 3: copy the parent's page tables into the child's without the PM
+    // lock, with interrupts enabled as in the rest of the syscall. Preemption
+    // stays disabled, so this CPU holds the parent's claim until the copy
+    // gives it up, before phase 4 takes the lock (`memory::fork_copy`).
+    let copied = fork.copy();
+
+    // Phase 4: publish the child under the PM lock (NO logging inside). An
+    // abandoned child, declared before the guard, is released after the unlock.
+    let mut abandoned = None;
+    let mut manager_guard = crate::process::manager();
+    let fork_result = if let Some(ref mut manager) = *manager_guard {
+        manager.finish_fork(fork, copied, parent_context, &mut abandoned)
     } else {
         Err("Process manager not available")
     };
-    crate::serial_line::Line::new().char(b'7'); // Fork: fork_process_aarch64 returned
+    crate::serial_line::Line::new().char(b'7'); // Fork: finish_fork returned
 
     match fork_result {
         Ok(child_pid) => {

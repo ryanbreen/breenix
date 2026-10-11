@@ -1116,7 +1116,13 @@ fn generate_pid_status(pid: u64) -> String {
     let (cpu_online, cpu_sample_ticks, cpu_capacity_ticks) = procfs_cpu_accounting_ticks();
     let scheduler_state = crate::task::scheduler::get_process_display_state(pid);
 
-    let manager_guard = crate::process::manager();
+    // VmRSS walks the process's tables: a fork copying them is waited for
+    // with the lock released (`memory::fork_copy`).
+    let manager_guard = crate::process::manager_once_copied(|manager| {
+        manager
+            .get_process(ProcessId::new(pid))
+            .and_then(|process| process.cr3_value())
+    });
     let manager = match manager_guard.as_ref() {
         Some(m) => m,
         None => return String::from("Process manager not available\n"),

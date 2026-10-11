@@ -3999,14 +3999,15 @@ const NEXT_PID_FETCH_ADD_SITES: &[(&str, &str, usize)] = &[
 const ALLOCATE_ORDINARY_PID_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process_with_argv", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn fork_process_aarch64", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_process", 1),
     // #713: x86 spawn() gained its own PID allocator, mirroring aarch64's sibling row above.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_process_with_argv", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_page_table", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_parent_context", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn allocate_pid", 1),
+    // #1360/#1361: both architectures' production fork allocates its child's PID
+    // in the one shared begin_fork, before the parent's copy claim is taken.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn begin_fork", 1),
 ];
 #[rustfmt::skip]
 const INIT_PID_CONSTANT_DEFINITION: &[(&str, &str, usize)] = &[

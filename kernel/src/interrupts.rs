@@ -928,6 +928,12 @@ fn handle_cow_fault(
 
     cow_stats::TOTAL_FAULTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
+    // While a fork copies this address space the write is retried without
+    // taking the lock on each pass; the check under the lock decides.
+    if may_retry && crate::memory::fork_copy::copying(cr3) {
+        return true;
+    }
+
     match fault_manager(may_retry) {
         Ok(mut guard) => {
             cow_stats::MANAGER_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -1010,17 +1016,19 @@ fn resolve_stale_translation(
     addr: VirtAddr,
     needed: x86_64::structures::paging::PageTableFlags,
 ) -> bool {
-    use x86_64::structures::paging::{PageTable, PageTableFlags};
+    use crate::memory::process_memory::{descriptor_entry, descriptors};
+    use x86_64::structures::paging::PageTableFlags;
 
-    let phys_offset = crate::memory::physical_memory_offset();
     let mut table_phys = cr3 & !0xfff;
     for level in (0..4).rev() {
         let index = ((addr.as_u64() >> (12 + 9 * level)) & 0x1FF) as usize;
         // SAFETY: `table_phys` is a page-table frame of the faulting address
         // space, reached from its root through present entries, and the
-        // physical-memory window maps it.
-        let table: &PageTable = unsafe { &*(phys_offset + table_phys).as_ptr::<PageTable>() };
-        let entry = &table[index];
+        // physical-memory window maps it. Each descriptor is read in one
+        // access, since a fork may be lowering it meanwhile without the lock
+        // (`memory::fork_copy`).
+        let table = unsafe { descriptors(x86_64::PhysAddr::new(table_phys)) };
+        let entry = descriptor_entry(table[index].load(core::sync::atomic::Ordering::Relaxed));
         let flags = entry.flags();
         if !flags.contains(needed) || (level > 0 && flags.contains(PageTableFlags::HUGE_PAGE)) {
             return false;
@@ -1046,6 +1054,12 @@ fn handle_cow_with_manager(
         Some(pm) => pm,
         None => return false,
     };
+
+    // A fork copying this address space keeps it unchanged until it is done
+    // (`memory::fork_copy`): the write runs again and faults again.
+    if crate::memory::fork_copy::copying(cr3) {
+        return true;
+    }
 
     let (_pid, process) = match pm.find_process_by_cr3_mut(cr3) {
         Some(p) => p,
@@ -1148,6 +1162,12 @@ fn handle_cow_direct(
     use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
     use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB};
+
+    // The section this fault interrupted holds PROCESS_MANAGER and cannot
+    // release it, so a fork copying this address space is waited for here;
+    // its CPU needs neither the lock nor this one to finish
+    // (`memory::fork_copy::wait`).
+    crate::memory::fork_copy::wait(cr3);
 
     let phys_offset = crate::memory::physical_memory_offset();
     let virt_addr = faulting_addr;
@@ -1288,6 +1308,12 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bo
         return false;
     }
 
+    // While a fork copies this address space the access is retried without
+    // taking the lock on each pass; the check under the lock decides.
+    if may_retry && crate::memory::fork_copy::copying(cr3) {
+        return true;
+    }
+
     // A holder on this CPU is the section this fault interrupted, which
     // cannot be waited for; no stack is grown on its behalf.
     let mut guard = match fault_manager(may_retry) {
@@ -1300,6 +1326,12 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bo
         Some(pm) => pm,
         None => return false,
     };
+
+    // The stack of an address space a fork is copying grows once the copy is
+    // done (`memory::fork_copy`): the access runs again and faults again.
+    if crate::memory::fork_copy::copying(cr3) {
+        return true;
+    }
 
     let (_pid, process) = match pm.find_process_by_cr3_mut(cr3) {
         Some(p) => p,

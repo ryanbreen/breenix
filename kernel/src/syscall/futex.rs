@@ -574,7 +574,9 @@ impl Deadline {
 /// has touched the word, so its page is present.
 fn futex_key(uaddr: u64, private: bool) -> Option<FutexKey> {
     let thread_id = crate::task::scheduler::current_thread_id()?;
-    let mut manager_guard = crate::process::manager();
+    // A shared word's key translates through the caller's tables: a fork
+    // copying them is waited for with the lock released (`memory::fork_copy`).
+    let mut manager_guard = crate::process::manager_for_address_space(thread_id);
     let manager = manager_guard.as_mut()?;
     let group = {
         let (pid, process) = manager.find_process_by_thread(thread_id)?;
