@@ -2436,8 +2436,11 @@ fn cpu_itimer(which: i32, sig: i32, min_left: i64) -> CaseResult {
     arm_itimer(which, 0, 100_000)?;
     pause_ms(300);
     check(count(sig) == 0, &format!("signal {sig} arrived while the process slept"))?;
-    let left = itv_value(&getitimer(which)?);
+    // Start the measured CPU interval before querying its remaining timer
+    // budget: user instructions between these calls consume that budget too.
+    // A later baseline would omit them and report a correct expiry as early.
     let c0 = itimer_cpu_us(which)?;
+    let left = itv_value(&getitimer(which)?);
     let fired = burn_until(2000, || count(sig) > 0);
     let used = itimer_cpu_us(which)? - c0;
     value("left", left / 1000, "ms", Some((min_left, 100)));
