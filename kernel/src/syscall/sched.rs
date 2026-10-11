@@ -127,7 +127,56 @@ fn set(pid: u64, policy: Option<u8>, reset_on_fork: Option<bool>, param: u64) ->
     if !crate::task::scheduler::set_sched_policy(tid, sched) {
         return Err(ESRCH as u64);
     }
+    drop(_serial);
+    // A thread blocked on a priority-inheritance futex passes its new
+    // priority on to the owner.
+    super::futex::pi_priority_changed(tid);
     Ok(0)
+}
+
+/// Breenix's priority-protect call, behind PTHREAD_PRIO_PROTECT mutexes:
+/// the calling thread runs at no less than SCHED_FIFO priority `ceiling`
+/// while it holds mutexes with that ceiling, and at its own priority again
+/// with `ceiling` 0. With `check` nonzero, a SCHED_FIFO or SCHED_RR caller
+/// whose own priority is above `check` gets EINVAL and nothing changes: a
+/// mutex with ceiling `check` may not be locked by it.
+///
+/// Running at a ceiling is running at a real-time priority, so it takes
+/// sched_setscheduler's permission: an unprivileged caller may rise only to
+/// its RLIMIT_RTPRIO, or no higher than its own real-time priority or the
+/// ceiling it already runs at, and gets EPERM otherwise. Lowering is always
+/// allowed.
+pub fn sys_breenix_prio_ceiling(ceiling: u64, check: u64) -> SyscallResult {
+    if ceiling > RT_PRIORITY_MAX as u64 || check > RT_PRIORITY_MAX as u64 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let (me, _, rtprio) = match target(0) {
+        Ok(found) => found,
+        Err(e) => return SyscallResult::Err(e),
+    };
+    let mut refused = None;
+    let rank = if ceiling == 0 { 0 } else { 1 + ceiling as u8 };
+    crate::task::scheduler::update_sched_boost(me, |sched| {
+        let permitted = rtprio.map_or(true, |limit| {
+            ceiling <= limit
+                || rank <= sched.ceiling
+                || (sched.is_realtime() && ceiling <= u64::from(sched.priority))
+        });
+        refused = if check != 0 && sched.is_realtime() && u64::from(sched.priority) > check {
+            Some(EINVAL)
+        } else if !permitted {
+            Some(EPERM)
+        } else {
+            None
+        };
+        if refused.is_none() {
+            sched.ceiling = rank;
+        }
+    });
+    match refused {
+        Some(e) => SyscallResult::Err(e as u64),
+        None => SyscallResult::Ok(0),
+    }
 }
 
 /// sched_setscheduler(pid, policy, param). SCHED_RESET_ON_FORK may be ORed

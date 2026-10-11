@@ -6353,6 +6353,13 @@ impl Scheduler {
             .unwrap_or(current_cpu)
     }
 
+    /// Whether thread `id` is some CPU's current thread. A thread killed from
+    /// another CPU stays current there, and may be in user mode, until that
+    /// CPU switches away.
+    pub fn is_current_on_any_cpu(&self, id: u64) -> bool {
+        self.cpu_state.iter().any(|cpu| cpu.current_thread == Some(id))
+    }
+
     /// Get a thread by ID (public for timer.rs)
     pub fn get_thread(&self, id: u64) -> Option<&Thread> {
         self.threads
@@ -7722,8 +7729,9 @@ pub fn update_sched_policy<E>(
         let Some(thread) = scheduler.get_thread_mut(tid) else {
             return Err(None);
         };
-        let mut sched = change(thread.sched).map_err(Some)?;
-        if sched.is_realtime() || sched.policy == SchedPolicy::IDLE {
+        // An inherited priority or a ceiling outlasts the change.
+        let mut sched = thread.sched.keeping_boosts(change(thread.sched).map_err(Some)?);
+        if sched.is_realtime() || sched.policy == SchedPolicy::IDLE || sched.is_boosted() {
             POLICIES_IN_USE.store(true, Ordering::Release);
         }
         // A quantum is counted from the thread's CPU time as it stands now.
@@ -7745,6 +7753,41 @@ pub fn update_sched_policy<E>(
         Ok(())
     })
     .unwrap_or(Err(None))
+}
+
+/// Change what thread `tid` runs above its own priority with: the rank it
+/// inherits through priority-inheritance futexes or takes from a
+/// priority-protect ceiling (`SchedPolicy::inherited`, `ceiling`, and the
+/// exit mark). When its rank changes, the CPU it runs or waits on chooses
+/// again. Returns the thread's policy as it stands after, None when the
+/// scheduler has no such thread.
+pub fn update_sched_boost(
+    tid: u64,
+    change: impl FnOnce(&mut super::thread::SchedPolicy),
+) -> Option<super::thread::SchedPolicy> {
+    with_scheduler(|scheduler| {
+        let thread = scheduler.get_thread_mut(tid)?;
+        let before = thread.sched.rank();
+        change(&mut thread.sched);
+        let sched = thread.sched;
+        if sched.rank() != before {
+            if sched.rank() > SchedPolicy::DEFAULT.rank() {
+                POLICIES_IN_USE.store(true, Ordering::Release);
+            }
+            let here = Scheduler::current_cpu_id();
+            let running = (0..MAX_CPUS).find(|&cpu| scheduler.cpu_state[cpu].current_thread == Some(tid));
+            let queued = (0..MAX_CPUS).find(|&cpu| scheduler.per_cpu_queues[cpu].contains(&tid));
+            for cpu in [running, queued].into_iter().flatten() {
+                if cpu == here {
+                    set_need_resched();
+                } else {
+                    scheduler.send_resched_ipi_to_cpu(cpu);
+                }
+            }
+        }
+        Some(sched)
+    })
+    .flatten()
 }
 
 /// Give thread `tid` scheduling policy `sched` (`update_sched_policy`).

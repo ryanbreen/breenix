@@ -27,12 +27,32 @@ core::arch::global_asm!(
     .pushsection .text.breenix_uaccess, "ax"
     .global breenix_uaccess_copy
     .global breenix_uaccess_insn
+    .global breenix_uaccess_cmpxchg
+    .global breenix_uaccess_cmpxchg_insn
+    .global breenix_uaccess_load32
+    .global breenix_uaccess_load32_insn
     .global breenix_uaccess_fixup
 // breenix_uaccess_copy(dst: RDI, src: RSI, len: RDX) -> RAX (0 = copied, 1 = faulted)
 breenix_uaccess_copy:
     mov rcx, rdx
 breenix_uaccess_insn:
     rep movsb
+    xor eax, eax
+    ret
+// breenix_uaccess_cmpxchg(word: RDI user, expected: ESI, new: EDX, seen: RCX kernel)
+//     -> RAX (0 = done, 1 = faulted); *seen = the value the word held
+breenix_uaccess_cmpxchg:
+    mov eax, esi
+breenix_uaccess_cmpxchg_insn:
+    lock cmpxchg dword ptr [rdi], edx
+    mov dword ptr [rcx], eax
+    xor eax, eax
+    ret
+// breenix_uaccess_load32(word: RDI user, value: RSI kernel) -> RAX (0 = read, 1 = faulted)
+breenix_uaccess_load32:
+breenix_uaccess_load32_insn:
+    mov eax, dword ptr [rdi]
+    mov dword ptr [rsi], eax
     xor eax, eax
     ret
 breenix_uaccess_fixup:
@@ -55,6 +75,11 @@ core::arch::global_asm!(
     .global breenix_uaccess_load
     .global breenix_uaccess_store8
     .global breenix_uaccess_store
+    .global breenix_uaccess_cmpxchg
+    .global breenix_uaccess_cmpxchg_load
+    .global breenix_uaccess_cmpxchg_store
+    .global breenix_uaccess_load32
+    .global breenix_uaccess_load32_insn
     .global breenix_uaccess_fixup
 // breenix_uaccess_read(dst: x0 kernel, src: x1 user, len: x2) -> x0 (0 = copied, 1 = faulted)
 breenix_uaccess_read:
@@ -108,6 +133,33 @@ breenix_uaccess_store:
 8:
     mov x0, #0
     ret
+// breenix_uaccess_cmpxchg(word: x0 user, expected: w1, new: w2, seen: x3 kernel)
+//     -> x0 (0 = done, 1 = faulted); *seen = the value the word held.
+// The exclusive pair runs with EL1's permissions (PAN is clear); the caller
+// reads the word through the unprivileged routine first.
+breenix_uaccess_cmpxchg:
+9:
+breenix_uaccess_cmpxchg_load:
+    ldaxr w4, [x0]
+    cmp w4, w1
+    b.ne 10f
+breenix_uaccess_cmpxchg_store:
+    stlxr w5, w2, [x0]
+    cbnz w5, 9b
+    b 11f
+10:
+    clrex
+11:
+    str w4, [x3]
+    mov x0, #0
+    ret
+// breenix_uaccess_load32(word: x0 user, value: x1 kernel) -> x0 (0 = read, 1 = faulted)
+breenix_uaccess_load32:
+breenix_uaccess_load32_insn:
+    ldtr w2, [x0]
+    str w2, [x1]
+    mov x0, #0
+    ret
 breenix_uaccess_fixup:
     mov x0, #1
     ret
@@ -132,6 +184,15 @@ extern "C" {
     static breenix_uaccess_store8: u8;
     #[cfg(target_arch = "aarch64")]
     static breenix_uaccess_store: u8;
+    #[cfg(target_arch = "aarch64")]
+    static breenix_uaccess_cmpxchg_load: u8;
+    #[cfg(target_arch = "aarch64")]
+    static breenix_uaccess_cmpxchg_store: u8;
+    #[cfg(target_arch = "x86_64")]
+    static breenix_uaccess_cmpxchg_insn: u8;
+    fn breenix_uaccess_cmpxchg(word: *mut u32, expected: u32, new: u32, seen: *mut u32) -> usize;
+    static breenix_uaccess_load32_insn: u8;
+    fn breenix_uaccess_load32(word: *const u32, value: *mut u32) -> usize;
     static breenix_uaccess_fixup: u8;
 }
 
@@ -144,13 +205,22 @@ pub fn uaccess_fixup(pc: u64, addr: u64) -> Option<u64> {
     }
     // Only the addresses of these assembly labels are taken.
     #[cfg(target_arch = "x86_64")]
-    let hit = pc == core::ptr::addr_of!(breenix_uaccess_insn) as u64;
+    let hit = [
+        core::ptr::addr_of!(breenix_uaccess_insn),
+        core::ptr::addr_of!(breenix_uaccess_cmpxchg_insn),
+        core::ptr::addr_of!(breenix_uaccess_load32_insn),
+    ]
+    .iter()
+    .any(|&insn| pc == insn as u64);
     #[cfg(target_arch = "aarch64")]
     let hit = [
         core::ptr::addr_of!(breenix_uaccess_load8),
         core::ptr::addr_of!(breenix_uaccess_load),
         core::ptr::addr_of!(breenix_uaccess_store8),
         core::ptr::addr_of!(breenix_uaccess_store),
+        core::ptr::addr_of!(breenix_uaccess_cmpxchg_load),
+        core::ptr::addr_of!(breenix_uaccess_cmpxchg_store),
+        core::ptr::addr_of!(breenix_uaccess_load32_insn),
     ]
     .iter()
     .any(|&insn| pc == insn as u64);
@@ -203,6 +273,49 @@ pub fn write_user_bytes(dst: u64, src: *const u8, len: usize) -> Result<(), u64>
     let faulted = unsafe { breenix_uaccess_write(dst as *mut u8, src, len) };
     if faulted == 0 {
         Ok(())
+    } else {
+        Err(14) // EFAULT
+    }
+}
+
+/// Atomically replace the user word at `word` with `new` if it holds
+/// `expected`. Returns the value the word held: the replacement happened when
+/// it equals `expected`. `Err(14)` (EFAULT) if the word is not a legitimate,
+/// aligned user word or its page cannot be read and written. A copy-on-write
+/// page is copied by the fault handler and the exchange retried.
+pub fn cmpxchg_user_u32(word: u64, expected: u32, new: u32) -> Result<u32, u64> {
+    if word % 4 != 0 {
+        return Err(14); // EFAULT
+    }
+    // Readable by the process itself: the exchange below uses the kernel's
+    // own permissions on aarch64.
+    copy_from_user::<u32>(word as *const u32)?;
+    let mut seen = 0u32;
+    // SAFETY: `seen` is a kernel word; the user side faults into the
+    // routine's fault exit rather than the kernel.
+    let faulted = unsafe { breenix_uaccess_cmpxchg(word as *mut u32, expected, new, &mut seen) };
+    if faulted == 0 {
+        Ok(seen)
+    } else {
+        Err(14) // EFAULT
+    }
+}
+
+/// Read the aligned user word at `word` in one access, so a concurrent store
+/// is seen whole or not at all (`copy_from_user` copies bytes). `Err(14)`
+/// (EFAULT) if it is not a legitimate, aligned user word or its page cannot be
+/// read.
+pub fn read_user_u32(word: u64) -> Result<u32, u64> {
+    if word % 4 != 0 {
+        return Err(14); // EFAULT
+    }
+    validate_user_ptr_read(word as *const u32)?;
+    let mut value = 0u32;
+    // SAFETY: `value` is a kernel word; the user side faults into the
+    // routine's fault exit rather than the kernel.
+    let faulted = unsafe { breenix_uaccess_load32(word as *const u32, &mut value) };
+    if faulted == 0 {
+        Ok(value)
     } else {
         Err(14) // EFAULT
     }
