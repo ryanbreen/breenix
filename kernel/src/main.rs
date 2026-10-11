@@ -2664,6 +2664,7 @@ fn panic(info: &PanicInfo) -> ! {
     // Try to output panic info if possible
     serial_println!("KERNEL PANIC: {}", info);
     log::error!("KERNEL PANIC: {}", info);
+    kernel::serial::flush_log_for_panic();
 
     // Failure-capture PR-4: the bounded, lock-free BXCAP record.
     //
