@@ -43,8 +43,9 @@ const NS_PER_SEC: u64 = 1_000_000_000;
 /// not yet delivered.
 const QUEUED: u64 = 1 << 63;
 
-/// Generation order of due signals, so signals due together are queued in the
-/// order their timers expired.
+/// Order of the scheduler passes that made timer signals due. Signals one pass
+/// made due share its number and are queued by `due_late`, in the order their
+/// timers expired, not the order the pass visited the timers.
 static NEXT_DUE: AtomicU64 = AtomicU64::new(1);
 
 /// `TimerSignal::due_for` of a due signal whose recipient exited before its
@@ -80,8 +81,11 @@ pub struct TimerSignal {
     /// The `ThreadSignals` address of the thread whose next signal check
     /// queues the due signal, `REBIND` or `JOB`; 0 while none is due.
     due_for: AtomicUsize,
-    /// When it became due, in `NEXT_DUE` order.
+    /// The pass that made it due, in `NEXT_DUE` order.
     due_seq: AtomicU64,
+    /// How long before that pass the timer expired, on its own clock: of
+    /// signals one pass made due, the one with the most is the earliest.
+    due_late: AtomicU64,
     /// The overrun count the pending signal's siginfo was last read with
     /// (`overrun`), which delivery then reports, or `NOT_SHOWN`.
     shown: AtomicU64,
@@ -95,8 +99,15 @@ impl TimerSignal {
             last_overrun: AtomicI32::new(0),
             due_for: AtomicUsize::new(0),
             due_seq: AtomicU64::new(0),
+            due_late: AtomicU64::new(0),
             shown: AtomicU64::new(NOT_SHOWN),
         }
+    }
+
+    /// Where its due signal is queued among the others: by pass, then within
+    /// a pass the earliest expiry first.
+    fn due_order(&self) -> (u64, core::cmp::Reverse<u64>) {
+        (self.due_seq.load(Ordering::Relaxed), core::cmp::Reverse(self.due_late.load(Ordering::Relaxed)))
     }
 
     /// Clear the due mark, accounting for a due job-control signal.
@@ -472,6 +483,7 @@ impl PosixTimers {
             return false;
         };
         let mut due = false;
+        let mut pass = 0;
         for timer in table.timers.iter_mut() {
             if timer.signal.due_for.load(Ordering::Acquire) == REBIND {
                 let thread = match timer.notify {
@@ -496,6 +508,7 @@ impl PosixTimers {
             if current < timer.deadline {
                 continue;
             }
+            let late = current - timer.deadline;
             let expiries = if timer.interval == 0 {
                 timer.deadline = 0;
                 1
@@ -514,7 +527,11 @@ impl PosixTimers {
             if !timer.signal.expire(expiries) {
                 continue;
             }
-            timer.signal.due_seq.store(NEXT_DUE.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+            if pass == 0 {
+                pass = NEXT_DUE.fetch_add(1, Ordering::Relaxed);
+            }
+            timer.signal.due_seq.store(pass, Ordering::Relaxed);
+            timer.signal.due_late.store(late, Ordering::Relaxed);
             if is_job_control(timer.signo) {
                 timer.signal.due_for.store(JOB, Ordering::Release);
                 JOB_DUE.fetch_add(1, Ordering::AcqRel);
@@ -546,7 +563,7 @@ impl PosixTimers {
             .timers
             .iter()
             .filter(|t| t.signal.due_for.load(Ordering::Acquire) == me)
-            .min_by_key(|t| t.signal.due_seq.load(Ordering::Relaxed))?;
+            .min_by_key(|t| t.signal.due_order())?;
         timer.signal.due_for.store(0, Ordering::Release);
         let process = !matches!(timer.notify, Notify::Thread(_));
         Some((timer.signo, super::types::SigInfo::timer(timer.signal.id, timer.value), process, timer.signal.clone()))
@@ -561,7 +578,7 @@ impl PosixTimers {
             .timers
             .iter()
             .filter(|t| t.signal.due_for.load(Ordering::Acquire) == JOB)
-            .min_by_key(|t| t.signal.due_seq.load(Ordering::Relaxed))?;
+            .min_by_key(|t| t.signal.due_order())?;
         timer.signal.clear_due();
         let thread = match timer.notify {
             Notify::Thread(tid) => Some(tid),

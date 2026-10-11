@@ -8,26 +8,9 @@ const RTC_ADDR_PORT: u16 = 0x70;
 const RTC_DATA_PORT: u16 = 0x71;
 
 #[cfg(target_arch = "x86_64")]
-const RTC_REG_SECONDS: u8 = 0x00;
-#[cfg(target_arch = "x86_64")]
-const RTC_REG_MINUTES: u8 = 0x02;
-#[cfg(target_arch = "x86_64")]
-const RTC_REG_HOURS: u8 = 0x04;
-#[cfg(target_arch = "x86_64")]
-const RTC_REG_DAY: u8 = 0x07;
-#[cfg(target_arch = "x86_64")]
-const RTC_REG_MONTH: u8 = 0x08;
-#[cfg(target_arch = "x86_64")]
-const RTC_REG_YEAR: u8 = 0x09;
-#[cfg(target_arch = "x86_64")]
-const RTC_REG_STATUS_A: u8 = 0x0A;
-#[cfg(target_arch = "x86_64")]
-const RTC_REG_STATUS_B: u8 = 0x0B;
+#[path = "cmos.rs"]
+mod cmos;
 
-#[cfg(target_arch = "x86_64")]
-const RTC_UPDATE_IN_PROGRESS: u8 = 0x80;
-#[cfg(target_arch = "x86_64")]
-const RTC_24HOUR_FORMAT: u8 = 0x02;
 #[cfg(target_arch = "x86_64")]
 const RTC_BINARY_FORMAT: u8 = 0x04;
 
@@ -56,26 +39,23 @@ struct RTCTime {
 }
 
 #[cfg(target_arch = "x86_64")]
-static CMOS_LOCK: spin::Mutex<()> = spin::Mutex::new(());
-
-#[cfg(target_arch = "x86_64")]
-fn read_rtc_register(reg: u8) -> u8 {
-    crate::arch_without_interrupts(|| {
-        let guard = CMOS_LOCK.lock();
-        let value = unsafe {
-            let mut addr_port = Port::new(RTC_ADDR_PORT);
-            let mut data_port = Port::new(RTC_DATA_PORT);
-            addr_port.write(reg);
-            data_port.read()
-        };
-        drop(guard);
-        value
-    })
+struct CachedRtc {
+    raw: [u8; 7],
+    sampled_tsc: u64,
 }
 
 #[cfg(target_arch = "x86_64")]
-fn rtc_update_in_progress() -> bool {
-    read_rtc_register(RTC_REG_STATUS_A) & RTC_UPDATE_IN_PROGRESS != 0
+static CMOS_LOCK: spin::Mutex<Option<CachedRtc>> = spin::Mutex::new(None);
+
+#[cfg(target_arch = "x86_64")]
+// Called only with interrupts masked and CMOS_LOCK held for the snapshot.
+fn read_rtc_register(reg: u8) -> u8 {
+    unsafe {
+        let mut addr_port = Port::new(RTC_ADDR_PORT);
+        let mut data_port = Port::new(RTC_DATA_PORT);
+        addr_port.write(reg);
+        data_port.read()
+    }
 }
 
 #[cfg(test)]
@@ -89,35 +69,74 @@ fn bcd_to_binary(value: u8) -> u8 {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn read_rtc_raw() -> RTCTime {
-    while rtc_update_in_progress() {
+fn read_rtc_raw() -> Result<RTCTime, &'static str> {
+    read_rtc_raw_with(read_rtc_register)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn read_rtc_raw_with(mut read: impl FnMut(u8) -> u8) -> Result<RTCTime, &'static str> {
+    // UIP can cover a millisecond-scale update. A count bound can expire too
+    // soon on physical CMOS, whose port accesses are much faster than KVM's.
+    let frequency = super::tsc::frequency_hz();
+    let started = super::tsc::read_tsc_serialized();
+    let timeout = frequency / 100; // 10 ms stabilization retry window.
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let raw = crate::arch_without_interrupts(|| {
+            let mut cache = CMOS_LOCK.lock();
+            let before = super::tsc::read_tsc_serialized();
+            let budget = frequency / 2;
+            let raw = match cache.as_ref() {
+                Some(cached) if before.wrapping_sub(cached.sampled_tsc) < budget => {
+                    cmos::live_time(&mut read).and_then(|(second, minute)| {
+                        let age = super::tsc::read_tsc_serialized().wrapping_sub(cached.sampled_tsc);
+                        cmos::advance_cached(cached.raw, second, minute, age, budget)
+                            .or_else(|| cmos::snapshot(&mut read))
+                    })
+                }
+                _ => cmos::snapshot(&mut read),
+            };
+            let elapsed = super::tsc::read_tsc_serialized().wrapping_sub(before);
+            // A VM pause or NMI lasting a full minute can hide a seconds wrap.
+            // A conservative half-second budget also keeps multiple updates
+            // out of any accepted snapshot; time is still read from the RTC.
+            if budget != 0 && elapsed < budget {
+                if let Some(raw) = raw {
+                    *cache = Some(CachedRtc { raw, sampled_tsc: before });
+                }
+                raw
+            } else {
+                *cache = None;
+                None
+            }
+        });
+        if let Some(raw) = raw {
+            return Ok(decode_rtc(raw));
+        }
+        if cmos::retry_exhausted(
+            super::tsc::read_tsc_serialized().wrapping_sub(started), timeout, attempts,
+        ) {
+            return Err("RTC did not stabilize");
+        }
         core::hint::spin_loop();
     }
+}
 
-    let status_b = read_rtc_register(RTC_REG_STATUS_B);
-    let is_binary = status_b & RTC_BINARY_FORMAT != 0;
-    let is_24hour = status_b & RTC_24HOUR_FORMAT != 0;
-
+#[cfg(target_arch = "x86_64")]
+fn decode_rtc(raw: [u8; 7]) -> RTCTime {
+    let is_binary = raw[6] & RTC_BINARY_FORMAT != 0;
     let mut time = RTCTime {
-        second: read_rtc_register(RTC_REG_SECONDS),
-        minute: read_rtc_register(RTC_REG_MINUTES),
-        hour: read_rtc_register(RTC_REG_HOURS),
-        day: read_rtc_register(RTC_REG_DAY),
-        month: read_rtc_register(RTC_REG_MONTH),
-        year: read_rtc_register(RTC_REG_YEAR) as u16,
+        second: raw[0], minute: raw[1], hour: cmos::decode_hour(raw[2], raw[6]),
+        day: raw[3], month: raw[4], year: u16::from(raw[5]),
     };
 
     if !is_binary {
         time.second = bcd_to_binary(time.second);
         time.minute = bcd_to_binary(time.minute);
-        time.hour = bcd_to_binary(time.hour & 0x7F);
         time.day = bcd_to_binary(time.day);
         time.month = bcd_to_binary(time.month);
         time.year = bcd_to_binary(time.year as u8) as u16;
-    }
-
-    if !is_24hour && (time.hour & 0x80) != 0 {
-        time.hour = ((time.hour & 0x7F) + 12) % 24;
     }
 
     time.year += 2000;
@@ -249,44 +268,9 @@ impl DateTime {
     }
 }
 
-#[allow(dead_code)]
-fn rtc_time_to_datetime(rtc: &RTCTime) -> DateTime {
-    DateTime {
-        year: rtc.year,
-        month: rtc.month,
-        day: rtc.day,
-        hour: rtc.hour,
-        minute: rtc.minute,
-        second: rtc.second,
-    }
-}
-
 #[cfg(target_arch = "x86_64")]
 pub fn read_rtc_time() -> Result<u64, &'static str> {
-    // Retry a second-boundary update instead of rejecting a healthy RTC.
-    let mut previous = read_rtc_raw();
-    for _ in 0..100 {
-        let current = read_rtc_raw();
-        if previous.second == current.second
-            && previous.minute == current.minute
-            && previous.hour == current.hour
-            && previous.day == current.day
-            && previous.month == current.month
-            && previous.year == current.year
-        {
-            return Ok(rtc_to_unix_timestamp(&current));
-        }
-        previous = current;
-    }
-    Err("RTC did not stabilize")
-}
-
-/// Read the current date and time from the RTC
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-pub fn read_datetime() -> DateTime {
-    let time = read_rtc_raw();
-    rtc_time_to_datetime(&time)
+    read_rtc_raw().map(|time| rtc_to_unix_timestamp(&time))
 }
 
 /// Initialize RTC and cache boot time
