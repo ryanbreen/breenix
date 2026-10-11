@@ -713,3 +713,7 @@ path = "src/suite_memory.rs"
 [[bin]]
 name = "suite-threads"
 path = "src/suite_threads.rs"
+
+[[bin]]
+name = "suite-stall"
+path = "src/suite_stall.rs"

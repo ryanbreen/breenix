@@ -1,0 +1,16 @@
+{
+  "id": "stall",
+  "title": "Stall (scratch)",
+  "area": "Processes",
+  "summary": "Scratch measurement of how long running threads go without executing; never merged.",
+  "binary": "/sbin/suite-stall",
+  "categories": [
+    {
+      "id": "measure",
+      "title": "Measurement",
+      "cases": [
+        { "id": "done", "title": "The stall measurement ran" }
+      ]
+    }
+  ]
+}
