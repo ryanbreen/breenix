@@ -231,6 +231,10 @@
         {
           "id": "futex-private",
           "title": "Linux ABI: FUTEX_WAKE_PRIVATE wakes a FUTEX_WAIT_PRIVATE waiter"
+        },
+        {
+          "id": "futex-child-exit",
+          "title": "Linux ABI: FUTEX_WAIT with a 100 ms timeout returns ETIMEDOUT on time when a child exits during the wait and SIGCHLD is ignored"
         }
       ]
     },

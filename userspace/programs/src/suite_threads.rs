@@ -2368,6 +2368,34 @@ fn mx_futex_timeout() -> CaseResult {
     })
 }
 
+fn mx_futex_child_exit() -> CaseResult {
+    trial_ms(3000, || {
+        let child = match process::fork() {
+            Ok(ForkResult::Child) => {
+                sleep_ms(30);
+                exit_group(0)
+            }
+            Ok(ForkResult::Parent(pid)) => pid.raw() as i64,
+            Err(e) => return fail(format!("fork failed: {e}")),
+        };
+        let word = AtomicU32::new(0);
+        let rel = ts(100 * MS);
+        wait_for(100, "late");
+        let t0 = mono();
+        step("in FUTEX_WAIT with a 100 ms timeout while a child exits");
+        let r = futex(&word, FUTEX_WAIT, 0, rel.as_ptr() as u64, 0, 0);
+        let end = mono();
+        let mut status = 0;
+        let reaped = sc(nr::WAIT4, &[child as u64, &mut status as *mut i32 as u64, 0, 0]);
+        check(reaped == child, &format!("wait4 for the child returned {}", shown(reaped)))?;
+        check(r == -(ETIMEDOUT as i64), &format!(
+            "FUTEX_WAIT with a 100 ms timeout returned {} after {} ms, while a child exited 30 ms in, expected ETIMEDOUT",
+            shown(r), (end - t0) / MS
+        ))?;
+        on_time("FUTEX_WAIT", end, t0 + 100 * MS)
+    })
+}
+
 fn mx_futex_private() -> CaseResult {
     trial(|| {
         let word = leak(AtomicU32::new(0));
@@ -4362,6 +4390,7 @@ static SUITE: Suite = suite("threads", "Threads", &[
         case("futex-wake-count", "Linux ABI: FUTEX_WAKE wakes exactly as many waiters as asked", mx_futex_wake_count),
         case("futex-timeout", "Linux ABI: FUTEX_WAIT with a 100 ms timeout returns ETIMEDOUT on time", mx_futex_timeout),
         case("futex-private", "Linux ABI: FUTEX_WAKE_PRIVATE wakes a FUTEX_WAIT_PRIVATE waiter", mx_futex_private),
+        case("futex-child-exit", "Linux ABI: FUTEX_WAIT with a 100 ms timeout returns ETIMEDOUT on time when a child exits during the wait and SIGCHLD is ignored", mx_futex_child_exit),
     ]),
     category("cond", "condition variables", &[
         case("signal-wakes", "pthread_cond_signal wakes a waiting thread, which returns holding the mutex", cv_signal_wakes),
