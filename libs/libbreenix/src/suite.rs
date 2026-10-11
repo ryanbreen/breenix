@@ -217,6 +217,14 @@ fn is_word(text: &str) -> bool {
 /// range the case accepts. `name` is lowercase words joined by '-' and `unit` lowercase
 /// letters (or empty); a record with any other name or unit is not printed. Report the
 /// quantities a case asserts on, a few per case, never one per loop iteration.
+/// SCRATCH: one uncapped line on the case's record output.
+pub fn scratch_line(line: &str) {
+    let fd = RECORD_FD.load(Ordering::Relaxed);
+    if fd >= 0 {
+        emit_to(Fd::from_raw(fd as u64), line);
+    }
+}
+
 pub fn value(name: &str, number: i64, unit: &str, expect: Option<(i64, i64)>) {
     if !is_word(name) || !unit.bytes().all(|b| b.is_ascii_lowercase()) {
         return;

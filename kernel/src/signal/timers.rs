@@ -509,6 +509,10 @@ impl PosixTimers {
                 continue;
             }
             let late = current - timer.deadline;
+            #[cfg(target_arch = "x86_64")]
+            if timer.signo != 0 {
+                crate::task::wakelat::posix_late(late);
+            }
             let expiries = if timer.interval == 0 {
                 timer.deadline = 0;
                 1

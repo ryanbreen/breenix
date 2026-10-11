@@ -1574,8 +1574,15 @@ pub fn reclaim_deferred_process_resources() {
 
     // Keep detached Unix close work inside the existing preemption/ownership
     // bracket, after PM and scheduler-scope refusal.
+    #[cfg(target_arch = "x86_64")]
+    let wl = crate::task::wakelat::reclaim(true);
     crate::socket::unix::drain_close_notifications();
     reclaim_deferred_process_resources_for_pass(my_pass, false);
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::task::wakelat::reclaim(false);
+        crate::task::wakelat::reclaim_done(wl);
+    }
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
     reclaim_preempt_enable();
 }

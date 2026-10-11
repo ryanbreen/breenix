@@ -4462,4 +4462,45 @@ static SUITE: Suite = suite("threads", "Threads", &[
     ]),
 ]);
 
-fn main() { SUITE.run() }
+
+// SCRATCH (never merged): forcing cases for #1357/#1350.
+fn wl_dump(tag: &str) {
+    if let Ok(text) = std::fs::read_to_string("/proc/trace/counters") {
+        for line in text.lines().filter(|l| l.starts_with("WAKELAT")) {
+            libbreenix::suite::scratch_line(&format!("SCRATCH {tag} {line}"));
+        }
+    }
+}
+fn br_cpus_stat() -> CaseResult {
+    wl_dump("pre-barrier");
+    let start = mono();
+    let r = br_cpus();
+    libbreenix::suite::scratch_line(&format!("SCRATCH barrier ms={} ok={}", (mono() - start) / MS, r.is_ok()));
+    wl_dump("barrier");
+    r
+}
+fn tw_rep() -> CaseResult {
+    wl_dump("pre-tw");
+    for i in 0..10 {
+        let r = cv_timedwait_monotonic();
+        let ok = r.is_ok();
+        let msg = r.err().map(text).unwrap_or_default();
+        libbreenix::suite::scratch_line(&format!("SCRATCH tw iter={i} ok={ok} {msg}"));
+    }
+    wl_dump("tw");
+    Ok(())
+}
+static SCRATCH: Suite = suite("threads", "Threads", &[
+    category("scratch", "scratch", &[
+        case("barrier-cpus", "scratch", br_cpus_stat),
+        case("tw-a", "scratch", tw_rep),
+        case("tw-b", "scratch", tw_rep),
+        case("tw-c", "scratch", tw_rep),
+        case("tw-d", "scratch", tw_rep),
+        case("tw-e", "scratch", tw_rep),
+        case("tw-f", "scratch", tw_rep),
+        case("barrier-cpus-2", "scratch", br_cpus_stat),
+    ]),
+]);
+
+fn main() { let _ = &SUITE; SCRATCH.run() }
