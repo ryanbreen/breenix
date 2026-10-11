@@ -452,8 +452,12 @@ const PRODUCTION_RECLAIM_FRAME_BUDGET: u32 = 16;
 /// dispatch latency for memory, as the uncapped drain did.
 const PRESSURED_PASS_SELECTION_CAP: u32 = 4;
 
-/// Whether fewer than half of the usable frames are free: unallocated at the
-/// frontier or on the free list.
+/// Whether fewer than half of the usable frames are free (unallocated at the
+/// frontier or on the free list), or less than half of the kernel heap. A
+/// queued receipt keeps its process row and the page table's per-page custody
+/// records on the heap until it completes, and a fork copies its parent's
+/// records, so receipts falling behind a forking suite can empty the 64 MiB
+/// heap while most frames are still free.
 fn memory_pressure() -> bool {
     let stats = crate::memory::frame_allocator::memory_stats();
     let total = (stats.total_bytes / 4096) as usize;
@@ -461,6 +465,7 @@ fn memory_pressure() -> bool {
         .saturating_sub(stats.allocated_frames)
         .saturating_add(stats.free_list_frames);
     available < total / 2
+        || crate::memory::heap::free_bytes() < (crate::memory::heap::HEAP_SIZE / 2) as usize
 }
 
 /// Injected nested refusals observed by `boot_prove_nested_drain_refusal`.
@@ -1520,8 +1525,10 @@ fn boot_finish_reclaim_pass(boot_test_owned: bool) {
     let _ = boot_test_owned;
 }
 
-/// Reclaim process frames whose cross-CPU TTBR0 retention has quiesced.
-pub fn reclaim_deferred_process_resources() {
+/// Reclaim process frames whose cross-CPU TTBR0 retention has quiesced: one
+/// production pass. Returns whether it retired anything (a receipt completed,
+/// or a bounded step released part of one).
+pub fn reclaim_deferred_process_resources() -> bool {
     let my_pass = next_reclaim_pass_id(
         RECLAIM_PASS_ID
             .fetch_add(1, Ordering::Relaxed)
@@ -1531,11 +1538,11 @@ pub fn reclaim_deferred_process_resources() {
         || crate::tracing::providers::teardown::scheduler_scope_active()
     {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_CONTEXT_VIOLATIONS);
-        return;
+        return false;
     }
     #[cfg(feature = "boot_tests")]
     if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
-        return;
+        return false;
     }
     crate::proof_cover!(ReclaimBracket);
     // #653: the bracket opens BEFORE the compare-exchange on purpose. The gap
@@ -1556,7 +1563,7 @@ pub fn reclaim_deferred_process_resources() {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED);
         #[cfg(not(feature = "coreproof_mut_reclaim_bracket"))]
         reclaim_preempt_enable();
-        return;
+        return false;
     }
     #[cfg(feature = "coreproof_mut_reclaim_bracket")]
     reclaim_preempt_disable();
@@ -1564,17 +1571,20 @@ pub fn reclaim_deferred_process_resources() {
     // Keep detached Unix close work inside the existing preemption/ownership
     // bracket, after PM and scheduler-scope refusal.
     crate::socket::unix::drain_close_notifications();
-    reclaim_deferred_process_resources_for_pass(my_pass, false);
+    let retired = reclaim_deferred_process_resources_for_pass(my_pass, false);
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
     reclaim_preempt_enable();
+    retired
 }
 
-fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bool) {
+/// One reclamation pass. Returns whether it retired anything: a receipt
+/// completed, or a bounded step released part of one.
+fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bool) -> bool {
     #[cfg(not(feature = "boot_tests"))]
     let _ = boot_test_owned;
     #[cfg(feature = "boot_tests")]
     if !boot_test_owned && BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
-        return;
+        return false;
     }
     unpark_sweep();
     boot_begin_reclaim_pass(boot_test_owned);
@@ -1584,6 +1594,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
     // passes are uncapped and keep their drain-to-quiesce meaning.
     let mut production_selections: u32 = 0;
     let pressured = !boot_test_owned && memory_pressure();
+    let mut retired = false;
 
     loop {
         #[cfg(feature = "boot_tests")]
@@ -1652,6 +1663,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                 })
                     == crate::memory::process_memory::RetireProgress::Complete
                 {
+                    retired = true;
                     crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
                     // P6a retire arm: settle this row's receipt and, if the reap
                     // already landed, complete the join here.
@@ -1676,6 +1688,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     }
                     drop(evicted);
                 } else {
+                    retired = true;
                     crate::trace_count!(
                         crate::tracing::providers::teardown::PT_RETIRE_BUDGET_REQUEUED
                     );
@@ -1709,6 +1722,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
         }
     }
     boot_finish_reclaim_pass(boot_test_owned);
+    retired
 }
 
 #[cfg(feature = "boot_tests")]
