@@ -471,7 +471,7 @@ for i in $(seq 1 "$COUNT"); do
   fi
   if [ "$utc_clock_failed" = true ]; then
     verdict_ok=false
-    verdict_reason="guest UTC epoch disagreed with host UTC; $verdict_reason"
+    verdict_reason="guest UTC epoch check failed (missing, duplicate or outside host bracket); $verdict_reason"
   fi
   if [ "$census_ok" = true ] && [ "$verdict_ok" = true ]; then
     echo "  Test $i: PASS"

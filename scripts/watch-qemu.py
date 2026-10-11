@@ -116,17 +116,17 @@ def main():
                        args.gate_timeout, args.suite_hold, clock)
     finally:
         stop(process)
-    clock_ok, clock_reason = clock.verdict()
-    print(clock_reason, flush=True)
-    if args.mode in COMPLETING_MODES and not clock_ok:
-        return 1
+    clock_ok = True
+    if args.mode in COMPLETING_MODES:
+        clock_ok, clock_reason = clock.verdict()
+        print(clock_reason, flush=True)
     if reason == "fatal":
         return 1
     if args.mode in ("probe", "tests"):
         serial = args.serial.read_bytes().decode("utf-8", errors="replace") if args.serial.exists() else ""
         result = DONE["completion"](serial, args.mode, args.suite)
         print(f"{'PASS' if result and result[0] else 'FAIL'}: {result[1] if result else 'no completion record'}", flush=True)
-        return 0 if result and result[0] else 1
+        return 0 if result and result[0] and clock_ok else 1
     if args.mode == "suite":
         serial = args.serial.read_bytes().decode("utf-8", errors="replace") if args.serial.exists() else ""
         result = DONE["completion"](serial, args.mode, args.suite)
@@ -143,7 +143,9 @@ def main():
             if disk_detail:
                 detail += f"; {disk_detail}"
         print(f"{'PASS' if ok else 'FAIL'}: {detail}", flush=True)
-        return 0 if ok else 1
+        return 0 if ok and clock_ok else 1
+    if reason == "idle":
+        return 0
     return process.returncode if process.returncode >= 0 else 128 - process.returncode
 
 

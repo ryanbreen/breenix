@@ -52,8 +52,9 @@ def main():
     parser.add_argument("mode", choices=("probe", "suite", "tests"))
     parser.add_argument("--suite", default="")
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--started", type=float, help="host epoch immediately before VM launch")
     args = parser.parse_args()
-    clock = WallClockCheck(args.serial)
+    clock = WallClockCheck(args.serial, args.started)
     deadline = time.monotonic() + args.timeout
     while True:
         try:
@@ -70,10 +71,9 @@ def main():
                 verdict = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))["verdict"]
                 ok, reason = verdict(manifest, args.serial, [args.serial])
             clock_ok, clock_reason = clock.verdict()
-            ok = ok and clock_ok
             print(clock_reason)
             print(f"{'PASS' if ok else 'FAIL'}: {reason}")
-            return 0 if ok else 1
+            return 0 if ok and clock_ok else 1
         if time.monotonic() >= deadline:
             print(f"FAIL: no {args.mode} DONE within {args.timeout} seconds")
             return 1

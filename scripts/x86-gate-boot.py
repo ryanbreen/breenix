@@ -43,7 +43,7 @@ def main():
     backstop = float(os.environ.get('BREENIX_FULL_BACKSTOP', str(max(1800, deadline))))
     if deadline <= 0 or backstop <= 0:
         raise ValueError('gate deadline and full backstop must be positive')
-    clock = WallClockCheck(kernel_log)
+    clock = WallClockCheck(user_log)
     process = subprocess.Popen(sys.argv[3:], start_new_session=True)
     started = time.monotonic()
     try:
@@ -53,11 +53,11 @@ def main():
             if COMPLETE.search(text) and REPORT_DONE.search(text):
                 elapsed = time.monotonic() - started
                 print(f'[gate] full boot completed after {elapsed:.1f}s', flush=True)
+                clock_ok, clock_reason = clock.verdict()
+                print(clock_reason, flush=True)
                 if elapsed > deadline:
                     print(f'GATE: FAIL (full boot completed beyond {deadline:g}s scoring deadline; #1068)', flush=True)
                     return 2
-                clock_ok, clock_reason = clock.verdict()
-                print(clock_reason, flush=True)
                 return 0 if clock_ok else 3
             if process.poll() is not None:
                 print(f'GATE: FAIL (full boot exited before USERSPACE TEST COMPLETE; status={process.returncode})', flush=True)

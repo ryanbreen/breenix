@@ -71,7 +71,7 @@ def record(repo, out, suite, user, kernel, disk, started, ended, forced_failure=
 def main():
     repo, out, suites, timeout, command = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3].split(','), float(sys.argv[4]), sys.argv[5:]
     user_path, kernel_path = out / 'serial_user.log', out / 'serial_kernel.log'
-    clock = WallClockCheck(kernel_path)
+    clock = WallClockCheck(user_path)
     offsets = [0, 0]
     started = time.time()
     deadline = time.monotonic() + timeout

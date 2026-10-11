@@ -10,7 +10,7 @@ Clock = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/wall_c
 class WallClockTest(unittest.TestCase):
     def check(self, offset, source='UEFI', newline=True):
         with tempfile.TemporaryDirectory() as directory:
-            clock = Clock(Path(directory) / 'serial')
+            clock = Clock(Path(directory) / 'serial', 1800000000.5)
             clock.observe(f'[clock] UTC epoch={1800000000 + offset} source={source}' + ('\n' if newline else ''), 1800000000.5)
             return clock.verdict()[0]
 
@@ -22,24 +22,38 @@ class WallClockTest(unittest.TestCase):
         for offset in (-43200, -14400, -3600, 3600, 19800, 43200):
             self.assertFalse(self.check(offset))
 
-    def test_five_second_bound(self):
-        self.assertTrue(self.check(-4))
-        self.assertTrue(self.check(5))
-        self.assertFalse(self.check(-5))
-        self.assertFalse(self.check(6))
+    def test_launch_receipt_bracket(self):
+        self.assertTrue(self.check(0))
+        self.assertFalse(self.check(-1))
+        self.assertFalse(self.check(1))
+
+    def test_stalled_receipt_preserves_boot_epoch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clock = Clock(Path(directory) / 'serial', 1800000000.5)
+            clock.observe('[clock] UTC epoch=1800000000 source=PL031\n', 1800000030.5)
+            self.assertTrue(clock.verdict()[0])
+
+    def test_stale_sidecar_is_removed_even_without_a_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / 'serial'
+            sidecar = Path(str(serial) + '.utc.json')
+            sidecar.write_text('{"passed":true}')
+            clock = Clock(serial)
+            self.assertFalse(sidecar.exists())
+            self.assertFalse(clock.verdict()[0])
 
     def test_incomplete_record_does_not_count(self):
         self.assertFalse(self.check(0, newline=False))
 
     def test_announcements_and_missing_records_fail(self):
         with tempfile.TemporaryDirectory() as directory:
-            clock = Clock(Path(directory) / 'serial')
+            clock = Clock(Path(directory) / 'serial', 1800000000.5)
             clock.observe('kernel::test_exec: -> Userspace will emit [clock] UTC epoch=1800000000 source=CMOS\n', 1800000000)
             self.assertFalse(clock.verdict()[0])
 
     def test_duplicate_records_fail(self):
         with tempfile.TemporaryDirectory() as directory:
-            clock = Clock(Path(directory) / 'serial')
+            clock = Clock(Path(directory) / 'serial', 1800000000.5)
             clock.observe('[clock] UTC epoch=1800000000 source=CMOS\n' * 2, 1800000000)
             self.assertFalse(clock.verdict()[0])
 

@@ -219,6 +219,5 @@ echo "==> VM stopped (exit $code)"
 host_slot_header "$SERIAL_LOG"
 "$ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" "$code"
 
-# Propagate the watcher's boot and UTC verdict in every mode; Vigil records
-# the same status, including a missing probe or testing completion.
+# Propagate the watcher status; suite, probe and tests include a UTC verdict.
 exit "$code"

@@ -319,7 +319,7 @@ mark_wrapped_ext2() {
 # Wait for a userspace completion record and reject missing or failing verdicts.
 wait_boot_done() {
     python3 "$BREENIX_ROOT/scripts/wait-boot-done.py" "$SERIAL_LOG" "$BOOT_MODE" \
-        --suite "$SUITE" --timeout "$GATE_TIMEOUT"
+        --suite "$SUITE" --timeout "$GATE_TIMEOUT" --started "$CLOCK_STARTED"
 }
 
 # Install before starting a VM. Ignore further signals during cleanup so Vigil
@@ -605,8 +605,8 @@ if [ "$PARALLELS" = true ]; then
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
     prlctl set "$PARALLELS_VM" --memsize 8192
     prlctl set "$PARALLELS_VM" --cpus 8
-    # Firmware currently supplies UTC with an unspecified UEFI TimeZone.
-    # Keep Tools time synchronization in UTC too, independent of the host zone.
+    # Parallels UEFI supplies UTC by default with an unspecified TimeZone.
+    # Tools synchronization settings do not determine that firmware default.
     prlctl set "$PARALLELS_VM" --time-sync on --disable-timezone-sync on
     # Disable auto-suspend: default is "suspend" which halts the VM when Parallels
     # detects no display activity. Breenix runs headless/serial; we want it to
@@ -666,6 +666,7 @@ if [ "$PARALLELS" = true ]; then
     else
         prlctl set "$PARALLELS_VM" --startup-view window 2>/dev/null || true
     fi
+    CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
     prlctl start "$PARALLELS_VM"
     echo ""
     echo "========================================="
@@ -1037,8 +1038,10 @@ VMXEOF
         # the operator's desktop has to skip the gui attempt entirely rather
         # than rely on the error-fallback path below.
         echo "BREENIX_VMWARE_NOGUI set: starting headless (nogui)"
+        CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
         "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
     else
+        CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
         "$VMRUN" start "$VMX_FILE" gui 2>&1 || {
             echo "vmrun start failed with GUI, trying nogui..."
             "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true

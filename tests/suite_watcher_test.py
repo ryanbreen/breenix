@@ -66,7 +66,10 @@ class SuiteWatcherTest(unittest.TestCase):
             )
             elapsed = time.monotonic() - started
             self.assertTrue(stopped.exists(), result.stdout + result.stderr)
-            self.assertTrue(serial.read_bytes().endswith(data + late))
+            recorded = serial.read_bytes()
+            clock_line, body = recorded.split(b"\n", 1)
+            self.assertRegex(clock_line, rb"^\[clock\] UTC epoch=\d+ source=PL031$")
+            self.assertEqual(body, data + late)
             return result, elapsed
 
     def test_done_stops_before_idle_and_keeps_complete_serial(self):
@@ -81,6 +84,7 @@ class SuiteWatcherTest(unittest.TestCase):
         result, _ = self.replay(RECORDING, clock_offset=-3600)
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("UTC clock FAIL", result.stdout)
+        self.assertIn("PASS: SUITE directories DONE", result.stdout)
 
     def test_missing_done_idles_and_fails(self):
         data = b"\n".join(line for line in RECORDING.split(b"\n")
@@ -154,6 +158,22 @@ class SuiteWatcherTest(unittest.TestCase):
         self.assertIn("before deadline", result.stdout)
         self.assertGreaterEqual(elapsed, 1)
         self.assertLess(elapsed, 2)
+
+    def test_interactive_modes_idle_without_a_clock_verdict(self):
+        for mode in ("shell", "desktop", "program"):
+            result, _ = self.replay(b"interactive output\n", idle=0.2, mode=mode, split=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("UTC clock", result.stdout)
+
+    def test_bad_clock_preserves_probe_and_testing_verdicts(self):
+        for mode, data, expected in (
+            ("probe", b"PROBE DONE passed=16 failed=0\n", "PASS: PROBE DONE passed=16 failed=0"),
+            ("tests", b"USERSPACE TEST REPORT DONE\n", "PASS: USERSPACE TEST REPORT DONE"),
+        ):
+            result, _ = self.replay(data, mode=mode, clock_offset=-3600)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn(expected, result.stdout)
+            self.assertIn("UTC clock FAIL", result.stdout)
 
     def test_shell_fatal_retains_idle_exit(self):
         result, elapsed = self.replay(b"!!! SOFT LOCKUP DETECTED !!! synthetic fault\n", idle=1, mode="shell")
