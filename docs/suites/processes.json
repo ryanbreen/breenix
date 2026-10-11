@@ -4,7 +4,6 @@
   "area": "Processes",
   "summary": "fork, exec, wait and exit, process groups and sessions, user and group IDs, resource limits and priorities behave as POSIX specifies.",
   "binary": "/sbin/suite-processes",
-  "timingSensitive": true,
   "categories": [
     {
       "id": "fork",

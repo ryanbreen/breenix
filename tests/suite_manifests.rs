@@ -102,7 +102,7 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
         return None;
     };
     let mut expected = vec!["id", "title", "area", "summary", "binary", "categories"];
-    // A suite whose cases measure time waits for a quiet Mac host before it boots.
+    // A suite whose cases measure time waits for a quiet host before it boots.
     if let Some(sensitive) = object.get("timingSensitive") {
         expected.push("timingSensitive");
         if sensitive != &Value::Bool(true) {

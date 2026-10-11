@@ -381,6 +381,7 @@ follow_vm_serial() {
 # BTRT mode: delegate to xtask and exit
 if [ "$BTRT" = true ]; then
     host_slot_acquire mac-boot
+    host_slot_quiet
     if [ "$ARCH" = "arm64" ]; then
         BTRT_ARCH="arm64"
     else
@@ -652,8 +653,9 @@ if [ "$PARALLELS" = true ]; then
     # Serial port must be explicitly connected or it stays disconnected
     prlctl set "$PARALLELS_VM" --device-set serial0 --connect 2>/dev/null || true
 
-    # A timing-sensitive suite waits for a quiet host first (docs/boot-path.md, "Shared host slots").
-    [ -z "$SUITE" ] || host_slot_quiet "$BREENIX_ROOT/docs/suites/$SUITE.json"
+    # Records the boot's start; a timing-sensitive suite first waits for a quiet host
+    # (docs/boot-path.md, "Shared host slots").
+    host_slot_quiet ${SUITE:+"$BREENIX_ROOT/docs/suites/$SUITE.json"}
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
@@ -1025,8 +1027,9 @@ VMXEOF
 
     echo "  VMX: $VMX_FILE ($(wc -c < "$VMX_FILE") bytes)"
 
-    # A timing-sensitive suite waits for a quiet host first (docs/boot-path.md, "Shared host slots").
-    [ -z "$SUITE" ] || host_slot_quiet "$BREENIX_ROOT/docs/suites/$SUITE.json"
+    # Records the boot's start; a timing-sensitive suite first waits for a quiet host
+    # (docs/boot-path.md, "Shared host slots").
+    host_slot_quiet ${SUITE:+"$BREENIX_ROOT/docs/suites/$SUITE.json"}
     echo ""
     echo "--- Starting VM ---"
     vmware_network_summary
@@ -1363,6 +1366,7 @@ if [ "$ARCH" = "arm64" ]; then
     # blocking.
     host_slot_acquire mac-boot
     qemu_host_lock_acquire
+    host_slot_quiet
     qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -smp 4 \
         -m 512M \
@@ -1399,6 +1403,7 @@ else
     # with a concurrent arm64 session.
     host_slot_acquire mac-boot
     qemu_host_lock_acquire qemu-system-x86_64
+    host_slot_quiet
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
