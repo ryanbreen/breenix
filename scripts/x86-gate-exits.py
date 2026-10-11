@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Classify parseable nonzero records and reject incomplete exit accounting."""
-import os
 import pathlib
 import re
 import sys
 
 
-def classify(logs, allowlist):
+def classify_serial(serial, allowlist):
     contracts = []
     for line in allowlist.read_text().splitlines():
         if not line.strip() or line.lstrip().startswith('#'):
@@ -21,8 +20,10 @@ def classify(logs, allowlist):
         if any(c[:2] == contract[:2] for c in contracts):
             raise ValueError(f'duplicate allowlist entry: {line}')
         contracts.append(contract)
-    tallies = [line for path in logs for line in path.read_text(errors='replace').splitlines()
-               if 'TEST_TALLY:' in line]
+    lines = serial.splitlines()
+    if any(re.search(r'\bSKIP\b', line) for line in lines):
+        raise ValueError('completed boot contains a skipped check')
+    tallies = [line for line in lines if 'TEST_TALLY:' in line]
     if not tallies:
         raise ValueError('TEST_TALLY was absent; no completed exit accounting')
     match = re.search(r'TEST_TALLY: exited=(\d+) nonzero=(\d+) failed=\[([^\r\n]*)', tallies[-1])
@@ -47,7 +48,7 @@ def classify(logs, allowlist):
                        if code == status and re.fullmatch(pattern, name)), None)
         failures.append((name, status, reason))
     started = re.search(r'\bstarted=(\d+)', tail)
-    require_publications = os.environ.get('REQUIRE_PROCESS_ACCOUNTING') == '1'
+    require_publications = True
     if require_publications and started and int(started[1]) != exited:
         errors.append(f'published {started[1]} processes but only {exited} exited')
     if require_publications and not started:
@@ -63,6 +64,10 @@ def classify(logs, allowlist):
     if errors:
         raise ValueError("; ".join(errors))
     return real == 0
+
+
+def classify(logs, allowlist):
+    return classify_serial("\n".join(path.read_text(errors="replace") for path in logs), allowlist)
 
 
 if __name__ == '__main__':

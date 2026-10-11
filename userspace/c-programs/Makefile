@@ -1,44 +1,49 @@
-# Build the canonical ARM64 C tests with a real musl cross toolchain.
+# Build the canonical C tests with a real musl toolchain for each target.
 # MUSL_CC may select an equivalent installed compiler.
 
 BREENIX_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 
 # Use the installed musl cross toolchain, including its CRT and builtins.
-MUSL_CC ?= aarch64-linux-musl-gcc
+ARCH ?= aarch64
+MUSL_CC ?= $(if $(filter x86_64,$(ARCH)),musl-gcc,aarch64-linux-musl-gcc)
+BUILD_DIR := build/$(ARCH)
 CFLAGS := -O2 -Wall -Wextra -Werror
 LDFLAGS := -static -no-pie -Wl,--build-id=none -Wl,-Ttext-segment=0x40000000
 
 # Output directory
-AARCH64_DIR := $(BREENIX_ROOT)/userspace/programs/aarch64
+INSTALL_DIR := $(BREENIX_ROOT)/userspace/programs$(if $(filter aarch64,$(ARCH)),/aarch64,)
 
 # Programs
 PROGRAMS := hello_musl env_musl_test uname_musl_test rlimit_musl_test identity_musl_test
 
 .PHONY: all install clean
 
-all: $(addsuffix .elf,$(PROGRAMS))
+all: $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(PROGRAMS)))
 
-%.o: %.c Makefile
+$(BUILD_DIR):
+	mkdir -p "$@"
+
+$(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR)
 	$(MUSL_CC) $(CFLAGS) -c $< -o $@
 
-hello_musl.elf: hello.o Makefile
+$(BUILD_DIR)/hello_musl.elf: $(BUILD_DIR)/hello.o Makefile
 	$(MUSL_CC) $(LDFLAGS) $< -o $@
 
-env_musl_test.elf: env_test.o Makefile
+$(BUILD_DIR)/env_musl_test.elf: $(BUILD_DIR)/env_test.o Makefile
 	$(MUSL_CC) $(LDFLAGS) $< -o $@
 
-uname_musl_test.elf: uname_test.o Makefile
+$(BUILD_DIR)/uname_musl_test.elf: $(BUILD_DIR)/uname_test.o Makefile
 	$(MUSL_CC) $(LDFLAGS) $< -o $@
 
-rlimit_musl_test.elf: rlimit_test.o Makefile
+$(BUILD_DIR)/rlimit_musl_test.elf: $(BUILD_DIR)/rlimit_test.o Makefile
 	$(MUSL_CC) $(LDFLAGS) $< -o $@
 
-identity_musl_test.elf: identity_test.o Makefile
+$(BUILD_DIR)/identity_musl_test.elf: $(BUILD_DIR)/identity_test.o Makefile
 	$(MUSL_CC) $(LDFLAGS) $< -o $@
 
 install: all
-	mkdir -p "$(AARCH64_DIR)"
-	for prog in $(PROGRAMS); do cp $$prog.elf $(AARCH64_DIR)/$$prog.elf; done
+	mkdir -p "$(INSTALL_DIR)"
+	for prog in $(PROGRAMS); do cp $(BUILD_DIR)/$$prog.elf $(INSTALL_DIR)/$$prog.elf; done
 
 clean:
-	rm -f *.o *.elf
+	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.elf

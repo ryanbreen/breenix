@@ -3,7 +3,8 @@
 
 Fatal output and a missing completion line are failures. A testing-kernel boot
 completes at its "USERSPACE TEST REPORT DONE" line; its stages are scored from
-the serial against docs/boot-path.json, so the line itself is the whole verdict.
+the serial against docs/boot-path.json. Completion also requires full exit accounting
+and rejects skips, missing binaries and unexpected process exits.
 """
 
 import argparse
@@ -48,7 +49,13 @@ def completion(serial, mode, suite):
                     name, _, status = failure.rpartition(":")
                     if name in canonical and status != "0":
                         return False, f"canonical test failed: {failure}"
-        return True, tally[0] if tally else TESTS_DONE
+        try:
+            classify = runpy.run_path(str(ROOT / "scripts/x86-gate-exits.py"))["classify_serial"]
+            if not classify(serial, ROOT / "scripts/x86-gate-allowlist.txt"):
+                return False, "unexpected process exit"
+        except (OSError, ValueError) as error:
+            return False, f"incomplete exit accounting: {error}"
+        return True, tally[0]
     prefix = "PROBE DONE " if mode == "probe" else f"SUITE {suite} DONE "
     done = [line for line in lines if line.startswith(prefix)]
     if not done:

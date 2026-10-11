@@ -1274,6 +1274,13 @@ pub fn drain_deferred_fault_sigsegv_exits() {
         .flatten();
         if let Some(pid) = pid {
             crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
+            #[cfg(target_arch = "x86_64")]
+            {
+                scheduler::with_scheduler(|scheduler| scheduler.terminate_process_threads(pid.as_u64()));
+                scheduler::Scheduler::send_exit_expedite_sgi(
+                    pid.as_u64(), scheduler::GroupBatchId::for_single_victim(pid.as_u64()),
+                );
+            }
         }
         ProcessScheduler::handle_thread_exit(tid, exit_code);
     }
@@ -1291,6 +1298,13 @@ pub fn drain_deferred_fault_sigsegv_exits() {
             .flatten();
             if let Some(pid) = pid {
                 crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
+                #[cfg(target_arch = "x86_64")]
+                {
+                    scheduler::with_scheduler(|scheduler| scheduler.terminate_process_threads(pid.as_u64()));
+                    scheduler::Scheduler::send_exit_expedite_sgi(
+                        pid.as_u64(), scheduler::GroupBatchId::for_single_victim(pid.as_u64()),
+                    );
+                }
             }
             ProcessScheduler::handle_thread_exit(tid, exit_code);
         }

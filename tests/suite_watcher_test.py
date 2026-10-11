@@ -168,7 +168,7 @@ class SuiteWatcherTest(unittest.TestCase):
     def test_bad_clock_preserves_probe_and_testing_verdicts(self):
         for mode, data, expected in (
             ("probe", b"PROBE DONE passed=16 failed=0\n", "PASS: PROBE DONE passed=16 failed=0"),
-            ("tests", b"USERSPACE TEST REPORT DONE\n", "PASS: USERSPACE TEST REPORT DONE"),
+            ("tests", b"TEST_TALLY: exited=1 nonzero=0 failed=[] started=1\nUSERSPACE TEST REPORT DONE\n", "PASS: TEST_TALLY:"),
         ):
             result, _ = self.replay(data, mode=mode, clock_offset=-3600)
             self.assertEqual(result.returncode, 1, result.stdout)
@@ -180,6 +180,17 @@ class SuiteWatcherTest(unittest.TestCase):
         result, _ = self.replay(data, mode="tests")
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("canonical test failed: identity_musl_test:1", result.stdout)
+
+    def test_testing_completion_rejects_unknown_child_exit(self):
+        data = b"TEST_TALLY: exited=2 nonzero=1 failed=[dns_test_child_18:-9] started=2\nUSERSPACE TEST REPORT DONE\n"
+        result, _ = self.replay(data, mode="tests")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("unexpected process exit", result.stdout)
+
+    def test_testing_completion_requires_exit_accounting(self):
+        result, _ = self.replay(b"USERSPACE TEST REPORT DONE\n", mode="tests")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("no completed exit accounting", result.stdout)
 
     def test_testing_completion_preserves_expected_child_deaths(self):
         data = b"TEST_TALLY: exited=2 nonzero=1 failed=[sigkill_teardown_test_child_18:-9] started=2\nUSERSPACE TEST REPORT DONE\n"

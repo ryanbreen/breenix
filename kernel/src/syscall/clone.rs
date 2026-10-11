@@ -316,13 +316,14 @@ pub fn sys_clone_thread(
     #[cfg(not(target_arch = "x86_64"))]
     let entry_point = crate::memory::arch_stub::VirtAddr::new(fn_ptr);
 
-    let mut child_process = Process::new(
-        child_pid,
-        alloc::format!("thread-{}", child_pid.as_u64()),
-        entry_point,
-    );
     let parent = manager.get_process(parent_pid)
         .expect("parent remains present under PM during clone");
+    let child_name = if flags & CLONE_THREAD != 0 {
+        alloc::format!("thread-{}", child_pid.as_u64())
+    } else {
+        alloc::format!("{}_child_{}", parent.name, child_pid.as_u64())
+    };
+    let mut child_process = Process::new(child_pid, child_name, entry_point);
     child_process.limits = parent.limits.clone();
     child_process.cred = parent.cred.clone();
     child_process.nice = parent.nice;

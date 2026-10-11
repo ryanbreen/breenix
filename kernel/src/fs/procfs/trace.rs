@@ -261,11 +261,16 @@ pub fn generate_counters() -> String {
 /// Reading the file before a kill registers that PID in the provider's fixed,
 /// lock-free tally table; a later read returns only that PID's deltas.
 pub fn generate_teardown_pid(pid: u64) -> String {
-    #[cfg(all(any(feature = "boot_tests", feature = "testing"), target_arch = "aarch64"))]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     {
         let Some(evidence) = crate::tracing::providers::teardown::teardown_pid_evidence(pid) else {
             return String::from("capacity_exhausted: 1\n");
         };
+        #[cfg(target_arch = "aarch64")]
+        let tick_period = crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT
+            .load(Ordering::Acquire);
+        #[cfg(target_arch = "x86_64")]
+        let tick_period = crate::time::tsc::frequency_hz() / 1000;
         return format!(
             "pid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
             pid,
@@ -275,8 +280,7 @@ pub fn generate_teardown_pid(pid: u64) -> String {
             evidence.sgi_sent_count,
             evidence.kick_observed_count,
             evidence.kick_observed_interval,
-            crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT
-                .load(Ordering::Acquire),
+            tick_period,
             evidence.masked_frames_walked,
             evidence.report_count,
             evidence.bucket_published_count,
@@ -285,7 +289,7 @@ pub fn generate_teardown_pid(pid: u64) -> String {
         );
     }
 
-    #[cfg(not(all(any(feature = "boot_tests", feature = "testing"), target_arch = "aarch64")))]
+    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
     {
         let _ = pid;
         String::from("unavailable: 1\n")

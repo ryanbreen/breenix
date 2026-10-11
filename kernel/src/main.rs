@@ -2208,6 +2208,13 @@ fn kernel_main_continue() -> ! {
         // Test FbInfo syscall (framebuffer information)
         log::info!("=== GRAPHICS TEST: FbInfo syscall ===");
         test_exec::test_fbinfo();
+        // The musl programs are canonical tests on both architectures.
+        for name in ["hello_musl", "env_musl_test", "uname_musl_test",
+                     "rlimit_musl_test", "identity_musl_test"] {
+            let binary = userspace_test::get_test_binary(name);
+            process::creation::create_user_process(String::from(name), &binary)
+                .unwrap_or_else(|error| panic!("cannot start canonical test {}: {}", name, error));
+        }
         log::info!("Boot test program registration complete");
         task::userspace_completion::start();
     }

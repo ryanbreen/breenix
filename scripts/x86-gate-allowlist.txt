@@ -19,3 +19,4 @@ signal_test_child_* -132 # userspace/programs/src/signal_test.rs: default/ignore
 /tmp/syscall_edge.elf -11 # userspace/programs/src/signal_test.rs: noncanonical SYSCALL return child must die by SIGSEGV; parent asserts WTERMSIG=11.
 test_mmap_child_* -139 # userspace/programs/src/test_mmap.rs: partial_protection child writes its PROT_NONE page with SIGSEGV at SIG_DFL; parent asserts WTERMSIG=SIGSEGV; the core-dump encoding is -(128+SIGSEGV).
 simple_exit 42 # userspace/programs/src/simple_exit.rs: intentionally exits 42 to test exec/exit status (#781).
+sigkill_teardown_test_child_* -9 # userspace/programs/src/sigkill_teardown_test.rs: parent asserts SIGKILL for external victims, its CLONE_VM victim and the self-killing child; supervising test must exit zero.
