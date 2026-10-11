@@ -284,6 +284,7 @@ pub fn report(out: &mut alloc::string::String) {
         );
     }
     report_snapshots(out);
+    report_phases(out);
     let tn = TL_N.swap(0, Relaxed).max(1);
     let _ = write!(out, "WAKELAT timer-late n={} avg_us={} max_us={} hist", tn, TL_SUM.swap(0, Relaxed) / tn, TL_MAX.swap(0, Relaxed));
     hist(out, &TL_HIST);
@@ -391,6 +392,23 @@ pub fn report_snapshots(out: &mut alloc::string::String) {
             let rel = if ts >= start { us(ts - start) as i64 } else { -(us(start - ts) as i64) };
             let _ = write!(out, " {}:{}/{:x}", rel, e & 0xff, e >> 8);
         }
+        let _ = writeln!(out);
+    }
+}
+
+// Reclaim phase durations: 0 release_root_on_peers, 1 reclaim_bounded, 2 live_row_names_root.
+static PH_MAX: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+static PH_HIST: [[AtomicU64; NB]; 3] = [const { [const { AtomicU64::new(0) }; NB] }; 3];
+pub fn phase(k: usize, start: u64) {
+    let d = us(tsc().saturating_sub(start));
+    max(&PH_MAX[k], d);
+    PH_HIST[k][bucket(d)].fetch_add(1, Relaxed);
+}
+pub fn report_phases(out: &mut alloc::string::String) {
+    use core::fmt::Write;
+    for k in 0..3 {
+        let _ = write!(out, "WAKELAT reclaim-phase{} max_us={} hist", k, PH_MAX[k].swap(0, Relaxed));
+        hist(out, &PH_HIST[k]);
         let _ = writeln!(out);
     }
 }

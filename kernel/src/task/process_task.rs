@@ -1633,7 +1633,12 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                 let mut proof = reclaim.lock_free_root_proof(&snapshot, true);
                 boot_after_step_two(&reclaim.after_epoch);
                 #[cfg(target_arch = "x86_64")]
-                if proof.blocker().is_none() && !reclaim.release_root_on_peers() {
+                if proof.blocker().is_none() && {
+                    let t = crate::task::wakelat::tsc();
+                    let released = reclaim.release_root_on_peers();
+                    crate::task::wakelat::phase(0, t);
+                    !released
+                } {
                     proof = RootProof::blocked(RootBlocker::Shadow);
                 }
                 if proof.blocker().is_none()
@@ -1642,8 +1647,11 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                 {
                     proof = RootProof::blocked(RootBlocker::Cached);
                 }
+                let wl_t = crate::task::wakelat::tsc();
+                let live_row = proof.blocker().is_none() && reclaim.live_row_names_root();
+                crate::task::wakelat::phase(2, wl_t);
                 if proof.blocker().is_none()
-                    && (reclaim.live_row_names_root()
+                    && (live_row
                         || boot_forces_blocker(reclaim.pid, RootBlocker::LiveRow, true))
                 {
                     proof = RootProof::blocked(RootBlocker::LiveRow);
@@ -1659,15 +1667,18 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     } else {
                         push_pending_or_abandon(reclaim);
                     }
-                } else if reclaim.reclaim_bounded(if boot_test_owned {
-                    crate::memory::process_memory::RETIRE_FRAME_BUDGET
-                } else if pressured {
-                    u32::MAX
-                } else {
-                    PRODUCTION_RECLAIM_FRAME_BUDGET
-                })
-                    == crate::memory::process_memory::RetireProgress::Complete
-                {
+                } else if {
+                    let wl_t = crate::task::wakelat::tsc();
+                    let progress = reclaim.reclaim_bounded(if boot_test_owned {
+                        crate::memory::process_memory::RETIRE_FRAME_BUDGET
+                    } else if pressured {
+                        u32::MAX
+                    } else {
+                        PRODUCTION_RECLAIM_FRAME_BUDGET
+                    });
+                    crate::task::wakelat::phase(1, wl_t);
+                    progress == crate::memory::process_memory::RetireProgress::Complete
+                } {
                     crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
                     // P6a retire arm: settle this row's receipt and, if the reap
                     // already landed, complete the join here.
