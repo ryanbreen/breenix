@@ -16,7 +16,7 @@ use core::{
 
 const LEDGER_CAPACITY: usize = 4096;
 const STRANDED_TID_CAPACITY: usize = 16;
-const HEARTBEAT_INTERVAL_NS: u64 = 250_000_000;
+const HEARTBEAT_INTERVAL_NS: u64 = 1_000_000_000;
 const EVER_SAVED: u8 = 1 << 0;
 const LAST_EVENT_RESTORED: u8 = 1 << 1;
 const EXITED: u8 = 1 << 2;
