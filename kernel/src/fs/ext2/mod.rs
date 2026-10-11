@@ -540,7 +540,7 @@ impl Ext2Fs {
         offset: u64,
         bytes: &[u8],
     ) -> Result<usize, &'static str> {
-        self.write_file_range_disk(ino, offset, bytes, true)
+        self.write_file_range_disk(ino, offset, bytes, true, true)
     }
 
     /// Write data to a file at the specified offset
@@ -573,7 +573,7 @@ impl Ext2Fs {
         if let Some(object) = &mapped {
             object.map.prepare_write(offset, data.len())?;
         }
-        let result = self.write_file_range_disk(inode_num, offset, data, unprivileged);
+        let result = self.write_file_range_disk(inode_num, offset, data, unprivileged, false);
         if let Some(object) = mapped {
             object.map.transition(object.size.load(Ordering::Acquire));
             match result {
@@ -591,6 +591,7 @@ impl Ext2Fs {
         offset: u64,
         data: &[u8],
         unprivileged: bool,
+        mapped: bool,
     ) -> Result<usize, &'static str> {
         self.check_shrink(inode_num)?;
         if data.is_empty() {
@@ -624,7 +625,8 @@ impl Ext2Fs {
             .iter()
             .map(|group| group.bg_free_blocks_count as u32)
             .sum();
-        let written = write_file_range(
+        let write_data = if mapped { file::write_mapped_file_range } else { write_file_range };
+        let written = write_data(
             self.device.as_ref(),
             &mut inode,
             &self.superblock,

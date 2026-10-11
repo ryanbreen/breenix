@@ -81,7 +81,7 @@ pub(crate) fn sync_range_with_buffer(
     last: u64,
     bytes: &mut [u8],
 ) -> Result<(), &'static str> {
-    let mut wrote = false;
+    let range_first = first;
     loop {
         let next = {
             let mut guard = crate::fs::ext2::write_mount(handle.object.mount)?;
@@ -93,15 +93,17 @@ pub(crate) fn sync_range_with_buffer(
                     .object
                     .map
                     .writeback(fs, ino, first, last, WRITEBACK_PAGES, bytes)?;
-            if next.is_none() && !wrote {
-                fs.sync()?;
+            if next.is_none() || next.is_some_and(|next| next >= last) {
+                let result = fs.sync();
+                if result.is_err() { handle.object.map.request_writeback(); }
+                result?;
+                handle.object.map.complete_writeback(range_first, last);
             }
             next
         };
         let Some(next) = next else {
             return Ok(());
         };
-        wrote = true;
         if next >= last {
             return Ok(());
         }
@@ -320,6 +322,9 @@ struct CachePage {
     frame: PhysFrame,
     dirty: bool,
     gen: u64,
+    /// A snapshot taken with no writable binding, written but not yet flushed.
+    /// Kept on the page so a multi-batch sync needs no growing snapshot list.
+    written_gen: Option<u64>,
 }
 
 impl CachePage {
@@ -329,6 +334,7 @@ impl CachePage {
             frame,
             dirty: false,
             gen: 0,
+            written_gen: None,
         })
     }
 
@@ -591,8 +597,8 @@ impl MapState {
         Ok(())
     }
 
-    /// One bounded snapshot, contiguous writes, then a device flush. Errors
-    /// leave the snapshot dirty. No PTEs are changed here.
+    /// Write one bounded snapshot. The caller flushes the completed traversal
+    /// before clearing dirty custody. No PTEs are changed here.
     pub(crate) fn writeback(
         &self,
         fs: &mut Ext2Fs,
@@ -648,6 +654,12 @@ impl MapState {
         if snapshot.is_empty() {
             return Ok(None);
         }
+        {
+            let mut inner = self.inner.lock();
+            for (index, _, _) in &snapshot {
+                if let Some(page) = inner.pages.get_mut(*index) { page.written_gen = None; }
+            }
+        }
         fs.check_shrink(ino)?;
         let size = fs.read_inode(ino)?.size();
         let mut cursor = 0;
@@ -684,19 +696,31 @@ impl MapState {
                 return Err("Short mapped writeback");
             }
         }
-        fs.sync()?;
         let mut inner = self.inner.lock();
         if writable == 0 && inner.writable_shared == 0 {
             for (index, _, gen) in &snapshot {
                 if let Some(page) = inner.pages.get_mut(*index) {
                     if page.gen == *gen {
-                        page.dirty = false;
+                        page.written_gen = Some(*gen);
                     }
                 }
             }
         }
         self.refresh(&inner);
         Ok(snapshot.last().map(|(index, _, _)| index + 1))
+    }
+
+    /// Called only after a successful device flush under the mount guard.
+    /// A new write fault changes gen; writable snapshots never earn a clean
+    /// candidate because stores can continue without another fault.
+    fn complete_writeback(&self, first: u64, last: u64) {
+        let mut inner = self.inner.lock();
+        if inner.writable_shared == 0 {
+            for (_, page) in inner.pages.entries.iter_mut().filter(|(index, _)| *index >= first && *index < last) {
+                if page.written_gen == Some(page.gen) { page.dirty = false; }
+            }
+        }
+        self.refresh(&inner);
     }
 
     /// The service processes at most the remaining page budget and resumes
@@ -733,6 +757,10 @@ impl MapState {
         };
         let mut bytes = writeback_buffer()?;
         let next = self.writeback(fs, ino, first, u64::MAX, *budget, &mut bytes)?;
+        if let Some(end) = next {
+            fs.sync()?;
+            self.complete_writeback(first, end);
+        }
         *budget -= count;
         let mut inner = self.inner.lock();
         let next = next.unwrap_or(u64::MAX);

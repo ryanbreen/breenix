@@ -522,6 +522,9 @@ impl Ext2Inode {
         // Safety: We're writing the first 128 bytes of the inode structure
         let inode_bytes =
             unsafe { core::slice::from_raw_parts(self as *const Ext2Inode as *const u8, 128) };
+        if block_buf[offset_in_ext2_block..offset_in_ext2_block + 128] == *inode_bytes {
+            return Ok(());
+        }
         block_buf[offset_in_ext2_block..offset_in_ext2_block + 128].copy_from_slice(inode_bytes);
 
         // Write back only the sectors containing this inode.

@@ -44,6 +44,11 @@ impl BlockDevice for MountDevice {
         self.inner.write_block(block_num, buf)
     }
 
+    fn write_blocks(&self, start_block: u64, block_count: usize, buf: &[u8]) -> Result<(), BlockError> {
+        if self.failed.load(Ordering::Acquire) { return Err(BlockError::IoError); }
+        self.inner.write_blocks(start_block, block_count, buf)
+    }
+
     fn block_size(&self) -> usize {
         self.inner.block_size()
     }

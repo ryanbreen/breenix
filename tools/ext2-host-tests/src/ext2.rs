@@ -121,9 +121,8 @@ mod reclaim_checks {
         // handing it to the finalizer; exercise that finalizer here.
         inode.i_links_count = 0;
         fs.write_inode(1, &inode).unwrap();
-        let mut progress = reclaim::Reclaim::prepare(&fs, 1)
-            .unwrap_or_else(|_| panic!("zero-link directory was not accepted"));
-        assert!(matches!(progress.finish(&mut fs, 1, &mut 128), Ok(true)));
+        let mut progress = reclaim::Reclaim::prepare(&fs, 1).ok().expect("prepare orphan directory");
+        assert!(progress.finish(&mut fs, 1, &mut 1).ok().expect("reclaim empty directory"));
         assert_eq!(data.lock().unwrap()[4 * 4096], 0);
         let free = fs.block_groups[0].bg_free_inodes_count;
         assert_eq!(free, 128);

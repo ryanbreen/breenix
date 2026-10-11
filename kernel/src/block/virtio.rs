@@ -74,6 +74,20 @@ impl BlockDevice for VirtioBlockWrapper {
             .map_err(BlockError::from)
     }
 
+    fn read_blocks(&self, start_block: u64, block_count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+        let bytes = block_count.checked_mul(self.block_size).ok_or(BlockError::IoError)?;
+        if buf.len() < bytes { return Err(BlockError::IoError); }
+        if bytes == 0 { return Ok(()); }
+        self.device.read_sectors(start_block, &mut buf[..bytes]).map_err(BlockError::from)
+    }
+
+    fn write_blocks(&self, start_block: u64, block_count: usize, buf: &[u8]) -> Result<(), BlockError> {
+        let bytes = block_count.checked_mul(self.block_size).ok_or(BlockError::IoError)?;
+        if buf.len() < bytes { return Err(BlockError::IoError); }
+        if bytes == 0 { return Ok(()); }
+        self.device.write_sectors(start_block, &buf[..bytes]).map_err(BlockError::from)
+    }
+
     fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError> {
         // Validate buffer size
         if buf.len() < self.block_size {
