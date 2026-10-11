@@ -4,6 +4,7 @@
   "area": "Processes",
   "summary": "Scratch measurement of how long running threads go without executing; never merged.",
   "binary": "/sbin/suite-stall",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "measure",
