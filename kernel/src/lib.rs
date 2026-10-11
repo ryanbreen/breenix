@@ -575,9 +575,8 @@ pub fn arch_halt_while_blocked() {
     #[cfg(not(target_arch = "x86_64"))]
     let blocked = task::scheduler::with_scheduler(current_blocked).unwrap_or(false);
     if !blocked {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(tid) = per_cpu::current_thread_id_lock_free() {
-            task::wakelat::ran(tid, 3);
+        if let Some(thread) = per_cpu::current_thread() {
+            task::wakelat::ran(thread.id(), 3);
         }
         // SAFETY: every caller would have halted with interrupts enabled.
         unsafe { arch_enable_interrupts() };
@@ -613,8 +612,15 @@ pub fn arch_halt_while_blocked() {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: WFI with IRQs masked wakes on a pending interrupt, which the
     // unmask then takes.
-    unsafe {
-        core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
+    {
+        task::wakelat::halt(true);
+        unsafe {
+            core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
+        }
+        task::wakelat::halt(false);
+        if let Some(thread) = per_cpu::current_thread() {
+            task::wakelat::ran(thread.id(), 2);
+        }
     }
 }
 

@@ -24,7 +24,6 @@ pub mod userspace_completion;
 pub mod user_dispatch;
 pub mod thread;
 pub mod waitqueue;
-#[cfg(target_arch = "x86_64")]
 pub mod wakelat;
 
 // Architecture-specific context switching

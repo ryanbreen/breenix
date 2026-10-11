@@ -949,7 +949,6 @@ fn futex_wait_until(
 
 /// Leave a futex wait: the thread runs on in its syscall.
 fn finish_wait(thread_id: u64) {
-    #[cfg(target_arch = "x86_64")]
     crate::task::wakelat::ran(thread_id, 4);
     crate::task::scheduler::with_thread_mut(thread_id, |thread| {
         if thread.state == ThreadState::BlockedOnIO {
@@ -1432,7 +1431,6 @@ fn futex_wake(uaddr: u64, max_wake: u32, _val3: u32, private: bool, bitset: u32)
             return SyscallResult::Err(e);
         }
     }
-    #[cfg(target_arch = "x86_64")]
     crate::task::wakelat::wake_entry();
     let Some(key) = futex_key(uaddr, private) else {
         return SyscallResult::Err(super::errno::ESRCH as u64);
