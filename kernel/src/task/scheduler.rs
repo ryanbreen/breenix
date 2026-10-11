@@ -1763,9 +1763,10 @@ fn release_leaving_stack(cpu: usize, thread_id: u64) {
 
 /// x86_64: the idle loop's release of the thread this CPU last switched away
 /// from. The idle loop runs on the idle thread's own kernel stack
-/// (`setup_idle_return`), so the CPU is off the outgoing thread's: checked
-/// here against the stack pointer, since a missing idle stack falls back to
-/// another. Until now the entry was released only at the CPU's next
+/// (`setup_idle_return`, from `kernel_stack_top`), so the CPU is off the
+/// outgoing thread's: checked here against the stack pointer, since a missing
+/// idle stack falls back to another. `stack_top`/`stack_bottom` do not bound
+/// that stack: swapper/0 is built with a zero `stack_top`. Until now the entry was released only at the CPU's next
 /// interrupt, and an idle CPU whose housekeeping masked interrupts, waiting on
 /// shootdown acknowledgements, kept the thread from every other CPU for that
 /// long: up to 35 ms under the x86 gate.
@@ -1783,9 +1784,10 @@ pub fn release_outgoing_stack_from_idle() {
     with_scheduler(|scheduler| {
         let idle = scheduler.cpu_state[cpu].idle_thread;
         let leaving = LEAVING_STACK[cpu].load(Ordering::Acquire);
-        let on_idle_stack = scheduler.get_thread(idle).is_some_and(|thread| {
-            rsp > thread.stack_bottom.as_u64() && rsp <= thread.stack_top.as_u64()
-        });
+        let on_idle_stack = scheduler
+            .get_thread(idle)
+            .and_then(|thread| thread.kernel_stack_top)
+            .is_some_and(|top| crate::memory::kernel_stack::kernel_stack_contains(top.as_u64(), rsp));
         if leaving != 0 && leaving != idle && on_idle_stack {
             release_leaving_stack(cpu, leaving);
         }
