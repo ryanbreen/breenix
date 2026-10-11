@@ -15,12 +15,18 @@ pub struct Ext2Fs {
     pub device: Box<dyn crate::block::BlockDevice>,
     pub superblock: Ext2Superblock,
     pub block_groups: Vec<Ext2BlockGroupDesc>,
+    durable_epoch: core::sync::atomic::AtomicU64,
 }
 impl Ext2Fs {
     pub fn sync(&self) -> Result<(), &'static str> {
-        self.device.flush().map_err(|_| "flush")
+        self.device.flush().map_err(|_| "flush")?;
+        self.durable_epoch.fetch_add(1, core::sync::atomic::Ordering::Release);
+        Ok(())
     }
 
+    pub fn durable_epoch(&self) -> u64 {
+        self.durable_epoch.load(core::sync::atomic::Ordering::Acquire)
+    }
     pub fn read_inode(&self, ino: u32) -> Result<Ext2Inode, &'static str> {
         Ext2Inode::read_from(
             self.device.as_ref(),
@@ -76,6 +82,120 @@ mod reclaim_checks {
             Ok(())
         }
     }
+    struct BarrierDisk {
+        disk: Disk,
+        flushes: Arc<core::sync::atomic::AtomicUsize>,
+        fail_flush: Arc<core::sync::atomic::AtomicBool>,
+    }
+    impl block::BlockDevice for BarrierDisk {
+        fn read_block(&self, b: u64, out: &mut [u8]) -> Result<(), block::BlockError> {
+            block::BlockDevice::read_block(&self.disk, b, out)
+        }
+        fn write_block(&self, b: u64, input: &[u8]) -> Result<(), block::BlockError> {
+            block::BlockDevice::write_block(&self.disk, b, input)
+        }
+        fn block_size(&self) -> usize { 512 }
+        fn num_blocks(&self) -> u64 { 4096 }
+        fn flush(&self) -> Result<(), block::BlockError> {
+            self.flushes.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if self.fail_flush.load(core::sync::atomic::Ordering::Relaxed) {
+                Err(block::BlockError::IoError)
+            } else { Ok(()) }
+        }
+    }
+
+    type BarrierFixture = (Ext2Fs, Arc<Mutex<Vec<u8>>>, Arc<core::sync::atomic::AtomicUsize>, Arc<core::sync::atomic::AtomicBool>);
+    fn two_orphans() -> BarrierFixture {
+        let data = Arc::new(Mutex::new(vec![0; 512 * 4096]));
+        let mut sb = Ext2Superblock::from_bytes(&[0; 1024]).unwrap();
+        sb.s_blocks_count = 512;
+        sb.s_free_blocks_count = 510;
+        sb.s_inodes_count = 128;
+        sb.s_free_inodes_count = 126;
+        sb.s_log_block_size = 2;
+        sb.s_blocks_per_group = 512;
+        sb.s_inodes_per_group = 128;
+        let mut group: Ext2BlockGroupDesc = unsafe { core::mem::zeroed() };
+        group.bg_inode_table = 8;
+        group.bg_block_bitmap = 3;
+        group.bg_inode_bitmap = 4;
+        group.bg_free_blocks_count = 510;
+        group.bg_free_inodes_count = 126;
+        {
+            let mut bytes = data.lock().unwrap();
+            bytes[3 * 4096 + 2] = 0x30;
+            bytes[4 * 4096] = 3;
+        }
+        let flushes = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        let fail_flush = Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let mut fs = Ext2Fs {
+            device: Box::new(BarrierDisk {
+                disk: Disk { data: data.clone(), fail: Arc::new(Mutex::new(None)) },
+                flushes: flushes.clone(), fail_flush: fail_flush.clone(),
+            }),
+            superblock: sb, block_groups: vec![group],
+            durable_epoch: core::sync::atomic::AtomicU64::new(0),
+        };
+        for ino in 1..=2 {
+            let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
+            inode.i_links_count = 0;
+            inode.i_size = 4096;
+            inode.i_blocks = 8;
+            inode.i_block[0] = 19 + ino;
+            fs.write_inode(ino, &inode).unwrap();
+        }
+        (fs, data, flushes, fail_flush)
+    }
+
+    fn allocated_pair(data: &Arc<Mutex<Vec<u8>>>) -> (u8, u8) {
+        let bytes = data.lock().unwrap();
+        (bytes[3 * 4096 + 2], bytes[4 * 4096])
+    }
+
+    #[test]
+    fn two_orphan_detachments_share_one_barrier_before_bitmap_release() {
+        let (mut fs, data, flushes, _) = two_orphans();
+        let mut a = reclaim::Reclaim::prepare(&fs, 1).ok().expect("first orphan");
+        let mut b = reclaim::Reclaim::prepare(&fs, 2).ok().expect("second orphan");
+        assert!(a.stage(&fs, 1).ok().expect("stage first"));
+        assert!(b.stage(&fs, 2).ok().expect("stage second"));
+        assert_eq!(allocated_pair(&data), (0x30, 3));
+        for ino in 1..=2 {
+            let pointers = fs.read_inode(ino).unwrap().i_block;
+            assert_eq!(pointers, [0; 15]);
+        }
+        fs.sync().unwrap();
+        assert!(a.finish(&mut fs, 1, &mut 128).ok().expect("free first"));
+        assert!(b.finish(&mut fs, 2, &mut 128).ok().expect("free second"));
+        assert_eq!(flushes.load(core::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(allocated_pair(&data), (0, 0));
+        let counts = (fs.superblock.s_free_blocks_count, fs.superblock.s_free_inodes_count);
+        assert_eq!(counts, (512, 128));
+    }
+
+    #[test]
+    fn failed_shared_barrier_keeps_both_orphans_allocated_until_success() {
+        let (mut fs, data, flushes, fail_flush) = two_orphans();
+        let mut a = reclaim::Reclaim::prepare(&fs, 1).ok().expect("first orphan");
+        let mut b = reclaim::Reclaim::prepare(&fs, 2).ok().expect("second orphan");
+        a.stage(&fs, 1).ok().expect("stage first");
+        b.stage(&fs, 2).ok().expect("stage second");
+        fail_flush.store(true, core::sync::atomic::Ordering::Relaxed);
+        assert!(fs.sync().is_err());
+        assert!(a.finish(&mut fs, 1, &mut 128).is_err());
+        assert!(b.finish(&mut fs, 2, &mut 128).is_err());
+        assert_eq!(allocated_pair(&data), (0x30, 3));
+        let counts = (fs.superblock.s_free_blocks_count, fs.superblock.s_free_inodes_count);
+        assert_eq!(counts, (510, 126));
+        fail_flush.store(false, core::sync::atomic::Ordering::Relaxed);
+        assert!(a.finish(&mut fs, 1, &mut 128).ok().expect("free first after recovery"));
+        assert!(b.finish(&mut fs, 2, &mut 128).ok().expect("free second after recovery"));
+        assert_eq!(flushes.load(core::sync::atomic::Ordering::Relaxed), 4);
+        assert_eq!(allocated_pair(&data), (0, 0));
+        let counts = (fs.superblock.s_free_blocks_count, fs.superblock.s_free_inodes_count);
+        assert_eq!(counts, (512, 128));
+    }
+
     #[test]
     fn linked_inode_is_not_reclaimed() {
         let data = Arc::new(Mutex::new(vec![0; 512 * 4096]));
@@ -94,6 +214,7 @@ mod reclaim_checks {
             }),
             superblock: sb,
             block_groups: vec![group],
+            durable_epoch: core::sync::atomic::AtomicU64::new(0),
         };
         fs.write_inode(1, &Ext2Inode::new_regular_file(0o600, 0, 0))
             .unwrap();
@@ -118,7 +239,7 @@ mod reclaim_checks {
         group.bg_used_dirs_count = 1;
         data.lock().unwrap()[4 * 4096] = 1;
         let mut fs = Ext2Fs { device: Box::new(Disk { data: data.clone(),
-            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group] };
+            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group], durable_epoch: core::sync::atomic::AtomicU64::new(0) };
         let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
         inode.i_mode = EXT2_S_IFDIR | 0o700;
         // remove_directory commits the namespace and zero-link inode before
@@ -158,7 +279,7 @@ mod reclaim_checks {
             bytes[20 * 4096 + 4..20 * 4096 + 8].copy_from_slice(&512u32.to_le_bytes());
         }
         let mut fs = Ext2Fs { device: Box::new(Disk { data: data.clone(),
-            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group] };
+            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group], durable_epoch: core::sync::atomic::AtomicU64::new(0) };
         fs.write_inode(1, &inode).unwrap();
         let mut progress = reclaim::Reclaim::shrink(inode, 13);
         inode.i_links_count = 2;
@@ -214,6 +335,7 @@ mod reclaim_checks {
             }),
             superblock: sb,
             block_groups: vec![group],
+            durable_epoch: core::sync::atomic::AtomicU64::new(0),
         };
         fs.write_inode(1, &inode).unwrap();
         let mut progress = reclaim::Reclaim::shrink(inode, 14);

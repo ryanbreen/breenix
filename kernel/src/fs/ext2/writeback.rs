@@ -6,6 +6,11 @@ use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static PENDING: AtomicBool = AtomicBool::new(false);
+static ORPHANS: AtomicBool = AtomicBool::new(false);
+/// A bounded metadata commit window groups namespace removals. Unlink and
+/// close need not flush; quarantined allocations remain unavailable until
+/// the finalizer's shared pointer-detachment barrier succeeds.
+const ORPHAN_COMMIT_NS: u64 = 50_000_000;
 static WORK: WaitQueueHead = WaitQueueHead::new();
 
 /// Publish before waking. Handle drops can run under the process manager, so
@@ -14,6 +19,11 @@ static WORK: WaitQueueHead = WaitQueueHead::new();
 pub(super) fn request() {
     PENDING.store(true, Ordering::Release);
     WORK.wake_up_deferred();
+}
+
+pub(super) fn request_orphan() {
+    ORPHANS.store(true, Ordering::Release);
+    request();
 }
 
 pub fn init() -> Result<(), &'static str> {
@@ -57,6 +67,13 @@ fn service() {
         let mut more = false;
         let mut retry = false;
         if PENDING.swap(false, Ordering::AcqRel) {
+            if ORPHANS.swap(false, Ordering::AcqRel) {
+                // No mount, inode, map or process lock is held while waiting.
+                pause(ORPHAN_COMMIT_NS);
+                // Requests during the window are included in the snapshot
+                // below. A later request keeps both its flag and wake.
+                ORPHANS.store(false, Ordering::Release);
+            }
             for home in [false, true] {
                 let mut guard = super::fs_write_raw(home);
                 if let Some(fs) = guard.as_mut() {

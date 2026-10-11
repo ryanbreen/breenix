@@ -66,7 +66,7 @@ impl LiveInode {
     /// Queue this orphan for the finalizer service.
     pub(super) fn defer(&self) {
         self.pending.store(true, Ordering::Release);
-        super::writeback::request();
+        super::writeback::request_orphan();
     }
 
     pub(super) fn publish_size(&self, size: u64) {

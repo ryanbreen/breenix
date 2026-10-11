@@ -208,7 +208,28 @@ impl Ext2Fs {
         if evictions.len() == live_inode::EVICTION_BATCH && self.live_inodes.evictions_pending() {
             outcome = outcome.merge(Finalize::More);
         }
+        if budget == 0 { return outcome.merge(Finalize::More); }
+        let mut ready = Vec::new();
+        let mut barrier = false;
         for object in self.live_inodes.pending(self.finalization_cursor) {
+            if !object.unused() { continue; }
+            match self.stage_orphan(&object) {
+                Ok(needs_barrier) => {
+                    barrier |= needs_barrier;
+                    ready.push(object);
+                }
+                Err(reclaim::ReclaimError::Retry) => outcome = Finalize::Retry,
+                Err(reclaim::ReclaimError::Abandon(reason)) => {
+                    log::warn!("ext2: leaving orphan inode {} allocated: {}", object.key.inode, reason);
+                    self.live_inodes.remove(&object);
+                }
+            }
+        }
+        if barrier && self.sync().is_err() {
+            // No staged orphan may expose a free bit after a failed barrier.
+            return Finalize::Retry;
+        }
+        for object in ready {
             if !object.unused() {
                 continue;
             }
@@ -254,6 +275,24 @@ impl Ext2Fs {
             }
         }
         outcome
+    }
+
+    /// Retain each detachment until the shared barrier and bitmap phase finish.
+    fn stage_orphan(
+        &mut self,
+        object: &alloc::sync::Arc<live_inode::LiveInode>,
+    ) -> Result<bool, reclaim::ReclaimError> {
+        let ino = object.key.inode;
+        if self.shrink_reclaims.contains_key(&ino) {
+            return Err(reclaim::ReclaimError::Retry);
+        }
+        let mut progress = match self.orphan_reclaims.remove(&ino) {
+            Some(progress) => progress,
+            None => reclaim::Reclaim::prepare(self, ino)?,
+        };
+        let result = progress.stage(self, ino);
+        self.orphan_reclaims.insert(ino, progress);
+        result
     }
 
     /// Release an unobserved orphan's blocks and inode under the write guard,
@@ -1020,22 +1059,10 @@ impl Ext2Fs {
         )?;
         if links == 0 {
             handle.object.orphan.store(true, Ordering::Release);
-            // With no descriptor observing it, reclaim the inode now under
-            // this guard; otherwise its last observer queues it on close.
-            // A large orphan's remainder, or a retryable failure, goes to
-            // the finalizer so unlink holds the guard for one budget only.
-            match handle.release_sole() {
-                Ok(object) => {
-                    let mut budget = RECLAIM_BUDGET;
-                    if matches!(
-                        self.reclaim_orphan(&object, &mut budget),
-                        Ok(false) | Err(reclaim::ReclaimError::Retry)
-                    ) {
-                        object.defer();
-                    }
-                }
-                Err(handle) => drop(handle),
-            }
+            // Like rmdir, unlink publishes the namespace change and leaves
+            // allocation reclamation to the last-observer handoff. It does
+            // not require a durability barrier before returning.
+            drop(handle);
         } else {
             drop(handle);
         }
