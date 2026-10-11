@@ -4070,6 +4070,8 @@ pub fn sys_sync() -> SyscallResult {
             let guard = mount.read();
             guard.as_ref().map(|fs| fs.dirty_handles()).transpose()
         };
+        let _sync = handles.as_ref().ok().and_then(|handles| handles.as_ref())
+            .map(|handles| crate::memory::file_map::SyncMaps::new(handles));
         if let (Ok(Some(handles)), Some(buffer)) = (&handles, bytes.as_mut()) {
             for handle in handles {
                 let _ = crate::memory::file_map::stage_range_with_buffer(handle, 0, u64::MAX, buffer);

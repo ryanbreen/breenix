@@ -174,7 +174,7 @@ impl Reclaim {
                 // pointers, and the name removal and zero-link inode written
                 // before the handoff, are made durable before any bitmap bit
                 // they guarded can persist as free.
-                fs.device.flush().map_err(|_| ReclaimError::Retry)?;
+                fs.sync().map_err(|_| ReclaimError::Retry)?;
                 *inode = published;
                 self.inode_published = true;
                 batch.published = true;

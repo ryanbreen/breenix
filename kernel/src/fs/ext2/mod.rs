@@ -613,6 +613,7 @@ impl Ext2Fs {
             return Err("Not a regular file");
         }
 
+        let mode_before = inode.i_mode;
         if unprivileged {
             let kill = 0o4000 | if inode.i_mode & 0o0010 != 0 { 0o2000 } else { 0 };
             inode.i_mode &= !kill;
@@ -625,15 +626,19 @@ impl Ext2Fs {
             .iter()
             .map(|group| group.bg_free_blocks_count as u32)
             .sum();
-        let write_data = if mapped { file::write_mapped_file_range } else { write_file_range };
-        let written = write_data(
+        let object = self.live_inodes.get(inode_num);
+        let previous_epoch = object.as_ref().map(|object| object.map.note_disk_write(self.durable_epoch()));
+        let written = if mapped { file::write_mapped_file_range(
             self.device.as_ref(),
             &mut inode,
             &self.superblock,
             &mut self.block_groups,
             offset,
             data,
-        );
+        ) } else {
+            write_file_range(self.device.as_ref(), &mut inode, &self.superblock,
+                &mut self.block_groups, offset, data).map(|_| true)
+        };
         if written == Err(crate::block::BlockError::MetadataPublishFailed) {
             // The bitmap may have landed only in part. Do not publish inode
             // pointers or build another allocation on an uncertain bitmap.
@@ -646,7 +651,8 @@ impl Ext2Fs {
             .map(|group| group.bg_free_blocks_count as u32)
             .sum();
         let mut persisted = Ok(());
-        if free_before != free_after || self.superblock.s_free_blocks_count != free_after {
+        let counts_changed = free_before != free_after || self.superblock.s_free_blocks_count != free_after;
+        if counts_changed {
             self.superblock.s_free_blocks_count = free_after;
             persisted = self
                 .superblock
@@ -674,10 +680,15 @@ impl Ext2Fs {
                 &self.block_groups,
             )
             .map_err(|_| "Failed to write inode");
-        written.map_err(|_| "Failed to write file data")?;
+        let changed = written.map_err(|_| "Failed to write file data")?;
         persisted?;
         linked?;
 
+        if !changed && mode_before == inode.i_mode && !counts_changed {
+            if let (Some(object), Some(epoch)) = (object, previous_epoch) {
+                object.map.restore_disk_epoch(epoch);
+            }
+        }
         self.live_inodes.publish_size(inode_num, inode.size());
         Ok(data.len())
     }
@@ -688,6 +699,9 @@ impl Ext2Fs {
     /// * `inode_num` - The inode number to write
     /// * `inode` - The modified inode data
     pub fn write_inode(&mut self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
+        if let Some(object) = self.live_inodes.get(inode_num) {
+            object.map.note_disk_write(self.durable_epoch());
+        }
         inode
             .write_to(
                 self.device.as_ref(),
@@ -800,9 +814,13 @@ impl Ext2Fs {
 
     /// Synchronize this filesystem's synchronous data and metadata writes.
     pub fn sync(&self) -> Result<(), &'static str> {
-        self.device
-            .flush()
-            .map_err(|_| "Failed to flush filesystem")
+        self.device.flush().map_err(|_| "Failed to flush filesystem")?;
+        self.live_inodes.record_durable();
+        Ok(())
+    }
+
+    pub(crate) fn durable_epoch(&self) -> u64 {
+        self.live_inodes.durable_epoch()
     }
 
     /// Bound addressing by the sector counter and LARGE_FILE feature.

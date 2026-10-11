@@ -799,11 +799,13 @@ pub fn write_file_range<B: BlockDevice + ?Sized>(
     offset: u64,
     data: &[u8],
 ) -> Result<(), BlockError> {
-    write_file_range_batched(device, inode, superblock, block_groups, offset, data, false)
+    write_file_range_batched(device, inode, superblock, block_groups, offset, data, false).map(|_| ())
 }
 
 /// Mapped writeback may visit a still-writable page more than once. Compare
 /// against disk rather than rewriting bytes that have not changed since sync.
+/// Returns whether data changed, so an identical snapshot preserves its
+/// existing durability certificate.
 pub fn write_mapped_file_range<B: BlockDevice + ?Sized>(
     device: &B,
     inode: &mut Ext2Inode,
@@ -811,7 +813,7 @@ pub fn write_mapped_file_range<B: BlockDevice + ?Sized>(
     block_groups: &mut [super::Ext2BlockGroupDesc],
     offset: u64,
     data: &[u8],
-) -> Result<(), BlockError> {
+) -> Result<bool, BlockError> {
     write_file_range_batched(device, inode, superblock, block_groups, offset, data, true)
 }
 
@@ -826,8 +828,8 @@ fn write_file_range_batched<B: BlockDevice + ?Sized>(
     offset: u64,
     data: &[u8],
     skip_unchanged: bool,
-) -> Result<(), BlockError> {
-    if data.is_empty() { return Ok(()); }
+) -> Result<bool, BlockError> {
+    if data.is_empty() { return Ok(false); }
     let metadata = MetadataBatch::new(device, superblock, block_groups)?;
     let result = write_file_range_impl(&metadata, device, inode, superblock, block_groups, offset, data, skip_unchanged);
     metadata.publish()?;
@@ -843,9 +845,9 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
     offset: u64,
     data: &[u8],
     skip_unchanged: bool,
-) -> Result<(), BlockError> {
+) -> Result<bool, BlockError> {
     if data.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     let block_size = superblock.block_size();
@@ -982,7 +984,7 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
     // Update modification and change timestamps
     if !skip_unchanged || changed { inode.update_timestamps(false, true, true); }
 
-    Ok(())
+    Ok(changed)
 }
 
 /// Helper to write block pointers to an indirect block
@@ -1379,16 +1381,16 @@ mod tests {
         inode.i_mtime = 7;
         inode.i_ctime = 7;
         let bytes = [0xa5; 4096];
-        write_mapped_file_range(&dev, &mut inode, &sb, &mut [], 0, &bytes).unwrap();
-        write_mapped_file_range(&dev, &mut inode, &sb, &mut [], 13, &bytes[..37]).unwrap();
+        assert!(!write_mapped_file_range(&dev, &mut inode, &sb, &mut [], 0, &bytes).unwrap());
+        assert!(!write_mapped_file_range(&dev, &mut inode, &sb, &mut [], 13, &bytes[..37]).unwrap());
         assert_eq!(dev.io.lock().1, 0);
         let times = (inode.i_mtime, inode.i_ctime);
         assert_eq!(times, (7, 7));
-        write_mapped_file_range(&dev, &mut inode, &sb, &mut [], 13, b"changed").unwrap();
+        assert!(write_mapped_file_range(&dev, &mut inode, &sb, &mut [], 13, b"changed").unwrap());
         assert_eq!(dev.io.lock().1, 1);
         let times = (inode.i_mtime, inode.i_ctime);
         assert_eq!(times, (1, 1));
-        write_mapped_file_range(&dev, &mut inode, &sb, &mut [], 13, b"changed").unwrap();
+        assert!(!write_mapped_file_range(&dev, &mut inode, &sb, &mut [], 13, b"changed").unwrap());
         assert_eq!(dev.io.lock().1, 1);
         let stored = dev.bytes.lock();
         assert_eq!(&stored[20 * 4096 + 13..20 * 4096 + 20], b"changed");

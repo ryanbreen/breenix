@@ -17,6 +17,10 @@ pub struct Ext2Fs {
     pub block_groups: Vec<Ext2BlockGroupDesc>,
 }
 impl Ext2Fs {
+    pub fn sync(&self) -> Result<(), &'static str> {
+        self.device.flush().map_err(|_| "flush")
+    }
+
     pub fn read_inode(&self, ino: u32) -> Result<Ext2Inode, &'static str> {
         Ext2Inode::read_from(
             self.device.as_ref(),

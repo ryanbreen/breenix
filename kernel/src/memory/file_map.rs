@@ -36,7 +36,7 @@ use crate::memory::{
 };
 use crate::process::{Process, ProcessId, ProcessManager};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::{
@@ -102,6 +102,7 @@ fn write_range_with_buffer(
     bytes: &mut [u8],
     flush: bool,
 ) -> Result<(), &'static str> {
+    let _sync = SyncMaps::new(core::slice::from_ref(handle));
     let range_first = first;
     loop {
         let next = {
@@ -132,6 +133,32 @@ fn write_range_with_buffer(
     }
 }
 
+/// A foreground traversal keeps the service from taking an intermediate
+/// barrier between its bounded batches. The last caller restores its wake.
+pub(crate) struct SyncMaps<'a> {
+    handles: &'a [FileHandle],
+}
+
+impl<'a> SyncMaps<'a> {
+    pub(crate) fn new(handles: &'a [FileHandle]) -> Self {
+        for handle in handles {
+            handle.object.map.syncers.fetch_add(1, Ordering::AcqRel);
+        }
+        Self { handles }
+    }
+}
+
+impl Drop for SyncMaps<'_> {
+    fn drop(&mut self) {
+        for handle in self.handles {
+            let map = &handle.object.map;
+            if map.syncers.fetch_sub(1, Ordering::AcqRel) == 1 && map.writeback_pending() {
+                crate::fs::ext2::request_map_eviction();
+            }
+        }
+    }
+}
+
 const SIGBUS: u32 = crate::signal::constants::SIGBUS;
 const SIGSEGV: u32 = crate::signal::constants::SIGSEGV;
 
@@ -149,6 +176,8 @@ pub struct MapState {
     dirty: AtomicBool,
     writeback_pending: AtomicBool,
     writeback_requests: AtomicU64,
+    disk_epoch: AtomicU64,
+    syncers: AtomicUsize,
 }
 
 #[derive(Debug)]
@@ -537,7 +566,7 @@ impl MapInner {
 }
 
 impl MapState {
-    pub fn new(size: u64) -> Self {
+    pub fn new(size: u64, durable_epoch: u64) -> Self {
         Self {
             inner: Mutex::new(MapInner {
                 mapped_size: size,
@@ -553,7 +582,18 @@ impl MapState {
             dirty: AtomicBool::new(false),
             writeback_pending: AtomicBool::new(false),
             writeback_requests: AtomicU64::new(0),
+            disk_epoch: AtomicU64::new(durable_epoch),
+            syncers: AtomicUsize::new(0),
         }
+    }
+
+    /// Called under the mount write guard before I/O; failures retain custody.
+    pub(crate) fn note_disk_write(&self, epoch: u64) -> u64 {
+        self.disk_epoch.swap(epoch, Ordering::AcqRel)
+    }
+
+    pub(crate) fn restore_disk_epoch(&self, epoch: u64) {
+        self.disk_epoch.store(epoch, Ordering::Release);
     }
 
     fn refresh(&self, inner: &MapInner) {
@@ -754,7 +794,7 @@ impl MapState {
         ino: u32,
         budget: &mut usize,
     ) -> Result<bool, &'static str> {
-        if !self.writeback_pending() {
+        if !self.writeback_pending() || self.syncers.load(Ordering::Acquire) != 0 {
             return Ok(false);
         }
         if *budget == 0 {
@@ -779,7 +819,12 @@ impl MapState {
         let mut bytes = writeback_buffer()?;
         let next = self.writeback(fs, ino, first, u64::MAX, *budget, &mut bytes)?;
         if let Some(end) = next {
-            fs.sync()?;
+            // An identical snapshot of already durable bytes must not flush
+            // pending writes belonging to another inode. Mount guards serialize
+            // the epoch check with writes and successful barriers.
+            if self.disk_epoch.load(Ordering::Acquire) == fs.durable_epoch() {
+                fs.sync()?;
+            }
             self.complete_writeback(first, end);
         }
         *budget -= count;

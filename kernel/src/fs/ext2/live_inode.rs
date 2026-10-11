@@ -172,16 +172,27 @@ impl Table {
 
 pub(super) struct LiveInodes {
     table: Mutex<Table>,
+    durable_epoch: AtomicU64,
 }
 
 impl LiveInodes {
     pub fn new() -> Self {
         Self {
+            durable_epoch: AtomicU64::new(0),
             table: Mutex::new(Table {
                 objects: BTreeMap::new(),
                 prune_cursor: 0,
             }),
         }
+    }
+
+    pub fn durable_epoch(&self) -> u64 {
+        self.durable_epoch.load(Ordering::Acquire)
+    }
+
+    /// All preceding writes are durable after a successful mount barrier.
+    pub fn record_durable(&self) {
+        self.durable_epoch.fetch_add(1, Ordering::Release);
     }
 
     /// Caller holds the selected filesystem guard through path lookup and pin.
@@ -206,7 +217,7 @@ impl LiveInodes {
                 mount,
                 size: AtomicU64::new(size),
                 size_epoch: AtomicU64::new(0),
-                map: crate::memory::file_map::MapState::new(size),
+                map: crate::memory::file_map::MapState::new(size, self.durable_epoch()),
                 external_handles: AtomicUsize::new(0),
                 pending: AtomicBool::new(false),
                 orphan: AtomicBool::new(false),
