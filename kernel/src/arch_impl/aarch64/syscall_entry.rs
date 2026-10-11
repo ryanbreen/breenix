@@ -424,8 +424,9 @@ fn sys_exit_aarch64(
                     let pid_val = _pid.as_u64();
                     let name_val = process.name.clone();
                     let clear_child_tid = process.clear_child_tid.map(|tid_addr| {
-                        let tg_id = process.thread_group_id.unwrap_or(pid_val);
-                        (tg_id, tid_addr)
+                        let address_space_id = process.address_space_lifetime.as_ref()
+                            .map_or(pid_val, |lifetime| lifetime.id);
+                        (address_space_id, tid_addr)
                     });
                     (Some(pid_val), Some(name_val), clear_child_tid)
                 } else {
@@ -510,7 +511,10 @@ fn sys_exit_aarch64(
         // This call first pivots to the neutral per-CPU scheduler stack. Its
         // trampoline marks this thread Terminated only after that pivot and
         // immediately dispatches a successor.
-        super::context_switch::schedule_terminated_from_exit(thread_id);
+        super::context_switch::schedule_terminated_from_exit(
+            thread_id,
+            if report_exit { None } else { pid_for_log },
+        );
     }
 
     panic!("AArch64 sys_exit invoked without a current scheduler thread");

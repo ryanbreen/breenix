@@ -344,17 +344,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         core::mem::forget(initial_kernel_stack);
     }
 
-    // Run contract tests to verify kernel invariants
-    #[cfg(feature = "testing")]
-    {
-        log::info!("Running contract tests...");
-        let (passed, failed) = contract_runner::run_all_contracts();
-        log::info!("Contract tests: {} passed, {} failed", passed, failed);
-        if failed > 0 {
-            panic!("Contract test failures!");
-        }
-    }
-
     // Test heap allocation
     log::info!("Testing heap allocation...");
     {
@@ -2221,6 +2210,17 @@ fn kernel_main_continue() -> ! {
         test_exec::test_fbinfo();
         log::info!("Boot test program registration complete");
         task::userspace_completion::start();
+    }
+
+    // Run contracts after test registration has created real process tables.
+    #[cfg(feature = "testing")]
+    {
+        log::info!("Running contract tests...");
+        let (passed, failed) = contract_runner::run_all_contracts();
+        log::info!("Contract tests: {} passed, {} failed", passed, failed);
+        if failed > 0 {
+            panic!("Contract test failures!");
+        }
     }
 
     // NOTE: Premature success markers removed - tests must verify actual execution

@@ -2921,6 +2921,7 @@ pub(crate) fn coreproof_reset_self_retracted_tags() {
 struct ExitScheduleState {
     scheduler_ptr: AtomicUsize,
     thread_id: AtomicU64,
+    signal_pid: AtomicU64,
 }
 
 static EXIT_SCHEDULE_STATE: [ExitScheduleState; crate::arch_impl::aarch64::constants::MAX_CPUS] =
@@ -2928,6 +2929,7 @@ static EXIT_SCHEDULE_STATE: [ExitScheduleState; crate::arch_impl::aarch64::const
         ExitScheduleState {
             scheduler_ptr: AtomicUsize::new(0),
             thread_id: AtomicU64::new(0),
+            signal_pid: AtomicU64::new(0),
         }
     }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
@@ -6010,7 +6012,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 /// The inline switch saves the outgoing context and changes SP to the per-CPU
 /// scheduler stack before entering `exit_schedule_trampoline`. Only that
 /// neutral-stack trampoline is allowed to publish `Terminated`.
-pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
+pub fn schedule_terminated_from_exit(thread_id: u64, signal_pid: Option<u64>) -> ! {
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
     }
@@ -6032,6 +6034,9 @@ pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
     EXIT_SCHEDULE_STATE[cpu_id]
         .scheduler_ptr
         .store(sched as *mut Scheduler as usize, Ordering::Relaxed);
+    EXIT_SCHEDULE_STATE[cpu_id]
+        .signal_pid
+        .store(signal_pid.unwrap_or(0), Ordering::Relaxed);
     EXIT_SCHEDULE_STATE[cpu_id]
         .thread_id
         .store(thread_id, Ordering::Release);
@@ -6056,19 +6061,36 @@ pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
 extern "C" fn exit_schedule_trampoline() -> ! {
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     let state = &EXIT_SCHEDULE_STATE[cpu_id];
-    let sched_ptr = state.scheduler_ptr.swap(0, Ordering::Acquire) as *mut Scheduler;
+    let mut sched_ptr = state.scheduler_ptr.swap(0, Ordering::Acquire) as *mut Scheduler;
     let thread_id = state.thread_id.swap(0, Ordering::Relaxed);
     assert!(!sched_ptr.is_null(), "missing AArch64 exit scheduler state");
 
     // The assembly caller has already executed `mov sp, scheduler_stack_top`.
     // Publishing Terminated here makes "terminated while still on its own
     // kernel stack" unrepresentable on the syscall-exit path.
+    let signal_pid = state.signal_pid.swap(0, Ordering::Relaxed);
+    if signal_pid != 0 {
+        // The outgoing stack is now neutral: quarantine can safely publish
+        // Terminated and retain a token for a peer's expedited observation.
+        unsafe { &mut *sched_ptr }.terminate_process_threads(signal_pid);
+        unsafe { crate::task::scheduler::force_unlock_scheduler() };
+        Scheduler::send_exit_expedite_sgi(
+            signal_pid,
+            crate::task::scheduler::GroupBatchId::for_single_victim(signal_pid),
+        );
+        let mut guard = crate::task::scheduler::lock_for_context_switch();
+        sched_ptr = guard.as_mut().expect("scheduler unavailable after signal exit")
+            as *mut Scheduler;
+        let _ = spin::MutexGuard::leak(guard);
+    } else {
+        let sched = unsafe { &mut *sched_ptr };
+        sched
+            .get_thread_mut(thread_id)
+            .expect("exiting AArch64 thread disappeared before stack pivot")
+            .set_terminated();
+        sched.remove_from_ready_queue(thread_id);
+    }
     let sched = unsafe { &mut *sched_ptr };
-    sched
-        .get_thread_mut(thread_id)
-        .expect("exiting AArch64 thread disappeared before stack pivot")
-        .set_terminated();
-    sched.remove_from_ready_queue(thread_id);
 
     let (old_id, new_id, should_requeue_old) = sched
         .schedule_deferred_requeue()

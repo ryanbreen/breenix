@@ -988,7 +988,13 @@ impl ProcessScheduler {
                         } else {
                             #[cfg(target_arch = "aarch64")]
                             let receipt =
-                                if let Some(reclaim) = defer_live_process_resources(process) {
+                                if let Some(reclaim) = if exit_code < 0 {
+                                    // Fatal exits retain an epoch-fenced receipt even
+                                    // after the syscall has left its userspace root.
+                                    Some(defer_process_resources(process))
+                                } else {
+                                    defer_live_process_resources(process)
+                                } {
                                     drop(process.stack.take());
                                     Some(crate::process::RetirementReceipt::from_reclaim(reclaim))
                                 } else {

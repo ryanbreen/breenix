@@ -150,7 +150,8 @@ pub fn test_master_pml4() -> (usize, usize) {
             }
         }
         None => {
-            log::warn!("  [SKIP] Master kernel PML4 not available");
+            log::error!("  [FAIL] Master kernel PML4 not available");
+            failed += 1;
         }
     }
 
@@ -230,7 +231,8 @@ pub fn test_all_processes() -> (usize, usize) {
             let process_count = processes.len();
 
             if process_count == 0 {
-                log::info!("  [SKIP] No processes to test");
+                log::error!("  [FAIL] No processes to test");
+                failed += 1;
                 return (passed, failed);
             }
 
@@ -293,10 +295,12 @@ pub fn test_all_processes() -> (usize, usize) {
                 );
             }
         } else {
-            log::info!("  [SKIP] Process manager not initialized");
+            log::error!("  [FAIL] Process manager not initialized");
+            failed += 1;
         }
     } else {
-        log::info!("  [SKIP] Process manager not available (locked)");
+        log::error!("  [FAIL] Process manager not available (locked)");
+        failed += 1;
     }
 
     (passed, failed)
