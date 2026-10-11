@@ -375,7 +375,7 @@ extern "C" fn phase_one_child(arg: *mut u8) -> *mut u8 {
     unsafe {
         let alive = arg.add(SHARED_ALIVE_OFFSET) as *mut u64;
         let command = arg.add(SHARED_COMMAND_OFFSET) as *mut u64;
-        core::ptr::write_volatile(alive, 1);
+        core::ptr::write_volatile(alive, process::getpid().unwrap().raw());
 
         let mut iteration = 0;
         // Bounded like every other wait here, by yields. sched_yield with no
@@ -560,9 +560,12 @@ unsafe fn first_stage() -> ! {
         fail_closed(b"CLONEVM_EXEC_TEST: ERROR borrowed clone failed\n");
     }
     wait_for_nonzero_u64(alive, b"CLONEVM_EXEC_TEST: ERROR borrowed child not live\n");
+    // clone returns a TID in Breenix's function-entry ABI; waitpid selects
+    // the PID published by the child, never that scheduler identity.
+    let child_pid = core::ptr::read_volatile(alive) as i32;
     core::ptr::write_volatile(command, 3);
     let mut status = 0;
-    if process::waitpid(child as i32, &mut status, 0).is_err()
+    if process::waitpid(child_pid, &mut status, 0).map(|pid| pid.raw() as i32).ok() != Some(child_pid)
         || !process::wifexited(status) || process::wexitstatus(status) != 0 {
         fail_closed(b"CLONEVM_EXEC_TEST: ERROR borrowed child image failed\n");
     }
