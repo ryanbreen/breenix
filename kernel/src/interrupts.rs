@@ -928,6 +928,12 @@ fn handle_cow_fault(
 
     cow_stats::TOTAL_FAULTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
+    // While a fork copies this address space the write is retried without
+    // taking the lock on each pass; the check under the lock decides.
+    if may_retry && crate::memory::fork_copy::copying(cr3) {
+        return true;
+    }
+
     match fault_manager(may_retry) {
         Ok(mut guard) => {
             cow_stats::MANAGER_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -1047,6 +1053,12 @@ fn handle_cow_with_manager(
         None => return false,
     };
 
+    // A fork copying this address space keeps it unchanged until it is done
+    // (`memory::fork_copy`): the write runs again and faults again.
+    if crate::memory::fork_copy::copying(cr3) {
+        return true;
+    }
+
     let (_pid, process) = match pm.find_process_by_cr3_mut(cr3) {
         Some(p) => p,
         None => return false,
@@ -1148,6 +1160,12 @@ fn handle_cow_direct(
     use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
     use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB};
+
+    // The section this fault interrupted holds PROCESS_MANAGER and cannot
+    // release it, so a fork copying this address space is waited for here;
+    // its CPU needs neither the lock nor this one to finish
+    // (`memory::fork_copy::wait`).
+    crate::memory::fork_copy::wait(cr3);
 
     let phys_offset = crate::memory::physical_memory_offset();
     let virt_addr = faulting_addr;
@@ -1300,6 +1318,12 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64, may_retry: bool) -> bo
         Some(pm) => pm,
         None => return false,
     };
+
+    // The stack of an address space a fork is copying grows once the copy is
+    // done (`memory::fork_copy`): the access runs again and faults again.
+    if crate::memory::fork_copy::copying(cr3) {
+        return true;
+    }
 
     let (_pid, process) = match pm.find_process_by_cr3_mut(cr3) {
         Some(p) => p,

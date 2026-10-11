@@ -7,12 +7,11 @@
 //! claim-lint:ok: 6 of 6 assertions carry a delete mutation below, and 10 of 10
 //! tests in this file pass at the bytes this ships at.
 //!
-//! It also pins #745's OTHER fix, the one no boot leg can reach: both
-//! production fork bodies in `manager.rs` must put the parent's page table
-//! back into its row before propagating a CoW setup failure (precheck C2).
-//! See `validate_cow_restore_precedes_try` at the bottom of this file.
+//! #745's other fix, putting the parent's page table back into its row before
+//! a CoW setup failure propagated (precheck C2), has no shape left to pin: fork
+//! no longer takes the parent's table out of its row (#1360, #1361).
 //!
-//! claim-lint:ok: 8 of 8 assertions here carry a mutation test in this file.
+//! claim-lint:ok: 6 of 6 assertions here carry a mutation test in this file.
 //! This is #745's version of `exec_lock_order_structure.rs`'s
 //! `validate_sys_exec_releases_process_manager` -- proving the fix BY
 //! CONSTRUCTION (a text-shape assertion that cannot pass without the fix
@@ -24,21 +23,14 @@
 //!
 //! Host-side only: a text read of the tree, no kernel build or QEMU boot.
 //! Run: `cargo test --test fork_lock_order_structure`.
-//! claim-lint:ok: 10 of 10 tests pass, and every assertion's own mutation is a
-//! test in this file rather than a claim about one.
+//! claim-lint:ok: every assertion's own mutation is a test in this file rather
+//! than a claim about one.
 
 use std::fs;
 use std::path::PathBuf;
 
 const HANDLERS_RS: &str = "kernel/src/syscall/handlers.rs";
 const FORK_FN: &str = "sys_fork_with_parent_context";
-const MANAGER_RS: &str = "kernel/src/process/manager.rs";
-/// The two production fork bodies that take the parent's page table out of its
-/// row, hand it to `setup_cow_pages_with_vmas`, and must put it back before the
-/// fallible `?` -- x86 first, then the aarch64 twin.
-const COW_RESTORE_FNS: &[&str] = &["fork_process_with_parent_context", "fork_process_aarch64"];
-const COW_RESTORE_STMT: &str = "parent.page_table = Some(parent_page_table);";
-const COW_RESULT_TRY: &str = "cow_result?;";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -276,16 +268,18 @@ fn validate_fork_lock_order(body: &str) -> Result<(), String> {
 
     // 3. Guard-liveness (#745 precheck C4): no process-manager guard may be
     // live across either reclaim call. `crate::process::manager()` must
-    // occur exactly twice (Window 1: read parent info; Window 2: fork +
-    // publish), and BOTH reclaim calls must sit strictly between Window 1's
-    // own enclosing block closing and Window 2's acquisition -- i.e.
-    // outside every manager-guard scope, by construction. claim-lint:ok: 1 of 1
-    // mutation, negative_guard_live_across_reclaim_is_rejected, below.
+    // occur exactly three times (Window 1: read parent info; Window 2: begin
+    // the fork and claim the parent's address space; Window 4: publish the
+    // child after Window 3's unlocked copy), and BOTH reclaim calls must sit
+    // strictly between Window 1's own enclosing block closing and Window 2's
+    // acquisition -- i.e. outside every manager-guard scope, by construction.
+    // claim-lint:ok: 1 of 1 mutation,
+    // negative_guard_live_across_reclaim_is_rejected, below.
     let manager_calls = code_offsets(body, &mask, "crate::process::manager()");
-    if manager_calls.len() != 2 {
+    if manager_calls.len() != 3 {
         return Err(format!(
-            "{FORK_FN} must acquire the process manager exactly twice (Window 1 + \
-             Window 2), found {}",
+            "{FORK_FN} must acquire the process manager exactly three times \
+             (Windows 1, 2 and 4), found {}",
             manager_calls.len()
         ));
     }
@@ -337,7 +331,7 @@ fn sys_fork_with_parent_context_has_the_required_lock_order() {
 // ---------------------------------------------------------------------------
 // Delete-mutation proofs -- every assertion above reddens under the mutation
 // it exists to catch (#721 review M1: do not report a ratchet "met" without
-// actually reddening it). claim-lint:ok: 8 of 8 mutations below are themselves
+// actually reddening it). claim-lint:ok: 6 of 6 mutations below are themselves
 // tests, so "reddens" is executed, not asserted.
 // ---------------------------------------------------------------------------
 
@@ -404,7 +398,7 @@ fn negative_guard_live_across_reclaim_is_rejected() {
     // Simulate Window 2's guard being acquired BEFORE the reclaim calls
     // instead of after, by inserting a second `crate::process::manager()`
     // call immediately before the first reclaim call -- this changes the
-    // manager-call count from 2 to 3 (still caught) AND, independently,
+    // manager-call count from 3 to 4 (still caught) AND, independently,
     // pulls a manager() acquisition ahead of the drain calls.
     let mutated = body.replacen(
         "crate::task::process_task::reclaim_deferred_process_resources();",
@@ -423,97 +417,6 @@ fn negative_missing_drop_before_spawn_front_is_rejected() {
     let mutated = body.replacen("drop(manager_guard);\n", "", 2);
     assert_ne!(mutated, body, "mutation did not apply");
     assert!(validate_fork_lock_order(&mutated).is_err());
-}
-
-// ---------------------------------------------------------------------------
-// The C2 ordering ratchet (#745 precheck C2; review round 2, m9)
-// ---------------------------------------------------------------------------
-
-/// The parent's page table must be put back into its row BEFORE the fallible
-/// `cow_result?`, on both production fork paths.
-///
-/// This is the one fix in #745 that no boot-level leg reaches: the prove
-/// slot's Leg 2C constructed the reverse mutation by hand and it did not
-/// redden any leg, because `setup_cow_pages_with_vmas` does not fail on a
-/// healthy boot and the tree has no CoW-allocation fault injection. So the
-/// protection against a silent reversal is structural instead. Getting this order wrong is not a
-/// leak: it leaves the LIVE PARENT row with `page_table == None`, and both x86
-/// dispatch consumers answer a `None` CR3 by terminating the thread -- a
-/// transient allocator failure inside fork would kill the calling process.
-/// claim-lint:ok: the two dispatch consumers that terminate on a `None` CR3 are
-/// in kernel/src/interrupts/context_switch.rs; the defect shape is precheck C2,
-/// docs/planning/745-x86-fork/precheck.md.
-fn validate_cow_restore_precedes_try(body: &str, function: &str) -> Result<(), String> {
-    let mask = code_mask(body);
-    let restores = code_offsets(body, &mask, COW_RESTORE_STMT);
-    let tries = code_offsets(body, &mask, COW_RESULT_TRY);
-    if restores.len() != 1 {
-        return Err(format!(
-            "{function} must restore the parent's page table exactly once \
-             (`{COW_RESTORE_STMT}`), found {}",
-            restores.len()
-        ));
-    }
-    if tries.len() != 1 {
-        return Err(format!(
-            "{function} must have exactly one `{COW_RESULT_TRY}`, found {}",
-            tries.len()
-        ));
-    }
-    if restores[0] > tries[0] {
-        return Err(format!(
-            "{function} propagates the CoW error before restoring the parent's page \
-             table -- an allocator failure inside fork would leave the live parent row \
-             with no page table and get the CALLING process terminated (#745 precheck C2)"
-        ));
-    }
-    Ok(())
-}
-
-#[test]
-fn both_production_forks_restore_the_parent_page_table_before_propagating() {
-    let source = repo_text(MANAGER_RS);
-    for function in COW_RESTORE_FNS {
-        let body = function_body(&source, function);
-        assert_eq!(
-            validate_cow_restore_precedes_try(body, function),
-            Ok(()),
-            "{function}"
-        );
-    }
-}
-
-#[test]
-fn negative_cow_restore_moved_after_the_try_is_rejected() {
-    let source = repo_text(MANAGER_RS);
-    for function in COW_RESTORE_FNS {
-        let body = function_body(&source, function);
-        // The exact pre-#745 shape: propagate first, restore second.
-        let mutated = body.replacen(
-            &format!("{COW_RESTORE_STMT}\n\n            {COW_RESULT_TRY}"),
-            &format!("{COW_RESULT_TRY}\n\n            {COW_RESTORE_STMT}"),
-            1,
-        );
-        assert_ne!(mutated, body, "mutation did not apply for {function}");
-        assert!(
-            validate_cow_restore_precedes_try(&mutated, function).is_err(),
-            "{function}"
-        );
-    }
-}
-
-#[test]
-fn negative_deleted_cow_restore_is_rejected() {
-    let source = repo_text(MANAGER_RS);
-    for function in COW_RESTORE_FNS {
-        let body = function_body(&source, function);
-        let mutated = body.replacen(COW_RESTORE_STMT, "", 1);
-        assert_ne!(mutated, body, "mutation did not apply for {function}");
-        assert!(
-            validate_cow_restore_precedes_try(&mutated, function).is_err(),
-            "{function}"
-        );
-    }
 }
 
 #[test]

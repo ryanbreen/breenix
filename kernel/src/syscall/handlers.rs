@@ -2068,27 +2068,53 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
         }
     };
 
-    // Window 2: fork under the PM lock. `fork_process_with_parent_context`
-    // and `complete_fork` contain no logging of their own -- they run
-    // entirely inside this lock, and x86's PM lock is a bare spinlock that
-    // blocks all dispatch while held (#745 precheck C9); see their own doc
-    // comments in manager.rs, which also name the one callee inside this
-    // window that still does log (#756).
+    // Window 2: take what the fork needs from the parent under the PM lock
+    // and claim the parent's address space for the copy (`begin_fork`,
+    // `memory::fork_copy`).
+    let fork = {
+        let mut manager_guard = crate::process::manager();
+        match *manager_guard {
+            Some(ref mut manager) => {
+                if !crate::process::limits::fork_allowed(manager, parent_pid) {
+                    return SyscallResult::Err(super::errno::EAGAIN as u64);
+                }
+                manager.begin_fork(parent_pid, child_page_table)
+            }
+            None => Err("Process manager not available"),
+        }
+    };
+    let mut fork = match fork {
+        Ok(fork) => fork,
+        Err(e) => {
+            log::error!("sys_fork: Failed to fork process: {}", e);
+            return SyscallResult::Err(ENOMEM as u64);
+        }
+    };
+
+    // Window 3: copy the parent's page tables into the child's without the
+    // PM lock, so every CPU keeps dispatching, and with interrupts enabled; a
+    // syscall otherwise runs with them masked from the INT 0x80 gate.
+    // Preemption stays disabled, as for the whole syscall, so this CPU holds
+    // the parent's claim until Window 4 gives it up.
+    let interrupts_were_enabled = x86_64::instructions::interrupts::are_enabled();
+    x86_64::instructions::interrupts::enable();
+    let copied = fork.copy();
+    if !interrupts_were_enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+
+    // Window 4: publish the child under the PM lock. `finish_fork` and
+    // `complete_fork` contain no logging of their own -- they run entirely
+    // inside this lock, and x86's PM lock is a bare spinlock that blocks all
+    // dispatch while held (#745 precheck C9); see their own doc comments in
+    // manager.rs, which also name the one callee inside this window that
+    // still does log (#756).
     // claim-lint:ok: "entirely inside this lock" is a statement about these two
-    // functions' own call sites, both of which are the two lines below; the one
-    // callee that escapes the no-logging property is #756.
+    // functions, both reached from the call below; the one callee that
+    // escapes the no-logging property is #756.
     let mut manager_guard = crate::process::manager();
     let fork_result = match *manager_guard {
-        Some(ref mut manager) => {
-            if !crate::process::limits::fork_allowed(manager, parent_pid) {
-                return SyscallResult::Err(super::errno::EAGAIN as u64);
-            }
-            manager.fork_process_with_parent_context(
-                parent_pid,
-                parent_context,
-                child_page_table.publish(),
-            )
-        }
+        Some(ref mut manager) => manager.finish_fork(fork, copied, parent_context),
         None => Err("Process manager not available"),
     };
 
@@ -2114,7 +2140,7 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
             let Some((child_thread_id, child_tls_block, child_thread)) = child_info else {
                 // Defensive teardown, believed unreachable in practice:
                 // `complete_fork`'s own invariant guarantees `main_thread`
-                // is `Some` whenever `fork_process_with_parent_context`
+                // is `Some` whenever `finish_fork`
                 // returns `Ok` (it is set immediately before the row
                 // insert this same call performed). Mirrors sys_spawn's
                 // own Window-3 undo (#713 precheck C2) for defense in

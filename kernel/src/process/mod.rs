@@ -381,6 +381,36 @@ pub fn manager() -> ProcessManagerGuard {
     }
 }
 
+/// PROCESS_MANAGER, taken once no fork is copying the address space `thread`
+/// runs in (`memory::fork_copy`): the acquisition for a syscall that changes
+/// its caller's mappings. With a copy in progress the lock is released and the
+/// copy waited for, with interrupts enabled, so a CLONE_VM thread's mmap holds
+/// neither the lock nor its CPU's interrupts while its group's fork copies.
+/// Called from syscall context holding no lock.
+pub fn manager_for_address_space(thread: u64) -> ProcessManagerGuard {
+    loop {
+        let guard = manager();
+        let root = guard
+            .as_ref()
+            .and_then(|manager| manager.find_process_by_thread(thread))
+            .and_then(|(_, process)| process.cr3_value());
+        match root {
+            Some(root) if crate::memory::fork_copy::copying(root) => {
+                drop(guard);
+                let masked = !crate::arch_interrupts_enabled();
+                // SAFETY: no lock is held; the mask is restored below.
+                unsafe { crate::arch_enable_interrupts() };
+                crate::memory::fork_copy::wait(root);
+                if masked {
+                    // SAFETY: restores the caller's masked state.
+                    unsafe { crate::arch_disable_interrupts() };
+                }
+            }
+            _ => return guard,
+        }
+    }
+}
+
 /// Proof that PROCESS_MANAGER is held on this CPU, by the code a fault
 /// interrupted, without a guard in hand. The only way to obtain one is
 /// `pm_held_on_this_cpu()`.

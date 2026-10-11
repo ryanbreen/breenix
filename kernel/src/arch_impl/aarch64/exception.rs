@@ -2788,6 +2788,11 @@ fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
     let Some(pm) = guard.as_mut() else {
         return false;
     };
+    // The stack of an address space a fork is copying grows once the copy is
+    // done (`memory::fork_copy`): the access runs again and faults again.
+    if crate::memory::fork_copy::copying(page_table_phys) {
+        return true;
+    }
     let Some((_pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) else {
         return false;
     };
@@ -2906,6 +2911,12 @@ fn handle_cow_fault_arm64(far: u64, iss: u32, from_el0: bool) -> bool {
         Some(pm) => pm,
         None => return false,
     };
+
+    // A fork copying this address space keeps it unchanged until it is done
+    // (`memory::fork_copy`): the write runs again and faults again.
+    if crate::memory::fork_copy::copying(page_table_phys) {
+        return true;
+    }
 
     // Find process by page table
     let (pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {

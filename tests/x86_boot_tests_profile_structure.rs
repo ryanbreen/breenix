@@ -6,7 +6,7 @@ use std::{fs, path::PathBuf};
 fn root() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
 fn fork_body(source: &str) -> &str {
     let start = source.find("pub fn fork_process_with_page_table(").expect("fork helper");
-    let end = source[start..].find("    /// Fork a process with the ACTUAL").expect("next helper");
+    let end = source[start..].find("    /// Start a fork of `parent_pid`").expect("next helper");
     &source[start..start + end]
 }
 fn validate_fork(source: &str) -> Result<(), &'static str> {

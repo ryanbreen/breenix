@@ -355,6 +355,17 @@ pub(crate) enum AbandonReason {
 }
 
 impl ProcessPageTable {
+    /// Refuse to change a table a fork is copying (`memory::fork_copy`). The
+    /// paths that can reach one wait for the copy before they get here, so
+    /// reaching this with the claim in force is a missed wait, not a race to
+    /// lose quietly.
+    fn assert_unclaimed(&self) {
+        assert!(
+            !crate::memory::fork_copy::copying(self.level_4_frame.start_address().as_u64()),
+            "page table changed while a fork copies it"
+        );
+    }
+
     /// Create a new page table for a process (ARM64 version)
     ///
     /// On ARM64, this is much simpler than x86_64 because:
@@ -1156,6 +1167,7 @@ impl ProcessPageTable {
 
     /// Transfer bindings without allocation when exec or exit supersedes the root.
     pub(crate) fn retain_file_vmas(&mut self, vmas: &mut alloc::vec::Vec<crate::memory::vma::Vma>) {
+        self.assert_unclaimed();
         assert!(self.retired_vmas.is_empty());
         self.retired_vmas = core::mem::take(vmas);
     }
@@ -1164,6 +1176,7 @@ impl ProcessPageTable {
     /// leaves retain their own frame references until root reclamation, so
     /// release its file bindings without retaining inode or writer custody.
     pub(crate) fn release_exec_file_vmas(&mut self) {
+        self.assert_unclaimed();
         self.retired_vmas.clear();
     }
 
@@ -1398,6 +1411,136 @@ impl ProcessPageTable {
         Ok(page_count)
     }
 
+    /// Visit every user page this table maps, in address order, and let `f`
+    /// lower its permissions in place. `f` gets the page's address, frame and
+    /// flags and returns the flags the page keeps in this table, `None` to
+    /// leave it as it is.
+    ///
+    /// A fork shares its parent's pages with this while it holds the parent's
+    /// copy claim (`memory::fork_copy`) instead of PROCESS_MANAGER, so other
+    /// CPUs may be walking the table, in hardware or in software. Each
+    /// descriptor changes in one store and keeps its frame: a walker sees the
+    /// page before or after, never unmapped. Neither the tables nor their
+    /// custody records change, which is why this takes `&self`. Every lowered
+    /// page's translations are flushed from every CPU before this returns,
+    /// whether it returns an error or not.
+    pub(crate) fn share_user_leaves<F>(&self, mut f: F) -> Result<(), &'static str>
+    where
+        F: FnMut(VirtAddr, PhysAddr, PageTableFlags) -> Result<Option<PageTableFlags>, &'static str>,
+    {
+        let phys_offset = crate::memory::physical_memory_offset();
+        let table_at = |phys: PhysAddr| (phys_offset + phys.as_u64()).as_mut_ptr::<PageTable>();
+        #[cfg(target_arch = "x86_64")]
+        let mut lowered = false;
+        let mut result = Ok(());
+
+        #[cfg(target_arch = "x86_64")]
+        let l4_range = 0..256u64;
+        #[cfg(target_arch = "aarch64")]
+        let l4_range = 0..512u64;
+        // SAFETY: every table reached is a page-table page of this address
+        // space, found from its root through present table entries, and the
+        // physical-memory window maps it. The claim keeps every other writer
+        // out; a hardware walker reads each descriptor whole.
+        'walk: for l4_idx in l4_range {
+            let l4 = unsafe { &*table_at(self.level_4_frame.start_address()) };
+            let l4_entry = &l4[l4_idx as usize];
+            if l4_entry.is_unused() || !l4_entry.flags().contains(PageTableFlags::PRESENT) {
+                continue;
+            }
+            let l3 = unsafe { &mut *table_at(l4_entry.addr()) };
+            for l3_idx in 0..512u64 {
+                let l3_entry = &mut l3[l3_idx as usize];
+                if l3_entry.is_unused() || !l3_entry.flags().contains(PageTableFlags::PRESENT) {
+                    continue;
+                }
+                if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                    let virt = VirtAddr::new((l4_idx << 39) | (l3_idx << 30));
+                    if let Err(error) = Self::keep_huge(&mut f, virt, l3_entry.addr(), l3_entry.flags()) {
+                        result = Err(error);
+                        break 'walk;
+                    }
+                    continue;
+                }
+                let l2 = unsafe { &mut *table_at(l3_entry.addr()) };
+                for l2_idx in 0..512u64 {
+                    let l2_entry = &mut l2[l2_idx as usize];
+                    if l2_entry.is_unused() || !l2_entry.flags().contains(PageTableFlags::PRESENT)
+                    {
+                        continue;
+                    }
+                    if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                        let virt = VirtAddr::new((l4_idx << 39) | (l3_idx << 30) | (l2_idx << 21));
+                        if let Err(error) = Self::keep_huge(&mut f, virt, l2_entry.addr(), l2_entry.flags()) {
+                            result = Err(error);
+                            break 'walk;
+                        }
+                        continue;
+                    }
+                    let l1 = unsafe { &mut *table_at(l2_entry.addr()) };
+                    for l1_idx in 0..512u64 {
+                        let entry = &mut l1[l1_idx as usize];
+                        if entry.is_unused() || !entry.flags().contains(PageTableFlags::PRESENT) {
+                            continue;
+                        }
+                        let virt = VirtAddr::new(
+                            (l4_idx << 39) | (l3_idx << 30) | (l2_idx << 21) | (l1_idx << 12),
+                        );
+                        let flags = match f(virt, entry.addr(), entry.flags()) {
+                            Ok(Some(flags)) => flags,
+                            Ok(None) => continue,
+                            Err(error) => {
+                                result = Err(error);
+                                break 'walk;
+                            }
+                        };
+                        if self.root_slot_custody(virt.as_u64()) == RootSlotCustody::Inherited {
+                            crate::trace_count!(
+                                crate::tracing::providers::teardown::PT_ROOT_SLOT_REFUSED
+                            );
+                            result = Err("Cannot update flags in an inherited root page-table slot");
+                            break 'walk;
+                        }
+                        entry.set_addr(entry.addr(), flags);
+                        // x86_64: every other online CPU answers a flush by
+                        // NMI, so the parent's translations are dropped once
+                        // below, as Linux flushes once at the end of a fork's
+                        // copy. ARM64 broadcasts each page's invalidation.
+                        #[cfg(target_arch = "x86_64")]
+                        {
+                            lowered = true;
+                        }
+                        #[cfg(not(target_arch = "x86_64"))]
+                        crate::memory::tlb::flush_page(virt);
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if lowered {
+            crate::memory::tlb::flush_all();
+        }
+        result
+    }
+
+    /// `share_user_leaves` for a block mapping, which it shares as it is: one
+    /// whose permissions would have to change is refused.
+    fn keep_huge<F>(
+        f: &mut F,
+        virt: VirtAddr,
+        frame: PhysAddr,
+        flags: PageTableFlags,
+    ) -> Result<(), &'static str>
+    where
+        F: FnMut(VirtAddr, PhysAddr, PageTableFlags) -> Result<Option<PageTableFlags>, &'static str>,
+    {
+        match f(virt, frame, flags)? {
+            None => Ok(()),
+            Some(_) => Err("Cannot share a block mapping copy-on-write"),
+        }
+    }
+
     /// Map a page in this process's address space
     pub fn map_page(
         &mut self,
@@ -1405,6 +1548,7 @@ impl ProcessPageTable {
         frame: PhysFrame<Size4KiB>,
         flags: PageTableFlags,
     ) -> Result<(), &'static str> {
+        self.assert_unclaimed();
         log::trace!(
             "ProcessPageTable::map_page called for page {:#x}",
             page.start_address().as_u64()
@@ -1616,6 +1760,7 @@ impl ProcessPageTable {
         &mut self,
         page: Page<Size4KiB>,
     ) -> Result<ReleasedLeaf, &'static str> {
+        self.assert_unclaimed();
         let page_addr = page.start_address().as_u64();
         let record_index = self.leaves.search(page_addr).map_err(|_| {
             crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
@@ -1640,6 +1785,7 @@ impl ProcessPageTable {
     /// whose descriptor and custody record disagree. The caller flushes and
     /// releases a returned leaf, as for `unmap_page_deferred`.
     pub(crate) fn revoke_page(&mut self, page: Page<Size4KiB>) -> Result<Revoked, RevokeFailed> {
+        self.assert_unclaimed();
         let recorded = self.leaves.search(page.start_address().as_u64()).is_ok();
         let mapped = self.mapper.translate_page(page).is_ok();
         match (recorded, mapped) {
@@ -1729,6 +1875,7 @@ impl ProcessPageTable {
     /// mapping; its current descriptor supplies the frame identity so a CoW
     /// replacement does not change the record's ownership key.
     pub(crate) fn release_mapped_leaves(&mut self) {
+        self.assert_unclaimed();
         if self.leaves.released {
             return;
         }
@@ -1756,6 +1903,7 @@ impl ProcessPageTable {
     /// Tables remain owned until this scan completes. Empty subtrees are skipped
     /// together, and both leaf release and descriptor scanning are bounded.
     pub(crate) fn release_mapped_leaves_bounded(&mut self, budget: &mut u32) -> RetireProgress {
+        self.assert_unclaimed();
         if self.leaves.released {
             return RetireProgress::Complete;
         }
@@ -1822,6 +1970,7 @@ impl ProcessPageTable {
         page: Page<Size4KiB>,
         new_flags: PageTableFlags,
     ) -> Result<(), &'static str> {
+        self.assert_unclaimed();
         if self.root_slot_custody(page.start_address().as_u64()) == RootSlotCustody::Inherited {
             crate::trace_count!(crate::tracing::providers::teardown::PT_ROOT_SLOT_REFUSED);
             return Err("Cannot update flags in an inherited root page-table slot");
@@ -1879,6 +2028,7 @@ impl ProcessPageTable {
     /// handler that reacquires it. The ordinary data-abort path shares this
     /// implementation, including break-before-make and leaf retirement.
     pub(crate) fn resolve_cow_write(&mut self, far: u64, pid: u64) -> bool {
+        self.assert_unclaimed();
         use crate::memory::cow_stats;
         use crate::memory::frame_metadata::frame_is_shared;
         let faulting_addr = VirtAddr::new(far);
@@ -1985,6 +2135,7 @@ impl ProcessPageTable {
     /// the copy. Resolve CoW through the owned table rather than reacquiring PM
     /// from a nested data abort. No byte may bypass EL0 write permissions.
     pub(crate) fn write_user_memory(&mut self, start: u64, bytes: &[u8], pid: u64) -> bool {
+        self.assert_unclaimed();
         if start == 0 || !crate::memory::layout::is_valid_user_range(start, bytes.len()) {
             return false;
         }
@@ -2220,6 +2371,7 @@ impl ProcessPageTable {
     /// unmap pages that might conflict with the new program.
     #[allow(dead_code)]
     pub fn clear_userspace_for_exec(&mut self) -> Result<(), &'static str> {
+        self.assert_unclaimed();
         log::debug!("clear_userspace_for_exec: Clearing common userspace regions");
 
         // Clear the standard userspace regions that programs typically use
@@ -2250,6 +2402,7 @@ impl ProcessPageTable {
     ///
     /// NOTE: This doesn't work well when L3 tables are shared between processes
     pub fn clear_user_entries(&mut self) {
+        self.assert_unclaimed();
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();
 
@@ -2284,6 +2437,7 @@ impl ProcessPageTable {
         start_addr: VirtAddr,
         end_addr: VirtAddr,
     ) -> Result<(), &'static str> {
+        self.assert_unclaimed();
         log::debug!(
             "Unmapping user pages from {:#x} to {:#x}",
             start_addr.as_u64(),
@@ -2338,6 +2492,7 @@ impl ProcessPageTable {
     /// this address space is no longer live. Work is resumable and the root is
     /// always attempted last, after every intermediate-table lease is consumed.
     pub(crate) fn retire_bounded(&mut self, pid: u64, budget: &mut u32) -> RetireProgress {
+        self.assert_unclaimed();
         match self.tables.disposition {
             Disposition::Retired => return RetireProgress::Complete,
             Disposition::Undecided => {
@@ -2399,6 +2554,7 @@ impl ProcessPageTable {
     /// custody. The caller supplies the shared retirement budget, and old exec
     /// roots remain resumable through the ordinary exit pipeline.
     pub(crate) fn cleanup_for_exec(&mut self, pid: u64, budget: &mut u32) -> RetireProgress {
+        self.assert_unclaimed();
         if self.release_mapped_leaves_bounded(budget) != RetireProgress::Complete {
             return RetireProgress::Budgeted;
         }
@@ -2408,6 +2564,7 @@ impl ProcessPageTable {
 
 impl Drop for ProcessPageTable {
     fn drop(&mut self) {
+        self.assert_unclaimed();
         match self.tables.disposition {
             Disposition::Undecided => {
                 crate::trace_count!(crate::tracing::providers::teardown::PT_ROOT_DROPPED_UNDECIDED);

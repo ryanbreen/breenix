@@ -3,6 +3,7 @@ pub mod arch_stub;
 pub mod anon_map;
 pub mod cow_stats;
 pub mod file_map;
+pub mod fork_copy;
 pub mod frame_allocator;
 pub mod frame_metadata;
 pub mod heap;

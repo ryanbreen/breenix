@@ -222,7 +222,7 @@ pub(crate) fn populate(thread: u64, start: u64, end: u64) -> Result<(), u64> {
         let mut prepared = None;
         loop {
             let outcome = {
-                let mut guard = crate::process::manager();
+                let mut guard = crate::process::manager_for_address_space(thread);
                 let (_, process) = guard
                     .as_mut()
                     .and_then(|m| m.find_address_space_by_thread_mut(thread))
@@ -253,7 +253,7 @@ pub fn sys_mlock(addr: u64, length: u64) -> SyscallResult {
         let (start, end) = range(addr, length, false)?;
         let thread = get_current_thread_id().ok_or(ENOMEM as u64)?;
         {
-            let mut guard = crate::process::manager();
+            let mut guard = crate::process::manager_for_address_space(thread);
             let (_, p) = guard
                 .as_mut()
                 .and_then(|m| m.find_address_space_by_thread_mut(thread))
@@ -274,7 +274,7 @@ pub fn sys_munlock(addr: u64, length: u64) -> SyscallResult {
     result((|| {
         let (start, end) = range(addr, length, false)?;
         let thread = get_current_thread_id().ok_or(ENOMEM as u64)?;
-        let mut guard = crate::process::manager();
+        let mut guard = crate::process::manager_for_address_space(thread);
         let (_, p) = guard
             .as_mut()
             .and_then(|m| m.find_address_space_by_thread_mut(thread))
@@ -298,7 +298,7 @@ pub fn sys_mlockall(flags: u64) -> SyscallResult {
     result((|| {
         let thread = get_current_thread_id().ok_or(ENOMEM as u64)?;
         let ranges = {
-            let mut guard = crate::process::manager();
+            let mut guard = crate::process::manager_for_address_space(thread);
             let (_, p) = guard
                 .as_mut()
                 .and_then(|m| m.find_address_space_by_thread_mut(thread))
@@ -356,7 +356,7 @@ pub fn sys_mlockall(flags: u64) -> SyscallResult {
 pub fn sys_munlockall() -> SyscallResult {
     result((|| {
         let thread = get_current_thread_id().ok_or(ENOMEM as u64)?;
-        let mut guard = crate::process::manager();
+        let mut guard = crate::process::manager_for_address_space(thread);
         let (_, p) = guard
             .as_mut()
             .and_then(|m| m.find_address_space_by_thread_mut(thread))
@@ -376,7 +376,7 @@ pub fn sys_madvise(addr: u64, length: u64, advice: u64) -> SyscallResult {
         // Validate and discard one page per PM section.
         let mut cursor = start;
         while cursor < end {
-            let mut guard = crate::process::manager();
+            let mut guard = crate::process::manager_for_address_space(thread);
             let (_, p) = guard
                 .as_mut()
                 .and_then(|m| m.find_address_space_by_thread_mut(thread))
@@ -444,7 +444,7 @@ pub fn sys_mincore(addr: u64, length: u64, vector: u64) -> SyscallResult {
         while cursor < end {
             let count = ((end - cursor) / PAGE_SIZE).min(PAGE_SIZE) as usize;
             for byte in &mut bytes[..count] {
-                let mut guard = crate::process::manager();
+                let mut guard = crate::process::manager_for_address_space(thread);
                 let (_, p) = guard
                     .as_mut()
                     .and_then(|m| m.find_address_space_by_thread_mut(thread))

@@ -151,6 +151,36 @@ pub struct ProcessManager {
     next_process_base: VirtAddr,
 }
 
+/// A fork between `ProcessManager::begin_fork` and `finish_fork`: what it took
+/// from its parent under PROCESS_MANAGER, and its claim on the parent's
+/// address space, held while `copy` runs without the lock.
+pub(crate) struct ForkCopy {
+    parent_pid: ProcessId,
+    child_pid: ProcessId,
+    parent_thread: Thread,
+    child_process: Process,
+    vmas: Vec<crate::memory::vma::Vma>,
+    child_page_table: crate::memory::process_memory::UnpublishedPageTable,
+    /// The parent's table. Only the parent's own row can free or replace it,
+    /// by exiting or exec'ing, and that row's thread is this fork, inside a
+    /// syscall a kill leaves to finish (`KillCustody`); a CLONE_VM sibling's
+    /// row does not own it. The claim keeps every other change off it.
+    parent_page_table: *const ProcessPageTable,
+    claim: crate::memory::fork_copy::CopyClaim,
+}
+
+impl ForkCopy {
+    /// Share the parent's pages with the child, write-protecting the parent's
+    /// writable private ones. Called without PROCESS_MANAGER, with interrupts
+    /// enabled and preemption disabled, as `CopyClaim::take` requires.
+    pub(crate) fn copy(&mut self) -> Result<(), &'static str> {
+        // SAFETY: see `parent_page_table`.
+        let parent = unsafe { &*self.parent_page_table };
+        super::fork::setup_cow_pages_with_vmas(parent, &mut self.child_page_table, &self.vmas)
+            .map(|_| ())
+    }
+}
+
 impl ProcessManager {
     /// Arch-neutral: walks only `Process`/`Thread` fields shared by both
     /// architectures. Used by both arches' exec functions to refuse an exec
@@ -2859,10 +2889,125 @@ impl ProcessManager {
         }
     }
 
-    /// Fork a process with the ACTUAL parent register state from syscall frame
-    /// This is the preferred method as it captures the exact register values at fork time,
-    /// not the stale values from the last context switch.
-    /// Note: Fork requires architecture-specific register manipulation
+    /// Start a fork of `parent_pid`: take what the child needs from the
+    /// parent's row, give the child its own bindings of the parent's file
+    /// mappings in `child_page_table`, and claim the parent's address space
+    /// for the copy (`memory::fork_copy`). PROCESS_MANAGER held.
+    ///
+    /// The copy itself (`ForkCopy::copy`) runs without the lock, and
+    /// `finish_fork` publishes the child under it again. Until then the claim
+    /// keeps every other change off the parent's tables. Nothing a fork
+    /// gathers here is logged, as on every PROCESS_MANAGER section of fork.
+    pub(crate) fn begin_fork(
+        &mut self,
+        parent_pid: ProcessId,
+        child_page_table: crate::memory::process_memory::UnpublishedPageTable,
+    ) -> Result<ForkCopy, &'static str> {
+        crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
+
+        let (parent_thread, parent_page_table) = {
+            let parent = self
+                .processes
+                .live_row(&parent_pid)
+                .ok_or("Parent process not found")?;
+            let thread = parent
+                .main_thread
+                .as_ref()
+                .ok_or("Parent process has no main thread")?
+                .clone();
+            let table: *const ProcessPageTable = parent
+                .page_table
+                .as_deref()
+                .ok_or("Parent process has no page table")?;
+            (thread, table)
+        };
+
+        // Allocate a new PID for the child
+        let child_pid = self.allocate_ordinary_pid();
+        let parent = self
+            .processes
+            .live_row(&parent_pid)
+            .ok_or("Parent process not found")?;
+
+        // Each file VMA needs its own binding in the child's address space.
+        let vmas = crate::memory::file_map::fork_vmas(&parent.vmas, child_pid, &child_page_table)?;
+
+        // The child starts at the parent's entry point, in the parent's
+        // process group, session and working directory (POSIX), with the
+        // parent's heap, mmap state, memory usage and stack bounds: its table
+        // shares the parent's pages, grown stack pages included.
+        let mut child_process = Process::new(
+            child_pid,
+            format!("{}_child_{}", parent.name, child_pid.as_u64()),
+            parent.entry_point,
+        );
+        child_process.parent = Some(parent_pid);
+        child_process.pgid = parent.pgid;
+        child_process.sid = parent.sid;
+        child_process.cwd = parent.cwd.copy();
+        child_process.heap_start = parent.heap_start;
+        child_process.heap_end = parent.heap_end;
+        child_process.mmap_hint = parent.mmap_hint;
+        child_process.memory_usage.code_size = parent.memory_usage.code_size;
+        child_process.memory_usage.heap_size = parent.memory_usage.heap_size;
+        child_process.memory_usage.stack_size = parent.memory_usage.stack_size;
+        child_process.user_stack_top = parent.user_stack_top;
+        child_process.user_stack_bottom = parent.user_stack_bottom;
+
+        // SAFETY: the table is the parent row's, read under this guard.
+        let root = unsafe { (*parent_page_table).level_4_frame().start_address().as_u64() };
+        Ok(ForkCopy {
+            parent_pid,
+            child_pid,
+            parent_thread,
+            child_process,
+            vmas,
+            child_page_table,
+            parent_page_table,
+            claim: crate::memory::fork_copy::CopyClaim::take(root),
+        })
+    }
+
+    /// End a fork's copy under PROCESS_MANAGER: give up the claim on the
+    /// parent's address space and, if the copy succeeded and the parent is
+    /// not being killed, hand back the child row ready to complete. A failed
+    /// or abandoned fork's child table and bindings are released here.
+    ///
+    /// A parent whose group is exiting, by a group exit or a fatal signal
+    /// that arrived during the copy, gets no child, as a clone in a dying
+    /// group gets no thread (Linux's copy_process makes the same check).
+    fn end_fork_copy(
+        &mut self,
+        fork: ForkCopy,
+        copied: Result<(), &'static str>,
+    ) -> Result<(ProcessId, ProcessId, Thread, Process), &'static str> {
+        let ForkCopy {
+            parent_pid,
+            child_pid,
+            parent_thread,
+            mut child_process,
+            vmas,
+            child_page_table,
+            claim,
+            ..
+        } = fork;
+        drop(claim);
+        copied?;
+        let parent = self
+            .processes
+            .live_row(&parent_pid)
+            .ok_or("Parent process not found")?;
+        if parent.group_exit_code.is_some() {
+            return Err("Parent process is exiting");
+        }
+        child_process.vmas = vmas;
+        child_process.page_table = Some(child_page_table.publish());
+        Ok((parent_pid, child_pid, parent_thread, child_process))
+    }
+
+    /// Finish a fork whose copy has run (`begin_fork`, `ForkCopy::copy`),
+    /// using the ACTUAL parent register state from the syscall frame, not the
+    /// stale values from the last context switch. PROCESS_MANAGER held.
     ///
     /// NOTE: No logging in this function's own body — it runs under the PM
     /// lock (#745 precheck C9). x86's PM lock is a bare spinlock, and
@@ -2871,7 +3016,7 @@ impl ProcessManager {
     /// thread that blocks on the logger lock while holding PM here can
     /// deadlock permanently if the logger's actual holder was preempted and
     /// can never be rescheduled to release it. Use tracing events instead
-    /// (mirrors `fork_process_aarch64`'s own identical invariant below).
+    /// (mirrors the ARM64 `finish_fork`'s own identical invariant below).
     /// claim-lint:ok: scope and residue both stated below and filed as #756.
     ///
     /// This is a property of the FUNCTION, not of the whole PM-held region:
@@ -2885,298 +3030,44 @@ impl ProcessManager {
     /// claim-lint:ok: the call-site census behind "every create_user_process"
     /// is enumerated in #756.
     #[cfg(target_arch = "x86_64")]
-    pub fn fork_process_with_parent_context(
+    pub(crate) fn finish_fork(
         &mut self,
-        parent_pid: ProcessId,
+        fork: ForkCopy,
+        copied: Result<(), &'static str>,
         parent_context: crate::task::thread::CpuContext,
-        mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
-        crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
-
-        // Get the parent process info we need (including page table for memory copying)
-        let (
-            parent_name,
-            parent_entry_point,
-            parent_pgid,
-            parent_sid,
-            parent_cwd,
-            parent_thread_info,
-            parent_heap_start,
-            parent_heap_end,
-            parent_mmap_hint,
-            parent_code_size,
-            parent_heap_size,
-            parent_stack_size,
-            parent_user_stack_top,
-            parent_user_stack_bottom,
-        ) = {
-            let parent = self
-                .processes
-                .live_row(&parent_pid)
-                .ok_or("Parent process not found")?;
-
-            let _parent_thread = parent
-                .main_thread
-                .as_ref()
-                .ok_or("Parent process has no main thread")?;
-
-            // Clone what we need to avoid borrow issues
-            (
-                parent.name.clone(),
-                parent.entry_point,
-                parent.pgid,
-                parent.sid,
-                parent.cwd.copy(),
-                _parent_thread.clone(),
-                parent.heap_start,
-                parent.heap_end,
-                parent.mmap_hint,
-                parent.memory_usage.code_size,
-                parent.memory_usage.heap_size,
-                parent.memory_usage.stack_size,
-                parent.user_stack_top,
-                parent.user_stack_bottom,
-            )
-        };
-
-        // Allocate a new PID for the child
-        let child_pid = self.allocate_ordinary_pid();
-
-        // Each file VMA needs its own binding in the child's address space.
-        let parent_vmas = crate::memory::file_map::fork_vmas(
-            &self
-                .processes
-                .live_row(&parent_pid)
-                .ok_or("Parent process not found")?
-                .vmas,
-            child_pid,
-            &child_page_table,
-        )?;
-
-        // Create child process name
-        let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
-
-        // Create the child process with the same entry point
-        let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
-        child_process.parent = Some(parent_pid);
-        // POSIX: Child inherits parent's process group, session, and working directory
-        child_process.pgid = parent_pgid;
-        child_process.sid = parent_sid;
-        child_process.cwd = parent_cwd;
-
-        // COPY-ON-WRITE FORK: Share pages between parent and child.
-        // Pages are marked read-only and only copied when written to.
-        {
-            // Get mutable access to parent's page table for CoW setup.
-            // We temporarily take ownership to modify parent's page flags.
-            let parent = self
-                .processes
-                .live_row_mut(&parent_pid)
-                .ok_or("Parent process not found during CoW setup")?;
-            let mut parent_page_table = parent
-                .page_table
-                .take()
-                .ok_or("Parent process has no page table")?;
-
-            // Set up Copy-on-Write sharing between parent and child.
-            // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
-            let cow_result = super::fork::setup_cow_pages_with_vmas(
-                parent_page_table.as_mut(),
-                child_page_table.as_mut(),
-                &parent_vmas,
-            );
-
-            // Restore the parent's page table on EVERY exit path, success or
-            // failure (#745 precheck C2) -- a CoW setup failure must not
-            // leave the live parent row with no page table: both x86
-            // dispatch consumers respond to a `None` page table by
-            // terminating the thread (`context_switch.rs`'s no-CR3
-            // refusal), which would turn a transient allocator failure
-            // inside fork into the CALLING process getting killed.
-            // claim-lint:ok: "every exit path" here is two -- the `?` below and
-            // the fall-through -- and the ordering is ratchet-pinned with swap
-            // and delete mutations in tests/fork_lock_order_structure.rs.
-            parent.page_table = Some(parent_page_table);
-
-            cow_result?;
-
-            // Child inherits parent's heap bounds and mmap state
-            child_process.heap_start = parent_heap_start;
-            child_process.heap_end = parent_heap_end;
-            child_process.mmap_hint = parent_mmap_hint;
-            child_process.vmas = parent_vmas;
-
-            // Child inherits parent's memory usage (CoW shares the same pages)
-            child_process.memory_usage.code_size = parent_code_size;
-            child_process.memory_usage.heap_size = parent_heap_size;
-            child_process.memory_usage.stack_size = parent_stack_size;
-            // The child's page table copies the parent's stack, grown pages
-            // included, so it grows from the same bounds.
-            child_process.user_stack_top = parent_user_stack_top;
-            child_process.user_stack_bottom = parent_user_stack_bottom;
-        }
-
-        child_process.page_table = Some(child_page_table);
-
-        // Use the actual parent context from the syscall frame
+        let (parent_pid, child_pid, parent_thread, child_process) =
+            self.end_fork_copy(fork, copied)?;
         self.complete_fork(
             parent_pid,
             child_pid,
-            &parent_thread_info,
+            &parent_thread,
             Some(parent_context.rsp),
             Some(parent_context.rip),
-            Some(parent_context), // Pass the actual parent context
+            Some(parent_context),
             child_process,
         )
     }
 
-    /// Fork a process on ARM64 with the ACTUAL parent register state from exception frame
-    ///
-    /// This is the ARM64 equivalent of fork_process_with_parent_context. It captures the
-    /// exact register values at fork time from the exception frame.
+    /// Finish a fork whose copy has run (`begin_fork`, `ForkCopy::copy`), on
+    /// ARM64, with the ACTUAL parent register state from the exception frame.
+    /// PROCESS_MANAGER held.
     #[cfg(target_arch = "aarch64")]
-    pub fn fork_process_aarch64(
+    pub(crate) fn finish_fork(
         &mut self,
-        parent_pid: ProcessId,
+        fork: ForkCopy,
+        copied: Result<(), &'static str>,
         parent_context: crate::task::thread::CpuContext,
-        mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
-        // Lock-free trace: fork entry
-        crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
-
-        // Get the parent process info
-        let (
-            parent_name,
-            parent_entry_point,
-            parent_pgid,
-            parent_sid,
-            parent_cwd,
-            parent_thread_info,
-            parent_heap_start,
-            parent_heap_end,
-            parent_mmap_hint,
-            parent_code_size,
-            parent_heap_size,
-            parent_stack_size,
-            parent_user_stack_top,
-            parent_user_stack_bottom,
-        ) = {
-            let parent = self
-                .processes
-                .live_row(&parent_pid)
-                .ok_or("Parent process not found")?;
-
-            let parent_thread = parent
-                .main_thread
-                .as_ref()
-                .ok_or("Parent process has no main thread")?;
-
-            (
-                parent.name.clone(),
-                parent.entry_point,
-                parent.pgid,
-                parent.sid,
-                parent.cwd.copy(),
-                parent_thread.clone(),
-                parent.heap_start,
-                parent.heap_end,
-                parent.mmap_hint,
-                parent.memory_usage.code_size,
-                parent.memory_usage.heap_size,
-                parent.memory_usage.stack_size,
-                parent.user_stack_top,
-                parent.user_stack_bottom,
-            )
-        };
-
-        // Allocate a new PID for the child
-        let child_pid = self.allocate_ordinary_pid();
-
-        // Each file VMA needs its own binding in the child's address space.
-        let parent_vmas = crate::memory::file_map::fork_vmas(
-            &self
-                .processes
-                .live_row(&parent_pid)
-                .ok_or("Parent process not found")?
-                .vmas,
-            child_pid,
-            &child_page_table,
-        )?;
-
         // NOTE: No logging in this function — it runs under PM lock which disables
         // interrupts on ARM64. Acquiring the logger lock here can deadlock if another
         // thread was preempted while holding it. Use tracing events instead.
-
-        // Create child process name (format! allocates — acceptable small allocation)
-        let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
-
-        // Create the child process with the same entry point
-        let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
-        child_process.parent = Some(parent_pid);
-        // POSIX: Child inherits parent's process group, session, and working directory
-        child_process.pgid = parent_pgid;
-        child_process.sid = parent_sid;
-        child_process.cwd = parent_cwd;
-
-        // COPY-ON-WRITE FORK: Share pages between parent and child
-        {
-            // Get mutable access to parent's page table for CoW setup
-            let parent = self
-                .processes
-                .live_row_mut(&parent_pid)
-                .ok_or("Parent process not found during CoW setup")?;
-            let mut parent_page_table = parent
-                .page_table
-                .take()
-                .ok_or("Parent process has no page table")?;
-
-            // Set up Copy-on-Write sharing between parent and child.
-            // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
-            let cow_result = super::fork::setup_cow_pages_with_vmas(
-                parent_page_table.as_mut(),
-                child_page_table.as_mut(),
-                &parent_vmas,
-            );
-
-            // Restore the parent's page table on EVERY exit path, success or
-            // failure (#745 precheck C2 -- the x86 fork twin above carried
-            // the identical defect and is fixed the same way here): a CoW
-            // setup failure must not leave the live parent row with no page
-            // table, which would get the parent's next dispatch refused and
-            // the thread terminated.
-            // claim-lint:ok: "every exit path" here is two -- the `?` below and
-            // the fall-through -- and the ordering is ratchet-pinned with swap
-            // and delete mutations in tests/fork_lock_order_structure.rs.
-            parent.page_table = Some(parent_page_table);
-
-            cow_result?;
-
-            // Child inherits parent's heap bounds
-            child_process.heap_start = parent_heap_start;
-            child_process.heap_end = parent_heap_end;
-
-            // Child inherits parent's mmap state so it doesn't collide with
-            // CoW-shared pages that are already mapped in the child's page table
-            child_process.mmap_hint = parent_mmap_hint;
-            child_process.vmas = parent_vmas;
-
-            // Child inherits parent's memory usage (CoW shares the same pages)
-            child_process.memory_usage.code_size = parent_code_size;
-            child_process.memory_usage.heap_size = parent_heap_size;
-            child_process.memory_usage.stack_size = parent_stack_size;
-            // The child's page table copies the parent's stack, grown pages
-            // included, so it grows from the same bounds.
-            child_process.user_stack_top = parent_user_stack_top;
-            child_process.user_stack_bottom = parent_user_stack_bottom;
-        }
-
-        child_process.page_table = Some(child_page_table);
-
-        // Complete the fork with ARM64-specific handling
+        let (parent_pid, child_pid, parent_thread, child_process) =
+            self.end_fork_copy(fork, copied)?;
         self.complete_fork_aarch64(
             parent_pid,
             child_pid,
-            &parent_thread_info,
+            &parent_thread,
             parent_context,
             child_process,
         )
@@ -5750,5 +5641,25 @@ impl ProcessManager {
         self.processes.values().any(|process| {
             !process.is_terminated() && process.cr3_value().is_some_and(&mut root_matches)
         })
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+impl ProcessManager {
+    /// Fork with the copy made under the caller's PROCESS_MANAGER guard, for
+    /// the boot fixtures that fork a parent they built while holding it.
+    pub(crate) fn fork_process_aarch64(
+        &mut self,
+        parent_pid: ProcessId,
+        parent_context: crate::task::thread::CpuContext,
+        child_page_table: Box<ProcessPageTable>,
+    ) -> Result<ProcessId, &'static str> {
+        let child_page_table = crate::memory::process_memory::UnpublishedPageTable::from_box(
+            child_page_table,
+            parent_pid.as_u64(),
+        );
+        let mut fork = self.begin_fork(parent_pid, child_page_table)?;
+        let copied = fork.copy();
+        self.finish_fork(fork, copied, parent_context)
     }
 }
