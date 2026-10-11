@@ -211,7 +211,12 @@ impl ExitNotificationObligations {
     }
 }
 
-/// A process represents a running program with its own address space
+/// Stable identity and counted ownership of a CLONE_VM address space.
+pub(crate) struct AddressSpaceLifetime {
+    pub(crate) id: u64,
+}
+
+/// A process represents a running program and an address-space owner.
 pub struct Process {
     pub limits: alloc::sync::Arc<super::limits::Limits>,
     pub memory_locks: crate::memory::locked::MemoryLocks,
@@ -303,7 +308,7 @@ pub struct Process {
 
     /// One reference per row that can use this address space. Serialized by PM;
     /// exit releases it only after handing table custody to a remaining owner.
-    pub(crate) address_space_lifetime: Option<alloc::sync::Arc<()>>,
+    pub(crate) address_space_lifetime: Option<alloc::sync::Arc<AddressSpaceLifetime>>,
 
     /// Per-process page table
     pub page_table: Option<Box<ProcessPageTable>>,
@@ -454,7 +459,7 @@ impl Process {
             memory_usage: MemoryUsage::default(),
             stack: None,
             page_table: None,
-            address_space_lifetime: Some(alloc::sync::Arc::new(())),
+            address_space_lifetime: Some(alloc::sync::Arc::new(AddressSpaceLifetime { id: id.as_u64() })),
             heap_start: 0,
             heap_end: 0,
             vmas: alloc::vec::Vec::new(),

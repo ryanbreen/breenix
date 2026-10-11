@@ -31,6 +31,23 @@ def completion(serial, mode, suite):
         if not any(line == TESTS_DONE for line in lines):
             return None
         tally = [line for line in lines if line.startswith("TEST_TALLY: ")]
+        # Child programs deliberately test signal deaths and nonzero exits;
+        # their supervising canonical tests must exit zero after verifying them.
+        canonical = set(re.findall(r'^    "([^"]+)",',
+                         (ROOT / "kernel/src/boot/test_list.rs").read_text(), re.MULTILINE))
+        for line in lines:
+            if re.search(r"\bSKIP\b", line):
+                return False, f"skipped test: {line}"
+            loaded = re.fullmatch(r"\[test\] Loaded (\d+)/(\d+) test binaries \((\d+) failed, (\d+) not found\)", line)
+            if loaded and (loaded[1] != loaded[2] or int(loaded[3]) or int(loaded[4])):
+                return False, f"unloaded test programs: {line}"
+        for line in tally:
+            failures = re.search(r"failed=\[(.*?)\]", line)
+            if failures:
+                for failure in failures[1].split(","):
+                    name, _, status = failure.rpartition(":")
+                    if name in canonical and status != "0":
+                        return False, f"canonical test failed: {failure}"
         return True, tally[0] if tally else TESTS_DONE
     prefix = "PROBE DONE " if mode == "probe" else f"SUITE {suite} DONE "
     done = [line for line in lines if line.startswith(prefix)]

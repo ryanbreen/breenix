@@ -180,7 +180,7 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
             if let Some(ref manager) = *manager_guard {
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
                     if let Some(tid_addr) = process.clear_child_tid {
-                        let tg_id = process.thread_group_id.unwrap_or(_pid.as_u64());
+                        let tg_id = process.address_space_lifetime.as_ref().map_or(_pid.as_u64(), |owners| owners.id);
                         Some((tg_id, tid_addr))
                     } else {
                         None

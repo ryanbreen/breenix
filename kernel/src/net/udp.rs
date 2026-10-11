@@ -117,83 +117,19 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
         payload.len()
     );
 
-    // #908: try-lock before entering deliver_to_socket's process-manager mask.
-    match crate::socket::SOCKET_REGISTRY.try_lookup_udp(header.dst_port) {
-        Some(Some((pid, _handle))) => {
-            deliver_to_socket(pid, header.dst_port, ip.src_ip, header.src_port, payload);
+    // The binding belongs to the socket, not the PID that called bind. A
+    // parent closing its descriptor after fork must not strand the child's
+    // receive queue. Weak lookup avoids keeping closed sockets alive.
+    if let Some(Some((_, handle))) = crate::socket::SOCKET_REGISTRY.try_lookup_udp(header.dst_port) {
+        if let Some(endpoint) = crate::socket::SOCKET_REGISTRY.try_udp_endpoint(header.dst_port) {
+            if let Some(socket) = endpoint.try_lock() {
+                if socket.handle != handle { return; }
+                socket.enqueue_packet(crate::socket::udp::UdpPacket {
+                    src_addr: ip.src_ip,
+                    src_port: header.src_port,
+                    data: payload.to_vec(),
+                });
+            };
         }
-        Some(None) => {
-            // No listener; drop (ICMP port unreachable is not implemented).
-            log::debug!(
-                "UDP: No socket listening on port {}, dropping packet",
-                header.dst_port
-            );
-        }
-        None => {
-            // A peer holds udp_ports. Drop rather than block in IRQ context.
-            // #908 review: no log call here -- this arm runs off the NetRx
-            // softirq/IRQ-exit route without holding udp_ports, and on x86
-            // log::debug! reaches SERIAL2's real spinlock + UART I/O
-            // (logger.rs, serial.rs). socket::udp_ports_lookup_refused()
-            // is the lock-free diagnostic for this refusal instead.
-        }
-    }
-}
-
-/// Deliver a UDP packet to a socket's receive queue
-fn deliver_to_socket(
-    pid: crate::process::process::ProcessId,
-    dst_port: u16,
-    src_addr: [u8; 4],
-    src_port: u16,
-    payload: &[u8],
-) {
-    use crate::ipc::fd::FdKind;
-    use crate::socket::udp::UdpPacket;
-
-    // Access process manager with interrupts disabled to prevent deadlock
-    let result = crate::process::with_process_manager(|manager| {
-        // Find the process
-        let process = match manager.get_process_mut(pid) {
-            Some(p) => p,
-            None => {
-                log::warn!("UDP: Process {:?} not found for port {}", pid, dst_port);
-                return;
-            }
-        };
-
-        // Find the socket in the process's fd_table
-        // We need to iterate through all FDs to find the one with matching port
-        for fd_num in 3..crate::ipc::fd::MAX_FDS {
-            if let Some(fd_entry) = process.fd_table.get(fd_num as i32) {
-                if let FdKind::UdpSocket(socket_ref) = &fd_entry.kind {
-                    let socket = socket_ref.lock();
-                    if socket.local_port == Some(dst_port) {
-                        // Found the socket! Enqueue the packet
-                        let packet = UdpPacket {
-                            src_addr,
-                            src_port,
-                            data: payload.to_vec(),
-                        };
-                        socket.enqueue_packet(packet);
-                        crate::serial_println!(
-                            "UDP: Delivered packet to socket on port {}",
-                            dst_port
-                        );
-                        return;
-                    }
-                }
-            }
-        }
-
-        log::warn!(
-            "UDP: Socket for port {} not found in process {:?} fd_table",
-            dst_port,
-            pid
-        );
-    });
-
-    if result.is_none() {
-        log::warn!("UDP: Failed to access process manager for packet delivery");
     }
 }

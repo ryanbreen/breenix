@@ -1,12 +1,12 @@
 # Build the canonical ARM64 C tests with a real musl cross toolchain.
 # MUSL_CC may select an equivalent installed compiler.
 
-BREENIX_ROOT := $(shell cd ../.. && pwd)
+BREENIX_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 
 # Use the installed musl cross toolchain, including its CRT and builtins.
 MUSL_CC ?= aarch64-linux-musl-gcc
 CFLAGS := -O2 -Wall -Wextra -Werror
-LDFLAGS := -static -no-pie -Wl,--build-id=none
+LDFLAGS := -static -no-pie -Wl,--build-id=none -Wl,-Ttext-segment=0x40000000
 
 # Output directory
 AARCH64_DIR := $(BREENIX_ROOT)/userspace/programs/aarch64
@@ -18,22 +18,22 @@ PROGRAMS := hello_musl env_musl_test uname_musl_test rlimit_musl_test identity_m
 
 all: $(addsuffix .elf,$(PROGRAMS))
 
-%.o: %.c
+%.o: %.c Makefile
 	$(MUSL_CC) $(CFLAGS) -c $< -o $@
 
-hello_musl.elf: hello.o
+hello_musl.elf: hello.o Makefile
 	$(MUSL_CC) $(LDFLAGS) $< -o $@
 
-env_musl_test.elf: env_test.o
+env_musl_test.elf: env_test.o Makefile
 	$(MUSL_CC) $(LDFLAGS) $< -o $@
 
-uname_musl_test.elf: uname_test.o
+uname_musl_test.elf: uname_test.o Makefile
 	$(MUSL_CC) $(LDFLAGS) $< -o $@
 
-rlimit_musl_test.elf: rlimit_test.o
+rlimit_musl_test.elf: rlimit_test.o Makefile
 	$(MUSL_CC) $(LDFLAGS) $< -o $@
 
-identity_musl_test.elf: identity_test.o
+identity_musl_test.elf: identity_test.o Makefile
 	$(MUSL_CC) $(LDFLAGS) $< -o $@
 
 install: all

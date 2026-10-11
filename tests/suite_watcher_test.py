@@ -175,6 +175,23 @@ class SuiteWatcherTest(unittest.TestCase):
             self.assertIn(expected, result.stdout)
             self.assertIn("UTC clock FAIL", result.stdout)
 
+    def test_testing_completion_rejects_a_failed_canonical_program(self):
+        data = b"TEST_TALLY: exited=2 nonzero=1 failed=[identity_musl_test:1] started=2\nUSERSPACE TEST REPORT DONE\n"
+        result, _ = self.replay(data, mode="tests")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("canonical test failed: identity_musl_test:1", result.stdout)
+
+    def test_testing_completion_preserves_expected_child_deaths(self):
+        data = b"TEST_TALLY: exited=2 nonzero=1 failed=[sigkill_teardown_test_child_18:-9] started=2\nUSERSPACE TEST REPORT DONE\n"
+        result, _ = self.replay(data, mode="tests")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_testing_completion_rejects_skips_and_unloaded_programs(self):
+        for line in (b"DNS_TEST: local_resolve SKIP\n",
+                     b"[test] Loaded 73/78 test binaries (0 failed, 5 not found)\n"):
+            result, _ = self.replay(line + b"USERSPACE TEST REPORT DONE\n", mode="tests")
+            self.assertEqual(result.returncode, 1, result.stdout)
+
     def test_shell_fatal_retains_idle_exit(self):
         result, elapsed = self.replay(b"!!! SOFT LOCKUP DETECTED !!! synthetic fault\n", idle=1, mode="shell")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -15,8 +15,7 @@
 /// loading pattern). The ARM64 path iterates this list directly in
 /// `load_test_binaries_from_ext2()`.
 ///
-/// Binaries not present on a given architecture's disk/filesystem are
-/// silently skipped.
+/// Missing binaries are loader failures; every entry must execute on ARM64.
 pub const TEST_BINARIES: &[&str] = &[
     // Core functionality tests
     "hello_time",

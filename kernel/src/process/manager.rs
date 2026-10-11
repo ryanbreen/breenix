@@ -4068,7 +4068,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
-        process.address_space_lifetime = Some(alloc::sync::Arc::new(()));
+        process.address_space_lifetime = Some(alloc::sync::Arc::new(super::process::AddressSpaceLifetime { id: pid.as_u64() }));
         process.thread_group_id = None;
 
         // Replace the stack
@@ -4517,7 +4517,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
-        process.address_space_lifetime = Some(alloc::sync::Arc::new(()));
+        process.address_space_lifetime = Some(alloc::sync::Arc::new(super::process::AddressSpaceLifetime { id: pid.as_u64() }));
         process.thread_group_id = None;
         process.cred = cred;
         let new_cr3 = process
@@ -4912,7 +4912,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
-        process.address_space_lifetime = Some(alloc::sync::Arc::new(()));
+        process.address_space_lifetime = Some(alloc::sync::Arc::new(super::process::AddressSpaceLifetime { id: pid.as_u64() }));
         process.thread_group_id = None;
         process.cred = cred;
         let new_ttbr0 = process
@@ -5269,7 +5269,7 @@ impl ProcessManager {
         process.detach_lock_owner();
         process.detach_cpu_account();
         process.inherited_cr3 = None;
-        process.address_space_lifetime = Some(alloc::sync::Arc::new(()));
+        process.address_space_lifetime = Some(alloc::sync::Arc::new(super::process::AddressSpaceLifetime { id: pid.as_u64() }));
         process.thread_group_id = None;
         let new_ttbr0 = process
             .page_table
