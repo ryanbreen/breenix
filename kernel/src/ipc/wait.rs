@@ -13,7 +13,7 @@ pub enum IpcDeadline {
 pub enum WaitEnd {
     Woken,
     TimedOut,
-    Interrupted,
+    Interrupted(u64),
 }
 
 #[repr(C)]
@@ -102,7 +102,7 @@ pub fn wait_on(q: &WaitQueueHead, d: &IpcDeadline, cond: impl FnOnce() -> bool) 
     });
     let result = crate::syscall::blocking_io::wait_prepared(q, outcome);
     match result {
-        Err(_) => WaitEnd::Interrupted,
+        Err(error) => WaitEnd::Interrupted(error as u64),
         Ok(()) if needed && (expired || d.reached()) => WaitEnd::TimedOut,
         Ok(()) => WaitEnd::Woken,
     }

@@ -2267,7 +2267,7 @@ fn ext2_acquire<T>(
 
             match outcome {
                 crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
-                crate::task::waitqueue::PrepareOutcome::PublishFailed => break,
+                crate::task::waitqueue::PrepareOutcome::PublishFailed | crate::task::waitqueue::PrepareOutcome::OutOfMemory => break,
                 crate::task::waitqueue::PrepareOutcome::Queued => {
                     ext2_record_park(lock_name);
                     ext2_schedule_current_wait();
@@ -2378,7 +2378,7 @@ fn ext2_acquire_write(
 
         match outcome {
             crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
-            crate::task::waitqueue::PrepareOutcome::PublishFailed => {
+            crate::task::waitqueue::PrepareOutcome::PublishFailed | crate::task::waitqueue::PrepareOutcome::OutOfMemory => {
                 return ext2_spin_wait_upgrade(upgradeable, lock_name);
             }
             crate::task::waitqueue::PrepareOutcome::Queued => {

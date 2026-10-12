@@ -253,10 +253,11 @@ fn read_dir_inode(fs: &ext2::Ext2Fs, ino: u32) -> Result<ext2::Ext2Inode, u64> {
 /// Whether a devfs or procfs pathname names a directory (`Some(true)`),
 /// another entry (`Some(false)`) or nothing.
 fn virtual_entry(path: &str) -> Option<bool> {
+    if let Some(entry) = crate::ipc::mqueue::dev::virtual_entry(path) { return entry; }
     if let Some(entry) = crate::ipc::shmem::virtual_entry(path) {
         return entry;
     }
-    if path == "/dev" || path == "/proc" || path == "/dev/pts" || path == "/dev/shm" {
+    if path == "/dev" || path == "/proc" || path == "/dev/pts" || path == "/dev/shm" || path == "/dev/mqueue" {
         return Some(true);
     }
     if let Some(pty) = path.strip_prefix("/dev/pts/") {

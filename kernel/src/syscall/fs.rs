@@ -542,6 +542,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
     );
 
     if resolved.target == Target::Virtual {
+        if let Some(result) = crate::ipc::mqueue::dev::open_path(path, flags, mode) { return result; }
         if let Some(result) = crate::ipc::shmem::open_path(path, flags, mode) {
             return result;
         }
@@ -1590,6 +1591,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
 
     log::debug!("sys_unlink: path={:?}", path);
 
+    if let Some(result) = crate::ipc::mqueue::dev::unlink_path(path) { return result; }
     if let Some(result) = crate::ipc::shmem::unlink_path(path) {
 
         return result;
@@ -2278,6 +2280,7 @@ fn access_resolved(resolved: &crate::fs::namei::Resolved, mode: u32, cred: &File
         Target::Inode { mount, ino, .. } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
+            if let Some(result) = crate::ipc::mqueue::dev::access_path(&resolved.path, mode, cred) { return result; }
             if let Some(result) = crate::ipc::shmem::access_path(&resolved.path, mode, cred) { return result; }
             if resolved.is_mount_point() { return SyscallResult::Ok(0); }
             if let Some(device) = resolved.path.strip_prefix("/dev/") {
@@ -3572,6 +3575,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
     };
     let full_path = resolved.path.as_str();
 
+    if let Some(result) = crate::ipc::mqueue::dev::stat_path(full_path, statbuf) { return result; }
     if let Some(result) = crate::ipc::shmem::stat_path(full_path, statbuf) {
 
         return result;
@@ -4036,6 +4040,8 @@ fn resolved_statfs(resolved: &crate::fs::namei::Resolved) -> Result<Statfs, u64>
             0x9fa0
         } else if resolved.path == "/dev/pts" || resolved.path.starts_with("/dev/pts/") {
             0x1cd1
+        } else if resolved.path == "/dev/mqueue" || resolved.path.starts_with("/dev/mqueue/") { 0x19800202
+        } else if resolved.path == "/dev/shm" || resolved.path.starts_with("/dev/shm/") { 0x01021994
         } else { 0x1373 })),
     }
 }

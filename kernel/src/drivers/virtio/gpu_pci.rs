@@ -60,7 +60,7 @@ impl GpuPciLock {
                         self.waiters.finish_wait();
                         continue;
                     }
-                    crate::task::waitqueue::PrepareOutcome::PublishFailed => {}
+                    crate::task::waitqueue::PrepareOutcome::PublishFailed | crate::task::waitqueue::PrepareOutcome::OutOfMemory => {}
                 }
             }
 
