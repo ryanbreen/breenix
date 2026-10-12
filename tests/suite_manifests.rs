@@ -528,7 +528,7 @@ fn suites_using_time_or_concurrency_require_timing_metadata() {
         if uses_time_or_concurrency(tokens) {
             checked += 1;
             assert_eq!(manifest.get("timingSensitive"), Some(&Value::Bool(true)),
-                "{id}: cases use clocks or concurrency; set timingSensitive=true for x86 quiet-host admission");
+                "{id}: cases use clocks or concurrency; set timingSensitive=true to classify this workload");
         }
     }
     assert!(checked > 0, "no timing-sensitive suite was checked");

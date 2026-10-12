@@ -31,10 +31,10 @@ calls outside that table do not count.
 
 A suite whose cases read clocks, measure time or exercise concurrency adds
 `"timingSensitive": true`, including smoke for its monotonic-clock case.
-`tests/suite_manifests.rs` checks this admission policy as well as manifest shape.
-Before such a suite boots in the x86 gate VM, its launcher waits for a quiet host, as
-"Shared host slots" in `docs/boot-path.md` describes. Mac boots record host load at
-start and verdict without waiting for it to fall.
+`tests/suite_manifests.rs` checks this classification as well as manifest shape.
+Boot tooling records host load at start and verdict without waiting for it to fall
+on either host, as "Shared host slots" in `docs/boot-path.md` describes. The
+`timingSensitive` flag classifies the workload; it does not request a default wait.
 
 ## Serial lines
 
