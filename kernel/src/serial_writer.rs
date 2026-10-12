@@ -18,7 +18,7 @@
 //! does not mask interrupts for the whole line. [`exclusive`] keeps the
 //! console's prompt and echo out of the gaps between those units: a TTY write
 //! holds it from its first unit to its last, as Linux's tty write lock does,
-//! and so does each console write. Kernel output does not wait for it, since
+//! and so does each console write. Its holder runs with preemption disabled. Kernel output does not wait for it, since
 //! it is also written from interrupt and fault paths, so a kernel line that
 //! arrives between two units of one TTY line still starts a line of its own
 //! inside that TTY line.
@@ -64,11 +64,19 @@ pub fn wrote(writer: Writer, byte: u8) {
 }
 
 /// Run `write`, one TTY write or one console write, with no other such write
-/// in progress. Thread context only, never an interrupt handler: the holder
-/// writes with interrupts enabled between its units.
+/// in progress. Thread context only, never an interrupt handler.
+///
+/// Preemption is disabled from before the wait until the lock is released, as
+/// `spin_lock` does. A holder switched out mid-write would otherwise leave the
+/// next waiter on its CPU spinning for good: x86-64 syscalls run with
+/// interrupts masked, so nothing would switch the holder back in.
 pub fn exclusive<R>(write: impl FnOnce() -> R) -> R {
-    let _turn = EXCLUSIVE.lock();
-    write()
+    crate::per_cpu::preempt_disable();
+    let turn = EXCLUSIVE.lock();
+    let result = write();
+    drop(turn);
+    crate::per_cpu::preempt_enable();
+    result
 }
 
 /// Write one unit of the kernel serial console's prompt or echo.
