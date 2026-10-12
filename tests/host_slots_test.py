@@ -398,8 +398,8 @@ sys.stdin.readline()
         self.assertEqual(session.wait(timeout=10), 0)
         self.assertEqual(json.loads(record.read_text())['quiet'], {'required': False})
 
-    def test_only_linux_hosts_wait_by_default(self):
-        self.assertEqual(slots.QUIET_WAITS_ON_THIS_HOST, sys.platform != 'darwin')
+    def test_no_host_waits_by_default(self):
+        self.assertIs(slots.QUIET_WAITS_ON_THIS_HOST, False)
 
     def test_suite_that_is_not_timing_sensitive_does_not_wait(self):
         manifest = self.write_manifest(False)
