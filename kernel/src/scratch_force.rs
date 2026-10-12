@@ -1,7 +1,8 @@
 //! SCRATCH ONLY, never merged (#1401 forcing).
 //!
 //! Emulates a host stall of the vCPU that runs a scheduling pass started by
-//! sched_yield in which the yielding thread keeps its CPU: once per armed
+//! sched_yield in which the yielding thread keeps its CPU (the x86 branch of
+//! Scheduler::schedule that returns None for a sole runnable user thread): once per armed
 //! timed futex wait or sleep, in a window from 3 ms before its deadline to 1 ms after,
 //! such a pass spins 80 ms with the scheduler lock (and PROCESS_MANAGER)
 //! held, as run 20261012T122252Z-x86_64-gate-878f caught the suite runner's
@@ -40,13 +41,11 @@ pub fn arm(wake_ns: u64) {
     }
 }
 
-/// Under the scheduler lock, after a pass on this CPU chose `old` -> `new`.
-pub fn after_pass(old: u64, new: u64) {
+/// Under the scheduler lock, at the start of a pass on this CPU: whether
+/// sys_yield asked for it. Cleared on every pass.
+pub fn take_yield_pass() -> bool {
     let c = cpu();
-    if c >= 8 || !YIELD_PASS[c].swap(false, Ordering::AcqRel) || old != new {
-        return;
-    }
-    stall_if_due();
+    c < 8 && YIELD_PASS[c].swap(false, Ordering::AcqRel)
 }
 
 /// sys_yield returned without a pass (the fix's fast path): the same stall,
@@ -57,8 +56,10 @@ pub fn fast_path() {
 }
 
 /// Spin 80 ms once per armed deadline, when called from 3 ms before it to
-/// 1 ms after it.
-fn stall_if_due() {
+/// 1 ms after it. The baseline calls it in the scheduling pass's branch that
+/// keeps the yielding user thread on its CPU (another CPU online, nothing
+/// else runnable), with the scheduler lock and PROCESS_MANAGER held.
+pub fn stall_if_due() {
     let deadline = ARMED.load(Ordering::Acquire);
     if deadline == 0 {
         return;
