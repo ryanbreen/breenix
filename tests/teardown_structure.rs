@@ -14908,21 +14908,22 @@ fn drop_body_static_locks_are_irqsafe_by_derived_census() {
     );
 }
 
-const REQUIRED_DEFERRED_RECLAMATION_CALLS: [&str; 3] = [
-    "drain_deferred_fault_sigsegv_exits",
+const REQUIRED_DEFERRED_RECLAMATION_CALLS: [&str; 2] = [
     "reclaim_deferred_process_resources",
     "reclaim_terminated_threads",
 ];
 
 /// Count anchor for the total number of operations in `run_deferred_reclamation`.
 ///
-/// The named census below proves the three teardown operations are each present
-/// exactly once; this anchor is what stops a FOURTH operation from being added
+/// The named census below proves the two reclamation operations are each present
+/// exactly once; this anchor also bounds the remaining idle-path operations.
+/// Fatal exit publication now runs only in the resumable fault-exit daemon.
+/// Additional operations must not be added
 /// to the idle-path reclamation sequence without anyone deciding to. Bumping it
 /// is the deliberate act of adding work to that sequence — review note N3, whose
 /// defect was that the round-1 rewrite of this test dropped the total bound and
 /// let two new calls in silently.
-const EXPECTED_DEFERRED_RECLAMATION_STATEMENTS: usize = 5;
+const EXPECTED_DEFERRED_RECLAMATION_STATEMENTS: usize = 4;
 
 fn validate_run_deferred_reclamation_census(context_switch: &str) -> Result<(), String> {
     let reclamation = function_body(context_switch, "run_deferred_reclamation");
