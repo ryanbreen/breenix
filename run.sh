@@ -316,6 +316,19 @@ mark_wrapped_ext2() {
     if writes_boot_target; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
 }
 
+# Cargo can restore a cached profile with an older mtime. Compare the exact
+# kernel and loader contents, rather than dates, before reusing an EFI image.
+efi_artifact_identity() {
+    (set -o pipefail; shasum -a 256 "$KERNEL_ELF" "$LOADER_EFI" | awk '{print $1}')
+}
+
+efi_artifacts_match() {
+    local identity
+    [ -f "$1" ] || return 1
+    identity=$(efi_artifact_identity) || return 1
+    [ "$(cat "$1")" = "$identity" ]
+}
+
 # Wait for a userspace completion record and reject missing or failing verdicts.
 wait_boot_done() {
     python3 "$BREENIX_ROOT/scripts/wait-boot-done.py" "$SERIAL_LOG" "$BOOT_MODE" \
@@ -497,8 +510,8 @@ if [ "$PARALLELS" = true ]; then
     # currently on disk, otherwise Parallels silently boots a stale .hds
     # (this voided a validation run: a freshly built kernel was never
     # copied in because --no-build short-circuited the whole pipeline).
-    # Skip ONLY when --no-build is set AND the existing .hds is already
-    # at least as new as both source artifacts.
+    # Skip only when the existing EFI image contains these exact artifacts;
+    # a cached production kernel may be older than the deployed testing one.
     # -------------------------------------------------------------------
     EXISTING_HDS=""
     if [ -d "$HDD_DIR" ]; then
@@ -508,7 +521,7 @@ if [ "$PARALLELS" = true ]; then
     DEPLOY_NEEDED=true
     EXT2_SUITE_MARKER="$EXT2_HDD_DIR.suite"
     if [ "$NO_BUILD" = true ] && [ -n "$EXISTING_HDS" ] && [ -f "$EXISTING_HDS" ] \
-        && [ ! "$KERNEL_ELF" -nt "$EXISTING_HDS" ] && [ ! "$LOADER_EFI" -nt "$EXISTING_HDS" ]; then
+        && efi_artifacts_match "$PARALLELS_DIR/efi-artifacts.sha256"; then
         DEPLOY_NEEDED=false
     fi
 
@@ -516,8 +529,9 @@ if [ "$PARALLELS" = true ]; then
         echo "Existing Parallels disk ($EXISTING_HDS) already up to date with loader/kernel; skipping repackage"
         HDS_FILE="$EXISTING_HDS"
     else
+        efi_artifact_identity >/dev/null || { echo "ERROR: selected kernel or loader is unreadable"; exit 1; }
         if [ "$NO_BUILD" = true ]; then
-            echo "--no-build: deploying newer prebuilt image (loader/kernel newer than deployed .hds, or none found)"
+            echo "--no-build: deploying selected kernel and loader (artifact contents changed or no image exists)"
         fi
 
         echo ""
@@ -570,6 +584,7 @@ if [ "$PARALLELS" = true ]; then
         fi
         cp "$RAW_IMG" "$HDS_FILE"
         rm -f "$RAW_IMG"
+        efi_artifact_identity > "$PARALLELS_DIR/efi-artifacts.sha256"
         echo "  EFI disk: $HDD_DIR"
     fi
 
@@ -849,7 +864,12 @@ if [ "$VMWARE" = true ]; then
             echo "  WARNING: ext2 disk creation failed"
         fi
 
-        # Create FAT32 EFI disk image
+    fi
+
+    if [ "$NO_BUILD" = false ] || [ ! -f "$VMWARE_DIR/boot.vmdk" ] \
+        || ! efi_artifacts_match "$VMWARE_DIR/efi-artifacts.sha256"; then
+        # Deploy the selected artifacts even when compilation was skipped.
+        efi_artifact_identity >/dev/null || { echo "ERROR: selected kernel or loader is unreadable"; exit 1; }
         echo ""
         echo "[5/6] Creating FAT32 EFI disk image..."
         mkdir -p "$VMWARE_DIR"
@@ -889,6 +909,7 @@ if [ "$VMWARE" = true ]; then
         # Convert raw to VMDK
         qemu-img convert -f raw -O vmdk "$RAW_IMG" "$VMWARE_DIR/boot.vmdk"
         rm -f "$RAW_IMG"
+        efi_artifact_identity > "$VMWARE_DIR/efi-artifacts.sha256"
         echo "  Boot VMDK: $VMWARE_DIR/boot.vmdk"
     fi
 
