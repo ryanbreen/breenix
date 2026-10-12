@@ -4,6 +4,10 @@
 //! and Linux's system call ABI: each call but ftok is one system call, and
 //! the kernel's structures are Linux's 64-bit ones.
 
+use crate::{syscall_result_to_c_int, syscall_result_to_c_ssize};
+use libbreenix::raw;
+use libbreenix::syscall::nr;
+
 /// ftok: a key from the file `path` names and the low eight bits of `id`.
 /// The same file and id always give the same key: the id in bits 24-31, the
 /// low eight bits of the file's device in bits 16-23 and the low sixteen
@@ -19,4 +23,30 @@ pub unsafe extern "C" fn ftok(path: *const u8, id: i32) -> i32 {
     }
     let (dev, ino) = (st[0] as u32, st[1] as u32);
     (((id as u32 & 0xff) << 24) | ((dev & 0xff) << 16) | (ino & 0xffff)) as i32
+}
+
+/// msgget: the identifier of the message queue `key` names.
+#[no_mangle]
+pub extern "C" fn msgget(key: i32, msgflg: i32) -> i32 {
+    syscall_result_to_c_int(unsafe { raw::syscall2(nr::MSGGET, key as u64, msgflg as u64) } as i64)
+}
+
+/// msgsnd: send the message at `msgp`, a long type then `msgsz` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn msgsnd(msqid: i32, msgp: *const u8, msgsz: usize, msgflg: i32) -> i32 {
+    syscall_result_to_c_int(raw::syscall4(nr::MSGSND, msqid as u64, msgp as u64, msgsz as u64, msgflg as u64) as i64)
+}
+
+/// msgrcv: receive a message into `msgp`: the number of bytes of text.
+#[no_mangle]
+pub unsafe extern "C" fn msgrcv(msqid: i32, msgp: *mut u8, msgsz: usize, msgtyp: i64, msgflg: i32) -> isize {
+    syscall_result_to_c_ssize(
+        raw::syscall5(nr::MSGRCV, msqid as u64, msgp as u64, msgsz as u64, msgtyp as u64, msgflg as u64) as i64,
+    )
+}
+
+/// msgctl: IPC_STAT, IPC_SET or IPC_RMID on a message queue.
+#[no_mangle]
+pub unsafe extern "C" fn msgctl(msqid: i32, cmd: i32, buf: *mut u8) -> i32 {
+    syscall_result_to_c_int(raw::syscall3(nr::MSGCTL, msqid as u64, cmd as u64, buf as u64) as i64)
 }
