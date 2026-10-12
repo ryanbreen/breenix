@@ -560,7 +560,6 @@ macro_rules! serial_println {
 /// (`drain_log_while`). Until an idle loop drains the log every caller waits.
 #[doc(hidden)]
 pub fn _log_print(args: fmt::Arguments) {
-    use core::fmt::Write;
     use core::sync::atomic::Ordering;
 
     let may_wait = !LOG_IDLE_DRAIN.load(Ordering::Acquire)
@@ -577,20 +576,44 @@ pub fn _log_print(args: fmt::Arguments) {
             drain_until(target);
         }
     }
-    let end = crate::arch_without_interrupts(|| {
-        let mut ring = LOG_RING.lock();
-        if ring.dropped != 0 {
-            let dropped = core::mem::take(&mut ring.dropped);
-            let _ = write!(RingWriter(&mut ring), "[log: {} bytes dropped]\n", dropped);
-        }
-        let _ = RingWriter(&mut ring).write_fmt(args);
-        ring.pushed
-    });
+    let end = enqueue_log(args);
     if may_wait {
         drain_until(end);
     } else {
         let _ = write_burst();
     }
+}
+
+/// Append a COM2 record without waiting for the UART, dropping the whole
+/// record when it does not fit. The caller arranges delivery via the drainers.
+/// Interrupts are masked while formatting into the existing fixed ring.
+pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
+    use core::fmt::Write;
+    crate::arch_without_interrupts(|| {
+        let mut ring = LOG_RING.lock();
+        if ring.dropped != 0 {
+            let dropped = core::mem::take(&mut ring.dropped);
+            let _ = write!(RingWriter(&mut ring), "[log: {} bytes dropped]\n", dropped);
+        }
+        let start_len = ring.len;
+        let start_pushed = ring.pushed;
+        let start_dropped = ring.dropped;
+        let _ = RingWriter(&mut ring).write_fmt(args);
+        if ring.dropped != start_dropped {
+            // Roll back the prefix too: a census consumer needs a whole record.
+            ring.dropped += ring.pushed - start_pushed;
+            ring.len = start_len;
+            ring.pushed = start_pushed;
+        }
+        ring.pushed
+    })
+}
+
+/// Try one FIFO burst without polling UART readiness, then report whether
+/// bytes remain. Thread-context housekeeping sleeps between calls.
+pub(crate) fn drain_log_once() -> bool {
+    let _ = write_burst();
+    crate::arch_without_interrupts(|| LOG_RING.lock().len != 0)
 }
 
 /// Macros for writing to the log serial port (COM2).

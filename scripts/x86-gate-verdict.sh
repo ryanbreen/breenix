@@ -30,13 +30,13 @@ python3 "$SCRIPT_DIR/x86-gate-exits.py" "$@" || exit_contracts_ok=false
 
 python3 "$SCRIPT_DIR/score-softirq-deferral.py" "$@" || exit $?
 
-# Run the strand census first. The kernel emits a ledger snapshot from three
-# rate-limited contexts -- the scheduler's idle loop, the loopback pump and the
-# `kstrandd` census kthread -- at most once per second between them, so a
+# Run the strand census first. The kernel emits a ledger snapshot from two
+# rate-limited contexts -- the loopback pump and the `kstrandd` census kthread
+# -- at most once per second between them, so a
 # saved-blocked thread can be NAMED even when that userspace thread never runs
 # again. The consumer judges the highest-seq snapshot because it carries the
 # newest ledger state, and the completion path emits a final one.
-# claim-lint:ok: the 4 emission sites are pinned by
+# claim-lint:ok: the emission sites are pinned by
 # tests/dispatch_strand_census_structure.rs.
 #
 # The emission is rate-LIMITED, not guaranteed-periodic. `kstrandd` sleeps on
@@ -46,7 +46,7 @@ python3 "$SCRIPT_DIR/score-softirq-deferral.py" "$@" || exit $?
 # snapshot at the completion marker for that reason, and reports what the
 # snapshot supports -- "not restored as of the latest snapshot" -- not
 # "never restored".
-# claim-lint:ok: #775 rulings R134 and R137 define the three cadence sources;
+# claim-lint:ok: #775 rulings R134 and R137 describe the historical cadence sources;
 # the cadence and its failure mode are measured in
 # docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
 #

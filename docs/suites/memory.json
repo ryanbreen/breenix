@@ -4,6 +4,7 @@
   "area": "Memory",
   "summary": "Anonymous and shared mappings, protection changes and the faults they produce, the program break and memory locking behave as POSIX requires, on every target.",
   "binary": "/sbin/suite-memory",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "anonymous",

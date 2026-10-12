@@ -29,9 +29,12 @@ parses the suite's source, `userspace/programs/src/suite_<id>.rs` with `-` in th
 as `_`, and reads the `static` that `main` calls `.run()` on, so comments, disabled code and
 calls outside that table do not count.
 
-A suite whose cases measure time adds `"timingSensitive": true` (time and threads do).
-Before a boot of such a suite starts its VM, the boot tooling waits for a quiet host, as
-"Shared host slots" in `docs/boot-path.md` describes.
+A suite whose cases read clocks, measure time or exercise concurrency adds
+`"timingSensitive": true`, including smoke for its monotonic-clock case.
+`tests/suite_manifests.rs` checks this classification as well as manifest shape.
+Boot tooling records host load at start and verdict without waiting for it to fall
+on either host, as "Shared host slots" in `docs/boot-path.md` describes. The
+`timingSensitive` flag classifies the workload; it does not request a default wait.
 
 ## Serial lines
 

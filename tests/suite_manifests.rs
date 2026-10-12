@@ -496,3 +496,57 @@ fn build_lists_are_parsed_exactly() {
     let build = "A=(\n\"suite-nope\"\n)\nSTD_BINARIES=(\n    # \"suite-commented\"\n    \"a:b\"\n    \"suite-smoke\"\n)\n\"suite-after\"\n";
     assert_eq!(std_binaries(build), ["a:b", "suite-smoke"]);
 }
+
+/// Clock reads and bounded concurrency helpers make host scheduling observable.
+/// Walk Rust tokens so comments and string literals cannot classify a suite.
+fn uses_time_or_concurrency(tokens: proc_macro2::TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        proc_macro2::TokenTree::Group(group) => uses_time_or_concurrency(group.stream()),
+        proc_macro2::TokenTree::Ident(ident) => matches!(ident.to_string().as_str(),
+            "CLOCK_GETTIME" | "clock_gettime" | "now_monotonic" | "sleep_ms"
+            | "nanosleep" | "clock_nanosleep" | "pthread_create" | "spawn"
+            | "poll" | "select" | "ppoll" | "alarm" | "setitimer"
+            | "sched_yield" | "fork" | "POLL" | "SELECT" | "PPOLL"
+            | "ALARM" | "SETITIMER" | "CLOCK_NANOSLEEP" | "SCHED_YIELD" | "FORK"),
+        _ => false,
+    })
+}
+
+#[test]
+fn suites_using_time_or_concurrency_require_timing_metadata() {
+    let root = repo_root();
+    let mut checked = 0;
+    for entry in fs::read_dir(root.join("docs/suites")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|ext| ext != "json") { continue; }
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let id = manifest["id"].as_str().unwrap();
+        let source = fs::read_to_string(root.join(format!(
+            "userspace/programs/src/suite_{}.rs", id.replace('-', "_")
+        ))).unwrap();
+        let tokens = source.parse::<proc_macro2::TokenStream>().unwrap();
+        if uses_time_or_concurrency(tokens) {
+            checked += 1;
+            assert_eq!(manifest.get("timingSensitive"), Some(&Value::Bool(true)),
+                "{id}: cases use clocks or concurrency; set timingSensitive=true to classify this workload");
+        }
+    }
+    assert!(checked > 0, "no timing-sensitive suite was checked");
+}
+
+#[test]
+fn timing_classification_ignores_comments_and_literals() {
+    assert!(!uses_time_or_concurrency(
+        "// now_monotonic\nfn case() { let text = \"pthread_create\"; }".parse().unwrap()
+    ));
+    for name in ["poll", "select", "ppoll", "alarm", "setitimer",
+                 "clock_nanosleep", "sched_yield", "fork"] {
+        assert!(uses_time_or_concurrency(format!("fn case() {{ {name}(); }}").parse().unwrap()));
+        assert!(uses_time_or_concurrency(format!("fn case() {{ sc(nr::{}, &[]); }}", name.to_uppercase()).parse().unwrap()));
+    }
+    for source in ["fn case() { time::now_monotonic(); }",
+                   "fn case() { sc(nr::CLOCK_GETTIME, &[]); }",
+                   "fn case() { std::thread::spawn(|| {}); }"] {
+        assert!(uses_time_or_concurrency(source.parse().unwrap()));
+    }
+}

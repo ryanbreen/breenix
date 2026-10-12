@@ -21,6 +21,17 @@ fn read(path: &str) -> String {
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
 }
 
+fn function_body(source: &str, signature: &str) -> String {
+    let start = source.find(signature).expect("function exists");
+    let body = &source[start..];
+    let end = body.find("\n}\n").expect("function ends");
+    body[..end]
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .flat_map(|line| line.chars().filter(|c| !c.is_whitespace()))
+        .collect()
+}
+
 /// Each `log::<level>!` invocation in a file, as (line number, level). Matches
 /// one per physical line, which is the shape context_switch.rs uses.
 fn log_records(source: &str) -> Vec<(usize, String)> {
@@ -117,10 +128,7 @@ fn the_surviving_record_census_in_the_dispatch_path_is_pinned() {
     );
     assert_eq!(
         histogram,
-        vec![
-            ("error".to_string(), 1),
-            ("trace".to_string(), 9),
-        ],
+        vec![("error".to_string(), 1), ("trace".to_string(), 9),],
         "context_switch.rs record level histogram moved"
     );
 }
@@ -247,7 +255,8 @@ fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
     );
     assert!(task_mod.contains("pub fn start_dispatch_strand_census_kthread()"));
     assert_eq!(
-        main.matches("task::start_dispatch_strand_census_kthread()").count(),
+        main.matches("task::start_dispatch_strand_census_kthread()")
+            .count(),
         1
     );
     let pump_start = main
@@ -269,14 +278,22 @@ fn the_snapshot_is_emitted_on_the_kernel_log_channel() {
     // i.e. COM2. COM1 is the interactive user console (kernel/src/serial.rs), so
     // the replacement must not move the diagnostic onto it.
     let census = read("kernel/src/task/dispatch_strand_census.rs");
+    let snapshot = function_body(&census, "fn snapshot(deferred: bool)");
     assert!(
-        census.contains("crate::log_serial_println!"),
-        "the census snapshot is not emitted on the kernel-log channel"
+        snapshot.contains(
+            "ifdeferred{crate::serial::enqueue_log(args);}else{crate::serial::_log_print(args);}"
+        ),
+        "deferred and explicit snapshots must use their respective COM2 paths"
     );
-    assert!(
-        !census.contains("crate::serial_println!"),
-        "the census snapshot writes to the user console (COM1)"
-    );
+    assert!(!snapshot.contains("crate::serial::_print("));
+    assert!(!snapshot.contains("crate::serial_print"));
+    let heartbeat = function_body(&census, "pub(crate) fn report_heartbeat_if_due()");
+    assert_eq!(heartbeat.matches("snapshot(true);").count(), 1);
+    assert!(!heartbeat.contains("snapshot(false)") && !heartbeat.contains("report_snapshot("));
+    let thread = function_body(&census, "fn census_thread_fn()");
+    assert!(thread.contains(
+        "report_heartbeat_if_due();letpending=crate::serial::drain_log_once();sleep_one_interval(ifpending{DRAIN_RETRY_INTERVAL_NS}else{HEARTBEAT_INTERVAL_NS});"
+    ), "kstrandd must drain before blocking and use the pending result for its deadline");
 }
 
 #[test]
@@ -375,7 +392,9 @@ fn the_staleness_bound_has_exactly_one_copy_in_the_repository() {
         1,
         "the bound must be assigned exactly once in {census_relative}: {assignments:?}"
     );
-    let bound = assignments[0].trim_start_matches("stale_limit_ms = ").trim();
+    let bound = assignments[0]
+        .trim_start_matches("stale_limit_ms = ")
+        .trim();
     assert!(
         !bound.is_empty() && bound.chars().all(|character| character.is_ascii_digit()),
         "the bound must be a decimal count of milliseconds, not {bound:?}"

@@ -4,6 +4,7 @@
   "area": "Signals",
   "summary": "Signals are generated, blocked, delivered and handled as POSIX specifies, including realtime signals, interval timers and job control.",
   "binary": "/sbin/suite-signals",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "dispositions",

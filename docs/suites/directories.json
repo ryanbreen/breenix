@@ -4,6 +4,7 @@
   "area": "Directories & links",
   "summary": "Programs can build, walk and rearrange directory trees with POSIX semantics, including permissions and timestamps.",
   "binary": "/sbin/suite-directories",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "mkdir-rmdir",
