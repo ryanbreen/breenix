@@ -2015,8 +2015,10 @@ fn run_test_loader() {
     boot_screen::stage(Stage::StartingPid1);
     serial_println!("[test] Test processes loaded - will run via timer interrupts");
     serial_println!("[test] Entering scheduler idle loop");
-    // The prompt signals to the test harness that boot is complete.
-    serial_print!("breenix> ");
+    // The prompt signals to the test harness that boot is complete. It is the
+    // console's output, not kernel output, so it starts a fresh line after a
+    // breadcrumb rather than continuing it (`serial_writer`).
+    kernel::serial_writer::console(b"breenix> ");
 }
 
 /// Load test binaries from ext2 filesystem and create userspace processes.

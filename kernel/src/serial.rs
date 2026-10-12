@@ -513,17 +513,12 @@ pub fn write_str_bounded(s: &str) {
             core::hint::spin_loop();
         }
         // SAFETY: COM1's data port; the bytes may interleave with the holder's.
+        // Without SERIAL1 this neither reads nor updates `serial_writer`'s line state.
         unsafe {
             let mut port = x86_64::instructions::port::Port::<u8>::new(COM1_PORT);
-            for &byte in crate::serial_writer::lead(Writer::Kernel, s.as_bytes())
-                .iter()
-                .chain(s.as_bytes())
-            {
+            for byte in s.bytes() {
                 port.write(byte);
             }
-        }
-        if let Some(&last) = s.as_bytes().last() {
-            crate::serial_writer::wrote(Writer::Kernel, last);
         }
     });
 }
@@ -549,17 +544,11 @@ pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
 
     impl fmt::Write for EmergencySerial {
         fn write_str(&mut self, s: &str) -> fmt::Result {
-            // Unlocked: a fresh line if another writer's is open, as far as
-            // the unlocked line state can tell.
-            let lead = crate::serial_writer::lead(Writer::Kernel, s.as_bytes());
-            for &byte in lead.iter().chain(s.as_bytes()) {
+            for byte in s.bytes() {
                 unsafe {
                     // Direct port I/O to COM1
                     x86_64::instructions::port::Port::<u8>::new(0x3F8).write(byte);
                 }
-            }
-            if let Some(&last) = s.as_bytes().last() {
-                crate::serial_writer::wrote(Writer::Kernel, last);
             }
             Ok(())
         }

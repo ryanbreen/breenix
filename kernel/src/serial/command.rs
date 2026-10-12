@@ -1,7 +1,8 @@
 extern crate alloc;
 
-use super::{write_bytes_atomic, SerialInputStream, Writer};
+use super::SerialInputStream;
 use crate::serial_println;
+use crate::serial_writer::console;
 use alloc::string::String;
 use alloc::vec::Vec;
 use futures_util::stream::StreamExt;
@@ -57,7 +58,7 @@ pub async fn serial_command_task() {
             // Enter/newline - process the command
             b'\r' | b'\n' => {
                 // Echo newline
-                write_bytes_atomic(Writer::Console, b"\r\n");
+                console(b"\r\n");
 
                 if !line_buffer.is_empty() {
                     process_command(&line_buffer);
@@ -73,21 +74,21 @@ pub async fn serial_command_task() {
                     line_buffer.pop();
                     // Send backspace sequence: backspace, space, backspace
                     // This erases the character on most terminals
-                    write_bytes_atomic(Writer::Console, &[0x08, b' ', 0x08]);
+                    console(&[0x08, b' ', 0x08]);
                 }
             }
 
             // Ctrl+C (ASCII 0x03) - cancel current line
             0x03 => {
                 line_buffer.clear();
-                write_bytes_atomic(Writer::Console, b"^C\r\n");
+                console(b"^C\r\n");
                 print_prompt();
             }
 
             // Regular printable characters
             0x20..=0x7E => {
                 // Echo the character
-                write_bytes_atomic(Writer::Console, &[byte]);
+                console(&[byte]);
                 line_buffer.push(byte as char);
             }
 
@@ -98,10 +99,11 @@ pub async fn serial_command_task() {
 }
 
 /// The prompt goes out as one unit, so no other writer's bytes land inside it,
-/// and on a fresh line if another writer's line is open (`serial_writer`).
+/// never between the chunks of a TTY write, and on a fresh line if another
+/// writer's line is open (`serial_writer`).
 #[allow(dead_code)] // Used by serial_command_task (conditionally compiled)
 fn print_prompt() {
-    write_bytes_atomic(Writer::Console, b"breenix> ");
+    console(b"breenix> ");
 }
 
 #[allow(dead_code)] // Used by serial_command_task (conditionally compiled)

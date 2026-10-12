@@ -628,44 +628,48 @@ impl TtyDevice {
         // Each lock acquisition covers at most one line and one bounded UART
         // chunk, never the whole userspace buffer. Build ONLCR expansion before
         // entering the serial primitive so CR-LF stays in the same atomic write.
-        for_each_line_segment(buf, |line| {
-            let mut expanded = [0u8; SERIAL_ATOMIC_OUTPUT_BYTES];
-            let mut expanded_len = 0usize;
+        // The whole write holds `serial_writer::exclusive`, so the console's
+        // prompt and echo do not land between its chunks.
+        crate::serial_writer::exclusive(|| {
+            for_each_line_segment(buf, |line| {
+                let mut expanded = [0u8; SERIAL_ATOMIC_OUTPUT_BYTES];
+                let mut expanded_len = 0usize;
 
-            for &c in line {
-                let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
-                if expanded_len + output_len > expanded.len() {
+                for &c in line {
+                    let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
+                    if expanded_len + output_len > expanded.len() {
+                        crate::serial::write_bytes_atomic(
+                            crate::serial::Writer::Tty,
+                            &expanded[..expanded_len],
+                        );
+                        expanded_len = 0;
+                    }
+                    if output_len == 2 {
+                        expanded[expanded_len] = b'\r';
+                        expanded_len += 1;
+                    }
+                    expanded[expanded_len] = c;
+                    expanded_len += 1;
+                }
+
+                if expanded_len != 0 {
                     crate::serial::write_bytes_atomic(
                         crate::serial::Writer::Tty,
                         &expanded[..expanded_len],
                     );
-                    expanded_len = 0;
                 }
-                if output_len == 2 {
-                    expanded[expanded_len] = b'\r';
-                    expanded_len += 1;
-                }
-                expanded[expanded_len] = c;
-                expanded_len += 1;
-            }
 
-            if expanded_len != 0 {
-                crate::serial::write_bytes_atomic(
-                    crate::serial::Writer::Tty,
-                    &expanded[..expanded_len],
-                );
-            }
-
-            // Both architectures use the render queue — it's lock-free on the
-            // producer side and never drops data unless the buffer overflows.
-            for &c in line {
-                if do_onlcr && c == b'\n' {
+                // Both architectures use the render queue — it's lock-free on the
+                // producer side and never drops data unless the buffer overflows.
+                for &c in line {
+                    if do_onlcr && c == b'\n' {
+                        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+                        let _ = crate::graphics::render_queue::queue_byte(b'\r');
+                    }
                     #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-                    let _ = crate::graphics::render_queue::queue_byte(b'\r');
+                    let _ = crate::graphics::render_queue::queue_byte(c);
                 }
-                #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-                let _ = crate::graphics::render_queue::queue_byte(c);
-            }
+            });
         });
     }
 
@@ -842,7 +846,7 @@ impl TtyDevice {
     /// This runs from IRQ context and acquires PROCESS_MANAGER (level 2) and
     /// SCHEDULER (level 1) via `with_scheduler`. It must NOT use serial_println!
     /// (acquires SERIAL1, level 4) because SCHEDULER is a higher-priority lock.
-    /// Its diagnostic is a raw UART write on both architectures.
+    /// Its diagnostic is written after both guards are released.
     ///
     /// The x86_64 arm printed through `serial_println!` until this round --
     /// `SERIAL1.lock()`, blocking, taken from an interrupt entry while the
@@ -850,7 +854,7 @@ impl TtyDevice {
     /// the paragraph above forbids and the one scheduler.rs's lock-order
     /// comment names ("never acquire SERIAL1 while holding SCHEDULER or
     /// PROCESS_MANAGER"). It also formatted a string on that path. Both are
-    /// gone; what is left writes bytes straight at the UART.
+    /// gone; what is left writes one fixed unit after both guards are dropped.
     /// claim-lint:ok: kernel/src/task/scheduler.rs:21 is the quoted line.
     #[allow(dead_code)]
     fn send_signal_to_process_nonblock(pid: ProcessId, sig: u32) {
@@ -863,6 +867,10 @@ impl TtyDevice {
         TTY_IRQ_FG_SIGNAL_LAST_PID.store(pid.as_u64(), Ordering::Relaxed);
         TTY_IRQ_FG_SIGNAL_LAST_SIG.store(u64::from(sig), Ordering::Relaxed);
         TTY_IRQ_FG_SIGNAL_CALLS.fetch_add(1, Ordering::Relaxed);
+
+        // Set once the signal is pending; the diagnostic below is written
+        // after PROCESS_MANAGER and SCHEDULER are released.
+        let mut sent = false;
 
         // Try to get the process manager without blocking
         if let Some(mut manager) = process::try_manager() {
@@ -878,20 +886,7 @@ impl TtyDevice {
                 let recipient = pm.signal_recipient(pid, sig);
                 if let Some(proc) = pm.get_process_mut(recipient) {
                     proc.signals.set_process_pending(sig);
-
-                    // Diagnostic output as one unit with a bounded wait, one
-                    // write per architecture and the same subject on both. The
-                    // signal number and the pid are NOT written here: they are
-                    // already published lock-free, by the census stores at the
-                    // top of this function, and read back from thread context.
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        crate::serial_line::Line::new().bytes(b"[TTY] sig sent to PID\n");
-                    }
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        crate::serial::write_str_bounded("[TTY] sig sent to PID\n");
-                    }
+                    sent = true;
 
                     // CRITICAL: Wake the thread if it's blocked so it can receive the signal.
                     // Use unblock() instead of unblock_for_signal() because:
@@ -917,6 +912,19 @@ impl TtyDevice {
         }
         // No diagnostic for "manager lock busy" in IRQ context --
         // the signal will be retried on next input.
+
+        // Diagnostic output, one unit on both architectures, written with no
+        // PROCESS_MANAGER or SCHEDULER guard held. On x86_64 it takes SERIAL1
+        // the way this path's echo (`output_char_nonblock`) already does. The
+        // signal number and the pid are NOT written here: they are already
+        // published lock-free, by the census stores at the top of this
+        // function, and read back from thread context.
+        if sent {
+            crate::serial::write_bytes_atomic(
+                crate::serial::Writer::Kernel,
+                b"[TTY] sig sent to PID\n",
+            );
+        }
     }
 
     /// Register a thread as blocked waiting for TTY input
@@ -1034,12 +1042,15 @@ pub fn write_output(buf: &[u8]) -> usize {
 }
 
 /// Write `buf` to the console serial port as it is, without output
-/// processing, a line segment (at most one bounded chunk) per serial unit.
+/// processing, a line segment (at most one bounded chunk) per serial unit,
+/// holding `serial_writer::exclusive` for the whole write.
 pub fn write_unprocessed(buf: &[u8]) {
-    for_each_line_segment(buf, |line| {
-        for chunk in line.chunks(SERIAL_ATOMIC_OUTPUT_BYTES) {
-            crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, chunk);
-        }
+    crate::serial_writer::exclusive(|| {
+        for_each_line_segment(buf, |line| {
+            for chunk in line.chunks(SERIAL_ATOMIC_OUTPUT_BYTES) {
+                crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, chunk);
+            }
+        });
     });
 }
 
