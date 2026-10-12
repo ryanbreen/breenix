@@ -27,21 +27,28 @@ final class BeastLauncherTests: XCTestCase {
         var repo = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { repo.deleteLastPathComponent() }
         let bundle = try BeastLauncher.progressBundle(repoRoot: repo)
-        let data = try XCTUnwrap(Data(base64Encoded: bundle))
-        let files = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        for (path, content) in files {
-            let destination = root.appendingPathComponent(path)
-            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try XCTUnwrap(Data(base64Encoded: content)).write(to: destination)
-        }
-        let code = "import runpy,sys; from pathlib import Path; p=runpy.run_path(sys.argv[1])['BootProgress'](Path('serial')); assert 'EXEC_ARGV_TEST_PASSED' in p.markers; assert 'Kernel initialization complete!' in p.markers"
-        let result = try RealProcessRunner().run(ProcessRequest(executable: "/usr/bin/python3", arguments: ["-c", code, root.appendingPathComponent("scripts/boot_progress.py").path]))
-        XCTAssertEqual(result.exitCode, 0, String(decoding: result.stderr, as: UTF8.self))
         let helper = try Data(contentsOf: repo.appendingPathComponent("scripts/host-slots.py")).base64EncodedString()
         let request = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: BeastPaths(clonePath: "/root/run"), slotHelperBase64: helper, progressBundleBase64: bundle)
         XCTAssertLessThan(try XCTUnwrap(request.arguments.last).utf8.count, 131_072)
+        let syntax = try RealProcessRunner().run(ProcessRequest(executable: "/bin/bash", arguments: ["-n", "-c", try XCTUnwrap(request.arguments.last)]))
+        XCTAssertEqual(syntax.exitCode, 0)
+        let code = """
+        import pathlib,runpy,shlex,subprocess,sys
+        script=shlex.split(sys.argv[1])[-1]
+        subprocess.run(['/bin/bash','-n','-c',script],check=True)
+        installer=script.partition(' && python3 -c ')[2].partition(' && python3 -c ')[0]
+        command=[sys.executable,'-c']+shlex.split(installer)
+        command[3]=sys.argv[2]
+        subprocess.run(command,check=True)
+        root=pathlib.Path(sys.argv[2])
+        p=runpy.run_path(str(root/'scripts/boot_progress.py'))['BootProgress'](root/'serial')
+        assert 'EXEC_ARGV_TEST_PASSED' in p.markers
+        assert 'Kernel initialization complete!' in p.markers
+        """
+        let result = try RealProcessRunner().run(ProcessRequest(executable: "/usr/bin/python3", arguments: ["-c", code, try XCTUnwrap(request.arguments.last), root.path]))
+        XCTAssertEqual(result.exitCode, 0, String(decoding: result.stderr, as: UTF8.self))
     }
 
     func testPersistentTreePreparationAndCleanupKeepRunEvidencePrivate() {
