@@ -626,6 +626,7 @@ fn force1413_f3_leg() {
                 fail("F3 victim did not report readiness");
             }
             let _ = io::close(ready_read);
+            let _before = evidence(pid);
             kill(pid, SIGKILL).unwrap_or_else(|_| fail("F3 kill failed"));
             wait_killed(pid);
             let mut current = evidence(pid);
