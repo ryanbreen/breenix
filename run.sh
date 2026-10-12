@@ -356,7 +356,6 @@ finish_vm_boot() {
         "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
-        sweep_vmware_bundles
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
@@ -929,7 +928,7 @@ if [ "$VMWARE" = true ]; then
     # breenix-<epoch> bundles that are not running and were created more than 30 minutes ago, so a caller still
     # scoring a just-stopped VM's data disk keeps it. Age comes from the epoch in the name, because VMware Fusion
     # rewrites files in every bundle its library lists, so file times never age. Never a named VM. Sweep
-    # at launch and again from finish_vm_boot, so a burst of boots leaves at most its last half hour.
+    # before VM startup, so housekeeping cannot delay recording a completed boot or releasing its slot.
     sweep_vmware_bundles() {
         local now old_bundle old_name old_vmx VM_BUNDLE_LIST
         VM_BUNDLE_LIST=$(mktemp)

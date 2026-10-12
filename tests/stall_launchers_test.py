@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -83,25 +84,28 @@ while True:time.sleep(.1)
 host_slot_header() { :; }
 vmware_check_network_log() { :; }
 vmware_network_summary() { :; }
-sweep_vmware_bundles() { :; }
+sweep_vmware_bundles() { sleep 10; }
 '''
                 shell = subprocess.Popen(['bash', '-c', definitions + '\n' + stubs +
                                           'install_vm_boot_traps\n' + blocks[index]],
-                                         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                         start_new_session=True)
                 try:
                     try:
                         stdout, stderr = shell.communicate(timeout=4)
                     except subprocess.TimeoutExpired as error:
                         self.assertIn(b'PASS: SUITE smoke DONE', error.stdout or b'')
-                        self.fail(f'{platform} keeps its guest running after scored DONE')
+                        self.fail(f'{platform} does not finish cleanup after scored DONE')
                     self.assertEqual(shell.returncode, 0, stdout + stderr)
                     guest.wait(timeout=2)
                     self.assertTrue(stopped.exists(), stdout + stderr)
                     self.assertEqual(record.read_text(), '0')
                     self.assertIn('SUITE smoke DONE', serial.read_text())
                 finally:
-                    if shell.poll() is None:
-                        shell.kill()
+                    try:
+                        os.killpg(shell.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     shell.wait()
                     if guest.poll() is None:
                         guest.kill()
