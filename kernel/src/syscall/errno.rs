@@ -118,6 +118,9 @@ pub const EOVERFLOW: i32 = 75;
 /// Not a socket
 pub const ENOTSOCK: i32 = 88;
 
+/// Message too long (a message queue's message size)
+pub const EMSGSIZE: i32 = 90;
+
 /// Address family not supported
 pub const EAFNOSUPPORT: i32 = 97;
 

@@ -24,6 +24,43 @@ pub mod wait;
 pub mod mqueue;
 #[path = "../../../kernel/src/syscall/sysv.rs"]
 pub mod sysv;
+
+/// The message queue calls as `mqueue::dispatch` reaches them. Each records
+/// its name and arguments, so a test sees which call a number routes to and
+/// how its registers were narrowed to Linux's argument types.
+pub mod ipc {
+    pub mod mqueue {
+        use crate::SyscallResult;
+        use std::cell::RefCell;
+        use std::string::String;
+        use std::vec::Vec;
+        std::thread_local! {
+            pub static CALLS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        }
+        fn record(call: String) -> SyscallResult {
+            CALLS.with(|calls| calls.borrow_mut().push(call));
+            SyscallResult::Ok(0)
+        }
+        pub fn sys_mq_open(name: u64, oflag: u32, mode: u32, attr: u64) -> SyscallResult {
+            record(format!("mq_open {name:#x} {oflag:o} {mode:o} {attr:#x}"))
+        }
+        pub fn sys_mq_unlink(name: u64) -> SyscallResult {
+            record(format!("mq_unlink {name:#x}"))
+        }
+        pub fn sys_mq_timedsend(mqd: i32, msg: u64, len: u64, prio: u32, ts: u64) -> SyscallResult {
+            record(format!("mq_timedsend {mqd} {msg:#x} {len} {prio} {ts:#x}"))
+        }
+        pub fn sys_mq_timedreceive(mqd: i32, msg: u64, len: u64, prio: u64, ts: u64) -> SyscallResult {
+            record(format!("mq_timedreceive {mqd} {msg:#x} {len} {prio:#x} {ts:#x}"))
+        }
+        pub fn sys_mq_notify(mqd: i32, sevp: u64) -> SyscallResult {
+            record(format!("mq_notify {mqd} {sevp:#x}"))
+        }
+        pub fn sys_mq_getsetattr(mqd: i32, new: u64, old: u64) -> SyscallResult {
+            record(format!("mq_getsetattr {mqd} {new:#x} {old:#x}"))
+        }
+    }
+}
 pub mod syscall {
     pub mod errno {
         pub const EINVAL: i32 = 22;
@@ -193,13 +230,32 @@ pub mod task {
 #[test]
 fn foundation_does_not_claim_unimplemented_calls() {
     for number in [
-        dispatch::MQ_OPEN_SYSCALL_NUMBER,
         dispatch::MSGRCV_SYSCALL_NUMBER,
         dispatch::SEMTIMEDOP_SYSCALL_NUMBER,
         dispatch::SHMCTL_SYSCALL_NUMBER,
         u64::MAX,
     ] {
         assert_eq!(dispatch::dispatch(number, [1, 2, 3, 4, 5, 6]), None);
+    }
+}
+
+#[test]
+fn mq_dispatch_routes_each_call_with_linux_argument_types() {
+    let wide = |low: u64| low | 0xdead_0000_0000;
+    let neg = |v: i64| v as u64;
+    let cases = [
+        (dispatch::MQ_OPEN_SYSCALL_NUMBER, [0x1000, wide(0o4302), wide(0o644), 0x2000, 0, 0], "mq_open 0x1000 4302 644 0x2000"),
+        (dispatch::MQ_UNLINK_SYSCALL_NUMBER, [0x1000, 0, 0, 0, 0, 0], "mq_unlink 0x1000"),
+        (dispatch::MQ_TIMEDSEND_SYSCALL_NUMBER, [wide(3), 0x1000, 64, wide(7), 0x3000, 0], "mq_timedsend 3 0x1000 64 7 0x3000"),
+        (dispatch::MQ_TIMEDRECEIVE_SYSCALL_NUMBER, [neg(-1), 0x1000, 64, 0x2000, 0, 0], "mq_timedreceive -1 0x1000 64 0x2000 0x0"),
+        (dispatch::MQ_NOTIFY_SYSCALL_NUMBER, [wide(4), 0, 0, 0, 0, 0], "mq_notify 4 0x0"),
+        (dispatch::MQ_GETSETATTR_SYSCALL_NUMBER, [5, 0x1000, 0x2000, 0, 0, 0], "mq_getsetattr 5 0x1000 0x2000"),
+    ];
+    for (number, args, want) in cases {
+        ipc::mqueue::CALLS.with(|calls| calls.borrow_mut().clear());
+        assert_eq!(dispatch::dispatch(number, args), Some(SyscallResult::Ok(0)), "{want}");
+        let got = ipc::mqueue::CALLS.with(|calls| calls.borrow().clone());
+        assert_eq!(got, [want]);
     }
 }
 

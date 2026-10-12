@@ -306,6 +306,16 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32, sender: Sender, info:
     send_signal(target_pid, sig, sender, info, Recipient::Process)
 }
 
+/// Send `sig` with `info` from the kernel to process `pid`: no permission
+/// check, as for any signal the kernel raises. Takes PROCESS_MANAGER and the
+/// scheduler, so the caller holds neither and no IPC lock.
+pub(crate) fn send_kernel_signal(pid: ProcessId, sig: u32, info: SigInfo) -> Result<(), u64> {
+    match send_signal(pid, sig, Sender::Kernel, info, Recipient::Process) {
+        SyscallResult::Ok(_) => Ok(()),
+        SyscallResult::Err(e) => Err(e),
+    }
+}
+
 /// Send `sig` with `info` to the process `target` is a row of, or to that
 /// row's thread. Signal 0 only checks that the target exists and that the
 /// sender may signal it.
