@@ -2953,6 +2953,7 @@ impl Scheduler {
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
         let current_cpu = Self::current_cpu_id();
+        crate::scratch_probe::THREADS_LEN.store(self.threads.len() as u64, Ordering::Relaxed);
         if current_cpu < 8 {
             crate::scratch_probe::SWITCHES[current_cpu].fetch_add(1, Ordering::Relaxed);
         }
@@ -7287,6 +7288,16 @@ pub fn schedule() -> Option<(u64, u64)> {
             None
         };
         crate::scratch_probe::stage(2);
+        {
+            let c = crate::scratch_probe::cpu() as usize;
+            if c < 8 {
+                let s1 = crate::scratch_probe::STAGE[c][1].load(Ordering::Relaxed);
+                let s2 = crate::scratch_probe::STAGE[c][2].load(Ordering::Relaxed);
+                if s1 != 0 && s2 >= s1 {
+                    crate::scratch_probe::body(s2 - s1);
+                }
+            }
+        }
         r
     };
     crate::scratch_probe::stage(3);
