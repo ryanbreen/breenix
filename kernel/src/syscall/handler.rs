@@ -147,8 +147,9 @@ pub fn is_ring3_confirmed() -> bool {
 
 /// Serial string output for the once-per-boot marker below. It allocates
 /// nothing and waits on SERIAL1 for a bounded time only: up to 2^20 try_lock
-/// attempts with interrupts masked, then straight to the port, so another
-/// CPU's output cannot interleave with it byte by byte.
+/// attempts with interrupts masked, then to the kernel log, whole, as a
+/// lock-free notice (`serial::write_str_bounded`), so another CPU's output
+/// cannot interleave with it byte by byte.
 #[inline(always)]
 fn raw_serial_str_local(s: &str) {
     #[cfg(target_arch = "x86_64")]
