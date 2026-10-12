@@ -23,6 +23,20 @@ pub const POST_EXIT: u64 = 10;
 pub const STAGES: u64 = 11;
 pub const IPI_SLOW: u64 = 12;
 pub const NMI_SAMPLE: u64 = 13;
+pub const NMI_STACK: u64 = 14;
+pub static BODY_N: AtomicU64 = AtomicU64::new(0);
+pub static BODY_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static BODY_MAX: AtomicU64 = AtomicU64::new(0);
+pub static BODY_GT1: AtomicU64 = AtomicU64::new(0);
+pub static THREADS_LEN: AtomicU64 = AtomicU64::new(0);
+pub fn body(ns: u64) {
+    BODY_N.fetch_add(1, Ordering::Relaxed);
+    BODY_TOTAL.fetch_add(ns, Ordering::Relaxed);
+    BODY_MAX.fetch_max(ns, Ordering::Relaxed);
+    if ns > 1_000_000 {
+        BODY_GT1.fetch_add(1, Ordering::Relaxed);
+    }
+}
 static SAMPLE_REQ: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static SAMPLE_WHY: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static SAMPLE_FROM: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
@@ -51,7 +65,7 @@ pub fn request_sample(target: u64, why: u64) {
 }
 
 /// From the NMI handler: answer a pending sample request for this CPU.
-pub fn nmi_sample(c: usize, rip: u64) {
+pub fn nmi_sample(c: usize, rip: u64, rsp: u64) {
     if c >= 8 {
         return;
     }
@@ -67,6 +81,26 @@ pub fn nmi_sample(c: usize, rip: u64) {
         now.wrapping_sub(PM_ACQ_NS.load(Ordering::Relaxed))
     };
     push(NMI_SAMPLE, [now - req, req, c as u64, rip, why, held, SAMPLE_FROM[c].load(Ordering::Relaxed), 0, 0]);
+    // Heuristic callers: kernel-text words on the interrupted stack.
+    let anchor = nmi_sample as usize as u64;
+    let (lo, hi) = (anchor.saturating_sub(0x80_0000), anchor + 0x80_0000);
+    let mut found = [0u64; 8];
+    let mut n = 0;
+    if rsp >= 0x8000_0000_0000 && rsp % 8 == 0 {
+        let words = (0x1000 - (rsp & 0xfff)) / 8;
+        for i in 0..words {
+            let p = rsp + i * 8;
+            let w = unsafe { core::ptr::read_volatile(p as *const u64) };
+            if w >= lo && w < hi {
+                found[n] = w;
+                n += 1;
+                if n == found.len() {
+                    break;
+                }
+            }
+        }
+    }
+    push(NMI_STACK, [c as u64, req, found[0], found[1], found[2], found[3], found[4], found[5], found[6]]);
     SAMPLE_REQ[c].store(0, Ordering::Release);
 }
 pub static IPI_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
@@ -218,6 +252,17 @@ pub fn push(kind: u64, words: [u64; WORDS - 1]) {
 
 /// Thread context only: print every event pushed since the last call.
 pub fn drain() {
+    log::info!(
+        "[P1401 SCHED_SUMMARY at_ms={} n={} total_us={} max_us={} gt1ms={} threads={} poll_fails={} anchor={:#x}]",
+        now_ns() / 1_000_000,
+        BODY_N.swap(0, Ordering::Relaxed),
+        BODY_TOTAL.swap(0, Ordering::Relaxed) / 1000,
+        BODY_MAX.swap(0, Ordering::Relaxed) / 1000,
+        BODY_GT1.swap(0, Ordering::Relaxed),
+        THREADS_LEN.load(Ordering::Relaxed),
+        POLL_FAILS.swap(0, Ordering::Relaxed),
+        nmi_sample as usize
+    );
     let head = HEAD.load(Ordering::Acquire);
     let mut next = PRINTED.load(Ordering::Acquire);
     if head.saturating_sub(next) > SLOTS as u64 {
@@ -357,6 +402,18 @@ pub fn drain() {
                 w[5],
                 w[6] / 1000,
                 w[7]
+            ),
+            NMI_STACK => log::info!(
+                "[P1401 NMI_STACK cpu={} req_ms={} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}]",
+                w[1],
+                w[2] / 1_000_000,
+                w[3],
+                w[4],
+                w[5],
+                w[6],
+                w[7],
+                w[8],
+                w[9]
             ),
             POLL_FAIL => log::info!("[P1401 POLL_FAIL at_ms={} cpu={} holder_cpu={}]", w[1] / 1_000_000, w[2], w[3]),
             _ => {}

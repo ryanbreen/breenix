@@ -319,7 +319,7 @@ mod shootdown {
             None
         };
         if let Some(c) = cpu {
-            crate::scratch_probe::nmi_sample(c, _frame.instruction_pointer.as_u64());
+            crate::scratch_probe::nmi_sample(c, _frame.instruction_pointer.as_u64(), _frame.stack_pointer.as_u64());
         }
         let Some(cpu) = cpu.filter(|&cpu| PENDING[cpu].load(Ordering::Acquire)) else {
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
