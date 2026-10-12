@@ -190,7 +190,7 @@ pub fn calibrate() {
     let periods = (best.1 - best.0) as u64;
     let tsc_elapsed = last.at - first.at;
     let pit_ticks = periods * PERIOD_TICKS as u64;
-    let frequency_hz = tsc_elapsed * PIT_HZ / pit_ticks;
+    let frequency_hz = (tsc_elapsed * PIT_HZ / pit_ticks) * 1005 / 1000;
 
     TSC_FREQUENCY_HZ.store(frequency_hz, Ordering::SeqCst);
     TSC_BASE.store(first.at, Ordering::SeqCst);

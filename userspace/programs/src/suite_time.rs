@@ -1140,7 +1140,7 @@ fn counter_pair() -> Result<(u64, i64), String> {
 fn clk_rate_counter() -> CaseResult {
     wait_for(COUNTER_WAIT_MS, "drift");
     let (c0, m0) = counter_pair()?;
-    let freq = counter_frequency()? * 1005 / 1000;
+    let freq = counter_frequency()?;
     // Measuring the x86-64 frequency already spans the RTC seconds; follow the
     // counter for at least 2 s on either architecture.
     let spent = (clock_ns(CLOCK_MONOTONIC)? - m0) / MS;
