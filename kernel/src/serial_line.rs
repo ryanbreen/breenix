@@ -343,14 +343,13 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8]) {
 }
 
 /// Write the lines posted on paths that may not log (`log_notice`), oldest
-/// first, while owning the UART.
+/// first, while owning the UART. Each is a line of its own, even after an open
+/// line of kernel output.
 fn write_notices_owned<const TEE: bool>(ownership: &mut Ownership) {
     crate::log_notice::take(|line| {
-        write::<TEE>(
-            Writer::Kernel,
-            crate::serial_writer::lead(Writer::Kernel, line),
-            ownership,
-        );
+        if crate::serial_writer::line_open() {
+            write::<TEE>(Writer::Kernel, b"\r\n", ownership);
+        }
         write::<TEE>(Writer::Kernel, line, ownership);
         write::<TEE>(Writer::Kernel, b"\n", ownership);
     });
