@@ -67,6 +67,7 @@ mod nr {
     pub const MQ_TIMEDRECEIVE: u64 = 243;
     pub const MQ_NOTIFY: u64 = 244;
     pub const MQ_GETSETATTR: u64 = 245;
+    #[cfg(not(libc_has = "mkfifo"))]
     pub const MKNODAT: u64 = 259;
     pub const GETCPU: u64 = 309;
 }
@@ -104,6 +105,7 @@ mod nr {
     pub const MQ_TIMEDRECEIVE: u64 = 183;
     pub const MQ_NOTIFY: u64 = 184;
     pub const MQ_GETSETATTR: u64 = 185;
+    #[cfg(not(libc_has = "mkfifo"))]
     pub const MKNODAT: u64 = 33;
     pub const GETCPU: u64 = 168;
 }
@@ -135,6 +137,7 @@ const O_CREAT: i32 = 0o100;
 const O_EXCL: i32 = 0o200;
 const O_TRUNC: i32 = 0o1000;
 const O_NONBLOCK: i32 = 0o4000;
+#[cfg(not(libc_has = "mkfifo"))]
 const AT_FDCWD: i64 = -100;
 const S_IFMT: u32 = 0o170000;
 const S_IFIFO: u32 = 0o010000;
