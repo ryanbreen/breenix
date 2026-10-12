@@ -499,6 +499,11 @@ impl IpcFile for MqFile {
         st.st_ctime_nsec = nsec;
     }
 
+    /// Linux's MQUEUE_MAGIC, the filesystem its queues live in.
+    fn statfs_magic(&self) -> u64 {
+        0x19800202
+    }
+
     fn poll_events(&self) -> i16 {
         const POLLIN: i16 = 0x1;
         const POLLOUT: i16 = 0x4;

@@ -137,16 +137,19 @@ fn mq_open(name: u64, oflag: u32, mode: u32, attr: u64) -> Result<u64, u64> {
             }
         });
     };
-    let file = super::open(name.as_bytes(), oflag, mode, attr, &cred, creator)
-        .and_then(|queue| Arc::try_new(MqFile(queue)).map_err(|_| ENOMEM as u64));
-    let file: Arc<dyn IpcFile> = match file {
-        Ok(file) => file,
+    let entry = super::open(name.as_bytes(), oflag, mode, attr, &cred, creator)
+        .and_then(|queue| Arc::try_new(MqFile(queue)).map_err(|_| ENOMEM as u64))
+        .and_then(|file| {
+            let file: Arc<dyn IpcFile> = file;
+            FileDescriptor::try_opened(FdKind::Ipc(file), oflag | status_flags::O_CLOEXEC)
+        });
+    let entry = match entry {
+        Ok(entry) => entry,
         Err(e) => {
             release();
             return Err(e);
         }
     };
-    let entry = FileDescriptor::opened(FdKind::Ipc(file), oflag | status_flags::O_CLOEXEC);
     crate::process::with_process_manager(|manager| {
         let (_, process) = manager.find_process_by_thread_mut(tid).ok_or(ESRCH as u64)?;
         process.fd_table.install_reserved(slot, entry).map_err(|_| EMFILE as u64)
