@@ -29,7 +29,7 @@
 
 use super::live_inode::FileHandle;
 use super::{
-    add_directory_entry, dir_entry_type, find_entry, is_directory_empty,
+    add_directory_entry, dir_entry_type, is_directory_empty,
     remove_entry, update_directory_entry, write_ext2_block, Ext2Fs, Ext2Inode, EXT2_FT_DIR,
     EXT2_LINK_MAX, EXT2_ROOT_INO,
 };
@@ -60,6 +60,8 @@ pub enum RenameError {
     TooManyLinks,
     /// A read or write failed.
     Io,
+    /// A namespace plan could not reserve memory before its writes.
+    NoMemory,
 }
 
 /// One planned write and the bytes it replaces.
@@ -76,8 +78,13 @@ pub(super) enum Write<'a> {
     },
 }
 
-fn io<T>(_: T) -> RenameError {
-    RenameError::Io
+trait MemoryFailure { fn no_memory(&self) -> bool; }
+impl MemoryFailure for &'static str { fn no_memory(&self)->bool { self.contains("memory") } }
+impl MemoryFailure for crate::block::BlockError { fn no_memory(&self)->bool { *self == crate::block::BlockError::OutOfMemory } }
+impl MemoryFailure for core::num::TryFromIntError { fn no_memory(&self)->bool { false } }
+impl MemoryFailure for () { fn no_memory(&self)->bool { false } }
+fn io(error: impl MemoryFailure) -> RenameError {
+    if error.no_memory() { RenameError::NoMemory } else { RenameError::Io }
 }
 
 /// A count that leaves the range of a link count can only come from a
@@ -110,9 +117,7 @@ impl Ext2Fs {
         let new_dir_inode = self.named_dir(new_dir)?;
 
         let old_data = self.read_directory(&old_dir_inode).map_err(io)?;
-        let source = find_entry(&old_data, old_name)
-            .ok_or(RenameError::NotFound)?
-            .inode;
+        let source = super::dir::find_inode(&old_data, old_name).ok_or(RenameError::NotFound)?;
         let source_inode = self.read_inode(source).map_err(io)?;
         let source_is_dir = source_inode.is_dir();
         if want_dir && !source_is_dir {
@@ -123,8 +128,7 @@ impl Ext2Fs {
         } else {
             Some(self.read_directory(&new_dir_inode).map_err(io)?)
         };
-        let replaced = find_entry(new_data.as_deref().unwrap_or(&old_data), new_name)
-            .map(|entry| entry.inode);
+        let replaced = super::dir::find_inode(new_data.as_deref().unwrap_or(&old_data), new_name);
         // Two names for one file, or one name twice: POSIX has rename return
         // successfully and do nothing else, so both names remain.
         if replaced == Some(source) {
@@ -184,8 +188,8 @@ impl Ext2Fs {
                 RenameError::Io
             }
         };
-        let mut old_image = old_data.clone();
-        let mut new_image = new_data.clone();
+        let mut old_image = super::namespace_alloc::copy_image(&old_data).map_err(io)?;
+        let mut new_image = new_data.as_deref().map(super::namespace_alloc::copy_image).transpose().map_err(io)?;
         let named_at = match new_image.as_mut() {
             None if victim.is_some() => {
                 let at = update_directory_entry(&mut old_image, new_name, source, file_type)
@@ -210,7 +214,7 @@ impl Ext2Fs {
         // A directory moving to another parent names that parent in `..`.
         let moved = if source_is_dir && !same_dir {
             let data = self.read_directory(&source_inode).map_err(io)?;
-            let mut image = data.clone();
+            let mut image = super::namespace_alloc::copy_image(&data).map_err(io)?;
             update_directory_entry(&mut image, "..", new_dir, EXT2_FT_DIR).map_err(io)?;
             Some((data, image))
         } else {
@@ -255,6 +259,7 @@ impl Ext2Fs {
         }
 
         let mut writes = Vec::new();
+        writes.try_reserve_exact(6).map_err(|_| RenameError::NoMemory)?;
         writes.push(Write::Inode {
             ino: source,
             old: source_inode,
@@ -277,6 +282,7 @@ impl Ext2Fs {
         if let Some((data, image)) = &moved {
             self.plan_blocks(&source_inode, data, image, 0, &mut writes)?;
         }
+        writes.try_reserve(4).map_err(|_| RenameError::NoMemory)?;
         // Counts that fall go last, once the names they counted are gone.
         if let (Some((ino, inode, _)), Some(after)) = (&victim, victim_after) {
             writes.push(Write::Inode {
@@ -345,7 +351,7 @@ impl Ext2Fs {
             }
             let inode = self.read_inode(ino).map_err(io)?;
             let data = self.read_directory(&inode).map_err(io)?;
-            ino = find_entry(&data, "..").ok_or(RenameError::Io)?.inode;
+            ino = super::dir::find_inode(&data, "..").ok_or(RenameError::Io)?;
         }
         // More steps than inodes: the `..` chain has a cycle.
         Err(RenameError::Io)
@@ -405,6 +411,7 @@ impl Ext2Fs {
             )
             .map_err(io)?
             .ok_or(RenameError::Io)?;
+            writes.try_reserve(1).map_err(|_| RenameError::NoMemory)?;
             writes.push(Write::Block {
                 block,
                 old: &old[range.clone()],

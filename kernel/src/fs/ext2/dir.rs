@@ -309,8 +309,8 @@ pub fn remove_entry(data: &mut [u8], name: &str, block_size: usize) -> Result<u3
     }
 
     // Find the entry location
-    let location = find_entry_location(data, name).ok_or("Entry not found")?;
-    let removed_inode = location.entry.inode;
+    let location = raw_location(data, name).ok_or("Entry not found")?;
+    let removed_inode = location.inode;
 
     // If there's a previous entry in the same block, extend its rec_len to
     // include this entry (effectively "absorbing" this entry's space). The
@@ -485,17 +485,8 @@ fn write_dir_entry(
 /// # Returns
 /// * `true` - Directory is empty (only . and ..)
 /// * `false` - Directory has other entries
-pub fn is_directory_empty(dir_data: &[u8]) -> bool {
-    for entry in DirReader::new(dir_data) {
-        // Skip "." and ".." entries
-        if entry.name == "." || entry.name == ".." {
-            continue;
-        }
-        // Found a non-dot entry
-        return false;
-    }
-    // Only found . and .. (or no entries at all)
-    true
+pub fn is_directory_empty(data: &[u8]) -> bool {
+    raw_entries(data).all(|entry| entry.name == b"." || entry.name == b"..")
 }
 
 /// Point an existing directory entry at another inode
@@ -673,4 +664,19 @@ mod raw_tests {
         assert_eq!(raw_entries(&data).nth(1).unwrap().name,&[0xff,b'i',b'f',b'o']);
         data[4..6].fill(0); assert!(raw_entries(&data).next().is_none());
     }
+}
+
+struct RawLocation { inode:u32,offset:usize,rec_len:u16,prev_offset:Option<usize>,prev_rec_len:Option<u16> }
+fn raw_location(data:&[u8],name:&str)->Option<RawLocation>{
+    let mut offset=0usize;let mut prev_offset=None;let mut prev_rec_len=None;
+    while offset<data.len(){
+        let header=data.get(offset..offset.checked_add(8)?)?;
+        let inode=u32::from_le_bytes(header[..4].try_into().ok()?);let len=u16::from_le_bytes(header[4..6].try_into().ok()?);
+        if len<8||offset.checked_add(len as usize)?>data.len(){return None;}
+        let count=header[6] as usize;
+        if inode!=0&&count+8<=len as usize&&data.get(offset+8..offset+8+count)?==name.as_bytes(){
+            return Some(RawLocation{inode,offset,rec_len:len,prev_offset,prev_rec_len});
+        }
+        prev_offset=Some(offset);prev_rec_len=Some(len);offset+=len as usize;
+    }None
 }

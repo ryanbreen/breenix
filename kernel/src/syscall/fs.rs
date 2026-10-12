@@ -558,19 +558,21 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         return handle_procfs_open(path, flags);
     }
 
-    // Check if this is a FIFO (named pipe)
-    if let Some(entry) = crate::ipc::fifo::FIFO_REGISTRY.get(path) {
-        if want_creat && want_excl {
-            return SyscallResult::Err(super::errno::EEXIST as u64);
-        }
-        if flags & O_DIRECTORY != 0 {
-            return SyscallResult::Err(super::errno::ENOTDIR as u64);
-        }
-        let cred = current_file_credentials();
-        // O_TRUNC does not change a FIFO or require an extra write permission.
-        if let Err(error) = check_open_access(&entry.lock().inode(), flags & !O_TRUNC, &cred) {
-            return error;
-        }
+    if let Target::Inode { mount, ino, file_type: Ext2FileType::Fifo } = resolved.target {
+        if want_creat && want_excl { return SyscallResult::Err(EEXIST as u64); }
+        if flags & O_DIRECTORY != 0 { return SyscallResult::Err(ENOTDIR as u64); }
+        let handle = {
+            let guard = mount.read();
+            let Some(fs) = guard.as_ref() else { return SyscallResult::Err(5); };
+            let Some(handle) = resolved.handle().cloned() else { return SyscallResult::Err(5); };
+            if handle.verify(fs) != Ok(ino) { return SyscallResult::Err(5); }
+            let inode = match fs.read_inode(ino) { Ok(inode) => inode, Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)) };
+            if let Err(error) = check_open_access(&inode, flags & !O_TRUNC, &cred) { return error; }
+            handle
+        };
+        let entry = match crate::ipc::fifo::FIFO_REGISTRY.get_or_create(handle) {
+            Ok(entry) => entry, Err(e) => return SyscallResult::Err(e as u64),
+        };
         return handle_fifo_open(path, flags, entry);
     }
 
@@ -1194,7 +1196,9 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFSOCK | 0o755;
             stat.st_nlink = 1;
         }
-        FstatKind::Fifo(entry) => fill_fifo_stat(&mut stat, &entry.lock()),
+        FstatKind::Fifo(entry) => {
+            if let Err(e) = fill_fifo_stat(&mut stat, &entry) { return SyscallResult::Err(e); }
+        },
         FstatKind::ProcfsFile { size } => {
             stat.st_dev = 0;
             stat.st_ino = 0;
@@ -1224,15 +1228,32 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-/// What fstat and newfstatat report for a FIFO, which has no inode.
-fn fill_fifo_stat(stat: &mut Stat, entry: &crate::ipc::fifo::FifoEntry) {
-    stat.st_dev = 0;
-    stat.st_ino = entry.ino;
-    stat.st_mode = S_IFIFO | entry.mode;
-    stat.st_uid = entry.uid;
-    stat.st_gid = entry.gid;
-    stat.st_nlink = if entry.linked { 1 } else { 0 };
+/// A FIFO descriptor keeps the inode open, even after its name is removed.
+fn fill_fifo_stat(stat: &mut Stat, entry: &alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>) -> Result<(), u64> {
+    let handle = entry.lock().handle.clone().ok_or(5u64)?;
+    let inode = load_ext2_inode_stat_for_handle(&handle).ok_or(5u64)?;
+    stat.st_dev = handle.object.mount.mount_id as u64;
+    stat.st_ino = handle.object.key.inode as u64;
+    stat.st_mode = inode.mode;
+    stat.st_uid = inode.uid;
+    stat.st_gid = inode.gid;
+    stat.st_nlink = inode.nlink as _;
     stat.st_size = 0;
+    stat.st_atime = inode.atime;
+    stat.st_mtime = inode.mtime;
+    stat.st_ctime = inode.ctime;
+    stat.st_blocks = inode.blocks;
+    Ok(())
+}
+
+pub(crate) fn touch_fifo(entry: &alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>, read: bool) {
+    let Some(handle) = entry.lock().handle.clone() else { return; };
+    let Ok(mut guard) = crate::fs::ext2::write_mount(handle.object.mount) else { return; };
+    let Some(fs) = guard.as_mut() else { return; };
+    let Ok(ino) = handle.verify(fs) else { return; };
+    let Ok(mut inode) = fs.read_inode(ino) else { return; };
+    inode.update_timestamps(read, !read, !read);
+    let _ = fs.write_inode(ino, &inode);
 }
 
 /// Helper to create device ID from major/minor numbers
@@ -1626,24 +1647,6 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
 
     }
 
-    // A permission check may do filesystem I/O. Revalidate the registry
-    // identity afterwards so it cannot authorize unlink of a replacement.
-    {
-        use crate::ipc::fifo::FIFO_REGISTRY;
-        while let Some(entry) = FIFO_REGISTRY.get(path) {
-            let owner = entry.lock().uid;
-            let cred = current_file_credentials();
-            if let Err(errno) = super::fifo::check_parent_access(&resolved, &cred, Some(owner)) {
-                return SyscallResult::Err(errno);
-            }
-            match FIFO_REGISTRY.unlink_entry(path, &entry) {
-                Ok(()) => return SyscallResult::Ok(0),
-                Err(super::errno::EAGAIN) => continue,
-                Err(errno) => return SyscallResult::Err(errno as u64),
-            }
-        }
-    }
-
     if resolved.last != Last::Name {
         return SyscallResult::Err(EISDIR as u64);
     }
@@ -1657,18 +1660,22 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
         Target::Inode { mount, .. } => mount,
     };
 
+    let cred = current_file_credentials();
     let unlink_result = {
-        let mut fs_guard = mount.write();
-        match fs_guard.as_mut() {
-            Some(fs) => fs.unlink_file(resolved.fs_path()),
-            None => {
-                log::error!("sys_unlink: ext2 filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
+        let Some(parent) = resolved.entry_dir() else { return SyscallResult::Err(EIO as u64); };
+        let mut guard = mount.write();
+        let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
+        let parent = match parent.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(ENOENT as u64) };
+        let parent_inode = match fs.read_inode(parent) { Ok(inode) => inode, Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)) };
+        let target = match fs.lookup_in_dir(&parent_inode, resolved.final_name()) {
+            Ok(Some(ino)) => ino, Ok(None) => return SyscallResult::Err(ENOENT as u64), Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+        };
+        let inode = match fs.read_inode(target) { Ok(inode) => inode, Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)) };
+        if inode.is_dir() { return SyscallResult::Err(EISDIR as u64); }
+        if let Err(e) = super::fifo_policy::check_parent_access(&parent_inode, &cred, Some(inode.uid())) { return SyscallResult::Err(e); }
+        fs.unlink_in_dir(parent, resolved.final_name())
     };
 
-    // Handle the unlink result
     match unlink_result {
         Ok(()) => {
             log::info!("sys_unlink: successfully unlinked {}", path);
@@ -1677,7 +1684,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
         Err(e) => {
             log::debug!("sys_unlink: failed: {}", e);
             // Map error to appropriate errno
-            let errno = if e.contains("not found") || e.contains("not exist") {
+            let errno = if e.contains("memory") { super::errno::ENOMEM } else if e.contains("not found") || e.contains("not exist") {
                 ENOENT
             } else if e.contains("directory") {
                 EISDIR
@@ -1768,16 +1775,26 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
     // A pathname ending in `/` names a directory.
     let want_dir = old.trailing_slash || new.trailing_slash;
 
+    let cred = current_file_credentials();
     let result = {
         let mut fs_guard = mount.write();
         match fs_guard.as_mut() {
-            Some(fs) => fs.rename(
-                old_dir,
-                old.final_name(),
-                new_dir,
-                new.final_name(),
-                want_dir,
-            ),
+            Some(fs) => {
+                let (Ok(old_parent), Ok(new_parent)) = (old_dir.verify(fs), new_dir.verify(fs)) else {
+                    return SyscallResult::Err(ENOENT as u64);
+                };
+                for (parent, name, required) in [(old_parent, old.final_name(), true), (new_parent, new.final_name(), false)] {
+                    let inode = match fs.read_inode(parent) { Ok(inode) => inode, Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)) };
+                    let target = match fs.lookup_in_dir(&inode, name) { Ok(ino) => ino, Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)) };
+                    if required && target.is_none() { return SyscallResult::Err(ENOENT as u64); }
+                    let owner = match target {
+                        Some(ino) => match fs.read_inode(ino) { Ok(inode) => Some(inode.uid()), Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)) },
+                        None => None,
+                    };
+                    if let Err(e) = super::fifo_policy::check_parent_access(&inode, &cred, owner) { return SyscallResult::Err(e); }
+                }
+                fs.rename(old_dir, old.final_name(), new_dir, new.final_name(), want_dir)
+            },
             None => return SyscallResult::Err(EIO as u64),
         }
     };
@@ -1796,6 +1813,7 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
                 RenameError::NoSpace => ENOSPC,
                 RenameError::TooManyLinks => EMLINK,
                 RenameError::Io => EIO,
+                RenameError::NoMemory => super::errno::ENOMEM,
             };
             SyscallResult::Err(errno as u64)
         }
@@ -1856,16 +1874,20 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
         Target::Inode { .. } => return SyscallResult::Err(ENOTDIR as u64),
     };
 
-    // Perform the rmdir operation on the correct filesystem
+    let cred = current_file_credentials();
     let rmdir_result = {
-        let mut fs_guard = mount.write();
-        match fs_guard.as_mut() {
-            Some(fs) => fs.remove_directory(resolved.fs_path()),
-            None => {
-                log::error!("sys_rmdir: ext2 filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
+        let Some(parent) = resolved.entry_dir() else { return SyscallResult::Err(EIO as u64); };
+        let mut guard = mount.write();
+        let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
+        let parent = match parent.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(ENOENT as u64) };
+        let parent_inode = match fs.read_inode(parent) { Ok(inode) => inode, Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)) };
+        let target = match fs.lookup_in_dir(&parent_inode, resolved.final_name()) {
+            Ok(Some(ino)) => ino, Ok(None) => return SyscallResult::Err(ENOENT as u64), Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+        };
+        let inode = match fs.read_inode(target) { Ok(inode) => inode, Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)) };
+        if !inode.is_dir() { return SyscallResult::Err(ENOTDIR as u64); }
+        if let Err(e) = super::fifo_policy::check_parent_access(&parent_inode, &cred, Some(inode.uid())) { return SyscallResult::Err(e); }
+        fs.remove_directory_in(parent, resolved.final_name())
     };
 
     match rmdir_result {
@@ -1876,7 +1898,7 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
         Err(e) => {
             log::debug!("sys_rmdir: failed: {}", e);
             // Map error to appropriate errno
-            let errno = if e.contains("busy") {
+            let errno = if e.contains("memory") { super::errno::ENOMEM } else if e.contains("busy") {
                 EBUSY
             } else if e.contains("not found") || e.contains("not exist") {
                 ENOENT
@@ -1960,16 +1982,16 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
         }
     }
 
-    // Perform the hard link operation on the correct filesystem
+    let cred = current_file_credentials();
     let link_result = {
-        let mut fs_guard = mount.write();
-        match fs_guard.as_mut() {
-            Some(fs) => fs.create_hard_link(old.fs_path(), new.fs_path()),
-            None => {
-                log::error!("sys_link: ext2 filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
+        let (Some(source),Some(parent)) = (old.handle(),new.entry_dir()) else { return SyscallResult::Err(EIO as u64); };
+        let mut guard = mount.write();
+        let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
+        let source = match source.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(ENOENT as u64) };
+        let parent = match parent.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(ENOENT as u64) };
+        let inode = match fs.read_inode(parent) { Ok(inode) => inode, Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)) };
+        if let Err(e) = super::fifo_policy::check_parent_access(&inode,&cred,None) { return SyscallResult::Err(e); }
+        fs.link_in_dir(source,parent,new.final_name())
     };
 
     match link_result {
@@ -1984,7 +2006,7 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
         Err(e) => {
             log::debug!("sys_link: failed: {}", e);
             // Map error to appropriate errno
-            let errno = if e.contains("Too many links") {
+            let errno = if e.contains("memory") { super::errno::ENOMEM } else if e.contains("Too many links") {
                 super::errno::EMLINK
             } else if e.contains("not found") || e.contains("not exist") {
                 ENOENT
@@ -2309,9 +2331,6 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 fn access_resolved(resolved: &crate::fs::namei::Resolved, mode: u32, cred: &FileCredentials) -> SyscallResult {
     use super::errno::{EACCES, EIO, ENOENT};
     use crate::fs::namei::Target;
-    if let Some(entry) = crate::ipc::fifo::FIFO_REGISTRY.get(&resolved.path) {
-        return if cred.permits(&entry.lock().inode(), mode) { SyscallResult::Ok(0) } else { SyscallResult::Err(EACCES as u64) };
-    }
     let (mount, ino) = match resolved.target {
         Target::Inode { mount, ino, .. } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
@@ -3283,7 +3302,7 @@ fn handle_fifo_open(
     use super::errno::EINTR;
     use crate::ipc::fd::status_flags;
     use crate::ipc::fifo::{
-        abandon_fifo_open, open_fifo_read, open_fifo_write, recheck_fifo_open, FifoOpenResult,
+        abandon_fifo_open, open_fifo_read, open_fifo_write, open_fifo_readwrite, recheck_fifo_open, FifoOpenResult,
         PendingFifoOpen,
     };
 
@@ -3297,11 +3316,7 @@ fn handle_fifo_open(
         nonblock
     );
 
-    // POSIX permits EINVAL for O_RDWR on a FIFO. Do not pretend a read-only
-    // endpoint can provide bidirectional I/O or wait indefinitely for itself.
-    if access_mode != O_RDONLY && access_mode != O_WRONLY {
-        return SyscallResult::Err(super::errno::EINVAL as u64);
-    }
+    if access_mode == 3 { return SyscallResult::Err(super::errno::EINVAL as u64); }
     let for_write = access_mode == O_WRONLY;
 
     let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -3320,7 +3335,9 @@ fn handle_fifo_open(
     };
 
     // Attempt to open the FIFO
-    let result = if for_write {
+    let result = if access_mode == O_RDWR {
+        open_fifo_readwrite(&entry)
+    } else if for_write {
         open_fifo_write(&entry, nonblock)
     } else {
         open_fifo_read(&entry, nonblock)
@@ -3345,11 +3362,16 @@ fn handle_fifo_open(
                 entry: entry.clone(),
                 for_write,
             });
-            crate::process::with_process_manager(|manager| {
-                if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
-                    process.pending_fifo_opens.extend(open.take());
-                }
-            });
+            let recorded = crate::process::with_process_manager(|manager| {
+                let (_, process) = manager.find_process_by_thread_mut(thread_id).ok_or(3u64)?;
+                process.pending_fifo_opens.try_reserve(1).map_err(|_| 12u64)?;
+                process.pending_fifo_opens.extend(open.take());
+                Ok::<(), u64>(())
+            }).unwrap_or(Err(3));
+            if let Err(e) = recorded {
+                if let Some(open) = open { abandon_fifo_open(&open); }
+                return SyscallResult::Err(e);
+            }
             if let Some(open) = open {
                 abandon_fifo_open(&open);
                 return SyscallResult::Err(3); // ESRCH
@@ -3391,7 +3413,9 @@ fn handle_fifo_open(
                 //   - when we set thread state to Blocked
                 // If other end opened during that window, add_reader/add_writer
                 // would have tried to wake us but unblock() would have done nothing.
-                if let FifoOpenResult::Ready(buffer) = recheck_fifo_open(&entry, for_write, partner_opens_seen) {
+                let checked = recheck_fifo_open(&entry, for_write, partner_opens_seen);
+                if let FifoOpenResult::Error(e) = checked { return fail_pending_fifo_open(thread_id, &entry, e as u64); }
+                if let FifoOpenResult::Ready(buffer) = checked {
                     log::debug!(
                         "FIFO: Thread {} caught race - other end opened during block setup",
                         thread_id
@@ -3476,7 +3500,9 @@ fn handle_fifo_open(
                 {}
                 crate::task::scheduler::check_and_clear_need_resched();
 
-                if let FifoOpenResult::Ready(buffer) = recheck_fifo_open(&entry, for_write, partner_opens_seen) {
+                let checked = recheck_fifo_open(&entry, for_write, partner_opens_seen);
+                if let FifoOpenResult::Error(e) = checked { return fail_pending_fifo_open(thread_id, &entry, e as u64); }
+                if let FifoOpenResult::Ready(buffer) = checked {
                     break buffer;
                 }
             };
@@ -3497,6 +3523,26 @@ fn handle_fifo_open(
     }
 }
 
+fn fail_pending_fifo_open(tid: u64, entry: &alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>, error: u64) -> SyscallResult {
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() { thread.blocked_in_syscall = false; thread.set_ready(); }
+    });
+    let open = crate::process::with_process_manager(|manager| {
+        manager.find_process_by_thread_mut(tid).and_then(|(_, p)| p.take_pending_fifo_open(tid, entry))
+    }).flatten();
+    if let Some(open) = open { crate::ipc::fifo::abandon_fifo_open(&open); }
+    SyscallResult::Err(error)
+}
+fn abandon_open_with_flags(open: &crate::ipc::fifo::PendingFifoOpen, flags: u32) {
+    let both = if flags & 3 == O_RDWR { open.entry.lock().buffer.clone() } else { None };
+    crate::ipc::fifo::abandon_fifo_open(open);
+    if let Some(buffer) = both {
+        crate::ipc::fifo::close_fifo_write(&open.entry);
+        let notifications = buffer.lock().close_write();
+        notifications.deliver();
+    }
+}
+
 /// Install the descriptor for a FIFO open that holds its reader or writer
 /// reference, or give the reference back if no descriptor can be installed.
 ///
@@ -3513,7 +3559,7 @@ fn install_fifo_descriptor(
     buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
     recorded: bool,
 ) -> SyscallResult {
-    use super::errno::{EINTR, EMFILE};
+    use super::errno::EINTR;
     use crate::ipc::fd::{FdKind, FileDescriptor};
     use alloc::string::String;
 
@@ -3537,12 +3583,21 @@ fn install_fifo_descriptor(
         None
     };
 
-    let kind = if open.for_write {
-        FdKind::FifoWrite(String::from(path), buffer, open.entry.clone())
+    let kind = if flags & 3 == O_RDWR {
+        FdKind::FifoReadWrite(String::new(), buffer, open.entry.clone())
+    } else if open.for_write {
+        FdKind::FifoWrite(String::new(), buffer, open.entry.clone())
     } else {
-        FdKind::FifoRead(String::from(path), buffer, open.entry.clone())
+        FdKind::FifoRead(String::new(), buffer, open.entry.clone())
     };
-    let fd_entry = FileDescriptor::opened(kind, flags);
+    let fd_entry = match FileDescriptor::try_opened(kind, flags) {
+        Ok(entry) => entry,
+        Err(e) => {
+            if recorded { return fail_pending_fifo_open(open.tid, &open.entry, e); }
+            abandon_open_with_flags(&open, flags);
+            return SyscallResult::Err(e);
+        }
+    };
 
     let outcome = crate::process::with_process_manager(|manager| {
         let Some((_, process)) = manager.find_process_by_thread_mut(open.tid) else {
@@ -3553,7 +3608,7 @@ fn install_fifo_descriptor(
         }
         match process.fd_table.alloc_with_entry(fd_entry) {
             Ok(fd) => Install::Installed(fd),
-            Err(_) => Install::Refused(EMFILE as u64),
+            Err(e) => Install::Refused(e as u64),
         }
     })
     .unwrap_or(Install::Refused(3)); // ESRCH
@@ -3570,7 +3625,7 @@ fn install_fifo_descriptor(
         }
         Install::Released => SyscallResult::Err(EINTR as u64),
         Install::Refused(errno) => {
-            crate::ipc::fifo::abandon_fifo_open(&open);
+            abandon_open_with_flags(&open, flags);
             SyscallResult::Err(errno)
         }
     };
@@ -3621,19 +3676,6 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
 
     }
 
-    // Paths outside ext2 have no inode to read. A FIFO is described without
-    // opening it, since an open could block or release a waiting writer.
-    // devfs and procfs paths are described by the descriptor an open of them
-    // yields; those opens make no permission check.
-    if let Some(entry) = crate::ipc::fifo::FIFO_REGISTRY.get(full_path) {
-        let mut stat = Stat::zeroed();
-        stat.st_blksize = 4096;
-        fill_fifo_stat(&mut stat, &entry.lock());
-        return match copy_to_user(statbuf as *mut Stat, &stat) {
-            Ok(()) => SyscallResult::Ok(0),
-            Err(errno) => SyscallResult::Err(errno),
-        };
-    }
     let (mount, inode_num) = match resolved.target {
         Target::Inode { mount, ino, .. } => (mount, ino as u64),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
@@ -3671,6 +3713,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
         stat.st_ctime = inode_stat.ctime;
         stat.st_blocks = inode_stat.blocks;
     }
+    else { return SyscallResult::Err(super::errno::EIO as u64); }
 
     if let Err(errno) = copy_to_user(statbuf as *mut Stat, &stat) {
         return SyscallResult::Err(errno);
@@ -3723,11 +3766,8 @@ pub fn sys_mkdirat(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
 
 /// mknodat(dirfd, pathname, mode, dev) - replacement for mknod
 pub fn sys_mknodat(dirfd: i32, pathname: u64, mode: u32, dev: u64) -> SyscallResult {
-    if mode & S_IFMT == S_IFIFO {
-        super::fifo::sys_mkfifo_at(dirfd, pathname, mode & 0o7777)
-    } else {
-        super::fifo::sys_mknod(pathname, mode, dev)
-    }
+    if mode & S_IFMT == S_IFIFO { super::fifo::sys_mkfifo_at(dirfd, pathname, mode & 0o7777) }
+    else { super::fifo::sys_mknodat(dirfd, pathname, mode, dev) }
 }
 
 /// unlinkat(dirfd, pathname, flags) - replacement for unlink and rmdir
@@ -4083,10 +4123,6 @@ fn virtual_statfs(kind: u64) -> Statfs {
 
 fn resolved_statfs(resolved: &crate::fs::namei::Resolved) -> Result<Statfs, u64> {
     use crate::fs::namei::Target;
-    // Named FIFOs have namespace entries in the registry rather than ext2.
-    if crate::ipc::fifo::FIFO_REGISTRY.exists(&resolved.path) {
-        return Ok(virtual_statfs(0x50495045));
-    }
     match resolved.target {
         Target::Inode { mount, .. } => ext2_statfs(mount),
         Target::Absent { .. } => Err(super::errno::ENOENT as u64),
@@ -4130,8 +4166,10 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
             let pin = dir.lock().handle.clone();
             statfs_pin(&pin)
         }
-        // FIFOs currently live in the in-memory FIFO registry, not ext2.
-        FdKind::FifoRead(_, _, _) | FdKind::FifoWrite(_, _, _) | FdKind::FifoReadWrite(_, _, _) => Ok(virtual_statfs(0x50495045)),
+        FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) | FdKind::FifoReadWrite(_, _, entry) => {
+            let pin = entry.lock().handle.clone();
+            pin.as_ref().ok_or(5u64).and_then(statfs_pin)
+        }
         FdKind::ProcfsFile { .. } | FdKind::ProcfsDirectory { .. } => Ok(virtual_statfs(0x9fa0)),
         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => Ok(virtual_statfs(0x50495045)),
         FdKind::Device(_) | FdKind::StdIo(_) | FdKind::DevfsDirectory { .. } => Ok(virtual_statfs(0x1373)),
@@ -4297,10 +4335,6 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let full_path = resolved.path.as_str();
-    if crate::ipc::fifo::FIFO_REGISTRY.exists(full_path) {
-        return SyscallResult::Err(EINVAL as u64);
-    }
     let (mount, ino) = match resolved.target {
         Target::Inode { mount, ino, .. } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),

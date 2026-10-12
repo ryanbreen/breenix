@@ -323,16 +323,6 @@ pub fn resolve_create(path: &str) -> Result<Resolved, u64> {
     walk(path, Mode::Create)
 }
 
-/// Create a name from a directory descriptor using the same final-component
-/// rules as mkdir/mknod: an existing final symlink stays unfollowed.
-pub(crate) fn resolve_create_from(
-    path: &str,
-    start: Option<WorkingDir>,
-    cred: &super::permissions::Credentials,
-) -> Result<Resolved, u64> {
-    walk_with(path, Mode::Create, start, cred)
-}
-
 /// Resolve with the caller's chosen credentials (access uses real IDs) and
 /// optionally a directory descriptor, using the same component walk.
 pub(crate) fn resolve_from(

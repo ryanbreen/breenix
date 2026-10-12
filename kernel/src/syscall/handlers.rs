@@ -484,6 +484,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         Eopnotsupp, // Operation not supported
     }
 
+    let mut fifo_to_touch = None;
     let write_op = {
         let manager_guard = crate::process::manager();
         let process = match &*manager_guard {
@@ -526,10 +527,13 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     != 0,
             },
             FdKind::PipeRead(_) => WriteOperation::Ebadf,
-            FdKind::FifoWrite(_path, pipe_buffer, _) | FdKind::FifoReadWrite(_path, pipe_buffer, _) => WriteOperation::Fifo {
+            FdKind::FifoWrite(_path, pipe_buffer, entry) | FdKind::FifoReadWrite(_path, pipe_buffer, entry) => {
+                fifo_to_touch = Some(entry.clone());
+                WriteOperation::Fifo {
                 pipe_buffer: pipe_buffer.clone(),
                 is_nonblocking: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
+                }
             },
             FdKind::FifoRead(_, _, _) => WriteOperation::Ebadf,
             FdKind::TcpSocket(_) => WriteOperation::Enotconn,
@@ -567,7 +571,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
     };
 
     // Now perform the actual I/O operation without holding the manager lock
-    match write_op {
+    let result = match write_op {
         WriteOperation::Ipc { file, append } => match file.write(&buffer, append) {
             Ok(n) => SyscallResult::Ok(n),
             Err(e) => SyscallResult::Err(e),
@@ -597,14 +601,8 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                 SyscallResult::Err(5) // EIO
             }
         }
-        WriteOperation::Pipe {
-            pipe_buffer,
-            is_nonblocking,
-        }
-        | WriteOperation::Fifo {
-            pipe_buffer,
-            is_nonblocking,
-        } => super::blocking_io::write_pipe(&pipe_buffer, &buffer, is_nonblocking),
+        WriteOperation::Pipe { pipe_buffer, is_nonblocking }
+        | WriteOperation::Fifo { pipe_buffer, is_nonblocking } => super::blocking_io::write_pipe(&pipe_buffer, &buffer, is_nonblocking),
         WriteOperation::UnixStream {
             socket,
             is_nonblocking,
@@ -761,7 +759,12 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             );
             SyscallResult::Ok(bytes_written as u64)
         }
+    };
+    if matches!(result, SyscallResult::Ok(n) if n > 0) {
+        if let Some(entry) = fifo_to_touch { super::fs::touch_fifo(&entry, false); }
     }
+    result
+
 }
 
 /// Helper function to write to stdio through TTY layer
@@ -1130,11 +1133,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Can't read from write end of pipe
             SyscallResult::Err(9) // EBADF
         }
-        FdKind::FifoRead(_path, pipe_buffer, _) | FdKind::FifoReadWrite(_path, pipe_buffer, _) => {
+        FdKind::FifoRead(_path, pipe_buffer, entry) | FdKind::FifoReadWrite(_path, pipe_buffer, entry) => {
             // FIFO read - with blocking support
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let pipe_buffer_clone = pipe_buffer.clone();
+            let entry = entry.clone();
 
             // CRITICAL: Release process manager lock before blocking!
             // If we hold the lock while blocked in the HLT loop, timer interrupts
@@ -1142,7 +1146,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // process that needs to write to the FIFO).
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() { return SyscallResult::Err(12); }
+            user_buf.resize(count as usize, 0);
 
             // Try to read - if empty and blocking, we'll enter blocking path
             loop {
@@ -1159,6 +1165,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }
                         }
                         log::debug!("sys_read: Read {} bytes from FIFO", n);
+                        if n > 0 { super::fs::touch_fifo(&entry, true); }
                         return SyscallResult::Ok(n as u64);
                     }
                     Err(11) => {
@@ -1182,7 +1189,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // Register as waiter BEFORE setting blocked state (race condition fix)
                         {
                             let mut pipe = pipe_buffer_clone.lock();
-                            pipe.add_read_waiter(thread_id);
+                            if let Err(e) = pipe.try_add_read_waiter(thread_id) { return SyscallResult::Err(e as u64); }
                         }
 
                         // Block the thread

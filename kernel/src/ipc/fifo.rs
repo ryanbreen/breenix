@@ -10,11 +10,8 @@
 //! - Once both ends are open, I/O works exactly like anonymous pipes
 //! - FIFOs persist in the filesystem namespace until unlinked
 
-use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::pipe::PipeBuffer;
@@ -33,10 +30,6 @@ pub static FIFO_REGISTRY: FifoRegistry = FifoRegistry::new();
 pub struct FifoEntry {
     /// Held filesystem identity for a disk-backed FIFO, including after unlink.
     pub handle: Option<crate::fs::ext2::live_inode::FileHandle>,
-    /// Stable identity of this namespace object, also after unlink.
-    pub ino: u64,
-    /// Whether this object still has its namespace link.
-    pub linked: bool,
     /// The underlying pipe buffer (created on first open)
     pub buffer: Option<Arc<Mutex<PipeBuffer>>>,
     /// Number of processes that have opened for reading
@@ -54,20 +47,14 @@ pub struct FifoEntry {
     pub read_waiters: Vec<u64>,
     /// Threads waiting to open for writing (waiting for reader)
     pub write_waiters: Vec<u64>,
-    /// File mode (permissions)
-    pub mode: u32,
-    pub uid: u32,
-    pub gid: u32,
+
 }
 
 impl FifoEntry {
     /// Create a new FIFO entry
-    pub fn new(mode: u32, uid: u32, gid: u32) -> Self {
-        static NEXT_INO: AtomicU64 = AtomicU64::new(6000);
+    pub fn new() -> Self {
         FifoEntry {
             handle: None,
-            ino: NEXT_INO.fetch_add(1, Ordering::Relaxed),
-            linked: true,
             buffer: None,
             readers: 0,
             writers: 0,
@@ -75,38 +62,21 @@ impl FifoEntry {
             writer_opens: 0,
             read_waiters: Vec::new(),
             write_waiters: Vec::new(),
-            mode,
-            uid,
-            gid,
         }
     }
 
-    /// In-memory metadata uses the same permission and ownership rules as ext2.
-    pub(crate) fn inode(&self) -> crate::fs::ext2::Ext2Inode {
-        let mut inode = crate::fs::ext2::Ext2Inode::new_regular_file(0, 0, 0);
-        inode.i_mode = crate::fs::ext2::inode::EXT2_S_IFIFO | self.mode as u16;
-        inode.set_owner(self.uid, self.gid);
-        inode
-    }
-
     /// Get or create the pipe buffer
-    pub fn get_or_create_buffer(&mut self) -> Arc<Mutex<PipeBuffer>> {
+    pub fn get_or_create_buffer(&mut self) -> Result<Arc<Mutex<PipeBuffer>>, i32> {
         if let Some(ref buffer) = self.buffer {
-            buffer.clone()
+            Ok(buffer.clone())
         } else {
             // POSIX read(): an empty FIFO with no writer returns EOF (0),
             // including an O_NONBLOCK reader opened before the first writer.
             // Do not invent a writer reference to turn that EOF into EAGAIN.
-            let buffer = Arc::new(Mutex::new(PipeBuffer::new_zero_refs()));
+            let buffer = Arc::try_new(Mutex::new(PipeBuffer::try_new_zero_refs()?)).map_err(|_| 12)?;
             self.buffer = Some(buffer.clone());
-            buffer
+            Ok(buffer)
         }
-    }
-
-    /// Check if the FIFO has both readers and writers (ready for I/O)
-    #[allow(dead_code)] // Part of FifoEntry public API
-    pub fn is_ready(&self) -> bool {
-        self.readers > 0 && self.writers > 0
     }
 
     /// Add a reader and wake any waiting writers
@@ -114,7 +84,7 @@ impl FifoEntry {
         self.readers += 1;
         self.reader_opens = self.reader_opens.wrapping_add(1);
         // Wake writers waiting for a reader
-        let waiters: Vec<u64> = self.write_waiters.drain(..).collect();
+        let waiters = core::mem::take(&mut self.write_waiters);
         for tid in waiters {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
@@ -127,7 +97,7 @@ impl FifoEntry {
         self.writers += 1;
         self.writer_opens = self.writer_opens.wrapping_add(1);
         // Wake readers waiting for a writer
-        let waiters: Vec<u64> = self.read_waiters.drain(..).collect();
+        let waiters = core::mem::take(&mut self.read_waiters);
         for tid in waiters {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
@@ -184,83 +154,28 @@ impl FifoEntry {
     }
 }
 
-/// Registry of all FIFOs in the system
+/// Runtime pipe state, keyed by the held filesystem inode's incarnation.
+/// Weak entries keep the table from pinning an unlinked inode after last close.
 pub struct FifoRegistry {
-    /// Map from path to FIFO entry
-    fifos: Mutex<BTreeMap<String, Arc<Mutex<FifoEntry>>>>,
+    fifos: Mutex<Vec<(crate::fs::ext2::live_inode::FileKey, Weak<Mutex<FifoEntry>>)>>,
 }
-
 impl FifoRegistry {
-    /// Create a new empty registry
-    pub const fn new() -> Self {
-        FifoRegistry {
-            fifos: Mutex::new(BTreeMap::new()),
-        }
-    }
-
-    /// Create a new FIFO at the given path
-    ///
-    /// Returns Ok(()) on success, Err(errno) on failure:
-    /// - EEXIST (17) if path already exists
-    pub fn create(&self, path: &str, mode: u32, uid: u32, gid: u32) -> Result<(), i32> {
+    pub const fn new() -> Self { Self { fifos: Mutex::new(Vec::new()) } }
+    pub fn get_or_create(
+        &self, handle: crate::fs::ext2::live_inode::FileHandle,
+    ) -> Result<Arc<Mutex<FifoEntry>>, i32> {
+        let key = handle.object.key;
         let mut fifos = self.fifos.lock();
-
-        if fifos.contains_key(path) {
-            return Err(17); // EEXIST
+        fifos.retain(|(_, entry)| entry.strong_count() != 0);
+        if let Some(entry) = fifos.iter().find_map(|(held, entry)| (*held == key).then(|| entry.upgrade()).flatten()) {
+            return Ok(entry);
         }
-
-        let entry = Arc::new(Mutex::new(FifoEntry::new(mode, uid, gid)));
-        fifos.insert(String::from(path), entry);
-
-        log::debug!("FIFO created: {} with mode {:#o}", path, mode);
-        Ok(())
-    }
-
-    /// Check if a path is a FIFO
-    pub fn exists(&self, path: &str) -> bool {
-        self.fifos.lock().contains_key(path)
-    }
-
-    /// Get a FIFO entry by path
-    pub fn get(&self, path: &str) -> Option<Arc<Mutex<FifoEntry>>> {
-        self.fifos.lock().get(path).cloned()
-    }
-
-    /// Remove a FIFO from the registry
-    ///
-    /// Returns Ok(()) on success, Err(ENOENT) if not found
-    pub fn unlink(&self, path: &str) -> Result<(), i32> {
-        let mut fifos = self.fifos.lock();
-
-        if let Some(entry) = fifos.remove(path) {
-            entry.lock().linked = false;
-            log::debug!("FIFO unlinked: {}", path);
-            Ok(())
-        } else {
-            Err(2) // ENOENT
-        }
-    }
-
-    /// Remove the object whose permissions the caller checked. A replacement
-    /// must be checked again, outside the registry lock, before it is removed.
-    pub fn unlink_entry(&self, path: &str, expected: &Arc<Mutex<FifoEntry>>) -> Result<(), i32> {
-        let mut fifos = self.fifos.lock();
-        match fifos.get(path) {
-            Some(entry) if Arc::ptr_eq(entry, expected) => {}
-            Some(_) => return Err(11), // EAGAIN: retry against the replacement
-            None => return Err(2),     // ENOENT
-        }
-        let entry = fifos
-            .remove(path)
-            .expect("checked FIFO still present under registry lock");
-        entry.lock().linked = false;
-        Ok(())
-    }
-
-    /// List all FIFOs (for debugging)
-    #[allow(dead_code)]
-    pub fn list(&self) -> Vec<String> {
-        self.fifos.lock().keys().cloned().collect()
+        fifos.try_reserve(1).map_err(|_| 12)?;
+        let mut entry = FifoEntry::new();
+        entry.handle = Some(handle);
+        let entry = Arc::try_new(Mutex::new(entry)).map_err(|_| 12)?;
+        fifos.push((key, Arc::downgrade(&entry)));
+        Ok(entry)
     }
 }
 
@@ -286,7 +201,8 @@ pub fn open_fifo_read(entry_arc: &Arc<Mutex<FifoEntry>>, nonblock: bool) -> Fifo
         let mut entry = entry_arc.lock();
 
         // Get or create the buffer
-        let buffer = entry.get_or_create_buffer();
+        if !nonblock && entry.read_waiters.try_reserve(1).is_err() { return FifoOpenResult::Error(12); }
+        let buffer = match entry.get_or_create_buffer() { Ok(b) => b, Err(e) => return FifoOpenResult::Error(e) };
 
         // Add ourselves as a reader
         entry.add_reader();
@@ -329,7 +245,8 @@ pub fn open_fifo_write(entry_arc: &Arc<Mutex<FifoEntry>>, nonblock: bool) -> Fif
         }
 
         // Get or create the buffer
-        let buffer = entry.get_or_create_buffer();
+        if !nonblock && entry.write_waiters.try_reserve(1).is_err() { return FifoOpenResult::Error(12); }
+        let buffer = match entry.get_or_create_buffer() { Ok(b) => b, Err(e) => return FifoOpenResult::Error(e) };
 
         // Add ourselves as a writer
         entry.add_writer();
@@ -348,6 +265,18 @@ pub fn open_fifo_write(entry_arc: &Arc<Mutex<FifoEntry>>, nonblock: bool) -> Fif
             }
             FifoOpenResult::Block(entry.reader_opens)
         }
+    })
+}
+
+/// Linux opens both ends atomically for O_RDWR, with no partner wait.
+pub fn open_fifo_readwrite(entry_arc: &Arc<Mutex<FifoEntry>>) -> FifoOpenResult {
+    Cpu::without_interrupts(|| {
+        let mut entry = entry_arc.lock();
+        let buffer = match entry.get_or_create_buffer() { Ok(b) => b, Err(e) => return FifoOpenResult::Error(e) };
+        entry.add_reader();
+        entry.add_writer();
+        { let mut pipe = buffer.lock(); pipe.add_reader(); pipe.add_writer(); }
+        FifoOpenResult::Ready(buffer)
     })
 }
 
@@ -383,8 +312,10 @@ pub fn recheck_fifo_open(
         }
         if let Some(tid) = crate::task::scheduler::current_thread_id() {
             if for_write {
+                if entry.write_waiters.try_reserve(1).is_err() { return FifoOpenResult::Error(12); }
                 entry.add_write_waiter(tid);
             } else {
+                if entry.read_waiters.try_reserve(1).is_err() { return FifoOpenResult::Error(12); }
                 entry.add_read_waiter(tid);
             }
         }

@@ -65,11 +65,15 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
                 | crate::ipc::FdKind::FifoReadWrite(_, buffer, _) => Some((
                     buffer.clone(),
                     entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK != 0,
+                    match &entry.kind {
+                        crate::ipc::FdKind::FifoWrite(_, _, fifo) | crate::ipc::FdKind::FifoReadWrite(_, _, fifo) => Some(fifo.clone()),
+                        _ => None,
+                    },
                 )),
                 _ => None,
             }
         });
-        if let Some((buffer, nonblocking)) = endpoint {
+        if let Some((buffer, nonblocking, fifo)) = endpoint {
             // Gather before taking the pipe lock. One adapter call preserves
             // aggregate PIPE_BUF atomicity without faulting on userspace under
             // the buffer lock or retaining a lock across a prepared wait.
@@ -86,7 +90,9 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
                     }
                 }
             }
-            return super::blocking_io::write_pipe(&buffer, &gathered, nonblocking);
+            let result = super::blocking_io::write_pipe(&buffer, &gathered, nonblocking);
+            if matches!(result, SyscallResult::Ok(n) if n > 0) { if let Some(fifo) = fifo { super::fs::touch_fifo(&fifo, false); } }
+            return result;
         }
     }
 

@@ -8,6 +8,9 @@ pub mod dir;
 mod mount_device;
 pub mod file;
 pub mod inode;
+pub mod create_node;
+mod directory_io;
+mod namespace_alloc;
 pub mod live_inode;
 mod inode_index;
 mod reclaim;
@@ -27,19 +30,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::RwLock;
 
-/// The directory-entry file type recorded for an inode.
-fn dir_entry_type(inode: &Ext2Inode) -> u8 {
-    match inode.file_type() {
-        FileType::Regular => EXT2_FT_REG_FILE,
-        FileType::Directory => EXT2_FT_DIR,
-        FileType::CharDevice => EXT2_FT_CHRDEV,
-        FileType::BlockDevice => EXT2_FT_BLKDEV,
-        FileType::Fifo => EXT2_FT_FIFO,
-        FileType::Socket => EXT2_FT_SOCK,
-        FileType::SymLink => EXT2_FT_SYMLINK,
-        FileType::Unknown => EXT2_FT_UNKNOWN,
-    }
-}
+use create_node::dir_entry_type;
 
 /// What statfs reports for a mounted ext2 filesystem.
 #[derive(Clone, Copy, Debug)]
@@ -1044,6 +1035,10 @@ impl Ext2Fs {
 
         // Resolve parent directory
         let parent_inode_num = self.resolve_path(parent_path)?;
+        self.unlink_in_dir(parent_inode_num, filename)
+    }
+
+    pub fn unlink_in_dir(&mut self, parent_inode_num: u32, filename: &str) -> Result<(), &'static str> {
         let parent_inode = self.read_inode(parent_inode_num)?;
 
         if !parent_inode.is_dir() {
@@ -1054,8 +1049,7 @@ impl Ext2Fs {
         let mut dir_data = self.read_directory(&parent_inode)?;
 
         // Find the entry to verify it exists and get its inode
-        let entry = find_entry(&dir_data, filename).ok_or("File not found")?;
-        let target_inode_num = entry.inode;
+        let target_inode_num = dir::find_inode(&dir_data, filename).ok_or("File not found")?;
 
         // Check that we're not unlinking a directory (use rmdir for that)
         let target_inode = self.read_inode(target_inode_num)?;
@@ -1100,7 +1094,7 @@ impl Ext2Fs {
         }
         drop(handle);
 
-        log::debug!("ext2: unlinked {} (inode {})", path, target_inode_num);
+        log::debug!("ext2: unlinked {} (inode {})", filename, target_inode_num);
         Ok(())
     }
 
@@ -1340,9 +1334,15 @@ impl Ext2Fs {
             return Err("Invalid directory name");
         }
 
-        // Resolve the target directory. The entry removed is the one named,
-        // so a final symlink is not followed: it is not a directory.
-        let target_inode_num = self.resolve_path_no_follow(path)?;
+        let parent_inode_num = self.resolve_path(parent_path)?;
+        self.remove_directory_in(parent_inode_num, dir_name)
+    }
+
+    pub fn remove_directory_in(&mut self, parent_inode_num: u32, dir_name: &str) -> Result<(), &'static str> {
+        let parent_inode = self.read_inode(parent_inode_num)?;
+        if !parent_inode.is_dir() { return Err("Parent is not a directory"); }
+        let target_inode_num = self.lookup_in_dir(&parent_inode, dir_name)?.ok_or("Directory not found")?;
+        if target_inode_num == EXT2_ROOT_INO { return Err("Cannot remove root directory"); }
         let target_inode = self.read_inode(target_inode_num)?;
 
         // Verify it's a directory
@@ -1365,17 +1365,11 @@ impl Ext2Fs {
             return Err("Directory not empty");
         }
 
-        // Resolve parent directory
-        let parent_inode_num = self.resolve_path(parent_path)?;
-        let parent_inode = self.read_inode(parent_inode_num)?;
-
-        if !parent_inode.is_dir() {
-            return Err("Parent is not a directory");
-        }
-
         // The parent's entries with the name removed
         let parent_dir_data = self.read_directory(&parent_inode)?;
-        let mut parent_image = parent_dir_data.clone();
+        let mut parent_image = Vec::new();
+        parent_image.try_reserve_exact(parent_dir_data.len()).map_err(|_| "No memory for directory removal")?;
+        parent_image.extend_from_slice(&parent_dir_data);
         remove_entry(&mut parent_image, dir_name, self.superblock.block_size())?;
 
         // The parent loses the link the directory's ".." gave it, and its
@@ -1397,7 +1391,8 @@ impl Ext2Fs {
         let handle = self.pin_loaded_inode(target_inode_num, target_inode.size())?;
 
         // The name goes first; the counts it held fall after it is gone.
-        let mut writes = Vec::with_capacity(3);
+        let mut writes = Vec::new();
+        writes.try_reserve_exact(parent_dir_data.len().div_ceil(self.superblock.block_size()) + 2).map_err(|_| "No memory for directory removal plan")?;
         self.plan_blocks(&parent_inode, &parent_dir_data, &parent_image, 0, &mut writes)
             .map_err(|_| "Failed to plan directory removal")?;
         writes.push(rename::Write::Inode {
@@ -1426,7 +1421,7 @@ impl Ext2Fs {
 
         log::debug!(
             "ext2: removed directory '{}' (inode {})",
-            path,
+            dir_name,
             target_inode_num
         );
         Ok(())
@@ -1461,46 +1456,26 @@ impl Ext2Fs {
         // Resolve the source path to get the inode. As on Linux, a final
         // symlink is linked itself.
         let source_inode_num = self.resolve_path_no_follow(oldpath)?;
-        let source_inode = self.read_inode(source_inode_num)?;
-
-        // Hard links to directories are not allowed (prevents cycles in filesystem)
-        if source_inode.is_dir() {
-            return Err("Cannot create hard link to directory");
-        }
-        if source_inode.i_links_count >= EXT2_LINK_MAX {
-            return Err("Too many links");
-        }
-
-        // Parse newpath to get parent directory and new name
-        let (new_parent_path, new_filename) = match newpath.rfind('/') {
-            Some(0) => ("/", &newpath[1..]), // File in root directory
-            Some(idx) => (&newpath[..idx], &newpath[idx + 1..]),
-            None => return Err("Invalid newpath"),
+        let (parent, name) = match newpath.rfind('/') {
+            Some(0) => ("/", &newpath[1..]), Some(index) => (&newpath[..index], &newpath[index+1..]), None => return Err("Invalid newpath"),
         };
+        let parent = self.resolve_path(parent)?;
+        self.link_in_dir(source_inode_num, parent, name)
+    }
 
-        // Validate the new filename
-        if new_filename.is_empty() || new_filename.len() > 255 {
-            return Err("Invalid filename length");
-        }
-        if new_filename.contains('/') || new_filename == "." || new_filename == ".." {
-            return Err("Invalid filename");
-        }
-
-        // Resolve the parent directory for the new link
-        let new_parent_inode_num = self.resolve_path(new_parent_path)?;
+    pub fn link_in_dir(&mut self, source_inode_num: u32, new_parent_inode_num: u32, new_filename: &str) -> Result<(), &'static str> {
+        let source_inode = self.read_inode(source_inode_num)?;
+        if source_inode.i_links_count == 0 { return Err("Source not found"); }
+        if source_inode.is_dir() { return Err("Cannot create hard link to directory"); }
+        if source_inode.i_links_count >= EXT2_LINK_MAX { return Err("Too many links"); }
+        if new_filename.is_empty() || new_filename.len() > 255 || new_filename.contains('/') || new_filename == "." || new_filename == ".." { return Err("Invalid filename"); }
         let new_parent_inode = self.read_inode(new_parent_inode_num)?;
-
-        if !new_parent_inode.is_dir() {
-            return Err("Parent is not a directory");
-        }
-
-        // Check if the destination already exists, a dangling symlink included
-        if self.resolve_path_no_follow(newpath).is_ok() {
-            return Err("Destination already exists");
-        }
-
+        if !new_parent_inode.is_dir() { return Err("Parent is not a directory"); }
+        if new_parent_inode.i_links_count == 0 { return Err("Parent not found"); }
         // Read the parent directory data
         let mut dir_data = self.read_directory(&new_parent_inode)?;
+
+        if dir::find_inode(&dir_data, new_filename).is_some() { return Err("Destination already exists"); }
 
         // Add a new directory entry pointing to the source inode
         add_directory_entry(
@@ -1536,9 +1511,8 @@ impl Ext2Fs {
         )?;
 
         log::debug!(
-            "ext2: created hard link {} -> {} (inode {})",
-            newpath,
-            oldpath,
+            "ext2: created hard link {} (inode {})",
+            new_filename,
             source_inode_num
         );
         Ok(())
@@ -1769,51 +1743,10 @@ impl Ext2Fs {
     }
 
     fn write_directory_data(&self, dir_inode_num: u32, data: &[u8]) -> Result<(), &'static str> {
-        // Read the directory inode
         let inode = self.read_inode(dir_inode_num)?;
+        let blocks = directory_io::prepare(self.device.as_ref(), &inode, &self.superblock, data.len())?;
+        directory_io::write(self.device.as_ref(), self.superblock.block_size(), &blocks, data)
 
-        if !inode.is_dir() {
-            return Err("Not a directory");
-        }
-
-        // Get the direct block pointers
-        let i_block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block)) };
-
-        let block_size = self.superblock.block_size();
-        let mut offset = 0usize;
-
-        // Write to each direct block
-        for i in 0..12 {
-            if offset >= data.len() {
-                break;
-            }
-
-            let block_num = i_block[i];
-            if block_num == 0 {
-                break;
-            }
-
-            // Calculate how much data to write to this block
-            let bytes_to_write = core::cmp::min(block_size, data.len() - offset);
-
-            // Prepare block buffer
-            // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
-            let mut block_buf = [0u8; 4096]; // Max block size
-            block_buf[..bytes_to_write].copy_from_slice(&data[offset..offset + bytes_to_write]);
-
-            // Write the block using ext2-to-device block conversion
-            file::write_ext2_block(
-                self.device.as_ref(),
-                block_num,
-                block_size,
-                &block_buf[..block_size],
-            )
-            .map_err(|_| "Failed to write directory block")?;
-
-            offset += bytes_to_write;
-        }
-
-        Ok(())
     }
 }
 
