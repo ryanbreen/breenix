@@ -20,7 +20,7 @@ DIAGNOSTIC = re.compile(
     r"|BP (?:handler|from_userspace)|BP_HANDLER_ENTRY|(?:About to call|Called) preempt_disable"
     r"|breenix>\s*$)", re.I)
 ANNOUNCEMENT = re.compile(r"(?:kernel::test_exec:|Userspace will emit|will (?:print|emit)|expected marker|Missing marker|checkHint)", re.I)
-USER = re.compile(r"^(?:SUITE |SUITE_SEQUENCE |PROBE |RUN PATH |TEST_TALLY:|[A-Z][A-Z0-9_]*(?:_TEST|_PASSED|_START|_COMPLETE)\b|\[(?:init|bsh|probe)\])")
+USER = re.compile(r"^(?:SUITE |SUITE_SEQUENCE |PROBE |RUN PATH |TEST_TALLY:|[A-Z][A-Z0-9_]*(?:_TEST|_PASSED|_START|_COMPLETE)\b|\[(?i:init|bsh|probe|parent|child)\])")
 DONE = re.compile(r"^(?:SUITE \S+ DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+|PROBE DONE passed=\d+ failed=\d+|USERSPACE TEST REPORT DONE|RUN PATH DONE .+)$")
 
 
