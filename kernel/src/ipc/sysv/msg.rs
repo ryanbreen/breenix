@@ -1,7 +1,7 @@
 //! System V message queues: msgget, msgsnd, msgrcv and msgctl.
 
 use super::state::{
-    self, try_vec, IpcIds, IpcPerm, Message, MsgQueue, IPC_64, IPC_INFO, IPC_NOWAIT, IPC_RMID, IPC_SET, IPC_STAT,
+    self, try_vec, IpcIds, IpcPerm, Message, MsgQueue, Select, IPC_64, IPC_INFO, IPC_NOWAIT, IPC_RMID, IPC_SET, IPC_STAT,
     MSGMAX, MSGMNB, MSGMNI, MSG_INFO, MSG_NOERROR, MSG_STAT, MSG_STAT_ANY, MSQID_DS_SIZE, READ, WRITE,
 };
 use super::{caller, interrupted_unless_handled, ipcperms, now, Waiters};
@@ -21,17 +21,6 @@ pub(crate) static SYSV_MSG: IrqSafeMutex<IpcIds<Msq>> = IrqSafeMutex::new(IpcIds
 
 fn err(e: i32) -> SyscallResult {
     SyscallResult::Err(e as u64)
-}
-
-/// The queue `id` names, as a call that may have slept on `slept` finds it:
-/// EIDRM when the queue it slept on was removed, EINVAL for any other id that
-/// names nothing.
-fn missing(slept: &Option<Arc<Waiters>>) -> i32 {
-    if slept.as_ref().is_some_and(|w| w.is_removed()) {
-        EIDRM
-    } else {
-        EINVAL
-    }
 }
 
 /// msgget: the queue `key` names, made when IPC_CREAT asks for it.
@@ -59,12 +48,14 @@ pub fn sys_msgget(key: i32, flags: u32) -> SyscallResult {
 /// msgsnd: queue the message at `msgp`, a long type and `msgsz` bytes of
 /// text, waiting for room unless IPC_NOWAIT.
 pub fn sys_msgsnd(id: i32, msgp: u64, msgsz: u64, flags: u32) -> SyscallResult {
-    if msgsz > MSGMAX as u64 || id < 0 {
-        return err(EINVAL);
-    }
+    // Linux reads the type before it checks the arguments, so a bad buffer
+    // is EFAULT even with a bad identifier or size.
     let mut mtype = [0u8; 8];
     if read_user_bytes(mtype.as_mut_ptr(), msgp, 8).is_err() {
         return err(EFAULT);
+    }
+    if msgsz > MSGMAX as u64 || id < 0 {
+        return err(EINVAL);
     }
     let mtype = i64::from_ne_bytes(mtype);
     if mtype < 1 {
@@ -83,7 +74,10 @@ pub fn sys_msgsnd(id: i32, msgp: u64, msgsz: u64, flags: u32) -> SyscallResult {
     loop {
         let t = now();
         let mut ids = SYSV_MSG.lock();
-        let Some(entry) = ids.get_mut(id) else { return err(missing(&slept)) };
+        if Waiters::gone(&slept, ids.get(id).map(|e| &e.obj.waiters)) {
+            return err(EIDRM);
+        }
+        let Some(entry) = ids.get_mut(id) else { return err(EINVAL) };
         if !ipcperms(&entry.perm, &me.cred, WRITE) {
             return err(EACCES);
         }
@@ -124,12 +118,30 @@ pub fn sys_msgrcv(id: i32, msgp: u64, msgsz: u64, msgtyp: i64, flags: u32) -> Sy
         Ok(select) => select,
         Err(e) => return err(e),
     };
+    // MSG_COPY reads the buffer, up to MSGMAX bytes, before the queue is
+    // looked up, as Linux does when it prepares the copy: an unreadable
+    // buffer is EFAULT whatever the queue holds.
+    if let Select::Copy(_) = select {
+        let mut chunk = [0u8; 256];
+        let len = msgsz.min(MSGMAX as u64);
+        let mut at = 0;
+        while at < len {
+            let n = (len - at).min(chunk.len() as u64);
+            if read_user_bytes(chunk.as_mut_ptr(), msgp.wrapping_add(at), n as usize).is_err() {
+                return err(EFAULT);
+            }
+            at += n;
+        }
+    }
     let me = caller();
     let mut slept: Option<Arc<Waiters>> = None;
     let msg = loop {
         let t = now();
         let mut ids = SYSV_MSG.lock();
-        let Some(entry) = ids.get_mut(id) else { return err(missing(&slept)) };
+        if Waiters::gone(&slept, ids.get(id).map(|e| &e.obj.waiters)) {
+            return err(EIDRM);
+        }
+        let Some(entry) = ids.get_mut(id) else { return err(EINVAL) };
         if !ipcperms(&entry.perm, &me.cred, READ) {
             return err(EACCES);
         }

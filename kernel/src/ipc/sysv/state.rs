@@ -458,7 +458,8 @@ impl MsgQueue {
     /// when `noerror`; None when no message matches; E2BIG, leaving it
     /// queued, when it is longer than `size` without `noerror`. Select::Copy
     /// leaves the message queued and the queue's times and pids unchanged,
-    /// and can fail with ENOMEM.
+    /// can fail with ENOMEM, and never truncates: a message longer than
+    /// `size` is EINVAL even with `noerror`, as Linux's copy_msg gives it.
     pub fn receive(&mut self, select: Select, size: usize, noerror: bool, pid: i32, now: i64) -> Result<Option<Message>, i32> {
         let Some(index) = self.find(select) else { return Ok(None) };
         let len = self.msgs[index].text.len();
@@ -466,8 +467,11 @@ impl MsgQueue {
             return Err(E2BIG);
         }
         if let Select::Copy(_) = select {
+            if len > size {
+                return Err(EINVAL);
+            }
             let m = &self.msgs[index];
-            let text = try_copy(&m.text[..len.min(size)])?;
+            let text = try_copy(&m.text)?;
             return Ok(Some(Message { mtype: m.mtype, text }));
         }
         let Some(mut msg) = self.msgs.remove(index) else { return Ok(None) };

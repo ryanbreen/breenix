@@ -37,6 +37,7 @@ fn err(e: i32) -> SyscallResult {
 /// asks for it. For an existing set, asking for more semaphores than it has
 /// is EINVAL before the permission check, as on Linux.
 pub fn sys_semget(key: i32, nsems: i32, flags: u32) -> SyscallResult {
+    super::wake_deferred();
     if nsems < 0 || nsems as usize > SEMMSL {
         return err(EINVAL);
     }
@@ -65,16 +66,44 @@ pub fn sys_semget(key: i32, nsems: i32, flags: u32) -> SyscallResult {
     }
 }
 
+/// semtimedop's relative timeout, as Linux checks it: EINVAL for a negative
+/// time or nanoseconds out of range.
+fn deadline_after(ts: Option<[i64; 2]>) -> Result<IpcDeadline, i32> {
+    let Some([sec, nsec]) = ts else { return Ok(IpcDeadline::Never) };
+    if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
+        return Err(EINVAL);
+    }
+    let (now_sec, now_nsec) = crate::time::get_monotonic_time_ns();
+    let now = now_sec.saturating_mul(1_000_000_000).saturating_add(now_nsec);
+    let wait = (sec as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64);
+    Ok(IpcDeadline::Monotonic(now.saturating_add(wait)))
+}
+
 /// semop and semtimedop: apply the `nsops` operations at `sops` all at once,
 /// waiting until they can be applied unless one that cannot has
 /// IPC_NOWAIT. `timeout` is a relative timespec (semtimedop) or 0; when it
 /// passes the call fails with EAGAIN, as on Linux.
 pub fn sys_semtimedop(id: i32, sops: u64, nsops: u64, timeout: u64) -> SyscallResult {
-    if nsops < 1 || id < 0 {
-        return err(EINVAL);
-    }
+    super::wake_deferred();
+    // Linux's order: the timeout is copied in, nsops is checked, the
+    // operations are copied in, and only then are the identifier and the
+    // timeout's value checked. nsops is an unsigned int.
+    let ts = if timeout == 0 {
+        None
+    } else {
+        let mut b = [0u8; 16];
+        if read_user_bytes(b.as_mut_ptr(), timeout, b.len()).is_err() {
+            return err(EFAULT);
+        }
+        let word = |at: usize| i64::from_ne_bytes([b[at], b[at + 1], b[at + 2], b[at + 3], b[at + 4], b[at + 5], b[at + 6], b[at + 7]]);
+        Some([word(0), word(8)])
+    };
+    let nsops = u64::from(nsops as u32);
     if nsops > SEMOPM as u64 {
         return err(E2BIG);
+    }
+    if nsops < 1 {
+        return err(EINVAL);
     }
     let mut raw = match try_vec(nsops as usize * 6, 0u8) {
         Ok(raw) => raw,
@@ -88,9 +117,12 @@ pub fn sys_semtimedop(id: i32, sops: u64, nsops: u64, timeout: u64) -> SyscallRe
         return err(ENOMEM);
     }
     ops.extend(raw.chunks_exact(6).map(|b| SemOp::from_bytes([b[0], b[1], b[2], b[3], b[4], b[5]])));
-    let deadline = match crate::ipc::wait::relative(timeout) {
+    if id < 0 {
+        return err(EINVAL);
+    }
+    let deadline = match deadline_after(ts) {
         Ok(d) => d,
-        Err(e) => return SyscallResult::Err(e),
+        Err(e) => return err(e),
     };
     let undoes = ops.iter().any(|o| o.flg & SEM_UNDO != 0);
     // An array that changes a value needs only write permission, even when
@@ -115,9 +147,10 @@ fn semop_as(me: &Caller, id: i32, ops: &[SemOp], undoes: bool, wanted: u32, dead
         let t = now();
         let mut guard = SYSV_SEM.lock();
         let SemTable { ids, undo } = &mut *guard;
-        let Some(entry) = ids.get_mut(id) else {
-            return err(if slept.as_ref().is_some_and(|w| w.is_removed()) { EIDRM } else { EINVAL });
-        };
+        if Waiters::gone(&slept, ids.get(id).map(|e| &e.obj.waiters)) {
+            return err(EIDRM);
+        }
+        let Some(entry) = ids.get_mut(id) else { return err(EINVAL) };
         let nsems = entry.obj.set.nsems();
         if max >= nsems {
             return err(EFBIG);
@@ -158,7 +191,7 @@ fn semop_as(me: &Caller, id: i32, ops: &[SemOp], undoes: bool, wanted: u32, dead
         let seen = w.seen();
         drop(guard);
         let end = w.wait(seen, deadline);
-        if let Some(entry) = SYSV_SEM.lock().ids.get_mut(id) {
+        if let Some(entry) = SYSV_SEM.lock().ids.get_mut(id).filter(|e| Arc::ptr_eq(&e.obj.waiters, &w)) {
             entry.obj.set.waiters.retain(|w| w.tid != tid);
         }
         match end {
@@ -185,6 +218,7 @@ enum Reply {
 /// SEM_STAT_ANY. `arg` is union semun as a register: the value for SETVAL,
 /// else a pointer.
 pub fn sys_semctl(id: i32, num: i32, cmd: u32, arg: u64) -> SyscallResult {
+    super::wake_deferred();
     if id < 0 {
         return err(EINVAL);
     }

@@ -9,9 +9,11 @@
 //! its object's `Waiters`, which outlives the object's removal. Two paths
 //! take the SEM table inside PROCESS_MANAGER: clone with CLONE_SYSVSEM, and
 //! a fatal signal's default action that ends the row under the lock (always
-//! on ARM64, on x86-64 when the deferred-exit queue is full); the second
-//! wakes sleepers through the deferred wake, which does not take the
-//! scheduler lock.
+//! on ARM64, on x86-64 when the deferred-exit queue is full). The second
+//! applies the row's SEM_UNDO adjustments there but wakes no one, since a
+//! wake can take the scheduler lock, which ranks above PROCESS_MANAGER: it
+//! marks the sets' sleepers, and `wake_deferred` wakes them from the exit
+//! hooks that run with no lock held, or from the next semaphore call.
 
 pub mod msg;
 pub mod sem;
@@ -22,6 +24,7 @@ use crate::fs::permissions::Credentials;
 use crate::ipc::wait::{IpcDeadline, WaitEnd};
 use crate::process::process::Process;
 use crate::process::ProcessId;
+use crate::signal::constants::{NSIG, SIG_DFL};
 use crate::syscall::errno::{EINTR, ENOMEM, ERESTARTSYS};
 use crate::syscall::SyscallResult;
 use crate::task::waitqueue::WaitQueueHead;
@@ -75,12 +78,23 @@ pub(crate) struct Waiters {
     queue: WaitQueueHead,
     changes: AtomicU64,
     removed: AtomicBool,
+    /// A change made under PROCESS_MANAGER that these sleepers have not
+    /// been woken for yet.
+    wake_owed: AtomicBool,
 }
+
+/// Whether some set's sleepers are owed a wake (`Waiters::owe_wake`).
+static WAKES_OWED: AtomicBool = AtomicBool::new(false);
 
 impl Waiters {
     /// A new object's sleepers, or ENOMEM.
     pub fn new() -> Result<Arc<Waiters>, i32> {
-        Arc::try_new(Waiters { queue: WaitQueueHead::new(), changes: AtomicU64::new(0), removed: AtomicBool::new(false) })
+        Arc::try_new(Waiters {
+            queue: WaitQueueHead::new(),
+            changes: AtomicU64::new(0),
+            removed: AtomicBool::new(false),
+            wake_owed: AtomicBool::new(false),
+        })
             .map_err(|_| ENOMEM)
     }
 
@@ -105,15 +119,29 @@ impl Waiters {
         self.removed.load(Ordering::SeqCst)
     }
 
+    /// Whether a call that slept on `slept` must fail with EIDRM on finding
+    /// `found` by the same identifier: the object it slept on was removed,
+    /// or the identifier now names another object, which it does once the
+    /// sequence numbers wrap. Linux checks the object it slept on in the
+    /// same way, not the identifier.
+    pub fn gone(slept: &Option<Arc<Waiters>>, found: Option<&Arc<Waiters>>) -> bool {
+        slept.as_ref().is_some_and(|w| w.is_removed() || found.is_none_or(|f| !Arc::ptr_eq(w, f)))
+    }
+
     /// Wake every sleeper. Called with no table locked.
     pub fn wake(&self) {
         self.queue.wake_up();
     }
 
-    /// Wake every sleeper without taking the scheduler lock, for a caller
-    /// that holds PROCESS_MANAGER.
-    fn wake_deferred(&self) {
-        self.queue.wake_up_deferred();
+    /// Owe the sleepers a wake, for a caller that holds PROCESS_MANAGER and
+    /// so may not wake them: `wake_deferred` does, later.
+    fn owe_wake(&self) {
+        self.wake_owed.store(true, Ordering::SeqCst);
+        WAKES_OWED.store(true, Ordering::SeqCst);
+    }
+
+    fn take_owed_wake(&self) -> bool {
+        self.wake_owed.swap(false, Ordering::SeqCst)
     }
 
     /// Sleep until a change after `seen`, the object's removal, `deadline`
@@ -125,29 +153,53 @@ impl Waiters {
 
 /// The errno of msgsnd and msgrcv when their wait ends with `error`: ENOMEM
 /// when the wait could not reserve its place on the queue; otherwise as
-/// Linux's ERESTARTNOHAND gives it: EINTR when a handler will run or the
-/// signal kills, whatever SA_RESTART says; for a job-control stop,
-/// ERESTARTSYS, which the return path turns into the call made again once
-/// the process continues; EINTR for anything else.
+/// Linux's ERESTARTNOHAND gives it: EINTR when a pending signal will run a
+/// handler or kill the process, whatever SA_RESTART says, and ERESTARTSYS
+/// for anything else, which the return path turns into the call made again
+/// (after a job-control stop, once the process continues). The answer rests
+/// on the pending signals, not on the stop state, which a SIGCONT's default
+/// action can clear before this runs.
 pub(crate) fn interrupted_unless_handled(error: u64) -> i32 {
     if error == ENOMEM as u64 {
         return ENOMEM;
     }
-    if let Some(e) = crate::syscall::check_signals_for_eintr() {
-        return e;
-    }
-    let stopped = crate::task::scheduler::current_thread_id().is_some_and(|tid| {
+    let handled = crate::task::scheduler::current_thread_id().is_some_and(|tid| {
         crate::process::with_process_manager(|manager| {
-            manager
-                .find_process_by_thread(tid)
-                .is_some_and(|(_, p)| crate::signal::delivery::stop_pending_or_in_force(p))
+            manager.find_process_by_thread(tid).is_some_and(|(_, p)| {
+                let deliverable = p.signals.pending_set() & !p.signals.blocked();
+                (1..=NSIG).filter(|&sig| deliverable & (1u64 << (sig - 1)) != 0).any(|sig| {
+                    let action = p.signals.get_handler(sig);
+                    action.is_handler()
+                        || (action.handler == SIG_DFL && crate::signal::delivery::fatal_exit_code(sig).is_some())
+                })
+            })
         })
         .unwrap_or(false)
     });
-    if stopped {
-        ERESTARTSYS
-    } else {
+    if handled {
         EINTR
+    } else {
+        ERESTARTSYS
+    }
+}
+
+/// Wake the sleepers of each semaphore set whose undo adjustments were
+/// applied under PROCESS_MANAGER. Called with no lock held; allocates
+/// nothing.
+pub(crate) fn wake_deferred() {
+    if !WAKES_OWED.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    loop {
+        let owed = {
+            let table = sem::SYSV_SEM.lock();
+            let found = table.ids.iter().find_map(|(_, e)| e.obj.waiters.take_owed_wake().then(|| e.obj.waiters.clone()));
+            found
+        };
+        match owed {
+            Some(w) => w.wake(),
+            None => return,
+        }
     }
 }
 
@@ -155,7 +207,8 @@ pub(crate) fn interrupted_unless_handled(error: u64) -> i32 {
 /// last reference, the list's adjustments are applied, held to the
 /// semaphores' range, and the processes waiting on those sets are woken.
 /// `under_pm` when the caller holds PROCESS_MANAGER, which the SEM table
-/// nests inside: nothing holding the SEM table takes PROCESS_MANAGER.
+/// nests inside: nothing holding the SEM table takes PROCESS_MANAGER, and
+/// the wakes are then owed rather than made.
 fn task_exit(row: u64, pid: i32, under_pm: bool) {
     let Some(list) = sem::SYSV_SEM.lock().undo.leave(row) else { return };
     // One set at a time, waking its sleepers with the table unlocked, so
@@ -174,7 +227,7 @@ fn task_exit(row: u64, pid: i32, under_pm: bool) {
         };
         if let Some(w) = woken {
             if under_pm {
-                w.wake_deferred();
+                w.owe_wake();
             } else {
                 w.wake();
             }
@@ -195,6 +248,7 @@ fn task_of(row: ProcessId) -> Option<(u64, i32)> {
 /// commit that makes the row a zombie its parent can reap, as on Linux,
 /// where exit_sem runs before exit_notify. Called with no lock held.
 pub fn row_exit(pid: ProcessId) {
+    wake_deferred();
     if let Some((row, tgid)) = task_of(pid) {
         task_exit(row, tgid, false);
     }
@@ -211,6 +265,7 @@ pub fn row_exited(pid: ProcessId) {
 /// list, as `row_exit`. The row may already be marked terminated, as a fatal
 /// signal on ARM64 leaves it. Called with no lock held.
 pub fn thread_exit(thread_id: u64) {
+    wake_deferred();
     let task = crate::process::with_process_manager(|manager| {
         manager
             .find_process_by_thread(thread_id)
@@ -224,7 +279,9 @@ pub fn thread_exit(thread_id: u64) {
 
 /// A fatal signal is about to mark `process` terminated, with
 /// PROCESS_MANAGER held, which makes the row a zombie its parent can reap
-/// as soon as the lock goes: its task leaves its SEM_UNDO list first.
+/// as soon as the lock goes: its task leaves its SEM_UNDO list first. The
+/// sets' sleepers are woken once the lock is gone, by the exit hook the
+/// deferred-exit drain runs for this row.
 pub fn row_dying_locked(process: &Process) {
     let row = process.id.as_u64();
     task_exit(row, process.thread_group_id.unwrap_or(row) as i32, true);

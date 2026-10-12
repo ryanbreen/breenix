@@ -173,8 +173,12 @@ fn msg_copy_reads_by_position_and_leaves_the_queue_alone() {
     assert_eq!((m.mtype, m.text), (5, b"twotwo".to_vec()));
     assert_eq!((q.qnum(), q.cbytes, q.lrpid, q.rtime), (2, 9, 0, 0), "a copy changes nothing");
     assert_eq!(q.receive(Select::Copy(1), 3, false, 9, 20).err(), Some(syscall::errno::E2BIG));
-    let m = q.receive(Select::Copy(1), 3, true, 9, 20).unwrap().unwrap();
-    assert_eq!(m.text, b"two");
+    assert_eq!(
+        q.receive(Select::Copy(1), 3, true, 9, 20).err(),
+        Some(syscall::errno::EINVAL),
+        "MSG_COPY never truncates, even with MSG_NOERROR"
+    );
+    assert_eq!((q.qnum(), q.cbytes), (2, 9));
     assert!(q.receive(Select::Copy(2), 64, false, 9, 20).unwrap().is_none());
     assert!(q.receive(Select::Copy(-1), 64, false, 9, 20).unwrap().is_none());
 }
