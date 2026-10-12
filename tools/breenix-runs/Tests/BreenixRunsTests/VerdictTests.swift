@@ -19,8 +19,17 @@ final class VerdictTests: XCTestCase {
 
     func testFailAttributedAndRefusedAreFailures() {
         XCTAssertTrue(Verdict.fail("boom").isFailure)
+        XCTAssertTrue(Verdict.stalled("STALLED: stopped_at=2026-10-12T12:00:00Z; last progress: FAIL").isFailure)
         XCTAssertTrue(Verdict.attributed("known flake").isFailure)
         XCTAssertTrue(Verdict.refused("preflight refused").isFailure)
+    }
+
+    func testGateOutputPersistsStalledVerdictAndLastProgress() throws {
+        let line = "STALLED: stopped_at=2026-10-12T12:00:00Z no test progress for 120.0s; last progress: SIGKILL_TEARDOWN_TEST: FAIL"
+        let verdict = Verdict.projectGateOutput("earlier output\n" + line + "\n", verdict: "FAIL", exitCode: 124, command: [])
+        XCTAssertEqual(verdict, .stalled(line))
+        XCTAssertEqual(try JSONDecoder().decode(Verdict.self, from: JSONEncoder().encode(verdict)), verdict)
+        XCTAssertEqual(SidebarViewModel.displayText(for: verdict), "STALLED")
     }
 
     func testPassRunningAndUnknownAreNotFailures() {

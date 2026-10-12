@@ -35,6 +35,7 @@ public struct KernelIdentity: Codable, Equatable, Sendable {
 public enum Verdict: Codable, Equatable, Sendable {
     case pass
     case fail(String)
+    case stalled(String)
     case attributed(String)
     case running
     case unknown
@@ -59,6 +60,8 @@ public enum Verdict: Codable, Equatable, Sendable {
             self = .pass
         case "fail":
             self = .fail(try container.decode(String.self, forKey: .reason))
+        case "stalled":
+            self = .stalled(try container.decode(String.self, forKey: .reason))
         case "attributed":
             self = .attributed(try container.decode(String.self, forKey: .reason))
         case "running":
@@ -85,6 +88,9 @@ public enum Verdict: Codable, Equatable, Sendable {
         case .fail(let reason):
             try container.encode("fail", forKey: .kind)
             try container.encode(reason, forKey: .reason)
+        case .stalled(let reason):
+            try container.encode("stalled", forKey: .kind)
+            try container.encode(reason, forKey: .reason)
         case .attributed(let reason):
             try container.encode("attributed", forKey: .kind)
             try container.encode(reason, forKey: .reason)
@@ -104,7 +110,7 @@ public enum Verdict: Codable, Equatable, Sendable {
 
     public var isFailure: Bool {
         switch self {
-        case .fail, .attributed, .refused:
+        case .fail, .stalled, .attributed, .refused:
             return true
         case .gateScript(_, let exitCode):
             return exitCode != 0
@@ -285,6 +291,13 @@ public struct RunManifest: Codable, Equatable, Sendable {
 }
 
 extension Verdict {
+    public static func projectGateOutput(_ output: String, verdict: String, exitCode: Int, command: [String]) -> Verdict {
+        if let line = output.split(separator: "\n").last(where: { $0.hasPrefix("STALLED: stopped_at=") }) {
+            return .stalled(String(line))
+        }
+        return projectGateVerdict(verdict, exitCode: exitCode, command: command)
+    }
+
     /// Shares gate-owned verdict projection between hook imports and direct launches.
     public static func projectGateVerdict(_ verdict: String, exitCode: Int, command: [String]) -> Verdict {
         if verdict == "PASS-WITH-ATTRIBUTED-LOCKUP" { return .attributed(verdict) }

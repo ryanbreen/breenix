@@ -72,7 +72,7 @@ public enum SidebarViewModel {
         switch verdict {
         case .pass:
             return .success
-        case .fail, .refused:
+        case .fail, .stalled, .refused:
             return .failure
         case .attributed:
             return .attributed
@@ -91,6 +91,8 @@ public enum SidebarViewModel {
             return "PASS"
         case .fail:
             return "FAIL"
+        case .stalled:
+            return "STALLED"
         case .attributed(let reason):
             return attributedText(reason)
         case .running:
