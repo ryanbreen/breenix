@@ -512,9 +512,10 @@ def supervise_worker(argv, parent):
 
     def start_boot(request):
         nonlocal progress
-        # Load from the booted checkout, including when this supervisor is staged
-        # outside it by Run Inspector. Builds and lease waits are not boot time.
-        helper = Path(request.get("progress_helper", str(Path(worktree) / "scripts/boot_progress.py")))
+        # Run Inspector stages its current classifier outside historical checkouts.
+        # Builds and lease waits are not boot time.
+        helper = Path(request.get("progress_helper") or os.environ.get("BREENIX_SLOT_PROGRESS_HELPER")
+                      or str(Path(worktree) / "scripts/boot_progress.py"))
         if helper.exists():
             Progress = runpy.run_path(str(helper))["BootProgress"]
             serial = next((path for path, (count, _, _) in serials.items()
@@ -662,7 +663,8 @@ def supervise_worker(argv, parent):
                                 continue
                             paths = re.findall(r'-serial\s+file:([^\s]+)', command)
                             paths += re.findall(r'-chardev\s+file,[^\s]*path=([^,\s]+)', command)
-                            helper = Path(worktree) / 'scripts/boot_progress.py'
+                            helper = Path(os.environ.get('BREENIX_SLOT_PROGRESS_HELPER')
+                                          or str(Path(worktree) / 'scripts/boot_progress.py'))
                             if paths and helper.exists() and row[1] not in legacy_progress:
                                 Progress = runpy.run_path(str(helper))["BootProgress"]
                                 for serial in paths:

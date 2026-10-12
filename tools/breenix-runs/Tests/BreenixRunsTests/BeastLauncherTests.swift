@@ -23,6 +23,27 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertTrue(request.arguments.last!.contains("BREENIX_BOOT_SUITE=files-io,directories,processes"))
     }
 
+    func testProgressBundleWorksWithoutTheTestedCheckout() throws {
+        var repo = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { repo.deleteLastPathComponent() }
+        let bundle = try BeastLauncher.progressBundle(repoRoot: repo)
+        let data = try XCTUnwrap(Data(base64Encoded: bundle))
+        let files = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for (path, content) in files {
+            let destination = root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try XCTUnwrap(Data(base64Encoded: content)).write(to: destination)
+        }
+        let code = "import runpy,sys; from pathlib import Path; p=runpy.run_path(sys.argv[1])['BootProgress'](Path('serial')); assert 'EXEC_ARGV_TEST_PASSED' in p.markers; assert 'Kernel initialization complete!' in p.markers"
+        let result = try RealProcessRunner().run(ProcessRequest(executable: "/usr/bin/python3", arguments: ["-c", code, root.appendingPathComponent("scripts/boot_progress.py").path]))
+        XCTAssertEqual(result.exitCode, 0, String(decoding: result.stderr, as: UTF8.self))
+        let helper = try Data(contentsOf: repo.appendingPathComponent("scripts/host-slots.py")).base64EncodedString()
+        let request = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: BeastPaths(clonePath: "/root/run"), slotHelperBase64: helper, progressBundleBase64: bundle)
+        XCTAssertLessThan(try XCTUnwrap(request.arguments.last).utf8.count, 131_072)
+    }
+
     func testPersistentTreePreparationAndCleanupKeepRunEvidencePrivate() {
         var paths = BeastPaths(clonePath: "/root/run")
         paths.laneKey = String(repeating: "a", count: 64)
@@ -30,10 +51,12 @@ final class BeastLauncherTests: XCTestCase {
         let prepare = RemoteCommand.prepareCloneRequest(sha: paths.requestedSHA!, paths: paths, treeHelperBase64: "aGVscGVy")
         XCTAssertTrue(prepare.arguments.last!.contains("/root/run/gate-tmp/gate-tree.py"))
         XCTAssertFalse(prepare.arguments.last!.contains("git clone"))
-        let gate = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: paths, slotHelperBase64: "c2xvdHM=")
+        let gate = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: paths, slotHelperBase64: "c2xvdHM=", progressBundleBase64: "e30=")
         XCTAssertTrue(gate.arguments.last!.contains("gate-tree.py /root/breenix " + paths.laneKey!))
         XCTAssertTrue(gate.arguments.last!.contains("BREENIX_SLOT_WORKTREE=\"${BREENIX_GATE_CACHE_DIR:-/root/breenix-gate-cache}/trees/" + paths.laneKey!))
         XCTAssertTrue(gate.arguments.last!.contains("BREENIX_SLOT_COMMIT=" + paths.requestedSHA!))
+        XCTAssertTrue(gate.arguments.last!.contains("BREENIX_SLOT_PROGRESS_HELPER=/root/run/gate-tmp/watchdog/scripts/boot_progress.py"))
+        XCTAssertTrue(gate.arguments.last!.contains("json.loads(base64.b64decode(sys.argv[2]))"))
         XCTAssertFalse(gate.arguments.last!.contains("acquire x86-boot"), "current gates acquire and release their own distinct build/boot leases")
         XCTAssertEqual(RemoteCommand.removeCloneRequest(paths: paths).arguments.last,
             "sudo -n incus exec breenix-x86 -- python3 /root/run/gate-tmp/gate-tree.py remove-evidence /root/run")
