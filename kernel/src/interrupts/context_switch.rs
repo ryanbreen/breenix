@@ -1954,9 +1954,9 @@ pub fn idle_loop() -> ! {
         // which was up to 35 ms under the x86 gate, so placement takes this
         // CPU for a busy one meanwhile, and what was queued here regardless is
         // dispatched as soon as it ends.
-        crate::task::scheduler::release_outgoing_stack_from_idle();
+        crate::scratch_probe::step(1, crate::task::scheduler::release_outgoing_stack_from_idle);
         crate::task::scheduler::set_idle_housekeeping(true);
-        crate::task::process_task::reclaim_deferred_process_resources();
+        crate::scratch_probe::step(2, crate::task::process_task::reclaim_deferred_process_resources);
         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
         // from a context that exists AFTER every userspace thread is gone and
         // after the drain above has had passes to run; the idle loop is the only
@@ -1968,14 +1968,14 @@ pub fn idle_loop() -> ! {
         // allocation, and nothing on the context-switch path itself.
         #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
         crate::tracing::providers::teardown::x86_settled_tombstone_census();
-        crate::task::scheduler::reclaim_terminated_threads();
+        crate::scratch_probe::step(3, crate::task::scheduler::reclaim_terminated_threads);
         // Try to flush any pending IRQ logs while idle
-        crate::irq_log::flush_local_try();
+        crate::scratch_probe::step(4, crate::irq_log::flush_local_try);
         crate::task::scheduler::set_idle_housekeeping(false);
         // Lines logged by callers that could not wait on the UART, holding a
         // lock or with interrupts masked, are written out here, until this
         // CPU has something to run.
-        crate::serial::drain_log_while(|| !crate::task::scheduler::is_need_resched());
+        crate::scratch_probe::step(5, || crate::serial::drain_log_while(|| !crate::task::scheduler::is_need_resched()));
         // Reclamation can wake a waiter. Check with interrupts masked so a
         // wakeup cannot slip between the check and the atomic enable/halt.
         // A reschedule raised while the housekeeping above could not switch

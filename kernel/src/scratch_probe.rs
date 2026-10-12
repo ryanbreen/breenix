@@ -17,6 +17,7 @@ pub const FUTEX_WAKE_SLOW: u64 = 4;
 pub const IDLE_GAP: u64 = 5;
 pub const POLL_FAIL: u64 = 6;
 pub const MUNMAP: u64 = 7;
+pub const HOUSEKEEP: u64 = 8;
 pub static SHOOTDOWNS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static PM_SHOOT0: AtomicU64 = AtomicU64::new(0);
 pub static PM_OWNER_TID: AtomicU64 = AtomicU64::new(0);
@@ -107,11 +108,13 @@ pub fn drain() {
                 w[4]
             ),
             IDLE_GAP => log::info!(
-                "[P1401 IDLE_GAP us={} at_ms={} cpu={} switches={}]",
+                "[P1401 IDLE_GAP us={} at_ms={} cpu={} switches={} ticks={} steps={}]",
                 w[1] / 1000,
                 w[2] / 1_000_000,
                 w[3],
-                w[4]
+                w[4],
+                w[5],
+                w[6]
             ),
             MUNMAP => log::info!(
                 "[P1401 MUNMAP us={} at_ms={} cpu={} tid={} len={} pages={} shootdowns={}]",
@@ -122,6 +125,14 @@ pub fn drain() {
                 w[5],
                 w[6],
                 w[7]
+            ),
+            HOUSEKEEP => log::info!(
+                "[P1401 HOUSEKEEP step={} us={} at_ms={} cpu={} ticks={}]",
+                w[1],
+                w[2] / 1000,
+                w[3] / 1_000_000,
+                w[4],
+                w[5]
             ),
             POLL_FAIL => log::info!("[P1401 POLL_FAIL at_ms={} cpu={} holder_cpu={}]", w[1] / 1_000_000, w[2], w[3]),
             _ => {}
@@ -206,6 +217,30 @@ pub fn pm_released() {
 // Idle-pass gaps per CPU.
 static IDLE_LAST: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static IDLE_SWITCHES: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static IDLE_TICKS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+pub static STEPS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static IDLE_STEPS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+fn ticks_on(cpu: usize) -> u64 {
+    crate::tracing::providers::counters::TIMER_TICK_TOTAL.get_cpu(cpu)
+}
+
+/// Time one idle-housekeeping step on this CPU.
+pub fn step<R>(id: u64, f: impl FnOnce() -> R) -> R {
+    let c = cpu() as usize;
+    let t0 = now_ns();
+    let k0 = if c < 8 { ticks_on(c) } else { 0 };
+    let r = f();
+    if c < 8 {
+        STEPS[c].fetch_add(1, Ordering::Relaxed);
+    }
+    let dt = now_ns() - t0;
+    if dt > 3_000_000 {
+        let k1 = if c < 8 { ticks_on(c) } else { 0 };
+        push(HOUSEKEEP, [id, dt, t0, c as u64, k1 - k0, 0, 0, 0, 0]);
+    }
+    r
+}
 pub static SWITCHES: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
 pub fn idle_pass(cpu: usize) {
@@ -216,7 +251,11 @@ pub fn idle_pass(cpu: usize) {
     let last = IDLE_LAST[cpu].swap(now, Ordering::Relaxed);
     let sw = SWITCHES[cpu].load(Ordering::Relaxed);
     let last_sw = IDLE_SWITCHES[cpu].swap(sw, Ordering::Relaxed);
+    let tk = ticks_on(cpu);
+    let last_tk = IDLE_TICKS[cpu].swap(tk, Ordering::Relaxed);
+    let st = STEPS[cpu].load(Ordering::Relaxed);
+    let last_st = IDLE_STEPS[cpu].swap(st, Ordering::Relaxed);
     if last != 0 && now - last > 15_000_000 && sw == last_sw {
-        push(IDLE_GAP, [now - last, last, cpu as u64, sw, 0, 0, 0, 0, 0]);
+        push(IDLE_GAP, [now - last, last, cpu as u64, sw, tk - last_tk, st - last_st, 0, 0, 0]);
     }
 }
