@@ -35,11 +35,13 @@ WAIT_MESSAGE_SECONDS = 60
 # physical host: halted vCPUs accrue no steal, and the VM's load average omits the
 # host's work. Breenix boots wait for other projects; they never limit them. The
 # launcher's environment can override the policy for one invocation (quiet_policy).
-# Only Linux hosts (the x86 gate VM) wait by default. On the Mac the wait held the boot
-# lease for up to 45 minutes behind other projects' work, blocking every other lane, and
-# measured no smaller guest stalls (7.9 ms before, 21.2 ms after, #1376), so Mac boots
-# record their load and never wait unless BREENIX_QUIET=1 asks (#1383).
-QUIET_WAITS_ON_THIS_HOST = sys.platform != 'darwin'
+# No host waits by default. On the Mac the wait held the boot lease for up to 45 minutes
+# behind other projects' work and measured no smaller guest stalls (#1376, #1383); in the
+# x86 gate VM it held x86-boot for 35 minutes waiting on the vCPU-gap burst while every
+# other lane's boot queued behind it. Boots record their load and, on Linux, the vCPU gap
+# and steal at start and verdict; a boot holding x86-boot still excludes every build in
+# the gate VM. BREENIX_QUIET=1 asks for the wait for one invocation.
+QUIET_WAITS_ON_THIS_HOST = False
 QUIET_LOAD_FRACTION = 0.5
 QUIET_MAX_GAP_MS = 10.0
 QUIET_BURST_SECONDS = 0.5
