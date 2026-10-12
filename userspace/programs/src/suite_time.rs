@@ -1059,34 +1059,23 @@ fn rtc_seconds(fd: Fd) -> Result<i64, String> {
     Ok(i64::from(tm[2]) * 3600 + i64::from(tm[1]) * 60 + i64::from(tm[0]))
 }
 
-/// An RTC seconds edge timed by the counter.
 #[cfg(target_arch = "x86_64")]
-#[derive(Clone, Copy)]
-struct RtcEdge {
-    /// The RTC's time of day, in seconds, after the edge.
-    second: i64,
-    /// The counter halfway between the ends of the last poll that read the old
-    /// second and the first that read the new one.
-    at: u64,
-    /// Counter cycles between those two ends.
-    width: u64,
-}
+mod rtc_counter;
+#[cfg(target_arch = "x86_64")]
+use rtc_counter::{RtcEdge, RtcPoll};
 
-/// Poll the RTC until its seconds change. Each poll samples the seconds register
-/// the same distance before it returns, so timing poll ends cancels that distance
-/// between two edges.
+/// Include the entire last old-second read and first new-second read in the
+/// edge's bounds: a descheduled ioctl can return an old value after the edge.
 #[cfg(target_arch = "x86_64")]
 fn rtc_counter_edge(fd: Fd) -> Result<RtcEdge, String> {
-    let first = rtc_seconds(fd)?;
-    let mut last = counter_now();
-    let start = now_ms();
-    loop {
+    let read = || {
+        let before = counter_now();
         let second = rtc_seconds(fd)?;
-        let at = counter_now();
-        if second != first { return Ok(RtcEdge { second, at: last + (at - last) / 2, width: at - last }); }
-        if now_ms().saturating_sub(start) >= 1500 { return Err("the RTC's seconds did not change within 1500 ms".into()); }
-        last = at;
-    }
+        Ok(RtcPoll { second, before, after: counter_now() })
+    };
+    let first = read()?;
+    let start = now_ms();
+    rtc_counter::next_edge(first, read, || now_ms().saturating_sub(start) >= 1500)
 }
 
 /// The TSC's frequency in Hz on x86-64, measured against the RTC, a clock the
