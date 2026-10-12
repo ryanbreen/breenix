@@ -357,23 +357,14 @@ static PENDING_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
 static PARKED_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
-/// A reclaim queue for publishing into or sweeping. x86_64 waits for a holder
-/// on another CPU: every hold is short and masks interrupts, so it always
-/// finishes, and the try-lock's `None` -- park nothing, sweep nothing, abandon
-/// the reclaim and leak its address space -- was the answer for nesting on one
-/// CPU, not for contention between CPUs, which with four CPUs leaked a dead
-/// process's page tables at a time. aarch64 keeps its try-lock.
+/// A reclaim queue for publishing into or sweeping. Every guard masks local
+/// interrupts and queues are never held together, so contention is another
+/// CPU's short critical section. Wait for its holder: treating contention as
+/// allocation failure abandons a valid receipt and leaks its address space.
 fn reclaim_queue<T>(
     queue: &crate::irq_safe_mutex::IrqSafeMutex<T>,
 ) -> Option<crate::irq_safe_mutex::IrqSafeMutexGuard<'_, T>> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        Some(queue.lock())
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        queue.try_lock()
-    }
+    Some(queue.lock())
 }
 
 static RECLAIM_PASS_ID: AtomicU32 = AtomicU32::new(0);
