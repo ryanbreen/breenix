@@ -896,6 +896,8 @@ fn futex_wait_until(
         Prepared::Queued => {}
     }
 
+    let __wake_ns = deadline.wake_ns().unwrap_or(0);
+    let mut __resume_ns = 0u64;
     // Preemption stays disabled until the signal check below has run (#1230):
     // see `blocking_io::wait_prepared`.
     let result = loop {
@@ -914,6 +916,9 @@ fn futex_wait_until(
         })
         .unwrap_or(false);
         if !still_waiting {
+            if __resume_ns == 0 {
+                __resume_ns = crate::scratch_probe::now_ns();
+            }
             // Woken: by a waker, which took this thread off its queue, by the
             // deadline, or by CLOCK_REALTIME being set.
             let outcome = with_table(|table| {
@@ -946,6 +951,26 @@ fn futex_wait_until(
         crate::per_cpu::preempt_disable();
     };
     finish_wait(thread_id);
+    if __wake_ns != 0 {
+        let now = crate::scratch_probe::now_ns();
+        if now > __wake_ns + 10_000_000 {
+            let (pop_ns, pop_cpu, arm, target) = crate::scratch_probe::pop_of(thread_id);
+            crate::scratch_probe::push(
+                crate::scratch_probe::LATE_WAIT,
+                [
+                    thread_id,
+                    now - __wake_ns,
+                    __wake_ns,
+                    pop_ns.wrapping_sub(__wake_ns),
+                    pop_cpu,
+                    arm,
+                    target,
+                    __resume_ns.wrapping_sub(__wake_ns),
+                    crate::scratch_probe::cpu(),
+                ],
+            );
+        }
+    }
     result
 }
 
@@ -1432,10 +1457,17 @@ fn futex_wake(uaddr: u64, max_wake: u32, _val3: u32, private: bool, bitset: u32)
             return SyscallResult::Err(e);
         }
     }
+    let __t0 = crate::scratch_probe::now_ns();
     let Some(key) = futex_key(uaddr, private) else {
         return SyscallResult::Err(super::errno::ESRCH as u64);
     };
-    SyscallResult::Ok(u64::from(with_table(|table| table.wake(key, max_wake, bitset))))
+    let __t1 = crate::scratch_probe::now_ns();
+    let woke = with_table(|table| table.wake(key, max_wake, bitset));
+    let __t2 = crate::scratch_probe::now_ns();
+    if __t2 - __t0 > 2_000_000 {
+        crate::scratch_probe::push(crate::scratch_probe::FUTEX_WAKE_SLOW, [__t2 - __t0, __t1 - __t0, __t0, crate::scratch_probe::cpu(), 0, 0, 0, 0, 0]);
+    }
+    SyscallResult::Ok(u64::from(woke))
 }
 
 /// Perform a FUTEX_WAKE on a specific address for a specific thread group.

@@ -1866,6 +1866,7 @@ pub fn x86_idle_pass() -> bool {
         return true;
     }
     scheduler.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
+    crate::scratch_probe::idle_pass(cpu);
     scheduler.apply_isr_wakeups();
     scheduler.wake_expired_timers();
     PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) != 0
@@ -2977,6 +2978,9 @@ impl Scheduler {
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
         let current_cpu = Self::current_cpu_id();
+        if current_cpu < 8 {
+            crate::scratch_probe::SWITCHES[current_cpu].fetch_add(1, Ordering::Relaxed);
+        }
         self.cpu_state[current_cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
         self.deliver_pinned_wakes_for_this_cpu();
@@ -5637,6 +5641,7 @@ impl Scheduler {
                 // syscall halt loop. Wake its hardware wait, as unblock does,
                 // while leaving the thread exclusively current on that CPU.
                 if let Some(cpu) = (0..MAX_CPUS).find(|&cpu| self.cpu_state[cpu].current_thread == Some(tid)) {
+                    crate::scratch_probe::note_pop(tid, 1, cpu as u64);
                     #[cfg(target_arch = "aarch64")]
                     self.send_resched_ipi_to_cpu(cpu);
                     #[cfg(target_arch = "x86_64")]
@@ -5735,8 +5740,10 @@ impl Scheduler {
                         if !ranked_above_default && self.timer_wake_promotion_open(target) {
                             self.per_cpu_queues[target].push_front(tid);
                             self.cpu_state[target].promoted_wake = Some(tid);
+                            crate::scratch_probe::note_pop(tid, 2, target as u64);
                         } else {
                             self.per_cpu_queues[target].push_back(tid);
+                            crate::scratch_probe::note_pop(tid, 3, target as u64);
                         }
                         // Discovery must preempt even a busy destination;
                         // otherwise its remaining quantum delays this deadline.
@@ -5744,9 +5751,11 @@ impl Scheduler {
                         ENQUEUE_TIMER_WAKE.fetch_add(1, Ordering::Relaxed);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     } else {
+                        crate::scratch_probe::note_pop(tid, 4, 99);
                         self.hold_pinned_wake_for_home(tid);
                     }
                 } else if in_deferred_requeue {
+                    crate::scratch_probe::note_pop(tid, 5, 99);
                     trace_sched_diag(
                         TRACE_SCHED_DIAG_WAKE_TIMER_DEFERRED,
                         tid,
@@ -5756,6 +5765,7 @@ impl Scheduler {
                     );
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                 } else if already_queued {
+                    crate::scratch_probe::note_pop(tid, 6, 99);
                     trace_sched_diag(
                         TRACE_SCHED_DIAG_WAKE_TIMER_ALREADY_QUEUED,
                         tid,
