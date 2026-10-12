@@ -351,6 +351,11 @@ pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
     try_print(args)
 }
 
+/// Write out the lines posted on paths that may not log (`log_notice`).
+pub fn write_notices() {
+    crate::serial_line::write_notices();
+}
+
 /// Log print function for the log_serial_print macro
 #[doc(hidden)]
 pub fn _log_print(args: fmt::Arguments) {

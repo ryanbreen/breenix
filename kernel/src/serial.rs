@@ -136,6 +136,7 @@ fn drain_until(target: u64) {
 /// thread can be switched out between bursts as anywhere else in the loop.
 pub fn drain_log_while(go_on: impl Fn() -> bool) {
     LOG_IDLE_DRAIN.store(true, core::sync::atomic::Ordering::Release);
+    write_notices();
     while go_on() {
         match write_burst() {
             Burst::Empty => return,
@@ -550,6 +551,8 @@ macro_rules! serial_println {
 pub fn _log_print(args: fmt::Arguments) {
     use core::sync::atomic::Ordering;
 
+    write_notices();
+
     let may_wait = !LOG_IDLE_DRAIN.load(Ordering::Acquire)
         || (crate::per_cpu::is_initialized()
             && crate::arch_interrupts_enabled()
@@ -589,6 +592,20 @@ pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
             Err(needed) => make_room(needed),
         }
     }
+}
+
+/// Append the lines posted on paths that may not log (`log_notice`) to the
+/// kernel log, oldest first, with interrupts masked until every one taken is in.
+pub fn write_notices() {
+    if !crate::log_notice::pending() {
+        return;
+    }
+    crate::arch_without_interrupts(|| {
+        crate::log_notice::take(|line| {
+            let text = core::str::from_utf8(line).unwrap_or("[log: notice is not UTF-8]");
+            enqueue_log(format_args!("{}\n", text));
+        })
+    });
 }
 
 /// Write the ring out until it has `needed` free bytes.

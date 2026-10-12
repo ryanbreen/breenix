@@ -317,12 +317,34 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8]) {
         return;
     }
     let mut ownership = Ownership::acquire();
+    write_notices_owned::<TEE>(&mut ownership);
     write::<TEE>(
         writer,
         crate::serial_writer::lead(writer, bytes),
         &mut ownership,
     );
     write::<TEE>(writer, bytes, &mut ownership);
+}
+
+/// Write the lines posted on paths that may not log (`log_notice`), oldest
+/// first, while owning the UART.
+fn write_notices_owned<const TEE: bool>(ownership: &mut Ownership) {
+    crate::log_notice::take(|line| {
+        write::<TEE>(
+            Writer::Kernel,
+            crate::serial_writer::lead(Writer::Kernel, line),
+            ownership,
+        );
+        write::<TEE>(Writer::Kernel, line, ownership);
+        write::<TEE>(Writer::Kernel, b"\n", ownership);
+    });
+}
+
+/// Write out the lines posted on paths that may not log (`log_notice`).
+pub fn write_notices() {
+    if crate::log_notice::pending() {
+        write_notices_owned::<true>(&mut Ownership::acquire());
+    }
 }
 
 /// Write `bytes` as one record if the UART can be owned without waiting, for

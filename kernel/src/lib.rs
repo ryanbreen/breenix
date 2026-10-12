@@ -89,6 +89,8 @@ pub mod capture_oracle;
 pub mod capture_lockup_oracle;
 // Kernel log ring buffer for /proc/kmsg
 pub mod log_buffer;
+// Lines composed on paths that may not log, written out by the next output
+pub mod log_notice;
 // The x86 kernel log ring's rules: lines go in whole, stage lines are kept
 #[cfg(target_arch = "x86_64")]
 pub mod log_ring;

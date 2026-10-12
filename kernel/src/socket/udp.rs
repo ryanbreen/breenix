@@ -76,6 +76,10 @@ pub struct UdpSocket {
     pub waiting_threads: Mutex<Vec<u64>>,
     /// Non-blocking mode flag (default false = blocking)
     pub nonblocking: bool,
+    /// The line reporting this socket's first delivered datagram, posted by
+    /// the delivering code (`net::udp::handle_udp`), which may run on the
+    /// NetRx softirq and so may not log.
+    pub delivery_notice: crate::log_notice::Notice,
 }
 
 impl core::fmt::Debug for UdpSocket {
@@ -101,6 +105,7 @@ impl UdpSocket {
             rx_queue: Mutex::new(VecDeque::new()),
             waiting_threads: Mutex::new(Vec::new()),
             nonblocking: false, // Default to blocking (POSIX standard)
+            delivery_notice: crate::log_notice::Notice::new(),
         }
     }
 
