@@ -1957,6 +1957,8 @@ pub fn sys_yield() -> SyscallResult {
 
     // Behind the other threads of its priority, then to the scheduler.
     crate::task::scheduler::note_sched_yield();
+    #[cfg(target_arch = "x86_64")]
+    crate::scratch_force::note_yield();
     crate::task::scheduler::yield_current();
 
     // Note: The actual context switch will happen on the next timer interrupt
