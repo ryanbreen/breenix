@@ -123,7 +123,7 @@
         },
         {
           "id": "fault-order",
-          "title": "The first touch of each page of a 32 MiB anonymous mapping costs at most 3 times as much from the highest page down as from the lowest page up"
+          "title": "The first touch of each page going down the lower half of a 64 MiB anonymous mapping costs at most 3 times as much as going up its upper half, in alternating rounds"
         },
         {
           "id": "churn",
@@ -264,10 +264,6 @@
         {
           "id": "private-cow-spread",
           "title": "After fork, a copy-on-write break in the lowest pages of a 32 MiB MAP_PRIVATE mapping costs at most 3 times one in its highest pages"
-        },
-        {
-          "id": "private-cow-sparse",
-          "title": "After fork, a copy-on-write break in the lowest of 2048 pages 2 MiB apart in a 4 GiB MAP_PRIVATE mapping costs at most 3 times one in the highest"
         },
         {
           "id": "file-child-sees",

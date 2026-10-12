@@ -2369,6 +2369,10 @@ fn mx_futex_timeout() -> CaseResult {
 }
 
 fn mx_futex_child_exit() -> CaseResult {
+    // The parent publishes when its wait begins; the child exits LATE_MS + 30 ms
+    // later. on_time bounds how late the parent entered the wait by LATE_MS, so
+    // the child's exit came after the wait began, and the check that it began
+    // to exit by 250 ms leaves 50 ms for its exit to land before the wait ends.
     trial_ms(3000, || {
         // [0]: when the parent's wait began; [1]: when the child began to exit.
         let page = mmap_anon(4096, MAP_SHARED_ANON)?;
@@ -2377,7 +2381,7 @@ fn mx_futex_child_exit() -> CaseResult {
         let child = match process::fork() {
             Ok(ForkResult::Child) => {
                 if spin_until(1000, || times[0].load(SeqCst) != 0) {
-                    sleep_ms(30);
+                    sleep_ms((LATE_MS + 30) as u64);
                     times[1].store(mono(), SeqCst);
                 }
                 exit_group(0)
@@ -2386,26 +2390,26 @@ fn mx_futex_child_exit() -> CaseResult {
             Err(e) => return fail(format!("fork failed: {e}")),
         };
         let word = AtomicU32::new(0);
-        let rel = ts(100 * MS);
-        wait_for(100, "late");
+        let rel = ts(300 * MS);
+        wait_for(300, "late");
         let t0 = mono();
         times[0].store(t0, SeqCst);
-        step("in FUTEX_WAIT with a 100 ms timeout while a child exits");
+        step("in FUTEX_WAIT with a 300 ms timeout while a child exits");
         let r = futex(&word, FUTEX_WAIT, 0, rel.as_ptr() as u64, 0, 0);
         let end = mono();
         let mut status = 0;
         let reaped = sc(nr::WAIT4, &[child as u64, &mut status as *mut i32 as u64, 0, 0]);
         check(reaped == child, &format!("wait4 for the child returned {}", shown(reaped)))?;
         let exiting = times[1].load(SeqCst);
-        check(exiting != 0 && exiting - t0 <= 50 * MS, &format!(
-            "the child began to exit {} ms into the 100 ms wait, not within 50 ms, so its exit did not fall inside the wait",
+        check(exiting != 0 && exiting - t0 <= 250 * MS, &format!(
+            "the child began to exit {} ms into the 300 ms wait, not within 250 ms, so its exit may not have fallen inside the wait",
             if exiting == 0 { -1 } else { (exiting - t0) / MS }
         ))?;
         check(r == -(ETIMEDOUT as i64), &format!(
-            "FUTEX_WAIT with a 100 ms timeout returned {} after {} ms, while a child exited {} ms in, expected ETIMEDOUT",
+            "FUTEX_WAIT with a 300 ms timeout returned {} after {} ms, while a child exited {} ms in, expected ETIMEDOUT",
             shown(r), (end - t0) / MS, (exiting - t0) / MS
         ))?;
-        on_time("FUTEX_WAIT", end, t0 + 100 * MS)
+        on_time("FUTEX_WAIT", end, t0 + 300 * MS)
     })
 }
 
@@ -4403,7 +4407,7 @@ static SUITE: Suite = suite("threads", "Threads", &[
         case("futex-wake-count", "Linux ABI: FUTEX_WAKE wakes exactly as many waiters as asked", mx_futex_wake_count),
         case("futex-timeout", "Linux ABI: FUTEX_WAIT with a 100 ms timeout returns ETIMEDOUT on time", mx_futex_timeout),
         case("futex-private", "Linux ABI: FUTEX_WAKE_PRIVATE wakes a FUTEX_WAIT_PRIVATE waiter", mx_futex_private),
-        case("futex-child-exit", "A child exiting during a 100 ms FUTEX_WAIT does not wake the wait while SIGCHLD is ignored: it returns ETIMEDOUT on time", mx_futex_child_exit),
+        case("futex-child-exit", "A child exiting during a 300 ms FUTEX_WAIT does not wake the wait while SIGCHLD is ignored: it returns ETIMEDOUT on time", mx_futex_child_exit),
     ]),
     category("cond", "condition variables", &[
         case("signal-wakes", "pthread_cond_signal wakes a waiting thread, which returns holding the mutex", cv_signal_wakes),

@@ -234,7 +234,7 @@
         },
         {
           "id": "futex-child-exit",
-          "title": "A child exiting during a 100 ms FUTEX_WAIT does not wake the wait while SIGCHLD is ignored: it returns ETIMEDOUT on time"
+          "title": "A child exiting during a 300 ms FUTEX_WAIT does not wake the wait while SIGCHLD is ignored: it returns ETIMEDOUT on time"
         }
       ]
     },

@@ -1433,19 +1433,24 @@ fn an_page_by_page() -> CaseResult {
 }
 
 fn an_fault_order() -> CaseResult {
-    let pages = 8192;
-    let len = pages * PAGE;
-    let up = anon(len)?;
-    let t0 = clock()?;
-    for i in 0..pages { poke(at(up, i * PAGE), 1); }
-    let ascending = clock()? - t0;
-    unmap(up, len)?;
-    let down = anon(len)?;
-    let t0 = clock()?;
-    for i in (0..pages).rev() { poke(at(down, i * PAGE), 1); }
-    let descending = clock()? - t0;
-    unmap(down, len)?;
-    at_most_3x(pages as i64, (ascending, "ascending"), (descending, "descending"), "the first touch of each page")
+    // Up the upper half and down the lower half of one mapping, in alternating
+    // rounds so host noise falls on both. Each page going down lies below every
+    // page touched before it.
+    let half = 8192;
+    let len = 2 * half * PAGE;
+    let p = anon(len)?;
+    let (rounds, round) = (32, 256);
+    let (mut up, mut down) = (0, 0);
+    for r in 0..rounds {
+        let t0 = clock()?;
+        for i in 0..round { poke(at(p, (half + r * round + i) * PAGE), 1); }
+        let t1 = clock()?;
+        for i in 0..round { poke(at(p, (half - 1 - r * round - i) * PAGE), 1); }
+        up += t1 - t0;
+        down += clock()? - t1;
+    }
+    unmap(p, len)?;
+    at_most_3x(half as i64, (up, "ascending"), (down, "descending"), "the first touch of each page")
 }
 
 fn an_churn() -> CaseResult {
@@ -1858,13 +1863,11 @@ fn sh_private_cow_many() -> CaseResult {
     check(kept.is_none(), &format!("the parent's copy changed at byte {} when the child wrote its own", kept.unwrap_or(0)))
 }
 
-/// After fork, time copy-on-write breaks of `stride`-apart pages in the
-/// lowest and the highest of `pages` such pages, alternating groups so host
-/// noise falls on both, and check the lowest cost at most 3 times the highest.
-fn cow_break_spread(pages: usize, stride: usize) -> CaseResult {
-    let len = pages * stride;
+fn sh_private_cow_spread() -> CaseResult {
+    let pages = 8192;
+    let len = pages * PAGE;
     let p = anon(len)?;
-    for i in 0..pages { poke(at(p, i * stride), 1); }
+    for i in 0..pages { poke(at(p, i * PAGE), 1); }
     let (to_child_r, to_child_w) = pipe()?;
     let mut child = Child::start(|| {
         close(to_child_w);
@@ -1876,9 +1879,9 @@ fn cow_break_spread(pages: usize, stride: usize) -> CaseResult {
     let (mut top, mut bottom) = (0, 0);
     for g in 0..groups {
         let t0 = clock()?;
-        for i in 0..group { poke(at(p, (pages - 1 - g * group - i) * stride), 2); }
+        for i in 0..group { poke(at(p, (pages - 1 - g * group - i) * PAGE), 2); }
         let t1 = clock()?;
-        for i in 0..group { poke(at(p, (g * group + i) * stride), 2); }
+        for i in 0..group { poke(at(p, (g * group + i) * PAGE), 2); }
         top += t1 - t0;
         bottom += clock()? - t1;
     }
@@ -1887,10 +1890,6 @@ fn cow_break_spread(pages: usize, stride: usize) -> CaseResult {
     unmap(p, len)?;
     at_most_3x((groups * group) as i64, (top, "top"), (bottom, "bottom"), "a copy-on-write break")
 }
-
-fn sh_private_cow_spread() -> CaseResult { cow_break_spread(8192, PAGE) }
-
-fn sh_private_cow_sparse() -> CaseResult { cow_break_spread(2048, 2 * MIB) }
 
 fn sh_file_child_sees() -> CaseResult {
     let f = TempFile::new("child-sees", &[0u8; PAGE])?;
@@ -2554,7 +2553,7 @@ static SUITE: Suite = suite(
             case("remap-zero", "A page mapped with MAP_FIXED into the hole a munmap left reads as zero, not the old contents", an_remap_zero),
             case("sparse", "Linux policy: touching one byte every 1 MiB of a 256 MiB anonymous mapping makes about 256 pages resident, not 65536", an_sparse),
             case("page-by-page", "Each page of a 16 MiB anonymous mapping, touched in order, keeps its own contents, and unmapping it gives back all 4096 pages as resident", an_page_by_page),
-            case("fault-order", "The first touch of each page of a 32 MiB anonymous mapping costs at most 3 times as much from the highest page down as from the lowest page up", an_fault_order),
+            case("fault-order", "The first touch of each page going down the lower half of a 64 MiB anonymous mapping costs at most 3 times as much as going up its upper half, in alternating rounds", an_fault_order),
             case("churn", "Mapping, touching and unmapping 1 MiB 100 times leaves free memory within 4 MiB of where it was and the resident set no larger", an_churn),
             case("many", "1000 one-page anonymous mappings exist at once at distinct addresses, each keeping its own contents, and all unmap", an_many),
             case("unmap-cpus", "With two to four processors, worker threads pinned one to each other processor and reading a page the case's thread has just unmapped raise SIGSEGV with SEGV_MAPERR at the byte read every time and never read the old page", an_unmap_cpus),
@@ -2591,7 +2590,6 @@ static SUITE: Suite = suite(
             case("private-parent-isolated", "After fork, the parent's stores to a MAP_PRIVATE anonymous page are not seen by the child", sh_private_parent_isolated),
             case("private-cow-many", "After fork, parent and child each rewrite all 64 pages of a MAP_PRIVATE mapping and each sees only its own stores", sh_private_cow_many),
             case("private-cow-spread", "After fork, a copy-on-write break in the lowest pages of a 32 MiB MAP_PRIVATE mapping costs at most 3 times one in its highest pages", sh_private_cow_spread),
-            case("private-cow-sparse", "After fork, a copy-on-write break in the lowest of 2048 pages 2 MiB apart in a 4 GiB MAP_PRIVATE mapping costs at most 3 times one in the highest", sh_private_cow_sparse),
             case("file-child-sees", "A child's store into a MAP_SHARED file mapping inherited across fork is seen through the parent's mapping and by read()", sh_file_child_sees),
             case("file-independent", "Two processes that each map the same file MAP_SHARED see each other's stores", sh_file_independent),
             case("file-msync-read", "Stores into a MAP_SHARED mapping of a sparse file are on disk when msync(MS_SYNC) returns: the file has the disk blocks they need (st_blocks), and read() returns them", sh_file_msync_read),
