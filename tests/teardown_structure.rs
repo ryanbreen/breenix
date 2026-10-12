@@ -5201,11 +5201,19 @@ fn validate_thread_state_aliases(sources: &[(String, String)]) -> Result<(), Vec
     )
 }
 
+/// Writes that put a row in a thread group: `thread_group_id = X` for any X
+/// but `None`, whether `Some(..)` or a conditional such as `.then_some(..)`.
+fn group_join_writes(source: &str, mask: &[bool]) -> Vec<usize> {
+    const WRITE: &str = "thread_group_id = ";
+    code_offsets(source, mask, WRITE)
+        .into_iter()
+        .filter(|&at| !source[at + WRITE.len()..].starts_with("None"))
+        .collect()
+}
+
 fn validate_group_writes(sources: &[(String, String)]) -> Result<(), Vec<String>> {
     validate_census(
-        &census(sources, |source, mask| {
-            code_offsets(source, mask, "thread_group_id = Some(")
-        }),
+        &census(sources, |source, mask| group_join_writes(source, mask)),
         THREAD_GROUP_WRITES,
     )
 }
@@ -7898,7 +7906,7 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     ];
     if production_group_sources
         .iter()
-        .map(|body| body.matches("thread_group_id = Some(").count())
+        .map(|body| group_join_writes(body, &code_mask(body)).len())
         .sum::<usize>()
         != 1
         || production_group_sources
