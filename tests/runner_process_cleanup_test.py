@@ -15,6 +15,32 @@ MONITOR = ROOT / "scripts" / "vm-log-monitor.py"
 
 
 class RunnerProcessCleanupTest(unittest.TestCase):
+    def test_parallels_sweep_finishes_before_runner_exits(self):
+        source = RUNNER.read_text()
+        sweep = source.split('    PARALLELS_VM="breenix-$(date +%s)"', 1)[1]
+        sweep = sweep.split('    echo "Creating fresh VM', 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            child_pid = root / "delete.pid"
+            script = f"""
+set -e
+PARALLELS_VM=breenix-new
+prlctl() {{
+    if [ "$1" = list ]; then
+        printf 'stopped breenix-123\\n'
+    elif [ "$1" = delete ]; then
+        sleep 0.25 &
+        echo "$!" > {child_pid}
+        wait "$!"
+    fi
+}}
+{sweep}
+"""
+            process = subprocess.run(["/bin/bash", "-c", script], capture_output=True, timeout=5)
+            self.assertEqual(process.returncode, 0, process.stderr.decode())
+            pid = int(child_pid.read_text())
+            self.assertFalse(self.is_alive(pid), f"Parallels sweep left PID {pid} alive")
+
     def test_exit_and_interruption_reap_log_monitor(self):
         source = RUNNER.read_text()
         finish = source.split("finish_vm_boot() {\n", 1)[1].split("\n}\n", 1)[0]

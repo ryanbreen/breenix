@@ -593,19 +593,18 @@ if [ "$PARALLELS" = true ]; then
 
     # Use a unique VM name each time to avoid Parallels stale state issues.
     # Parallels can get stuck in "stopping"/"suspended" states that require
-    # sudo service restarts. Using unique names sidesteps this entirely —
-    # old VMs are cleaned up in the background, never blocking new launches.
+    # sudo service restarts. Using unique names sidesteps this entirely.
     PARALLELS_VM="breenix-$(date +%s)"
     echo "VM name: $PARALLELS_VM"
     # Delete earlier boots' VMs, which nothing else removed: only stopped ones named breenix-<epoch>, never a running,
-    # stopping or suspended VM and never the named VMs (breenix-dev, breenix-parallels-*). In the background, so a slow
-    # delete never holds up this boot.
+    # stopping or suspended VM and never the named VMs (breenix-dev, breenix-parallels-*).
+    # Finish this sweep before launching so none of its children outlive the runner.
     (
         prlctl list -a -o status,name 2>/dev/null | awk '$1 == "stopped" && $2 ~ /^breenix-[0-9]+$/ { print $2 }' |
             while read -r old_vm; do
                 [ "$old_vm" = "$PARALLELS_VM" ] || prlctl delete "$old_vm" >/dev/null 2>&1 || true
             done
-    ) &
+    )
 
     echo "Creating fresh VM '$PARALLELS_VM'..."
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
