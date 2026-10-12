@@ -1461,8 +1461,8 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
             let runs_this = current.is_some()
                 && row.main_thread.as_ref().map(|thread| thread.id) == current;
             // Only the peer running this is told here. The others are killed
-            // below, and `kill_process_now` publishes SIGKILL to a peer only
-            // when it cannot claim it (#1413).
+            // below, and `kill_process_now` leaves SIGKILL pending on a peer
+            // only when it cannot claim it (#1413).
             if runs_this {
                 row.signals.set_pending(SIGKILL);
             }
