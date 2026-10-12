@@ -10,5 +10,6 @@ fn main() {
         println!("ENOSYS OK");
     } else {
         println!("ENOSYS FAIL (got {})", rv);
+        std::process::exit(1);
     }
 }
