@@ -20,6 +20,14 @@ pub const MUNMAP: u64 = 7;
 pub const HOUSEKEEP: u64 = 8;
 pub const TIMED: u64 = 9;
 pub const POST_EXIT: u64 = 10;
+pub const STAGES: u64 = 11;
+pub static STAGE: [[AtomicU64; 4]; 8] = [const { [const { AtomicU64::new(0) }; 4] }; 8];
+pub fn stage(i: usize) {
+    let c = cpu() as usize;
+    if c < 8 {
+        STAGE[c][i].store(now_ns(), Ordering::Relaxed);
+    }
+}
 pub static POLL_FAILS: AtomicU64 = AtomicU64::new(0);
 
 struct WaitSlot {
@@ -253,6 +261,20 @@ pub fn drain() {
                 w[5],
                 w[6]
             ),
+            STAGES => {
+                let f = |v: u64| if v == u64::MAX { -1 } else { (v / 1000) as i64 };
+                log::info!(
+                    "[P1401 STAGES held_us={} at_ms={} cpu={} line={} s0_us={} s1_us={} s2_us={} s3_us={}]",
+                    w[1] / 1000,
+                    w[2] / 1_000_000,
+                    w[3],
+                    w[8],
+                    f(w[4]),
+                    f(w[5]),
+                    f(w[6]),
+                    f(w[7])
+                )
+            }
             POLL_FAIL => log::info!("[P1401 POLL_FAIL at_ms={} cpu={} holder_cpu={}]", w[1] / 1_000_000, w[2], w[3]),
             _ => {}
         }
@@ -298,6 +320,12 @@ pub fn pm_acquired(loc: &'static core::panic::Location<'static>) {
     PM_FILE_LEN.store(loc.file().len() as u64, Ordering::Relaxed);
     PM_LINE.store(loc.line() as u64, Ordering::Relaxed);
     PM_SHOOT0.store(shootdowns_here(), Ordering::Relaxed);
+    let c = cpu() as usize;
+    if c < 8 {
+        for st in STAGE[c].iter() {
+            st.store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 pub fn shootdowns_here() -> u64 {
@@ -316,6 +344,14 @@ pub fn pm_released() {
     let start = PM_ACQ_NS.load(Ordering::Relaxed);
     let held = now_ns().saturating_sub(start);
     if start != 0 && held > 5_000_000 {
+        let c = cpu() as usize;
+        if c < 8 {
+            let rel = |i: usize| {
+                let v = STAGE[c][i].load(Ordering::Relaxed);
+                if v == 0 { u64::MAX } else { v.wrapping_sub(start) }
+            };
+            push(STAGES, [held, start, c as u64, rel(0), rel(1), rel(2), rel(3), PM_LINE.load(Ordering::Relaxed), 0]);
+        }
         push(
             PM_HOLD,
             [

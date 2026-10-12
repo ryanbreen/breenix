@@ -7256,12 +7256,16 @@ pub fn schedule() -> Option<(u64, u64)> {
     } else {
         // Already in interrupt context - don't try to disable interrupts again
         let mut scheduler_lock = lock_scheduler();
-        if let Some(scheduler) = scheduler_lock.as_mut() {
+        crate::scratch_probe::stage(1);
+        let r = if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
         } else {
             None
-        }
+        };
+        crate::scratch_probe::stage(2);
+        r
     };
+    crate::scratch_probe::stage(3);
 
     result
 }
