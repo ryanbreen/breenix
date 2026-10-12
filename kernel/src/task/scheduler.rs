@@ -2977,6 +2977,8 @@ impl Scheduler {
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
         let current_cpu = Self::current_cpu_id();
+        #[cfg(target_arch = "x86_64")]
+        let yield_pass = crate::scratch_force::take_yield_pass();
         self.cpu_state[current_cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
         self.deliver_pinned_wakes_for_this_cpu();
@@ -3385,6 +3387,9 @@ impl Scheduler {
                 {
                     if let Some(t) = self.get_thread_mut(next_thread_id) {
                         t.set_running();
+                    }
+                    if yield_pass {
+                        crate::scratch_force::stall_if_due();
                     }
                     return None;
                 }
@@ -7293,15 +7298,11 @@ pub fn schedule() -> Option<(u64, u64)> {
     } else {
         // Already in interrupt context - don't try to disable interrupts again
         let mut scheduler_lock = lock_scheduler();
-        let r = if let Some(scheduler) = scheduler_lock.as_mut() {
+        if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
         } else {
             None
-        };
-        if let Some((old, new)) = r {
-            crate::scratch_force::after_pass(old, new);
         }
-        r
     };
 
     result
