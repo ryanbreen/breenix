@@ -14,6 +14,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::pipe::PipeBuffer;
@@ -32,6 +33,10 @@ pub static FIFO_REGISTRY: FifoRegistry = FifoRegistry::new();
 pub struct FifoEntry {
     /// Held filesystem identity for a disk-backed FIFO, including after unlink.
     pub handle: Option<crate::fs::ext2::live_inode::FileHandle>,
+    /// Stable identity of this namespace object, also after unlink.
+    pub ino: u64,
+    /// Whether this object still has its namespace link.
+    pub linked: bool,
     /// The underlying pipe buffer (created on first open)
     pub buffer: Option<Arc<Mutex<PipeBuffer>>>,
     /// Number of processes that have opened for reading
@@ -58,8 +63,11 @@ pub struct FifoEntry {
 impl FifoEntry {
     /// Create a new FIFO entry
     pub fn new(mode: u32, uid: u32, gid: u32) -> Self {
+        static NEXT_INO: AtomicU64 = AtomicU64::new(6000);
         FifoEntry {
             handle: None,
+            ino: NEXT_INO.fetch_add(1, Ordering::Relaxed),
+            linked: true,
             buffer: None,
             readers: 0,
             writers: 0,
@@ -69,7 +77,8 @@ impl FifoEntry {
             write_waiters: Vec::new(),
             mode,
             uid,
-            gid,        }
+            gid,
+        }
     }
 
     /// In-memory metadata uses the same permission and ownership rules as ext2.
@@ -131,12 +140,22 @@ impl FifoEntry {
         if self.readers > 0 {
             self.readers -= 1;
         }
+        self.discard_unused_buffer();
     }
 
     /// Remove a writer
     pub fn remove_writer(&mut self) {
         if self.writers > 0 {
             self.writers -= 1;
+        }
+        self.discard_unused_buffer();
+    }
+
+    /// Last-close cleanup is a leaf under the entry lock, including under PM.
+    /// Pending opens count as endpoints until abandoned or installed.
+    fn discard_unused_buffer(&mut self) {
+        if self.readers == 0 && self.writers == 0 {
+            self.buffer = None;
         }
     }
 
@@ -213,12 +232,29 @@ impl FifoRegistry {
     pub fn unlink(&self, path: &str) -> Result<(), i32> {
         let mut fifos = self.fifos.lock();
 
-        if fifos.remove(path).is_some() {
+        if let Some(entry) = fifos.remove(path) {
+            entry.lock().linked = false;
             log::debug!("FIFO unlinked: {}", path);
             Ok(())
         } else {
             Err(2) // ENOENT
         }
+    }
+
+    /// Remove the object whose permissions the caller checked. A replacement
+    /// must be checked again, outside the registry lock, before it is removed.
+    pub fn unlink_entry(&self, path: &str, expected: &Arc<Mutex<FifoEntry>>) -> Result<(), i32> {
+        let mut fifos = self.fifos.lock();
+        match fifos.get(path) {
+            Some(entry) if Arc::ptr_eq(entry, expected) => {}
+            Some(_) => return Err(11), // EAGAIN: retry against the replacement
+            None => return Err(2),     // ENOENT
+        }
+        let entry = fifos
+            .remove(path)
+            .expect("checked FIFO still present under registry lock");
+        entry.lock().linked = false;
+        Ok(())
     }
 
     /// List all FIFOs (for debugging)
@@ -385,6 +421,9 @@ pub struct PendingFifoOpen {
 pub fn abandon_fifo_open(open: &PendingFifoOpen) {
     let buffer = Cpu::without_interrupts(|| {
         let mut entry = open.entry.lock();
+        // Retain the old generation before last-close discards the entry's Arc,
+        // so the abandoned open still releases its pipe count and notifications.
+        let buffer = entry.buffer.clone();
         if open.for_write {
             entry.remove_write_waiter(open.tid);
             entry.remove_writer();
@@ -392,7 +431,7 @@ pub fn abandon_fifo_open(open: &PendingFifoOpen) {
             entry.remove_read_waiter(open.tid);
             entry.remove_reader();
         }
-        entry.buffer.clone()
+        buffer
     });
     if let Some(buffer) = buffer {
         if open.for_write {

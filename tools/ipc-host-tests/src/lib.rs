@@ -303,3 +303,264 @@ fn interrupted_wait_preserves_the_original_restart_or_exit_errno() {
 
 #[path = "../../../kernel/src/task/waitqueue_alloc.rs"]
 mod waitqueue_alloc;
+#[path = "../../../kernel/src/ipc/fifo.rs"]
+pub mod fifo;
+#[path = "../../../kernel/src/ipc/pipe.rs"]
+pub mod pipe;
+pub mod arch_impl {
+    pub mod traits {
+        pub trait CpuOps {
+            fn without_interrupts<F: FnOnce() -> R, R>(f: F) -> R;
+        }
+    }
+    pub mod x86_64 {
+        pub use crate::HostCpu as X86Cpu;
+    }
+    pub mod aarch64 {
+        pub use crate::HostCpu as Aarch64Cpu;
+    }
+}
+pub struct HostCpu;
+impl arch_impl::traits::CpuOps for HostCpu {
+    fn without_interrupts<F: FnOnce() -> R, R>(f: F) -> R {
+        f()
+    }
+}
+
+#[test]
+fn fifo_reopen_discards_data_after_either_close_order() {
+    for writer_first in [false, true] {
+        let entry = alloc::sync::Arc::new(spin::Mutex::new(fifo::FifoEntry::new(0o600, 10, 20)));
+        let fifo::FifoOpenResult::Ready(buffer) = fifo::open_fifo_read(&entry, true) else {
+            panic!("read open");
+        };
+        assert!(matches!(
+            fifo::open_fifo_write(&entry, true),
+            fifo::FifoOpenResult::Ready(_)
+        ));
+        assert_eq!(buffer.lock().write(b"old"), Ok(3));
+        if writer_first {
+            buffer.lock().close_write().deliver();
+            fifo::close_fifo_write(&entry);
+            assert!(entry.lock().buffer.is_some());
+            buffer.lock().close_read().deliver();
+            fifo::close_fifo_read(&entry);
+        } else {
+            buffer.lock().close_read().deliver();
+            fifo::close_fifo_read(&entry);
+            assert!(entry.lock().buffer.is_some());
+            buffer.lock().close_write().deliver();
+            fifo::close_fifo_write(&entry);
+        }
+        assert!(entry.lock().buffer.is_none());
+        let fifo::FifoOpenResult::Ready(reopened) = fifo::open_fifo_read(&entry, true) else {
+            panic!("reopen");
+        };
+        assert!(!alloc::sync::Arc::ptr_eq(&buffer, &reopened));
+        assert_eq!(reopened.lock().read(&mut [0; 3]), Ok(0));
+        assert!(matches!(
+            fifo::open_fifo_write(&entry, true),
+            fifo::FifoOpenResult::Ready(_)
+        ));
+        assert_eq!(reopened.lock().read(&mut [0; 3]), Err(11));
+    }
+}
+
+#[test]
+fn fifo_abandoned_pending_open_resets_only_the_last_endpoint() {
+    for for_write in [false, true] {
+        let entry = alloc::sync::Arc::new(spin::Mutex::new(fifo::FifoEntry::new(0o600, 10, 20)));
+        let result = if for_write {
+            fifo::open_fifo_write(&entry, false)
+        } else {
+            fifo::open_fifo_read(&entry, false)
+        };
+        assert!(matches!(result, fifo::FifoOpenResult::Block(0)));
+        let old = entry.lock().buffer.clone().unwrap();
+        fifo::abandon_fifo_open(&fifo::PendingFifoOpen {
+            tid: 1,
+            entry: entry.clone(),
+            for_write,
+        });
+        let entry = entry.lock();
+        assert_eq!((entry.readers, entry.writers), (0, 0));
+        assert!(entry.buffer.is_none());
+        assert!(entry.read_waiters.is_empty() && entry.write_waiters.is_empty());
+        assert!(!old.lock().has_readers() && !old.lock().has_writers());
+    }
+}
+
+#[test]
+fn fifo_open_partner_history_survives_a_short_lived_peer() {
+    let entry = alloc::sync::Arc::new(spin::Mutex::new(fifo::FifoEntry::new(0o600, 0, 0)));
+    let fifo::FifoOpenResult::Block(seen) = fifo::open_fifo_read(&entry, false) else {
+        panic!("blocking reader");
+    };
+    let fifo::FifoOpenResult::Ready(buffer) = fifo::open_fifo_write(&entry, true) else {
+        panic!("partner");
+    };
+    buffer.lock().close_write().deliver();
+    fifo::close_fifo_write(&entry);
+    assert!(entry.lock().buffer.is_some());
+    assert!(matches!(
+        fifo::recheck_fifo_open(&entry, false, seen),
+        fifo::FifoOpenResult::Ready(_)
+    ));
+    assert_eq!(buffer.lock().read(&mut [0; 1]), Ok(0));
+    fifo::abandon_fifo_open(&fifo::PendingFifoOpen {
+        tid: 1,
+        entry: entry.clone(),
+        for_write: false,
+    });
+    assert!(entry.lock().buffer.is_none());
+}
+
+#[test]
+fn fifo_nonblocking_writer_enxio_takes_no_reference() {
+    let entry = alloc::sync::Arc::new(spin::Mutex::new(fifo::FifoEntry::new(0o600, 0, 0)));
+    assert!(matches!(
+        fifo::open_fifo_write(&entry, true),
+        fifo::FifoOpenResult::Error(6)
+    ));
+    let entry = entry.lock();
+    assert_eq!((entry.readers, entry.writers), (0, 0));
+    assert_eq!(entry.writer_opens, 0);
+    assert!(entry.buffer.is_none());
+}
+
+#[test]
+fn unlink_and_recreate_keep_old_open_ends_and_identity() {
+    let registry = fifo::FifoRegistry::new();
+    assert_eq!(registry.create("/fifo", 0o600, 0, 0), Ok(()));
+    assert_eq!(registry.create("/fifo", 0o600, 0, 0), Err(17));
+    let original = registry.get("/fifo").unwrap();
+    let ino = original.lock().ino;
+    let metadata = original.lock().inode();
+    assert_eq!(metadata.i_mode as u32 & 0o170000, 0o010000);
+    assert_eq!(metadata.permissions(), 0o600);
+    assert_eq!((metadata.uid(), metadata.gid()), (0, 0));
+    let fifo::FifoOpenResult::Ready(buffer) = fifo::open_fifo_read(&original, true) else {
+        panic!("reader");
+    };
+    assert!(matches!(
+        fifo::open_fifo_write(&original, true),
+        fifo::FifoOpenResult::Ready(_)
+    ));
+    assert_eq!(registry.unlink("/fifo"), Ok(()));
+    assert!(!original.lock().linked);
+    assert!(!registry.exists("/fifo"));
+    assert_eq!(buffer.lock().write(b"abc"), Ok(3));
+    let mut got = [0; 3];
+    assert_eq!(buffer.lock().read(&mut got), Ok(3));
+    assert_eq!(&got, b"abc");
+    assert_eq!(original.lock().ino, ino);
+    assert_eq!(registry.create("/fifo", 0o600, 0, 0), Ok(()));
+    let replacement = registry.get("/fifo").unwrap();
+    assert_ne!(replacement.lock().ino, ino);
+    assert!(!alloc::sync::Arc::ptr_eq(&original, &replacement));
+    buffer.lock().close_write().deliver();
+    fifo::close_fifo_write(&original);
+    buffer.lock().close_read().deliver();
+    fifo::close_fifo_read(&original);
+    assert!(replacement.lock().linked);
+    assert_eq!(registry.unlink("/fifo"), Ok(()));
+    assert_eq!(registry.unlink("/fifo"), Err(2));
+}
+
+#[test]
+fn pipe_atomic_writes_partial_reads_eof_and_broken_pipe() {
+    let mut pipe = pipe::PipeBuffer::new();
+    assert_eq!(
+        pipe.write(&vec![7; pipe::PIPE_BUF_SIZE - 1]),
+        Ok(pipe::PIPE_BUF_SIZE - 1)
+    );
+    assert!(matches!(
+        pipe.try_write(&[1, 2], true),
+        Err(pipe::WriteAttempt::WouldBlock)
+    ));
+    assert_eq!(pipe.available(), pipe::PIPE_BUF_SIZE - 1);
+    assert_eq!(
+        pipe.read(&mut [0; pipe::PIPE_BUF_SIZE]),
+        Ok(pipe::PIPE_BUF_SIZE - 1)
+    );
+    assert_eq!(pipe.write(b"abc"), Ok(3));
+    let mut got = [0; 8];
+    assert_eq!(pipe.read(&mut got), Ok(3));
+    assert_eq!(&got[..3], b"abc");
+    assert_eq!(pipe.read(&mut got), Err(11));
+    pipe.close_write().deliver();
+    assert_eq!(pipe.read(&mut got), Ok(0));
+    pipe.close_read().deliver();
+    assert_eq!(pipe.write(b"x"), Err(32));
+}
+
+#[test]
+fn closing_a_duplicated_end_preserves_the_surviving_descriptors_data() {
+    let entry = alloc::sync::Arc::new(spin::Mutex::new(fifo::FifoEntry::new(0o600, 0, 0)));
+    let fifo::FifoOpenResult::Ready(buffer) = fifo::open_fifo_read(&entry, true) else {
+        panic!("reader");
+    };
+    assert!(matches!(
+        fifo::open_fifo_write(&entry, true),
+        fifo::FifoOpenResult::Ready(_)
+    ));
+    // This is the endpoint reference increment used by fd-table dup/fork.
+    entry.lock().readers += 1;
+    buffer.lock().add_reader();
+    assert_eq!(buffer.lock().write(b"held"), Ok(4));
+    buffer.lock().close_write().deliver();
+    fifo::close_fifo_write(&entry);
+    buffer.lock().close_read().deliver();
+    fifo::close_fifo_read(&entry);
+    assert!(entry.lock().buffer.is_some());
+    let mut got = [0; 4];
+    assert_eq!(buffer.lock().read(&mut got), Ok(4));
+    assert_eq!(&got, b"held");
+    buffer.lock().close_read().deliver();
+    fifo::close_fifo_read(&entry);
+    assert!(entry.lock().buffer.is_none());
+}
+
+#[test]
+fn abandoned_writer_leaves_buffered_data_then_eof_for_the_reader() {
+    let entry = alloc::sync::Arc::new(spin::Mutex::new(fifo::FifoEntry::new(0o600, 0, 0)));
+    let fifo::FifoOpenResult::Block(seen) = fifo::open_fifo_write(&entry, false) else {
+        panic!("writer");
+    };
+    let fifo::FifoOpenResult::Ready(buffer) = fifo::open_fifo_read(&entry, true) else {
+        panic!("reader");
+    };
+    assert!(matches!(
+        fifo::recheck_fifo_open(&entry, true, seen),
+        fifo::FifoOpenResult::Ready(_)
+    ));
+    assert_eq!(buffer.lock().write(b"held"), Ok(4));
+    fifo::abandon_fifo_open(&fifo::PendingFifoOpen {
+        tid: 1,
+        entry: entry.clone(),
+        for_write: true,
+    });
+    assert!(entry.lock().buffer.is_some());
+    let mut got = [0; 4];
+    assert_eq!(buffer.lock().read(&mut got), Ok(4));
+    assert_eq!(&got, b"held");
+    assert_eq!(buffer.lock().read(&mut got), Ok(0));
+    buffer.lock().close_read().deliver();
+    fifo::close_fifo_read(&entry);
+    assert!(entry.lock().buffer.is_none());
+}
+
+#[test]
+fn checked_unlink_refuses_a_replacement_and_then_accepts_its_identity() {
+    let registry = fifo::FifoRegistry::new();
+    registry.create("/fifo", 0o600, 10, 20).unwrap();
+    let original = registry.get("/fifo").unwrap();
+    registry.unlink("/fifo").unwrap();
+    registry.create("/fifo", 0o600, 30, 40).unwrap();
+    let replacement = registry.get("/fifo").unwrap();
+    assert_eq!(registry.unlink_entry("/fifo", &original), Err(11));
+    assert!(registry.exists("/fifo") && replacement.lock().linked);
+    assert_eq!(registry.unlink_entry("/fifo", &replacement), Ok(()));
+    assert!(!replacement.lock().linked);
+    assert_eq!(registry.unlink_entry("/fifo", &replacement), Err(2));
+}

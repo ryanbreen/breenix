@@ -560,8 +560,15 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
 
     // Check if this is a FIFO (named pipe)
     if let Some(entry) = crate::ipc::fifo::FIFO_REGISTRY.get(path) {
+        if want_creat && want_excl {
+            return SyscallResult::Err(super::errno::EEXIST as u64);
+        }
+        if flags & O_DIRECTORY != 0 {
+            return SyscallResult::Err(super::errno::ENOTDIR as u64);
+        }
         let cred = current_file_credentials();
-        if let Err(error) = check_open_access(&entry.lock().inode(), flags, &cred) {
+        // O_TRUNC does not change a FIFO or require an extra write permission.
+        if let Err(error) = check_open_access(&entry.lock().inode(), flags & !O_TRUNC, &cred) {
             return error;
         }
         return handle_fifo_open(path, flags, entry);
@@ -1219,14 +1226,12 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
 
 /// What fstat and newfstatat report for a FIFO, which has no inode.
 fn fill_fifo_stat(stat: &mut Stat, entry: &crate::ipc::fifo::FifoEntry) {
-    static FIFO_INODE_COUNTER: core::sync::atomic::AtomicU64 =
-        core::sync::atomic::AtomicU64::new(6000);
     stat.st_dev = 0;
-    stat.st_ino = FIFO_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    stat.st_ino = entry.ino;
     stat.st_mode = S_IFIFO | entry.mode;
     stat.st_uid = entry.uid;
     stat.st_gid = entry.gid;
-    stat.st_nlink = 1;
+    stat.st_nlink = if entry.linked { 1 } else { 0 };
     stat.st_size = 0;
 }
 
@@ -1621,18 +1626,20 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
 
     }
 
-    // Check if this is a FIFO - if so, remove from registry
+    // A permission check may do filesystem I/O. Revalidate the registry
+    // identity afterwards so it cannot authorize unlink of a replacement.
     {
         use crate::ipc::fifo::FIFO_REGISTRY;
-        if FIFO_REGISTRY.exists(path) {
-            match FIFO_REGISTRY.unlink(path) {
-                Ok(()) => {
-                    log::info!("sys_unlink: successfully unlinked FIFO {}", path);
-                    return SyscallResult::Ok(0);
-                }
-                Err(errno) => {
-                    return SyscallResult::Err(errno as u64);
-                }
+        while let Some(entry) = FIFO_REGISTRY.get(path) {
+            let owner = entry.lock().uid;
+            let cred = current_file_credentials();
+            if let Err(errno) = super::fifo::check_parent_access(&resolved, &cred, Some(owner)) {
+                return SyscallResult::Err(errno);
+            }
+            match FIFO_REGISTRY.unlink_entry(path, &entry) {
+                Ok(()) => return SyscallResult::Ok(0),
+                Err(super::errno::EAGAIN) => continue,
+                Err(errno) => return SyscallResult::Err(errno as u64),
             }
         }
     }
@@ -3290,8 +3297,11 @@ fn handle_fifo_open(
         nonblock
     );
 
-    // O_RDWR on a FIFO is not well-defined in POSIX, but we can support it
-    // by opening both read and write ends. For simplicity, treat it as read.
+    // POSIX permits EINVAL for O_RDWR on a FIFO. Do not pretend a read-only
+    // endpoint can provide bidirectional I/O or wait indefinitely for itself.
+    if access_mode != O_RDONLY && access_mode != O_WRONLY {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
     let for_write = access_mode == O_WRONLY;
 
     let thread_id = match crate::task::scheduler::current_thread_id() {

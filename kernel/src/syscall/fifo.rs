@@ -36,13 +36,19 @@ pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
     if resolved.trailing_slash {
         return SyscallResult::Err(super::errno::ENOENT as u64);
     }
-    let path = resolved.path;
 
+    let path = resolved.path.as_str();
     log::debug!("sys_mkfifo: path={}, mode={:#o}", path, mode);
 
     // Create the FIFO in the registry
     let cred = crate::fs::permissions::Credentials::current(false);
-    match FIFO_REGISTRY.create(&path, mode & 0o7777 & !cred.umask, cred.euid, cred.egid) {
+    // The namei walk checks search permission; creation also needs write
+    // permission on the parent and inherits its group when setgid is set.
+    let gid = match check_parent_access(&resolved, &cred, None) {
+        Ok(gid) => gid,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    match FIFO_REGISTRY.create(path, mode & 0o7777 & !cred.umask, cred.euid, gid) {
         Ok(()) => {
             log::info!("Created FIFO: {}", path);
             SyscallResult::Ok(0)
@@ -81,4 +87,38 @@ pub fn sys_mknod(pathname: u64, mode: u32, _dev: u64) -> SyscallResult {
         log::warn!("sys_mknod: file type {:#o} not supported", file_type);
         SyscallResult::Err(38) // ENOSYS
     }
+}
+
+/// Check a registry FIFO's real parent without holding a FIFO/PM lock.
+/// An owner selects unlink's sticky-directory rule; creation omits it.
+pub(crate) fn check_parent_access(
+    resolved: &crate::fs::namei::Resolved,
+    cred: &crate::fs::permissions::Credentials,
+    owner: Option<u32>,
+) -> Result<u32, u64> {
+    use super::errno::{EACCES, EIO, ENOENT, EPERM};
+    use crate::fs::namei::Target;
+    let Target::Absent { mount, parent } = resolved.target else {
+        return Err(ENOENT as u64);
+    };
+    let guard = mount.read();
+    let fs = guard.as_ref().ok_or(EIO as u64)?;
+    let inode = fs.read_inode(parent).map_err(|_| EIO as u64)?;
+    if !cred.permits(&inode, 3) {
+        return Err(EACCES as u64);
+    }
+    if let Some(owner) = owner {
+        if inode.permissions() & 0o1000 != 0
+            && cred.euid != 0
+            && cred.euid != inode.uid()
+            && cred.euid != owner
+        {
+            return Err(EPERM as u64);
+        }
+    }
+    Ok(if inode.permissions() & 0o2000 != 0 {
+        inode.gid()
+    } else {
+        cred.egid
+    })
 }
