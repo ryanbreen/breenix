@@ -106,8 +106,8 @@ pub fn sys_msgsnd(id: i32, msgp: u64, msgsz: u64, flags: u32) -> SyscallResult {
         let w = entry.obj.waiters.clone();
         let seen = w.seen();
         drop(ids);
-        if let WaitEnd::Interrupted = w.wait(seen, &IpcDeadline::Never) {
-            return err(interrupted_unless_handled());
+        if let WaitEnd::Interrupted(e) = w.wait(seen, &IpcDeadline::Never) {
+            return err(interrupted_unless_handled(e));
         }
         slept = Some(w);
     }
@@ -148,8 +148,8 @@ pub fn sys_msgrcv(id: i32, msgp: u64, msgsz: u64, msgtyp: i64, flags: u32) -> Sy
         let w = entry.obj.waiters.clone();
         let seen = w.seen();
         drop(ids);
-        if let WaitEnd::Interrupted = w.wait(seen, &IpcDeadline::Never) {
-            return err(interrupted_unless_handled());
+        if let WaitEnd::Interrupted(e) = w.wait(seen, &IpcDeadline::Never) {
+            return err(interrupted_unless_handled(e));
         }
         slept = Some(w);
     };

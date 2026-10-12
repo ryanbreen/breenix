@@ -162,7 +162,10 @@ fn semop_as(me: &Caller, id: i32, ops: &[SemOp], undoes: bool, wanted: u32, dead
             entry.obj.set.waiters.retain(|w| w.tid != tid);
         }
         match end {
-            WaitEnd::Interrupted => return err(EINTR),
+            // The wait could not reserve its place on the queue, or a
+            // signal ended it: semop is never restarted.
+            WaitEnd::Interrupted(e) if e == ENOMEM as u64 => return err(ENOMEM),
+            WaitEnd::Interrupted(_) => return err(EINTR),
             WaitEnd::TimedOut => timed_out = true,
             WaitEnd::Woken => {}
         }

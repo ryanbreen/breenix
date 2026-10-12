@@ -122,12 +122,16 @@ impl Waiters {
     }
 }
 
-/// The errno of msgsnd and msgrcv when their wait ends interrupted, as
+/// The errno of msgsnd and msgrcv when their wait ends with `error`: ENOMEM
+/// when the wait could not reserve its place on the queue; otherwise as
 /// Linux's ERESTARTNOHAND gives it: EINTR when a handler will run or the
 /// signal kills, whatever SA_RESTART says; for a job-control stop,
 /// ERESTARTSYS, which the return path turns into the call made again once
 /// the process continues; EINTR for anything else.
-pub(crate) fn interrupted_unless_handled() -> i32 {
+pub(crate) fn interrupted_unless_handled(error: u64) -> i32 {
+    if error == ENOMEM as u64 {
+        return ENOMEM;
+    }
     if let Some(e) = crate::syscall::check_signals_for_eintr() {
         return e;
     }
