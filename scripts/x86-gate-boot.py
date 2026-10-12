@@ -11,6 +11,7 @@ import runpy
 
 WallClockCheck = runpy.run_path(str(pathlib.Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
 BootProgress = runpy.run_path(str(pathlib.Path(__file__).with_name("boot_progress.py")))["BootProgress"]
+relay_api = runpy.run_path(str(pathlib.Path(__file__).with_name("x86_serial_relay.py")))
 
 # The scoring deadline and the completion backstop serve different purposes.
 # Full mode reports a missed scoring deadline after collecting the final report.
@@ -47,7 +48,12 @@ def main():
     started = time.monotonic()
     progress = BootProgress(user_log, now=started)
     clock = WallClockCheck(user_log)
-    process = subprocess.Popen(sys.argv[3:], start_new_session=True)
+    command, relays = relay_api['live_serial_command'](sys.argv[3:], (user_log, kernel_log))
+    try:
+        process = subprocess.Popen(command, start_new_session=True)
+    except BaseException:
+        relay_api['close_relays'](relays)
+        raise
     try:
         while True:
             text = kernel_log.read_text(errors='replace') if kernel_log.exists() else ''
@@ -92,7 +98,10 @@ def main():
                 return 1
             time.sleep(0.25)
     finally:
-        stop(process)
+        try:
+            stop(process)
+        finally:
+            relay_api['close_relays'](relays)
 
 
 if __name__ == '__main__':

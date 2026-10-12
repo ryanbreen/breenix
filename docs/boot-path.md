@@ -287,7 +287,10 @@ periodic kernel census and diagnostics do not extend that deadline. The launcher
 exits nonzero and keeps its serial and a neighboring `*.stall.json` record with
 `status: stalled`, the last progress line and its source, the last progress time,
 and the UTC stop time. Default Mac serial paths are unique per launcher run, so
-a later boot cannot overwrite that evidence. The shared host-slot supervisor also watches older QEMU
+a later boot cannot overwrite that evidence. The x86 gate relays QEMU's Unix
+socket serial channels into those files as bytes arrive; `-serial file:` can
+delay a short userspace line past the watchdog's poll. Run Inspector preserves
+the gate's stop time and last progress line in a `stalled` verdict. The shared host-slot supervisor also watches older QEMU
 launchers once their owned VM starts; build and queue time do not count. A completed
 suite's retained panel is outside the stall deadline; suite sequences resume the
 watch while waiting to exec the next suite.
