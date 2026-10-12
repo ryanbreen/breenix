@@ -10,19 +10,12 @@ import time
 import runpy
 
 WallClockCheck = runpy.run_path(str(pathlib.Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
+BootProgress = runpy.run_path(str(pathlib.Path(__file__).with_name("boot_progress.py")))["BootProgress"]
 
 # The scoring deadline and the completion backstop serve different purposes.
 # Full mode reports a missed scoring deadline after collecting the final report.
 COMPLETE = re.compile(r'kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished[^\r\n]*\r?$', re.M)
 REPORT_DONE = re.compile(r'kernel::syscall::handlers: USERSPACE TEST REPORT DONE\r?$', re.M)
-# The kernel's periodic census records, e.g. [TOMBSTONE_CENSUS:resident=0:removed=165],
-# also reach COM1. They are not userspace progress.
-CENSUS = re.compile(r'^\[[A-Z][A-Z0-9_]*(?::[a-z0-9_]+=[^:\]\r\n]*)+\]\r?$', re.M)
-
-
-def userspace_output(text):
-    """COM1's output without the kernel's census records."""
-    return CENSUS.sub('', text)
 
 
 def stop(process):
@@ -49,18 +42,17 @@ def main():
     user_log = pathlib.Path(sys.argv[2])
     deadline = float(os.environ.get('BREENIX_GATE_TIMEOUT', '1800'))
     backstop = float(os.environ.get('BREENIX_FULL_BACKSTOP', str(max(1800, deadline))))
-    silence = float(os.environ.get('BREENIX_USER_SILENCE', '120'))
-    if deadline <= 0 or backstop <= 0 or silence <= 0:
-        raise ValueError('gate deadline, full backstop and userspace silence limit must be positive')
+    if deadline <= 0 or backstop <= 0:
+        raise ValueError('gate deadline and full backstop must be positive')
+    started = time.monotonic()
+    progress = BootProgress(user_log, now=started)
     clock = WallClockCheck(user_log)
     process = subprocess.Popen(sys.argv[3:], start_new_session=True)
-    started = time.monotonic()
-    heard, last_heard = 0, started
     try:
         while True:
             text = kernel_log.read_text(errors='replace') if kernel_log.exists() else ''
-            user = user_log.read_text(errors='replace') if user_log.exists() else ''
-            clock.observe(user)
+            progress.poll([(kernel_log, False), (user_log, True)])
+            clock.observe(user_log.read_text(errors='replace') if user_log.exists() else '')
             if COMPLETE.search(text) and REPORT_DONE.search(text):
                 elapsed = time.monotonic() - started
                 print(f'[gate] full boot completed after {elapsed:.1f}s', flush=True)
@@ -70,19 +62,14 @@ def main():
                     print(f'GATE: FAIL (full boot completed beyond {deadline:g}s scoring deadline; #1068)', flush=True)
                     return 2
                 return 0 if clock_ok else 3
+            if progress.stalled():
+                progress.record()
+                return 124
             if process.poll() is not None:
                 print(f'GATE: FAIL (full boot exited before USERSPACE TEST COMPLETE; status={process.returncode})', flush=True)
                 return 1
-            now = time.monotonic()
-            output = len(userspace_output(user))
-            if output != heard:
-                heard, last_heard = output, now
-            if now - started >= backstop or now - last_heard >= silence:
-                if now - started >= backstop:
-                    print(f'GATE: FAIL (full boot reached {backstop:g}s hang backstop; completion report still unfinished)', flush=True)
-                else:
-                    print(f'GATE: FAIL (userspace printed nothing but census records for {silence:g}s, '
-                          f'{now - started:.0f}s into the boot; completion report still unfinished)', flush=True)
+            if time.monotonic() - started >= backstop:
+                print(f'GATE: FAIL (full boot reached {backstop:g}s hang backstop; completion report still unfinished)', flush=True)
                 # Existing strand records name the threads still saved in waits.
                 subprocess.run([str(pathlib.Path(__file__).with_name('x86-strand-census.sh')),
                                 str(user_log), str(kernel_log)], check=False)

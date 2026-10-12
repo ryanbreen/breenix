@@ -15,6 +15,7 @@ import runpy
 import time
 
 WallClockCheck = runpy.run_path(str(Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
+BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))["BootProgress"]
 
 ROOT = Path(__file__).resolve().parents[1]
 FATAL = json.loads((ROOT / "docs/boot-path.json").read_text())["fatal"] + ["KERNEL PANIC:"]
@@ -82,11 +83,13 @@ def main():
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--started", type=float, help="host epoch immediately before VM launch")
     args = parser.parse_args()
+    progress = BootProgress(args.serial)
     clock = WallClockCheck(args.serial, args.started)
     deadline = time.monotonic() + args.timeout
     while True:
         try:
             serial = args.serial.read_bytes().decode("utf-8", errors="replace")
+            progress.observe(serial)
             clock.observe(serial)
             result = completion(serial, args.mode, args.suite)
         except FileNotFoundError:
@@ -102,6 +105,9 @@ def main():
             print(clock_reason)
             print(f"{'PASS' if ok else 'FAIL'}: {reason}")
             return 0 if ok and clock_ok else 1
+        if progress.stalled():
+            progress.record()
+            return 124
         if time.monotonic() >= deadline:
             print(f"FAIL: no {args.mode} DONE within {args.timeout} seconds")
             return 1

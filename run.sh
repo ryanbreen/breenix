@@ -1360,6 +1360,8 @@ if [ "$ARCH" = "arm64" ]; then
     # blocking.
     host_slot_acquire mac-boot
     qemu_host_lock_acquire
+    : > "$OUTPUT_DIR/serial.txt"
+    host_slot_serial "$OUTPUT_DIR/serial.txt"
     host_slot_quiet
     qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -smp 4 \
@@ -1375,7 +1377,8 @@ if [ "$ARCH" = "arm64" ]; then
         $QMP_OPTS \
         $GDB_OPTS \
         $FW_CFG_OPTS \
-        -serial mon:stdio \
+        -chardev "stdio,id=console,mux=on,logfile=$OUTPUT_DIR/serial.txt" \
+        -serial chardev:console -mon chardev=console,mode=readline \
         -no-reboot \
         &
 else
@@ -1397,6 +1400,10 @@ else
     # with a concurrent arm64 session.
     host_slot_acquire mac-boot
     qemu_host_lock_acquire qemu-system-x86_64
+    : > "$OUTPUT_DIR/serial.txt"
+    : > "$OUTPUT_DIR/serial-kernel.txt"
+    host_slot_serial "$OUTPUT_DIR/serial.txt"
+    host_slot_serial "$OUTPUT_DIR/serial-kernel.txt"
     host_slot_quiet
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
@@ -1419,7 +1426,9 @@ else
         -monitor tcp:127.0.0.1:4444,server,nowait \
         $QMP_OPTS \
         $GDB_OPTS \
-        -serial mon:stdio \
+        -chardev "stdio,id=console,mux=on,logfile=$OUTPUT_DIR/serial.txt" \
+        -serial chardev:console -mon chardev=console,mode=readline \
+        -serial "file:$OUTPUT_DIR/serial-kernel.txt" \
         &
 fi
 
@@ -1453,7 +1462,7 @@ if [ "$ARCH" = "x86_64" ] && [ "$HEADLESS" = false ] && [ "$(uname)" = "Darwin" 
 fi
 
 # Wait for QEMU to finish
-wait $QEMU_PID 2>/dev/null || true
+wait "$QEMU_PID" 2>/dev/null || exit $?
 
 echo ""
 echo "========================================="
