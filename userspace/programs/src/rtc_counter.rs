@@ -21,10 +21,17 @@ pub fn next_edge(
     mut read: impl FnMut() -> Result<RtcPoll, String>,
     mut timed_out: impl FnMut() -> bool,
 ) -> Result<RtcEdge, String> {
+    if previous.after < previous.before {
+        return Err("the counter went backwards during an RTC read".into());
+    }
     loop {
         let current = read()?;
+        if current.before < previous.after || current.after < current.before {
+            return Err("the counter went backwards between or during RTC reads".into());
+        }
         if current.second != previous.second {
-            let width = current.after - previous.before;
+            let width = current.after.checked_sub(previous.before)
+                .ok_or("the counter went backwards across an RTC edge")?;
             return Ok(RtcEdge {
                 second: current.second,
                 at: previous.before + width / 2,

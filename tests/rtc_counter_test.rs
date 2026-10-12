@@ -15,8 +15,7 @@ fn delayed_old_second_cannot_masquerade_as_a_narrow_edge() {
     assert!(edge.at - edge.width / 2 <= 1_000_000);
     assert!(edge.at + edge.width / 2 >= 1_000_000);
     assert!(edge.width > 1_000_000 / 500);
-    // Return-to-return timing would accept 500 us and put this edge 12 ms late.
-    assert!(new.after - old.after < 1_000_000 / 500);
+    assert_eq!(edge.at, 1_006_000);
 }
 
 #[test]
@@ -41,6 +40,20 @@ fn uses_the_last_old_read_and_preserves_timeout_and_read_errors() {
     let edge = next_edge(first, || Ok(reads.next().unwrap()), || false).unwrap();
     assert_eq!(edge.width, 1500);
     assert_eq!(edge.at, 999_750);
-    assert!(next_edge(first, || Ok(first), || true).unwrap_err().contains("1500 ms"));
+    assert!(next_edge(first, || Ok(last), || true).unwrap_err().contains("1500 ms"));
     assert_eq!(next_edge(first, || Err("device error".into()), || false).unwrap_err(), "device error");
+}
+
+#[test]
+fn rejects_backward_counters_within_and_between_reads() {
+    let old = RtcPoll { second: 10, before: 1000, after: 1500 };
+    for new in [
+        RtcPoll { second: 11, before: 500, after: 900 },
+        RtcPoll { second: 11, before: 1500, after: 1400 },
+        RtcPoll { second: 10, before: 500, after: 900 },
+    ] {
+        assert!(next_edge(old, || Ok(new), || false).unwrap_err().contains("backwards"));
+    }
+    let reversed = RtcPoll { second: 10, before: 1500, after: 1000 };
+    assert!(next_edge(reversed, || Ok(old), || false).unwrap_err().contains("backwards"));
 }
