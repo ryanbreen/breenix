@@ -70,8 +70,8 @@ stage list and shown alongside, but does not block moving on.
   to watch for fatal output. It stops the VM, validates the records against the
   manifest and releases the shared boot slot. A missing DONE or fatal kernel
   output fails the boot; its idle exit and `--gate-timeout` DONE deadline also
-  stop unfinished suites. Parallels and VMware retain their scored panel until
-  Ctrl-C stops the VM. `--suite --test` on Parallels
+  stop unfinished suites. Parallels and VMware stop the VM, record the result and
+  release the boot slot after scoring DONE. `--suite --test` on Parallels
   waits for DONE before its timed screenshot and exit; VMware rejects `--test`.
   `--gate-timeout N` sets the DONE deadline (default 1800 seconds for ARM64 QEMU
   suites and Parallels/VMware suites and probes); QEMU enforces it even when
