@@ -1,6 +1,7 @@
 """Exercise run.sh's EXIT and signal cleanup with an actual log watcher."""
 
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -100,6 +101,16 @@ install_vm_boot_traps
                 while self.is_alive(pid) and time.monotonic() < deadline:
                     time.sleep(0.02)
                 self.assertFalse(self.is_alive(pid), f"{name} left monitor PID {pid} alive")
+
+    def test_stopped_suite_exits_before_log_watching(self):
+        source = RUNNER.read_text()
+        blocks = re.findall(r'    if \[ "\$BOOT_MODE" = probe \] \|\| \[ "\$BOOT_MODE" = suite \] \|\| \[ "\$BOOT_MODE" = tests \]; then\n.*?\n    fi', source, re.S)
+        self.assertEqual(len(blocks), 2)
+        for block in blocks:
+            script = "BOOT_MODE=suite; PARALLELS_TEST=false; wait_boot_done() { :; }; hold_suite_panel() { :; }; vmware_check_network_log() { :; }; vmware_network_summary() { :; }; " + block + "\necho unexpected-watcher"
+            result = subprocess.run(["/bin/bash", "-c", script], capture_output=True, timeout=3)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertNotIn(b"unexpected-watcher", result.stdout)
 
     def test_monitor_exits_if_parent_is_killed(self):
         for platform in ("parallels", "vmware"):

@@ -692,7 +692,7 @@ if [ "$PARALLELS" = true ]; then
     if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ]; then
         wait_boot_done || exit $?
         if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
-        if [ "$PARALLELS_TEST" != true ]; then hold_suite_panel; fi
+        if [ "$PARALLELS_TEST" != true ]; then hold_suite_panel; exit 0; fi
     fi
 
     if [ "$PARALLELS_TEST" = true ]; then
@@ -1073,6 +1073,7 @@ VMXEOF
         vmware_network_summary
         if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
         hold_suite_panel
+        exit 0
     fi
 
     echo "Tailing serial output (Ctrl+C stops the VM)..."
