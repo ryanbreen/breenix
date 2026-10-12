@@ -77,7 +77,10 @@ pub const O_APPEND: u32 = 0x400;
 /// O_NONBLOCK - non-blocking I/O (important for FIFOs)
 pub const O_NONBLOCK: u32 = 0x800;
 /// O_DIRECTORY - must be a directory
+#[cfg(target_arch = "x86_64")]
 pub const O_DIRECTORY: u32 = 0x10000;
+#[cfg(target_arch = "aarch64")]
+pub const O_DIRECTORY: u32 = 0x4000;
 
 /// Access mode constants for access() syscall
 pub const F_OK: u32 = 0;  // Test for existence

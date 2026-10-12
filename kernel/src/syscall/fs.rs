@@ -17,7 +17,10 @@ pub const O_TRUNC: u32 = 0x200;
 #[allow(dead_code)] // Part of POSIX open() API
 pub const O_APPEND: u32 = 0x400;
 /// O_DIRECTORY - must be a directory
+#[cfg(target_arch = "x86_64")]
 pub const O_DIRECTORY: u32 = 0x10000;
+#[cfg(target_arch = "aarch64")]
+pub const O_DIRECTORY: u32 = 0x4000;
 /// O_NOFOLLOW - fail with ELOOP rather than follow a final symlink. The Linux
 /// value differs by architecture.
 #[cfg(target_arch = "x86_64")]

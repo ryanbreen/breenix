@@ -2434,7 +2434,10 @@ pub struct Dirent {
 }
 
 const O_RDONLY_DIR: i32 = 0;
-const O_DIRECTORY: i32 = 0o200000;
+#[cfg(target_arch = "x86_64")]
+const O_DIRECTORY: i32 = 0x10000;
+#[cfg(target_arch = "aarch64")]
+const O_DIRECTORY: i32 = 0x4000;
 
 /// opendir - open a directory stream
 #[no_mangle]
