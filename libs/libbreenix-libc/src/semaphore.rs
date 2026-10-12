@@ -18,7 +18,7 @@ const FUTEX_CLOCK_REALTIME: u64 = 256;
 pub struct Sem {
     value: AtomicU32,
     waiters: AtomicU32,
-    pshared: u32,
+    pshared: AtomicU32,
     ready: AtomicU32,
     padding: [u8; 16],
 }
@@ -49,7 +49,7 @@ unsafe fn checked<'a>(sem: *mut Sem) -> Result<&'a Sem, i64> {
 }
 impl Sem {
     fn private(&self) -> u64 {
-        if self.pshared == 0 {
+        if self.pshared.load(Ordering::Relaxed) == 0 {
             FUTEX_PRIVATE_FLAG
         } else {
             0
@@ -80,7 +80,7 @@ pub unsafe extern "C" fn sem_init(sem: *mut Sem, pshared: i32, value: u32) -> i3
     sem.write(Sem {
         value: AtomicU32::new(value),
         waiters: AtomicU32::new(0),
-        pshared: u32::from(pshared != 0),
+        pshared: AtomicU32::new(u32::from(pshared != 0)),
         ready: AtomicU32::new(1),
         padding: [0; 16],
     });
@@ -195,6 +195,45 @@ const EEXIST: i64 = 17;
 const ENOMEM: i64 = 12;
 const SEM_MAP_LEN: usize = 4096;
 
+const PROT_READ: i32 = 1;
+const PROT_WRITE: i32 = 2;
+const MAP_SHARED: i32 = 1;
+const INIT_TIMEOUT_NS: u64 = 1_000_000_000;
+
+// Published Linux ABI: inode at 8, size at 48 on both 64-bit arches. Opaque
+// metadata surrounds the fields used here; storage covers either stat layout.
+#[repr(C)]
+struct NamedStat {
+    dev: u64,
+    ino: u64,
+    metadata: [u8; 32],
+    size: i64,
+    rest: [u8; 88],
+}
+impl NamedStat {
+    fn zeroed() -> Self {
+        Self {
+            dev: 0,
+            ino: 0,
+            metadata: [0; 32],
+            size: 0,
+            rest: [0; 88],
+        }
+    }
+}
+const _: () = assert!(core::mem::offset_of!(NamedStat, ino) == 8);
+const _: () = assert!(core::mem::offset_of!(NamedStat, size) == 48);
+const _: () = assert!(core::mem::size_of::<NamedStat>() == 144);
+unsafe fn monotonic_ns() -> Result<u64, i64> {
+    let mut ts = [0i64; 2];
+    if crate::clock_gettime(1, ts.as_mut_ptr() as *mut u8) != 0 {
+        return Err(i64::from(*crate::__errno_location()));
+    }
+    Ok((ts[0] as u64)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(ts[1] as u64))
+}
+
 #[derive(Clone, Copy)]
 struct NamedEntry {
     ino: u64,
@@ -300,62 +339,106 @@ unsafe fn named_open(name: *const u8, oflag: i32, mode: u32, value: u32) -> Resu
     if oflag & O_CREAT != 0 && value > SEM_VALUE_MAX {
         return Err(EINVAL);
     }
-    let mut created = false;
-    let fd = if oflag & O_CREAT != 0 {
+    let (fd, created) = loop {
+        if oflag & O_CREAT == 0 {
+            let fd = crate::shm::shm_open(shm_name.as_ptr(), O_RDWR, 0);
+            if fd < 0 {
+                return Err(i64::from(*crate::__errno_location()));
+            }
+            break (fd, false);
+        }
         let fd = crate::shm::shm_open(shm_name.as_ptr(), O_RDWR | O_CREAT | O_EXCL, mode);
         if fd >= 0 {
-            created = true;
-            fd
-        } else if oflag & O_EXCL == 0 && *crate::__errno_location() == EEXIST as i32 {
-            crate::shm::shm_open(shm_name.as_ptr(), O_RDWR, 0)
-        } else {
-            return Err(i64::from(*crate::__errno_location()));
+            break (fd, true);
         }
-    } else {
-        crate::shm::shm_open(shm_name.as_ptr(), O_RDWR, 0)
+        let error = i64::from(*crate::__errno_location());
+        if oflag & O_EXCL != 0 || error != EEXIST {
+            return Err(error);
+        }
+        let fd = crate::shm::shm_open(shm_name.as_ptr(), O_RDWR, 0);
+        if fd >= 0 {
+            break (fd, false);
+        }
+        let error = i64::from(*crate::__errno_location());
+        // The name may disappear between the two opens. O_CREAT retries the
+        // create/open transaction instead of exposing this internal ENOENT.
+        if error != 2 {
+            return Err(error);
+        }
     };
-    if fd < 0 {
-        return Err(i64::from(*crate::__errno_location()));
-    }
     let result = (|| {
         if created && crate::ftruncate(fd, core::mem::size_of::<Sem>() as i64) != 0 {
             return Err(i64::from(*crate::__errno_location()));
         }
-        // Creation publishes the name before the initial truncate. Do not
-        // touch a zero-length object's mapping (which correctly raises SIGBUS).
+        // The kernel publishes the name before the creator's truncate. A
+        // bounded monotonic deadline handles abandoned or non-semaphore shm
+        // files without spinning or waiting forever. Such objects are invalid.
+        let deadline = monotonic_ns()?.saturating_add(INIT_TIMEOUT_NS);
         let ino = loop {
-            let mut stat = [0u64; 18];
-            if crate::fstat(fd, stat.as_mut_ptr() as *mut u8) != 0 {
+            let mut stat = NamedStat::zeroed();
+            if crate::fstat(fd, &mut stat as *mut NamedStat as *mut u8) != 0 {
                 return Err(i64::from(*crate::__errno_location()));
             }
-            if stat[6] >= core::mem::size_of::<Sem>() as u64 {
-                break stat[1];
+            if stat.size >= core::mem::size_of::<Sem>() as i64 {
+                break stat.ino;
             }
-            raw::syscall0(nr::YIELD);
+            if monotonic_ns()? >= deadline {
+                return Err(EINVAL);
+            }
+            let delay = [0i64, 1_000_000];
+            if crate::nanosleep(delay.as_ptr() as *const u8, null_mut()) != 0 {
+                return Err(i64::from(*crate::__errno_location()));
+            }
         };
-        let addr = crate::mmap(null_mut(), SEM_MAP_LEN, 3, 1, fd, 0) as *mut Sem;
+        let addr = crate::mmap(
+            null_mut(),
+            SEM_MAP_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        ) as *mut Sem;
         if addr as usize == usize::MAX {
             return Err(i64::from(*crate::__errno_location()));
         }
-        if created {
-            // The creator initializes the zeroed page before publishing ready.
-            addr.write(Sem {
-                value: AtomicU32::new(value),
-                waiters: AtomicU32::new(0),
-                pshared: 1,
-                ready: AtomicU32::new(0),
-                padding: [0; 16],
-            });
-            (*addr).ready.store(1, Ordering::Release);
-            futex(&(*addr).ready, FUTEX_WAKE, u32::MAX, null());
-        } else {
-            while (*addr).ready.load(Ordering::Acquire) == 0 {
-                let result = futex(&(*addr).ready, FUTEX_WAIT, 0, null());
-                if result < 0 && result != -EAGAIN && result != -4 {
-                    crate::munmap(addr as *mut u8, SEM_MAP_LEN);
-                    return Err(-result);
+        let initialize = (|| {
+            if created {
+                // Each field an opener can observe uses atomic access. The
+                // zeroed kernel page already supplies ready=0 and padding.
+                (*addr).value.store(value, Ordering::Relaxed);
+                (*addr).waiters.store(0, Ordering::Relaxed);
+                (*addr).pshared.store(1, Ordering::Relaxed);
+                (*addr).ready.store(1, Ordering::Release);
+                futex(&(*addr).ready, FUTEX_WAKE, i32::MAX as u32, null());
+            } else {
+                loop {
+                    match (*addr).ready.load(Ordering::Acquire) {
+                        1 => break,
+                        0 => {}
+                        _ => return Err(EINVAL),
+                    }
+                    let remaining = deadline.saturating_sub(monotonic_ns()?);
+                    if remaining == 0 {
+                        return Err(EINVAL);
+                    }
+                    let timeout = [
+                        (remaining / 1_000_000_000) as i64,
+                        (remaining % 1_000_000_000) as i64,
+                    ];
+                    let result = futex(&(*addr).ready, FUTEX_WAIT, 0, timeout.as_ptr());
+                    if result == -110 {
+                        return Err(EINVAL);
+                    }
+                    if result < 0 && result != -EAGAIN {
+                        return Err(-result);
+                    }
                 }
             }
+            Ok(())
+        })();
+        if let Err(error) = initialize {
+            crate::munmap(addr as *mut u8, SEM_MAP_LEN);
+            return Err(error);
         }
         let _guard = TableGuard::lock();
         match (&mut *TABLE.0.get()).retain(ino, addr) {

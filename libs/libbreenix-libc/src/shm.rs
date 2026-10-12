@@ -1,7 +1,10 @@
 //! POSIX shared-memory names over the flat /dev/shm namespace.
 const EINVAL: i64 = 22;
 const ENAMETOOLONG: i64 = 36;
+#[cfg(target_arch = "x86_64")]
 const O_NOFOLLOW: i32 = 0x20000;
+#[cfg(target_arch = "aarch64")]
+const O_NOFOLLOW: i32 = 0x8000;
 const O_CLOEXEC: i32 = 0x80000;
 
 /// Breenix accepts a leading slash and a single nonempty component, at most
