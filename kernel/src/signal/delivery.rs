@@ -353,7 +353,13 @@ fn write_signal_stack(
 
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
+/// SCRATCH #1413 F1: the last process whose own signal delivery took SIGKILL.
+pub static FORCE1413_DELIVER_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+    if sig == SIGKILL {
+        FORCE1413_DELIVER_PID.store(process.id.as_u64(), core::sync::atomic::Ordering::Release);
+    }
     #[cfg(target_arch = "x86_64")]
     if fatal_exit_code(sig).is_some() {
         let exit_code = signal_death_exit_code(process, sig);
