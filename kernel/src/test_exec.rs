@@ -143,7 +143,12 @@ pub fn test_fork_exec() {
                     let hello_time_elf = &create_minimal_elf_no_bss();
 
                     match crate::process::with_process_manager(|manager| {
-                        manager.exec_process(child_pid, hello_time_elf, Some("hello_time"), &mut closes)
+                        manager.exec_process(
+                            child_pid,
+                            hello_time_elf,
+                            Some("hello_time"),
+                            &mut closes,
+                        )
                     }) {
                         Some(Ok(entry_point)) => {
                             log::info!("✓ exec succeeded! Child process {} now running hello_time at {:#x}", 
@@ -423,7 +428,12 @@ pub fn test_shell_fork_exec() {
                     });
 
                     match crate::process::with_process_manager(|manager| {
-                        manager.exec_process(child_pid, command_elf, Some("hello_time"), &mut closes)
+                        manager.exec_process(
+                            child_pid,
+                            command_elf,
+                            Some("hello_time"),
+                            &mut closes,
+                        )
                     }) {
                         Some(Ok(entry_point)) => {
                             log::info!(
@@ -1192,6 +1202,32 @@ pub fn test_unix_named_socket() {
 /// - Stage 2 (Boot stage): Validates FIFO operations
 ///   - Marker: "FIFO_TEST_PASSED"
 ///   - This PROVES FIFO creation, open, read/write, and close all work
+pub fn test_fifo_fs() {
+    #[cfg(feature = "testing")]
+    let binary = crate::userspace_test::get_test_binary("fifo_fs_test");
+    #[cfg(not(feature = "testing"))]
+    let binary = create_hello_world_elf();
+    match crate::process::creation::create_user_process(String::from("fifo_fs_test"), &binary) {
+        Ok(pid) => {
+            #[cfg(feature = "btrt")]
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FIFO_FS,
+            );
+            log::info!("Scheduled FIFO filesystem test PID {:?}", pid);
+        }
+        Err(error) => {
+            log::error!("Failed to create FIFO filesystem test: {}", error);
+            #[cfg(feature = "btrt")]
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FIFO_FS,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
+        }
+    }
+}
+
 pub fn test_fifo() {
     log::info!("Testing FIFO (named pipe) syscall functionality");
 
@@ -2820,9 +2856,7 @@ pub fn test_fork_memory() {
         Ok(pid) => {
             log::info!("Created fork_memory_test process with PID {:?}", pid);
             log::info!("fork_memory_test: process scheduled for execution.");
-            log::info!(
-                "    -> userspace reports the fork memory isolation result"
-            );
+            log::info!("    -> userspace reports the fork memory isolation result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -2918,9 +2952,7 @@ pub fn test_fork_pending_signal() {
                 "Created fork_pending_signal_test process with PID {:?}",
                 pid
             );
-            log::info!(
-                "    -> userspace reports the fork pending signal result"
-            );
+            log::info!("    -> userspace reports the fork pending signal result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3060,9 +3092,7 @@ pub fn test_cow_sole_owner() {
     ) {
         Ok(pid) => {
             log::info!("Created cow_sole_owner_test process with PID {:?}", pid);
-            log::info!(
-                "    -> userspace reports the cow sole owner result"
-            );
+            log::info!("    -> userspace reports the cow sole owner result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3267,9 +3297,7 @@ pub fn test_exec_stack_argv() {
     ) {
         Ok(pid) => {
             log::info!("Created exec_stack_argv_test process with PID {:?}", pid);
-            log::info!(
-                "    -> userspace reports the exec stack argv result"
-            );
+            log::info!("    -> userspace reports the exec stack argv result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),
@@ -3696,9 +3724,7 @@ pub fn test_fbinfo() {
     ) {
         Ok(pid) => {
             log::info!("Created fbinfo_test process with PID {:?}", pid);
-            log::info!(
-                "    -> userspace reports the framebuffer info result"
-            );
+            log::info!("    -> userspace reports the framebuffer info result");
             #[cfg(feature = "btrt")]
             crate::test_framework::btrt::register_pid(
                 pid.as_u64(),

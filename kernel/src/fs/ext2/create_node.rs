@@ -31,6 +31,21 @@ pub fn node_inode(mode: u16, uid: u32, gid: u32, dev: u32) -> Ext2Inode {
     inode
 }
 
+pub fn node_device(inode: &Ext2Inode) -> u64 {
+    if !matches!(
+        inode.file_type(),
+        FileType::CharDevice | FileType::BlockDevice
+    ) {
+        return 0;
+    }
+    let old = inode.i_block[0];
+    if old != 0 {
+        old as u64
+    } else {
+        inode.i_block[1] as u64
+    }
+}
+
 impl Ext2Fs {
     /// Caller holds the mount write guard and verifies the parent pin and
     /// credentials before entering this method. Recheck the final name here.
@@ -58,6 +73,17 @@ impl Ext2Fs {
         if dir::find_inode(&data, name).is_some() {
             return Err("File already exists");
         }
+        let blocks = directory_io::prepare(
+            self.device.as_ref(),
+            &parent_inode,
+            &self.superblock,
+            data.len(),
+        )?;
+        let mut before = alloc::vec::Vec::new();
+        before
+            .try_reserve_exact(data.len())
+            .map_err(|_| "No memory for directory rollback")?;
+        before.extend_from_slice(&data);
         // Stage insertion before inode allocation; a full directory leaves
         // allocation bitmaps untouched. Replace the temporary inode before I/O.
         let offset = add_directory_entry(
@@ -65,12 +91,6 @@ impl Ext2Fs {
             u32::MAX,
             name,
             dir_entry_type(&node_inode(mode, uid, gid, dev)),
-        )?;
-        let blocks = directory_io::prepare(
-            self.device.as_ref(),
-            &parent_inode,
-            &self.superblock,
-            data.len(),
         )?;
         let ino = allocate_inode(
             self.device.as_ref(),
@@ -90,12 +110,30 @@ impl Ext2Fs {
             return Err(error);
         }
         data[offset..offset + 4].copy_from_slice(&ino.to_le_bytes());
-        directory_io::write(
+        if let Err(error) = directory_io::write(
             self.device.as_ref(),
             self.superblock.block_size(),
             &blocks,
             &data,
-        )?;
+        ) {
+            // A device may write bytes before returning an error. Restore the
+            // old directory before releasing an inode that a name might reach.
+            directory_io::write(
+                self.device.as_ref(),
+                self.superblock.block_size(),
+                &blocks,
+                &before,
+            )?;
+            let mut attempted = false;
+            inode::release_orphan_inode(
+                self.device.as_ref(),
+                ino,
+                &self.superblock,
+                &mut self.block_groups,
+                &mut attempted,
+            )?;
+            return Err(error);
+        }
         parent_inode.update_timestamps(false, true, true);
         self.write_inode(parent, &parent_inode)?;
         self.superblock.decrement_free_inodes();

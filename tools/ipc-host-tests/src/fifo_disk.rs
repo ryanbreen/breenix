@@ -139,6 +139,7 @@ fn ext2_special_nodes_store_linux_device_encoding_and_directory_types() {
         if kind == 0o020000 || kind == 0o060000 {
             let dev = inode.i_block[1];
             assert_eq!(dev, 0x12345678);
+            assert_eq!(create_node::node_device(&inode), 0x12345678);
         }
     }
 }
@@ -183,4 +184,75 @@ fn fifo_entry_persists_in_an_existing_indirect_directory_block() {
         u32::from_le_bytes(snapshot[18 * 4096..18 * 4096 + 4].try_into().unwrap()),
         ino
     );
+}
+
+#[test]
+fn old_and_new_device_encodings_decode_to_linux_rdev() {
+    for dev in [0, 0x0103, 0xffff, 0x10000, 0x12345678, u32::MAX] {
+        for kind in [0o020000, 0o060000] {
+            let inode = create_node::node_inode(kind, 0, 0, dev);
+            assert_eq!(create_node::node_device(&inode), dev as u64);
+        }
+    }
+}
+
+#[test]
+fn failed_directory_publication_restores_name_and_releases_inode() {
+    struct FailingDisk {
+        bytes: Arc<Mutex<Vec<u8>>>,
+        sector: u64,
+        landed: bool,
+        armed: Mutex<bool>,
+    }
+    impl BlockDevice for FailingDisk {
+        fn read_block(&self, b: u64, out: &mut [u8]) -> Result<(), BlockError> {
+            Disk(self.bytes.clone()).read_block(b, out)
+        }
+        fn write_block(&self, b: u64, data: &[u8]) -> Result<(), BlockError> {
+            let fail = {
+                let mut armed = self.armed.lock().unwrap();
+                let fail = b == self.sector && *armed;
+                if fail {
+                    *armed = false;
+                }
+                fail
+            };
+            if !fail || self.landed {
+                Disk(self.bytes.clone()).write_block(b, data)?;
+            }
+            if fail {
+                Err(BlockError::IoError)
+            } else {
+                Ok(())
+            }
+        }
+        fn block_size(&self) -> usize {
+            512
+        }
+        fn num_blocks(&self) -> u64 {
+            4096
+        }
+        fn flush(&self) -> Result<(), BlockError> {
+            Ok(())
+        }
+    }
+    for sector in 16 * 8..17 * 8 {
+        for landed in [false, true] {
+            let (mut fs, bytes) = fixture();
+            let bitmap = bytes.lock().unwrap()[4 * 4096..5 * 4096].to_vec();
+            let free = fs.block_groups[0].bg_free_inodes_count;
+            fs.device = Box::new(FailingDisk {
+                bytes: bytes.clone(),
+                sector,
+                landed,
+                armed: Mutex::new(true),
+            });
+            assert!(fs.create_node(2, "fifo", 0o010600, 0, 0, 0).is_err());
+            let parent = fs.read_inode(2).unwrap();
+            assert!(find_entry(&fs.read_directory(&parent).unwrap(), "fifo").is_none());
+            assert_eq!(&bytes.lock().unwrap()[4 * 4096..5 * 4096], &bitmap);
+            let after = fs.block_groups[0].bg_free_inodes_count;
+            assert_eq!(after, free);
+        }
+    }
 }

@@ -39,6 +39,16 @@ pub(crate) fn check_parent_access(
         cred.egid
     })
 }
+pub(crate) fn creation_mode(mode: u32, cred: &Credentials, gid: u32, inherit_setgid: bool) -> u16 {
+    let mut bits = (mode & 0o7777 & !cred.umask) as u16;
+    if cred.euid != 0 && !cred.in_group(gid) {
+        bits &= !0o2000;
+    }
+    if inherit_setgid {
+        bits |= 0o2000;
+    }
+    bits
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +92,13 @@ mod tests {
         assert_eq!(check_parent_access(&parent, &cred(11, 21), None), Ok(30000));
         parent.i_mode = 0o040777;
         assert_eq!(check_parent_access(&parent, &cred(11, 21), None), Ok(21));
+    }
+    #[test]
+    fn unprivileged_creation_clears_unowned_setgid_but_directories_inherit_it() {
+        let cred = cred(11, 21);
+        assert_eq!(creation_mode(0o2666, &cred, 30000, false) & 0o2000, 0);
+        assert_eq!(creation_mode(0o2666, &cred, 21, false) & 0o2000, 0o2000);
+        assert_eq!(creation_mode(0o777, &cred, 30000, true) & 0o2000, 0o2000);
     }
     #[test]
     fn mknod_types_match_linux_errors() {

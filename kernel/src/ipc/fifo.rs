@@ -47,7 +47,6 @@ pub struct FifoEntry {
     pub read_waiters: Vec<u64>,
     /// Threads waiting to open for writing (waiting for reader)
     pub write_waiters: Vec<u64>,
-
 }
 
 impl FifoEntry {
@@ -73,7 +72,8 @@ impl FifoEntry {
             // POSIX read(): an empty FIFO with no writer returns EOF (0),
             // including an O_NONBLOCK reader opened before the first writer.
             // Do not invent a writer reference to turn that EOF into EAGAIN.
-            let buffer = Arc::try_new(Mutex::new(PipeBuffer::try_new_zero_refs()?)).map_err(|_| 12)?;
+            let buffer =
+                Arc::try_new(Mutex::new(PipeBuffer::try_new_zero_refs()?)).map_err(|_| 12)?;
             self.buffer = Some(buffer.clone());
             Ok(buffer)
         }
@@ -157,17 +157,27 @@ impl FifoEntry {
 /// Runtime pipe state, keyed by the held filesystem inode's incarnation.
 /// Weak entries keep the table from pinning an unlinked inode after last close.
 pub struct FifoRegistry {
-    fifos: Mutex<Vec<(crate::fs::ext2::live_inode::FileKey, Weak<Mutex<FifoEntry>>)>>,
+    fifos: crate::irq_safe_mutex::IrqSafeMutex<
+        Vec<(crate::fs::ext2::live_inode::FileKey, Weak<Mutex<FifoEntry>>)>,
+    >,
 }
 impl FifoRegistry {
-    pub const fn new() -> Self { Self { fifos: Mutex::new(Vec::new()) } }
+    pub const fn new() -> Self {
+        Self {
+            fifos: crate::irq_safe_mutex::IrqSafeMutex::new(Vec::new()),
+        }
+    }
     pub fn get_or_create(
-        &self, handle: crate::fs::ext2::live_inode::FileHandle,
+        &self,
+        handle: crate::fs::ext2::live_inode::FileHandle,
     ) -> Result<Arc<Mutex<FifoEntry>>, i32> {
         let key = handle.object.key;
         let mut fifos = self.fifos.lock();
         fifos.retain(|(_, entry)| entry.strong_count() != 0);
-        if let Some(entry) = fifos.iter().find_map(|(held, entry)| (*held == key).then(|| entry.upgrade()).flatten()) {
+        if let Some(entry) = fifos
+            .iter()
+            .find_map(|(held, entry)| (*held == key).then(|| entry.upgrade()).flatten())
+        {
             return Ok(entry);
         }
         fifos.try_reserve(1).map_err(|_| 12)?;
@@ -201,8 +211,13 @@ pub fn open_fifo_read(entry_arc: &Arc<Mutex<FifoEntry>>, nonblock: bool) -> Fifo
         let mut entry = entry_arc.lock();
 
         // Get or create the buffer
-        if !nonblock && entry.read_waiters.try_reserve(1).is_err() { return FifoOpenResult::Error(12); }
-        let buffer = match entry.get_or_create_buffer() { Ok(b) => b, Err(e) => return FifoOpenResult::Error(e) };
+        if !nonblock && entry.read_waiters.try_reserve(1).is_err() {
+            return FifoOpenResult::Error(12);
+        }
+        let buffer = match entry.get_or_create_buffer() {
+            Ok(b) => b,
+            Err(e) => return FifoOpenResult::Error(e),
+        };
 
         // Add ourselves as a reader
         entry.add_reader();
@@ -245,8 +260,13 @@ pub fn open_fifo_write(entry_arc: &Arc<Mutex<FifoEntry>>, nonblock: bool) -> Fif
         }
 
         // Get or create the buffer
-        if !nonblock && entry.write_waiters.try_reserve(1).is_err() { return FifoOpenResult::Error(12); }
-        let buffer = match entry.get_or_create_buffer() { Ok(b) => b, Err(e) => return FifoOpenResult::Error(e) };
+        if !nonblock && entry.write_waiters.try_reserve(1).is_err() {
+            return FifoOpenResult::Error(12);
+        }
+        let buffer = match entry.get_or_create_buffer() {
+            Ok(b) => b,
+            Err(e) => return FifoOpenResult::Error(e),
+        };
 
         // Add ourselves as a writer
         entry.add_writer();
@@ -272,10 +292,17 @@ pub fn open_fifo_write(entry_arc: &Arc<Mutex<FifoEntry>>, nonblock: bool) -> Fif
 pub fn open_fifo_readwrite(entry_arc: &Arc<Mutex<FifoEntry>>) -> FifoOpenResult {
     Cpu::without_interrupts(|| {
         let mut entry = entry_arc.lock();
-        let buffer = match entry.get_or_create_buffer() { Ok(b) => b, Err(e) => return FifoOpenResult::Error(e) };
+        let buffer = match entry.get_or_create_buffer() {
+            Ok(b) => b,
+            Err(e) => return FifoOpenResult::Error(e),
+        };
         entry.add_reader();
         entry.add_writer();
-        { let mut pipe = buffer.lock(); pipe.add_reader(); pipe.add_writer(); }
+        {
+            let mut pipe = buffer.lock();
+            pipe.add_reader();
+            pipe.add_writer();
+        }
         FifoOpenResult::Ready(buffer)
     })
 }
@@ -312,10 +339,14 @@ pub fn recheck_fifo_open(
         }
         if let Some(tid) = crate::task::scheduler::current_thread_id() {
             if for_write {
-                if entry.write_waiters.try_reserve(1).is_err() { return FifoOpenResult::Error(12); }
+                if entry.write_waiters.try_reserve(1).is_err() {
+                    return FifoOpenResult::Error(12);
+                }
                 entry.add_write_waiter(tid);
             } else {
-                if entry.read_waiters.try_reserve(1).is_err() { return FifoOpenResult::Error(12); }
+                if entry.read_waiters.try_reserve(1).is_err() {
+                    return FifoOpenResult::Error(12);
+                }
                 entry.add_read_waiter(tid);
             }
         }

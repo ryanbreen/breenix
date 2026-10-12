@@ -29,9 +29,8 @@
 
 use super::live_inode::FileHandle;
 use super::{
-    add_directory_entry, dir_entry_type, is_directory_empty,
-    remove_entry, update_directory_entry, write_ext2_block, Ext2Fs, Ext2Inode, EXT2_FT_DIR,
-    EXT2_LINK_MAX, EXT2_ROOT_INO,
+    add_directory_entry, dir_entry_type, is_directory_empty, remove_entry, update_directory_entry,
+    write_ext2_block, Ext2Fs, Ext2Inode, EXT2_FT_DIR, EXT2_LINK_MAX, EXT2_ROOT_INO,
 };
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
@@ -78,13 +77,41 @@ pub(super) enum Write<'a> {
     },
 }
 
-trait MemoryFailure { fn no_memory(&self) -> bool; }
-impl MemoryFailure for &'static str { fn no_memory(&self)->bool { self.contains("memory") } }
-impl MemoryFailure for crate::block::BlockError { fn no_memory(&self)->bool { *self == crate::block::BlockError::OutOfMemory } }
-impl MemoryFailure for core::num::TryFromIntError { fn no_memory(&self)->bool { false } }
-impl MemoryFailure for () { fn no_memory(&self)->bool { false } }
+trait MemoryFailure {
+    fn no_memory(&self) -> bool;
+}
+impl MemoryFailure for &'static str {
+    fn no_memory(&self) -> bool {
+        matches!(
+            *self,
+            "No memory for namespace image"
+                | "No memory for ext2 inode object"
+                | "No memory for ext2 inode index"
+                | "No memory for directory data"
+        )
+    }
+}
+impl MemoryFailure for crate::block::BlockError {
+    fn no_memory(&self) -> bool {
+        *self == crate::block::BlockError::OutOfMemory
+    }
+}
+impl MemoryFailure for core::num::TryFromIntError {
+    fn no_memory(&self) -> bool {
+        false
+    }
+}
+impl MemoryFailure for () {
+    fn no_memory(&self) -> bool {
+        false
+    }
+}
 fn io(error: impl MemoryFailure) -> RenameError {
-    if error.no_memory() { RenameError::NoMemory } else { RenameError::Io }
+    if error.no_memory() {
+        RenameError::NoMemory
+    } else {
+        RenameError::Io
+    }
 }
 
 /// A count that leaves the range of a link count can only come from a
@@ -167,9 +194,7 @@ impl Ext2Fs {
                 Some((ino, inode, handle))
             }
         };
-        let victim_is_dir = victim
-            .as_ref()
-            .is_some_and(|(_, inode, _)| inode.is_dir());
+        let victim_is_dir = victim.as_ref().is_some_and(|(_, inode, _)| inode.is_dir());
         // The moved directory's `..` is a new link to its new parent.
         let raise_parent = source_is_dir && !same_dir;
         if raise_parent && victim.is_none() && new_dir_inode.i_links_count >= EXT2_LINK_MAX {
@@ -189,7 +214,11 @@ impl Ext2Fs {
             }
         };
         let mut old_image = super::namespace_alloc::copy_image(&old_data).map_err(io)?;
-        let mut new_image = new_data.as_deref().map(super::namespace_alloc::copy_image).transpose().map_err(io)?;
+        let mut new_image = new_data
+            .as_deref()
+            .map(super::namespace_alloc::copy_image)
+            .transpose()
+            .map_err(io)?;
         let named_at = match new_image.as_mut() {
             None if victim.is_some() => {
                 let at = update_directory_entry(&mut old_image, new_name, source, file_type)
@@ -259,7 +288,9 @@ impl Ext2Fs {
         }
 
         let mut writes = Vec::new();
-        writes.try_reserve_exact(6).map_err(|_| RenameError::NoMemory)?;
+        writes
+            .try_reserve_exact(6)
+            .map_err(|_| RenameError::NoMemory)?;
         writes.push(Write::Inode {
             ino: source,
             old: source_inode,
@@ -432,7 +463,12 @@ impl Ext2Fs {
             )
             .map_err(|_| ()),
             Write::Inode { ino, old, new } => (if undo { old } else { new })
-                .write_to(self.device.as_ref(), *ino, &self.superblock, &self.block_groups)
+                .write_to(
+                    self.device.as_ref(),
+                    *ino,
+                    &self.superblock,
+                    &self.block_groups,
+                )
                 .map_err(|_| ()),
         }
     }

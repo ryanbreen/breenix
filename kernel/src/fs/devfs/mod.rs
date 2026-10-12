@@ -173,6 +173,16 @@ pub fn lookup(name: &str) -> Option<DeviceNode> {
     None
 }
 
+/// Resolve a native device inode through the registered driver table.
+pub fn lookup_by_rdev(rdev: u64) -> Option<DeviceNode> {
+    DEVFS
+        .lock()
+        .devices
+        .iter()
+        .find(|device| device.rdev() == rdev)
+        .cloned()
+}
+
 /// Look up a device by inode number
 pub fn lookup_by_inode(inode: u64) -> Option<DeviceNode> {
     let devfs = DEVFS.lock();
@@ -200,7 +210,12 @@ pub fn list_devices() -> Vec<String> {
 /// Snapshot directory metadata without allocating per-name strings.
 pub fn directory_entries() -> Result<Vec<entries::DirectoryEntry>, u64> {
     let devfs = DEVFS.lock();
-    entries::entries(devfs.devices.iter().map(|d| (d.device_type.name(), d.device_type.inode())))
+    entries::entries(
+        devfs
+            .devices
+            .iter()
+            .map(|d| (d.device_type.name(), d.device_type.inode())),
+    )
 }
 
 /// Check if devfs is initialized

@@ -2,6 +2,9 @@
 #![cfg(test)]
 #![feature(allocator_api)]
 extern crate alloc;
+pub mod irq_safe_mutex {
+    pub type IrqSafeMutex<T> = spin::Mutex<T>;
+}
 pub use syscall::SyscallResult;
 include!(concat!(env!("OUT_DIR"), "/ipc_numbers.rs"));
 #[path = "../../ext2-host-tests/src/block.rs"]
@@ -17,11 +20,19 @@ pub mod fs {
         pub mod live_inode {
             use alloc::sync::Arc;
             #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-            pub struct FileKey { pub mount_instance: u64, pub inode: u32, pub incarnation: u64 }
+            pub struct FileKey {
+                pub mount_instance: u64,
+                pub inode: u32,
+                pub incarnation: u64,
+            }
             #[derive(Debug)]
-            pub struct LiveInode { pub key: FileKey }
+            pub struct LiveInode {
+                pub key: FileKey,
+            }
             #[derive(Clone, Debug)]
-            pub struct FileHandle { pub object: Arc<LiveInode> }
+            pub struct FileHandle {
+                pub object: Arc<LiveInode>,
+            }
         }
     }
 }
@@ -102,8 +113,12 @@ pub mod process {
     #[derive(Clone, Copy, Debug)]
     pub struct ProcessId(pub u64);
     impl ProcessId {
-        pub fn new(value: u64) -> Self { Self(value) }
-        pub fn as_u64(self) -> u64 { self.0 }
+        pub fn new(value: u64) -> Self {
+            Self(value)
+        }
+        pub fn as_u64(self) -> u64 {
+            self.0
+        }
     }
     pub struct Ids {
         pub uid: u32,
@@ -281,9 +296,13 @@ fn ipc_file_defaults_and_downcast() {
     #[derive(Debug)]
     struct Queue;
     impl object::IpcFile for Queue {
-        fn as_any(&self) -> &dyn core::any::Any { self }
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
         fn fill_stat(&self, _: &mut syscall::fs::Stat) {}
-        fn statfs_magic(&self) -> u64 { 0x19800202 }
+        fn statfs_magic(&self) -> u64 {
+            0x19800202
+        }
     }
     let queue: alloc::sync::Arc<dyn object::IpcFile> = alloc::sync::Arc::new(Queue);
     assert_eq!(queue.statfs_magic(), 0x19800202);
@@ -307,18 +326,21 @@ mod fd_flags;
 fn interrupted_wait_preserves_the_original_restart_or_exit_errno() {
     let q = task::waitqueue::WaitQueueHead::new();
     q.interrupted.set(true);
-    for error in [4,512,3,12] {
+    for error in [4, 512, 3, 12] {
         q.error.set(error);
-        assert_eq!(wait::wait_on(&q,&wait::IpcDeadline::Never,||true),wait::WaitEnd::Interrupted(error as u64));
+        assert_eq!(
+            wait::wait_on(&q, &wait::IpcDeadline::Never, || true),
+            wait::WaitEnd::Interrupted(error as u64)
+        );
     }
 }
 
-#[path = "../../../kernel/src/task/waitqueue_alloc.rs"]
-mod waitqueue_alloc;
 #[path = "../../../kernel/src/ipc/fifo.rs"]
 pub mod fifo;
 #[path = "../../../kernel/src/ipc/pipe.rs"]
 pub mod pipe;
+#[path = "../../../kernel/src/task/waitqueue_alloc.rs"]
+mod waitqueue_alloc;
 pub mod arch_impl {
     pub mod traits {
         pub trait CpuOps {
@@ -442,21 +464,35 @@ fn fifo_nonblocking_writer_enxio_takes_no_reference() {
 
 fn handle(ino: u32, incarnation: u64) -> fs::ext2::live_inode::FileHandle {
     use fs::ext2::live_inode::*;
-    FileHandle { object: alloc::sync::Arc::new(LiveInode { key: FileKey { mount_instance: 1, inode: ino, incarnation } }) }
+    FileHandle {
+        object: alloc::sync::Arc::new(LiveInode {
+            key: FileKey {
+                mount_instance: 1,
+                inode: ino,
+                incarnation,
+            },
+        }),
+    }
 }
 #[test]
 fn inode_aliases_share_runtime_and_recreated_names_do_not() {
     let registry = fifo::FifoRegistry::new();
-    let original = registry.get_or_create(handle(11,1)).unwrap();
-    let alias = registry.get_or_create(handle(11,1)).unwrap();
-    assert!(alloc::sync::Arc::ptr_eq(&original,&alias));
-    let fifo::FifoOpenResult::Ready(buffer) = fifo::open_fifo_readwrite(&original) else { panic!("duplex"); };
-    assert_eq!(buffer.lock().write(b"old"),Ok(3));
-    let replacement = registry.get_or_create(handle(11,2)).unwrap();
-    assert!(!alloc::sync::Arc::ptr_eq(&original,&replacement));
-    let fifo::FifoOpenResult::Ready(new_buffer) = fifo::open_fifo_readwrite(&replacement) else { panic!("new duplex"); };
-    assert_eq!(new_buffer.lock().read(&mut [0;3]),Err(11));
-    let mut got = [0;3]; assert_eq!(buffer.lock().read(&mut got),Ok(3)); assert_eq!(&got,b"old");
+    let original = registry.get_or_create(handle(11, 1)).unwrap();
+    let alias = registry.get_or_create(handle(11, 1)).unwrap();
+    assert!(alloc::sync::Arc::ptr_eq(&original, &alias));
+    let fifo::FifoOpenResult::Ready(buffer) = fifo::open_fifo_readwrite(&original) else {
+        panic!("duplex");
+    };
+    assert_eq!(buffer.lock().write(b"old"), Ok(3));
+    let replacement = registry.get_or_create(handle(11, 2)).unwrap();
+    assert!(!alloc::sync::Arc::ptr_eq(&original, &replacement));
+    let fifo::FifoOpenResult::Ready(new_buffer) = fifo::open_fifo_readwrite(&replacement) else {
+        panic!("new duplex");
+    };
+    assert_eq!(new_buffer.lock().read(&mut [0; 3]), Err(11));
+    let mut got = [0; 3];
+    assert_eq!(buffer.lock().read(&mut got), Ok(3));
+    assert_eq!(&got, b"old");
 }
 
 #[test]
@@ -545,7 +581,7 @@ fn abandoned_writer_leaves_buffered_data_then_eof_for_the_reader() {
 #[test]
 fn runtime_table_drops_the_last_inode_observer() {
     let registry = fifo::FifoRegistry::new();
-    let pin = handle(11,1);
+    let pin = handle(11, 1);
     let object = alloc::sync::Arc::downgrade(&pin.object);
     let entry = registry.get_or_create(pin).unwrap();
     assert!(object.upgrade().is_some());
@@ -556,18 +592,33 @@ fn runtime_table_drops_the_last_inode_observer() {
 #[test]
 fn duplex_close_preserves_other_endpoints_and_reopen_discards_bytes() {
     let entry = alloc::sync::Arc::new(spin::Mutex::new(fifo::FifoEntry::new()));
-    let fifo::FifoOpenResult::Ready(buffer) = fifo::open_fifo_readwrite(&entry) else { panic!("open"); };
-    assert_eq!(buffer.lock().write(b"abc"),Ok(3));
-    assert!(matches!(fifo::open_fifo_read(&entry,true),fifo::FifoOpenResult::Ready(_)));
-    let read = buffer.lock().close_read(); read.deliver(); fifo::close_fifo_read(&entry);
-    let write = buffer.lock().close_write(); write.deliver(); fifo::close_fifo_write(&entry);
-    let mut got=[0;3]; assert_eq!(buffer.lock().read(&mut got),Ok(3)); assert_eq!(&got,b"abc");
-    assert_eq!(buffer.lock().read(&mut got),Ok(0));
-    let read = buffer.lock().close_read(); read.deliver(); fifo::close_fifo_read(&entry);
+    let fifo::FifoOpenResult::Ready(buffer) = fifo::open_fifo_readwrite(&entry) else {
+        panic!("open");
+    };
+    assert_eq!(buffer.lock().write(b"abc"), Ok(3));
+    assert!(matches!(
+        fifo::open_fifo_read(&entry, true),
+        fifo::FifoOpenResult::Ready(_)
+    ));
+    let read = buffer.lock().close_read();
+    read.deliver();
+    fifo::close_fifo_read(&entry);
+    let write = buffer.lock().close_write();
+    write.deliver();
+    fifo::close_fifo_write(&entry);
+    let mut got = [0; 3];
+    assert_eq!(buffer.lock().read(&mut got), Ok(3));
+    assert_eq!(&got, b"abc");
+    assert_eq!(buffer.lock().read(&mut got), Ok(0));
+    let read = buffer.lock().close_read();
+    read.deliver();
+    fifo::close_fifo_read(&entry);
     assert!(entry.lock().buffer.is_none());
-    let fifo::FifoOpenResult::Ready(reopened) = fifo::open_fifo_readwrite(&entry) else { panic!("reopen"); };
-    assert!(!alloc::sync::Arc::ptr_eq(&buffer,&reopened));
-    assert_eq!(reopened.lock().read(&mut got),Err(11));
+    let fifo::FifoOpenResult::Ready(reopened) = fifo::open_fifo_readwrite(&entry) else {
+        panic!("reopen");
+    };
+    assert!(!alloc::sync::Arc::ptr_eq(&buffer, &reopened));
+    assert_eq!(reopened.lock().read(&mut got), Err(11));
 }
 
 #[path = "../../../kernel/src/syscall/fifo_policy.rs"]

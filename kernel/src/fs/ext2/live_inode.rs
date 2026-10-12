@@ -51,6 +51,8 @@ pub struct LiveInode {
     pub mount: MountPin,
     pub size: AtomicU64,
     pub size_epoch: AtomicU64,
+    pub atime_pending: AtomicU64,
+    pub mtime_pending: AtomicU64,
     /// Cached pages and reverse map for file mappings.
     pub map: crate::memory::file_map::MapState,
     external_handles: AtomicUsize,
@@ -59,6 +61,31 @@ pub struct LiveInode {
 }
 
 impl LiveInode {
+    pub fn touch(&self, read: bool) {
+        let now = crate::time::current_unix_time().max(1) as u64;
+        if read {
+            self.atime_pending.store(now, Ordering::Release);
+        } else {
+            self.mtime_pending.store(now, Ordering::Release);
+        }
+        super::writeback::request();
+    }
+    fn times_pending(&self) -> bool {
+        self.atime_pending.load(Ordering::Acquire) != 0
+            || self.mtime_pending.load(Ordering::Acquire) != 0
+    }
+    pub(super) fn overlay_times(&self, inode: &mut super::Ext2Inode) {
+        let atime = self.atime_pending.load(Ordering::Acquire);
+        let mtime = self.mtime_pending.load(Ordering::Acquire);
+        if atime != 0 {
+            inode.i_atime = atime as u32;
+        }
+        if mtime != 0 {
+            inode.i_mtime = mtime as u32;
+            inode.i_ctime = mtime as u32;
+        }
+    }
+
     pub(super) fn unused(&self) -> bool {
         self.external_handles.load(Ordering::Acquire) == 0
     }
@@ -159,7 +186,11 @@ impl Table {
             .take(PRUNE_PER_PIN)
         {
             self.prune_cursor = inode;
-            if object.unused() && !object.orphan.load(Ordering::Acquire) && !object.map.nonempty() {
+            if object.unused()
+                && !object.orphan.load(Ordering::Acquire)
+                && !object.map.nonempty()
+                && !object.times_pending()
+            {
                 stale[found] = inode;
                 found += 1;
             }
@@ -217,15 +248,31 @@ impl LiveInodes {
                 mount,
                 size: AtomicU64::new(size),
                 size_epoch: AtomicU64::new(0),
+                atime_pending: AtomicU64::new(0),
+                mtime_pending: AtomicU64::new(0),
                 map: crate::memory::file_map::MapState::new(size, self.durable_epoch()),
                 external_handles: AtomicUsize::new(0),
                 pending: AtomicBool::new(false),
                 orphan: AtomicBool::new(false),
-            }).map_err(|_| "No memory for ext2 inode object")?;
+            })
+            .map_err(|_| "No memory for ext2 inode object")?;
             table.objects.insert(inode, object.clone())?;
             object
         };
         Ok(FileHandle::acquire(object))
+    }
+
+    pub(super) fn next_times(&self, after: Option<u32>) -> Option<Arc<LiveInode>> {
+        self.table
+            .lock()
+            .objects
+            .values()
+            .find(|object| {
+                after.is_none_or(|ino| object.key.inode > ino)
+                    && !object.orphan.load(Ordering::Acquire)
+                    && object.times_pending()
+            })
+            .cloned()
     }
 
     /// The live entry for `inode`, if one exists.
@@ -325,17 +372,28 @@ impl LiveInodes {
     pub fn pending_snapshot(&self) -> Result<alloc::vec::Vec<Arc<LiveInode>>, &'static str> {
         let table = self.table.lock();
         let mut objects = alloc::vec::Vec::new();
-        objects.try_reserve(table.objects.len()).map_err(|_| "No memory for ext2 accounting")?;
-        objects.extend(table.objects.values()
-            .filter(|object| object.unused() && object.pending.load(Ordering::Acquire))
-            .cloned());
+        objects
+            .try_reserve(table.objects.len())
+            .map_err(|_| "No memory for ext2 accounting")?;
+        objects.extend(
+            table
+                .objects
+                .values()
+                .filter(|object| object.unused() && object.pending.load(Ordering::Acquire))
+                .cloned(),
+        );
         Ok(objects)
     }
 
     /// A captured Arc may outlive completed reclamation and inode reuse.
     pub fn is_pending(&self, object: &Arc<LiveInode>) -> bool {
-        object.unused() && object.pending.load(Ordering::Acquire)
-            && self.table.lock().objects.get(&object.key.inode)
+        object.unused()
+            && object.pending.load(Ordering::Acquire)
+            && self
+                .table
+                .lock()
+                .objects
+                .get(&object.key.inode)
                 .is_some_and(|entry| Arc::ptr_eq(entry, object))
     }
 
