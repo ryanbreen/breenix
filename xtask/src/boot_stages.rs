@@ -91,6 +91,36 @@ pub fn get_dns_stages() -> Vec<BootStage> {
 fn x86_64_kernel_stages() -> Vec<BootStage> {
     vec![
         BootStage {
+            name: "Keyboard queue initialized",
+            marker: "Keyboard queue initialized",
+            failure_meaning: "Initialization did not reach its own ready marker",
+            check_hint: "kernel/src/main.rs keyboard queue initialization",
+        },
+        BootStage {
+            name: "Keyboard task ready",
+            marker: "Keyboard ready! Type to see characters",
+            failure_meaning: "Initialization did not reach its own ready marker",
+            check_hint: "kernel/src/keyboard.rs keyboard task",
+        },
+        BootStage {
+            name: "Async executor started",
+            marker: "Starting async executor...",
+            failure_meaning: "Initialization did not reach its own ready marker",
+            check_hint: "kernel/src/main.rs executor startup",
+        },
+        BootStage {
+            name: "FD slab cache initialized",
+            marker: "Slab cache 'fd_table' initialized: 64 slots",
+            failure_meaning: "Initialization did not reach its own ready marker",
+            check_hint: "kernel/src/memory/slab.rs init_caches",
+        },
+        BootStage {
+            name: "Signal slab cache initialized",
+            marker: "Slab cache 'signal_handlers' initialized: 64 slots",
+            failure_meaning: "Initialization did not reach its own ready marker",
+            check_hint: "kernel/src/memory/slab.rs init_caches",
+        },
+        BootStage {
             name: "Kernel entry point",
             marker: "Kernel entry point reached",
             failure_meaning: "Kernel failed to start at all",

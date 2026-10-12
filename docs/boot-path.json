@@ -71,7 +71,9 @@
           "TLS initialized",
           "SWAPGS support enabled",
           "IST stacks updated",
-          "Initial TSS.RSP0 configured"
+          "Initial TSS.RSP0 configured",
+          "FD slab cache initialized",
+          "Signal slab cache initialized"
         ]
       }
     },
@@ -120,7 +122,9 @@
           "VirtIO block driver initialized",
           "VirtIO disk read successful",
           "E1000 driver initialized",
-          "Network stack initialized"
+          "Network stack initialized",
+          "Keyboard queue initialized",
+          "Keyboard task ready"
         ]
       }
     },
@@ -203,7 +207,8 @@
           "Softirq iteration limit test passed",
           "Softirq ksoftirqd verification passed",
           "Softirq all tests passed",
-          "User work ran on every online CPU"
+          "User work ran on every online CPU",
+          "Async executor started"
         ],
         "probe": [
           "Per-CPU data initialized",

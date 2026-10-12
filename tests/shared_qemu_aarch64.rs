@@ -15,9 +15,12 @@ mod process_tree;
 mod signal_handlers;
 use process_tree::ChildGroup;
 use signal_handlers::SignalHandlers;
+#[path = "shared_qemu/boot_lock.rs"]
+mod boot_lock;
+use boot_lock::BootLock;
 
 // Static container for shared QEMU output - runs once for all tests
-static ARM64_KERNEL_OUTPUT: OnceLock<String> = OnceLock::new();
+static ARM64_KERNEL_OUTPUT: OnceLock<Result<String, String>> = OnceLock::new();
 
 /// Build configuration for ARM64 kernel
 pub struct Arm64BuildConfig {
@@ -61,12 +64,17 @@ pub fn build_arm64_kernel(config: &Arm64BuildConfig) -> Result<String, String> {
         args.push("--release");
     }
 
-    let log_path = std::env::temp_dir().join(format!("breenix-arm64-build-{}.log", std::process::id()));
+    let log_path =
+        std::env::temp_dir().join(format!("breenix-arm64-build-{}.log", std::process::id()));
     let log = fs::File::create(&log_path).map_err(|e| format!("create build log: {e}"))?;
     let mut command = Command::new("cargo");
-    command.env("CARGO_BUILD_JOBS", "6").args(&args)
-        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::from(log));
-    let mut build = ChildGroup::spawn(&mut command).map_err(|e| format!("Failed to run cargo: {e}"))?;
+    command
+        .env("CARGO_BUILD_JOBS", "6")
+        .args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(log));
+    let mut build =
+        ChildGroup::spawn(&mut command).map_err(|e| format!("Failed to run cargo: {e}"))?;
     let deadline = Instant::now() + Duration::from_secs(900);
     let status = loop {
         if SignalHandlers::interrupted() {
@@ -108,6 +116,8 @@ pub fn build_arm64_kernel(config: &Arm64BuildConfig) -> Result<String, String> {
 /// Returns the captured serial output string
 pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, String> {
     let _signals = SignalHandlers::install();
+    let mut boot_lock =
+        BootLock::acquire("target/shared_arm64_test.lock").map_err(|e| e.to_string())?;
     let serial_output_file = "target/arm64_kernel_test_output.txt";
 
     // Remove old output file if it exists
@@ -165,7 +175,8 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
             .arg(&ext2_drive_spec);
     }
 
-    let mut qemu = ChildGroup::spawn(&mut qemu_cmd)
+    let mut qemu = boot_lock
+        .spawn(&mut qemu_cmd)
         .map_err(|e| format!("Failed to start QEMU: {}", e))?;
 
     // Wait for serial output file to be created and populated
@@ -190,60 +201,29 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
         thread::sleep(poll_interval);
     }
 
-    // Poll for boot completion AND userspace execution markers
-    let mut post_complete = false;
-    while start.elapsed() < timeout {
+    loop {
         if SignalHandlers::interrupted() {
             return Err("QEMU test interrupted".to_string());
         }
-        if let Some(status) = qemu.try_wait().map_err(|e| e.to_string())? {
-            return Err(format!("QEMU exited before boot completion: {status}"));
+        if arm64_ready(&fs::read_to_string(serial_output_file).map_err(|e| e.to_string())?) {
+            break;
         }
-        if let Ok(content) = fs::read_to_string(serial_output_file) {
-            // Check for ARM64-specific POST completion or boot completion
-            if !post_complete
-                && (content.contains("[CHECKPOINT:POST_COMPLETE]")
-                    || content.contains("Breenix ARM64 Boot Complete")
-                    || content.contains("Hello from ARM64"))
-            {
-                post_complete = true;
-                println!("Kernel reached boot completion marker");
-            }
-
-            // Check for userspace execution markers
-            // EL0_SYSCALL is printed when first syscall from userspace is received
-            // breenix> is the shell prompt (proves userspace is running)
-            if post_complete
-                && (content.contains("EL0_SYSCALL:")
-                    || content.contains("syscall path verified")
-                    || content.contains("breenix>")
-                    || content.contains("[STDIN_BLOCK]"))
-            {
-                println!("Userspace execution confirmed");
-                // Give it a moment to finish writing any final output
-                thread::sleep(Duration::from_millis(500));
-                break;
-            }
-
-            // If we've been waiting 5+ seconds after boot completion, proceed anyway
-            if post_complete && start.elapsed() > Duration::from_secs(15) {
-                println!("Warning: Userspace execution not detected after boot (waited 15s total)");
-                break;
-            }
+        if let Some(status) = qemu.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!(
+                "QEMU exited before ARM64 boot completion and EL0 syscall: {status}"
+            ));
+        }
+        if start.elapsed() >= timeout {
+            return Err(format!(
+                "ARM64 kernel did not print its boot completion and EL0 syscall lines: {}",
+                fs::read_to_string(serial_output_file).unwrap_or_default()
+            ));
         }
         thread::sleep(poll_interval);
     }
-
-    // Kill QEMU
     drop(qemu);
-
-    // Read the final serial output
     let output = fs::read_to_string(serial_output_file)
-        .map_err(|e| format!("Failed to read serial output: {}", e))?;
-
-    if !post_complete {
-        println!("Warning: Kernel did not reach boot completion marker");
-    }
+        .map_err(|e| format!("Failed to read serial output: {e}"))?;
 
     println!("Captured {} bytes of ARM64 kernel output", output.len());
 
@@ -253,33 +233,50 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
     Ok(output)
 }
 
+fn arm64_ready(output: &str) -> bool {
+    // ARM64 has no POST_COMPLETE checkpoint. Require both of its own complete
+    // lines, including the syscall entry's proof that the guest reached EL0.
+    let complete = |expected: &str| {
+        output
+            .split_inclusive('\n')
+            .any(|line| line.ends_with('\n') && line.trim() == expected)
+    };
+    complete("Breenix ARM64 Boot Complete!")
+        && complete("EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)")
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    #[test]
+    fn requires_both_producers_complete_lines() {
+        let boot = "  Breenix ARM64 Boot Complete!\n";
+        let syscall = "EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)\n";
+        assert!(!super::arm64_ready(boot));
+        assert!(!super::arm64_ready(syscall));
+        assert!(!super::arm64_ready(&format!(
+            "{boot}kernel::test_exec: will emit {syscall}"
+        )));
+        assert!(!super::arm64_ready(&format!(
+            "{boot}{}",
+            syscall.trim_end()
+        )));
+        assert!(super::arm64_ready(&format!("{boot}{syscall}")));
+    }
+}
+
 /// Get the complete ARM64 kernel output by building, running QEMU, and capturing output
 ///
 /// This function uses OnceLock to ensure QEMU only runs once per test session,
 /// even when called from multiple tests concurrently.
 pub fn get_arm64_kernel_output() -> &'static str {
-    ARM64_KERNEL_OUTPUT.get_or_init(|| {
-        println!("Starting ARM64 QEMU to capture kernel output...");
-
-        // Build the kernel
+    let result = ARM64_KERNEL_OUTPUT.get_or_init(|| {
         let config = Arm64BuildConfig::default();
-        let kernel_path = match build_arm64_kernel(&config) {
-            Ok(path) => path,
-            Err(e) => {
-                eprintln!("Failed to build ARM64 kernel: {}", e);
-                return format!("BUILD_ERROR: {}", e);
-            }
-        };
-
-        // Run QEMU and capture output (30 second timeout)
-        match run_arm64_qemu(&kernel_path, 30) {
-            Ok(output) => output,
-            Err(e) => {
-                eprintln!("Failed to run ARM64 QEMU: {}", e);
-                format!("QEMU_ERROR: {}", e)
-            }
-        }
-    })
+        build_arm64_kernel(&config).and_then(|path| run_arm64_qemu(&path, 300))
+    });
+    match result {
+        Ok(output) => output,
+        Err(error) => panic!("ARM64 shared QEMU initialization failed: {error}"),
+    }
 }
 
 /// Check if ARM64 kernel output contains all expected boot messages

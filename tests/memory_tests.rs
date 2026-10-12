@@ -63,7 +63,7 @@ fn test_heap_allocation() {
 
 /// Test slab allocator initialization
 #[test]
-#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
+#[ignore = "covered by x86 boot-path stages: FD slab cache initialized, Signal slab cache initialized"]
 fn test_slab_allocator_initialization() {
     println!("Testing slab allocator initialization...");
 

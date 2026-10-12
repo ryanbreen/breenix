@@ -8,10 +8,11 @@ use shared_qemu::get_kernel_output;
 /// 2. The kernel logs warnings for unknown syscalls
 /// 3. The userspace test program correctly detects ENOSYS
 ///
-/// NOTE: This test is marked ignore until Ring-3 execution is fixed.
+/// NOTE: This legacy test remains ignored until its Ring-3 assertions are repaired;
+/// it currently accepts partial evidence and cannot certify execution.
 /// Run with --ignored to test ENOSYS infrastructure.
 #[test]
-#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
+#[ignore = "Ring-3 execution not working - run with --ignored to test infrastructure"]
 fn test_enosys_syscall() {
     println!("Testing ENOSYS syscall handling...");
 

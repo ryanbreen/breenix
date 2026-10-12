@@ -324,6 +324,10 @@ wait_boot_done() {
 
 # Install before starting a VM. Ignore further signals during cleanup so Vigil
 # receives the boot verdict even if stopping the VM fails or Ctrl-C is repeated.
+bounded_vm_command() {
+    python3 "$BREENIX_ROOT/scripts/bounded-vm-command.py" 30 "$@"
+}
+
 finish_vm_boot() {
     local status=$?
     trap '' INT HUP TERM
@@ -600,9 +604,9 @@ if [ "$PARALLELS" = true ]; then
     # stopping or suspended VM and never the named VMs (breenix-dev, breenix-parallels-*).
     # Finish this sweep before launching so none of its children outlive the runner.
     (
-        prlctl list -a -o status,name 2>/dev/null | awk '$1 == "stopped" && $2 ~ /^breenix-[0-9]+$/ { print $2 }' |
+        bounded_vm_command prlctl list -a -o status,name 2>/dev/null | awk '$1 == "stopped" && $2 ~ /^breenix-[0-9]+$/ { print $2 }' |
             while read -r old_vm; do
-                [ "$old_vm" = "$PARALLELS_VM" ] || prlctl delete "$old_vm" >/dev/null 2>&1 || true
+                [ "$old_vm" = "$PARALLELS_VM" ] || bounded_vm_command prlctl delete "$old_vm" >/dev/null 2>&1 || true
             done
     )
 
@@ -745,7 +749,7 @@ if [ "$PARALLELS" = true ]; then
         VM_DIR="$HOME/Parallels/${PARALLELS_VM}.pvm"
         VM_LOG="$VM_DIR/parallels.log"
         if [ -f "$VM_LOG" ]; then
-            python3 -u "$BREENIX_ROOT/scripts/vm-log-monitor.py" parallels "$VM_LOG" &
+            python3 -u "$BREENIX_ROOT/scripts/vm-log-monitor.py" parallels "$VM_LOG" "$$" &
             LOGMON_PID=$!
         fi
 
@@ -914,17 +918,20 @@ if [ "$VMWARE" = true ]; then
     # rewrites files in every bundle its library lists, so file times never age. Never a named VM. Sweep
     # at launch and again from finish_vm_boot, so a burst of boots leaves at most its last half hour.
     sweep_vmware_bundles() {
-        local now old_bundle old_name old_vmx
+        local now old_bundle old_name old_vmx VM_BUNDLE_LIST
+        VM_BUNDLE_LIST=$(mktemp)
         now=$(date +%s)
         for old_bundle in "$VM_MACHINES"/breenix-[0-9]*.vmwarevm; do
             [ -d "$old_bundle" ] && [ "$old_bundle" != "$VM_BUNDLE" ] || continue
             old_name=$(basename "$old_bundle" .vmwarevm)
             [ $((now - ${old_name#breenix-})) -gt 1800 ] || continue
             old_vmx="$old_bundle/$old_name.vmx"
-            "$VMRUN" list 2>/dev/null | grep -qxF "$old_vmx" && continue
+            bounded_vm_command "$VMRUN" list > "$VM_BUNDLE_LIST" 2>/dev/null || { rm -f "$VM_BUNDLE_LIST"; return 0; }
+            grep -qxF "$old_vmx" "$VM_BUNDLE_LIST" && continue
             # deleteVM also drops the VM from Fusion's library; a bare rm leaves a dead library entry behind.
-            "$VMRUN" deleteVM "$old_vmx" >/dev/null 2>&1 || rm -rf "$old_bundle"
+            bounded_vm_command "$VMRUN" deleteVM "$old_vmx" >/dev/null 2>&1 || true
         done
+        rm -f "$VM_BUNDLE_LIST"
     }
     sweep_vmware_bundles
 
@@ -1073,7 +1080,7 @@ VMXEOF
 
     # Monitor vmware.log for CPU exceptions in background
     VM_LOG="$VM_BUNDLE/vmware.log"
-    python3 -u "$BREENIX_ROOT/scripts/vm-log-monitor.py" vmware "$VM_LOG" &
+    python3 -u "$BREENIX_ROOT/scripts/vm-log-monitor.py" vmware "$VM_LOG" "$$" &
     LOGMON_PID=$!
     # Keep VM cleanup installed while the serial tail runs.
     sleep 1
