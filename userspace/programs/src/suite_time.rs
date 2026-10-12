@@ -1039,8 +1039,8 @@ fn counter_frequency() -> Result<u64, String> {
 /// RTC seconds the x86-64 counter frequency is measured across.
 #[cfg(target_arch = "x86_64")]
 const RTC_SPAN_S: u64 = 4;
-/// The widest RTC_RD_TIME poll that may time a seconds edge, as a fraction of a
-/// second: 1/500 s. Each edge is timed to within half its poll, so the two edges
+/// The widest two-read RTC_RD_TIME bracket that may time a seconds edge, as a
+/// fraction of a second: 1/500 s. Each edge is timed to within half its bracket, so the two edges
 /// of the span add at most 1/(500 * RTC_SPAN_S), 500 ppm, to the measured frequency.
 #[cfg(target_arch = "x86_64")]
 const RTC_EDGE_DIVISOR: u64 = 500;
@@ -1059,45 +1059,36 @@ fn rtc_seconds(fd: Fd) -> Result<i64, String> {
     Ok(i64::from(tm[2]) * 3600 + i64::from(tm[1]) * 60 + i64::from(tm[0]))
 }
 
-/// An RTC seconds edge timed by the counter.
 #[cfg(target_arch = "x86_64")]
-#[derive(Clone, Copy)]
-struct RtcEdge {
-    /// The RTC's time of day, in seconds, after the edge.
-    second: i64,
-    /// The counter halfway between the ends of the last poll that read the old
-    /// second and the first that read the new one.
-    at: u64,
-    /// Counter cycles between those two ends.
-    width: u64,
-}
+mod rtc_counter;
+#[cfg(target_arch = "x86_64")]
+use rtc_counter::{RtcEdge, RtcPoll};
 
-/// Poll the RTC until its seconds change. Each poll samples the seconds register
-/// the same distance before it returns, so timing poll ends cancels that distance
-/// between two edges.
+/// Include the entire last old-second read and first new-second read in the
+/// edge's bounds: a descheduled ioctl can return an old value after the edge.
 #[cfg(target_arch = "x86_64")]
 fn rtc_counter_edge(fd: Fd) -> Result<RtcEdge, String> {
-    let first = rtc_seconds(fd)?;
-    let mut last = counter_now();
-    let start = now_ms();
-    loop {
+    let read = || {
+        let before = counter_now();
         let second = rtc_seconds(fd)?;
-        let at = counter_now();
-        if second != first { return Ok(RtcEdge { second, at: last + (at - last) / 2, width: at - last }); }
-        if now_ms().saturating_sub(start) >= 1500 { return Err("the RTC's seconds did not change within 1500 ms".into()); }
-        last = at;
-    }
+        Ok(RtcPoll { second, before, after: counter_now() })
+    };
+    let first = read()?;
+    let start = now_ms();
+    rtc_counter::next_edge(first, read, || now_ms().saturating_sub(start) >= 1500)
 }
 
 /// The TSC's frequency in Hz on x86-64, measured against the RTC, a clock the
 /// kernel does not derive CLOCK_MONOTONIC from: counter cycles between two RTC
-/// seconds edges RTC_SPAN_S or more seconds apart. An edge timed by a poll wider
+/// seconds edges RTC_SPAN_S or more seconds apart. An edge timed by a bracket wider
 /// than 1/RTC_EDGE_DIVISOR s, because the thread was descheduled, is passed over:
 /// a wide starting edge is replaced by the next one, a wide ending edge by the one
-/// after it, at most twice in all.
+/// after it, at most twice total.
 #[cfg(target_arch = "x86_64")]
 fn counter_frequency() -> Result<u64, String> {
     let fd = libbreenix::fs::open("/dev/rtc0", libbreenix::fs::O_RDONLY).map_err(|e| format!("open(/dev/rtc0) failed: {e}"))?;
+    let mut passed_over = 0;
+    let mut rejected_width = 0;
     let result = (|| -> Result<u64, String> {
         // A bounded sample reports RTC_RD_TIME cost without serial output in
         // the edge-polling loop or changing its acceptance criteria.
@@ -1113,28 +1104,33 @@ fn counter_frequency() -> Result<u64, String> {
         value("rtc-read-mean", total / 32, "ns", None);
         value("rtc-read-max", maximum, "ns", None);
         let mut first = rtc_counter_edge(fd)?;
-        let mut passed_over = 0;
         loop {
             let edge = rtc_counter_edge(fd)?;
             let seconds = (edge.second - first.second).rem_euclid(86_400) as u64;
             if seconds == 0 { return Err(format!("two RTC seconds edges both read {}", edge.second)); }
-            let freq = (edge.at - first.at) / seconds;
+            let cycles = edge.at.checked_sub(first.at)
+                .ok_or("the counter went backwards between RTC edges")?;
+            let freq = cycles / seconds;
+            if freq == 0 { return Err("the counter did not advance between RTC edges".into()); }
             let limit = freq / RTC_EDGE_DIVISOR;
             if first.width > limit || (seconds >= RTC_SPAN_S && edge.width > limit) {
                 passed_over += 1;
+                rejected_width = rejected_width.max(first.width.max(edge.width));
                 if passed_over > 2 {
-                    return Err(format!("RTC_RD_TIME polls of {} and {} counter cycles are wider than the {limit} that times an edge", first.width, edge.width));
+                    return Err(format!("RTC_RD_TIME two-read edge brackets of {} and {} counter cycles exceed the {limit} bound after {passed_over} passed-over edges", first.width, edge.width));
                 }
                 if first.width > limit { first = edge; }
                 continue;
             }
             if seconds < RTC_SPAN_S { continue; }
-            value("rtc-start-poll", (first.width as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 1_000_000 / RTC_EDGE_DIVISOR as i64)));
-            value("rtc-end-poll", (edge.width as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 1_000_000 / RTC_EDGE_DIVISOR as i64)));
-            value("rtc-edge-polls", ((first.width + edge.width) as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 2_000_000 / RTC_EDGE_DIVISOR as i64)));
+            value("rtc-start-edge", (first.width as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 1_000_000 / RTC_EDGE_DIVISOR as i64)));
+            value("rtc-end-edge", (edge.width as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 1_000_000 / RTC_EDGE_DIVISOR as i64)));
+            value("rtc-edge-brackets", ((first.width as u128 + edge.width as u128) * 1_000_000 / freq as u128) as i64, "us", Some((0, 2_000_000 / RTC_EDGE_DIVISOR as i64)));
             return Ok(freq);
         }
     })();
+    value("rtc-passed-over", passed_over, "", Some((0, 2)));
+    value("rtc-rejected-edge-max", rejected_width.min(i64::MAX as u64) as i64, "cycles", None);
     let _ = io::close(fd);
     result
 }
