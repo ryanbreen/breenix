@@ -21,6 +21,23 @@ pub const HOUSEKEEP: u64 = 8;
 pub const TIMED: u64 = 9;
 pub const POST_EXIT: u64 = 10;
 pub const STAGES: u64 = 11;
+pub const IPI_SLOW: u64 = 12;
+pub static IPI_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static PM_IPI0: AtomicU64 = AtomicU64::new(0);
+pub fn ipi_time(t0: u64, kind: u64, dest: u64) {
+    let dt = now_ns().wrapping_sub(t0);
+    let c = cpu() as usize;
+    if c < 8 {
+        IPI_NS[c].fetch_add(dt, Ordering::Relaxed);
+    }
+    if dt > 1_000_000 {
+        push(IPI_SLOW, [dt, t0, c as u64, kind, dest, 0, 0, 0, 0]);
+    }
+}
+fn ipi_here() -> u64 {
+    let c = cpu() as usize;
+    if c < 8 { IPI_NS[c].load(Ordering::Relaxed) } else { 0 }
+}
 pub static STAGE: [[AtomicU64; 4]; 8] = [const { [const { AtomicU64::new(0) }; 4] }; 8];
 pub fn stage(i: usize) {
     let c = cpu() as usize;
@@ -264,7 +281,7 @@ pub fn drain() {
             STAGES => {
                 let f = |v: u64| if v == u64::MAX { -1 } else { (v / 1000) as i64 };
                 log::info!(
-                    "[P1401 STAGES held_us={} at_ms={} cpu={} line={} s0_us={} s1_us={} s2_us={} s3_us={}]",
+                    "[P1401 STAGES held_us={} at_ms={} cpu={} line={} s0_us={} s1_us={} s2_us={} s3_us={} ipi_us={}]",
                     w[1] / 1000,
                     w[2] / 1_000_000,
                     w[3],
@@ -272,9 +289,18 @@ pub fn drain() {
                     f(w[4]),
                     f(w[5]),
                     f(w[6]),
-                    f(w[7])
+                    f(w[7]),
+                    w[9] / 1000
                 )
             }
+            IPI_SLOW => log::info!(
+                "[P1401 IPI_SLOW us={} at_ms={} cpu={} kind={} dest={}]",
+                w[1] / 1000,
+                w[2] / 1_000_000,
+                w[3],
+                w[4],
+                w[5]
+            ),
             POLL_FAIL => log::info!("[P1401 POLL_FAIL at_ms={} cpu={} holder_cpu={}]", w[1] / 1_000_000, w[2], w[3]),
             _ => {}
         }
@@ -320,6 +346,7 @@ pub fn pm_acquired(loc: &'static core::panic::Location<'static>) {
     PM_FILE_LEN.store(loc.file().len() as u64, Ordering::Relaxed);
     PM_LINE.store(loc.line() as u64, Ordering::Relaxed);
     PM_SHOOT0.store(shootdowns_here(), Ordering::Relaxed);
+    PM_IPI0.store(ipi_here(), Ordering::Relaxed);
     let c = cpu() as usize;
     if c < 8 {
         for st in STAGE[c].iter() {
@@ -350,7 +377,7 @@ pub fn pm_released() {
                 let v = STAGE[c][i].load(Ordering::Relaxed);
                 if v == 0 { u64::MAX } else { v.wrapping_sub(start) }
             };
-            push(STAGES, [held, start, c as u64, rel(0), rel(1), rel(2), rel(3), PM_LINE.load(Ordering::Relaxed), 0]);
+            push(STAGES, [held, start, c as u64, rel(0), rel(1), rel(2), rel(3), PM_LINE.load(Ordering::Relaxed), ipi_here().wrapping_sub(PM_IPI0.load(Ordering::Relaxed))]);
         }
         push(
             PM_HOLD,
