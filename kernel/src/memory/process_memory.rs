@@ -24,6 +24,7 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(target_arch = "x86_64"))]
@@ -253,8 +254,99 @@ impl FlushedLeaf {
     }
 }
 
+/// User pages per leaf chunk: the span of one last-level table, 2 MiB.
+const LEAF_CHUNK_PAGES: u64 = 512;
+const LEAF_CHUNK_WORDS: usize = (LEAF_CHUNK_PAGES / 64) as usize;
+/// Children per node of the record tree, as per page-table level.
+const LEAF_FANOUT: usize = 512;
+
+/// The custody records of the user pages in one 2 MiB-aligned span: which
+/// pages are recorded, and which of those own their frame.
+struct LeafChunk {
+    recorded: [u64; LEAF_CHUNK_WORDS],
+    owned: [u64; LEAF_CHUNK_WORDS],
+}
+
+impl LeafChunk {
+    fn bit(page: u64) -> (usize, u64) {
+        let index = (page >> 12) % LEAF_CHUNK_PAGES;
+        ((index / 64) as usize, 1 << (index % 64))
+    }
+}
+
+/// One level of the record tree, indexed by the same address bits as the
+/// page-table level it shadows. `next` is the teardown cursor.
+struct LeafNode<T> {
+    slots: [Option<Box<T>>; LEAF_FANOUT],
+    next: usize,
+}
+
+/// Record-tree types whose all-zero bit pattern is a valid empty value.
+///
+/// # Safety
+/// Implementors must hold only integers and `Option<Box<_>>`, for which all
+/// zero bits is `0` and `None`.
+unsafe trait LeafZeroed: Sized {}
+unsafe impl LeafZeroed for LeafChunk {}
+unsafe impl<T> LeafZeroed for LeafNode<T> {}
+
+/// The value in `slot`, made empty first if there is none. The only step of
+/// the record tree that allocates, and it can fail.
+fn leaf_slot<T: LeafZeroed>(slot: &mut Option<Box<T>>) -> Result<&mut T, &'static str> {
+    let node = match slot.take() {
+        Some(node) => node,
+        None => {
+            let node =
+                Box::<T>::try_new_zeroed().map_err(|_| "Failed to reserve leaf custody")?;
+            // SAFETY: `LeafZeroed` makes all-zero bits a valid empty `T`.
+            unsafe { node.assume_init() }
+        }
+    };
+    Ok(&mut **slot.insert(node))
+}
+
+/// Teardown of the record tree, one freed allocation per call.
+trait LeafDrain {
+    /// Free one allocation below this one. False if there is none left.
+    fn drain_one(&mut self) -> bool;
+}
+
+impl LeafDrain for LeafChunk {
+    fn drain_one(&mut self) -> bool {
+        false
+    }
+}
+
+impl<T: LeafDrain> LeafDrain for LeafNode<T> {
+    fn drain_one(&mut self) -> bool {
+        while self.next < LEAF_FANOUT {
+            if let Some(child) = self.slots[self.next].as_deref_mut() {
+                if !child.drain_one() {
+                    self.slots[self.next] = None;
+                    self.next += 1;
+                }
+                return true;
+            }
+            self.next += 1;
+        }
+        false
+    }
+}
+
+/// Spans of 2 MiB, 1 GiB and 512 GiB.
+type LeafSpans = LeafNode<LeafChunk>;
+type LeafGigs = LeafNode<LeafSpans>;
+type LeafRoot = LeafNode<LeafGigs>;
+
+/// The leaf custody records of an address space, one per mapped user page.
+/// They are bitmaps per 2 MiB span, in a tree shaped like the page tables
+/// above the last level, so finding, recording or dropping a page's record
+/// takes the same few steps however many pages are mapped (#1365). A span's
+/// chunk, and the nodes above it, are made with its first record and kept
+/// until teardown, as its page tables are: dropping a record (a copy-on-write
+/// break, an unmap) never frees, and recording one again never allocates.
 struct OwnedLeafFrames {
-    records: Vec<LeafRecord>,
+    root: Option<Box<LeafRoot>>,
     released: bool,
     release_cursor: u64,
 }
@@ -262,15 +354,95 @@ struct OwnedLeafFrames {
 impl OwnedLeafFrames {
     fn new() -> Self {
         Self {
-            records: Vec::new(),
+            root: None,
             released: false,
             release_cursor: 0,
         }
     }
 
-    fn search(&self, page: u64) -> Result<usize, usize> {
-        self.records
-            .binary_search_by_key(&page, |record| record.page)
+    /// The tree indices of `page`'s span, or None outside the 48-bit user range.
+    fn path(page: u64) -> Option<[usize; 3]> {
+        if page >> 48 != 0 {
+            return None;
+        }
+        let index = |shift: u64| ((page >> shift) as usize) % LEAF_FANOUT;
+        Some([index(39), index(30), index(21)])
+    }
+
+    fn chunk(&self, page: u64) -> Option<&LeafChunk> {
+        let [root, gig, span] = Self::path(page)?;
+        self.root.as_ref()?.slots[root].as_ref()?.slots[gig].as_ref()?.slots[span].as_deref()
+    }
+
+    fn chunk_mut(&mut self, page: u64) -> Option<&mut LeafChunk> {
+        let [root, gig, span] = Self::path(page)?;
+        self.root.as_mut()?.slots[root].as_mut()?.slots[gig].as_mut()?.slots[span].as_deref_mut()
+    }
+
+    /// The custody record of `page`, if it has one.
+    fn search(&self, page: u64) -> Option<LeafRecord> {
+        let chunk = self.chunk(page)?;
+        let (word, bit) = LeafChunk::bit(page);
+        if chunk.recorded[word] & bit == 0 {
+            return None;
+        }
+        let mapping = if chunk.owned[word] & bit != 0 {
+            LeafMapping::Owned
+        } else {
+            LeafMapping::External
+        };
+        Some(LeafRecord { page, mapping })
+    }
+
+    /// Make sure `page`'s span has a chunk, so that `insert` cannot fail.
+    fn try_reserve_page(&mut self, page: u64) -> Result<(), &'static str> {
+        let [root, gig, span] = Self::path(page).ok_or("User page outside leaf custody")?;
+        let gigs = leaf_slot(&mut leaf_slot(&mut self.root)?.slots[root])?;
+        leaf_slot(&mut leaf_slot(&mut gigs.slots[gig])?.slots[span])?;
+        Ok(())
+    }
+
+    /// Record `record`'s page, which has no record, in the chunk
+    /// `try_reserve_page` made sure of. Returns false if there is none.
+    fn insert(&mut self, record: LeafRecord) -> bool {
+        let Some(chunk) = self.chunk_mut(record.page) else {
+            return false;
+        };
+        let (word, bit) = LeafChunk::bit(record.page);
+        chunk.recorded[word] |= bit;
+        if let LeafMapping::Owned = record.mapping {
+            chunk.owned[word] |= bit;
+        }
+        true
+    }
+
+    /// Drop `page`'s record, returning it. Its chunk stays.
+    fn remove(&mut self, page: u64) -> Option<LeafRecord> {
+        let record = self.search(page)?;
+        let chunk = self.chunk_mut(page)?;
+        let (word, bit) = LeafChunk::bit(page);
+        chunk.recorded[word] &= !bit;
+        chunk.owned[word] &= !bit;
+        Some(record)
+    }
+
+    fn clear(&mut self) {
+        self.root = None;
+    }
+
+    /// Free the tree an allocation at a time, each charged to `budget`. True
+    /// once it is all freed.
+    fn clear_bounded(&mut self, budget: &mut u32) -> bool {
+        while *budget > 0 {
+            let Some(root) = self.root.as_deref_mut() else {
+                return true;
+            };
+            if !root.drain_one() {
+                self.root = None;
+            }
+            *budget -= 1;
+        }
+        self.root.is_none()
     }
 }
 
@@ -1640,7 +1812,7 @@ impl ProcessPageTable {
             if let Ok(existing_frame) = self.mapper.translate_page(page) {
                 if existing_frame == frame {
                     if user_mapping {
-                        let Ok(_) = self.leaves.search(page_addr) else {
+                        let Some(_) = self.leaves.search(page_addr) else {
                             crate::trace_count!(
                                 crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED
                             );
@@ -1667,33 +1839,24 @@ impl ProcessPageTable {
             }
 
             let leaf_insert = if user_mapping {
-                match self.leaves.search(page_addr) {
-                    Ok(_) => {
-                        crate::trace_count!(
-                            crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED
-                        );
-                        return Err("Leaf custody record exists without a mapped descriptor");
-                    }
-                    Err(index) => {
-                        self.leaves
-                            .records
-                            .try_reserve(1)
-                            .map_err(|_| "Failed to reserve leaf custody")?;
-                        let mapping = match acquire_leaf_mapping(frame) {
-                            Ok(LeafMappingClass::Owned) => LeafMapping::Owned,
-                            Ok(LeafMappingClass::External) => LeafMapping::External,
-                            Err(error) => return Err(error),
-                        };
-                        self.leaves.records.insert(
-                            index,
-                            LeafRecord {
-                                page: page_addr,
-                                mapping,
-                            },
-                        );
-                        Some((index, mapping))
-                    }
+                if self.leaves.search(page_addr).is_some() {
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED
+                    );
+                    return Err("Leaf custody record exists without a mapped descriptor");
                 }
+                self.leaves.try_reserve_page(page_addr)?;
+                let mapping = match acquire_leaf_mapping(frame) {
+                    Ok(LeafMappingClass::Owned) => LeafMapping::Owned,
+                    Ok(LeafMappingClass::External) => LeafMapping::External,
+                    Err(error) => return Err(error),
+                };
+                let recorded = self.leaves.insert(LeafRecord {
+                    page: page_addr,
+                    mapping,
+                });
+                debug_assert!(recorded, "leaf custody chunk reserved above");
+                Some(mapping)
             } else {
                 None
             };
@@ -1753,8 +1916,8 @@ impl ProcessPageTable {
                     Ok(())
                 }
                 Err(e) => {
-                    if let Some((index, mapping)) = leaf_insert {
-                        self.leaves.records.remove(index);
+                    if let Some(mapping) = leaf_insert {
+                        self.leaves.remove(page_addr);
                         if let LeafMapping::Owned = mapping {
                             let _ = crate::memory::frame_metadata::frame_decref(frame);
                         }
@@ -1809,18 +1972,17 @@ impl ProcessPageTable {
     ) -> Result<ReleasedLeaf, &'static str> {
         self.assert_unclaimed();
         let page_addr = page.start_address().as_u64();
-        let record_index = self.leaves.search(page_addr).map_err(|_| {
+        let record = self.leaves.search(page_addr).ok_or_else(|| {
             crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
             "Mapped user page has no releasable leaf custody"
         })?;
-        let record = self.leaves.records[record_index];
         let (frame, flush) = self
             .mapper
             .unmap(page)
             .map_err(|_| "Failed to unmap page")?;
         // The caller flushes, before releasing the leaf.
         let _ = flush;
-        self.leaves.records.remove(record_index);
+        self.leaves.remove(page_addr);
         Ok(ReleasedLeaf {
             record,
             frame,
@@ -1833,7 +1995,7 @@ impl ProcessPageTable {
     /// releases a returned leaf, as for `unmap_page_deferred`.
     pub(crate) fn revoke_page(&mut self, page: Page<Size4KiB>) -> Result<Revoked, RevokeFailed> {
         self.assert_unclaimed();
-        let recorded = self.leaves.search(page.start_address().as_u64()).is_ok();
+        let recorded = self.leaves.search(page.start_address().as_u64()).is_some();
         let mapped = self.mapper.translate_page(page).is_ok();
         match (recorded, mapped) {
             (false, false) => Ok(Revoked::Absent),
@@ -1927,21 +2089,21 @@ impl ProcessPageTable {
         if self.leaves.released {
             return;
         }
-        let records = &self.leaves.records;
+        let leaves = &self.leaves;
         let _ = self.walk_mapped_pages(|virt_addr, phys_addr, flags| {
             if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
                 return;
             }
             let page = virt_addr.as_u64() & !0xfff;
             let frame = PhysFrame::containing_address(phys_addr);
-            match records.binary_search_by_key(&page, |record| record.page) {
-                Ok(index) => Self::release_leaf_record(records[index], frame),
-                Err(_) => {
+            match leaves.search(page) {
+                Some(record) => Self::release_leaf_record(record, frame),
+                None => {
                     crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
                 }
             }
         });
-        self.leaves.records.clear();
+        self.leaves.clear();
         self.leaves.released = true;
     }
 
@@ -1979,8 +2141,8 @@ impl ProcessPageTable {
                     if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
                         *budget -= 1;
                         match self.leaves.search(address) {
-                            Ok(index) if shift == 12 => Self::release_leaf_record(
-                                self.leaves.records[index], PhysFrame::containing_address(entry.addr()),
+                            Some(record) if shift == 12 => Self::release_leaf_record(
+                                record, PhysFrame::containing_address(entry.addr()),
                             ),
                             // No huge-leaf custody exists: never treat one 4 KiB
                             // record as authority to return an entire huge page.
@@ -2000,8 +2162,7 @@ impl ProcessPageTable {
                 scans = 0;
             }
         }
-        if self.leaves.release_cursor == END {
-            self.leaves.records.clear();
+        if self.leaves.release_cursor == END && self.leaves.clear_bounded(budget) {
             self.leaves.released = true;
             RetireProgress::Complete
         } else {

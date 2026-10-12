@@ -5201,11 +5201,19 @@ fn validate_thread_state_aliases(sources: &[(String, String)]) -> Result<(), Vec
     )
 }
 
+/// Writes that put a row in a thread group: `thread_group_id = X` for any X
+/// but `None`, whether `Some(..)` or a conditional such as `.then_some(..)`.
+fn group_join_writes(source: &str, mask: &[bool]) -> Vec<usize> {
+    const WRITE: &str = "thread_group_id = ";
+    code_offsets(source, mask, WRITE)
+        .into_iter()
+        .filter(|&at| !source[at + WRITE.len()..].starts_with("None"))
+        .collect()
+}
+
 fn validate_group_writes(sources: &[(String, String)]) -> Result<(), Vec<String>> {
     validate_census(
-        &census(sources, |source, mask| {
-            code_offsets(source, mask, "thread_group_id = Some(")
-        }),
+        &census(sources, |source, mask| group_join_writes(source, mask)),
         THREAD_GROUP_WRITES,
     )
 }
@@ -7638,7 +7646,7 @@ fn validate_root_slot_custody(sources: &[(String, String)]) -> Result<(), ()> {
     let refused = map
         .find("return Err(\"Cannot map into an inherited root page-table slot\");")
         .ok_or(())?;
-    let reserve = map.find(".try_reserve(1)").ok_or(())?;
+    let reserve = map.find(".try_reserve_page(page_addr)").ok_or(())?;
     let publish = map.find("mapper.map_to_with_table_flags(").ok_or(())?;
     let claim = map.find("self.owned_root_slots.insert(").ok_or(())?;
     if !(refusal < counter
@@ -7727,13 +7735,24 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     let arm_elf = source(sources, "kernel/src/arch_impl/aarch64/elf.rs");
 
     let map = function_body(process_memory, "map_page");
-    let reserve = map.find(".try_reserve(1)").ok_or(())?;
+    let reserve = map.find(".try_reserve_page(page_addr)").ok_or(())?;
+    // The reservation makes every level of the page's record path, each by a
+    // fallible allocation, so the insert after the frame reference cannot fail.
+    let reserve_page = function_body(process_memory, "try_reserve_page");
+    let slot = function_body(process_memory, "leaf_slot");
+    if !reserve_page.contains("leaf_slot(&mut leaf_slot(&mut self.root)?.slots[root])?")
+        || !reserve_page.contains("leaf_slot(&mut leaf_slot(&mut gigs.slots[gig])?.slots[span])?")
+        || !slot.contains("Box::<T>::try_new_zeroed().map_err(")
+        || !slot.contains("slot.insert(node)")
+    {
+        return Err(());
+    }
     let acquire = map.find("acquire_leaf_mapping(frame)").ok_or(())?;
-    let insert = map.find("self.leaves.records.insert(").ok_or(())?;
+    let insert = map.find("self.leaves.insert(LeafRecord {").ok_or(())?;
     let publish = map.find("mapper.map_to_with_table_flags(").ok_or(())?;
     let committed = map.find("LEAF_MAPPINGS_RECORDED").ok_or(())?;
     if !(reserve < acquire && acquire < insert && insert < publish && publish < committed)
-        || !map.contains("self.leaves.records.remove(index);")
+        || !map.contains("self.leaves.remove(page_addr);")
         || !map.contains("frame_decref(frame)")
     {
         return Err(());
@@ -7758,7 +7777,7 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     let bounded_drain = function_body(process_memory, "release_mapped_leaves_bounded");
     if !process_memory.contains("struct LeafRecord")
         || !process_memory.contains("page: u64")
-        || !process_memory.contains("binary_search_by_key(&page")
+        || !process_memory.contains("fn search(&self, page: u64) -> Option<LeafRecord>")
         || !unmap.contains("self.unmap_page_deferred(page)?")
         || !unmap.contains("Self::release_leaf_record(leaf.record, leaf.frame);")
         || !unmap_deferred.contains("self.leaves.search(page_addr)")
@@ -7768,17 +7787,17 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
         || !release.contains("frame_decref(frame)")
         || !release.contains("deallocate_leaf_frame(frame) == ReturnOutcome::Returned")
         || !drain.contains("self.walk_mapped_pages(")
-        || !drain.contains("records.binary_search_by_key(&page")
-        || !drain.contains("self.leaves.records.clear();")
+        || !drain.contains("match leaves.search(page) {")
+        || !drain.contains("self.leaves.clear();")
         || !drain.contains("self.leaves.released = true;")
         || !bounded_drain.contains("if self.leaves.released {\n            return RetireProgress::Complete;\n        }")
         || !bounded_drain.contains("match self.leaves.search(address) {")
-        || !bounded_drain.contains("Ok(index) if shift == 12 => Self::release_leaf_record(")
+        || !bounded_drain.contains("Some(record) if shift == 12 => Self::release_leaf_record(")
         || !bounded_drain.contains("LEAF_CUSTODY_REFUSED")
         || bounded_drain.matches("Self::release_leaf_record(").count() != 1
         || bounded_drain.contains("frame_decref(")
         || bounded_drain.contains("deallocate_leaf_frame(")
-        || !bounded_drain.contains("self.leaves.records.clear();")
+        || !bounded_drain.contains("self.leaves.clear_bounded(budget)")
         || !bounded_drain.contains("self.leaves.released = true;")
     {
         return Err(());
@@ -7887,7 +7906,7 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     ];
     if production_group_sources
         .iter()
-        .map(|body| body.matches("thread_group_id = Some(").count())
+        .map(|body| group_join_writes(body, &code_mask(body)).len())
         .sum::<usize>()
         != 1
         || production_group_sources
@@ -11894,13 +11913,35 @@ fn deliberately_broken_variants_fail_the_ratchet() {
 
     // PR-2: virtual-page records precede descriptor publication, decref is
     // fail-closed, and a live leaf can never enter the reuse pool.
-    let no_leaf_reserve = process_memory.replacen(".try_reserve(1)", ".try_reserve(0)", 1);
+    let no_leaf_reserve = process_memory.replacen("self.leaves.try_reserve_page(page_addr)?;", "", 1);
     let no_leaf_reserve = with_replaced_source(
         &sources,
         "kernel/src/memory/process_memory.rs",
         no_leaf_reserve,
     );
     assert!(validate_leaf_custody(&no_leaf_reserve).is_err());
+    let hollow_leaf_reserve = process_memory.replacen(
+        "leaf_slot(&mut leaf_slot(&mut gigs.slots[gig])?.slots[span])?;",
+        "",
+        1,
+    );
+    let hollow_leaf_reserve = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        hollow_leaf_reserve,
+    );
+    assert!(validate_leaf_custody(&hollow_leaf_reserve).is_err());
+    let infallible_leaf_slot = process_memory.replacen(
+        "Box::<T>::try_new_zeroed().map_err(",
+        "Ok::<_, ()>(Box::<T>::new_zeroed()).map_err(",
+        1,
+    );
+    let infallible_leaf_slot = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        infallible_leaf_slot,
+    );
+    assert!(validate_leaf_custody(&infallible_leaf_slot).is_err());
     let post_publish_record = process_memory.replacen(
         "let mapping = match acquire_leaf_mapping(frame)",
         "let mapping = match classify_after_descriptor(frame)",
@@ -11963,7 +12004,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let bypassed_bounded_custody = with_replaced_source(
         &sources,
         "kernel/src/memory/process_memory.rs",
-        process_memory.replacen("Ok(index) if shift == 12 => Self::release_leaf_record(", "Ok(index) => Self::release_leaf_record(", 1),
+        process_memory.replacen("Some(record) if shift == 12 => Self::release_leaf_record(", "Some(record) => Self::release_leaf_record(", 1),
     );
     assert!(validate_leaf_custody(&bypassed_bounded_custody).is_err());
     let unrecorded_bounded_free = with_replaced_source(

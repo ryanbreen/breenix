@@ -3948,7 +3948,7 @@ fn clone_publication_lifecycle_guard_census_reddens_when_either_arch_guard_remov
     assert_eq!(validate_exec_sibling_guard_census(&manager), Ok(()));
 
     let bodies = module_function_bodies(&manager);
-    let call = "self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)";
+    let call = "self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)";
     let mut mutated = 0;
     for name in ["exec_process", "exec_process_with_argv"] {
         for &body in bodies.get(name).into_iter().flatten() {

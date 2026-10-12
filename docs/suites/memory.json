@@ -122,6 +122,10 @@
           "title": "Each page of a 16 MiB anonymous mapping, touched in order, keeps its own contents, and unmapping it gives back all 4096 pages as resident"
         },
         {
+          "id": "fault-order",
+          "title": "The first touch of each page going down the lower half of a 64 MiB anonymous mapping costs at most 3 times as much as going up its upper half, in alternating rounds"
+        },
+        {
           "id": "churn",
           "title": "Mapping, touching and unmapping 1 MiB 100 times leaves free memory within 4 MiB of where it was and the resident set no larger"
         },
@@ -256,6 +260,10 @@
         {
           "id": "private-cow-many",
           "title": "After fork, parent and child each rewrite all 64 pages of a MAP_PRIVATE mapping and each sees only its own stores"
+        },
+        {
+          "id": "private-cow-spread",
+          "title": "After fork, a copy-on-write break in the lowest pages of a 32 MiB MAP_PRIVATE mapping costs at most 3 times one in its highest pages"
         },
         {
           "id": "file-child-sees",

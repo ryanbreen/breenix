@@ -273,6 +273,27 @@ fn mono() -> i64 {
     t[0] * NS + t[1]
 }
 fn now_ms() -> u64 { (mono() / MS) as u64 }
+/// The monotonic clock, failing the case if clock_gettime fails.
+fn clock() -> Result<i64, CaseError> {
+    let mut t = [0i64; 2];
+    let r = sc(nr::CLOCK_GETTIME, &[1, t.as_mut_ptr() as u64]);
+    if r != 0 { return err(format!("clock_gettime(CLOCK_MONOTONIC) failed with {}", errname(-r))); }
+    Ok(t[0] * NS + t[1])
+}
+
+/// Two timings and the check that the second costs at most 3 times the
+/// first, per operation. Both must have taken time on the monotonic clock.
+fn at_most_3x(n: i64, (first, first_name): (i64, &str), (second, second_name): (i64, &str), failed: &str) -> CaseResult {
+    check(first > 0 && second > 0, &format!(
+        "the monotonic clock measured {first} ns {first_name} and {second} ns {second_name}, so nothing was timed"
+    ))?;
+    value(first_name, first / n, "ns", None);
+    value(second_name, second / n, "ns", Some((0, 3 * first / n)));
+    check(second <= 3 * first, &format!(
+        "{failed} cost {} ns {second_name} against {} ns {first_name}, more than 3 times as much",
+        second / n, first / n
+    ))
+}
 
 /// `ms`, cut short so that `reserve` ms of the case's limit remain afterwards.
 fn bounded(ms: u64, reserve: u64) -> u64 { ms.min(case_ms_left().saturating_sub(reserve)) }
@@ -1411,6 +1432,27 @@ fn an_page_by_page() -> CaseResult {
     check(freed == pages as i64, &format!("after touching all 4096 pages, unmapping the mapping gave back {freed} resident pages"))
 }
 
+fn an_fault_order() -> CaseResult {
+    // Up the upper half and down the lower half of one mapping, in alternating
+    // rounds so host noise falls on both. Each page going down lies below every
+    // page touched before it.
+    let half = 8192;
+    let len = 2 * half * PAGE;
+    let p = anon(len)?;
+    let (rounds, round) = (32, 256);
+    let (mut up, mut down) = (0, 0);
+    for r in 0..rounds {
+        let t0 = clock()?;
+        for i in 0..round { poke(at(p, (half + r * round + i) * PAGE), 1); }
+        let t1 = clock()?;
+        for i in 0..round { poke(at(p, (half - 1 - r * round - i) * PAGE), 1); }
+        up += t1 - t0;
+        down += clock()? - t1;
+    }
+    unmap(p, len)?;
+    at_most_3x(half as i64, (up, "ascending"), (down, "descending"), "the first touch of each page")
+}
+
 fn an_churn() -> CaseResult {
     let rounds = 100;
     let before = mem_free_kb()?;
@@ -1819,6 +1861,34 @@ fn sh_private_cow_many() -> CaseResult {
     ])?;
     check(heard, "the parent heard nothing from the child")?;
     check(kept.is_none(), &format!("the parent's copy changed at byte {} when the child wrote its own", kept.unwrap_or(0)))
+}
+
+fn sh_private_cow_spread() -> CaseResult {
+    let pages = 8192;
+    let len = pages * PAGE;
+    let p = anon(len)?;
+    for i in 0..pages { poke(at(p, i * PAGE), 1); }
+    let (to_child_r, to_child_w) = pipe()?;
+    let mut child = Child::start(|| {
+        close(to_child_w);
+        if recv(to_child_r, 2 * WAIT_MS) != Some(1) { return 1; }
+        0
+    })?;
+    close(to_child_r);
+    let (groups, group) = (8, 32);
+    let (mut top, mut bottom) = (0, 0);
+    for g in 0..groups {
+        let t0 = clock()?;
+        for i in 0..group { poke(at(p, (pages - 1 - g * group - i) * PAGE), 2); }
+        let t1 = clock()?;
+        for i in 0..group { poke(at(p, (g * group + i) * PAGE), 2); }
+        top += t1 - t0;
+        bottom += clock()? - t1;
+    }
+    send(to_child_w, 1);
+    child.finish("the child", &["the child heard nothing from the parent"])?;
+    unmap(p, len)?;
+    at_most_3x((groups * group) as i64, (top, "top"), (bottom, "bottom"), "a copy-on-write break")
 }
 
 fn sh_file_child_sees() -> CaseResult {
@@ -2483,6 +2553,7 @@ static SUITE: Suite = suite(
             case("remap-zero", "A page mapped with MAP_FIXED into the hole a munmap left reads as zero, not the old contents", an_remap_zero),
             case("sparse", "Linux policy: touching one byte every 1 MiB of a 256 MiB anonymous mapping makes about 256 pages resident, not 65536", an_sparse),
             case("page-by-page", "Each page of a 16 MiB anonymous mapping, touched in order, keeps its own contents, and unmapping it gives back all 4096 pages as resident", an_page_by_page),
+            case("fault-order", "The first touch of each page going down the lower half of a 64 MiB anonymous mapping costs at most 3 times as much as going up its upper half, in alternating rounds", an_fault_order),
             case("churn", "Mapping, touching and unmapping 1 MiB 100 times leaves free memory within 4 MiB of where it was and the resident set no larger", an_churn),
             case("many", "1000 one-page anonymous mappings exist at once at distinct addresses, each keeping its own contents, and all unmap", an_many),
             case("unmap-cpus", "With two to four processors, worker threads pinned one to each other processor and reading a page the case's thread has just unmapped raise SIGSEGV with SEGV_MAPERR at the byte read every time and never read the old page", an_unmap_cpus),
@@ -2518,6 +2589,7 @@ static SUITE: Suite = suite(
             case("private-child-isolated", "After fork, a child's stores to a MAP_PRIVATE anonymous page are not seen by the parent", sh_private_child_isolated),
             case("private-parent-isolated", "After fork, the parent's stores to a MAP_PRIVATE anonymous page are not seen by the child", sh_private_parent_isolated),
             case("private-cow-many", "After fork, parent and child each rewrite all 64 pages of a MAP_PRIVATE mapping and each sees only its own stores", sh_private_cow_many),
+            case("private-cow-spread", "After fork, a copy-on-write break in the lowest pages of a 32 MiB MAP_PRIVATE mapping costs at most 3 times one in its highest pages", sh_private_cow_spread),
             case("file-child-sees", "A child's store into a MAP_SHARED file mapping inherited across fork is seen through the parent's mapping and by read()", sh_file_child_sees),
             case("file-independent", "Two processes that each map the same file MAP_SHARED see each other's stores", sh_file_independent),
             case("file-msync-read", "Stores into a MAP_SHARED mapping of a sparse file are on disk when msync(MS_SYNC) returns: the file has the disk blocks they need (st_blocks), and read() returns them", sh_file_msync_read),

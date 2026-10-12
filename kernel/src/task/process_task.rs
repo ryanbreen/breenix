@@ -1130,11 +1130,13 @@ impl ProcessScheduler {
                     s.unblock_for_child_exit(tid);
                 });
             }
-            // Wake parent thread if blocked on waitpid or pause()
+            // Wake the parent's thread if it waits in waitpid. An interruptible
+            // wait (pause, a futex wait) is woken only by `signal_wake` above,
+            // which is set when the SIGCHLD is one the parent will act on: an
+            // ignored SIGCHLD is discarded without waking anybody, as on Linux.
             if let Some(parent_tid) = parent_tid {
                 scheduler::with_scheduler(|sched| {
                     sched.unblock_for_child_exit(parent_tid);
-                    sched.unblock_for_signal(parent_tid);
                 });
                 crate::tracing::providers::process::trace_waitpid_wake(
                     parent_tid as u16,
@@ -1191,12 +1193,17 @@ impl ProcessScheduler {
 /// Called with PROCESS_MANAGER released (condition C8).
 fn wake_group_parent(exited: crate::process::manager::GroupExited) {
     drop(exited.reaped);
-    for tid in [exited.signal_wake, exited.parent_tid].into_iter().flatten() {
-        scheduler::with_scheduler(|sched| {
+    scheduler::with_scheduler(|sched| {
+        if let Some(tid) = exited.signal_wake {
             sched.unblock_for_signal(tid);
             sched.unblock_for_child_exit(tid);
-        });
-    }
+        }
+        // As for a single-threaded child's exit: waitpid only, never an
+        // interruptible wait for a SIGCHLD the parent discards.
+        if let Some(tid) = exited.parent_tid {
+            sched.unblock_for_child_exit(tid);
+        }
+    });
 }
 
 fn next_reclaim_pass_id(mut pass: u32) -> u32 {
