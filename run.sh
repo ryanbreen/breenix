@@ -422,7 +422,7 @@ if [ "$PARALLELS" = true ]; then
     fi
 
     PARALLELS_DIR="$BREENIX_ROOT/target/parallels"
-    SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-parallels-serial.log}"
+    SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-parallels-serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}"
     HDD_DIR="$PARALLELS_DIR/breenix-efi.hdd"
     EXT2_HDD_DIR="$PARALLELS_DIR/breenix-ext2.hdd"
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
@@ -787,7 +787,7 @@ if [ "$VMWARE" = true ]; then
     vmware_check_nat_config "/Library/Preferences/VMware Fusion/networking"
 
     VMWARE_DIR="$BREENIX_ROOT/target/vmware"
-    SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial.log}"
+    SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}"
     # Fusion's "Use full resolution for Retina display": off by default so the guest is scaled 2x.
     if [ "${RETINA:-false}" = true ]; then VMWARE_NATIVE_RESOLUTION=TRUE; else VMWARE_NATIVE_RESOLUTION=FALSE; fi
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"

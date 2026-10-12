@@ -286,7 +286,8 @@ complete new userspace line or a first-seen boot-stage marker. Loader announceme
 periodic kernel census and diagnostics do not extend that deadline. The launcher
 exits nonzero and keeps its serial and a neighboring `*.stall.json` record with
 `status: stalled`, the last progress line and its source, the last progress time,
-and the UTC stop time. The shared host-slot supervisor also watches older QEMU
+and the UTC stop time. Default Mac serial paths are unique per launcher run, so
+a later boot cannot overwrite that evidence. The shared host-slot supervisor also watches older QEMU
 launchers once their owned VM starts; build and queue time do not count. A completed
 suite's retained panel is outside the stall deadline; suite sequences resume the
 watch while waiting to exec the next suite.
