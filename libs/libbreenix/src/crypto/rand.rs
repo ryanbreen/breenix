@@ -159,9 +159,18 @@ impl Csprng {
     /// # Panics
     /// Panics if the `getrandom` syscall fails or returns fewer bytes than requested.
     pub fn new() -> Self {
+        Self::from_entropy(getrandom_bytes)
+    }
+
+    /// Create a new CSPRNG instance, seeded from `entropy`, which fills a
+    /// buffer the way `getrandom_bytes` does.
+    ///
+    /// # Panics
+    /// Panics if `entropy` fails or returns fewer bytes than requested.
+    pub fn from_entropy(mut entropy: impl FnMut(&mut [u8]) -> Result<usize, i64>) -> Self {
         // Seed the key (32 bytes = 8 x u32)
         let mut key_bytes = [0u8; 32];
-        let n = getrandom_bytes(&mut key_bytes).expect("getrandom failed for key");
+        let n = entropy(&mut key_bytes).expect("getrandom failed for key");
         assert_eq!(n, 32, "getrandom returned fewer than 32 bytes for key");
 
         let mut key = [0u32; 8];
@@ -176,7 +185,7 @@ impl Csprng {
 
         // Seed the nonce (12 bytes = 3 x u32)
         let mut nonce_bytes = [0u8; 12];
-        let n = getrandom_bytes(&mut nonce_bytes).expect("getrandom failed for nonce");
+        let n = entropy(&mut nonce_bytes).expect("getrandom failed for nonce");
         assert_eq!(n, 12, "getrandom returned fewer than 12 bytes for nonce");
 
         let mut nonce = [0u32; 3];
@@ -250,6 +259,18 @@ impl Csprng {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    extern crate std;
+
+    /// The host's entropy source, filling a buffer as `getrandom_bytes` does
+    /// on Breenix.
+    fn host_entropy(buf: &mut [u8]) -> Result<usize, i64> {
+        use std::io::Read;
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(buf))
+            .map(|()| buf.len())
+            .map_err(|_| -5)
+    }
 
     /// Verify the ChaCha20 block function against the RFC 7539 Section 2.3.2 test vector.
     #[test]
@@ -329,11 +350,9 @@ mod tests {
     }
 
     /// Verify that fill() produces non-zero bytes for a reasonably sized buffer.
-    /// Requires a Breenix guest harness; the host cannot call its raw getrandom ABI.
     #[test]
-    #[ignore = "requires Breenix raw getrandom syscall ABI; no guest unit-test harness is wired"]
     fn test_csprng_fill_nonzero() {
-        let mut rng = Csprng::new();
+        let mut rng = Csprng::from_entropy(host_entropy);
         let mut buf = [0u8; 64];
         rng.fill(&mut buf);
 
@@ -343,12 +362,10 @@ mod tests {
     }
 
     /// Verify that two independent CSPRNG instances produce different output.
-    /// Requires a Breenix guest harness; the host cannot call its raw getrandom ABI.
     #[test]
-    #[ignore = "requires Breenix raw getrandom syscall ABI; no guest unit-test harness is wired"]
     fn test_csprng_different_instances() {
-        let mut rng1 = Csprng::new();
-        let mut rng2 = Csprng::new();
+        let mut rng1 = Csprng::from_entropy(host_entropy);
+        let mut rng2 = Csprng::from_entropy(host_entropy);
 
         let v1 = rng1.random_u64();
         let v2 = rng2.random_u64();
@@ -358,9 +375,8 @@ mod tests {
 
     /// Verify that fill() works across block boundaries.
     #[test]
-    #[ignore = "requires Breenix raw getrandom syscall ABI; no guest unit-test harness is wired"]
     fn test_csprng_fill_across_blocks() {
-        let mut rng = Csprng::new();
+        let mut rng = Csprng::from_entropy(host_entropy);
 
         // Request more than one 64-byte block
         let mut buf = [0u8; 200];
