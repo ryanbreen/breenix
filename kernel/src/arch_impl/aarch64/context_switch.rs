@@ -7214,6 +7214,9 @@ pub extern "C" fn idle_loop_arm64() -> ! {
     cpu0_breadcrumb(cpu_id, 50);
     loop {
         run_deferred_reclamation();
+        // Lines posted on paths that may not log are written out from thread
+        // context, so an idle CPU writes them (`log_notice`).
+        crate::serial_line::write_notices_from_thread();
 
         unsafe {
             // Match Linux's generic idle rule: after deciding whether sleep is
