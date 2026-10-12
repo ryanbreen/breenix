@@ -3,6 +3,7 @@ use shared_qemu::get_kernel_output;
 
 /// Test that memory management initializes correctly
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_memory_initialization() {
     println!("Testing memory initialization...");
 
@@ -34,6 +35,7 @@ fn test_memory_initialization() {
 
 /// Test heap allocation functionality
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_heap_allocation() {
     println!("Testing heap allocation...");
 
@@ -61,6 +63,7 @@ fn test_heap_allocation() {
 
 /// Test slab allocator initialization
 #[test]
+#[ignore = "covered by x86 boot-path stages: FD slab cache initialized, Signal slab cache initialized"]
 fn test_slab_allocator_initialization() {
     println!("Testing slab allocator initialization...");
 
@@ -93,6 +96,7 @@ fn test_slab_allocator_initialization() {
 
 /// Test that procfs is initialized (supports /proc/slabinfo)
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_procfs_initialization() {
     println!("Testing procfs initialization...");
 
@@ -108,6 +112,7 @@ fn test_procfs_initialization() {
 
 /// Test memory regions enumeration
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_memory_regions() {
     println!("Testing memory regions enumeration...");
 

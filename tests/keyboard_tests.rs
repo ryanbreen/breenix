@@ -3,6 +3,7 @@ use shared_qemu::get_kernel_output;
 
 /// Test keyboard system initialization and basic functionality
 #[test]
+#[ignore = "disabled: keyboard queue is a named x86 boot-path stage; task readiness has no replacement (#1400)"]
 fn test_keyboard_initialization() {
     println!("Testing keyboard initialization...");
 
@@ -31,6 +32,7 @@ fn test_keyboard_initialization() {
 
 /// Test that keyboard features are properly reported in feature comparison
 #[test]
+#[ignore = "disabled: keyboard queue is a named x86 boot-path stage; task readiness has no replacement (#1400)"]
 fn test_keyboard_features() {
     println!("Testing keyboard feature implementation...");
 

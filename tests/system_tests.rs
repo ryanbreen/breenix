@@ -7,6 +7,7 @@ use shared_qemu::get_kernel_output;
 
 /// Test complete boot sequence
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_boot_sequence() {
     println!("Testing complete boot sequence...");
 
@@ -47,6 +48,7 @@ fn test_boot_sequence() {
 
 /// Test system stability by checking output quality
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_system_stability() {
     println!("Testing system stability (via output analysis)...");
 

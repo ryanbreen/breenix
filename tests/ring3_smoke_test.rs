@@ -11,6 +11,7 @@ use shared_qemu::get_kernel_output;
 /// This serves as a regression test to ensure Ring 3 execution doesn't break
 /// as we add new features like syscalls and ELF loading.
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_ring3_smoke() {
     println!("Testing Ring 3 execution smoke test...");
 

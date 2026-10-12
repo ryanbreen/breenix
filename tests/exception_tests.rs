@@ -3,6 +3,7 @@ use shared_qemu::get_kernel_output;
 
 /// Test that exception handlers are properly installed and the system handles exceptions
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_exception_handlers() {
     println!("Testing exception handler system...");
 
@@ -117,6 +118,7 @@ fn test_exception_handler_installation() {
 
 /// Test that our exception handlers properly handle the generic case
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_generic_interrupt_handler() {
     println!("Testing generic interrupt handler coverage...");
 

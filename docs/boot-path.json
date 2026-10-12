@@ -71,7 +71,9 @@
           "TLS initialized",
           "SWAPGS support enabled",
           "IST stacks updated",
-          "Initial TSS.RSP0 configured"
+          "Initial TSS.RSP0 configured",
+          "FD slab cache initialized",
+          "Signal slab cache initialized"
         ]
       }
     },
@@ -120,7 +122,8 @@
           "VirtIO block driver initialized",
           "VirtIO disk read successful",
           "E1000 driver initialized",
-          "Network stack initialized"
+          "Network stack initialized",
+          "Keyboard queue initialized"
         ]
       }
     },

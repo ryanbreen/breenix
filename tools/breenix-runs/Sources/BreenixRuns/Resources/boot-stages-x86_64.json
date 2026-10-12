@@ -3,6 +3,24 @@
   "arch": "x86_64",
   "stages": [
     {
+      "name": "Keyboard queue initialized",
+      "marker": "Keyboard queue initialized",
+      "failureMeaning": "Initialization did not reach its own ready marker",
+      "checkHint": "kernel/src/main.rs keyboard queue initialization"
+    },
+    {
+      "name": "FD slab cache initialized",
+      "marker": "Slab cache 'fd_table' initialized: 64 slots",
+      "failureMeaning": "Initialization did not reach its own ready marker",
+      "checkHint": "kernel/src/memory/slab.rs init_caches"
+    },
+    {
+      "name": "Signal slab cache initialized",
+      "marker": "Slab cache 'signal_handlers' initialized: 64 slots",
+      "failureMeaning": "Initialization did not reach its own ready marker",
+      "checkHint": "kernel/src/memory/slab.rs init_caches"
+    },
+    {
       "name": "Kernel entry point",
       "marker": "Kernel entry point reached",
       "failureMeaning": "Kernel failed to start at all",

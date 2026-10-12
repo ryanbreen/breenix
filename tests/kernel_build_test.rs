@@ -80,6 +80,7 @@ fn test_kernel_builds_with_testing_feature() {
 
 /// Test that we can run the kernel binary in QEMU using shared infrastructure
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_kernel_runs_in_qemu() {
     println!("Testing kernel execution in QEMU...");
 

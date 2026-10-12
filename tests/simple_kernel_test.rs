@@ -3,6 +3,7 @@ use shared_qemu::get_kernel_output;
 
 /// Simple test that the kernel builds and runs
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_kernel_runs() {
     println!("Testing kernel execution...");
 

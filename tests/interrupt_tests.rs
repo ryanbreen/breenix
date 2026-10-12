@@ -3,6 +3,7 @@ use shared_qemu::get_kernel_output;
 
 /// Test interrupt system initialization
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_interrupt_initialization() {
     println!("Testing interrupt system initialization...");
 
@@ -31,6 +32,7 @@ fn test_interrupt_initialization() {
 
 /// Test breakpoint interrupt handling
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_breakpoint_interrupt() {
     println!("Testing breakpoint interrupt handling...");
 
@@ -51,6 +53,7 @@ fn test_breakpoint_interrupt() {
 
 /// Test keyboard interrupt handling
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_keyboard_interrupt() {
     println!("Testing keyboard interrupt setup...");
 
@@ -71,6 +74,7 @@ fn test_keyboard_interrupt() {
 
 /// Test timer interrupt is working (by checking for advancing timestamps)
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_timer_interrupt() {
     println!("Testing timer interrupt functionality...");
 
