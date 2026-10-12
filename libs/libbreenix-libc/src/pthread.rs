@@ -31,6 +31,7 @@ const CLONE_FS: u64 = 0x200;
 const CLONE_FILES: u64 = 0x400;
 const CLONE_SIGHAND: u64 = 0x800;
 const CLONE_THREAD: u64 = 0x10000;
+const CLONE_SYSVSEM: u64 = 0x40000;
 const CLONE_SETTLS: u64 = 0x80000;
 const CLONE_CHILD_CLEARTID: u64 = 0x200000;
 const CLONE_CHILD_SETTID: u64 = 0x1000000;
@@ -670,11 +671,14 @@ pub unsafe extern "C" fn pthread_create(
         *(sp as *mut usize) = 0;
         sp
     };
+    // CLONE_SYSVSEM: a process's threads share its semadj values, as POSIX
+    // keeps them per process.
     let flags = CLONE_VM
         | CLONE_FS
         | CLONE_FILES
         | CLONE_SIGHAND
         | CLONE_THREAD
+        | CLONE_SYSVSEM
         | CLONE_SETTLS
         | CLONE_CHILD_CLEARTID
         | CLONE_CHILD_SETTID;
