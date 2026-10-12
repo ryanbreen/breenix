@@ -461,6 +461,7 @@ pub extern "C" fn check_need_resched_and_switch(
         }
     };
 
+    crate::scratch_probe::stage(0);
     // Perform scheduling decision
     let schedule_result = scheduler::schedule();
 
