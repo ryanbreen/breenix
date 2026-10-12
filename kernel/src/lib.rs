@@ -563,6 +563,8 @@ pub fn arch_halt_with_interrupts() {
 /// state is read again here with interrupts masked; an interrupt arriving after
 /// that read ends the halt, through `sti; hlt` on x86 and, on ARM64, a WFI with
 /// IRQs masked, which ends when one is pending and takes it as they unmask.
+/// Preemptible ARM64 waiters instead save their continuation through the native
+/// scheduler; the WFI fallback below is for callers retaining their CPU.
 ///
 /// A waiting thread switches only on an interrupt return, on x86 and ARM64
 /// alike, so a waiter that halted here with another thread queued on its CPU
@@ -579,8 +581,8 @@ pub fn arch_halt_with_interrupts() {
 /// as a tick taken in the halt would: on x86 through a software interrupt, on
 /// ARM64 through a reschedule SGI to its own CPU, pending before the WFI.
 pub fn arch_halt_while_blocked() {
-    // SAFETY: check the state and begin any handoff with interrupts masked.
-    // Every return path below unmasks them.
+    // SAFETY: interrupts are masked only for the state read, and every path
+    // below unmasks them before returning.
     unsafe { arch_disable_interrupts() };
     let current_blocked = |scheduler: &mut task::scheduler::Scheduler| {
         scheduler
@@ -600,6 +602,16 @@ pub fn arch_halt_while_blocked() {
     // Counted only when the wait parks: a wake that already ended the wait
     // is not a park.
     per_cpu::note_wait_loop_park();
+    #[cfg(target_arch = "aarch64")]
+    if per_cpu::preempt_count() == 0 {
+        // Save the blocked continuation now. Otherwise its timer can make it
+        // ready on a peer CPU, but cannot dispatch it until this CPU takes an
+        // interrupt and saves the still-current stack.
+        unsafe { arch_enable_interrupts() };
+        arch_impl::aarch64::context_switch::run_deferred_reclamation();
+        arch_impl::aarch64::context_switch::schedule_from_kernel();
+        return;
+    }
     #[cfg(target_arch = "x86_64")]
     {
         if queued && per_cpu::preempt_count() == 0 {
@@ -617,20 +629,10 @@ pub fn arch_halt_while_blocked() {
         x86_64::instructions::interrupts::enable_and_hlt();
     }
     #[cfg(target_arch = "aarch64")]
-    {
-        if per_cpu::preempt_count() == 0 {
-            // Save the blocked continuation now. Halting as current ties a
-            // timer or signal wake to this CPU's next IRQ even when another
-            // CPU has already made the thread ready. The inline handoff frees
-            // its stack for dispatch elsewhere and returns with IRQs enabled.
-            arch_impl::aarch64::context_switch::schedule_from_kernel();
-        } else {
-            // SAFETY: a non-preemptible caller must keep its CPU; a pending
-            // IRQ wakes the masked WFI and is taken by the following unmask.
-            unsafe {
-                core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
-            }
-        }
+    // SAFETY: a non-preemptible caller keeps its CPU. A pending IRQ wakes
+    // the masked WFI and is taken by the following unmask.
+    unsafe {
+        core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
     }
 }
 
