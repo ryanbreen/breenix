@@ -1,6 +1,7 @@
 [package]
 name = "tiered_allocator"
 version = "0.1.0"
+edition = "2021"
 authors = ["Ryan Breen <rbreen@cimpress.com>"]
 
 [dependencies.lazy_static]
@@ -9,3 +10,9 @@ features = ["spin_no_std"]
 
 [dependencies]
 spin = "0.5.2"
+
+# Standalone package: host tests must not pull in the kernel artifact build.
+[workspace]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }

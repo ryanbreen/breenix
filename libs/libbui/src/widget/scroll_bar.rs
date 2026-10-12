@@ -18,22 +18,43 @@ use crate::theme::Theme;
 ///
 /// # Usage
 ///
-/// ```no_run
+/// ```
+/// use libbui::{InputState, Rect, Theme, widget::scroll_bar::ScrollBar};
+/// use libgfx::framebuf::FrameBuf;
+///
+/// let (win_w, win_h) = (320, 240);
+/// let (content_height, visible_height) = (600, win_h);
 /// let mut bar = ScrollBar::new(
 ///     Rect::new(win_w - ScrollBar::DEFAULT_WIDTH, 0, ScrollBar::DEFAULT_WIDTH, win_h),
 ///     content_height,
 ///     visible_height,
 /// );
 ///
-/// // In the event loop:
-/// if let Event::Scroll { delta_y } = event {
-///     bar.scroll(delta_y);
-/// }
+/// // Forward a scroll event's delta, then update mouse input.
+/// bar.scroll(-2);
+/// assert_eq!(bar.offset(), 80);
+/// let input = InputState::from_raw(0, 0, 0, 0);
 /// bar.update(&input);
 ///
 /// // When rendering content, subtract bar.offset() from all y positions.
 /// // Draw the bar last so it renders on top of content.
-/// bar.draw(fb, &theme);
+/// let mut pixels = vec![0u8; win_w as usize * win_h as usize * 4];
+/// let mut fb = unsafe {
+///     FrameBuf::from_raw(pixels.as_mut_ptr(), win_w as usize, win_h as usize,
+///                        win_w as usize * 4, 4, false)
+/// };
+/// let theme = Theme::dark();
+/// bar.draw(&mut fb, &theme);
+/// // At offset 80, the 96px thumb starts at y=32; check its interior and
+/// // the track above and below it so a misplaced thumb fails the example.
+/// let pixel = |y: usize| {
+///     let start = (y * win_w as usize + (win_w - 6) as usize) * 4;
+///     &pixels[start..start + 3]
+/// };
+/// assert_eq!(pixel(20), &[40, 42, 48]);
+/// assert_eq!(pixel(40), &[80, 85, 100]);
+/// assert_eq!(pixel(120), &[80, 85, 100]);
+/// assert_eq!(pixel(140), &[40, 42, 48]);
 /// ```
 pub struct ScrollBar {
     /// Position and size of the scroll bar track.

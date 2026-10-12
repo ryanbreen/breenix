@@ -18,7 +18,9 @@ use crate::types::{clock, Timespec};
 /// `Ok(())` on success, `Err(Error)` on error.
 ///
 /// # Example
-/// ```rust,ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
 /// use libbreenix::time::{clock_gettime, CLOCK_MONOTONIC};
 /// use libbreenix::Timespec;
 ///

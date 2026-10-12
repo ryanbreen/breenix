@@ -19,7 +19,9 @@ use crate::syscall::{nr, raw};
 /// keep the raw u64 return here.
 ///
 /// # Example
-/// ```rust,ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
 /// use libbreenix::memory::brk;
 ///
 /// // Query current break
@@ -99,7 +101,9 @@ pub const MAP_FAILED: *mut u8 = usize::MAX as *mut u8;
 /// `Ok(pointer)` to the mapped region on success, `Err(Error)` on failure.
 ///
 /// # Example
-/// ```rust,ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
 /// use libbreenix::memory::{mmap, PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_ANONYMOUS};
 /// use core::ptr::null_mut;
 ///
@@ -146,8 +150,13 @@ pub fn mmap(
 /// `Ok(())` on success, `Err(Error)` on failure.
 ///
 /// # Example
-/// ```rust,ignore
-/// use libbreenix::memory::munmap;
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::memory::{mmap, munmap, PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_ANONYMOUS};
+/// use core::ptr::null_mut;
+///
+/// let ptr = mmap(null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0).unwrap();
 ///
 /// munmap(ptr, 4096).unwrap();
 /// ```
@@ -170,7 +179,9 @@ pub fn munmap(addr: *mut u8, length: usize) -> Result<(), Error> {
 /// `Ok(())` on success, `Err(Error)` on failure.
 ///
 /// # Example
-/// ```rust,ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
 /// use libbreenix::memory::{mmap, mprotect, PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_ANONYMOUS};
 /// use core::ptr::null_mut;
 ///
@@ -217,7 +228,9 @@ pub struct CowStats {
 /// `Ok(CowStats)` on success, `Err(Error)` on error.
 ///
 /// # Example
-/// ```rust,ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
 /// use libbreenix::memory::cow_stats;
 ///
 /// let stats = cow_stats().unwrap();

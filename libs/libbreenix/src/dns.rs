@@ -4,7 +4,9 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+//!
+//! ```rust,no_run
 //! use libbreenix::dns::{resolve, SLIRP_DNS};
 //!
 //! // Resolve hostname using QEMU's DNS server
@@ -494,11 +496,16 @@ fn close_fd(fd: Fd) {
 /// * `Err(DnsError)` on failure
 ///
 /// # Example
-/// ```rust,ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
 /// use libbreenix::dns::{resolve, SLIRP_DNS};
+/// # fn main() -> Result<(), libbreenix::dns::DnsError> {
 ///
 /// let result = resolve("example.com", SLIRP_DNS)?;
 /// println!("IP: {}.{}.{}.{}", result.addr[0], result.addr[1], result.addr[2], result.addr[3]);
+/// # Ok(())
+/// # }
 /// ```
 pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsError> {
     if hostname.is_empty() {

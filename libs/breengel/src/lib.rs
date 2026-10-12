@@ -26,10 +26,12 @@
 //!
 //! # Quick Start
 //!
+//! This example requires Breenix and a running BWM server; host doctests compile it only.
+//!
 //! ```rust,no_run
 //! use breengel::{Window, Event};
 //!
-//! let mut win = Window::new("My App", 400, 300).unwrap();
+//! let mut win = Window::new(b"My App", 400, 300).unwrap();
 //! loop {
 //!     // Poll for input events
 //!     for event in win.poll_events() {

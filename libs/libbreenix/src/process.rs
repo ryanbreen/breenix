@@ -95,13 +95,17 @@ pub fn exec(path: &[u8]) -> Result<core::convert::Infallible, Error> {
 /// * `argv` - Array of argument pointers, must end with a null pointer
 ///
 /// # Example
-/// ```
+/// This example replaces the process using the Breenix syscall ABI, so it is compile-checked only.
+///
+/// ```no_run
+/// use libbreenix::process::execv;
+///
 /// // Execute "cat" with argument "/hello.txt"
 /// let path = b"cat\0";
 /// let arg0 = b"cat\0";
 /// let arg1 = b"/hello.txt\0";
 /// let argv: [*const u8; 3] = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
-/// execv(path, argv.as_ptr());
+/// execv(path, argv.as_ptr()).unwrap();
 /// ```
 ///
 /// # Returns

@@ -239,7 +239,11 @@ impl Default for StackT {
 /// * `Err(Error)` on failure
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::signal::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Send SIGTERM to process 42
 /// kill(42, SIGTERM)?;
 ///
@@ -247,6 +251,8 @@ impl Default for StackT {
 /// if kill(42, 0).is_ok() {
 ///     // Process exists
 /// }
+/// # Ok(())
+/// # }
 /// ```
 pub fn kill(pid: i32, sig: i32) -> Result<(), Error> {
     let ret = unsafe { raw::syscall2(nr::KILL, pid as u64, sig as u64) };
@@ -265,13 +271,19 @@ pub fn kill(pid: i32, sig: i32) -> Result<(), Error> {
 /// * `Err(Error)` on failure
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::signal::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// extern "C" fn handler(sig: i32) {
 ///     // Handle signal
 /// }
 ///
 /// let action = Sigaction::new(handler);
 /// sigaction(SIGUSR1, Some(&action), None)?;
+/// # Ok(())
+/// # }
 /// ```
 pub fn sigaction(
     sig: i32,
@@ -300,7 +312,11 @@ pub fn sigaction(
 /// * `Err(Error)` on failure
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::signal::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Block SIGINT
 /// let mask = 1u64 << (SIGINT - 1);
 /// sigprocmask(SIG_BLOCK, Some(&mask), None)?;
@@ -308,6 +324,8 @@ pub fn sigaction(
 /// // Unblock all signals
 /// let empty = 0u64;
 /// sigprocmask(SIG_SETMASK, Some(&empty), None)?;
+/// # Ok(())
+/// # }
 /// ```
 pub fn sigprocmask(how: i32, set: Option<&u64>, oldset: Option<&mut u64>) -> Result<(), Error> {
     let set_ptr = set.map_or(0, |s| s as *const _ as u64);
@@ -346,7 +364,11 @@ pub unsafe fn sigreturn() -> ! {
 /// * Always returns `Err(Error)` with EINTR (interrupted by signal)
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::signal::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Set up signal handler for SIGUSR1
 /// extern "C" fn handler(_sig: i32) {
 ///     // Handle signal
@@ -356,6 +378,8 @@ pub unsafe fn sigreturn() -> ! {
 ///
 /// // Wait for a signal
 /// let _ = pause();  // Will return when SIGUSR1 is received
+/// # Ok(())
+/// # }
 /// ```
 pub fn pause() -> Result<(), Error> {
     let ret = unsafe {
@@ -541,7 +565,11 @@ pub fn getitimer(which: i32, curr_value: &mut Itimerval) -> Result<(), Error> {
 /// * `Err(Error)` on failure
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::signal::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Set a one-shot timer for 2.5 seconds
 /// let new_value = Itimerval {
 ///     it_interval: Timeval { tv_sec: 0, tv_usec: 0 },
@@ -555,6 +583,8 @@ pub fn getitimer(which: i32, curr_value: &mut Itimerval) -> Result<(), Error> {
 ///     it_value: Timeval { tv_sec: 1, tv_usec: 0 },
 /// };
 /// setitimer(ITIMER_REAL, &repeating, None)?;
+/// # Ok(())
+/// # }
 /// ```
 pub fn setitimer(which: i32, new_value: &Itimerval, old_value: Option<&mut Itimerval>) -> Result<(), Error> {
     let old_ptr = old_value.map_or(0, |v| v as *mut _ as u64);

@@ -7,7 +7,9 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+//!
+//! ```rust,no_run
 //! use libbreenix::socket::{socket, bind_inet, sendto, SockAddrIn, AF_INET, SOCK_DGRAM};
 //!
 //! // Create UDP socket

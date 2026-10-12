@@ -13,21 +13,27 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
-//! use libcollab::{CollabSession, CollabEvent, DrawOp};
+//! This example uses Breenix TCP syscalls; host doctests compile it only.
 //!
-//! // Host a session
-//! let mut session = CollabSession::host(7890, b"Alice").unwrap();
+//! ```rust,no_run
+//! use libcollab::CollabSession;
+//! use libbreenix::{io::{poll, PollFd}, socket::SockAddrIn};
 //!
-//! // Or join one
-//! let mut session = CollabSession::join(&addr, b"Bob").unwrap();
+//! // Host a session, or pass --join to connect to an existing host.
+//! let mut session = if std::env::args().any(|arg| arg == "--join") {
+//!     let addr = SockAddrIn::new([127, 0, 0, 1], 7890);
+//!     CollabSession::join(&addr, b"Bob").unwrap()
+//! } else {
+//!     CollabSession::host(7890, b"Alice", 640, 480).unwrap()
+//! };
 //!
 //! // In your poll loop:
+//! let mut extra_fds = [PollFd::default(); 16];
 //! let n = session.poll_fds(&mut extra_fds);
-//! // ... add extra_fds to your poll set ...
-//! session.process_io(&poll_results)?;
+//! poll(&mut extra_fds[..n], 0).unwrap();
+//! session.process_io(&extra_fds[..n]);
 //! while let Some(event) = session.next_event() {
-//!     match event { /* handle events */ }
+//!     println!("{event:?}");
 //! }
 //! ```
 

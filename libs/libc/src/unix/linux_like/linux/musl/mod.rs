@@ -1,15 +1,6 @@
 use crate::off64_t;
 use crate::prelude::*;
 
-// Standard file descriptor constants (POSIX unistd.h)
-pub const STDIN_FILENO: c_int = 0;
-pub const STDOUT_FILENO: c_int = 1;
-pub const STDERR_FILENO: c_int = 2;
-
-// Socket type constants (musl values for non-MIPS)
-pub const SOCK_STREAM: c_int = 1;
-pub const SOCK_DGRAM: c_int = 2;
-
 pub type pthread_t = *mut c_void;
 pub type clock_t = c_long;
 #[cfg(musl32_time64)]
@@ -526,6 +517,15 @@ s_no_extra_traits! {
     }
 }
 
+// Standard file descriptor constants (POSIX unistd.h)
+pub const STDIN_FILENO: c_int = 0;
+pub const STDOUT_FILENO: c_int = 1;
+pub const STDERR_FILENO: c_int = 2;
+
+// Socket type constants (musl values for non-MIPS)
+pub const SOCK_STREAM: c_int = 1;
+pub const SOCK_DGRAM: c_int = 2;
+
 // include/sys/mman.h
 /*
  * Huge page size encoding when MAP_HUGETLB is specified, and a huge page
@@ -922,6 +922,37 @@ extern "C" {
     ) -> c_int;
 }
 
+// Additional pthread functions needed by Rust std
+extern "C" {
+    pub fn pthread_create(
+        native: *mut crate::pthread_t,
+        attr: *const crate::pthread_attr_t,
+        f: extern "C" fn(*mut c_void) -> *mut c_void,
+        value: *mut c_void,
+    ) -> c_int;
+
+    pub fn pthread_getattr_np(
+        native: crate::pthread_t,
+        attr: *mut crate::pthread_attr_t,
+    ) -> c_int;
+
+    pub fn pthread_attr_getstack(
+        attr: *const crate::pthread_attr_t,
+        stackaddr: *mut *mut c_void,
+        stacksize: *mut size_t,
+    ) -> c_int;
+
+    pub fn pthread_attr_getguardsize(
+        attr: *const crate::pthread_attr_t,
+        guardsize: *mut size_t,
+    ) -> c_int;
+
+    pub fn pthread_setname_np(
+        thread: crate::pthread_t,
+        name: *const c_char,
+    ) -> c_int;
+}
+
 // Alias <foo> to <foo>64 to mimic glibc's LFS64 support
 mod lfs64;
 pub use self::lfs64::*;
@@ -952,35 +983,4 @@ cfg_if! {
         pub use self::b32::*;
     } else {
     }
-}
-
-// Additional pthread functions needed by Rust std
-extern "C" {
-    pub fn pthread_create(
-        native: *mut crate::pthread_t,
-        attr: *const crate::pthread_attr_t,
-        f: extern "C" fn(*mut c_void) -> *mut c_void,
-        value: *mut c_void,
-    ) -> c_int;
-
-    pub fn pthread_getattr_np(
-        native: crate::pthread_t,
-        attr: *mut crate::pthread_attr_t,
-    ) -> c_int;
-
-    pub fn pthread_attr_getstack(
-        attr: *const crate::pthread_attr_t,
-        stackaddr: *mut *mut c_void,
-        stacksize: *mut size_t,
-    ) -> c_int;
-
-    pub fn pthread_attr_getguardsize(
-        attr: *const crate::pthread_attr_t,
-        guardsize: *mut size_t,
-    ) -> c_int;
-
-    pub fn pthread_setname_np(
-        thread: crate::pthread_t,
-        name: *const c_char,
-    ) -> c_int;
 }

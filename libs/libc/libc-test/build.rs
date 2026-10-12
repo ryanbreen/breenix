@@ -208,6 +208,20 @@ fn test_apple(target: &str) {
     let x86_64 = target.contains("x86_64");
     let i686 = target.contains("i686");
 
+    // These declarations follow macOS 27; compare them only with that SDK or newer.
+    // Honor the same SDKROOT selection used by the C compiler, not the host OS.
+    println!("cargo:rerun-if-env-changed=SDKROOT");
+    println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
+    let mut xcrun = std::process::Command::new("xcrun");
+    if let Some(sdk) = env::var_os("SDKROOT").filter(|sdk| !sdk.is_empty()) {
+        xcrun.arg("--sdk").arg(sdk);
+    }
+    let version = xcrun.arg("--show-sdk-version").output().expect("query Apple SDK version");
+    assert!(version.status.success(), "xcrun could not determine the Apple SDK version");
+    let version = String::from_utf8(version.stdout).expect("Apple SDK version is UTF-8");
+    let sdk_major: u32 = version.trim().split('.').next().unwrap().parse().expect("Apple SDK major version");
+    let before_macos_27 = target.contains("darwin") && sdk_major < 27;
+
     let mut cfg = ctest_cfg();
 
     cfg.flag("-Wno-deprecated-declarations");
@@ -326,6 +340,8 @@ fn test_apple(target: &str) {
         match s.ident() {
             // FIXME(macos): The size is changed in recent macOSes.
             "malloc_zone_t" => true,
+            // The macOS 27 fields and size are absent in older SDK headers.
+            "vm_statistics64" if before_macos_27 => true,
             // it is a moving target, changing through versions
             // also contains bitfields members
             "tcp_connection_info" => true,
@@ -346,8 +362,16 @@ fn test_apple(target: &str) {
             // https://github.com/apple-oss-distributions/xnu/commit/e6231be02a03711ca404e5121a151b24afbff733
             "TIOCREMOTE" => true,
 
+            // Updated in macOS 27 along with vm_statistics64.
+            "HOST_VM_INFO64_COUNT" | "AIO_LISTIO_MAX" if before_macos_27 => true,
+
             _ => false,
         }
+    });
+
+    cfg.skip_alias(move |ty| {
+        // This alias has the same version-dependent size as vm_statistics64.
+        ty.ident() == "vm_statistics64_data_t" && before_macos_27
     });
 
     cfg.skip_fn(move |func| {

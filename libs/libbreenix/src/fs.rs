@@ -215,8 +215,14 @@ impl Stat {
 /// File descriptor on success, Error on failure.
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// let fd = open("/hello.txt\0", O_RDONLY)?;
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn open(path: &str, flags: u32) -> Result<Fd, Error> {
@@ -265,12 +271,18 @@ pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Error> {
 /// * `Err(error)` - Access denied or file doesn't exist
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Check if file exists
 /// access("/hello.txt\0", F_OK)?;
 ///
 /// // Check if file is readable and writable
 /// access("/hello.txt\0", R_OK | W_OK)?;
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn access(path: &str, mode: u32) -> Result<(), Error> {
@@ -394,10 +406,17 @@ pub fn lseek(fd: Fd, offset: i64, whence: i32) -> Result<u64, Error> {
 /// Number of bytes written on success, Error on failure.
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// use libbreenix::io::close;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// let fd = open_with_mode("/newfile.txt\0", O_WRONLY | O_CREAT, 0o644)?;
 /// let n = write(fd, b"Hello, world!")?;
-/// close(fd);
+/// close(fd)?;
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Error> {
@@ -495,7 +514,12 @@ impl Dirent64 {
 /// * On error: Error
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// use libbreenix::io::close;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// let fd = open("/\0", O_RDONLY | O_DIRECTORY)?;
 /// let mut buf = [0u8; 1024];
 /// loop {
@@ -503,7 +527,9 @@ impl Dirent64 {
 ///     if n == 0 { break; }
 ///     // Process entries in buf[..n]
 /// }
-/// close(fd);
+/// close(fd)?;
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
@@ -538,8 +564,14 @@ pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
 /// * `EIO` - I/O error
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// unlink("/tmp/myfile.txt\0")?;
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn unlink(path: &str) -> Result<(), Error> {
@@ -619,8 +651,14 @@ impl<'a> Iterator for DirentIter<'a> {
 /// * `ENOSPC` - No space left on device
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// mkdir("/tmp/newdir\0", 0o755)?;
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn mkdir(path: &str, mode: u32) -> Result<(), Error> {
@@ -653,8 +691,14 @@ pub fn mkdir(path: &str, mode: u32) -> Result<(), Error> {
 /// * `EBUSY` - Directory is being used (e.g., is current directory)
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// rmdir("/tmp/olddir\0")?;
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn rmdir(path: &str) -> Result<(), Error> {
@@ -690,8 +734,14 @@ pub fn rmdir(path: &str) -> Result<(), Error> {
 /// * `EIO` - I/O error
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// rename("/tmp/oldname.txt\0", "/tmp/newname.txt\0")?;
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Error> {
@@ -729,10 +779,16 @@ pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Error> {
 /// * `EIO` - I/O error
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Create a hard link to an existing file
 /// link("/original.txt\0", "/link_to_original.txt\0")?;
 /// // Both paths now refer to the same file (same inode)
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn link(oldpath: &str, newpath: &str) -> Result<(), Error> {
@@ -769,12 +825,18 @@ pub fn link(oldpath: &str, newpath: &str) -> Result<(), Error> {
 /// * `EIO` - I/O error
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Create a symlink to an existing file
 /// symlink("/etc/passwd\0", "/tmp/passwd_link\0")?;
 ///
 /// // Symlinks can point to paths that don't exist
 /// symlink("/nonexistent/path\0", "/tmp/broken_link\0")?;
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn symlink(target: &str, linkpath: &str) -> Result<(), Error> {
@@ -813,10 +875,16 @@ pub fn symlink(target: &str, linkpath: &str) -> Result<(), Error> {
 /// exactly how many bytes of the target were written.
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// let mut buf = [0u8; 256];
 /// let len = readlink("/tmp/mylink\0", &mut buf)?;
-/// let target = core::str::from_utf8(&buf[..len])?;
+/// let target = core::str::from_utf8(&buf[..len]).unwrap();
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Error> {
@@ -849,12 +917,18 @@ pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Error> {
 /// * `ENOSPC` - No space left on device
 ///
 /// # Example
-/// ```ignore
+/// This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+///
+/// ```rust,no_run
+/// use libbreenix::fs::*;
+/// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Create a FIFO at /tmp/myfifo
 /// mkfifo("/tmp/myfifo\0", 0o644)?;
 ///
 /// // Now other processes can open it for read/write
 /// let fd = open("/tmp/myfifo\0", O_RDONLY)?;
+/// # Ok(())
+/// # }
 /// ```
 #[inline]
 pub fn mkfifo(pathname: &str, mode: u32) -> Result<(), Error> {

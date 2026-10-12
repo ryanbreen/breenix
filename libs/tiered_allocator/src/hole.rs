@@ -1,6 +1,5 @@
-use core::ptr::Unique;
-use alloc::alloc::{Layout, AllocErr};
-use core::mem::{self, size_of};
+use core::mem::size_of;
+use core::ptr::NonNull;
 
 use super::align_up;
 
@@ -8,6 +7,9 @@ use super::align_up;
 pub struct HoleList {
     first: Hole, // dummy
 }
+
+// The list exclusively owns its nodes; access through the global heap is mutex-protected.
+unsafe impl Send for HoleList {}
 
 impl HoleList {
     /// Creates an empty `HoleList`.
@@ -27,16 +29,15 @@ impl HoleList {
         assert!(size_of::<Hole>() == Self::min_size());
 
         let ptr = hole_addr as *mut Hole;
-        mem::forget(mem::replace(&mut *ptr,
-                                 Hole {
-                                     size: hole_size,
-                                     next: None,
-                                 }));
+        ptr.write(Hole {
+            size: hole_size,
+            next: None,
+        });
 
         HoleList {
             first: Hole {
                 size: 0,
-                next: Some(Unique::new(ptr).unwrap()),
+                next: Some(NonNull::new(ptr).unwrap()),
             },
         }
     }
@@ -50,15 +51,17 @@ impl HoleList {
     pub fn allocate_first_fit(&mut self, size: usize, align: usize) -> *mut u8 {
         assert!(size >= Self::min_size());
 
-        allocate_first_fit(&mut self.first, size, align).map(|allocation| {
-            if let Some(padding) = allocation.front_padding {
-                deallocate(&mut self.first, padding.addr, padding.size);
-            }
-            if let Some(padding) = allocation.back_padding {
-                deallocate(&mut self.first, padding.addr, padding.size);
-            }
-            allocation.info.addr as *mut u8
-        }).unwrap()
+        allocate_first_fit(&mut self.first, size, align)
+            .map(|allocation| {
+                if let Some(padding) = allocation.front_padding {
+                    deallocate(&mut self.first, padding.addr, padding.size);
+                }
+                if let Some(padding) = allocation.back_padding {
+                    deallocate(&mut self.first, padding.addr, padding.size);
+                }
+                allocation.info.addr as *mut u8
+            })
+            .unwrap_or(core::ptr::null_mut())
     }
 
     /// Frees the allocation given by `ptr` and `size`. `ptr` must be a pointer returned by a call
@@ -79,7 +82,10 @@ impl HoleList {
     /// Returns information about the first hole for test purposes.
     #[cfg(test)]
     pub fn first_hole(&self) -> Option<(usize, usize)> {
-        self.first.next.as_ref().map(|hole| (**hole as usize, unsafe { hole.get().size }))
+        self.first
+            .next
+            .as_ref()
+            .map(|hole| (hole.as_ptr() as usize, unsafe { hole.as_ref().size }))
     }
 }
 
@@ -87,13 +93,13 @@ impl HoleList {
 #[cfg(not(test))]
 struct Hole {
     size: usize,
-    next: Option<Unique<Hole>>,
+    next: Option<NonNull<Hole>>,
 }
 
 #[cfg(test)]
 pub struct Hole {
     pub size: usize,
-    pub next: Option<Unique<Hole>>,
+    pub next: Option<NonNull<Hole>>,
 }
 
 impl Hole {
@@ -188,16 +194,17 @@ fn split_hole(hole: HoleInfo, required_size: usize, required_align: usize) -> Op
 /// padding is returned as part of the `Allocation`. The caller must take care of freeing it again.
 /// This function uses the “first fit” strategy, so it breaks as soon as a big enough hole is
 /// found (and returns it).
-fn allocate_first_fit(mut previous: &mut Hole, size: usize, align: usize) -> Result<Allocation, AllocErr> {
+fn allocate_first_fit(mut previous: &mut Hole, size: usize, align: usize) -> Option<Allocation> {
     loop {
-        let allocation: Option<Allocation> = previous.next
+        let allocation: Option<Allocation> = previous
+            .next
             .as_mut()
             .and_then(|current| split_hole(unsafe { current.as_ref() }.info(), size, align));
         match allocation {
             Some(allocation) => {
                 // hole is big enough, so remove it from the list by updating the previous pointer
                 previous.next = previous.next_unwrap().next.take();
-                return Ok(allocation);
+                return Some(allocation);
             }
             None if previous.next.is_some() => {
                 // try next hole
@@ -205,7 +212,7 @@ fn allocate_first_fit(mut previous: &mut Hole, size: usize, align: usize) -> Res
             }
             None => {
                 // this was the last hole, so no hole is big enough -> allocation not possible
-                return Err(<alloc::alloc::AllocErr as Trait>::Exhausted { request: Layout::from_size_align(size, align).unwrap() })
+                return None;
             }
         }
     }
@@ -232,7 +239,10 @@ fn deallocate(mut hole: &mut Hole, addr: usize, mut size: usize) {
         assert!(hole_addr + hole.size <= addr);
 
         // get information about the next block
-        let next_hole_info = hole.next.as_ref().map(|next| unsafe { next.as_ref().info() });
+        let next_hole_info = hole
+            .next
+            .as_ref()
+            .map(|next| unsafe { next.as_ref().info() });
 
         match next_hole_info {
             Some(next) if hole_addr + hole.size == addr && addr + size == next.addr => {
@@ -256,7 +266,7 @@ fn deallocate(mut hole: &mut Hole, addr: usize, mut size: usize) {
                 // after:   ___XXX__FFFFYYYYY____    where F is the freed block
 
                 hole.next = hole.next_unwrap().next.take(); // remove the Y block
-                size += next.size;  // free the merged F/Y block in next iteration
+                size += next.size; // free the merged F/Y block in next iteration
                 continue;
             }
             Some(next) if next.addr <= addr => {
@@ -266,6 +276,10 @@ fn deallocate(mut hole: &mut Hole, addr: usize, mut size: usize) {
 
                 hole = move_helper(hole).next_unwrap(); // start next iteration at next hole
                 continue;
+            }
+            None if hole.size != 0 && hole_addr + hole.size == addr => {
+                // The final freed block is adjacent to the final free hole.
+                hole.size += size;
             }
             _ => {
                 // block is between this and the next hole
@@ -282,9 +296,11 @@ fn deallocate(mut hole: &mut Hole, addr: usize, mut size: usize) {
                 };
                 // write the new hole to the freed memory
                 let ptr = addr as *mut Hole;
-                mem::forget(mem::replace(unsafe { &mut *ptr }, new_hole));
+                unsafe {
+                    ptr.write(new_hole);
+                }
                 // add the F block as the next block of the X block
-                hole.next = Some(unsafe { Unique::new(ptr).unwrap() });
+                hole.next = Some(NonNull::new(ptr).unwrap());
             }
         }
         break;

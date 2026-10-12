@@ -14,7 +14,6 @@
 //!  * A `SlabPageProvider` is provided by the client and used by the
 //!    SlabAllocator to allocate SlabPages.
 //!
-#![feature(const_fn, allocator_api, alloc, global_allocator, ptr_internals, unique)]
 #![no_std]
 
 extern crate alloc;
@@ -23,22 +22,22 @@ extern crate spin;
 #[macro_use]
 extern crate lazy_static;
 
-use heap::Heap;
+use crate::heap::Heap;
 
 use alloc::alloc::{GlobalAlloc, Layout};
 
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
-mod heap;
+/// Free-list heap API for clients that manage their own backing memory.
+pub mod heap;
 mod hole;
 
 pub const HEAP_START: usize = 0o_000_001_000_000_0000;
 pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB
 
 lazy_static! {
-    static ref HEAP: Mutex<Heap> = Mutex::new(unsafe {
-        Heap::new(HEAP_START, HEAP_SIZE)
-    });
+    static ref HEAP: Mutex<Heap> = Mutex::new(unsafe { Heap::new(HEAP_START, HEAP_SIZE) });
 }
 
 /// Align downwards. Returns the greatest x with alignment `align`
@@ -60,19 +59,30 @@ pub fn align_up(addr: usize, align: usize) -> usize {
 }
 
 static mut SLAB_ALLOCATE: Option<fn(usize, usize) -> *mut u8> = None;
-static mut SLAB_DEALLOCATE: Option<fn()> = None;
+static mut SLAB_DEALLOCATE: Option<unsafe fn(*mut u8, usize, usize)> = None;
 
-pub fn init(allocate: fn(usize, usize) -> *mut u8) {
+/// Install paired slab allocation and deallocation callbacks.
+///
+/// # Safety
+/// Call before concurrent allocations begin. Callbacks must accept the same layouts.
+/// The allocation callback must never return memory in the bootstrap heap range
+/// `[HEAP_START, HEAP_START + HEAP_SIZE)`: deallocation uses that range to select
+/// the bootstrap heap rather than the slab callback.
+pub unsafe fn init(
+    allocate: fn(usize, usize) -> *mut u8,
+    deallocate: unsafe fn(*mut u8, usize, usize),
+) {
     unsafe {
         SLAB_ALLOCATE = Some(allocate);
+        SLAB_DEALLOCATE = Some(deallocate);
     }
 }
 
 pub struct Allocator;
 
-unsafe impl GlobalAlloc for & Allocator {
+unsafe impl GlobalAlloc for Allocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if SLAB_ALLOCATE.is_none() {
+        if core::ptr::addr_of!(SLAB_ALLOCATE).read().is_none() {
             bootstrap_allocate(layout.size(), layout.align())
         } else {
             slab_allocate(layout.size(), layout.align())
@@ -80,31 +90,69 @@ unsafe impl GlobalAlloc for & Allocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        
+        if (ptr as usize) >= HEAP_START && (ptr as usize) < HEAP_START + HEAP_SIZE {
+            HEAP.lock().deallocate(ptr, layout.size(), layout.align());
+        } else {
+            core::ptr::addr_of!(SLAB_DEALLOCATE)
+                .read()
+                .expect("slab deallocator not initialized")(
+                ptr, layout.size(), layout.align()
+            );
+        }
     }
 }
 
-//Our allocator static
+// The fixed bootstrap address is mapped by the kernel, never by a host test process.
+#[cfg(any(target_os = "none", target_os = "breenix"))]
 #[global_allocator]
 static GLOBAL_ALLOC: Allocator = Allocator;
 
-pub static mut BOOTSTRAP_ALLOCS: usize = 0;
-pub static mut BOOTSTRAP_ALLOC_SIZE: usize = 0;
+pub static BOOTSTRAP_ALLOCS: AtomicUsize = AtomicUsize::new(0);
+pub static BOOTSTRAP_ALLOC_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 fn bootstrap_allocate(size: usize, align: usize) -> *mut u8 {
-    // HEAP.lock().allocate_first_fit(size, align).expect("out of bootstrap memory")
-    unsafe {
-        BOOTSTRAP_ALLOCS += 1;
-        BOOTSTRAP_ALLOC_SIZE += size;
-
-        if size > 128000 {
-            BOOTSTRAP_ALLOC_SIZE += 0;
-        }
-    }
+    BOOTSTRAP_ALLOCS.fetch_add(1, Ordering::Relaxed);
+    BOOTSTRAP_ALLOC_SIZE.fetch_add(size, Ordering::Relaxed);
 
     HEAP.lock().allocate_first_fit(size, align)
 }
 
 unsafe fn slab_allocate(size: usize, align: usize) -> *mut u8 {
-    SLAB_ALLOCATE.expect("invalid allocate")(size, align)
+    core::ptr::addr_of!(SLAB_ALLOCATE)
+        .read()
+        .expect("invalid allocate")(size, align)
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    static FREED: AtomicBool = AtomicBool::new(false);
+
+    fn allocate(size: usize, align: usize) -> *mut u8 {
+        unsafe { std::alloc::alloc(Layout::from_size_align(size, align).unwrap()) }
+    }
+
+    unsafe fn deallocate(ptr: *mut u8, size: usize, align: usize) {
+        assert_eq!((size, align), (48, 16));
+        std::alloc::dealloc(ptr, Layout::from_size_align(size, align).unwrap());
+        FREED.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn slab_callbacks_allocate_and_deallocate() {
+        let allocator = Allocator;
+        let layout = Layout::from_size_align(48, 16).unwrap();
+        unsafe {
+            init(allocate, deallocate);
+            let ptr = allocator.alloc(layout);
+            assert!(!ptr.is_null());
+            assert_eq!(ptr as usize % 16, 0);
+            ptr.write_bytes(0xAA, layout.size());
+            allocator.dealloc(ptr, layout);
+        }
+        assert!(FREED.load(Ordering::SeqCst));
+    }
 }

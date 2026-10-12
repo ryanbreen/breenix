@@ -64,8 +64,10 @@
 //! order, with the same titles; a host test (`tests/suite_manifests.rs`) checks it
 //! against the `SUITE` table in the suite's source.
 //!
-//! ```rust,ignore
-//! use libbreenix::suite::{case, category, check, skip, suite, CaseResult, Suite};
+//! This example is compile-checked on the host; running a suite requires Breenix.
+//!
+//! ```rust,no_run
+//! use libbreenix::suite::{case, category, check, suite, CaseResult, Suite};
 //!
 //! static SUITE: Suite = suite("smoke", "Smoke", &[
 //!     category("process", "Process", &[
