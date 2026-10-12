@@ -10,7 +10,8 @@ use super::{
 };
 use crate::ipc::mqueue;
 
-/// The message queue call numbered `n`, or None for any other number.
+/// The message queue call numbered `n`; a number that is not a message
+/// queue call gets no result.
 pub fn dispatch(n: u64, a: [u64; 6]) -> Option<SyscallResult> {
     let int = |i: usize| a[i] as i32;
     let word = |i: usize| a[i] as u32;

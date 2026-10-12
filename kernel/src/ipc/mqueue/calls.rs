@@ -42,7 +42,7 @@ fn result(r: Result<u64, u64>) -> SyscallResult {
 
 /// mq_open(name, oflag, mode, attr): a descriptor for the queue `name`
 /// (without the leading slash the C library strips). The descriptor is
-/// always close-on-exec, as on Linux; `mode` and `attr` are used only when
+/// close-on-exec whatever `oflag` says, as on Linux; `mode` and `attr` are used only when
 /// O_CREAT creates the queue.
 pub fn sys_mq_open(name: u64, oflag: u32, mode: u32, attr: u64) -> SyscallResult {
     result(mq_open(name, oflag, mode, attr))

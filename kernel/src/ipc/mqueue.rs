@@ -9,7 +9,7 @@
 //! the scheduler. No queue lock is held while user memory is copied, a
 //! thread is woken, a signal is sent or PROCESS_MANAGER is taken. The one
 //! queue lock taken under PROCESS_MANAGER is `inner`, by `on_close`, which
-//! takes nothing under it.
+//! takes no other lock under it.
 
 mod calls;
 pub mod dev;
@@ -49,7 +49,7 @@ const O_EXCL: u32 = 0o200;
 /// How a registered process is told a message arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotifyKind {
-    /// SIGEV_NONE: the registration is used up and nothing is sent.
+    /// SIGEV_NONE: the registration is used up and no signal is sent.
     Nothing,
     /// SIGEV_SIGNAL: the signal is sent with SI_MESGQ and the value.
     Signal,
@@ -246,8 +246,8 @@ impl MessageQueue {
         }
     }
 
-    /// mq_notify from process `pid`: register `request`, or with None remove
-    /// the process's registration. Registering while any process is
+    /// mq_notify from process `pid`: register `request`, or, given no
+    /// request, remove the process's registration. Registering while any process is
     /// registered is EBUSY.
     pub fn set_notify(&self, pid: u64, request: Option<MqNotify>) -> Result<(), u64> {
         let mut inner = self.inner.lock();
@@ -288,7 +288,8 @@ fn wanted_access(oflag: u32) -> Result<u32, u64> {
 }
 
 /// mq_open of `name` (checked, without its slash) with `oflag`, as `cred`:
-/// the queue, created with `mode` and `attr` when O_CREAT finds none.
+/// the queue, created with `mode` and `attr` when O_CREAT finds no queue of
+/// that name.
 pub(crate) fn open(name: &str, oflag: u32, mode: u32, attr: Option<MqAttr>, cred: &Credentials) -> Result<Arc<MessageQueue>, u64> {
     let wanted = wanted_access(oflag)?;
     let mut names = MQ_NAMES.lock();

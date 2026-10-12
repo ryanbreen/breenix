@@ -48,8 +48,8 @@ pub fn check_name(name: &[u8]) -> Result<(), u64> {
     Ok(())
 }
 
-/// The (maxmsg, msgsize) a new queue gets from `attr`: the defaults for
-/// None; EINVAL for a value of 0 or less, or above the caller's cap.
+/// The (maxmsg, msgsize) a new queue gets from `attr`: the defaults when no
+/// attributes are given; EINVAL for a value of 0 or less, or above the caller's cap.
 pub fn check_attr(attr: Option<&MqAttr>, privileged: bool) -> Result<(usize, usize), u64> {
     let Some(attr) = attr else {
         return Ok((DFLT_MAXMSG as usize, DFLT_MSGSIZE as usize));
