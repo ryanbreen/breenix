@@ -241,7 +241,9 @@ panic or fatal EL1 fault replaces whatever is on screen with a red diagnostics s
 message or fault, the boot stage, and the last 20 log lines. Serial output is unchanged;
 every log line still goes there.
 
-- `--display` opens the screen in a window.
+- `--display` opens the screen in a window. On a Mac the window belongs to a QEMU app bundle
+  (`scripts/qemu-1x-app.sh`), which turns App Nap off for itself: a napped QEMU fires the
+  guest's timer ticks tens of milliseconds late, and the time suite's limits fail (#1292).
 - `--qmp SOCKET` opens a QMP socket; `scripts/qmp-screendump.py SOCKET out.png` saves the
   screen at that moment, with or without `--display`.
 - `--fbconsole log` draws the kernel log on screen instead of the boot screen (kernel lines
