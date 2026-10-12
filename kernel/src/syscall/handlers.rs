@@ -1948,6 +1948,7 @@ pub fn sys_yield() -> SyscallResult {
     // polling CPU there (#1401).
     #[cfg(target_arch = "x86_64")]
     if !crate::task::scheduler::thread_queued_anywhere() {
+        crate::scratch_force::fast_path();
         return SyscallResult::Ok(0);
     }
 
