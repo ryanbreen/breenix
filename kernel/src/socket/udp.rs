@@ -15,7 +15,7 @@ use crate::process::process::ProcessId;
 const MAX_RX_QUEUE_SIZE: usize = 32;
 
 /// Acquire `socket`'s outer `Arc<Mutex<UdpSocket>>` -- the lock the fd table
-/// holds, and the one `net/udp.rs::deliver_to_socket` (the NetRx IRQ route)
+/// holds, and the one `net/udp.rs::handle_udp` (the NetRx IRQ route)
 /// locks from inside `with_process_manager`, which masks interrupts on both
 /// architectures -- with interrupts masked for the WHOLE hold, and run `f`
 /// under it.
@@ -25,7 +25,7 @@ const MAX_RX_QUEUE_SIZE: usize = 32;
 /// regardless of preempt_count (see `net_rx_softirq_handler` and #812's own
 /// finding, which named this exact lock as an open item it did not touch), so
 /// an interrupted holder's own CPU reenters this same lock inside
-/// `deliver_to_socket` and spins forever -- the CPU is suspended in the
+/// `handle_udp` and spins forever -- the CPU is suspended in the
 /// exception it took and cannot execute the lock-release instruction until
 /// the exception returns; that return waits for the softirq's spin to end.
 /// claim-lint:ok: this round's red-boot mutation leg,

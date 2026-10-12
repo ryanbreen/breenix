@@ -5379,7 +5379,7 @@ fn test_fcntl_pm_contention_oracle() -> TestResult {
 // and crate::process::try_manager() used to change no interrupt state at all.
 // A holder could therefore take an IRQ, and that IRQ's exit path runs
 // do_softirq() unconditionally (exception.rs, after irq_exit()); the NetRx
-// softirq reaches net/udp.rs's deliver_to_socket, which acquires the same
+// softirq reaches net/udp.rs's handle_udp, which acquires the same
 // PROCESS_MANAGER through the BLOCKING with_process_manager. spin::Mutex is
 // not reentrant, so the CPU spins for a lock it already owns.
 //
@@ -5619,7 +5619,7 @@ fn udp_lock_holder_body(
 /// per-socket `Mutex<UdpSocket>` and require the hold to survive it (#823).
 /// Reddens if `with_locked_masked`'s mask is removed, where the same window
 /// is interruptible and the holder's CPU wedges on a lock it already owns --
-/// #812 named this exact lock (`net/udp.rs::deliver_to_socket` vs.
+/// #812 named this exact lock (UDP delivery in `net/udp.rs`, then `deliver_to_socket`, vs.
 /// `ipc/poll.rs`'s then-unmasked hold) as an open finding it did not touch.
 pub fn run_udp_lock_oracle() -> bool {
     #[cfg(target_arch = "aarch64")]
@@ -6294,8 +6294,8 @@ struct IrqHoldSocket {
 fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
     use crate::ipc::fd::{FdKind, FileDescriptor};
 
-    // deliver_to_socket resolves the port to a pid and then scans that
-    // process's fd table, so the socket has to live in a real row.
+    // handle_udp finds the socket by scanning processes' fd tables, so the
+    // socket has to live in a real row.
     let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
         .flatten()?;
 

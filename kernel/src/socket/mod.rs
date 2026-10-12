@@ -162,7 +162,7 @@ impl SocketRegistry {
     }
 
     /// IRQ-safe lookup: refuse a contended thread-side registry hold.
-    /// #908: handle_udp calls this before deliver_to_socket enters the PM mask.
+    /// #908: handle_udp calls this before it enters the PM mask.
     /// Contention drops the best-effort UDP datagram and increments a relaxed
     /// diagnostic counter. None means contention; Some(None) means no binding;
     /// Some(Some(..)) identifies the bound socket.

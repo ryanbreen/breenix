@@ -712,7 +712,7 @@ fn shared_userspace_stages() -> Vec<BootStage> {
             name: "UDP packet delivered to socket RX queue",
             marker: "UDP: Delivered packet to socket on port 54321",
             failure_meaning: "udp_socket_test's loopback datagram was not delivered to its RX socket on port 54321 - loopback or RX delivery path broken",
-            check_hint: "Check net/udp.rs:deliver_to_socket()",
+            check_hint: "Check net/udp.rs:handle_udp(), which posts the socket's delivery notice after enqueue_packet()",
         },
         BootStage {
             name: "UDP packet received from userspace",
