@@ -437,19 +437,31 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
 /// Write `s` to COM1 as one unit, from a path that must not wait indefinitely
 /// on a lock (an interrupt return, the syscall entry). It spins, with
 /// interrupts masked, for up to 2^20 `try_lock` attempts on SERIAL1, so the
-/// line is not interleaved byte by byte with another CPU's output, and writes
-/// straight to the port if SERIAL1 stays busy.
+/// line is not interleaved byte by byte with another CPU's output.
 ///
-/// This is a bounded wait for a lock, and its callers are once-per-boot
-/// markers. SERIAL1 is held with interrupts masked (`_print`), so a holder on
-/// another CPU finishes its line and releases it; a holder on this CPU cannot
-/// be waited for, which the bound covers.
+/// If SERIAL1 stays busy, `s` goes to the kernel log instead, whole, as a
+/// lock-free notice (`log_notice`) the next log line writes out ahead of
+/// itself. Written to the port without SERIAL1, its bytes would land inside
+/// the holder's unit, which may be a line a boot-path stage depends on. Half
+/// the notices are kept for boot-path stage lines (`stage_lines`); any other
+/// line that finds its half waiting to be written is dropped, and a stage line
+/// that finds every notice waiting keeps trying SERIAL1 and the notices.
 pub fn write_str_bounded(s: &str) {
+    use crate::log_notice::Notice;
     use core::fmt::Write;
     const ATTEMPTS: u32 = 1 << 20;
+    static FALLBACK: [Notice; 4] = [const { Notice::new() }; 4];
 
+    let stage = crate::stage_lines::contains(crate::STAGE_MARKERS, s.as_bytes());
+    let line = s.strip_suffix('\n').unwrap_or(s);
+    let notices = if stage {
+        &FALLBACK[..]
+    } else {
+        &FALLBACK[..FALLBACK.len() / 2]
+    };
     crate::arch_without_interrupts(|| {
-        for _ in 0..ATTEMPTS {
+        let mut attempts = 0u32;
+        loop {
             if let Some(mut serial) = SERIAL1.try_lock() {
                 let _ = Unit {
                     serial: &mut serial,
@@ -458,15 +470,12 @@ pub fn write_str_bounded(s: &str) {
                 .write_str(s);
                 return;
             }
-            core::hint::spin_loop();
-        }
-        // SAFETY: COM1's data port; the bytes may interleave with the holder's.
-        // Without SERIAL1 this neither reads nor updates `serial_writer`'s line state.
-        unsafe {
-            let mut port = x86_64::instructions::port::Port::<u8>::new(COM1_PORT);
-            for byte in s.bytes() {
-                port.write(byte);
+            if attempts < ATTEMPTS {
+                attempts += 1;
+            } else if notices.iter().any(|notice| notice.post_again(line)) || !stage {
+                return;
             }
+            core::hint::spin_loop();
         }
     });
 }
