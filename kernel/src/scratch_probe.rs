@@ -24,6 +24,22 @@ pub const STAGES: u64 = 11;
 pub const IPI_SLOW: u64 = 12;
 pub const NMI_SAMPLE: u64 = 13;
 pub const NMI_STACK: u64 = 14;
+// PM occupancy by acquisition line (16 slots, by line % 16 collisions tolerated).
+static OCC_LINE: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+static OCC_NS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+static OCC_N: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+fn occ(line: u64, ns: u64) {
+    let mut i = (line as usize) % 16;
+    for _ in 0..16 {
+        let l = OCC_LINE[i].load(Ordering::Relaxed);
+        if l == line || (l == 0 && OCC_LINE[i].compare_exchange(0, line, Ordering::Relaxed, Ordering::Relaxed).is_ok()) {
+            OCC_NS[i].fetch_add(ns, Ordering::Relaxed);
+            OCC_N[i].fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        i = (i + 1) % 16;
+    }
+}
 pub static BODY_N: AtomicU64 = AtomicU64::new(0);
 pub static BODY_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static BODY_MAX: AtomicU64 = AtomicU64::new(0);
@@ -263,6 +279,14 @@ pub fn drain() {
         POLL_FAILS.swap(0, Ordering::Relaxed),
         nmi_sample as usize
     );
+    for i in 0..16 {
+        let l = OCC_LINE[i].load(Ordering::Relaxed);
+        let n = OCC_N[i].swap(0, Ordering::Relaxed);
+        let ns = OCC_NS[i].swap(0, Ordering::Relaxed);
+        if l != 0 && ns > 5_000_000 {
+            log::info!("[P1401 PM_OCC line={} n={} total_us={}]", l, n, ns / 1000);
+        }
+    }
     let head = HEAD.load(Ordering::Acquire);
     let mut next = PRINTED.load(Ordering::Acquire);
     if head.saturating_sub(next) > SLOTS as u64 {
@@ -488,6 +512,9 @@ pub fn note_shootdown() {
 pub fn pm_released() {
     let start = PM_ACQ_NS.load(Ordering::Relaxed);
     let held = now_ns().saturating_sub(start);
+    if start != 0 {
+        occ(PM_LINE.load(Ordering::Relaxed), held);
+    }
     if start != 0 && held > 5_000_000 {
         let c = cpu() as usize;
         if c < 8 {
