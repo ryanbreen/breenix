@@ -3,6 +3,7 @@ use shared_qemu::get_kernel_output;
 
 /// Test that logging system initializes and works
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_logging_initialization() {
     println!("Testing logging system initialization...");
 
@@ -23,6 +24,7 @@ fn test_logging_initialization() {
 
 /// Test that different log levels work correctly
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_log_levels() {
     println!("Testing different log levels...");
 
@@ -45,6 +47,7 @@ fn test_log_levels() {
 
 /// Test serial output functionality
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_serial_output() {
     println!("Testing serial output...");
 

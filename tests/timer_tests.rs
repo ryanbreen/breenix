@@ -3,6 +3,7 @@ use shared_qemu::{extract_timestamps, get_kernel_output};
 
 /// Test that timer initializes and ticks
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_timer_initialization() {
     println!("Testing timer initialization...");
 
@@ -19,6 +20,7 @@ fn test_timer_initialization() {
 
 /// Test timer tick functionality
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_timer_ticks() {
     println!("Testing timer tick functionality...");
 
@@ -45,6 +47,7 @@ fn test_timer_ticks() {
 
 /// Test delay functionality
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_delay_functionality() {
     println!("Testing delay functionality...");
 
@@ -65,6 +68,7 @@ fn test_delay_functionality() {
 
 /// Test RTC (Real Time Clock) functionality
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_rtc_functionality() {
     println!("Testing RTC functionality...");
 

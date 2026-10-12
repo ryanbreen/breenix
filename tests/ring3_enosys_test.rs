@@ -11,7 +11,7 @@ use shared_qemu::get_kernel_output;
 /// NOTE: This test is marked ignore until Ring-3 execution is fixed.
 /// Run with --ignored to test ENOSYS infrastructure.
 #[test]
-#[ignore = "Ring-3 execution not working - run with --ignored to test infrastructure"]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_enosys_syscall() {
     println!("Testing ENOSYS syscall handling...");
 

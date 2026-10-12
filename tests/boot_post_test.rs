@@ -4,6 +4,7 @@ mod shared_qemu;
 use shared_qemu::get_kernel_output;
 
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_kernel_post_with_file_output() {
     println!("\n🧪 Breenix Kernel POST Test (Shared QEMU)");
     println!("==========================================\n");

@@ -3,6 +3,7 @@ use shared_qemu::get_kernel_output;
 
 /// Test that guard page system initializes properly
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_guard_page_initialization() {
     println!("Testing guard page system initialization...");
 
@@ -30,6 +31,7 @@ fn test_guard_page_initialization() {
 
 /// Test that the page fault handler is enhanced for guard page detection
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_page_fault_handler_enhanced() {
     println!("Testing enhanced page fault handler...");
 
@@ -57,6 +59,7 @@ fn test_page_fault_handler_enhanced() {
 
 /// Test that memory management includes stack allocation
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_memory_management_completeness() {
     println!("Testing memory management completeness...");
 

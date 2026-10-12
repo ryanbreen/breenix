@@ -7,6 +7,7 @@ mod shared_qemu;
 use shared_qemu::get_kernel_output;
 
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_syscall_infrastructure() {
     println!("\n🧪 Syscall Infrastructure Test");
     println!("==============================\n");

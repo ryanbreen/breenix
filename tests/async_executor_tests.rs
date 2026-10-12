@@ -3,6 +3,7 @@ use shared_qemu::get_kernel_output;
 
 /// Test that async executor starts after kernel initialization
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_async_executor_starts() {
     println!("Testing async executor startup...");
 
@@ -34,6 +35,7 @@ fn test_async_executor_starts() {
 
 /// Test that keyboard task is spawned correctly
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_keyboard_task_spawned() {
     println!("Testing keyboard task spawning...");
 
@@ -56,6 +58,7 @@ fn test_keyboard_task_spawned() {
 
 /// Test the ordering of async executor components
 #[test]
+#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
 fn test_async_executor_ordering() {
     println!("Testing async executor component ordering...");
 
