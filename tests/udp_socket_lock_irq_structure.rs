@@ -2,7 +2,7 @@
 //! runs masked for its whole duration, through one production primitive,
 //! `crate::socket::udp::with_locked_masked`.
 //!
-//! The defect these rules pin: `net/udp.rs::deliver_to_socket` (the NetRx IRQ
+//! The defect these rules pin: NetRx delivery in `net/udp.rs` (the IRQ
 //! route) locks this exact `Mutex<UdpSocket>` from inside
 //! `with_process_manager`, which masks interrupts on both architectures. Four
 //! thread-side callers took the same lock without masking for the whole hold
@@ -412,38 +412,36 @@ fn sys_recvfrom_nonblocking_read_rule_is_not_vacuous() {
     );
 }
 
-/// #823 rule 6 (regression guard): the NetRx IRQ-side counterpart is still
-/// inside `with_process_manager`'s masked closure -- this rule does not pin
-/// anything new, it stops a future edit from silently moving the IRQ-side
-/// lock out from under the mask while the thread side is being kept honest.
+/// #823 rule 6 (regression guard): NetRx delivery, inlined into `handle_udp`
+/// by #1384, still locks the socket inside `with_process_manager`'s masked
+/// closure, through the masked primitive, before it enqueues -- so a future
+/// edit cannot move the IRQ-side lock out from under the mask while the
+/// thread side is being kept honest.
 #[test]
-fn deliver_to_socket_still_locks_under_process_manager() {
-    let source = repo_text(NET_UDP);
-    let code = masked_text(&source);
+fn udp_delivery_locks_the_socket_under_process_manager() {
+    let code = masked_text(&repo_text(NET_UDP));
     let start = code
-        .find("fn deliver_to_socket")
-        .expect("#823 shape failure: net/udp.rs::deliver_to_socket was renamed or removed");
-    let with_pm = code[..start]
-        .rfind("with_process_manager")
-        .map(|_| true)
-        .unwrap_or(false)
-        || code[start..].contains("with_process_manager");
-    assert!(
-        with_pm,
-        "#823 shape failure: deliver_to_socket no longer runs inside \
-         with_process_manager -- the NetRx IRQ side may no longer be masked \
-         while it locks the same Mutex<UdpSocket> the thread side holds"
-    );
-    let end = code[start..]
-        .find("\nfn ")
-        .map(|i| start + i)
-        .unwrap_or(code.len());
+        .find("pub fn handle_udp(")
+        .expect("#823 shape failure: net/udp.rs::handle_udp was renamed or removed");
+    let end = code[start..].find("\n}\n").map_or(code.len(), |i| start + i);
     let body = &code[start..end];
+    let pm = body
+        .find("with_process_manager(")
+        .expect("#823 shape failure: handle_udp no longer delivers under with_process_manager");
+    let lock = body
+        .find("with_locked_masked(endpoint")
+        .expect("#823 shape failure: handle_udp no longer locks the socket through with_locked_masked");
+    let enqueue = body
+        .find("enqueue_packet(")
+        .expect("#823 shape failure: handle_udp no longer enqueues the packet");
     assert!(
-        body.contains("socket_ref.lock()"),
-        "#823 shape failure: deliver_to_socket no longer locks socket_ref -- \
-         update this test if the variable was renamed, but confirm the lock \
-         it takes is still the outer Mutex<UdpSocket>"
+        pm < lock && lock < enqueue,
+        "#823 shape failure: handle_udp must lock the socket inside the process-manager \
+         closure and enqueue while holding it"
+    );
+    assert!(
+        !body.contains(".lock()"),
+        "#823 shape failure: handle_udp takes a lock outside the masked primitive"
     );
 }
 
@@ -501,7 +499,7 @@ fn green_control_all_rules_hold_at_head() {
     sys_bind_udp_arm_uses_the_masked_primitive();
     sys_sendto_udp_arm_uses_the_masked_primitive();
     sys_recvfrom_nonblocking_read_uses_the_masked_primitive();
-    deliver_to_socket_still_locks_under_process_manager();
+    udp_delivery_locks_the_socket_under_process_manager();
     udp_lock_received_uses_the_masked_primitive();
 }
 

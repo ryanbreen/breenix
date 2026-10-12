@@ -294,10 +294,12 @@ fn handle_udp_uses_try_lookup_udp_not_lookup_udp_rule_is_not_vacuous() {
 }
 
 fn check_handle_udp_contended_arm_has_no_logging(source: &str) -> bool {
+    // Since #1384 a contended lookup (`try_lookup_udp` returning None) falls
+    // past the delivery `if let`, so nothing after the lookup may log.
     let body = body(source, "handle_udp");
-    body.rsplit_once("None => {").is_some_and(|(_, arm)| {
+    body.split_once("try_lookup_udp(").is_some_and(|(_, after)| {
         ["log::debug!", "log::warn!", "log::info!", "log::error!", "log::trace!", "serial_println!"]
-            .iter().all(|logging| !arm.contains(logging))
+            .iter().all(|logging| !after.contains(logging))
     })
 }
 
@@ -309,13 +311,12 @@ fn handle_udp_contended_arm_has_no_logging() {
 #[test]
 fn handle_udp_contended_arm_has_no_logging_rule_is_not_vacuous() {
     let source = repo_text(NET_UDP);
-    let start = source.find("fn handle_udp").unwrap();
-    let end = source[start..].find("\n/// Deliver").map(|offset| start + offset).unwrap();
-    let function = &source[start..end];
-    let arm = function.rfind("None => {").unwrap();
-    let mutated = format!("{}{}{}{}", &source[..start], &function[..arm], function[arm..].replacen(
-        "None => {", "None => {\n            log::debug!(\n                \"UDP: udp_ports lock contended, dropping packet for port {}\",\n                header.dst_port\n            );", 1,
-    ), &source[end..]);
+    let start = source.find("pub fn handle_udp(").unwrap();
+    let mutated = format!("{}{}", &source[..start], source[start..].replacen(
+        "try_lookup_udp(header.dst_port) {",
+        "try_lookup_udp(header.dst_port) {\n        log::debug!(\"UDP: udp_ports lock contended\");",
+        1,
+    ));
     assert_ne!(source, mutated, "mutation text must match real source");
     assert!(!check_handle_udp_contended_arm_has_no_logging(&mutated), "mutation must redden the same rule");
 }
@@ -368,40 +369,36 @@ fn with_udp_ports_masked_documents_removal_allocator_work_rule_is_not_vacuous() 
     assert!(!check_with_udp_ports_masked_documents_removal_allocator_work(&mutated), "mutation must redden the same rule");
 }
 
-/// Limitation: this copied #823 regression guard uses a whole-file PM
-/// substring search, not a nesting-aware proof. It guards an unchanged path.
-/// #823 rule 6 (regression guard): the NetRx IRQ-side counterpart is still
-/// inside `with_process_manager`'s masked closure -- this rule does not pin
-/// anything new, it stops a future edit from silently moving the IRQ-side
-/// lock out from under the mask while the thread side is being kept honest.
+/// #823 rule 6 (regression guard): NetRx delivery, inlined into `handle_udp`
+/// by #1384, still locks the socket inside `with_process_manager`'s masked
+/// closure, through the masked primitive, before it enqueues -- so a future
+/// edit cannot move the IRQ-side lock out from under the mask while the
+/// thread side is being kept honest.
 #[test]
-fn deliver_to_socket_still_locks_under_process_manager() {
-    let source = repo_text(NET_UDP);
-    let code = masked_text(&source);
+fn udp_delivery_locks_the_socket_under_process_manager() {
+    let code = masked_text(&repo_text(NET_UDP));
     let start = code
-        .find("fn deliver_to_socket")
-        .expect("#823 shape failure: net/udp.rs::deliver_to_socket was renamed or removed");
-    let with_pm = code[..start]
-        .rfind("with_process_manager")
-        .map(|_| true)
-        .unwrap_or(false)
-        || code[start..].contains("with_process_manager");
-    assert!(
-        with_pm,
-        "#823 shape failure: deliver_to_socket no longer runs inside \
-         with_process_manager -- the NetRx IRQ side may no longer be masked \
-         while it locks the same Mutex<UdpSocket> the thread side holds"
-    );
-    let end = code[start..]
-        .find("\nfn ")
-        .map(|i| start + i)
-        .unwrap_or(code.len());
+        .find("pub fn handle_udp(")
+        .expect("#823 shape failure: net/udp.rs::handle_udp was renamed or removed");
+    let end = code[start..].find("\n}\n").map_or(code.len(), |i| start + i);
     let body = &code[start..end];
+    let pm = body
+        .find("with_process_manager(")
+        .expect("#823 shape failure: handle_udp no longer delivers under with_process_manager");
+    let lock = body
+        .find("with_locked_masked(endpoint")
+        .expect("#823 shape failure: handle_udp no longer locks the socket through with_locked_masked");
+    let enqueue = body
+        .find("enqueue_packet(")
+        .expect("#823 shape failure: handle_udp no longer enqueues the packet");
     assert!(
-        body.contains("socket_ref.lock()"),
-        "#823 shape failure: deliver_to_socket no longer locks socket_ref -- \
-         update this test if the variable was renamed, but confirm the lock \
-         it takes is still the outer Mutex<UdpSocket>"
+        pm < lock && lock < enqueue,
+        "#823 shape failure: handle_udp must lock the socket inside the process-manager \
+         closure and enqueue while holding it"
+    );
+    assert!(
+        !body.contains(".lock()"),
+        "#823 shape failure: handle_udp takes a lock outside the masked primitive"
     );
 }
 
@@ -417,7 +414,7 @@ fn green_control_all_rules_hold_at_head() {
     handle_udp_contended_arm_has_no_logging_rule_is_not_vacuous();
     with_udp_ports_masked_documents_removal_allocator_work();
     with_udp_ports_masked_documents_removal_allocator_work_rule_is_not_vacuous();
-    deliver_to_socket_still_locks_under_process_manager();
+    udp_delivery_locks_the_socket_under_process_manager();
 }
 
 #[test]

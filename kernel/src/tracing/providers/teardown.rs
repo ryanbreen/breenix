@@ -287,7 +287,10 @@ impl KickSlot {
             && self.pid.load(Ordering::Relaxed) != pid;
         self.pid.store(pid, Ordering::Relaxed);
         self.at.store(at, Ordering::Relaxed);
-        self.sender_cpu.store(crate::task::scheduler::current_cpu() as u64, Ordering::Relaxed);
+        self.sender_cpu.store(
+            crate::task::scheduler::current_cpu() as u64,
+            Ordering::Relaxed,
+        );
         self.state
             .store(reservation.generation << 2, Ordering::Release);
         KickPublishResult::Published {
@@ -330,8 +333,10 @@ impl KickSlot {
         let at = self.at.load(Ordering::Relaxed);
         let sender_cpu = self.sender_cpu.load(Ordering::Relaxed);
         let second_state = self.state.load(Ordering::Acquire);
-        if second_state != first_state || pid != expected_pid
-            || (require_peer && sender_cpu == crate::task::scheduler::current_cpu() as u64) {
+        if second_state != first_state
+            || pid != expected_pid
+            || (require_peer && sender_cpu == crate::task::scheduler::current_cpu() as u64)
+        {
             return None;
         }
 
