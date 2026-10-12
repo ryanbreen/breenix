@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 pub struct CheckpointTracker {
     file_path: String,
     file_offset: u64,                  // Track position for O(1) reading
+    pending_line: String,             // A serial write may end partway through a line
     current_index: usize,              // Current checkpoint in sequence
     checkpoint_time: Instant,          // When last checkpoint reached
     sequence: Vec<(String, Duration)>, // Expected checkpoints with timeouts
@@ -24,6 +25,7 @@ impl CheckpointTracker {
         Self {
             file_path: file_path.to_string(),
             file_offset: 0,
+            pending_line: String::new(),
             current_index: 0,
             checkpoint_time: Instant::now(),
             sequence,
@@ -59,22 +61,20 @@ impl CheckpointTracker {
         // Update our offset for next read
         self.file_offset += bytes_read as u64;
 
-        // Check if the current expected checkpoint appears in the new content
-        let (expected_checkpoint, _timeout) = &self.sequence[self.current_index];
-        let checkpoint_marker = format!("[CHECKPOINT:{}]", expected_checkpoint);
-
-        if new_content.contains(&checkpoint_marker) {
-            // Found the checkpoint! Move to next one
-            self.current_index += 1;
-            self.checkpoint_time = Instant::now();
-
-            // Check if we've completed all checkpoints
-            if self.current_index >= self.sequence.len() {
-                return Ok(true); // All checkpoints reached!
+        self.pending_line.push_str(&new_content);
+        while let Some(end) = self.pending_line.find('\n') {
+            let line = self.pending_line[..end].trim_end_matches('\r');
+            let (expected, _) = &self.sequence[self.current_index];
+            // The kernel logger prints this line. An announcement containing the
+            // marker, or a partial serial write, is not a reached checkpoint.
+            if line.ends_with(&format!("kernel: [CHECKPOINT:{expected}]")) {
+                self.current_index += 1;
+                self.checkpoint_time = Instant::now();
+                if self.current_index >= self.sequence.len() {
+                    return Ok(true);
+                }
             }
-
-            // Still more checkpoints to wait for
-            return Ok(false);
+            self.pending_line.drain(..=end);
         }
 
         // Checkpoint not found yet
@@ -167,5 +167,24 @@ mod tests {
 
         // Cleanup
         let _ = fs::remove_file(test_file);
+    }
+
+    #[test]
+    fn announcement_and_partial_line_do_not_complete_checkpoint() {
+        let test_file = "target/test_checkpoint_origin.txt";
+        let _ = fs::remove_file(test_file);
+        let mut tracker = CheckpointTracker::new(
+            test_file,
+            vec![("POST_COMPLETE".to_string(), Duration::from_secs(5))],
+        );
+        let mut file = fs::File::create(test_file).unwrap();
+        writeln!(file, "kernel::test_exec: will emit [CHECKPOINT:POST_COMPLETE]").unwrap();
+        write!(file, "[ INFO] kernel: [CHECKPOINT:POST_").unwrap();
+        file.flush().unwrap();
+        assert!(!tracker.check_for_new_checkpoints().unwrap());
+        writeln!(file, "COMPLETE]").unwrap();
+        file.flush().unwrap();
+        assert!(tracker.check_for_new_checkpoints().unwrap());
+        fs::remove_file(test_file).unwrap();
     }
 }

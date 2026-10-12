@@ -9,6 +9,13 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[path = "shared_qemu/process_tree.rs"]
+mod process_tree;
+#[path = "shared_qemu/signal_handlers.rs"]
+mod signal_handlers;
+use process_tree::ChildGroup;
+use signal_handlers::SignalHandlers;
+
 // Static container for shared QEMU output - runs once for all tests
 static ARM64_KERNEL_OUTPUT: OnceLock<String> = OnceLock::new();
 
@@ -34,6 +41,7 @@ impl Default for Arm64BuildConfig {
 /// Returns the path to the built kernel binary
 pub fn build_arm64_kernel(config: &Arm64BuildConfig) -> Result<String, String> {
     println!("Building ARM64 kernel...");
+    let _signals = SignalHandlers::install();
 
     let mut args = vec![
         "build",
@@ -53,14 +61,30 @@ pub fn build_arm64_kernel(config: &Arm64BuildConfig) -> Result<String, String> {
         args.push("--release");
     }
 
-    let output = Command::new("cargo")
-        .args(&args)
-        .output()
-        .map_err(|e| format!("Failed to run cargo: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Build failed: {}", stderr));
+    let log_path = std::env::temp_dir().join(format!("breenix-arm64-build-{}.log", std::process::id()));
+    let log = fs::File::create(&log_path).map_err(|e| format!("create build log: {e}"))?;
+    let mut command = Command::new("cargo");
+    command.env("CARGO_BUILD_JOBS", "6").args(&args)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::from(log));
+    let mut build = ChildGroup::spawn(&mut command).map_err(|e| format!("Failed to run cargo: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(900);
+    let status = loop {
+        if SignalHandlers::interrupted() {
+            return Err("ARM64 build interrupted".to_string());
+        }
+        if let Some(status) = build.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            return Err("ARM64 build timed out after 900 seconds".to_string());
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    drop(build);
+    let diagnostics = fs::read_to_string(&log_path).unwrap_or_default();
+    let _ = fs::remove_file(log_path);
+    if !status.success() {
+        return Err(format!("Build failed: {diagnostics}"));
     }
 
     // Determine the output path
@@ -83,16 +107,11 @@ pub fn build_arm64_kernel(config: &Arm64BuildConfig) -> Result<String, String> {
 ///
 /// Returns the captured serial output string
 pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, String> {
+    let _signals = SignalHandlers::install();
     let serial_output_file = "target/arm64_kernel_test_output.txt";
 
     // Remove old output file if it exists
     let _ = fs::remove_file(serial_output_file);
-
-    // Kill any existing ARM64 QEMU processes
-    let _ = Command::new("pkill")
-        .args(["-9", "-f", "qemu-system-aarch64"])
-        .status();
-    thread::sleep(Duration::from_millis(500));
 
     println!("Starting QEMU with ARM64 kernel: {}", kernel_path);
 
@@ -118,6 +137,8 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
 
     let mut qemu_cmd = Command::new("qemu-system-aarch64");
     qemu_cmd
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .arg("-M")
         .arg("virt")
         .arg("-cpu")
@@ -144,10 +165,7 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
             .arg(&ext2_drive_spec);
     }
 
-    let mut qemu = qemu_cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+    let mut qemu = ChildGroup::spawn(&mut qemu_cmd)
         .map_err(|e| format!("Failed to start QEMU: {}", e))?;
 
     // Wait for serial output file to be created and populated
@@ -160,8 +178,13 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
     // Wait for serial file to appear
     let file_timeout = Duration::from_secs(10);
     while !std::path::Path::new(serial_output_file).exists() {
+        if SignalHandlers::interrupted() {
+            return Err("QEMU test interrupted".to_string());
+        }
+        if let Some(status) = qemu.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!("QEMU exited before serial output: {status}"));
+        }
         if start.elapsed() > file_timeout {
-            let _ = qemu.kill();
             return Err("Timeout waiting for serial output file to be created".to_string());
         }
         thread::sleep(poll_interval);
@@ -170,6 +193,12 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
     // Poll for boot completion AND userspace execution markers
     let mut post_complete = false;
     while start.elapsed() < timeout {
+        if SignalHandlers::interrupted() {
+            return Err("QEMU test interrupted".to_string());
+        }
+        if let Some(status) = qemu.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!("QEMU exited before boot completion: {status}"));
+        }
         if let Ok(content) = fs::read_to_string(serial_output_file) {
             // Check for ARM64-specific POST completion or boot completion
             if !post_complete
@@ -206,8 +235,7 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
     }
 
     // Kill QEMU
-    let _ = qemu.kill();
-    let _ = qemu.wait();
+    drop(qemu);
 
     // Read the final serial output
     let output = fs::read_to_string(serial_output_file)

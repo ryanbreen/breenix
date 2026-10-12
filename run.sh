@@ -328,6 +328,11 @@ finish_vm_boot() {
     local status=$?
     trap '' INT HUP TERM
     trap - EXIT
+    if [ -n "${LOGMON_PID:-}" ]; then
+        kill "$LOGMON_PID" 2>/dev/null || true
+        wait "$LOGMON_PID" 2>/dev/null || true
+        LOGMON_PID=""
+    fi
     if [ "$PARALLELS" = true ]; then
         prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1 || true
     else
@@ -741,16 +746,8 @@ if [ "$PARALLELS" = true ]; then
         VM_DIR="$HOME/Parallels/${PARALLELS_VM}.pvm"
         VM_LOG="$VM_DIR/parallels.log"
         if [ -f "$VM_LOG" ]; then
-            (
-                tail -f "$VM_LOG" 2>/dev/null | while IFS= read -r line; do
-                    case "$line" in
-                        *VCPU*|*Exception*|*Synchronous*|*fault*|*FAULT*|*recursive*)
-                            echo "[parallels-log] $line" ;;
-                    esac
-                done
-            ) &
+            python3 -u "$BREENIX_ROOT/scripts/vm-log-monitor.py" parallels "$VM_LOG" &
             LOGMON_PID=$!
-            # The supervisor reaps this monitor when the VM run ends.
         fi
 
         sleep 1
@@ -915,8 +912,8 @@ if [ "$VMWARE" = true ]; then
     # Delete earlier boots' VM bundles, which nothing else removes (one per boot, about 100 MB each): only
     # breenix-<epoch> bundles that are not running and were created more than 30 minutes ago, so a caller still
     # scoring a just-stopped VM's data disk keeps it. Age comes from the epoch in the name, because VMware Fusion
-    # rewrites files in every bundle its library lists, so file times never age. Never a named VM. Runs in the
-    # background at launch and again from finish_vm_boot, so a burst of boots leaves at most its last half hour.
+    # rewrites files in every bundle its library lists, so file times never age. Never a named VM. Sweep
+    # at launch and again from finish_vm_boot, so a burst of boots leaves at most its last half hour.
     sweep_vmware_bundles() {
         local now old_bundle old_name old_vmx
         now=$(date +%s)
@@ -930,7 +927,7 @@ if [ "$VMWARE" = true ]; then
             "$VMRUN" deleteVM "$old_vmx" >/dev/null 2>&1 || rm -rf "$old_bundle"
         done
     }
-    sweep_vmware_bundles &
+    sweep_vmware_bundles
 
     # Create VM bundle
     mkdir -p "$VM_BUNDLE"
@@ -1077,17 +1074,7 @@ VMXEOF
 
     # Monitor vmware.log for CPU exceptions in background
     VM_LOG="$VM_BUNDLE/vmware.log"
-    (
-        sleep 2  # Wait for vmware.log to appear
-        if [ -f "$VM_LOG" ]; then
-            tail -f "$VM_LOG" 2>/dev/null | while IFS= read -r line; do
-                case "$line" in
-                    *vcpu*exception*|*PANIC*|*fault*|*FAULT*|*Guest:*)
-                        echo "[vmware-log] $line" ;;
-                esac
-            done
-        fi
-    ) &
+    python3 -u "$BREENIX_ROOT/scripts/vm-log-monitor.py" vmware "$VM_LOG" &
     LOGMON_PID=$!
     # Keep VM cleanup installed while the serial tail runs.
     sleep 1

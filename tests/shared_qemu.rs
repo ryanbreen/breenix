@@ -4,11 +4,18 @@
 //! kernel output for all tests to share, eliminating concurrency issues.
 
 use std::fs;
-use std::io::Read;
-use std::process::Command;
+use std::os::fd::AsRawFd;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[path = "shared_qemu/process_tree.rs"]
+mod process_tree;
+#[path = "shared_qemu/signal_handlers.rs"]
+mod signal_handlers;
+use process_tree::ChildGroup;
+use signal_handlers::SignalHandlers;
 
 #[path = "shared_qemu/checkpoint_tracker.rs"]
 mod checkpoint_tracker;
@@ -16,6 +23,29 @@ use checkpoint_tracker::CheckpointTracker;
 
 // Static container for shared QEMU output - runs once for all tests
 static KERNEL_OUTPUT: OnceLock<String> = OnceLock::new();
+
+// Separate cargo test binaries each have their own OnceLock. Keep their QEMU
+// boots and shared disk/serial paths exclusive without touching another VM.
+fn lock_shared_boot() -> fs::File {
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open("target/shared_kernel_test.lock")
+        .expect("open shared QEMU test lock");
+    let deadline = Instant::now() + Duration::from_secs(600);
+    loop {
+        // SAFETY: flock only uses this open file descriptor and its owned lock.
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return lock;
+        }
+        let error = std::io::Error::last_os_error();
+        assert_eq!(error.raw_os_error(), Some(libc::EWOULDBLOCK), "lock shared QEMU test disk: {error}");
+        assert!(!SignalHandlers::interrupted(), "QEMU test interrupted while waiting for its lock");
+        assert!(Instant::now() < deadline, "timed out waiting for the shared QEMU test lock");
+        thread::sleep(Duration::from_secs(1));
+    }
+}
 
 /// Get the complete kernel output by running QEMU once and capturing until POST completion
 ///
@@ -30,26 +60,16 @@ pub fn get_kernel_output() -> &'static str {
             println!("🚀 Starting QEMU to capture complete kernel output for all tests...");
         }
         
+        let _signals = SignalHandlers::install();
+        let _boot_lock = lock_shared_boot();
         let serial_output_file = "target/shared_kernel_test_output.txt";
         
         // Remove old output file if it exists
         let _ = fs::remove_file(serial_output_file);
         
-        // Kill any existing QEMU processes to free up the disk image
-        let _ = Command::new("pkill")
-            .args(&["-9", "qemu-system-x86_64"])
-            .status();
-        thread::sleep(Duration::from_millis(500));
-        
-        // Wait a moment for any file locks to clear after build
-        thread::sleep(Duration::from_secs(1));
-        
-        // Try to start QEMU with retries in case the image is still locked
-        let mut qemu = None;
-        let mut attempts = 0;
-        const MAX_ATTEMPTS: u32 = 10;
-        
-        while attempts < MAX_ATTEMPTS {
+        let stderr_path = "target/shared_kernel_test_stderr.txt";
+        let stderr_file = fs::File::create(stderr_path).expect("create QEMU runner stderr");
+        let mut qemu = {
             // Check if visual mode is requested via environment variable
             let display_arg = if std::env::var("BREENIX_VISUAL_TEST").is_ok() {
                 // Use platform-appropriate display backend
@@ -62,8 +82,10 @@ pub fn get_kernel_output() -> &'static str {
                 "none"
             };
             
-            let mut child = Command::new("cargo")
-                .args(&[
+            let mut command = Command::new("cargo");
+            command
+                .env("CARGO_BUILD_JOBS", "6")
+                .args([
                     "run",
                     "--features",
                     "testing",
@@ -75,71 +97,22 @@ pub fn get_kernel_output() -> &'static str {
                     "-serial",
                     &format!("file:{}", serial_output_file)
                 ])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .expect("Failed to spawn cargo");
-            
-            // Give QEMU a moment to fail if the image is locked
-            thread::sleep(Duration::from_millis(200));
-            
-            match child.try_wait() {
-                Ok(Some(_status)) => {
-                    // Process has already exited, check if it was due to lock error
-                    let mut stderr = child.stderr.take().unwrap();
-                    let mut stderr_string = String::new();
-                    let _ = stderr.read_to_string(&mut stderr_string);
-                    
-                    if stderr_string.contains("Failed to get \"write\" lock") {
-                        thread::sleep(Duration::from_millis(1000)); // Wait longer
-                        attempts += 1;
-                    } else {
-                        panic!("QEMU failed with unexpected error: {}", stderr_string);
-                    }
-                }
-                Ok(None) => {
-                    // Process is still running, success!
-                    qemu = Some(child);
-                    break;
-                }
-                Err(e) => {
-                    panic!("Error checking QEMU status: {}", e);
-                }
-            }
-        }
-        
-        let mut qemu = qemu.expect(&format!("Failed to start QEMU after {} attempts", MAX_ATTEMPTS));
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(stderr_file));
+            ChildGroup::spawn(&mut command).expect("Failed to spawn cargo QEMU runner")
+        };
         
         // Wait for kernel to complete POST tests by polling the output file
         println!("⏳ Waiting for kernel POST completion marker...");
-        let mut post_complete = false;
-        // Note: Debug builds run significantly slower than release builds
-        let max_wait_time = Duration::from_secs(30); // Maximum wait time as safety
-        let start_time = std::time::Instant::now();
-
-        // Wait for serial file to be created (QEMU may still be starting up)
-        // Note: This needs to account for kernel compilation time when running via cargo test
-        // Compilation can take 10-20 seconds in debug mode, plus ~2 seconds for QEMU startup
-        let file_wait_start = std::time::Instant::now();
-        let file_wait_timeout = Duration::from_secs(30);
-
-        while !std::path::Path::new(serial_output_file).exists()
-            && file_wait_start.elapsed() < file_wait_timeout {
+        let launch_deadline = Instant::now() + Duration::from_secs(600);
+        while !std::path::Path::new(serial_output_file).exists() {
+            assert!(!SignalHandlers::interrupted(), "QEMU test interrupted");
+            if let Some(status) = qemu.try_wait().expect("check QEMU runner") {
+                panic!("QEMU runner exited {status}: {}", fs::read_to_string(stderr_path).unwrap_or_default());
+            }
+            assert!(Instant::now() < launch_deadline, "QEMU did not create serial output before the launch deadline: {}", fs::read_to_string(stderr_path).unwrap_or_default());
             thread::sleep(Duration::from_millis(100));
         }
-
-        if !std::path::Path::new(serial_output_file).exists() {
-            // Try to get stderr output to diagnose the problem
-            let mut stderr_output = String::new();
-            if let Some(mut stderr) = qemu.stderr.take() {
-                let _ = stderr.read_to_string(&mut stderr_output);
-            }
-            panic!("Serial output file not created after {} seconds - QEMU may have failed to start.\nStderr: {}",
-                   file_wait_timeout.as_secs(), stderr_output);
-        }
-
-        // Give QEMU a moment to start writing content
-        thread::sleep(Duration::from_millis(500));
 
         // Use checkpoint-based detection for fast, signal-driven testing
         // Get absolute path to serial output file for CheckpointTracker
@@ -150,7 +123,7 @@ pub fn get_kernel_output() -> &'static str {
         println!("🔍 Setting up CheckpointTracker for file: {:?}", serial_output_file_abs);
 
         let checkpoints = vec![
-            ("POST_COMPLETE".to_string(), Duration::from_secs(5)),
+            ("POST_COMPLETE".to_string(), Duration::from_secs(300)),
         ];
         let mut tracker = CheckpointTracker::new(
             serial_output_file_abs.to_str().unwrap(),
@@ -160,69 +133,21 @@ pub fn get_kernel_output() -> &'static str {
         println!("✅ CheckpointTracker created, waiting for checkpoint...");
 
 
-        let poll_interval = Duration::from_millis(100); // Check every 100ms
-        let mut last_check = std::time::Instant::now();
-        let mut check_count = 0;
-
+        let ready_deadline = Instant::now() + Duration::from_secs(300);
         loop {
-            // Only check at the poll interval to avoid excessive I/O
-            if last_check.elapsed() >= poll_interval {
-                check_count += 1;
-                last_check = std::time::Instant::now();
-
-                // Check for new checkpoints
-                match tracker.check_for_new_checkpoints() {
-                    Ok(true) => {
-                        // All checkpoints reached!
-                        post_complete = true;
-                        println!("✅ Kernel reached final checkpoint: POST_COMPLETE (after {} checks)", check_count);
-                        // Give it a moment to finish writing any final output
-                        thread::sleep(Duration::from_millis(200));
-                        break;
-                    }
-                    Ok(false) => {
-                        // Still waiting for checkpoints
-                        if tracker.is_timed_out() {
-                            println!("⚠️  Checkpoint timeout: {}", tracker.timeout_info());
-                            break;
-                        }
-
-                        // Show progress every 5 checks
-                        if check_count % 5 == 0 {
-                            println!("⏳ Check #{}: {}", check_count, tracker.timeout_info());
-                        }
-                    }
-                    Err(e) => {
-                        // File read error - might be too early, try again
-                        if check_count == 1 || check_count % 10 == 0 {
-                            println!("⚠️  Check #{}: File read error: {}", check_count, e);
-                        }
-                        if check_count > 50 {
-                            // After 5 seconds of file errors, something is wrong
-                            println!("⚠️  Failed to read serial file after {} checks: {}", check_count, e);
-                            break;
-                        }
-                    }
-                }
-
-                // Safety timeout after 30 seconds
-                if start_time.elapsed() >= max_wait_time {
-                    println!("⚠️  Safety timeout reached after {} seconds", max_wait_time.as_secs());
-                    break;
-                }
-            } else {
-                // Sleep a tiny bit to avoid busy waiting
-                thread::sleep(Duration::from_millis(10));
+            assert!(!SignalHandlers::interrupted(), "QEMU test interrupted");
+            if let Some(status) = qemu.try_wait().expect("check QEMU runner") {
+                panic!("QEMU runner exited before POST_COMPLETE ({status}): {}", fs::read_to_string(stderr_path).unwrap_or_default());
             }
+            match tracker.check_for_new_checkpoints() {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(error) => panic!("read QEMU serial output: {error}"),
+            }
+            assert!(Instant::now() < ready_deadline, "kernel did not print its POST_COMPLETE checkpoint by the 300 s deadline ({}): {}", tracker.timeout_info(), fs::read_to_string(serial_output_file).unwrap_or_default());
+            thread::sleep(Duration::from_millis(100));
         }
-
-        if !post_complete {
-            println!("⚠️  Checkpoint detection incomplete, kernel may not have reached POST completion");
-        }
-        
-        // Kill QEMU
-        let _ = qemu.kill();
-        let _ = qemu.wait();
+        drop(qemu);
         
         // Read the final serial output from file
         let output = fs::read_to_string(serial_output_file)
@@ -232,6 +157,7 @@ pub fn get_kernel_output() -> &'static str {
         
         // Clean up the output file
         let _ = fs::remove_file(serial_output_file);
+        let _ = fs::remove_file(stderr_path);
         
         output
     })
