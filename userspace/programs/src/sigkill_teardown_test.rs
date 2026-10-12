@@ -477,6 +477,10 @@ fn clone_vm_sibling_survives() {
         let heartbeat_before = core::ptr::read_volatile(&(*shared).sibling_heartbeat);
         kill(victim, SIGKILL).unwrap_or_else(|_| fail("CLONE_VM victim kill failed"));
         wait_killed(victim);
+        // SCRATCH #1413 F2: take the failure path with the sibling still spinning.
+        if core::ptr::read_volatile(&(*shared).sibling_release) == 0 {
+            fail("F2 forced CLONE_VM leg failure");
+        }
         yield_many(64);
         let heartbeat_after = core::ptr::read_volatile(&(*shared).sibling_heartbeat);
         if heartbeat_after <= heartbeat_before {

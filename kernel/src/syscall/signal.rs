@@ -169,9 +169,7 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
     let t0 = crate::signal::types::monotonic_nanos();
     if force {
         crate::signal::delivery::FORCE1413_DELIVER_PID.store(0, core::sync::atomic::Ordering::Release);
-        while crate::signal::types::monotonic_nanos().wrapping_sub(t0) < 5_000_000 {
-            core::hint::spin_loop();
-        }
+        // F2: no hold; the kills take their normal route.
     }
     let t1 = crate::signal::types::monotonic_nanos();
     let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
