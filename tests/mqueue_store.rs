@@ -2,8 +2,12 @@
 extern crate alloc;
 mod syscall {
     pub mod errno {
+        pub const ENOENT: i32 = 2;
+        pub const ENOMEM: i32 = 12;
         pub const EACCES: i32 = 13;
         pub const EINVAL: i32 = 22;
+        pub const EMFILE: i32 = 24;
+        pub const ENOSPC: i32 = 28;
         pub const ENAMETOOLONG: i32 = 36;
         pub const EMSGSIZE: i32 = 90;
     }
@@ -12,8 +16,11 @@ mod syscall {
 mod store;
 use store::*;
 
+const ENOENT: u64 = 2;
 const EACCES: u64 = 13;
 const EINVAL: u64 = 22;
+const EMFILE: u64 = 24;
+const ENOSPC: u64 = 28;
 const ENAMETOOLONG: u64 = 36;
 const EMSGSIZE: u64 = 90;
 
@@ -37,11 +44,33 @@ fn names_are_checked_as_linux_checks_them() {
     assert_eq!(check_name(b"queue"), Ok(()));
     assert_eq!(check_name(&[b'q'; NAME_MAX]), Ok(()));
     assert_eq!(check_name(&[b'q'; NAME_MAX + 1]), Err(ENAMETOOLONG));
-    assert_eq!(check_name(b""), Err(EACCES));
+    // mq_open("/") and mq_unlink("/") reach the kernel as the empty name.
+    assert_eq!(check_name(b""), Err(ENOENT));
     assert_eq!(check_name(b"."), Err(EACCES));
     assert_eq!(check_name(b".."), Err(EACCES));
+    assert_eq!(check_name(b"..."), Ok(()));
     assert_eq!(check_name(b"a/b"), Err(EACCES));
     assert_eq!(check_name(b"/a"), Err(EACCES));
+}
+
+#[test]
+fn names_are_byte_strings() {
+    assert_eq!(check_name(b"\xff"), Ok(()));
+    assert_eq!(check_name(b"\xc3\x28queue"), Ok(()));
+}
+
+#[test]
+fn a_long_name_with_a_slash_is_eacces_before_enametoolong() {
+    let mut long = vec![b'q'; NAME_MAX + 10];
+    assert_eq!(check_name(&long), Err(ENAMETOOLONG));
+    long[NAME_MAX + 5] = b'/';
+    assert_eq!(check_name(&long), Err(EACCES));
+    // As the kernel scans it: only the first NAME_MAX bytes are kept.
+    assert_eq!(check_scanned(&long[..NAME_MAX], long.len(), true), Err(EACCES));
+    assert_eq!(check_scanned(&long[..NAME_MAX], long.len(), false), Err(ENAMETOOLONG));
+    assert_eq!(check_scanned(b".", 1, false), Err(EACCES));
+    // The kernel looks PATH_MAX bytes far for the terminator.
+    assert!(NAME_MAX < PATH_MAX);
 }
 
 #[test]
@@ -84,6 +113,16 @@ fn a_receive_buffer_shorter_than_msgsize_is_emsgsize() {
 }
 
 #[test]
+fn timeouts_are_checked_whole_and_first() {
+    assert_eq!(check_timeout(0, 0), Ok(0));
+    assert_eq!(check_timeout(1, 999_999_999), Ok(1_999_999_999));
+    assert_eq!(check_timeout(-1, 0), Err(EINVAL));
+    assert_eq!(check_timeout(1, -1), Err(EINVAL));
+    assert_eq!(check_timeout(1, 1_000_000_000), Err(EINVAL));
+    assert_eq!(check_timeout(i64::MAX, 999_999_999), Ok(u64::MAX));
+}
+
+#[test]
 fn setattr_changes_only_o_nonblock() {
     let mut a = attr(99, 99);
     a.mq_curmsgs = 99;
@@ -110,12 +149,23 @@ fn messages_leave_highest_priority_first_and_oldest_first_within_one() {
 }
 
 #[test]
+fn many_messages_of_one_priority_stay_in_order() {
+    let mut q = MessageStore::new(1000);
+    for i in 0..1000u32 {
+        q.push(7, i.to_le_bytes().to_vec()).unwrap();
+    }
+    for i in 0..1000u32 {
+        assert_eq!(q.pop(), Some((i.to_le_bytes().to_vec(), 7)));
+    }
+}
+
+#[test]
 fn a_full_queue_refuses_a_message_and_hands_it_back() {
     let mut q = MessageStore::new(2);
     q.push(0, b"1".to_vec()).unwrap();
     q.push(0, b"2".to_vec()).unwrap();
     assert!(q.is_full());
-    assert_eq!(q.push(7, b"3".to_vec()), Err(b"3".to_vec()));
+    assert_eq!(q.push(7, b"3".to_vec()), Err(Refused::Full(b"3".to_vec())));
     assert_eq!(q.len(), 2);
     assert_eq!(q.pop(), Some((b"1".to_vec(), 0)));
     assert!(!q.is_full());
@@ -126,10 +176,138 @@ fn a_full_queue_refuses_a_message_and_hands_it_back() {
 }
 
 #[test]
+fn a_name_already_in_the_table_is_not_inserted_again() {
+    let mut table: NameTable<u32> = NameTable::new();
+    assert_eq!(table.insert(b"a", 1), Ok(()));
+    assert_eq!(table.insert(b"a", 2), Err((EINVAL, 2)));
+    assert_eq!(table.get(b"a"), Some(&1));
+}
+
+#[test]
 fn empty_messages_are_messages() {
     let mut q = MessageStore::new(1);
     q.push(3, Vec::new()).unwrap();
     assert_eq!(q.len(), 1);
     assert_eq!(q.pop(), Some((Vec::new(), 3)));
     assert!(q.is_empty());
+}
+
+#[test]
+fn the_highest_ranked_waiter_that_waited_longest_is_served_first() {
+    let mut w = WaitList::new();
+    w.add(10, 1, None).unwrap();
+    w.add(11, 50, None).unwrap();
+    w.add(12, 50, None).unwrap();
+    w.add(13, 1, None).unwrap();
+    let mut order = Vec::new();
+    while let Some(next) = w.next_waiting() {
+        next.done = true;
+        order.push(next.id);
+    }
+    assert_eq!(order, [11, 12, 10, 13]);
+    assert!(!w.any_waiting());
+    assert!(w.get(12).is_some_and(|e| e.done));
+    assert_eq!(w.remove(12).map(|e| e.id), Some(12));
+    assert!(w.get(12).is_none());
+}
+
+#[test]
+fn a_send_with_a_receiver_waiting_hands_the_message_over() {
+    // Capacity 1 and one blocked receiver: the first send goes to the
+    // receiver, so a second, nonblocking send still finds room.
+    let mut c: Channel<&str> = Channel::new(1);
+    c.notify = Some("registration");
+    c.receivers.add(7, 1, None).unwrap();
+    assert_eq!(c.send(3, b"first".to_vec()), Sent::HandedOff);
+    assert_eq!(c.msgs.len(), 0);
+    assert_eq!(c.receivers.get(7).and_then(|w| w.msg.clone()), Some((b"first".to_vec(), 3)));
+    // The handed-off message used no registration; the second arrives at an
+    // empty queue no receiver waits on, and uses it.
+    assert_eq!(c.send(0, b"second".to_vec()), Sent::Queued { notify: Some("registration") });
+    assert_eq!(c.msgs.len(), 1);
+    assert_eq!(c.send(0, b"third".to_vec()), Sent::Full(b"third".to_vec()));
+}
+
+#[test]
+fn a_message_into_a_nonempty_queue_uses_no_registration() {
+    let mut c: Channel<u8> = Channel::new(4);
+    assert_eq!(c.send(0, b"a".to_vec()), Sent::Queued { notify: None });
+    c.notify = Some(1);
+    assert_eq!(c.send(0, b"b".to_vec()), Sent::Queued { notify: None });
+    assert_eq!(c.notify, Some(1));
+}
+
+#[test]
+fn a_receive_from_a_full_queue_queues_the_next_senders_message() {
+    let mut c: Channel<()> = Channel::new(1);
+    assert_eq!(c.send(0, b"full".to_vec()), Sent::Queued { notify: None });
+    c.senders.add(20, 1, Some((b"low".to_vec(), 9))).unwrap();
+    c.senders.add(21, 60, Some((b"high".to_vec(), 1))).unwrap();
+    let (taken, served) = c.receive().unwrap();
+    assert_eq!(taken, (b"full".to_vec(), 0));
+    assert!(served);
+    // The higher-ranked sender got the room, though its message's priority
+    // is lower.
+    assert!(c.senders.get(21).is_some_and(|w| w.done));
+    assert!(c.senders.get(20).is_some_and(|w| !w.done));
+    assert_eq!(c.receive(), Some(((b"high".to_vec(), 1), true)));
+    assert_eq!(c.receive(), Some(((b"low".to_vec(), 9), false)));
+    assert_eq!(c.receive(), None);
+}
+
+#[test]
+fn a_queue_is_charged_its_messages_and_their_bookkeeping() {
+    assert_eq!(queue_bytes(10, 8192), 10 * 8192 + 10 * 48 + 10 * 48);
+    assert_eq!(queue_bytes(65536, 1), 65536 + 65536 * 48 + 32768 * 48);
+    // The default limit holds nine queues of the default size.
+    let default = queue_bytes(10, 8192);
+    assert_eq!(DEFAULT_MSGQUEUE_BYTES / default, 9);
+}
+
+#[test]
+fn the_charge_is_per_real_user_and_released_with_the_queue() {
+    let mut u = Usage::new();
+    let limit = 1000;
+    assert_eq!(u.charge(5, 600, limit, false), Ok(()));
+    assert_eq!(u.charge(5, 401, limit, false), Err(EMFILE));
+    // Privilege does not lift RLIMIT_MSGQUEUE.
+    assert_eq!(u.charge(5, 401, limit, true), Err(EMFILE));
+    assert_eq!(u.charge(5, 400, limit, false), Ok(()));
+    assert_eq!(u.charge(6, 1000, limit, false), Ok(()));
+    assert_eq!(u.charged(5), 1000);
+    assert_eq!(u.queues(), 3);
+    u.release(5, 600);
+    assert_eq!(u.charged(5), 400);
+    assert_eq!(u.charge(5, u64::MAX, u64::MAX, false), Err(EMFILE));
+    u.release(5, 400);
+    u.release(6, 1000);
+    assert_eq!((u.charged(5), u.charged(6), u.queues()), (0, 0, 0));
+}
+
+#[test]
+fn queues_max_bounds_callers_without_privilege() {
+    let mut u = Usage::new();
+    for _ in 0..QUEUES_MAX {
+        u.charge(1, 1, u64::MAX, false).unwrap();
+    }
+    assert_eq!(u.charge(2, 1, u64::MAX, false), Err(ENOSPC));
+    assert_eq!(u.charge(0, 1, u64::MAX, true), Ok(()));
+    u.release(0, 1);
+    u.release(1, 1);
+    assert_eq!(u.charge(2, 1, u64::MAX, false), Ok(()));
+}
+
+#[test]
+fn the_name_table_finds_byte_names() {
+    let mut t: NameTable<u32> = NameTable::new();
+    for (i, name) in [b"b".as_slice(), b"\xff", b"a", b"ab"].into_iter().enumerate() {
+        t.insert(name, i as u32).unwrap();
+    }
+    assert_eq!(t.get(b"\xff"), Some(&1));
+    assert_eq!(t.get(b"a"), Some(&2));
+    assert_eq!(t.get(b"ab"), Some(&3));
+    assert_eq!(t.get(b"c"), None);
+    assert_eq!(t.remove(b"a"), Some(2));
+    assert_eq!(t.get(b"a"), None);
+    assert_eq!(t.get(b"b"), Some(&0));
 }

@@ -213,13 +213,17 @@ enum Sender {
     /// `row` is the calling thread's own row, `tgid` its process.
     Process { row: u64, tgid: u64, uid: u32, euid: u32, sid: ProcessId },
     Kernel,
+    /// The kernel, for the program image `exec_id` names: a target that has
+    /// exec'd since is not signalled. The check runs under PROCESS_MANAGER,
+    /// which exec holds while it changes the image.
+    KernelToImage(u64),
 }
 
 impl Sender {
     fn row(&self) -> Option<u64> {
         match *self {
             Sender::Process { row, .. } => Some(row),
-            Sender::Kernel => None,
+            Sender::Kernel | Sender::KernelToImage(_) => None,
         }
     }
 
@@ -227,7 +231,7 @@ impl Sender {
     /// queued is still generated, without an instance of its own: the
     /// kernel's, and kill's (SI_USER). Any other fails with EAGAIN (Linux).
     fn may_lose_info(&self, info: &SigInfo) -> bool {
-        matches!(*self, Sender::Kernel) || info.code == SI_USER
+        matches!(*self, Sender::Kernel | Sender::KernelToImage(_)) || info.code == SI_USER
     }
 
     /// Whether this sender may send `sig` to `target` (POSIX kill): a
@@ -238,6 +242,7 @@ impl Sender {
     fn may_signal(&self, target: &crate::process::Process, sig: u32) -> bool {
         match *self {
             Sender::Kernel => true,
+            Sender::KernelToImage(exec_id) => target.exec_id == exec_id,
             Sender::Process { uid, euid, sid, .. } => {
                 euid == 0
                     || [uid, euid].iter().any(|&id| id == target.cred.uid || id == target.cred.suid)
@@ -251,7 +256,7 @@ impl Sender {
     fn info(&self, code: i32) -> SigInfo {
         match *self {
             Sender::Process { tgid, uid, .. } => SigInfo::sender(code, tgid as u32, uid),
-            Sender::Kernel => SigInfo::kernel(),
+            Sender::Kernel | Sender::KernelToImage(_) => SigInfo::kernel(),
         }
     }
 }
@@ -306,11 +311,13 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32, sender: Sender, info:
     send_signal(target_pid, sig, sender, info, Recipient::Process)
 }
 
-/// Send `sig` with `info` from the kernel to process `pid`: no permission
-/// check, as for any signal the kernel raises. Takes PROCESS_MANAGER and the
-/// scheduler, so the caller holds neither and no IPC lock.
-pub(crate) fn send_kernel_signal(pid: ProcessId, sig: u32, info: SigInfo) -> Result<(), u64> {
-    match send_signal(pid, sig, Sender::Kernel, info, Recipient::Process) {
+/// Send `sig` with `info` from the kernel to process `pid`, if it still runs
+/// the program image `exec_id` names (`Process::exec_id`): no permission
+/// check, as for any signal the kernel raises, and EPERM for a process that
+/// has exec'd since. Takes PROCESS_MANAGER and the scheduler, so the caller
+/// holds neither and no IPC lock.
+pub(crate) fn send_kernel_signal(pid: ProcessId, sig: u32, info: SigInfo, exec_id: u64) -> Result<(), u64> {
+    match send_signal(pid, sig, Sender::KernelToImage(exec_id), info, Recipient::Process) {
         SyscallResult::Ok(_) => Ok(()),
         SyscallResult::Err(e) => Err(e),
     }
