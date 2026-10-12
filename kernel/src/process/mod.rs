@@ -676,6 +676,9 @@ pub fn poll_manager() -> Option<TryProcessManagerGuard> {
         }
         if crate::time::tsc::read_tsc().wrapping_sub(start) >= budget {
             crate::scratch_probe::POLL_FAILS.fetch_add(1, Ordering::Relaxed);
+            if crate::scratch_probe::now_ns().wrapping_sub(crate::scratch_probe::pm_acq_ns()) > 10_000_000 {
+                crate::scratch_probe::request_sample(PROCESS_MANAGER_OWNER_CPU.load(Ordering::Relaxed), 2);
+            }
             return None;
         }
         core::hint::spin_loop();

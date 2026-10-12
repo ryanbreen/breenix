@@ -22,6 +22,53 @@ pub const TIMED: u64 = 9;
 pub const POST_EXIT: u64 = 10;
 pub const STAGES: u64 = 11;
 pub const IPI_SLOW: u64 = 12;
+pub const NMI_SAMPLE: u64 = 13;
+static SAMPLE_REQ: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static SAMPLE_WHY: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static SAMPLE_FROM: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+pub static SCHED_OWNER: AtomicU64 = AtomicU64::new(u64::MAX);
+pub static SCHED_ACQ: AtomicU64 = AtomicU64::new(0);
+
+pub fn sched_acquired() {
+    SCHED_OWNER.store(cpu(), Ordering::Relaxed);
+    SCHED_ACQ.store(now_ns(), Ordering::Relaxed);
+}
+
+/// Ask `target` (the holder of a lock this CPU has waited on) where it is, by NMI.
+#[cfg(target_arch = "x86_64")]
+pub fn request_sample(target: u64, why: u64) {
+    let t = target as usize;
+    if t >= 8 || target == cpu() {
+        return;
+    }
+    if SAMPLE_REQ[t].compare_exchange(0, now_ns(), Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+        SAMPLE_WHY[t].store(why, Ordering::Relaxed);
+        SAMPLE_FROM[t].store(cpu(), Ordering::Relaxed);
+        if let Some(apic_id) = crate::arch_impl::x86_64::smp::cpu_apic_id(t) {
+            let _ = crate::arch_impl::x86_64::apic::send_ipi(apic_id, crate::arch_impl::x86_64::apic::Ipi::Nmi);
+        }
+    }
+}
+
+/// From the NMI handler: answer a pending sample request for this CPU.
+pub fn nmi_sample(c: usize, rip: u64) {
+    if c >= 8 {
+        return;
+    }
+    let req = SAMPLE_REQ[c].load(Ordering::Acquire);
+    if req == 0 {
+        return;
+    }
+    let now = now_ns();
+    let why = SAMPLE_WHY[c].load(Ordering::Relaxed);
+    let held = if why == 1 {
+        now.wrapping_sub(SCHED_ACQ.load(Ordering::Relaxed))
+    } else {
+        now.wrapping_sub(PM_ACQ_NS.load(Ordering::Relaxed))
+    };
+    push(NMI_SAMPLE, [now - req, req, c as u64, rip, why, held, SAMPLE_FROM[c].load(Ordering::Relaxed), 0, 0]);
+    SAMPLE_REQ[c].store(0, Ordering::Release);
+}
 pub static IPI_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static PM_IPI0: AtomicU64 = AtomicU64::new(0);
 pub fn ipi_time(t0: u64, kind: u64, dest: u64) {
@@ -301,6 +348,16 @@ pub fn drain() {
                 w[4],
                 w[5]
             ),
+            NMI_SAMPLE => log::info!(
+                "[P1401 NMI_SAMPLE lat_us={} at_ms={} cpu={} rip={:#x} why={} held_us={} from={}]",
+                w[1] / 1000,
+                w[2] / 1_000_000,
+                w[3],
+                w[4],
+                w[5],
+                w[6] / 1000,
+                w[7]
+            ),
             POLL_FAIL => log::info!("[P1401 POLL_FAIL at_ms={} cpu={} holder_cpu={}]", w[1] / 1_000_000, w[2], w[3]),
             _ => {}
         }
@@ -339,6 +396,10 @@ static PM_ACQ_NS: AtomicU64 = AtomicU64::new(0);
 static PM_FILE: AtomicU64 = AtomicU64::new(0);
 static PM_FILE_LEN: AtomicU64 = AtomicU64::new(0);
 static PM_LINE: AtomicU64 = AtomicU64::new(0);
+
+pub fn pm_acq_ns() -> u64 {
+    PM_ACQ_NS.load(Ordering::Relaxed)
+}
 
 pub fn pm_acquired(loc: &'static core::panic::Location<'static>) {
     PM_ACQ_NS.store(now_ns(), Ordering::Relaxed);
