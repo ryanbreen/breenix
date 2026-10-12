@@ -688,6 +688,9 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         else {
             return SyscallResult::Err(super::errno::ENOMEM as u64);
         };
+        if !crate::ipc::shmem::mprotect_allowed(vma, new_prot) {
+            return SyscallResult::Err(super::errno::EACCES as u64);
+        }
         let next = vma.end.as_u64().min(end_addr);
         if vma.flags.contains(MmapFlags::PRIVATE)
             && !vma.prot.contains(Protection::WRITE)
@@ -760,8 +763,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
             .then(|| process.vmas[index].piece(VirtAddr::new(start), VirtAddr::new(cursor)));
         let suffix = (next < end)
             .then(|| process.vmas[index].piece(VirtAddr::new(next), VirtAddr::new(end)));
-        process.vmas[index].start = VirtAddr::new(cursor);
-        process.vmas[index].end = VirtAddr::new(next);
+        process.vmas[index] = process.vmas[index].piece(VirtAddr::new(cursor), VirtAddr::new(next));
         process.vmas[index].prot = new_prot;
         process.vmas.extend(prefix.into_iter().chain(suffix));
         cursor = next;

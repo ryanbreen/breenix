@@ -8,8 +8,23 @@ pub trait IpcFile: Send + Sync + core::fmt::Debug {
     fn truncate(&self, _len: u64) -> Result<(), u64> {
         Err(EINVAL as u64)
     }
+    /// Filesystem identity for fstatfs; shared memory defaults to TMPFS_MAGIC.
+    fn statfs_magic(&self) -> u64 {
+        0x01021994
+    }
     fn poll_events(&self) -> i16 {
         0
+    }
+    fn chmod(&self, _mode: u32, _cred: &crate::fs::permissions::Credentials) -> Result<(), u64> {
+        Err(EINVAL as u64)
+    }
+    fn chown(&self, _uid: u32, _gid: u32, _cred: &crate::fs::permissions::Credentials) -> Result<(), u64> {
+        Err(EINVAL as u64)
+    }
+    /// Called after PM is released; the implementation owns its shared
+    /// directory cookie and advances it only after copying records succeeds.
+    fn getdents(&self, _dirp: u64, _count: usize) -> Result<u64, u64> {
+        Err(20)
     }
     fn on_close(&self, _pid: crate::process::ProcessId) {}
 }

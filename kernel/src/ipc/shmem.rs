@@ -24,3 +24,28 @@ pub fn mmap_fd(
 ) -> Option<SyscallResult> {
     None
 }
+
+/// The SHMSEM namespace supplies object ownership/mode using the caller's
+/// chosen credentials (real IDs for access, effective IDs for AT_EACCESS).
+pub fn access_path(path: &str, mode: u32, cred: &crate::fs::permissions::Credentials) -> Option<SyscallResult> {
+    if path == "/dev/shm" {
+        return Some(if cred.permits_mode(0, 0, crate::fs::devfs::SHM_DIRECTORY_MODE, mode) {
+            SyscallResult::Ok(0)
+        } else { SyscallResult::Err(13) });
+    }
+    None
+}
+
+/// Object policy checked before mprotect changes any VMA or leaf.
+pub fn mprotect_allowed(_vma: &crate::memory::vma::Vma, _prot: Protection) -> bool {
+    true
+}
+/// Allocate lazy object pages outside PM, before revalidating their VMA.
+pub fn prepare_population(_thread: u64, _address: u64) -> Result<(), u64> {
+    Ok(())
+}
+/// Called under PM; Some(false) retries a changed/reserved mapping and
+/// Some(true) denotes a resident object page. An absent result selects ordinary memory.
+pub fn populate_page(_process: &mut crate::process::Process, _address: u64) -> Option<Result<bool, u64>> {
+    None
+}

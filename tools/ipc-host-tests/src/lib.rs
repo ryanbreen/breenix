@@ -253,5 +253,22 @@ fn ipc_file_defaults_and_downcast() {
     assert_eq!(stat.st_size, 32);
     assert_eq!(object.truncate(8), Err(22));
     assert_eq!(object.poll_events(), 0);
+    let cred = permissions::Credentials::current(false);
+    assert_eq!(object.chmod(0o600, &cred), Err(22));
+    assert_eq!(object.chown(1, 2, &cred), Err(22));
+    assert_eq!(object.getdents(0, 4096), Err(20));
+    assert_eq!(object.statfs_magic(), 0x01021994);
     object.on_close(process::ProcessId(7));
+    #[derive(Debug)]
+    struct Queue;
+    impl object::IpcFile for Queue {
+        fn as_any(&self) -> &dyn core::any::Any { self }
+        fn fill_stat(&self, _: &mut syscall::fs::Stat) {}
+        fn statfs_magic(&self) -> u64 { 0x19800202 }
+    }
+    let queue: alloc::sync::Arc<dyn object::IpcFile> = alloc::sync::Arc::new(Queue);
+    assert_eq!(queue.statfs_magic(), 0x19800202);
 }
+
+#[path = "../../../kernel/src/fs/devfs/entries.rs"]
+mod devfs_entries;

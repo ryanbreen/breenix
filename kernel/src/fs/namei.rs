@@ -248,7 +248,7 @@ fn virtual_entry(path: &str) -> Option<bool> {
     if let Some(entry) = crate::ipc::shmem::virtual_entry(path) {
         return entry;
     }
-    if path == "/dev" || path == "/proc" || path == "/dev/pts" {
+    if path == "/dev" || path == "/proc" || path == "/dev/pts" || path == "/dev/shm" {
         return Some(true);
     }
     if let Some(pty) = path.strip_prefix("/dev/pts/") {

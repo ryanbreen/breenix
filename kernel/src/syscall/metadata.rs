@@ -188,6 +188,13 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
         Err(e) => return SyscallResult::Err(e),
     };
     match kind {
+        FdKind::Ipc(object) => {
+            let result = match change {
+                Change::Mode(mode) => object.chmod(mode, &cred),
+                Change::Owner(uid, gid) => object.chown(uid, gid, &cred),
+            };
+            match result { Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e) }
+        }
         FdKind::RegularFile(file) => {
             let handle = file.lock().handle.clone();
             let mut guard = match ext2::write_mount(handle.object.mount) {

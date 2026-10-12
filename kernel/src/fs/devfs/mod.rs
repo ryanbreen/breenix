@@ -25,6 +25,9 @@
 //!     sys_read/sys_write dispatch to device handlers
 //! ```
 
+pub mod entries;
+pub use entries::{SHM_DIRECTORY_INO, SHM_DIRECTORY_MODE};
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -189,6 +192,12 @@ pub fn list_devices() -> Vec<String> {
         .iter()
         .map(|d| String::from(d.device_type.name()))
         .collect()
+}
+
+/// Snapshot directory metadata without allocating per-name strings.
+pub fn directory_entries() -> Result<Vec<entries::DirectoryEntry>, u64> {
+    let devfs = DEVFS.lock();
+    entries::entries(devfs.devices.iter().map(|d| (d.device_type.name(), d.device_type.inode())))
 }
 
 /// Check if devfs is initialized

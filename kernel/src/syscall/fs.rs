@@ -1387,6 +1387,14 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         None => return SyscallResult::Err(EBADF as u64),
     };
 
+    if let FdKind::Ipc(object) = &fd_entry.kind {
+        let object = object.clone();
+        drop(manager_guard);
+        return match object.getdents(dirp, count as usize) {
+            Ok(n) => SyscallResult::Ok(n), Err(e) => SyscallResult::Err(e),
+        };
+    }
+
     // Handle DevfsDirectory specially
     if let FdKind::DevfsDirectory { position } = &fd_entry.kind {
         let start_position = *position;
@@ -2254,6 +2262,7 @@ fn access_resolved(resolved: &crate::fs::namei::Resolved, mode: u32, cred: &File
         Target::Inode { mount, ino, .. } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
+            if let Some(result) = crate::ipc::shmem::access_path(&resolved.path, mode, cred) { return result; }
             if resolved.is_mount_point() { return SyscallResult::Ok(0); }
             if let Some(device) = resolved.path.strip_prefix("/dev/") {
                 if crate::fs::devfs::lookup(device).is_none() {
@@ -2738,11 +2747,15 @@ fn handle_devfs_getdents64(
     use crate::fs::devfs;
 
     // Get the list of device names
-    let devices = devfs::list_devices();
+    let devices = match devfs::directory_entries() {
+        Ok(entries) => entries,
+        Err(e) => return SyscallResult::Err(e),
+    };
 
     // Build entries: ".", "..", then each device
     // We treat position as entry index (0 = ".", 1 = "..", 2+ = devices)
     let mut records = alloc::vec::Vec::new();
+    if records.try_reserve((devices.len() + 2) * align_up_8(DIRENT64_HEADER_SIZE + 256)).is_err() { return SyscallResult::Err(12); }
     let mut bytes_written = 0usize;
     let mut entry_index = 0u64;
     let mut new_position = start_position;
@@ -2775,7 +2788,8 @@ fn handle_devfs_getdents64(
     }
 
     // Now iterate through device entries
-    for device_name in devices.iter() {
+    for device in devices.iter() {
+        let device_name = device.name;
         if entry_index < start_position {
             entry_index += 1;
             continue;
@@ -2788,15 +2802,7 @@ fn handle_devfs_getdents64(
             break;
         }
 
-        // The shared-memory name table supplies a virtual directory rather
-        // than a character device. Its inode agrees with shmem::stat_path.
-        let (inode, file_type) = if device_name.as_str() == "shm" {
-            (1, DT_DIR)
-        } else {
-            (devfs::lookup(device_name).map(|d| d.device_type.inode()).unwrap_or(0), DT_CHR)
-        };
-
-        push_dirent64(&mut records, inode, (entry_index + 1) as i64, file_type, device_name.as_bytes());
+        push_dirent64(&mut records, device.ino, (entry_index + 1) as i64, device.kind, device_name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
@@ -4047,7 +4053,7 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
         match entry { Some(e) => e.kind.clone(), None => return SyscallResult::Err(9) }
     };
     let stat = match kind {
-        FdKind::Ipc(_) => Ok(virtual_statfs(0x01021994)),
+        FdKind::Ipc(object) => Ok(virtual_statfs(object.statfs_magic())),
         FdKind::RegularFile(file) => {
             let pin = file.lock().handle.clone();
             statfs_pin(&pin)
