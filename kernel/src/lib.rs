@@ -33,6 +33,8 @@ pub use per_cpu_aarch64 as per_cpu;
 #[cfg(target_arch = "x86_64")]
 pub mod elf;
 pub mod process;
+#[cfg(target_arch = "x86_64")]
+pub mod scratch_force;
 pub mod serial_writer;
 pub mod signal;
 pub mod task;

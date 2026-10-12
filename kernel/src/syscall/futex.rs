@@ -896,6 +896,10 @@ fn futex_wait_until(
         Prepared::Queued => {}
     }
 
+    #[cfg(target_arch = "x86_64")]
+    if let Some(wake) = deadline.wake_ns() {
+        crate::scratch_force::arm(wake);
+    }
     // Preemption stays disabled until the signal check below has run (#1230):
     // see `blocking_io::wait_prepared`.
     let result = loop {
@@ -1267,6 +1271,10 @@ fn futex_wait(
             // loop for the record below (#608 F4). It is a plain field read
             // taken inside the scheduler access this loop already performs.
             let mut timer_pop: Option<crate::task::thread::TimerPopRecord> = None;
+            #[cfg(target_arch = "x86_64")]
+            if let Some(wake) = user_wake_time_ns {
+                crate::scratch_force::arm(wake);
+            }
             loop {
                 if crate::syscall::check_signals_for_eintr().is_some() {
                     signal_pending = true;
