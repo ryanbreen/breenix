@@ -3267,12 +3267,15 @@ fn fbmmap(width_out: u64) -> SyscallResult {
         current_page += 1;
     }
 
-    // Create VMA (MAP_ANONYMOUS=0x20 | MAP_PRIVATE=0x02 = 0x22)
+    // MAP_SHARED | MAP_ANONYMOUS, as the window and texture buffers above are:
+    // a fork shares the pane's frames instead of write-protecting them. As a
+    // private mapping, every fork made the display owner fault on, and copy or
+    // re-own, each pane page it drew next, under PROCESS_MANAGER.
     let vma = Vma::new(
         VirtAddr::new(start_addr),
         VirtAddr::new(end_addr),
         prot,
-        MmapFlags::from_bits_truncate(0x22),
+        MmapFlags::from_bits_truncate(0x21),
     );
     process.vmas.push(vma);
 
