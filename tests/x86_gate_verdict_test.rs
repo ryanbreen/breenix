@@ -173,7 +173,7 @@ fn marker_with_facts(
 fn tail_pass_with(completion: &str) -> String {
     format!(
         "USERSPACE TEST COMPLETE\n{completion}\n\
-         TEST_TALLY: exited=10 nonzero=0 failed=[]\n\
+         TEST_TALLY: exited=10 nonzero=0 failed=[] started=10\n\
          \u{1f3c1} TEST RUNNER: All tests passed\n"
     )
 }
@@ -182,7 +182,7 @@ fn tail_pass_with(completion: &str) -> String {
 /// shape, which the census now rejects rather than reporting as "no marker".
 fn tail_pass_truncated() -> &'static str {
     "USERSPACE TEST COMPLETE\n\
-     TEST_TALLY: exited=10 nonzero=0 failed=[]\n\
+     TEST_TALLY: exited=10 nonzero=0 failed=[] started=10\n\
      \u{1f3c1} TEST RUNNER: All tests passed\n"
 }
 
@@ -340,7 +340,7 @@ fn highest_seq_snapshot_wins_even_when_two_share_a_physical_line() {
     // carries a completion snapshot.
     let kernel = format!(
         "{}\nUSERSPACE TEST COMPLETE\n{} {}\n\
-         TEST_TALLY: exited=10 nonzero=0 failed=[]\n\
+         TEST_TALLY: exited=10 nonzero=0 failed=[] started=10\n\
          \u{1f3c1} TEST RUNNER: All tests passed\n",
         marker(1, 200, 1000, 13, 0, "-"),
         marker(2, 400, 2000, 13, 1, "23"),
@@ -523,7 +523,7 @@ fn the_census_reports_its_snapshot_provenance_and_observed_cadence() {
 /// newest CADENCE snapshot was at that instant.
 fn capture_with_completion_age(cadence_ms: u32, completion_ms: u32) -> String {
     format!(
-        "{}\n{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=0 failed=[]\n🏁 TEST RUNNER: All tests passed\n",
+        "{}\n{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=0 failed=[] started=10\n🏁 TEST RUNNER: All tests passed\n",
         marker(1, 100, 500, 11, 0, "-"),
         marker(2, 200, cadence_ms, 11, 0, "-"),
         marker(3, 300, completion_ms, 11, 0, "-")
@@ -979,7 +979,7 @@ fn expected_child_name_does_not_allow_an_unexpected_status() {
 
 #[test]
 fn documented_child_status_passes_without_unrelated_contracts_running() {
-    let fixture = SerialFixture::new(&format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=1 failed=[waitpid_test_child_123:42]\nTEST RUNNER: FAILED\n",
+    let fixture = SerialFixture::new(&format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=1 failed=[waitpid_test_child_123:42] started=10\nTEST RUNNER: FAILED\n",
         marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-")), "");
     let output = fixture.run(Some("10"));
     assert!(output.status.success(), "{}", output_text(&output));
@@ -988,7 +988,7 @@ fn documented_child_status_passes_without_unrelated_contracts_running() {
 #[test]
 fn full_path_applets_and_encoded_signal_contracts_are_reviewable() {
     let fixture = SerialFixture::new(
-        &format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=4 failed=[/bin/false:1,/bin/cat:1,signal_test_child_104:-132,/tmp/syscall_edge.elf:-11]\nTEST RUNNER: FAILED\n",
+        &format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=4 failed=[/bin/false:1,/bin/cat:1,signal_test_child_104:-132,/tmp/syscall_edge.elf:-11] started=10\nTEST RUNNER: FAILED\n",
             marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-")), "");
     let output = fixture.run(Some("10"));
     let text = output_text(&output);
@@ -1034,15 +1034,17 @@ fn publication_exit_mismatch_fails() {
 }
 
 #[test]
-fn legacy_fixture_exits_are_scored_by_their_profile_floor() {
+fn legacy_fixture_publication_mismatch_is_rejected() {
     let fixture = SerialFixture::new(&format!("{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=0 failed=[] started=11\n🏁 TEST RUNNER: All tests passed\n", marker(1, 200, 1000, 11, 0, "-"), marker(2, 400, 2000, 11, 0, "-")), "");
     let output = fixture.run(Some("10"));
-    assert!(output.status.success(), "{}", output_text(&output));
+    let text = output_text(&output);
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("published 11 processes but only 10 exited"), "{text}");
 }
 
 #[test]
 fn full_accounting_requires_a_publication_count() {
-    let fixture = SerialFixture::new(&green_log(), "");
+    let fixture = SerialFixture::new(&green_log().replace(" started=10", ""), "");
     let output = Command::new("bash")
         .arg(repo_root().join("scripts/x86-gate-verdict.sh"))
         .arg(&fixture.kernel_log)
