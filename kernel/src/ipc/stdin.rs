@@ -100,7 +100,7 @@ pub fn push_byte(byte: u8) {
     let mut buffer = STDIN_BUFFER.lock();
     if buffer.push_byte(byte) {
         // Echo character to serial output for now
-        crate::serial::write_byte(byte);
+        crate::serial::write_byte(crate::serial::Writer::Tty, byte);
 
         // Drop buffer lock before waking readers to avoid deadlock
         drop(buffer);

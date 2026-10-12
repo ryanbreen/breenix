@@ -318,14 +318,17 @@ pub fn get_received_byte() -> Option<u8> {
     }
 }
 
-/// Write a single byte to serial output.
-pub fn write_byte(byte: u8) {
-    write_bytes_atomic(core::slice::from_ref(&byte));
+pub use crate::serial_writer::Writer;
+
+/// Write a single byte from `writer` to serial output.
+pub fn write_byte(writer: Writer, byte: u8) {
+    write_bytes_atomic(writer, core::slice::from_ref(&byte));
 }
 
-/// Write one caller-defined output unit as a single record (see `serial_line`).
-pub fn write_bytes_atomic(bytes: &[u8]) {
-    crate::serial_line::Line::new().bytes(bytes);
+/// Write one caller-defined output unit from `writer` as a single record (see
+/// `serial_line`).
+pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
+    crate::serial_line::Line::for_writer(writer).bytes(bytes);
 }
 
 #[doc(hidden)]

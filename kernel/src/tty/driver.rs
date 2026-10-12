@@ -596,14 +596,13 @@ impl TtyDevice {
     pub fn output_char(&self, c: u8) {
         // Handle NL -> CR-NL translation if ONLCR is set
         let termios = self.ldisc.lock().termios().clone();
-        if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
-            crate::serial::write_byte(b'\r');
-            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-            let _ = crate::graphics::render_queue::queue_byte(b'\r');
-        }
-        crate::serial::write_byte(c);
+        let crlf = [b'\r', c];
+        let unit = if termios.is_opost() && termios.is_onlcr() && c == b'\n' { &crlf[..] } else { &crlf[1..] };
+        crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
         #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-        let _ = crate::graphics::render_queue::queue_byte(c);
+        for &byte in unit {
+            let _ = crate::graphics::render_queue::queue_byte(byte);
+        }
     }
 
     /// Write a buffer of bytes to the terminal output
@@ -632,7 +631,7 @@ impl TtyDevice {
             for &c in line {
                 let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
                 if expanded_len + output_len > expanded.len() {
-                    crate::serial::write_bytes_atomic(&expanded[..expanded_len]);
+                    crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &expanded[..expanded_len]);
                     expanded_len = 0;
                 }
                 if output_len == 2 {
@@ -644,7 +643,7 @@ impl TtyDevice {
             }
 
             if expanded_len != 0 {
-                crate::serial::write_bytes_atomic(&expanded[..expanded_len]);
+                crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &expanded[..expanded_len]);
             }
 
             // Both architectures use the render queue — it's lock-free on the
@@ -674,8 +673,8 @@ impl TtyDevice {
     /// CPUs had already queued, each of which waits at most 10 ms per byte
     /// for the UART.
     ///
-    /// On x86_64, `write_byte()` disables interrupts and acquires the lock,
-    /// which is safe because x86_64 uses separate COM1/COM2 ports.
+    /// On x86_64, `write_bytes_atomic()` disables interrupts and acquires the
+    /// lock, which is safe because x86_64 uses separate COM1/COM2 ports.
     pub fn output_char_nonblock(&self, c: u8) {
         // Try to get termios settings without blocking
         let do_crlf = if let Some(ldisc) = self.ldisc.try_lock() {
@@ -686,28 +685,17 @@ impl TtyDevice {
             false
         };
 
-        // Handle CR-LF translation
-        if do_crlf {
-            #[cfg(target_arch = "aarch64")]
-            crate::serial_line::Line::new().char(b'\r');
-            #[cfg(target_arch = "x86_64")]
-            crate::serial::write_byte(b'\r');
-            // Queue for deferred framebuffer rendering
-            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-            let _ = crate::graphics::render_queue::queue_byte(b'\r');
-        }
-
-        // Write the character -- under UART ownership on ARM64, locked on x86_64
-        #[cfg(target_arch = "aarch64")]
-        crate::serial_line::Line::new().char(c);
-        #[cfg(target_arch = "x86_64")]
-        crate::serial::write_byte(c);
+        // The character and its CR-LF translation go out as one unit -- under
+        // UART ownership on ARM64, locked on x86_64
+        let crlf = [b'\r', c];
+        let unit = if do_crlf { &crlf[..] } else { &crlf[1..] };
+        crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
 
         // Queue for deferred framebuffer rendering
         // This is lock-free and safe for interrupt context
         #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-        {
-            let _queued = crate::graphics::render_queue::queue_byte(c);
+        for &byte in unit {
+            let _ = crate::graphics::render_queue::queue_byte(byte);
         }
     }
 
@@ -881,18 +869,18 @@ impl TtyDevice {
                 if let Some(proc) = pm.get_process_mut(recipient) {
                     proc.signals.set_process_pending(sig);
 
-                    // Lock-free diagnostic output, one write per architecture
-                    // and the same subject on both. The signal number and the
-                    // pid are NOT written here: they are already published
-                    // lock-free, by the census stores at the top of this
-                    // function, and read back from thread context.
+                    // Diagnostic output as one unit with a bounded wait, one
+                    // write per architecture and the same subject on both. The
+                    // signal number and the pid are NOT written here: they are
+                    // already published lock-free, by the census stores at the
+                    // top of this function, and read back from thread context.
                     #[cfg(target_arch = "aarch64")]
                     {
                         crate::serial_line::Line::new().bytes(b"[TTY] sig sent to PID\n");
                     }
                     #[cfg(target_arch = "x86_64")]
                     {
-                        crate::tracing::output::raw_serial_str("[TTY] sig sent to PID\n");
+                        crate::serial::write_str_bounded("[TTY] sig sent to PID\n");
                     }
 
                     // CRITICAL: Wake the thread if it's blocked so it can receive the signal.
@@ -1030,11 +1018,19 @@ pub fn write_output(buf: &[u8]) -> usize {
         buf.len()
     } else {
         // Fallback: write directly to serial if TTY not initialized
-        for &c in buf {
-            crate::serial::write_byte(c);
-        }
+        write_unprocessed(buf);
         buf.len()
     }
+}
+
+/// Write `buf` to the console serial port as it is, without output
+/// processing, a line segment (at most one bounded chunk) per serial unit.
+pub fn write_unprocessed(buf: &[u8]) {
+    for_each_line_segment(buf, |line| {
+        for chunk in line.chunks(SERIAL_ATOMIC_OUTPUT_BYTES) {
+            crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, chunk);
+        }
+    });
 }
 
 /// Push a character to the console TTY (non-blocking)
