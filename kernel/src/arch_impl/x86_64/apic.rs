@@ -216,7 +216,9 @@ pub fn send_ipi(destination: u32, ipi: Ipi) -> Result<(), &'static str> {
         Ipi::Startup(page) if page < 0xa0 => (6 << 8) | u32::from(page),
         Ipi::Startup(_) => return Err("Startup page is outside conventional memory"),
     };
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    let __t0 = crate::scratch_probe::now_ns();
+    let __kind = (low >> 8) & 7;
+    let __r = x86_64::instructions::interrupts::without_interrupts(|| {
         // Intel requires preceding stores to be globally visible before x2APIC ICR.
         unsafe {
             core::arch::asm!("mfence", "lfence", options(nostack, preserves_flags));
@@ -235,7 +237,9 @@ pub fn send_ipi(destination: u32, ipi: Ipi) -> Result<(), &'static str> {
             write(0x300, low);
             wait_delivery()
         }
-    })
+    });
+    crate::scratch_probe::ipi_time(__t0, u64::from(__kind), u64::from(destination));
+    __r
 }
 
 fn wait_delivery() -> Result<(), &'static str> {
