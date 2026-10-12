@@ -80,6 +80,8 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
                 thread.realtime_sleep = realtime;
             }
             sched.block_current_for_timer(wake);
+            #[cfg(target_arch = "x86_64")]
+            crate::scratch_force::arm(wake);
             false
         }).unwrap_or(true);
         if expired {
