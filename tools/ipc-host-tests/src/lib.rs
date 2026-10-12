@@ -564,3 +564,6 @@ fn checked_unlink_refuses_a_replacement_and_then_accepts_its_identity() {
     assert!(!replacement.lock().linked);
     assert_eq!(registry.unlink_entry("/fifo", &replacement), Err(2));
 }
+
+#[path = "../../../kernel/src/syscall/fifo_path.rs"]
+mod fifo_path;

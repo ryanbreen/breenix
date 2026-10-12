@@ -3723,10 +3723,11 @@ pub fn sys_mkdirat(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
 
 /// mknodat(dirfd, pathname, mode, dev) - replacement for mknod
 pub fn sys_mknodat(dirfd: i32, pathname: u64, mode: u32, dev: u64) -> SyscallResult {
-    if dirfd != AT_FDCWD {
-        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    if mode & S_IFMT == S_IFIFO {
+        super::fifo::sys_mkfifo_at(dirfd, pathname, mode & 0o7777)
+    } else {
+        super::fifo::sys_mknod(pathname, mode, dev)
     }
-    super::fifo::sys_mknod(pathname, mode, dev)
 }
 
 /// unlinkat(dirfd, pathname, flags) - replacement for unlink and rmdir

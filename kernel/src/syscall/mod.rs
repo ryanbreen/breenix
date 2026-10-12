@@ -36,6 +36,7 @@ pub mod blocking_io_oracle;
 pub mod clone;
 pub mod epoll;
 pub mod fifo;
+pub(crate) mod fifo_path;
 pub mod fs;
 pub mod futex;
 #[cfg(feature = "boot_tests")]

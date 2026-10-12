@@ -15,14 +15,39 @@ use crate::ipc::fifo::FIFO_REGISTRY;
 /// # Returns
 /// 0 on success, negative errno on failure
 pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
+    sys_mkfifo_at(super::fifo_path::AT_FDCWD, pathname, mode)
+}
+
+pub(crate) fn sys_mkfifo_at(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
     use crate::fs::namei::{Last, Target};
 
     let raw_path = match copy_cstr_from_user(pathname) {
         Ok(p) => p,
         Err(errno) => return SyscallResult::Err(errno),
     };
+    if raw_path.is_empty() {
+        return SyscallResult::Err(super::errno::ENOENT as u64);
+    }
+    let cred = crate::fs::permissions::Credentials::current(false);
+    let start = match super::fifo_path::directory_start(dirfd, raw_path.starts_with('/'), |fd| {
+        use crate::fs::namei::WorkingDir;
+        use crate::ipc::FdKind;
+        super::metadata::descriptor(fd).and_then(|kind| match kind {
+            FdKind::DevfsDirectory { .. } => {
+                Ok(WorkingDir::Virtual(alloc::string::String::from("/dev")))
+            }
+            FdKind::DevptsDirectory { .. } => {
+                Ok(WorkingDir::Virtual(alloc::string::String::from("/dev/pts")))
+            }
+            FdKind::ProcfsDirectory { path, .. } => Ok(WorkingDir::Virtual(path)),
+            kind => super::metadata::directory_of(kind),
+        })
+    }) {
+        Ok(start) => start,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     // A FIFO is registered under the physical pathname of its new name.
-    let resolved = match super::metadata::resolve_create_at(super::at_path::AT_FDCWD, &raw_path, &crate::fs::permissions::Credentials::current(false)) {
+    let resolved = match crate::fs::namei::resolve_create_from(&raw_path, start, &cred) {
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
     };
@@ -41,7 +66,6 @@ pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
     log::debug!("sys_mkfifo: path={}, mode={:#o}", path, mode);
 
     // Create the FIFO in the registry
-    let cred = crate::fs::permissions::Credentials::current(false);
     // The namei walk checks search permission; creation also needs write
     // permission on the parent and inherits its group when setgid is set.
     let gid = match check_parent_access(&resolved, &cred, None) {
