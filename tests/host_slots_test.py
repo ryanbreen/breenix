@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import selectors
 import signal
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,41 @@ spec.loader.exec_module(slots)
 
 
 class HostSlotsTest(unittest.TestCase):
+    def test_staged_classifier_stops_checkout_without_watchdog(self):
+        bundle = self.root / 'watchdog'
+        repo = HELPER.parents[1]
+        for relative in ('scripts/boot_progress.py', 'docs/boot-path.json',
+                         'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-aarch64.json',
+                         'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json'):
+            destination = bundle / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source = (repo / relative).read_text()
+            destination.write_text(source.replace('STALL_SECONDS = 120', 'STALL_SECONDS = 0.4'))
+        historical = self.root / 'historical'
+        historical.mkdir()
+        serial = self.root / 'serial_user.log'
+        replay = f'''from pathlib import Path
+import time
+p = Path({str(serial)!r})
+p.write_text('SIGKILL_TEARDOWN_TEST: FAIL\\n')
+for i in range(100):
+    with p.open('a') as stream: stream.write('[CPU_CENSUS:seq=%d]\\n' % i)
+    time.sleep(.05)
+'''
+        script = (f'{sys.executable} {HELPER} acquire mac-boot; '
+                  f'{sys.executable} {HELPER} serial {serial}; '
+                  f'{sys.executable} {HELPER} quiet; '
+                  f'exec {sys.executable} -c {shlex.quote(replay)}')
+        with mock.patch.dict(os.environ, BREENIX_SLOT_WORKTREE=str(historical),
+                             BREENIX_SLOT_PROGRESS_HELPER=str(bundle / 'scripts/boot_progress.py'),
+                             BREENIX_QUIET='0'):
+            process = self.launch(script)
+        output = process.communicate(timeout=10)[0].decode()
+        self.assertEqual(process.returncode, 124, output)
+        record = json.loads(Path(str(serial) + '.stall.json').read_text())
+        self.assertEqual(record['status'], 'stalled')
+        self.assertEqual(record['last_progress_line'], 'SIGKILL_TEARDOWN_TEST: FAIL')
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

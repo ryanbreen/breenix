@@ -472,6 +472,7 @@ func main() -> Int32 {
                     timeoutSecs: runArgs.gateTimeout,
                     pathsTemplate: BeastPaths(host: runArgs.host, clonePath: ""),
                     slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString(),
+                    progressBundleBase64: try BeastLauncher.progressBundle(repoRoot: root),
                     treeHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/gate-tree.py")).base64EncodedString(),
                     vigilScript: root.appendingPathComponent("scripts/vigil-record.sh")
                 )

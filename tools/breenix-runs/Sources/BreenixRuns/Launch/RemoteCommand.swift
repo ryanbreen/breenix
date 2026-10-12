@@ -86,7 +86,7 @@ public enum RemoteCommand {
         return ids.allSatisfy(isSuiteID) && Set(ids).count == ids.count
     }
 
-    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, treeHelperBase64: String? = nil, quietOverride: String? = nil) -> Plan {
+    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, progressBundleBase64: String? = nil, treeHelperBase64: String? = nil, quietOverride: String? = nil) -> Plan {
         Plan(
             sha: sha,
             boots: boots,
@@ -94,7 +94,7 @@ public enum RemoteCommand {
             timeoutSecs: timeoutSecs,
             paths: paths,
             prepareClone: prepareCloneRequest(sha: sha, paths: paths, treeHelperBase64: treeHelperBase64),
-            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs, slotHelperBase64: slotHelperBase64, quietOverride: quietOverride),
+            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs, slotHelperBase64: slotHelperBase64, progressBundleBase64: progressBundleBase64, quietOverride: quietOverride),
             pullEvidence: pullEvidenceRequest(paths: paths),
             removeClone: removeCloneRequest(paths: paths)
         )
@@ -130,7 +130,7 @@ public enum RemoteCommand {
     // production kernel running /sbin/suite-<id>, with a QMP socket in gate-tmp for its screen.
     // An id that is not one never reaches the shell: the request fails the gate instead of
     // quietly running the ordinary one (BeastLauncher refuses such an id before this).
-    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, quietOverride: String? = nil) -> ProcessRequest {
+    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, progressBundleBase64: String? = nil, quietOverride: String? = nil) -> ProcessRequest {
         // Explicit opt-in test/profile features; never interpolate unchecked shell text.
         let features = ProcessInfo.processInfo.environment["BREENIX_GATE_KERNEL_FEATURES"] ?? ""
         guard features.isEmpty || features.range(of: "^[a-zA-Z0-9_-]+(,[a-zA-Z0-9_-]+)*$", options: .regularExpression) != nil else {
@@ -160,6 +160,11 @@ public enum RemoteCommand {
         let installHelper = slotHelperBase64.map {
             " && printf %s \($0) | base64 -d > \(helper)"
         } ?? ""
+        let progressRoot = paths.gateTmpPath + "/watchdog"
+        let installProgress = progressBundleBase64.map {
+            " && python3 -c 'import base64,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); [( (root/k).parent.mkdir(parents=True,exist_ok=True), (root/k).write_bytes(base64.b64decode(v))) for k,v in json.loads(base64.b64decode(sys.argv[2])).items()]' \(progressRoot) \($0)"
+        } ?? ""
+        let progressEnv = progressBundleBase64 == nil ? "" : " BREENIX_SLOT_PROGRESS_HELPER=\(progressRoot)/scripts/boot_progress.py"
         let gate: String
         if let laneKey = paths.laneKey, let sha = paths.requestedSHA {
             gate = "python3 \(paths.gateTmpPath)/gate-tree.py \(paths.canonicalRepoDir) \(laneKey) \(sha) \(paths.gateTmpPath) \(boots) \(mode.rawValue)"
@@ -171,7 +176,7 @@ public enum RemoteCommand {
         let historicalAdmission = paths.laneKey == nil ? "if [ ! -f \(paths.clonePath)/scripts/host-slots.py ]; then python3 \(helper) acquire x86-build && python3 \(helper) acquire x86-boot || exit 1; fi; " : ""
         let launch = "python3 \(helper) supervise -- bash -c \"\(historicalAdmission)exec \(gate)\""
         let identityCode = #"import json,pathlib,sys;pid=int(sys.argv[1]);birth=pathlib.Path(\"/proc/%d/stat\"%pid).read_text().rsplit(\")\",1)[1].split()[19];pathlib.Path(sys.argv[2]).write_text(json.dumps([pid,birth,sys.argv[3]]))"#
-        let script = "mkdir -p \(paths.gateTmpPath)" + installHelper
+        let script = "mkdir -p \(paths.gateTmpPath)" + installHelper + installProgress
             + " && python3 -c \"\(identityCode)\" \"$$\" \(paths.gateTmpPath)/launcher-gate.json \(helper)"
             + " && source \(paths.cargoEnvPath)"
             + " && exec env BREENIX_GATE_TMP=\(paths.gateTmpPath)"
@@ -181,7 +186,7 @@ public enum RemoteCommand {
             + " BREENIX_FULL_BACKSTOP=\(fullBackstopSecs ?? max(1800, timeoutSecs))"
             + " CARGO_BUILD_JOBS=6"
             + (paths.fresh ? " BREENIX_GATE_FRESH=1" : "")
-            + featureEnv + quietEnv + profileEnv + suiteEnv + slotIdentity
+            + featureEnv + quietEnv + profileEnv + suiteEnv + slotIdentity + progressEnv
             + " " + launch
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }

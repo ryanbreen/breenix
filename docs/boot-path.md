@@ -290,7 +290,10 @@ and the UTC stop time. Default Mac serial paths are unique per launcher run, so
 a later boot cannot overwrite that evidence. The x86 gate relays QEMU's Unix
 socket serial channels into those files as bytes arrive; `-serial file:` can
 delay a short userspace line past the watchdog's poll. Run Inspector preserves
-the gate's stop time and last progress line in a `stalled` verdict. The shared host-slot supervisor also watches older QEMU
+the gate's stop time and last progress line in a `stalled` verdict. Run Inspector
+stages its current classifier and compact marker catalogs outside the tested
+checkout, so historical revisions without watchdog files are covered too.
+The shared host-slot supervisor also watches older QEMU
 launchers once their owned VM starts; build and queue time do not count. A completed
 suite's retained panel is outside the stall deadline; suite sequences resume the
 watch when the next suite prints START.
