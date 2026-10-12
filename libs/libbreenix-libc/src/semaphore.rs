@@ -187,3 +187,225 @@ pub unsafe extern "C" fn sem_wait(sem: *mut Sem) -> i32 {
 pub unsafe extern "C" fn sem_timedwait(sem: *mut Sem, abstime: *const i64) -> i32 {
     wait(sem, abstime, true)
 }
+
+const O_RDWR: i32 = 2;
+const O_CREAT: i32 = 0x40;
+const O_EXCL: i32 = 0x80;
+const EEXIST: i64 = 17;
+const ENOMEM: i64 = 12;
+const SEM_MAP_LEN: usize = 4096;
+
+#[derive(Clone, Copy)]
+struct NamedEntry {
+    ino: u64,
+    addr: *mut Sem,
+    refs: usize,
+}
+struct NamedTable {
+    entries: *mut NamedEntry,
+    len: usize,
+    capacity: usize,
+}
+struct TableCell(core::cell::UnsafeCell<NamedTable>);
+// Access is serialized by TABLE_LOCK; fork copies the private table.
+unsafe impl Sync for TableCell {}
+static TABLE: TableCell = TableCell(core::cell::UnsafeCell::new(NamedTable {
+    entries: core::ptr::null_mut(),
+    len: 0,
+    capacity: 0,
+}));
+// The holder's PID doubles as a fork marker: the child can take an inherited
+// lock held by a vanished parent thread without waiting for that thread.
+static TABLE_LOCK: AtomicU32 = AtomicU32::new(0);
+struct TableGuard;
+impl TableGuard {
+    unsafe fn lock() -> Self {
+        let pid = raw::syscall0(nr::GETPID) as u32;
+        loop {
+            let owner = TABLE_LOCK.load(Ordering::Relaxed);
+            if owner != pid {
+                if TABLE_LOCK
+                    .compare_exchange(owner, pid, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    return Self;
+                }
+            } else {
+                futex(&TABLE_LOCK, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, owner, null());
+            }
+        }
+    }
+}
+impl Drop for TableGuard {
+    fn drop(&mut self) {
+        TABLE_LOCK.store(0, Ordering::Release);
+        unsafe {
+            futex(&TABLE_LOCK, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1, null());
+        }
+    }
+}
+impl NamedTable {
+    unsafe fn retain(&mut self, ino: u64, addr: *mut Sem) -> Result<*mut Sem, i64> {
+        for index in 0..self.len {
+            let entry = &mut *self.entries.add(index);
+            if entry.ino == ino {
+                entry.refs = entry.refs.checked_add(1).ok_or(ENOMEM)?;
+                return Ok(entry.addr);
+            }
+        }
+        if self.len == self.capacity {
+            let capacity = self.capacity.max(4).checked_mul(2).ok_or(ENOMEM)?;
+            let bytes = capacity
+                .checked_mul(core::mem::size_of::<NamedEntry>())
+                .ok_or(ENOMEM)?;
+            let entries = crate::realloc(self.entries as *mut u8, bytes) as *mut NamedEntry;
+            if entries.is_null() {
+                return Err(ENOMEM);
+            }
+            self.entries = entries;
+            self.capacity = capacity;
+        }
+        self.entries
+            .add(self.len)
+            .write(NamedEntry { ino, addr, refs: 1 });
+        self.len += 1;
+        Ok(addr)
+    }
+    unsafe fn release(&mut self, addr: *mut Sem) -> Result<(), i64> {
+        for index in 0..self.len {
+            let entry = &mut *self.entries.add(index);
+            if entry.addr == addr {
+                if entry.refs > 1 {
+                    entry.refs -= 1;
+                    return Ok(());
+                }
+                if crate::munmap(addr as *mut u8, SEM_MAP_LEN) != 0 {
+                    return Err(i64::from(*crate::__errno_location()));
+                }
+                self.len -= 1;
+                if index != self.len {
+                    self.entries.add(index).write(*self.entries.add(self.len));
+                }
+                return Ok(());
+            }
+        }
+        Err(EINVAL)
+    }
+}
+
+unsafe fn named_open(name: *const u8, oflag: i32, mode: u32, value: u32) -> Result<*mut Sem, i64> {
+    use core::ptr::null_mut;
+    let mut shm_name = [0u8; 257];
+    crate::shm::name_with_prefix(name, b"/sem.", &mut shm_name)?;
+    if oflag & O_CREAT != 0 && value > SEM_VALUE_MAX {
+        return Err(EINVAL);
+    }
+    let mut created = false;
+    let fd = if oflag & O_CREAT != 0 {
+        let fd = crate::shm::shm_open(shm_name.as_ptr(), O_RDWR | O_CREAT | O_EXCL, mode);
+        if fd >= 0 {
+            created = true;
+            fd
+        } else if oflag & O_EXCL == 0 && *crate::__errno_location() == EEXIST as i32 {
+            crate::shm::shm_open(shm_name.as_ptr(), O_RDWR, 0)
+        } else {
+            return Err(i64::from(*crate::__errno_location()));
+        }
+    } else {
+        crate::shm::shm_open(shm_name.as_ptr(), O_RDWR, 0)
+    };
+    if fd < 0 {
+        return Err(i64::from(*crate::__errno_location()));
+    }
+    let result = (|| {
+        if created && crate::ftruncate(fd, core::mem::size_of::<Sem>() as i64) != 0 {
+            return Err(i64::from(*crate::__errno_location()));
+        }
+        // Creation publishes the name before the initial truncate. Do not
+        // touch a zero-length object's mapping (which correctly raises SIGBUS).
+        let ino = loop {
+            let mut stat = [0u64; 18];
+            if crate::fstat(fd, stat.as_mut_ptr() as *mut u8) != 0 {
+                return Err(i64::from(*crate::__errno_location()));
+            }
+            if stat[6] >= core::mem::size_of::<Sem>() as u64 {
+                break stat[1];
+            }
+            raw::syscall0(nr::YIELD);
+        };
+        let addr = crate::mmap(null_mut(), SEM_MAP_LEN, 3, 1, fd, 0) as *mut Sem;
+        if addr as usize == usize::MAX {
+            return Err(i64::from(*crate::__errno_location()));
+        }
+        if created {
+            // The creator initializes the zeroed page before publishing ready.
+            addr.write(Sem {
+                value: AtomicU32::new(value),
+                waiters: AtomicU32::new(0),
+                pshared: 1,
+                ready: AtomicU32::new(0),
+                padding: [0; 16],
+            });
+            (*addr).ready.store(1, Ordering::Release);
+            futex(&(*addr).ready, FUTEX_WAKE, u32::MAX, null());
+        } else {
+            while (*addr).ready.load(Ordering::Acquire) == 0 {
+                let result = futex(&(*addr).ready, FUTEX_WAIT, 0, null());
+                if result < 0 && result != -EAGAIN && result != -4 {
+                    crate::munmap(addr as *mut u8, SEM_MAP_LEN);
+                    return Err(-result);
+                }
+            }
+        }
+        let _guard = TableGuard::lock();
+        match (&mut *TABLE.0.get()).retain(ino, addr) {
+            Ok(existing) => {
+                if existing != addr {
+                    crate::munmap(addr as *mut u8, SEM_MAP_LEN);
+                }
+                Ok(existing)
+            }
+            Err(e) => {
+                crate::munmap(addr as *mut u8, SEM_MAP_LEN);
+                Err(e)
+            }
+        }
+    })();
+    crate::close(fd);
+    if result.is_err() && created {
+        crate::shm::shm_unlink(shm_name.as_ptr());
+    }
+    result
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn sem_open(name: *const u8, oflag: i32, mut args: ...) -> *mut Sem {
+    let (mode, value) = if oflag & O_CREAT != 0 {
+        (args.arg::<u32>(), args.arg::<u32>())
+    } else {
+        (0, 0)
+    };
+    match named_open(name, oflag, mode, value) {
+        Ok(addr) => addr,
+        Err(e) => {
+            fail(e);
+            core::ptr::null_mut()
+        }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn sem_close(sem: *mut Sem) -> i32 {
+    let _guard = TableGuard::lock();
+    match (&mut *TABLE.0.get()).release(sem) {
+        Ok(()) => 0,
+        Err(e) => fail(e),
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn sem_unlink(name: *const u8) -> i32 {
+    let mut shm_name = [0u8; 257];
+    if let Err(e) = crate::shm::name_with_prefix(name, b"/sem.", &mut shm_name) {
+        return fail(e);
+    }
+    crate::shm::shm_unlink(shm_name.as_ptr())
+}
