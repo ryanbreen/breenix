@@ -273,6 +273,27 @@ fn mono() -> i64 {
     t[0] * NS + t[1]
 }
 fn now_ms() -> u64 { (mono() / MS) as u64 }
+/// The monotonic clock, failing the case if clock_gettime fails.
+fn clock() -> Result<i64, CaseError> {
+    let mut t = [0i64; 2];
+    let r = sc(nr::CLOCK_GETTIME, &[1, t.as_mut_ptr() as u64]);
+    if r != 0 { return err(format!("clock_gettime(CLOCK_MONOTONIC) failed with {}", errname(-r))); }
+    Ok(t[0] * NS + t[1])
+}
+
+/// Two timings and the check that the second costs at most 3 times the
+/// first, per operation. Both must have taken time on the monotonic clock.
+fn at_most_3x(n: i64, (first, first_name): (i64, &str), (second, second_name): (i64, &str), failed: &str) -> CaseResult {
+    check(first > 0 && second > 0, &format!(
+        "the monotonic clock measured {first} ns {first_name} and {second} ns {second_name}, so nothing was timed"
+    ))?;
+    value(first_name, first / n, "ns", None);
+    value(second_name, second / n, "ns", Some((0, 3 * first / n)));
+    check(second <= 3 * first, &format!(
+        "{failed} cost {} ns {second_name} against {} ns {first_name}, more than 3 times as much",
+        second / n, first / n
+    ))
+}
 
 /// `ms`, cut short so that `reserve` ms of the case's limit remain afterwards.
 fn bounded(ms: u64, reserve: u64) -> u64 { ms.min(case_ms_left().saturating_sub(reserve)) }
@@ -1415,21 +1436,16 @@ fn an_fault_order() -> CaseResult {
     let pages = 8192;
     let len = pages * PAGE;
     let up = anon(len)?;
-    let t0 = mono();
+    let t0 = clock()?;
     for i in 0..pages { poke(at(up, i * PAGE), 1); }
-    let ascending = mono() - t0;
+    let ascending = clock()? - t0;
     unmap(up, len)?;
     let down = anon(len)?;
-    let t0 = mono();
+    let t0 = clock()?;
     for i in (0..pages).rev() { poke(at(down, i * PAGE), 1); }
-    let descending = mono() - t0;
+    let descending = clock()? - t0;
     unmap(down, len)?;
-    value("ascending", ascending / pages as i64, "ns", None);
-    value("descending", descending / pages as i64, "ns", Some((0, 3 * ascending / pages as i64)));
-    check(descending <= 3 * ascending, &format!(
-        "the first touch of each page cost {} ns from the highest page down against {} ns from the lowest page up, more than 3 times as much",
-        descending / pages as i64, ascending / pages as i64
-    ))
+    at_most_3x(pages as i64, (ascending, "ascending"), (descending, "descending"), "the first touch of each page")
 }
 
 fn an_churn() -> CaseResult {
@@ -1842,11 +1858,13 @@ fn sh_private_cow_many() -> CaseResult {
     check(kept.is_none(), &format!("the parent's copy changed at byte {} when the child wrote its own", kept.unwrap_or(0)))
 }
 
-fn sh_private_cow_spread() -> CaseResult {
-    let pages = 8192;
-    let len = pages * PAGE;
+/// After fork, time copy-on-write breaks of `stride`-apart pages in the
+/// lowest and the highest of `pages` such pages, alternating groups so host
+/// noise falls on both, and check the lowest cost at most 3 times the highest.
+fn cow_break_spread(pages: usize, stride: usize) -> CaseResult {
+    let len = pages * stride;
     let p = anon(len)?;
-    for i in 0..pages { poke(at(p, i * PAGE), 1); }
+    for i in 0..pages { poke(at(p, i * stride), 1); }
     let (to_child_r, to_child_w) = pipe()?;
     let mut child = Child::start(|| {
         close(to_child_w);
@@ -1857,23 +1875,22 @@ fn sh_private_cow_spread() -> CaseResult {
     let (groups, group) = (8, 32);
     let (mut top, mut bottom) = (0, 0);
     for g in 0..groups {
-        let t0 = mono();
-        for i in 0..group { poke(at(p, (pages - 1 - g * group - i) * PAGE), 2); }
-        let t1 = mono();
-        for i in 0..group { poke(at(p, (g * group + i) * PAGE), 2); }
+        let t0 = clock()?;
+        for i in 0..group { poke(at(p, (pages - 1 - g * group - i) * stride), 2); }
+        let t1 = clock()?;
+        for i in 0..group { poke(at(p, (g * group + i) * stride), 2); }
         top += t1 - t0;
-        bottom += mono() - t1;
+        bottom += clock()? - t1;
     }
     send(to_child_w, 1);
     child.finish("the child", &["the child heard nothing from the parent"])?;
-    let n = (groups * group) as i64;
-    value("top", top / n, "ns", None);
-    value("bottom", bottom / n, "ns", Some((0, 3 * top / n)));
-    check(bottom <= 3 * top, &format!(
-        "a copy-on-write break cost {} ns in the lowest pages of the mapping against {} ns in its highest pages, more than 3 times as much",
-        bottom / n, top / n
-    ))
+    unmap(p, len)?;
+    at_most_3x((groups * group) as i64, (top, "top"), (bottom, "bottom"), "a copy-on-write break")
 }
+
+fn sh_private_cow_spread() -> CaseResult { cow_break_spread(8192, PAGE) }
+
+fn sh_private_cow_sparse() -> CaseResult { cow_break_spread(2048, 2 * MIB) }
 
 fn sh_file_child_sees() -> CaseResult {
     let f = TempFile::new("child-sees", &[0u8; PAGE])?;
@@ -2574,6 +2591,7 @@ static SUITE: Suite = suite(
             case("private-parent-isolated", "After fork, the parent's stores to a MAP_PRIVATE anonymous page are not seen by the child", sh_private_parent_isolated),
             case("private-cow-many", "After fork, parent and child each rewrite all 64 pages of a MAP_PRIVATE mapping and each sees only its own stores", sh_private_cow_many),
             case("private-cow-spread", "After fork, a copy-on-write break in the lowest pages of a 32 MiB MAP_PRIVATE mapping costs at most 3 times one in its highest pages", sh_private_cow_spread),
+            case("private-cow-sparse", "After fork, a copy-on-write break in the lowest of 2048 pages 2 MiB apart in a 4 GiB MAP_PRIVATE mapping costs at most 3 times one in the highest", sh_private_cow_sparse),
             case("file-child-sees", "A child's store into a MAP_SHARED file mapping inherited across fork is seen through the parent's mapping and by read()", sh_file_child_sees),
             case("file-independent", "Two processes that each map the same file MAP_SHARED see each other's stores", sh_file_independent),
             case("file-msync-read", "Stores into a MAP_SHARED mapping of a sparse file are on disk when msync(MS_SYNC) returns: the file has the disk blocks they need (st_blocks), and read() returns them", sh_file_msync_read),

@@ -266,6 +266,10 @@
           "title": "After fork, a copy-on-write break in the lowest pages of a 32 MiB MAP_PRIVATE mapping costs at most 3 times one in its highest pages"
         },
         {
+          "id": "private-cow-sparse",
+          "title": "After fork, a copy-on-write break in the lowest of 2048 pages 2 MiB apart in a 4 GiB MAP_PRIVATE mapping costs at most 3 times one in the highest"
+        },
+        {
           "id": "file-child-sees",
           "title": "A child's store into a MAP_SHARED file mapping inherited across fork is seen through the parent's mapping and by read()"
         },
