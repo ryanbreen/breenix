@@ -1,7 +1,25 @@
 //! System V IPC state on the host: keys and identifiers, permissions, message
-//! selection, semop's all-or-none rule, SEM_UNDO and the ABI structures.
+//! selection, semop's all-or-none rule, SEM_UNDO and the ABI structures; and
+//! the C library's System V calls, with each system call recorded instead of
+//! made.
+#![feature(c_variadic)]
 extern crate alloc;
+extern crate self as libbreenix;
 mod syscall {
+    pub mod nr {
+        pub const MSGGET: u64 = 186;
+        pub const MSGCTL: u64 = 187;
+        pub const MSGRCV: u64 = 188;
+        pub const MSGSND: u64 = 189;
+        pub const SEMGET: u64 = 190;
+        pub const SEMCTL: u64 = 191;
+        pub const SEMTIMEDOP: u64 = 192;
+        pub const SEMOP: u64 = 193;
+        pub const SHMGET: u64 = 194;
+        pub const SHMCTL: u64 = 195;
+        pub const SHMAT: u64 = 196;
+        pub const SHMDT: u64 = 197;
+    }
     pub mod errno {
         pub const ENOENT: i32 = 2;
         pub const E2BIG: i32 = 7;
@@ -15,6 +33,67 @@ mod syscall {
 #[path = "../kernel/src/ipc/sysv/state.rs"]
 mod state;
 use state::*;
+
+/// The system calls the C library makes, recorded: the last number and
+/// arguments.
+mod raw {
+    use std::cell::Cell;
+    thread_local! { static LAST: Cell<(u64, [u64; 5])> = const { Cell::new((0, [0; 5])) }; }
+    pub fn last() -> (u64, [u64; 5]) {
+        LAST.with(Cell::get)
+    }
+    fn record(n: u64, a: [u64; 5]) -> u64 {
+        LAST.with(|l| l.set((n, a)));
+        0
+    }
+    pub unsafe fn syscall1(n: u64, a: u64) -> u64 {
+        record(n, [a, 0, 0, 0, 0])
+    }
+    pub unsafe fn syscall2(n: u64, a: u64, b: u64) -> u64 {
+        record(n, [a, b, 0, 0, 0])
+    }
+    pub unsafe fn syscall3(n: u64, a: u64, b: u64, c: u64) -> u64 {
+        record(n, [a, b, c, 0, 0])
+    }
+    pub unsafe fn syscall4(n: u64, a: u64, b: u64, c: u64, d: u64) -> u64 {
+        record(n, [a, b, c, d, 0])
+    }
+    pub unsafe fn syscall5(n: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> u64 {
+        record(n, [a, b, c, d, e])
+    }
+}
+fn syscall_result_to_c_int(result: i64) -> i32 {
+    if result < 0 { -1 } else { result as i32 }
+}
+fn syscall_result_to_c_ssize(result: i64) -> isize {
+    if result < 0 { -1 } else { result as isize }
+}
+fn set_errno_from_result(_: i64) {}
+unsafe fn stat(_: *const u8, _: *mut u8) -> i32 {
+    -1
+}
+#[path = "../libs/libbreenix-libc/src/sysv.rs"]
+mod libc_sysv;
+
+#[test]
+fn semctl_reads_a_fourth_argument_only_for_the_commands_that_take_one() {
+    use libc_sysv::semctl;
+    let mut buf = [0u8; 104];
+    let ptr = buf.as_mut_ptr() as u64;
+    unsafe {
+        // C's three-argument form, for the commands that take no union semun.
+        for cmd in [IPC_RMID, GETPID, GETVAL, GETNCNT, GETZCNT] {
+            assert_eq!(semctl(5, 1, cmd as i32), 0);
+            assert_eq!(raw::last(), (syscall::nr::SEMCTL, [5, 1, u64::from(cmd), 0, 0]), "cmd {cmd}");
+        }
+        assert_eq!(semctl(5, 1, SETVAL as i32, 7u64), 0);
+        assert_eq!(raw::last(), (syscall::nr::SEMCTL, [5, 1, u64::from(SETVAL), 7, 0]));
+        for cmd in [IPC_SET, IPC_STAT, IPC_INFO, GETALL, SETALL, SEM_STAT, SEM_INFO, SEM_STAT_ANY, IPC_STAT | IPC_64] {
+            assert_eq!(semctl(5, 0, cmd as i32, ptr), 0);
+            assert_eq!(raw::last(), (syscall::nr::SEMCTL, [5, 0, u64::from(cmd), ptr, 0]), "cmd {cmd}");
+        }
+    }
+}
 
 fn perm(key: i32, mode: u32) -> IpcPerm {
     IpcPerm::new(key, 1000, 100, mode)

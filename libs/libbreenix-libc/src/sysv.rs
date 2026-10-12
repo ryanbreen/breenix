@@ -70,13 +70,22 @@ pub unsafe extern "C" fn semtimedop(semid: i32, sops: *mut u8, nsops: usize, tim
     syscall_result_to_c_int(raw::syscall4(nr::SEMTIMEDOP, semid as u64, sops as u64, nsops as u64, timeout as u64) as i64)
 }
 
-/// semctl: a control command on a semaphore set or one semaphore. The
-/// fourth argument, when the command takes one, is union semun, which the
-/// caller passes as one register-sized argument: the value for SETVAL,
-/// otherwise a pointer.
+/// The semctl commands that take a fourth argument: IPC_SET, IPC_STAT,
+/// IPC_INFO, GETALL, SETVAL, SETALL, SEM_STAT, SEM_INFO and SEM_STAT_ANY.
+/// IPC_RMID, GETPID, GETVAL, GETNCNT and GETZCNT take none.
+fn semctl_takes_arg(cmd: i32) -> bool {
+    matches!(cmd & !0x100, 1 | 2 | 3 | 13 | 16..=20)
+}
+
+/// semctl: a control command on a semaphore set or one semaphore, called
+/// with three arguments or, when the command takes one, a fourth: union
+/// semun, one register-sized value (the value for SETVAL, otherwise a
+/// pointer). The fourth is read only for the commands that take it, as
+/// POSIX lets a caller leave it out of the others.
 #[no_mangle]
-pub extern "C" fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
-    syscall_result_to_c_int(unsafe { raw::syscall4(nr::SEMCTL, semid as u64, semnum as u64, cmd as u64, arg) } as i64)
+pub unsafe extern "C" fn semctl(semid: i32, semnum: i32, cmd: i32, mut args: ...) -> i32 {
+    let arg = if semctl_takes_arg(cmd) { args.arg::<u64>() } else { 0 };
+    syscall_result_to_c_int(raw::syscall4(nr::SEMCTL, semid as u64, semnum as u64, cmd as u64, arg) as i64)
 }
 
 /// shmget: the identifier of the shared memory segment `key` names.
