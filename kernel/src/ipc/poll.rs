@@ -113,7 +113,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
         }
         FdKind::UdpSocket(socket) => {
             // #823: this lock is also taken, masked, by the NetRx IRQ route
-            // (`net/udp.rs::deliver_to_socket`, inside `with_process_manager`).
+            // (`net/udp.rs::handle_udp`, inside `with_process_manager`).
             // `sys_poll`, `sys_select` and `sys_epoll_wait` reach this arm
             // through this one function, with no PM guard active here, so this
             // was the one call site actually reachable unmasked on both

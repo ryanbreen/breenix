@@ -40,10 +40,10 @@ static DISPATCH_GUARD_ESCALATION_LOGGED: AtomicBool = AtomicBool::new(false);
 const DISPATCH_GUARD_ESCALATION_THRESHOLD: u64 = 1024;
 
 /// Serial string output that allocates nothing and waits on SERIAL1 for a
-/// bounded time only (`serial::write_str_bounded`), then writes straight to
-/// the port. Every caller prints once per boot. Under SERIAL1, with several
-/// CPUs printing, a line is not interleaved byte by byte with their output and
-/// lost from the boot stages.
+/// bounded time only (`serial::write_str_bounded`), then goes to the kernel
+/// log, whole, as a lock-free notice. Every caller prints once per boot. Under
+/// SERIAL1, with several CPUs printing, a line is not interleaved byte by byte
+/// with their output and lost from the boot stages.
 #[inline(always)]
 fn raw_serial_str(s: &str) {
     crate::serial::write_str_bounded(s);

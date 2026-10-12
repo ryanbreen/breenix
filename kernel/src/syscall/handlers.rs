@@ -3219,7 +3219,7 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
     //     userspace when it trapped cannot already own PROCESS_MANAGER.
     //   * An asynchronous bottom half CAN block on this lock, so the guard is
     //     not "no asynchronous waiter for PM exists": `net/udp.rs`'s
-    //     `deliver_to_socket` takes the blocking `with_process_manager()`, and
+    //     `handle_udp` takes the blocking `with_process_manager()`, and
     //     it is reached from `net/mod.rs`'s `net_rx_softirq_handler`, which
     //     `task::softirqd::do_softirq()` runs at IRQ exit on both architectures
     //     (`arch_impl/aarch64/exception.rs`'s `handle_irq`, `per_cpu.rs`'s

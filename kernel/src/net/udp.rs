@@ -133,6 +133,13 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
                                     src_port: header.src_port,
                                     data: payload.to_vec(),
                                 });
+                                // The datagram is on the socket's RX queue. This
+                                // path may be the NetRx softirq, so the line is a
+                                // lock-free notice, once per socket, not a log call.
+                                socket.delivery_notice.post(
+                                    "UDP: Delivered packet to socket on port ",
+                                    u64::from(header.dst_port),
+                                );
                                 true
                             } else {
                                 false
