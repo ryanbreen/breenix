@@ -79,6 +79,16 @@ class ProgressTest(unittest.TestCase):
                       '[diagnostic] still running\n', 119, source, userspace=source=='user')
         self.assertTrue(self.progress.stalled(now=120))
 
+    def test_census_records_are_not_userspace_output(self):
+        self.feed('SIGKILL_TEARDOWN_TEST: FAIL\n', 1, 'serial_user.log', userspace=True)
+        self.feed('[TOMBSTONE_CENSUS:resident=0:removed=165]\n[PT_ROOT_CUSTODY:no_proof=0:retired=306]\r\n',
+                  121, 'census', userspace=True)
+        self.assertTrue(self.progress.stalled(now=121))
+        self.feed('[CHILD] x\n', 121, 'child', userspace=True)
+        self.assertFalse(self.progress.stalled(now=240))
+        self.feed('[PARENT] child reaped\n', 240, 'parent')
+        self.assertFalse(self.progress.stalled(now=359))
+
     def test_plain_kernel_serial_line_is_not_userspace_progress(self):
         self.feed('SIGKILL_TEARDOWN_TEST: FAIL\n', 1, 'serial_user.log', userspace=True)
         self.feed('scheduler still waiting\n', 119, 'serial_kernel.log')
