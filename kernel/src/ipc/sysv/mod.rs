@@ -2,7 +2,7 @@
 //! segments, named by keys and identifiers.
 //!
 //! Each class keeps its objects in one table behind an `IrqSafeMutex`
-//! (`msg::SYSV_MSG`, `sem::SYSV_SEM`). A table is a leaf: no
+//! (`msg::SYSV_MSG`, `sem::SYSV_SEM`, `shm::SYSV_SHM`). A table is a leaf: no
 //! code holding one takes PROCESS_MANAGER, the scheduler or user memory, so
 //! callers read their credentials and copy user data in before locking, copy
 //! out after unlocking, and wake sleepers after unlocking. A sleeper waits on
@@ -15,6 +15,7 @@
 
 pub mod msg;
 pub mod sem;
+pub mod shm;
 pub mod state;
 
 use crate::fs::permissions::Credentials;

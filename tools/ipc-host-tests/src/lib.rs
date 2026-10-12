@@ -70,6 +70,22 @@ pub mod ipc {
                 record(format!("semctl {id} {num} {cmd} {arg:#x}"))
             }
         }
+        pub mod shm {
+            use super::record;
+            use crate::SyscallResult;
+            pub fn sys_shmget(key: i32, size: u64, flags: u32) -> SyscallResult {
+                record(format!("shmget {key} {size} {flags:o}"))
+            }
+            pub fn sys_shmat(id: i32, addr: u64, flags: u32) -> SyscallResult {
+                record(format!("shmat {id} {addr:#x} {flags:o}"))
+            }
+            pub fn sys_shmdt(addr: u64) -> SyscallResult {
+                record(format!("shmdt {addr:#x}"))
+            }
+            pub fn sys_shmctl(id: i32, cmd: u32, buf: u64) -> SyscallResult {
+                record(format!("shmctl {id} {cmd} {buf:#x}"))
+            }
+        }
     }
 }
 pub mod syscall {
@@ -242,10 +258,6 @@ pub mod task {
 fn foundation_does_not_claim_unimplemented_calls() {
     for number in [
         dispatch::MQ_OPEN_SYSCALL_NUMBER,
-        dispatch::SHMGET_SYSCALL_NUMBER,
-        dispatch::SHMAT_SYSCALL_NUMBER,
-        dispatch::SHMDT_SYSCALL_NUMBER,
-        dispatch::SHMCTL_SYSCALL_NUMBER,
         u64::MAX,
     ] {
         assert_eq!(dispatch::dispatch(number, [1, 2, 3, 4, 5, 6]), None);
@@ -265,6 +277,10 @@ fn sysv_dispatch_routes_each_call_with_linux_argument_types() {
         (dispatch::SEMOP_SYSCALL_NUMBER, [5, 0x3000, wide(2), 0x4000, 0, 0], "semtimedop 5 0x3000 2 0x0"),
         (dispatch::SEMTIMEDOP_SYSCALL_NUMBER, [5, 0x3000, 1, 0x4000, 0, 0], "semtimedop 5 0x3000 1 0x4000"),
         (dispatch::SEMCTL_SYSCALL_NUMBER, [5, 1, 16, wide(65536), 0, 0], "semctl 5 1 16 0xdead00010000"),
+        (dispatch::SHMGET_SYSCALL_NUMBER, [wide(9), 4196, wide(0o1640), 0, 0, 0], "shmget 9 4196 1640"),
+        (dispatch::SHMAT_SYSCALL_NUMBER, [9, 0x5000, wide(0o10000), 0, 0, 0], "shmat 9 0x5000 10000"),
+        (dispatch::SHMDT_SYSCALL_NUMBER, [0x5000, 0, 0, 0, 0, 0], "shmdt 0x5000"),
+        (dispatch::SHMCTL_SYSCALL_NUMBER, [9, wide(2), 0x6000, 0, 0, 0], "shmctl 9 2 0x6000"),
     ];
     for (number, args, want) in cases {
         ipc::sysv::CALLS.with(|calls| calls.borrow_mut().clear());
