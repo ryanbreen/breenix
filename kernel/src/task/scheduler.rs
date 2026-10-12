@@ -430,17 +430,66 @@ fn arch_can_dispatch_here() -> bool {
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
+/// x86_64: bit `n` is set while CPU `n`'s run queue holds a thread, as the
+/// queues stood when the scheduler lock was last released. Read without the
+/// lock by `sys_yield` (`thread_queued_anywhere`).
+#[cfg(target_arch = "x86_64")]
+static QUEUED_CPUS: AtomicU64 = AtomicU64::new(0);
+
+/// x86_64: the scheduler lock, which publishes `QUEUED_CPUS` before it is
+/// released. Every x86_64 acquisition goes through `lock_scheduler` or
+/// `try_lock_scheduler`, and none forgets its guard.
+#[cfg(target_arch = "x86_64")]
+struct SchedulerGuard(spin::MutexGuard<'static, Option<Scheduler>>);
+
+#[cfg(target_arch = "x86_64")]
+impl core::ops::Deref for SchedulerGuard {
+    type Target = Option<Scheduler>;
+    fn deref(&self) -> &Option<Scheduler> {
+        &self.0
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl core::ops::DerefMut for SchedulerGuard {
+    fn deref_mut(&mut self) -> &mut Option<Scheduler> {
+        &mut self.0
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Drop for SchedulerGuard {
+    fn drop(&mut self) {
+        if let Some(scheduler) = self.0.as_ref() {
+            let queued = scheduler
+                .per_cpu_queues
+                .iter()
+                .enumerate()
+                .filter(|(_, queue)| !queue.is_empty())
+                .fold(0u64, |mask, (cpu, _)| mask | 1 << cpu);
+            QUEUED_CPUS.store(queued, Ordering::Release);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+type SchedulerGuard = spin::MutexGuard<'static, Option<Scheduler>>;
+
 #[inline(always)]
-fn lock_scheduler() -> spin::MutexGuard<'static, Option<Scheduler>> {
+fn lock_scheduler() -> SchedulerGuard {
     let guard = SCHEDULER.lock();
     crate::tracing::providers::teardown::note_scheduler_acquire();
+    #[cfg(target_arch = "x86_64")]
+    let guard = SchedulerGuard(guard);
     guard
 }
 
 #[inline(always)]
-fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> {
+fn try_lock_scheduler() -> Option<SchedulerGuard> {
     let guard = SCHEDULER.try_lock()?;
     crate::tracing::providers::teardown::note_scheduler_acquire();
+    #[cfg(target_arch = "x86_64")]
+    let guard = SchedulerGuard(guard);
     Some(guard)
 }
 
@@ -7886,6 +7935,18 @@ pub fn set_sched_policy(tid: u64, sched: super::thread::SchedPolicy) -> bool {
 /// Thread `tid`'s scheduling policy.
 pub fn sched_policy(tid: u64) -> Option<super::thread::SchedPolicy> {
     with_scheduler(|scheduler| scheduler.get_thread(tid).map(|thread| thread.sched)).flatten()
+}
+
+/// x86_64: whether any CPU's run queue held a thread, or a pinned wake was
+/// held for its home CPU, when the scheduler lock was last released. Read
+/// without the lock. A thread queued after the read is placed with its own
+/// reschedule request, so a caller that finds none is not what dispatches it.
+#[cfg(target_arch = "x86_64")]
+pub fn thread_queued_anywhere() -> bool {
+    QUEUED_CPUS.load(Ordering::Acquire) != 0
+        || PINNED_HOLDS_OUTSTANDING
+            .iter()
+            .any(|holds| holds.load(Ordering::Relaxed) != 0)
 }
 
 /// The calling thread asked to yield: the next reschedule puts it behind the
