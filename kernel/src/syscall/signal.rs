@@ -183,7 +183,7 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
             scheduler.wake_process_threads_for_kill(victim.as_u64());
         });
         if force {
-            log::info!("FORCE1413 victim={} claimed=false", victim.as_u64());
+            crate::serial_println!("FORCE1413 victim={} claimed=false", victim.as_u64());
         }
         return;
     }
@@ -199,7 +199,7 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
         let t2 = crate::signal::types::monotonic_nanos();
         let dpid = crate::signal::delivery::FORCE1413_DELIVER_PID.load(core::sync::atomic::Ordering::Acquire);
         let dns = crate::signal::delivery::FORCE1413_DELIVER_NS.load(core::sync::atomic::Ordering::Acquire);
-        log::info!(
+        crate::serial_println!(
             "FORCE1413 victim={} claimed={} self_delivered={} deliver_us={} claim_us={} retire_us={} repeat={}",
             victim.as_u64(),
             claimed,
