@@ -353,6 +353,11 @@ pub struct Process {
     /// the same wait queue. None means use self.id.as_u64().
     pub thread_group_id: Option<u64>,
 
+    /// The program image this row runs: a new value at each exec
+    /// (`next_exec_id`), 0 until the first. A message queue notification
+    /// registered under one image is not signalled to the next.
+    pub exec_id: u64,
+
     /// The POSIX record-lock owner this row belongs to. Every row of a thread
     /// group shares one; a new process gets its own, whose id is its PID.
     pub lock_owner: alloc::sync::Arc<crate::fs::locks::LockOwner>,
@@ -422,6 +427,14 @@ pub struct MemoryUsage {
     pub stack_size: usize,
 }
 
+/// The `exec_id` of the next program image an exec installs.
+static NEXT_EXEC_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+/// A new `Process::exec_id`, for an exec under PROCESS_MANAGER.
+pub fn next_exec_id() -> u64 {
+    NEXT_EXEC_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+}
+
 impl Process {
     /// Create a new process
     pub fn new(id: ProcessId, name: String, entry_point: VirtAddr) -> Self {
@@ -470,6 +483,7 @@ impl Process {
             group_exit_code: None,
             itimers: alloc::sync::Arc::new(crate::signal::IntervalTimers::default()),
             thread_group_id: None,
+            exec_id: 0,
             lock_owner: crate::fs::locks::LockOwner::new(id.as_u64()),
             inherited_cr3: None,
             clear_child_tid: None,

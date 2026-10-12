@@ -4087,6 +4087,7 @@ impl ProcessManager {
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
+        process.exec_id = super::process::next_exec_id();
 
         // Replace the stack
         process.stack = Some(Box::new(new_stack));
@@ -4543,6 +4544,7 @@ impl ProcessManager {
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
+        process.exec_id = super::process::next_exec_id();
         process.cred = cred;
         let new_cr3 = process
             .page_table
@@ -4945,6 +4947,7 @@ impl ProcessManager {
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
+        process.exec_id = super::process::next_exec_id();
         process.cred = cred;
         let new_ttbr0 = process
             .page_table
@@ -5309,6 +5312,7 @@ impl ProcessManager {
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
+        process.exec_id = super::process::next_exec_id();
         let new_ttbr0 = process
             .page_table
             .as_ref()
