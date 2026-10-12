@@ -47,7 +47,10 @@ fi
 # timers, so QEMU raised the guest's 1 ms ticks about 30 times a second instead of about 500, and ARM64
 # time cases ran 20-90 ms late. The plain binary is not an app and was not napped. The user default
 # NSAppSleepDisabled is what AppKit reads; LSAppNapIsDisabled in Info.plist and `taskpolicy -l 0 -t 0`
-# did not stop the demotion.
-defaults write "org.breenix.qemu-1x.$NAME" NSAppSleepDisabled -bool YES 2>/dev/null ||
-    echo "qemu-1x-app.sh: could not disable App Nap for org.breenix.qemu-1x.$NAME; ARM64 timing cases may run late" >&2
+# did not stop the demotion. If the default cannot be written, the plain binary is used instead.
+if ! defaults write "org.breenix.qemu-1x.$NAME" NSAppSleepDisabled -bool YES 2>/dev/null; then
+    echo "qemu-1x-app.sh: could not disable App Nap for org.breenix.qemu-1x.$NAME; using the plain $NAME" >&2
+    echo "$SOURCE"
+    exit 0
+fi
 echo "$BIN"
