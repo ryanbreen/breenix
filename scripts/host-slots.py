@@ -62,6 +62,12 @@ def command_output(argv):
         return ''
 
 
+def x86_vms():
+    """x86-64 QEMU guests running on this host, queued or not."""
+    return [{'vm': 'qemu-system-x86_64', 'pid': pid}
+            for pid in command_output(['pgrep', '-f', '^([^ ]*/)?qemu-system-x86_64( |$)']).splitlines()]
+
+
 def mac_vms():
     """Include older/manual launches that do not yet participate in the queue."""
     running = []
@@ -726,7 +732,7 @@ def supervise_worker(argv, parent):
                         pending['exclusive_wait_seconds'] = round(waited, 3)
                         pending['next_message'] = 0
                     holders = slots.snapshot()
-                    external = (mac_vms() if resource == 'mac-boot' else [{'vm': 'qemu-system-x86_64', 'pid': pid} for pid in command_output(['pgrep', '-f', '^([^ ]*/)?qemu-system-x86_64( |$)']).splitlines()] if resource == 'x86-boot' else []) if resource not in slots.held and not any(h.get('resource') == resource for h in holders) else []
+                    external = (mac_vms() if resource == 'mac-boot' else x86_vms() if resource == 'x86-boot' else []) if resource not in slots.held and not any(h.get('resource') == resource for h in holders) else []
                     bypass = pending['bypass']
                     holder = None if external and not bypass else slots.try_acquire(resource, identity) if not bypass else {}
                     if holder is None:
