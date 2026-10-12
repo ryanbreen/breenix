@@ -1952,6 +1952,7 @@ pub fn sys_yield() -> SyscallResult {
     if crate::arch_impl::x86_64::smp::cpus_online() > 1
         && !crate::task::scheduler::thread_queued_anywhere()
     {
+        crate::scratch_force::fast_path();
         return SyscallResult::Ok(0);
     }
 
