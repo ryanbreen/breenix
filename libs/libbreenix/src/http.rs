@@ -4,7 +4,9 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+//!
+//! ```rust,no_run
 //! use libbreenix::http::{http_get_with_buf, HttpResponse, MAX_RESPONSE_SIZE};
 //!
 //! let mut buf = [0u8; MAX_RESPONSE_SIZE];

@@ -5,6 +5,9 @@
 
 use crate::prelude::*;
 
+// ioctl request type
+pub type Ioctl = c_ulong;
+
 // Wide character type
 pub type wchar_t = i32;
 
@@ -885,71 +888,6 @@ pub const WNOHANG: c_int = 1;
 pub const WUNTRACED: c_int = 2;
 pub const WCONTINUED: c_int = 8;
 
-// Helper functions
-safe_f! {
-    pub fn WIFEXITED(status: c_int) -> bool {
-        (status & 0x7f) == 0
-    }
-
-    pub fn WEXITSTATUS(status: c_int) -> c_int {
-        (status >> 8) & 0xff
-    }
-
-    pub fn WIFSIGNALED(status: c_int) -> bool {
-        ((status & 0x7f) + 1) as i8 >= 2
-    }
-
-    pub fn WTERMSIG(status: c_int) -> c_int {
-        status & 0x7f
-    }
-
-    pub fn WIFSTOPPED(status: c_int) -> bool {
-        (status & 0xff) == 0x7f
-    }
-
-    pub fn WSTOPSIG(status: c_int) -> c_int {
-        (status >> 8) & 0xff
-    }
-
-    pub fn WIFCONTINUED(status: c_int) -> bool {
-        status == 0xffff
-    }
-
-    pub fn WCOREDUMP(status: c_int) -> bool {
-        (status & 0x80) != 0
-    }
-}
-
-// fd_set macros
-f! {
-    pub fn FD_CLR(fd: c_int, set: *mut fd_set) -> () {
-        let fd = fd as usize;
-        let size = size_of_val(&(*set).fds_bits[0]) * 8;
-        (*set).fds_bits[fd / size] &= !(1 << (fd % size));
-    }
-
-    pub fn FD_ISSET(fd: c_int, set: *const fd_set) -> bool {
-        let fd = fd as usize;
-        let size = size_of_val(&(*set).fds_bits[0]) * 8;
-        return ((*set).fds_bits[fd / size] & (1 << (fd % size))) != 0;
-    }
-
-    pub fn FD_SET(fd: c_int, set: *mut fd_set) -> () {
-        let fd = fd as usize;
-        let size = size_of_val(&(*set).fds_bits[0]) * 8;
-        (*set).fds_bits[fd / size] |= 1 << (fd % size);
-    }
-
-    pub fn FD_ZERO(set: *mut fd_set) -> () {
-        for slot in (*set).fds_bits.iter_mut() {
-            *slot = 0;
-        }
-    }
-}
-
-// ioctl request type
-pub type Ioctl = c_ulong;
-
 // TIOCGWINSZ for terminal size queries
 pub const TIOCGWINSZ: Ioctl = 0x5413;
 pub const FIONBIO: Ioctl = 0x5421;
@@ -1023,6 +961,68 @@ pub const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = pthread_mutex_t {
 pub const PTHREAD_COND_INITIALIZER: pthread_cond_t = pthread_cond_t {
     __size: [0; 48],
 };
+
+// Helper functions
+safe_f! {
+    pub fn WIFEXITED(status: c_int) -> bool {
+        (status & 0x7f) == 0
+    }
+
+    pub fn WEXITSTATUS(status: c_int) -> c_int {
+        (status >> 8) & 0xff
+    }
+
+    pub fn WIFSIGNALED(status: c_int) -> bool {
+        ((status & 0x7f) + 1) as i8 >= 2
+    }
+
+    pub fn WTERMSIG(status: c_int) -> c_int {
+        status & 0x7f
+    }
+
+    pub fn WIFSTOPPED(status: c_int) -> bool {
+        (status & 0xff) == 0x7f
+    }
+
+    pub fn WSTOPSIG(status: c_int) -> c_int {
+        (status >> 8) & 0xff
+    }
+
+    pub fn WIFCONTINUED(status: c_int) -> bool {
+        status == 0xffff
+    }
+
+    pub fn WCOREDUMP(status: c_int) -> bool {
+        (status & 0x80) != 0
+    }
+}
+
+// fd_set macros
+f! {
+    pub fn FD_CLR(fd: c_int, set: *mut fd_set) -> () {
+        let fd = fd as usize;
+        let size = size_of_val(&(*set).fds_bits[0]) * 8;
+        (*set).fds_bits[fd / size] &= !(1 << (fd % size));
+    }
+
+    pub fn FD_ISSET(fd: c_int, set: *const fd_set) -> bool {
+        let fd = fd as usize;
+        let size = size_of_val(&(*set).fds_bits[0]) * 8;
+        return ((*set).fds_bits[fd / size] & (1 << (fd % size))) != 0;
+    }
+
+    pub fn FD_SET(fd: c_int, set: *mut fd_set) -> () {
+        let fd = fd as usize;
+        let size = size_of_val(&(*set).fds_bits[0]) * 8;
+        (*set).fds_bits[fd / size] |= 1 << (fd % size);
+    }
+
+    pub fn FD_ZERO(set: *mut fd_set) -> () {
+        for slot in (*set).fds_bits.iter_mut() {
+            *slot = 0;
+        }
+    }
+}
 
 // External libc functions provided by libbreenix-libc
 unsafe extern "C" {

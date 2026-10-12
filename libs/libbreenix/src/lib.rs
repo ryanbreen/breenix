@@ -16,15 +16,13 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
-//! #![no_std]
-//! #![no_main]
+//! This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
 //!
+//! ```rust,no_run
 //! use libbreenix::io::stdout;
 //! use libbreenix::process::exit;
 //!
-//! #[no_mangle]
-//! pub extern "C" fn _start() -> ! {
+//! fn main() {
 //!     stdout().write(b"Hello from Breenix!\n");
 //!     exit(0);
 //! }

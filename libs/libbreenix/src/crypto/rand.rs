@@ -6,7 +6,9 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! This example uses the Breenix syscall ABI and is compile-checked only; run it inside Breenix.
+//!
+//! ```rust,no_run
 //! use libbreenix::crypto::rand::Csprng;
 //!
 //! let mut rng = Csprng::new();
@@ -327,9 +329,9 @@ mod tests {
     }
 
     /// Verify that fill() produces non-zero bytes for a reasonably sized buffer.
-    /// Note: This test requires a running kernel with getrandom support.
+    /// This test runs only on Breenix: getrandom_bytes uses its raw syscall ABI.
     #[test]
-    #[ignore]
+    #[cfg(target_os = "breenix")]
     fn test_csprng_fill_nonzero() {
         let mut rng = Csprng::new();
         let mut buf = [0u8; 64];
@@ -341,9 +343,9 @@ mod tests {
     }
 
     /// Verify that two independent CSPRNG instances produce different output.
-    /// Note: This test requires a running kernel with getrandom support.
+    /// This test runs only on Breenix: getrandom_bytes uses its raw syscall ABI.
     #[test]
-    #[ignore]
+    #[cfg(target_os = "breenix")]
     fn test_csprng_different_instances() {
         let mut rng1 = Csprng::new();
         let mut rng2 = Csprng::new();
@@ -354,9 +356,9 @@ mod tests {
         assert_ne!(v1, v2, "two CSPRNG instances produced identical output");
     }
 
-    /// Verify that fill() works across block boundaries.
+    /// Verify that fill() works across block boundaries on Breenix (raw getrandom ABI).
     #[test]
-    #[ignore]
+    #[cfg(target_os = "breenix")]
     fn test_csprng_fill_across_blocks() {
         let mut rng = Csprng::new();
 

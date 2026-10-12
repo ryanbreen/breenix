@@ -255,10 +255,11 @@ impl Default for Sha512 {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use libbreenix::crypto::sha512::sha512;
 ///
 /// let digest = sha512(b"abc");
+/// assert_eq!(&digest[..4], &[221, 175, 53, 161]);
 /// // ddaf35a193617aba...
 /// ```
 pub fn sha512(data: &[u8]) -> [u8; 64] {

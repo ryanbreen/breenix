@@ -241,10 +241,11 @@ impl Default for Sha256 {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use libbreenix::crypto::sha256::sha256;
 ///
 /// let digest = sha256(b"abc");
+/// assert_eq!(&digest[..4], &[186, 120, 22, 191]);
 /// // ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
 /// ```
 pub fn sha256(data: &[u8]) -> [u8; 32] {
