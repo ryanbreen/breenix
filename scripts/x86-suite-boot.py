@@ -15,6 +15,7 @@ import runpy
 
 WallClockCheck = runpy.run_path(str(Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
 BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))["BootProgress"]
+relay_api = runpy.run_path(str(Path(__file__).with_name("x86_serial_relay.py")))
 
 spec = importlib.util.spec_from_file_location('suite_verdict', Path(__file__).with_name('suite-verdict.py'))
 scorer = importlib.util.module_from_spec(spec)
@@ -87,7 +88,12 @@ def main():
         raise ValueError('suite hold must be nonnegative')
     results = []
     qmp = None
-    child = subprocess.Popen(command)
+    command, relays = relay_api['live_serial_command'](command, (user_path, kernel_path))
+    try:
+        child = subprocess.Popen(command)
+    except BaseException:
+        relay_api['close_relays'](relays)
+        raise
     def interrupt(number, frame):
         raise InterruptedError(f'suite boot interrupted by signal {number}')
     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -160,6 +166,7 @@ def main():
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait()
+        relay_api['close_relays'](relays)
         if qmp:
             qmp.close()
         data = read()
