@@ -1370,6 +1370,12 @@ extern "x86-interrupt" fn page_fault_handler(
 
     let is_potential_cow = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
         && error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
+    crate::scratch_probe::page_fault(
+        crate::per_cpu::current_thread_id_lock_free().unwrap_or(0),
+        cr2,
+        stack_frame.instruction_pointer.as_u64(),
+        error_code.bits(),
+    );
 
     // A kernel fault inside the user-copy routine on a user address is the
     // syscall's bad pointer, not a kernel bug: a copy-on-write write or a
