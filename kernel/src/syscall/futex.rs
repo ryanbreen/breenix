@@ -897,7 +897,9 @@ fn futex_wait_until(
     }
 
     let __wake_ns = deadline.wake_ns().unwrap_or(0);
-    let mut __resume_ns = 0u64;
+    if __wake_ns != 0 {
+        crate::scratch_probe::wait_begin(thread_id, __wake_ns);
+    }
     // Preemption stays disabled until the signal check below has run (#1230):
     // see `blocking_io::wait_prepared`.
     let result = loop {
@@ -916,9 +918,7 @@ fn futex_wait_until(
         })
         .unwrap_or(false);
         if !still_waiting {
-            if __resume_ns == 0 {
-                __resume_ns = crate::scratch_probe::now_ns();
-            }
+            crate::scratch_probe::wait_resume(thread_id);
             // Woken: by a waker, which took this thread off its queue, by the
             // deadline, or by CLOCK_REALTIME being set.
             let outcome = with_table(|table| {
@@ -952,24 +952,7 @@ fn futex_wait_until(
     };
     finish_wait(thread_id);
     if __wake_ns != 0 {
-        let now = crate::scratch_probe::now_ns();
-        if now > __wake_ns + 10_000_000 {
-            let (pop_ns, pop_cpu, arm, target) = crate::scratch_probe::pop_of(thread_id);
-            crate::scratch_probe::push(
-                crate::scratch_probe::LATE_WAIT,
-                [
-                    thread_id,
-                    now - __wake_ns,
-                    __wake_ns,
-                    pop_ns.wrapping_sub(__wake_ns),
-                    pop_cpu,
-                    arm,
-                    target,
-                    __resume_ns.wrapping_sub(__wake_ns),
-                    crate::scratch_probe::cpu(),
-                ],
-            );
-        }
+        crate::scratch_probe::wait_end(thread_id);
     }
     result
 }
@@ -1292,6 +1275,9 @@ fn futex_wait(
             // loop for the record below (#608 F4). It is a plain field read
             // taken inside the scheduler access this loop already performs.
             let mut timer_pop: Option<crate::task::thread::TimerPopRecord> = None;
+            if let Some(wake) = user_wake_time_ns {
+                crate::scratch_probe::wait_begin(thread_id, wake);
+            }
             loop {
                 if crate::syscall::check_signals_for_eintr().is_some() {
                     signal_pending = true;
@@ -1318,6 +1304,7 @@ fn futex_wait(
                 }
 
                 if !still_waiting {
+                    crate::scratch_probe::wait_resume(thread_id);
                     break;
                 }
 
@@ -1340,6 +1327,9 @@ fn futex_wait(
 
             let removed_by_me = with_table(|table| table.remove(thread_id));
             finish_wait(thread_id);
+            if user_wake_time_ns.is_some() {
+                crate::scratch_probe::wait_end(thread_id);
+            }
 
             #[cfg(feature = "boot_tests")]
             if removed_by_me && !oracle_parked {

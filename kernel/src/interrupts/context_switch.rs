@@ -491,6 +491,9 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
     if let Some((old_thread_id, new_thread_id)) = schedule_result {
+        if old_thread_id != new_thread_id {
+            crate::scratch_probe::note_switch(old_thread_id, new_thread_id);
+        }
         // Clear exception cleanup context since we're doing a context switch
         crate::per_cpu::clear_exception_cleanup_context();
 
