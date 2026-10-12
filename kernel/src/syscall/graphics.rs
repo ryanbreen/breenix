@@ -2960,12 +2960,18 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     } else {
         (0..pane.height, 0..pane.width)
     };
+    let __t0 = crate::scratch_probe::now_ns();
+    let (__r, __c) = (rows.len() as u64, columns.len() as u64);
     // SAFETY: the pane is the caller's own fb_mmap mapping, `pane.height` rows of
     // `pane.user_stride` bytes, mapped with pre-allocated frames, and the copy is
     // clipped to it.
     let copied = unsafe {
         crate::logger::copy_to_display(pane.user_addr as *const u8, pane.user_stride, rows, columns)
     };
+    let __dt = crate::scratch_probe::now_ns() - __t0;
+    if __dt > 2_000_000 {
+        crate::scratch_probe::push(crate::scratch_probe::FBDRAW, [__dt, __t0, crate::scratch_probe::cpu(), __r, __c, 0, 0, 0, 0]);
+    }
     if copied {
         SyscallResult::Ok(0)
     } else {

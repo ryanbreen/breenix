@@ -198,7 +198,8 @@ impl core::ops::DerefMut for ProcessManagerGuard {
 pub static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
 #[inline(always)]
-fn note_process_manager_lock_acquired() {
+fn note_process_manager_lock_acquired(loc: &'static core::panic::Location<'static>) {
+    crate::scratch_probe::pm_acquired(loc);
     let (cpu, tid) = current_process_manager_owner_identity();
     PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(cpu, Ordering::Release);
@@ -207,6 +208,7 @@ fn note_process_manager_lock_acquired() {
 
 #[inline(always)]
 fn note_process_manager_lock_released() {
+    crate::scratch_probe::pm_released();
     PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
 }
@@ -348,7 +350,9 @@ pub fn init() {
 /// thread that has been switched out. `try_manager()` and
 /// `with_process_manager()` already hold the lock with interrupts masked,
 /// which gives them the same property.
+#[track_caller]
 pub fn manager() -> ProcessManagerGuard {
+    let __loc = core::panic::Location::caller();
     // #821. Recorded BEFORE the acquisition, so a call that wedges on a lock
     // this CPU already owns, and so does not return, is still counted.
     note_blocking_process_manager_acquisition();
@@ -360,7 +364,7 @@ pub fn manager() -> ProcessManagerGuard {
             core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
         }
         let guard = PROCESS_MANAGER.lock();
-        note_process_manager_lock_acquired();
+        note_process_manager_lock_acquired(__loc);
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
             saved_daif,
@@ -373,7 +377,7 @@ pub fn manager() -> ProcessManagerGuard {
             crate::per_cpu::preempt_disable();
         }
         let guard = PROCESS_MANAGER.lock();
-        note_process_manager_lock_acquired();
+        note_process_manager_lock_acquired(__loc);
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
             preempt_braked,
@@ -385,6 +389,7 @@ pub fn manager() -> ProcessManagerGuard {
 /// runs in (`memory::fork_copy`): the acquisition for a syscall that changes
 /// its caller's mappings, or reads its tables (`manager_once_copied`).
 /// Called from syscall context holding no lock.
+#[track_caller]
 pub fn manager_for_address_space(thread: u64) -> ProcessManagerGuard {
     manager_once_copied(|manager| {
         manager
@@ -398,6 +403,7 @@ pub fn manager_for_address_space(thread: u64) -> ProcessManagerGuard {
 /// released and the copy waited for, with interrupts enabled, so a section
 /// that would change or read that address space holds neither the lock nor
 /// its CPU's interrupts while the fork copies. Called holding no lock.
+#[track_caller]
 pub fn manager_once_copied(root_of: impl Fn(&ProcessManager) -> Option<u64>) -> ProcessManagerGuard {
     loop {
         let guard = manager();
@@ -444,15 +450,17 @@ pub fn pm_held_on_this_cpu() -> Option<PmHeldOnThisCpu> {
 /// Execute a function with the process manager while interrupts are disabled
 /// This prevents deadlock when the timer interrupt tries to access the process manager
 #[cfg(target_arch = "x86_64")]
+#[track_caller]
 pub fn with_process_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut ProcessManager) -> R,
 {
+    let __loc = core::panic::Location::caller();
     // #821, for the same reason as `manager()`.
     note_blocking_process_manager_acquisition();
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut manager_lock = PROCESS_MANAGER.lock();
-        note_process_manager_lock_acquired();
+        note_process_manager_lock_acquired(__loc);
         let result = manager_lock.as_mut().map(|manager| {
             let result = f(manager);
             manager.finish_group_resets();
@@ -553,15 +561,17 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
 /// Execute a function with the process manager while interrupts are disabled (ARM64)
 /// This prevents deadlock when timer interrupts try to access the process manager
 #[cfg(target_arch = "aarch64")]
+#[track_caller]
 pub fn with_process_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut ProcessManager) -> R,
 {
+    let __loc = core::panic::Location::caller();
     // #821, for the same reason as `manager()`.
     note_blocking_process_manager_acquisition();
     crate::arch_impl::aarch64::cpu::without_interrupts(|| {
         let mut manager_lock = PROCESS_MANAGER.lock();
-        note_process_manager_lock_acquired();
+        note_process_manager_lock_acquired(__loc);
         let result = manager_lock.as_mut().map(|manager| {
             let result = f(manager);
             manager.finish_group_resets();
@@ -585,7 +595,9 @@ where
 /// PROCESS_MANAGER through the blocking `with_process_manager`. `spin::Mutex`
 /// is not reentrant, so the CPU waits on a lock it already owns. The mask makes
 /// this accessor differ from `manager()` only in whether it blocks.
+#[track_caller]
 pub fn try_manager() -> Option<TryProcessManagerGuard> {
+    let __loc = core::panic::Location::caller();
     #[cfg(target_arch = "aarch64")]
     {
         let saved_daif: u64;
@@ -603,7 +615,7 @@ pub fn try_manager() -> Option<TryProcessManagerGuard> {
             }
             return None;
         };
-        note_process_manager_lock_acquired();
+        note_process_manager_lock_acquired(__loc);
         Some(TryProcessManagerGuard {
             guard: core::mem::ManuallyDrop::new(guard),
             saved_daif,
@@ -623,7 +635,7 @@ pub fn try_manager() -> Option<TryProcessManagerGuard> {
             }
             return None;
         };
-        note_process_manager_lock_acquired();
+        note_process_manager_lock_acquired(__loc);
         Some(TryProcessManagerGuard {
             guard: core::mem::ManuallyDrop::new(guard),
             interrupts_were_enabled,
@@ -650,6 +662,7 @@ const INTERRUPT_RETURN_PM_POLL_US: u64 = 200;
 /// next release, and the bound keeps the interrupt the holder may need from
 /// waiting longer than that.
 #[cfg(target_arch = "x86_64")]
+#[track_caller]
 pub fn poll_manager() -> Option<TryProcessManagerGuard> {
     if process_manager_held_on_current_cpu() {
         return None;
@@ -661,6 +674,7 @@ pub fn poll_manager() -> Option<TryProcessManagerGuard> {
             return Some(guard);
         }
         if crate::time::tsc::read_tsc().wrapping_sub(start) >= budget {
+            crate::scratch_probe::push(crate::scratch_probe::POLL_FAIL, [crate::scratch_probe::now_ns(), crate::scratch_probe::cpu(), PROCESS_MANAGER_OWNER_CPU.load(Ordering::Relaxed), 0, 0, 0, 0, 0, 0]);
             return None;
         }
         core::hint::spin_loop();
