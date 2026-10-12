@@ -137,6 +137,11 @@ public enum RemoteCommand {
             return sshRequest(paths: paths, remote: "exit 2")
         }
         let featureEnv = features.isEmpty ? "" : " BREENIX_GATE_KERNEL_FEATURES=\(features)"
+        let quiet = ProcessInfo.processInfo.environment["BREENIX_QUIET"] ?? ""
+        guard quiet.isEmpty || quiet == "0" || quiet == "1" else {
+            return sshRequest(paths: paths, remote: "exit 2")
+        }
+        let quietEnv = quiet.isEmpty ? "" : " BREENIX_QUIET=\(quiet)"
         let profileEnv: String = qemuProfile.map { " BREENIX_QEMU_PROFILE=\($0.rawValue)" } ?? ""
         var suiteEnv = ""
         if let suite {
@@ -176,7 +181,7 @@ public enum RemoteCommand {
             + " BREENIX_FULL_BACKSTOP=\(fullBackstopSecs ?? max(1800, timeoutSecs))"
             + " CARGO_BUILD_JOBS=6"
             + (paths.fresh ? " BREENIX_GATE_FRESH=1" : "")
-            + featureEnv + profileEnv + suiteEnv + slotIdentity
+            + featureEnv + quietEnv + profileEnv + suiteEnv + slotIdentity
             + " " + launch
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }

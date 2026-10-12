@@ -116,19 +116,21 @@ final class BeastLauncherTests: XCTestCase {
     }
 
     func testRunGateRequestArgvEncodesBootsModeAndGateTmpInsideClone() {
+        let quietOverride = ProcessInfo.processInfo.environment["BREENIX_QUIET"].map { " BREENIX_QUIET=\($0)" } ?? ""
         let paths = BeastPaths(clonePath: "/root/breenix-testclone")
         let request = RemoteCommand.runGateRequest(boots: 3, mode: .kthread, timeoutSecs: 900, paths: paths)
 
         XCTAssertEqual(request.executable, "/usr/bin/ssh")
         XCTAssertEqual(request.arguments, [
             "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "beast",
-            #"sudo -n incus exec breenix-x86 -- bash -lc 'mkdir -p /root/breenix-testclone/gate-tmp && python3 -c "import json,pathlib,sys;pid=int(sys.argv[1]);birth=pathlib.Path(\"/proc/%d/stat\"%pid).read_text().rsplit(\")\",1)[1].split()[19];pathlib.Path(sys.argv[2]).write_text(json.dumps([pid,birth,sys.argv[3]]))" "$$" /root/breenix-testclone/gate-tmp/launcher-gate.json /root/breenix/scripts/host-slots.py && source /root/.cargo/env && exec env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp BREENIX_REPO_DIR=/root/breenix-testclone BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=900 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6 python3 /root/breenix/scripts/host-slots.py supervise -- bash -c "if [ ! -f /root/breenix-testclone/scripts/host-slots.py ]; then python3 /root/breenix/scripts/host-slots.py acquire x86-build && python3 /root/breenix/scripts/host-slots.py acquire x86-boot || exit 1; fi; exec /root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread"'"#
+            #"sudo -n incus exec breenix-x86 -- bash -lc 'mkdir -p /root/breenix-testclone/gate-tmp && python3 -c "import json,pathlib,sys;pid=int(sys.argv[1]);birth=pathlib.Path(\"/proc/%d/stat\"%pid).read_text().rsplit(\")\",1)[1].split()[19];pathlib.Path(sys.argv[2]).write_text(json.dumps([pid,birth,sys.argv[3]]))" "$$" /root/breenix-testclone/gate-tmp/launcher-gate.json /root/breenix/scripts/host-slots.py && source /root/.cargo/env && exec env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp BREENIX_REPO_DIR=/root/breenix-testclone BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=900 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6\#(quietOverride) python3 /root/breenix/scripts/host-slots.py supervise -- bash -c "if [ ! -f /root/breenix-testclone/scripts/host-slots.py ]; then python3 /root/breenix/scripts/host-slots.py acquire x86-build && python3 /root/breenix/scripts/host-slots.py acquire x86-boot || exit 1; fi; exec /root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread"'"#
         ])
         XCTAssertTrue(request.combineOutput)
         XCTAssertTrue(paths.gateTmpPath.hasPrefix(paths.clonePath + "/"))
     }
 
     func testHardwareProfileAndTimeoutReachRemoteGateAndManifest() throws {
+        let quietOverride = ProcessInfo.processInfo.environment["BREENIX_QUIET"].map { " BREENIX_QUIET=\($0)" } ?? ""
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let runner = BeastScriptedProcessRunner()
@@ -137,7 +139,7 @@ final class BeastLauncherTests: XCTestCase {
         var selected = options(runID: "q35-run")
         selected.qemuProfile = .q35
         let plan = try launcher.plan(options: selected)
-        XCTAssertTrue(plan.runGate.arguments.last!.contains("BREENIX_GATE_TIMEOUT=180 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6 BREENIX_QEMU_PROFILE=q35"))
+        XCTAssertTrue(plan.runGate.arguments.last!.contains("BREENIX_GATE_TIMEOUT=180 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6\(quietOverride) BREENIX_QEMU_PROFILE=q35"))
         let result = try launcher.runX86(options: selected)
         XCTAssertEqual(result.manifest.env["BREENIX_QEMU_PROFILE"], "q35")
         XCTAssertEqual(result.manifest.env["BREENIX_GATE_TIMEOUT"], "180")
