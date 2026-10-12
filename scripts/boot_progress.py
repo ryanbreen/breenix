@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STALL_SECONDS = 120
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 KERNEL = re.compile(r"^(?:\[\s*(?:INFO|WARN|ERROR|DEBUG|TRACE)\]|.*\bkernel(?:::|:))")
-DIAGNOSTIC = re.compile(r"^(?:\[[^]\n]*(?:CENSUS|diagnostic|BXCAP|FATAL_REGS)|\[smp\] user-thread dispatches|(?:BXCAP|FATAL_REGS)\b)", re.I)
+DIAGNOSTIC = re.compile(r"^(?:T\d+)?(?:\[[^]\n]*(?:CENSUS|diagnostic|BXCAP|FATAL_REGS)|\[smp\] user-thread dispatches|(?:BXCAP|FATAL_REGS)\b)", re.I)
 ANNOUNCEMENT = re.compile(r"(?:kernel::test_exec:|Userspace will emit|will (?:print|emit)|expected marker|Missing marker|checkHint)", re.I)
 USER = re.compile(r"^(?:SUITE |SUITE_SEQUENCE |PROBE |RUN PATH |TEST_TALLY:|[A-Z][A-Z0-9_]*(?:_TEST|_PASSED|_START|_COMPLETE)\b|\[(?:init|bsh|probe)\])")
 DONE = re.compile(r"^(?:SUITE \S+ DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+|PROBE DONE passed=\d+ failed=\d+|USERSPACE TEST REPORT DONE|RUN PATH DONE .+)$")
