@@ -536,6 +536,9 @@ fn clone_vm_sibling_survives() {
         yield_many(64);
         let heartbeat_after = core::ptr::read_volatile(&(*shared).sibling_heartbeat);
         if heartbeat_after <= heartbeat_before {
+            eprintln!(
+                "SIGKILL_TEARDOWN_TEST: CLONE_VM victim pid={victim} tid={victim_clone} sibling tid={sibling_clone} heartbeat before={heartbeat_before} after={heartbeat_after}"
+            );
             fail("CLONE_VM sibling did not survive victim-only SIGKILL");
         }
         assert_kill_evidence(victim, wait_for_evidence(victim));
