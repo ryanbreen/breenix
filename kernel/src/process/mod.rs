@@ -202,6 +202,7 @@ fn note_process_manager_lock_acquired(loc: &'static core::panic::Location<'stati
     crate::scratch_probe::pm_acquired(loc);
     let (cpu, tid) = current_process_manager_owner_identity();
     PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
+    crate::scratch_probe::PM_OWNER_TID.store(tid, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(cpu, Ordering::Release);
     crate::tracing::providers::teardown::note_process_manager_acquire();
 }

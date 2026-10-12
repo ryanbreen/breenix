@@ -258,6 +258,7 @@ mod shootdown {
             if targets == 0 {
                 return;
             }
+            crate::scratch_probe::note_shootdown();
 
             // Waiting here with interrupts masked is safe: the holder's NMI
             // still reaches this CPU and is answered.
