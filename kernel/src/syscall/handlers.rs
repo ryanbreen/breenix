@@ -1940,14 +1940,18 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 pub fn sys_yield() -> SyscallResult {
     // log::trace!("sys_yield called");
 
-    // x86_64: with no thread queued on any CPU there is nothing to yield to,
-    // and the scheduling pass would pick this thread again. That pass runs
-    // under PROCESS_MANAGER and the scheduler lock, which every CPU's timer
-    // expiry and dispatch need: a process polling with sched_yield kept them
-    // held much of the time, and a timed wake waited out any stall of the
-    // polling CPU there (#1401).
+    // x86_64: with another CPU online and no thread queued on any CPU there
+    // is nothing to yield to, and the scheduling pass would pick this thread
+    // again (#1172). That pass runs under PROCESS_MANAGER and the scheduler
+    // lock, which every CPU's timer expiry and dispatch need: a process
+    // polling with sched_yield kept them held much of the time, and a timed
+    // wake waited out any stall of the polling CPU there (#1401). With one
+    // CPU online the pass is kept: it switches this thread to idle, the only
+    // place idle's housekeeping runs there.
     #[cfg(target_arch = "x86_64")]
-    if !crate::task::scheduler::thread_queued_anywhere() {
+    if crate::arch_impl::x86_64::smp::cpus_online() > 1
+        && !crate::task::scheduler::thread_queued_anywhere()
+    {
         return SyscallResult::Ok(0);
     }
 
