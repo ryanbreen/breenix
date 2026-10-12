@@ -341,6 +341,12 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
                 crate::signal::delivery::SignalDeliveryResult::FrameFault
             );
 
+            // A queued fatal action is committed by the exit drain, which also
+            // ends its thread group. Never return this terminated thread to EL0.
+            if matches!(signal_result, crate::signal::delivery::SignalDeliveryResult::DeferredExit) {
+                crate::task::scheduler::set_need_resched();
+            }
+
             // Handle termination
             if let crate::signal::delivery::SignalDeliveryResult::Terminated(notification) =
                 signal_result

@@ -7394,7 +7394,8 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
                         setup_idle_return_arm64(frame);
                         crate::task::scheduler::switch_to_idle();
                     }
-                    crate::signal::delivery::SignalDeliveryResult::FrameFault => {
+                    crate::signal::delivery::SignalDeliveryResult::FrameFault
+                    | crate::signal::delivery::SignalDeliveryResult::DeferredExit => {
                         crate::task::scheduler::set_need_resched();
                         setup_idle_return_arm64(frame);
                         crate::task::scheduler::switch_to_idle();

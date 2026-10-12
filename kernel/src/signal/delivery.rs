@@ -47,7 +47,6 @@ pub enum SignalDeliveryResult {
     /// caller must not return it to user mode.
     FrameFault,
     /// A fatal default action queued its exit; the thread must not resume.
-    #[cfg(target_arch = "x86_64")]
     DeferredExit,
 }
 
@@ -214,6 +213,7 @@ pub fn deliver_pending_signals(
                 // Default action may terminate/stop the process
                 match deliver_default_action(process, sig) {
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
+                    DeliverResult::DeferredExit => return SignalDeliveryResult::DeferredExit,
                     DeliverResult::Terminated(notification) => {
                         return SignalDeliveryResult::Terminated(notification)
                     }
@@ -260,7 +260,6 @@ pub enum DeliverResult {
     Ignored,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
-    #[cfg(target_arch = "x86_64")]
     DeferredExit,
 }
 
@@ -354,7 +353,6 @@ fn write_signal_stack(
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
-    #[cfg(target_arch = "x86_64")]
     if fatal_exit_code(sig).is_some() {
         let exit_code = signal_death_exit_code(process, sig);
         if let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id) {
