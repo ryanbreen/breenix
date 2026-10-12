@@ -17,7 +17,7 @@ use crate::fs::permissions::Credentials;
 use crate::ipc::shmem::{self, ShmObject};
 use crate::irq_safe_mutex::IrqSafeMutex;
 use crate::memory::vma::Protection;
-use crate::syscall::errno::{EACCES, EEXIST, EFAULT, EINVAL, ENOMEM, EPERM, ESRCH};
+use crate::syscall::errno::{EACCES, EEXIST, EFAULT, EINVAL, ENOMEM, EPERM};
 use crate::syscall::memory_common::{self, PAGE_SIZE};
 use crate::syscall::userptr::{read_user_bytes, write_user_bytes};
 use crate::syscall::SyscallResult;
@@ -34,9 +34,6 @@ pub(crate) struct Segment {
     backing: Backing,
     segsz: u64,
     cpid: i32,
-    lpid: i32,
-    atime: i64,
-    dtime: i64,
     ctime: i64,
     /// The real user SHM_LOCK charged the segment's pages to, while it is
     /// locked.
@@ -48,13 +45,6 @@ impl Segment {
         match &self.backing {
             Backing::Live(obj) => Some(obj.clone()),
             Backing::Removed(weak) => weak.upgrade(),
-        }
-    }
-
-    fn is(&self, obj: &Arc<ShmObject>) -> bool {
-        match &self.backing {
-            Backing::Live(o) => Arc::ptr_eq(o, obj),
-            Backing::Removed(weak) => core::ptr::eq(weak.as_ptr(), Arc::as_ptr(obj)),
         }
     }
 
@@ -71,15 +61,19 @@ impl Segment {
         self.segsz.div_ceil(PAGE_SIZE)
     }
 
-    fn stat(&self, nattch: u64) -> ShmStat {
+    /// What IPC_STAT reports of the segment backed by `obj`: the object
+    /// keeps the last attach and detach, including the detach that exec,
+    /// exit and munmap do.
+    fn stat(&self, obj: &ShmObject) -> ShmStat {
+        let (atime, dtime, lpid) = obj.activity();
         ShmStat {
             segsz: self.segsz,
-            atime: self.atime,
-            dtime: self.dtime,
+            atime,
+            dtime,
             ctime: self.ctime,
             cpid: self.cpid,
-            lpid: self.lpid,
-            nattch,
+            lpid,
+            nattch: obj.attachments() as u64,
         }
     }
 }
@@ -152,9 +146,6 @@ pub fn sys_shmget(key: i32, size: u64, flags: u32) -> SyscallResult {
         backing: Backing::Live(obj),
         segsz: size,
         cpid: me.pid,
-        lpid: 0,
-        atime: 0,
-        dtime: 0,
         ctime: t,
         locker: None,
     };
@@ -164,14 +155,6 @@ pub fn sys_shmget(key: i32, size: u64, flags: u32) -> SyscallResult {
         Ok(id) => SyscallResult::Ok(id as u64),
         Err(e) => err(e),
     }
-}
-
-/// Whether the calling process has anything mapped in `start..end`.
-fn range_mapped(start: u64, end: u64) -> Result<bool, i32> {
-    let tid = memory_common::get_current_thread_id().ok_or(ESRCH)?;
-    let mut guard = crate::process::manager_for_address_space(tid);
-    let (_, process) = guard.as_mut().and_then(|m| m.find_address_space_by_thread_mut(tid)).ok_or(ESRCH)?;
-    Ok(process.vmas.iter().any(|v| v.start.as_u64() < end && start < v.end.as_u64()))
 }
 
 /// shmat: map segment `id` shared at `addr`, or where the system chooses
@@ -211,14 +194,6 @@ pub fn sys_shmat(id: i32, addr: u64, flags: u32) -> SyscallResult {
         }
         (obj, entry.obj.segsz)
     };
-    if fixed && flags & SHM_REMAP == 0 {
-        let Some(end) = addr.checked_add(segsz) else { return err(EINVAL) };
-        match range_mapped(addr, end) {
-            Ok(false) => {}
-            Ok(true) => return err(EINVAL),
-            Err(e) => return err(e),
-        }
-    }
     let mut prot = Protection::READ.bits();
     if !rdonly {
         prot |= Protection::WRITE.bits();
@@ -226,20 +201,23 @@ pub fn sys_shmat(id: i32, addr: u64, flags: u32) -> SyscallResult {
     if flags & SHM_EXEC != 0 {
         prot |= Protection::EXEC.bits();
     }
-    let start = match shmem::map_object(&obj, addr, segsz, Protection::from_bits_truncate(prot), fixed) {
-        Ok(start) => start,
-        Err(e) => return SyscallResult::Err(e),
+    let prot = Protection::from_bits_truncate(prot);
+    // Without SHM_REMAP the range is checked and taken in one step, so a
+    // sibling thread's mmap cannot land in it between the two.
+    let mapped = if fixed && flags & SHM_REMAP == 0 {
+        if addr.checked_add(segsz).is_none() {
+            return err(EINVAL);
+        }
+        shmem::map_object_noreplace(&obj, addr, segsz, prot).map_err(|e| if e == EEXIST as u64 { EINVAL as u64 } else { e })
+    } else {
+        shmem::map_object(&obj, addr, segsz, prot, fixed)
     };
-    let t = now();
-    {
-        let mut ids = SYSV_SHM.lock();
-        if let Some(entry) = ids.get_mut(id).filter(|e| e.obj.is(&obj)) {
-            entry.obj.lpid = me.pid;
-            entry.obj.atime = t;
-        };
-    }
+    // The mapping records the attach time and pid in the object.
     drop(obj);
-    SyscallResult::Ok(start)
+    match mapped {
+        Ok(start) => SyscallResult::Ok(start),
+        Err(e) => SyscallResult::Err(e),
+    }
 }
 
 /// The attachment at `addr`, as Linux's shmdt finds it: the lowest shared
@@ -252,8 +230,7 @@ fn attachment_at(addr: u64) -> Result<(Arc<ShmObject>, Vec<(u64, u64)>), i32> {
     let mut guard = crate::process::manager_for_address_space(tid);
     let (_, process) = guard.as_mut().and_then(|m| m.find_address_space_by_thread_mut(tid)).ok_or(EINVAL)?;
     let placed = |v: &crate::memory::vma::Vma| {
-        let start = v.start.as_u64();
-        start >= addr && v.shm.is_some() && start - addr == v.shm_offset
+        v.shm.as_ref().is_some_and(|m| m.matches_attachment(v.start.as_u64(), v.shm_offset, addr))
     };
     let first = process.vmas.iter().filter(|v| placed(v)).min_by_key(|v| v.start.as_u64()).ok_or(EINVAL)?;
     let obj = first.shm.as_ref().map(|m| m.object().clone()).ok_or(EINVAL)?;
@@ -280,17 +257,10 @@ pub fn sys_shmdt(addr: u64) -> SyscallResult {
     };
     // Each range is one whole VMA of the attachment, which munmap removes
     // and no more.
+    // Dropping each VMA's mapping records the detach time and pid in the
+    // object.
     for (start, end) in ranges {
         let _ = crate::syscall::mmap::sys_munmap(start, end - start);
-    }
-    let me = caller();
-    let t = now();
-    {
-        let mut ids = SYSV_SHM.lock();
-        if let Some((_, entry)) = ids.iter_mut().find(|(_, e)| e.obj.is(&obj)) {
-            entry.obj.lpid = me.pid;
-            entry.obj.dtime = t;
-        };
     }
     drop(obj);
     SyscallResult::Ok(0)
@@ -335,18 +305,18 @@ pub fn sys_shmctl(id: i32, cmd: u32, buf: u64) -> SyscallResult {
                 match sid.ok_or(EINVAL).and_then(|sid| live(&mut ids, sid).map(|obj| (sid, obj))) {
                     Err(e) => Err(e),
                     Ok((sid, obj)) => {
-                        let nattch = obj.attachments() as u64;
-                        held = Some(obj);
-                        match ids.get(sid) {
+                        let found = match ids.get(sid) {
                             Some(entry) if cmd != SHM_STAT_ANY && !ipcperms(&entry.perm, &me.cred, READ) => {
                                 Err(EACCES)
                             }
                             Some(entry) => {
                                 let result = if cmd == IPC_STAT { 0 } else { sid as u64 };
-                                Ok((state::shmid_ds(&entry.perm, &entry.obj.stat(nattch)), result))
+                                Ok((state::shmid_ds(&entry.perm, &entry.obj.stat(&obj)), result))
                             }
                             None => Err(EINVAL),
-                        }
+                        };
+                        held = Some(obj);
+                        found
                     }
                 }
             };
