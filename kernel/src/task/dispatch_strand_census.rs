@@ -120,6 +120,28 @@ const FACT_FIELD_NAMES: [&str; DISPATCH_LOG_FACT_COUNT] = [
 
 /// Record one occurrence of `fact`. Called from the dispatch path with
 /// interrupts disabled and, at several sites, with `PROCESS_MANAGER` held.
+/// SCRATCH #1413 diag: last save failures and abort bails.
+pub static DIAG1413_RING: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+pub static DIAG1413_IDX: AtomicU64 = AtomicU64::new(0);
+pub fn diag1413_note(site: u64, old: u64, new: u64, cpu: u64, present: bool, terminated: bool) {
+    let word = (old & 0xFFFFF) | ((new & 0xFFFFF) << 20) | ((cpu & 0xF) << 40)
+        | ((present as u64) << 44) | ((terminated as u64) << 45) | ((site & 0xF) << 48) | (1 << 63);
+    let i = DIAG1413_IDX.fetch_add(1, Ordering::Relaxed) as usize % 16;
+    DIAG1413_RING[i].store(word, Ordering::Relaxed);
+}
+struct Diag1413;
+impl core::fmt::Display for Diag1413 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, ":diag_n={}", DIAG1413_IDX.load(Ordering::Relaxed))?;
+        for slot in DIAG1413_RING.iter() {
+            let w = slot.load(Ordering::Relaxed);
+            if w == 0 { continue; }
+            write!(f, ":s{}/o{}/n{}/c{}/p{}/t{}", (w >> 48) & 0xF, w & 0xFFFFF, (w >> 20) & 0xFFFFF, (w >> 40) & 0xF, (w >> 44) & 1, (w >> 45) & 1)?;
+        }
+        crate::task::scheduler::diag1413_cpus(f)
+    }
+}
+
 #[inline(always)]
 pub(crate) fn note_fact(fact: DispatchLogFact) {
     DISPATCH_LOG_FACTS[fact as usize].fetch_add(1, Ordering::Relaxed);
@@ -286,6 +308,11 @@ fn snapshot(deferred: bool) {
         OVERFLOW_EVENTS.load(Ordering::Acquire),
         FactFields(fact_counts()),
     ));
+    if deferred {
+        crate::serial::enqueue_log(format_args!("[DIAG1413{}]\n", Diag1413));
+    } else {
+        crate::serial::_log_print(format_args!("[DIAG1413{}]\n", Diag1413));
+    }
 }
 
 fn monotonic_now_ns() -> u64 {

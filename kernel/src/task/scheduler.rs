@@ -8322,6 +8322,23 @@ pub fn requeue_refused_dispatch(thread_id: u64) {
 /// IRETQ will actually resume; handing the CPU to idle here would strand whatever
 /// lock the interrupted thread holds - which is the condition that aborts dispatch.
 #[cfg(target_arch = "x86_64")]
+/// SCRATCH #1413 diag: each CPU's current thread, its state and owner.
+pub fn diag1413_cpus(f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    let Some(guard) = try_lock_scheduler() else {
+        return write!(f, ":cpus=busy");
+    };
+    let Some(sched) = guard.as_ref() else { return Ok(()) };
+    for cpu in 0..sched.online_cpu_count() {
+        let cur = sched.cpu_state[cpu].current_thread.unwrap_or(0);
+        let (state, owner, user) = sched
+            .get_thread(cur)
+            .map(|t| (t.state as u8, t.owner_pid.unwrap_or(0), t.privilege == super::thread::ThreadPrivilege::User))
+            .unwrap_or((255, 0, false));
+        write!(f, ":cpu{}={}/st{}/pid{}/u{}/q{}", cpu, cur, state, owner, user as u8, sched.per_cpu_queues[cpu].len())?;
+    }
+    Ok(())
+}
+
 pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) {
     with_scheduler(|sched| {
         let cpu_id = Scheduler::current_cpu_id();
@@ -8329,6 +8346,14 @@ pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) 
         if sched.get_thread(aborted_thread_id).is_none()
             || sched.get_thread(resume_thread_id).is_none()
         {
+            crate::task::dispatch_strand_census::diag1413_note(
+                2,
+                resume_thread_id,
+                aborted_thread_id,
+                cpu_id as u64,
+                sched.get_thread(resume_thread_id).is_some(),
+                sched.get_thread(aborted_thread_id).is_some(),
+            );
             log::error!(
                 "Cannot abort dispatch of thread {} and resume thread {}: scheduler thread missing",
                 aborted_thread_id,

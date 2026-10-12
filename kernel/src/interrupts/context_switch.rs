@@ -567,6 +567,14 @@ pub extern "C" fn check_need_resched_and_switch(
                 },
             ) && !old_thread_terminated
             {
+                crate::task::dispatch_strand_census::diag1413_note(
+                    1,
+                    old_thread_id,
+                    new_thread_id,
+                    crate::per_cpu::cpu_id() as u64,
+                    scheduler::with_thread_mut(old_thread_id, |_| ()).is_some(),
+                    old_thread_terminated,
+                );
                 // Roll back the committed switch and re-arm rescheduling.
                 scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
                 trace_dispatch_abandon(DispatchAbandonSite::RollbackSaveFailed);
