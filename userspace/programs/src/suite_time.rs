@@ -1098,6 +1098,7 @@ fn rtc_counter_edge(fd: Fd) -> Result<RtcEdge, String> {
 #[cfg(target_arch = "x86_64")]
 fn counter_frequency() -> Result<u64, String> {
     let fd = libbreenix::fs::open("/dev/rtc0", libbreenix::fs::O_RDONLY).map_err(|e| format!("open(/dev/rtc0) failed: {e}"))?;
+    zero("arm RTC forcing", sc(nr::IOCTL, &[fd.raw(), 0x1419, 0]))?;
     let result = (|| -> Result<u64, String> {
         // A bounded sample reports RTC_RD_TIME cost without serial output in
         // the edge-polling loop or changing its acceptance criteria.

@@ -43,6 +43,8 @@ pub(crate) const ENOTTY: u64 = 25; // Inappropriate ioctl for device
 /// - TIOCGPTN (0x80045430): Get PTY number
 /// - TIOCSPTLCK (0x40045431): Lock/unlock PTY slave
 /// - TIOCGPTLCK (0x80045439): Get PTY lock status
+static RTC_FORCE_READS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
     log::debug!(
         "sys_ioctl: fd={}, request={:#x}, arg={:#x}",
@@ -80,11 +82,30 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
                 }
             }
             FdKind::Device(crate::fs::devfs::DeviceType::Rtc) => {
+                if request == 0x1419 {
+                    RTC_FORCE_READS.store(1, core::sync::atomic::Ordering::SeqCst);
+                    return SyscallResult::Ok(0);
+                }
                 if request != 0x8024_7009 { return SyscallResult::Err(ENOTTY); }
                 let stamp = match crate::time::rtc::read_rtc_time() {
                     Ok(stamp) => stamp,
                     Err(_) => return SyscallResult::Err(5),
                 };
+                let n = RTC_FORCE_READS.load(core::sync::atomic::Ordering::SeqCst);
+                if n != 0 { RTC_FORCE_READS.fetch_add(1, core::sync::atomic::Ordering::SeqCst); }
+                if n == 34 {
+                    let hz = crate::time::tsc::frequency_hz();
+                    let begin = crate::time::tsc::read_tsc_serialized();
+                    
+                    while crate::time::rtc::read_rtc_time().unwrap() == stamp {
+                        let current = crate::time::tsc::read_tsc_serialized();
+                        if current.wrapping_sub(begin) > hz * 2 { return SyscallResult::Err(5); }
+                    }
+                    let edge = crate::time::tsc::read_tsc_serialized();
+                    while crate::time::tsc::read_tsc_serialized().wrapping_sub(edge) < hz * 12 / 1000 { core::hint::spin_loop(); }
+                    let end = crate::time::tsc::read_tsc_serialized();
+                    crate::serial_println!("RTC FORCE old={} live={} sample_to_edge_us={} edge_to_return_us={}", stamp, crate::time::rtc::read_rtc_time().unwrap(), edge.wrapping_sub(begin) * 1_000_000 / hz, end.wrapping_sub(edge) * 1_000_000 / hz);
+                }
                 let dt = crate::time::DateTime::from_unix_timestamp(stamp);
                 let jan1 = crate::time::DateTime { year: dt.year, month: 1, day: 1, hour: 0, minute: 0, second: 0 }.to_unix_timestamp();
                 // Linux struct rtc_time, with struct tm's month/year origins.
