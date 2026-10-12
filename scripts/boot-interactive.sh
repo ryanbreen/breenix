@@ -16,7 +16,7 @@
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
-#   --serial-log FILE    also write everything the guest prints to FILE (default: $TMPDIR/breenix-boot/serial.txt)
+#   --serial-log FILE    also write everything the guest prints to FILE (default: a unique file under $TMPDIR/breenix-boot/)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 = never)
 #   --gate-timeout SECONDS  suite DONE deadline (default 1800), even with --idle-exit 0
 #   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
@@ -33,7 +33,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/host-slots.sh"
 host_slots_start "$ROOT/scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
-SERIAL_LOG="${TMPDIR:-/tmp}/breenix-boot/serial.txt"
+SERIAL_LOG="${TMPDIR:-/tmp}/breenix-boot/serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.txt"
 IDLE_EXIT=300
 GATE_TIMEOUT=1800
 DISPLAY_MODE=
