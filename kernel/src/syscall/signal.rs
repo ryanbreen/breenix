@@ -150,6 +150,27 @@ pub(crate) fn raise_sigpipe() {
 /// left pending as SIGKILL instead and the victim's waits are woken: the
 /// thread finishes its syscall, and its return to user mode ends the process.
 pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
+    // SCRATCH #1413 F3: wait until a victim thread is inside a section, so the claim is refused.
+    let force = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process(victim)
+            .is_some_and(|process| process.name.starts_with("sigkill_teardown_test"))
+    })
+    .unwrap_or(false);
+    let f3_t0 = crate::signal::types::monotonic_nanos();
+    let mut f3_seen = false;
+    if force {
+        while crate::signal::types::monotonic_nanos().wrapping_sub(f3_t0) < 5_000_000_000 {
+            if crate::task::scheduler::with_scheduler(|s| s.force1413_in_custody(victim.as_u64())).unwrap_or(false) {
+                f3_seen = true;
+                break;
+            }
+            let t = crate::signal::types::monotonic_nanos();
+            while crate::signal::types::monotonic_nanos().wrapping_sub(t) < 20_000 {
+                core::hint::spin_loop();
+            }
+        }
+    }
     // Publish, claim, and withdraw the publication when the claim succeeds,
     // all under one process-manager hold (#1413). Publishing before checking
     // custody means a thread that leaves its section while the claim is
@@ -179,6 +200,19 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
     })
     .unwrap_or(true);
     if !claimed {
+        // SCRATCH #1413 F3: hold the killer 5 ms after the refused claim.
+        if force {
+            let t = crate::signal::types::monotonic_nanos();
+            while crate::signal::types::monotonic_nanos().wrapping_sub(t) < 5_000_000 {
+                core::hint::spin_loop();
+            }
+            crate::serial_println!(
+                "FORCE1413-F3 victim={} claimed=false seen_in_section={} wait_us={}",
+                victim.as_u64(),
+                f3_seen,
+                t.wrapping_sub(f3_t0) / 1000
+            );
+        }
         // Deferred: wake. A thread that has blocked is woken here, and one
         // about to block refuses to (`Thread::mark_kill_pending`), so its
         // signal check runs and finds SIGKILL.
@@ -186,6 +220,9 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
             scheduler.wake_process_threads_for_kill(victim.as_u64());
         });
         return;
+    }
+    if force {
+        crate::serial_println!("FORCE1413-F3 victim={} claimed=true seen_in_section={}", victim.as_u64(), f3_seen);
     }
     crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
     crate::task::scheduler::with_scheduler(|scheduler| {

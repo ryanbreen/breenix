@@ -599,9 +599,62 @@ fn self_kill_child() {
     }
 }
 
+/// SCRATCH #1413 F3: a victim the kill finds inside a syscall. It sleeps 2 ms,
+/// then spins in user mode with no syscall, so a kill held after its refused
+/// claim finds the victim back in user mode.
+fn force1413_f3_leg() {
+    let (ready_read, ready_write) = io::pipe().unwrap_or_else(|_| fail("F3 ready pipe failed"));
+    match fork().unwrap_or_else(|_| fail("F3 fork failed")) {
+        ForkResult::Child => {
+            let _ = io::close(ready_read);
+            let _ = io::write(ready_write, b"R");
+            let _ = io::close(ready_write);
+            let nap = libbreenix::Timespec { tv_sec: 0, tv_nsec: 2_000_000 };
+            loop {
+                let _ = libbreenix::time::nanosleep(&nap);
+                for i in 0..50_000_000u64 {
+                    core::hint::black_box(i);
+                }
+            }
+        }
+        ForkResult::Parent(pid) => {
+            let pid = pid.raw() as i32;
+            track_victim(pid);
+            let _ = io::close(ready_write);
+            let mut ready = [0u8; 1];
+            if io::read(ready_read, &mut ready).ok() != Some(1) {
+                fail("F3 victim did not report readiness");
+            }
+            let _ = io::close(ready_read);
+            kill(pid, SIGKILL).unwrap_or_else(|_| fail("F3 kill failed"));
+            wait_killed(pid);
+            let mut current = evidence(pid);
+            for _ in 0..20_000 {
+                if current.report == 1 {
+                    break;
+                }
+                let _ = process::yield_now();
+                current = evidence(pid);
+            }
+            println!(
+                "SIGKILL_TEARDOWN_TEST: F3 pid={pid} report={} defer={} reclaim={} quarantine={}",
+                current.report, current.defer, current.reclaim, current.quarantine
+            );
+            if current.report != 1 {
+                fail("F3: the deferred SIGKILL victim's exit made no report");
+            }
+            println!("SIGKILL_TEARDOWN_TEST: F3 PASS");
+        }
+    }
+}
+
 fn main() {
     sigaction(SIGCHLD, Some(&Sigaction::new(sigchld_handler)), None)
         .unwrap_or_else(|_| fail("SIGCHLD sigaction failed"));
+    force1413_f3_leg();
+    if core::hint::black_box(true) {
+        std::process::exit(0);
+    }
 
     let fault_entry_before = counter("TEARDOWN_ENTRY_FAULT");
     let cr3_miss_before = counter("TEARDOWN_CR3_MISS");

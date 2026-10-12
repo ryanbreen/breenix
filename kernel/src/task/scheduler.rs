@@ -5843,6 +5843,13 @@ impl Scheduler {
     /// Claim every thread of `owner_pid` for an immediate kill, or none of
     /// them: when one is inside a kill-custody section (`KillCustody`) the
     /// kill must wait for that section to close, and nothing is claimed.
+    /// SCRATCH #1413 F3: whether a thread of `owner_pid` is inside a section.
+    pub fn force1413_in_custody(&self, owner_pid: u64) -> bool {
+        self.threads
+            .iter()
+            .any(|thread| thread.owner_pid == Some(owner_pid) && thread.in_kill_custody())
+    }
+
     pub fn claim_process_threads_for_kill(&mut self, owner_pid: u64) -> bool {
         let owned = |thread: &&Box<Thread>| thread.owner_pid == Some(owner_pid);
         if self.threads.iter().filter(owned).any(|thread| thread.in_kill_custody()) {

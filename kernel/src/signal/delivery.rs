@@ -354,6 +354,10 @@ fn write_signal_stack(
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+    #[cfg(target_arch = "aarch64")]
+    if sig == SIGKILL && process.name.starts_with("sigkill_teardown_test") {
+        crate::serial_println!("FORCE1413-F3 in-place SIGKILL at interrupt return pid={}", process.id.as_u64());
+    }
     #[cfg(target_arch = "x86_64")]
     if fatal_exit_code(sig).is_some() {
         let exit_code = signal_death_exit_code(process, sig);
