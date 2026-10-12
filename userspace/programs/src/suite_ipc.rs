@@ -38,8 +38,11 @@ mod nr {
     pub const CLOSE: u64 = 3;
     pub const MMAP: u64 = 9;
     pub const RT_SIGPROCMASK: u64 = 14;
+    #[cfg(not(libc_has = "shmget"))]
     pub const SHMGET: u64 = 29;
+    #[cfg(not(libc_has = "shmat"))]
     pub const SHMAT: u64 = 30;
+    #[cfg(not(libc_has = "shmctl"))]
     pub const SHMCTL: u64 = 31;
     pub const NANOSLEEP: u64 = 35;
     pub const GETPID: u64 = 39;
@@ -51,6 +54,7 @@ mod nr {
     pub const SEMOP: u64 = 65;
     #[cfg(not(libc_has = "semctl"))]
     pub const SEMCTL: u64 = 66;
+    #[cfg(not(libc_has = "shmdt"))]
     pub const SHMDT: u64 = 67;
     #[cfg(not(libc_has = "msgget"))]
     pub const MSGGET: u64 = 68;
@@ -83,8 +87,11 @@ mod nr {
     pub const CLOSE: u64 = 57;
     pub const MMAP: u64 = 222;
     pub const RT_SIGPROCMASK: u64 = 135;
+    #[cfg(not(libc_has = "shmget"))]
     pub const SHMGET: u64 = 194;
+    #[cfg(not(libc_has = "shmat"))]
     pub const SHMAT: u64 = 196;
+    #[cfg(not(libc_has = "shmctl"))]
     pub const SHMCTL: u64 = 195;
     pub const NANOSLEEP: u64 = 101;
     pub const GETPID: u64 = 172;
@@ -96,6 +103,7 @@ mod nr {
     pub const SEMOP: u64 = 193;
     #[cfg(not(libc_has = "semctl"))]
     pub const SEMCTL: u64 = 191;
+    #[cfg(not(libc_has = "shmdt"))]
     pub const SHMDT: u64 = 197;
     #[cfg(not(libc_has = "msgget"))]
     pub const MSGGET: u64 = 186;
