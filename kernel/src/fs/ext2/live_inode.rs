@@ -1,7 +1,7 @@
 //! Runtime inode identity. The mounted filesystem owns the table; external
 //! handles count observers independently of that owner. Drop never performs I/O.
 
-use alloc::collections::BTreeMap;
+use super::inode_index::InodeIndex;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
@@ -139,7 +139,7 @@ const PRUNE_PER_PIN: usize = 2;
 pub const EVICTION_BATCH: usize = 32;
 
 struct Table {
-    objects: BTreeMap<u32, Arc<LiveInode>>,
+    objects: InodeIndex<Arc<LiveInode>>,
     prune_cursor: u32,
 }
 
@@ -180,7 +180,7 @@ impl LiveInodes {
         Self {
             durable_epoch: AtomicU64::new(0),
             table: Mutex::new(Table {
-                objects: BTreeMap::new(),
+                objects: InodeIndex::new(),
                 prune_cursor: 0,
             }),
         }
@@ -208,7 +208,7 @@ impl LiveInodes {
             object.map.resync_unbound(size);
             object.clone()
         } else {
-            let object = Arc::new(LiveInode {
+            let object = Arc::try_new(LiveInode {
                 key: FileKey {
                     mount_instance: mount.instance,
                     inode,
@@ -221,8 +221,8 @@ impl LiveInodes {
                 external_handles: AtomicUsize::new(0),
                 pending: AtomicBool::new(false),
                 orphan: AtomicBool::new(false),
-            });
-            table.objects.insert(inode, object.clone());
+            }).map_err(|_| "No memory for ext2 inode object")?;
+            table.objects.insert(inode, object.clone())?;
             object
         };
         Ok(FileHandle::acquire(object))

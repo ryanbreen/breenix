@@ -195,8 +195,7 @@ impl PipeBuffer {
 
     /// Wake all threads waiting to read from this pipe
     fn wake_read_waiters(&mut self) {
-        let waiters: Vec<u64> = self.read_waiters.drain(..).collect();
-        for tid in waiters {
+        for tid in self.read_waiters.drain(..) {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
@@ -265,6 +264,14 @@ impl PipeBuffer {
         if !self.read_waiters.contains(&tid) {
             self.read_waiters.push(tid);
         }
+    }
+
+    pub fn try_add_read_waiter(&mut self, tid: u64) -> Result<(), i32> {
+        if !self.read_waiters.contains(&tid) {
+            self.read_waiters.try_reserve(1).map_err(|_| 12)?;
+            self.read_waiters.push(tid);
+        }
+        Ok(())
     }
 
     /// Unregister a thread from the read wait list

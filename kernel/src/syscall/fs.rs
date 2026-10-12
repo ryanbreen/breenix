@@ -1347,7 +1347,7 @@ fn copy_dirents_to_user(dirp: u64, records: &[u8]) -> Result<(), u64> {
 /// * On error: Negative errno
 pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     use super::errno::{EBADF, EFAULT, EINVAL, EIO, ENOTDIR};
-    use crate::fs::ext2::{self, dir::DirReader};
+    use crate::fs::ext2;
 
     log::debug!(
         "sys_getdents64: fd={}, dirp={:#x}, count={}",
@@ -1478,7 +1478,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
             Ok(data) => data,
             Err(e) => {
                 log::error!("sys_getdents64: failed to read directory: {}", e);
-                return SyscallResult::Err(EIO as u64);
+                return SyscallResult::Err(crate::fs::namei::fs_errno(e));
             }
         }
     };
@@ -1504,14 +1504,15 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     // rewind replays `.` and `..`.
     let mut records = alloc::vec::Vec::new();
     let buffer_size = count as usize;
+    if records.try_reserve(buffer_size.min(dir_data.len().saturating_mul(3))).is_err() { return SyscallResult::Err(12); }
     let mut bytes_written = 0usize;
     let mut new_position = start_position;
 
-    for positioned in DirReader::new(&dir_data).positioned() {
+    for positioned in ext2::dir::raw_entries(&dir_data) {
         if (positioned.offset as u64) < start_position {
             continue;
         }
-        let entry = &positioned.entry;
+        let entry = &positioned;
 
         let name_len = entry.name.len();
         // d_reclen = header + name + null terminator, aligned to 8 bytes
@@ -1527,7 +1528,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
             break;
         }
 
-        push_dirent64(&mut records, entry.inode as u64, positioned.next as i64, ext2_file_type_to_dt(entry.file_type), entry.name.as_bytes());
+        push_dirent64(&mut records, entry.inode as u64, positioned.next as i64, ext2_file_type_to_dt(entry.file_type), entry.name);
 
         bytes_written += reclen;
         new_position = positioned.next as u64;

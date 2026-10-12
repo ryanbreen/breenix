@@ -89,6 +89,8 @@ pub trait BlockDevice: Send + Sync {
 /// Errors that can occur during block device operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockError {
+    /// A fallible filesystem buffer allocation failed.
+    OutOfMemory,
     /// I/O error occurred during operation
     IoError,
     /// Block number is out of bounds
@@ -104,6 +106,7 @@ pub enum BlockError {
 impl fmt::Display for BlockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            BlockError::OutOfMemory => write!(f, "out of memory"),
             BlockError::IoError => write!(f, "I/O error"),
             BlockError::OutOfBounds => write!(f, "block number out of bounds"),
             BlockError::DeviceNotReady => write!(f, "device not ready"),

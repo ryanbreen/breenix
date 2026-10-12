@@ -22,6 +22,7 @@
 //! ```
 
 #![no_std]
+#![feature(c_variadic)]
 
 mod alloc_cache;
 mod mqueue;

@@ -628,3 +628,49 @@ mod tests {
         assert!(missing.is_none());
     }
 }
+
+/// A borrowed live directory record; iteration allocates no pathname strings.
+pub struct RawEntry<'a> {
+    pub inode: u32,
+    pub file_type: u8,
+    pub name: &'a [u8],
+    pub offset: usize,
+    pub next: usize,
+}
+pub fn raw_entries(data: &[u8]) -> impl Iterator<Item=RawEntry<'_>> {
+    let mut offset = 0usize;
+    core::iter::from_fn(move || loop {
+        let header = data.get(offset..offset.checked_add(8)?)?;
+        let inode = u32::from_le_bytes(header[..4].try_into().ok()?);
+        let len = u16::from_le_bytes(header[4..6].try_into().ok()?) as usize;
+        let name_len = header[6] as usize;
+        if len < 8 || offset.checked_add(len)? > data.len() { return None; }
+        let old = offset; offset += len;
+        if inode == 0 { continue; }
+        if name_len == 0 || name_len + 8 > len { return None; }
+        return Some(RawEntry { inode, file_type: header[7], name: &data[old+8..old+8+name_len], offset: old, next: offset });
+    })
+}
+pub fn find_inode(data:&[u8],name:&str)->Option<u32>{ raw_entries(data).find(|entry|entry.name==name.as_bytes()).map(|entry|entry.inode) }
+
+#[cfg(test)]
+mod raw_tests {
+    use super::*;
+    #[test]
+    fn borrowed_records_keep_exact_names_and_byte_cookies() {
+        let mut data = [0u8;40];
+        data[..4].copy_from_slice(&2u32.to_le_bytes()); data[4..6].copy_from_slice(&12u16.to_le_bytes());
+        data[6]=1; data[7]=EXT2_FT_DIR; data[8]=b'.';
+        data[16..18].copy_from_slice(&12u16.to_le_bytes());
+        data[24..28].copy_from_slice(&11u32.to_le_bytes()); data[28..30].copy_from_slice(&16u16.to_le_bytes());
+        data[30]=4; data[31]=EXT2_FT_FIFO; data[32..36].copy_from_slice(b"fifo");
+        let records: Vec<_> = raw_entries(&data).collect();
+        assert_eq!(records.len(),2);
+        assert_eq!((records[0].offset,records[0].next,records[0].name),(0,12,b".".as_slice()));
+        assert_eq!((records[1].inode,records[1].file_type,records[1].offset,records[1].next),(11,EXT2_FT_FIFO,24,40));
+        assert_eq!(find_inode(&data,"fifo"),Some(11));
+        data[32]=0xff; assert_eq!(find_inode(&data,"fifo"),None);
+        assert_eq!(raw_entries(&data).nth(1).unwrap().name,&[0xff,b'i',b'f',b'o']);
+        data[4..6].fill(0); assert!(raw_entries(&data).next().is_none());
+    }
+}

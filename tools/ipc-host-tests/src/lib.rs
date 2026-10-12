@@ -276,3 +276,9 @@ mod devfs_entries;
 
 #[path = "../../../kernel/src/syscall/at_path.rs"]
 mod at_path;
+
+#[path = "../../../kernel/src/fs/ext2/inode_index.rs"]
+mod inode_index;
+
+#[path = "../../../kernel/src/fs/ext2/dir.rs"]
+pub mod dir_entries;

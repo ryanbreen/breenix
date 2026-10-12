@@ -501,7 +501,8 @@ pub fn copy_cstr_from_user(ptr: u64) -> Result<alloc::string::String, u64> {
         return Err(14); // EFAULT - kernel address
     }
 
-    let mut bytes = Vec::with_capacity(256);
+    let mut bytes = Vec::new();
+    bytes.try_reserve(256).map_err(|_| 12u64)?;
 
     for offset in 0..MAX_PATH_LEN {
         let byte_addr = match ptr.checked_add(offset as u64) {
@@ -522,6 +523,7 @@ pub fn copy_cstr_from_user(ptr: u64) -> Result<alloc::string::String, u64> {
             return String::from_utf8(bytes).map_err(|_| 22); // EINVAL for invalid UTF-8
         }
 
+        bytes.try_reserve(1).map_err(|_| 12u64)?;
         bytes.push(byte);
     }
 
