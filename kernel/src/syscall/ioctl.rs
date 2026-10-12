@@ -93,7 +93,7 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
                 };
                 let n = RTC_FORCE_READS.load(core::sync::atomic::Ordering::SeqCst);
                 if n != 0 { RTC_FORCE_READS.fetch_add(1, core::sync::atomic::Ordering::SeqCst); }
-                if n == 34 {
+                if n == 33 {
                     let hz = crate::time::tsc::frequency_hz();
                     let begin = crate::time::tsc::read_tsc_serialized();
                     
