@@ -2788,12 +2788,15 @@ fn handle_devfs_getdents64(
             break;
         }
 
-        // Get device inode
-        let inode = devfs::lookup(device_name)
-            .map(|d| d.device_type.inode())
-            .unwrap_or(0);
+        // The shared-memory name table supplies a virtual directory rather
+        // than a character device. Its inode agrees with shmem::stat_path.
+        let (inode, file_type) = if device_name.as_str() == "shm" {
+            (1, DT_DIR)
+        } else {
+            (devfs::lookup(device_name).map(|d| d.device_type.inode()).unwrap_or(0), DT_CHR)
+        };
 
-        push_dirent64(&mut records, inode, (entry_index + 1) as i64, DT_CHR, device_name.as_bytes());
+        push_dirent64(&mut records, inode, (entry_index + 1) as i64, file_type, device_name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
