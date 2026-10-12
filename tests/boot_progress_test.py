@@ -74,6 +74,7 @@ class ProgressTest(unittest.TestCase):
     def test_kernel_diagnostics_do_not_count_on_either_serial(self):
         for source in ('mixed', 'user', 'kernel'):
             self.feed('[ INFO] kernel::task: thread count=100\n[CPU_CENSUS:seq=23]\n'
+                      'T0[RESUME_PC_CENSUS:cpu=0:seq=24]\n'
                       '[smp] user-thread dispatches per CPU: cpu0=4\n'
                       '[diagnostic] still running\n', 119, source, userspace=source=='user')
         self.assertTrue(self.progress.stalled(now=120))
