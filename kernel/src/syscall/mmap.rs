@@ -829,10 +829,28 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
         }
     };
 
-    match unmap_range(process, addr, end_addr) {
+    let __t0 = crate::scratch_probe::now_ns();
+    let __s0 = crate::scratch_probe::shootdowns_here();
+    let __pages = {
+        let mut n = 0u64;
+        if let Some(pt) = process.page_table.as_deref() {
+            let mut from = addr;
+            while let Some(page) = pt.next_mapped_page(from, end_addr) {
+                from = page.start_address().as_u64() + PAGE_SIZE;
+                n += 1;
+            }
+        }
+        n
+    };
+    let r = match unmap_range(process, addr, end_addr) {
         Ok(()) => SyscallResult::Ok(0),
         Err(errno) => SyscallResult::Err(errno),
+    };
+    let __dt = crate::scratch_probe::now_ns() - __t0;
+    if __dt > 2_000_000 {
+        crate::scratch_probe::push(crate::scratch_probe::MUNMAP, [__dt, __t0, crate::scratch_probe::cpu(), current_thread_id, end_addr - addr, __pages, crate::scratch_probe::shootdowns_here() - __s0, 0, 0]);
     }
+    r
 }
 
 /// Unmap `[addr, end_addr)` (page-aligned) from `process`, splitting VMAs that

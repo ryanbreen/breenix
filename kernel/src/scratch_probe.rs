@@ -16,6 +16,10 @@ pub const LATE_WAIT: u64 = 3;
 pub const FUTEX_WAKE_SLOW: u64 = 4;
 pub const IDLE_GAP: u64 = 5;
 pub const POLL_FAIL: u64 = 6;
+pub const MUNMAP: u64 = 7;
+pub static SHOOTDOWNS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static PM_SHOOT0: AtomicU64 = AtomicU64::new(0);
+pub static PM_OWNER_TID: AtomicU64 = AtomicU64::new(0);
 
 pub fn now_ns() -> u64 {
     crate::signal::monotonic_nanos()
@@ -65,12 +69,14 @@ pub fn drain() {
                     core::str::from_utf8_unchecked(core::slice::from_raw_parts(w[4] as *const u8, w[5] as usize))
                 };
                 log::info!(
-                    "[P1401 PM_HOLD us={} at_ms={} cpu={} site={}:{}]",
+                    "[P1401 PM_HOLD us={} at_ms={} cpu={} site={}:{} tid={} shootdowns={}]",
                     w[1] / 1000,
                     w[2] / 1_000_000,
                     w[3],
                     file,
-                    w[6]
+                    w[6],
+                    w[7],
+                    w[8]
                 );
             }
             FBDRAW => log::info!(
@@ -106,6 +112,16 @@ pub fn drain() {
                 w[2] / 1_000_000,
                 w[3],
                 w[4]
+            ),
+            MUNMAP => log::info!(
+                "[P1401 MUNMAP us={} at_ms={} cpu={} tid={} len={} pages={} shootdowns={}]",
+                w[1] / 1000,
+                w[2] / 1_000_000,
+                w[3],
+                w[4],
+                w[5],
+                w[6],
+                w[7]
             ),
             POLL_FAIL => log::info!("[P1401 POLL_FAIL at_ms={} cpu={} holder_cpu={}]", w[1] / 1_000_000, w[2], w[3]),
             _ => {}
@@ -151,6 +167,19 @@ pub fn pm_acquired(loc: &'static core::panic::Location<'static>) {
     PM_FILE.store(loc.file().as_ptr() as u64, Ordering::Relaxed);
     PM_FILE_LEN.store(loc.file().len() as u64, Ordering::Relaxed);
     PM_LINE.store(loc.line() as u64, Ordering::Relaxed);
+    PM_SHOOT0.store(shootdowns_here(), Ordering::Relaxed);
+}
+
+pub fn shootdowns_here() -> u64 {
+    let c = cpu() as usize;
+    if c < 8 { SHOOTDOWNS[c].load(Ordering::Relaxed) } else { 0 }
+}
+
+pub fn note_shootdown() {
+    let c = cpu() as usize;
+    if c < 8 {
+        SHOOTDOWNS[c].fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 pub fn pm_released() {
@@ -166,8 +195,8 @@ pub fn pm_released() {
                 PM_FILE.load(Ordering::Relaxed),
                 PM_FILE_LEN.load(Ordering::Relaxed),
                 PM_LINE.load(Ordering::Relaxed),
-                0,
-                0,
+                PM_OWNER_TID.load(Ordering::Relaxed),
+                shootdowns_here().wrapping_sub(PM_SHOOT0.load(Ordering::Relaxed)),
                 0,
             ],
         );
