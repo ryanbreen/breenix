@@ -1462,8 +1462,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     sched.block_current_in_syscall();
                 });
 
-                // Double-check for data after setting Blocked state
-                if crate::net::tcp::tcp_has_data(&conn_id) {
+                // Recheck data and EOF after publishing the blocked state.
+                if crate::net::tcp::tcp_recv_ready(&conn_id) {
                     log::debug!(
                         "TCP: Thread {} caught race - data arrived during block setup",
                         thread_id

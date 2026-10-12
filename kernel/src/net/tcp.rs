@@ -1860,6 +1860,24 @@ pub fn tcp_has_data(conn_id: &ConnectionId) -> bool {
     })
 }
 
+/// Whether recv can complete, including EOF without buffered data.
+///
+/// A reader rechecks this after publishing its blocked state. A FIN may have
+/// already consumed the waiter wake before that publication, so EOF must keep
+/// the reader from sleeping just as buffered data does.
+pub fn tcp_recv_ready(conn_id: &ConnectionId) -> bool {
+    with_tcp_connections(|connections| {
+        connections
+            .get(conn_id)
+            .map(|c| {
+                !c.rx_buffer.is_empty()
+                    || c.recv_shutdown
+                    || matches!(c.state, TcpState::CloseWait | TcpState::Closed | TcpState::TimeWait)
+            })
+            .unwrap_or(false)
+    })
+}
+
 /// Wake all threads waiting on a listening socket (called when SYN arrives)
 fn wake_accept_waiters(listener: &ListenSocket) {
     let readers: Vec<u64> = {
