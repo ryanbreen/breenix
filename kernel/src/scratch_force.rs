@@ -2,7 +2,7 @@
 //!
 //! Emulates a host stall of the vCPU that runs a scheduling pass started by
 //! sched_yield in which the yielding thread keeps its CPU: once per armed
-//! timed futex wait, in a window from 3 ms before its deadline to 1 ms after,
+//! timed futex wait or sleep, in a window from 3 ms before its deadline to 1 ms after,
 //! such a pass spins 80 ms with the scheduler lock (and PROCESS_MANAGER)
 //! held, as run 20261012T122252Z-x86_64-gate-878f caught the suite runner's
 //! CPU doing for 101 ms.
@@ -46,6 +46,19 @@ pub fn after_pass(old: u64, new: u64) {
     if c >= 8 || !YIELD_PASS[c].swap(false, Ordering::AcqRel) || old != new {
         return;
     }
+    stall_if_due();
+}
+
+/// sys_yield returned without a pass (the fix's fast path): the same stall,
+/// on the same CPU, with interrupts masked as they are inside a pass, but
+/// holding no lock.
+pub fn fast_path() {
+    x86_64::instructions::interrupts::without_interrupts(stall_if_due);
+}
+
+/// Spin 80 ms once per armed deadline, when called from 3 ms before it to
+/// 1 ms after it.
+fn stall_if_due() {
     let deadline = ARMED.load(Ordering::Acquire);
     if deadline == 0 {
         return;
