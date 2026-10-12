@@ -1,6 +1,6 @@
-//! System V IPC: ftok and the msg, sem and shm calls.
+//! System V IPC: ftok and the msg and sem calls.
 //!
-//! Written from POSIX.1-2024 (sys/ipc.h, sys/msg.h, sys/sem.h, sys/shm.h)
+//! Written from POSIX.1-2024 (sys/ipc.h, sys/msg.h, sys/sem.h)
 //! and Linux's system call ABI: each call but ftok is one system call, and
 //! the kernel's structures are Linux's 64-bit ones.
 
@@ -49,4 +49,32 @@ pub unsafe extern "C" fn msgrcv(msqid: i32, msgp: *mut u8, msgsz: usize, msgtyp:
 #[no_mangle]
 pub unsafe extern "C" fn msgctl(msqid: i32, cmd: i32, buf: *mut u8) -> i32 {
     syscall_result_to_c_int(raw::syscall3(nr::MSGCTL, msqid as u64, cmd as u64, buf as u64) as i64)
+}
+
+/// semget: the identifier of the semaphore set `key` names.
+#[no_mangle]
+pub extern "C" fn semget(key: i32, nsems: i32, semflg: i32) -> i32 {
+    syscall_result_to_c_int(unsafe { raw::syscall3(nr::SEMGET, key as u64, nsems as u64, semflg as u64) } as i64)
+}
+
+/// semop: apply `nsops` operations to a semaphore set at once.
+#[no_mangle]
+pub unsafe extern "C" fn semop(semid: i32, sops: *mut u8, nsops: usize) -> i32 {
+    syscall_result_to_c_int(raw::syscall3(nr::SEMOP, semid as u64, sops as u64, nsops as u64) as i64)
+}
+
+/// semtimedop: semop that gives up with EAGAIN once the relative `timeout`,
+/// if not null, has passed.
+#[no_mangle]
+pub unsafe extern "C" fn semtimedop(semid: i32, sops: *mut u8, nsops: usize, timeout: *const u8) -> i32 {
+    syscall_result_to_c_int(raw::syscall4(nr::SEMTIMEDOP, semid as u64, sops as u64, nsops as u64, timeout as u64) as i64)
+}
+
+/// semctl: a control command on a semaphore set or one semaphore. The
+/// fourth argument, when the command takes one, is union semun, which the
+/// caller passes as one register-sized argument: the value for SETVAL,
+/// otherwise a pointer.
+#[no_mangle]
+pub extern "C" fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
+    syscall_result_to_c_int(unsafe { raw::syscall4(nr::SEMCTL, semid as u64, semnum as u64, cmd as u64, arg) } as i64)
 }
