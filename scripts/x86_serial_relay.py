@@ -73,7 +73,7 @@ def live_serial_command(command, outputs):
                 if command[index - 1] == "-serial" and command[index] == target:
                     relay = SerialRelay(output)
                     relays.append(relay)
-                    command[index] = f"unix:{relay.path},server=off,wait=off"
+                    command[index] = f"unix:{relay.path},server=off"
                     break
         if any(command[index - 1] == "-serial" and value.startswith("file:")
                for index, value in enumerate(command) if index > 0):
