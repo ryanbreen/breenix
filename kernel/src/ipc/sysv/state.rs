@@ -2,12 +2,12 @@
 //! semaphore sets and their undo adjustments, and the Linux ABI's structures.
 //!
 //! Nothing in this file locks, sleeps, reads a clock or touches user memory;
-//! `msg`, `sem` and `shm` do that around it. The host tests in
-//! tests/sysv_ipc_state.rs build this file on its own.
+//! `msg`, `sem` and `shm` do that around it. Everything here that grows
+//! does so fallibly and reports ENOMEM, since a user's calls drive it. The
+//! host tests in tests/sysv_ipc_state.rs build this file on its own.
 
-use crate::syscall::errno::{E2BIG, EEXIST, EINVAL, ENOENT, ENOSPC, ERANGE};
-use alloc::collections::{BTreeMap, VecDeque};
-use alloc::vec;
+use crate::syscall::errno::{E2BIG, EEXIST, EINVAL, ENOENT, ENOMEM, ENOSPC, ERANGE};
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 pub const IPC_PRIVATE: i32 = 0;
@@ -18,10 +18,21 @@ pub const IPC_NOWAIT: u32 = 0o4000;
 pub const IPC_RMID: u32 = 0;
 pub const IPC_SET: u32 = 1;
 pub const IPC_STAT: u32 = 2;
+/// Linux's control command for a class's limits.
+pub const IPC_INFO: u32 = 3;
 /// Linux's request for the 64-bit structures, the only ones Breenix has.
 pub const IPC_64: u32 = 0x100;
 
 pub const MSG_NOERROR: u32 = 0o10000;
+/// Linux's msgrcv flags: the first message not of the type, and a copy of
+/// the message at a position, left queued.
+pub const MSG_EXCEPT: u32 = 0o20000;
+pub const MSG_COPY: u32 = 0o40000;
+
+/// Linux's msgctl commands beyond POSIX's.
+pub const MSG_STAT: u32 = 11;
+pub const MSG_INFO: u32 = 12;
+pub const MSG_STAT_ANY: u32 = 13;
 
 pub const GETPID: u32 = 11;
 pub const GETVAL: u32 = 12;
@@ -31,6 +42,10 @@ pub const GETZCNT: u32 = 15;
 pub const SETVAL: u32 = 16;
 pub const SETALL: u32 = 17;
 pub const SEM_UNDO: i16 = 0x1000;
+/// Linux's semctl commands beyond POSIX's.
+pub const SEM_STAT: u32 = 18;
+pub const SEM_INFO: u32 = 19;
+pub const SEM_STAT_ANY: u32 = 20;
 
 pub const SHM_RDONLY: u32 = 0o10000;
 pub const SHM_RND: u32 = 0o20000;
@@ -46,6 +61,13 @@ pub const SEMMSL: usize = 32000;
 pub const SEMMNI: usize = 32000;
 pub const SEMOPM: usize = 500;
 pub const SEMVMX: i32 = 32767;
+/// Linux's derived semaphore limits, which IPC_INFO reports.
+pub const SEMMNS: usize = SEMMNI * SEMMSL;
+pub const SEMUSZ: usize = 20;
+/// Linux's message pool figures, which IPC_INFO reports.
+pub const MSGPOOL: usize = MSGMNI * MSGMNB / 1024;
+pub const MSGSSZ: usize = 16;
+pub const MSGSEG: u16 = 0xffff;
 pub const SHMMNI: usize = 4096;
 pub const SHMMIN: u64 = 1;
 pub const SHMMAX: u64 = u64::MAX - (1 << 24);
@@ -57,6 +79,94 @@ pub const WRITE: u32 = 2;
 
 /// An identifier is `seq * SEQ_MULTIPLIER + index`, as on Linux.
 const SEQ_MULTIPLIER: i32 = 32768;
+
+/// A vector of `len` copies of `value`, or ENOMEM.
+pub fn try_vec<T: Clone>(len: usize, value: T) -> Result<Vec<T>, i32> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(len).map_err(|_| ENOMEM)?;
+    v.resize(len, value);
+    Ok(v)
+}
+
+/// A copy of `bytes`, or ENOMEM.
+pub fn try_copy(bytes: &[u8]) -> Result<Vec<u8>, i32> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(bytes.len()).map_err(|_| ENOMEM)?;
+    v.extend_from_slice(bytes);
+    Ok(v)
+}
+
+/// Push `item` onto `v`, or ENOMEM leaving `v` as it was.
+pub fn try_push<T>(v: &mut Vec<T>, item: T) -> Result<(), i32> {
+    v.try_reserve(1).map_err(|_| ENOMEM)?;
+    v.push(item);
+    Ok(())
+}
+
+/// A map kept as a vector sorted by key, so that adding to it can fail with
+/// ENOMEM where a BTreeMap would panic.
+pub struct VecMap<K, V> {
+    items: Vec<(K, V)>,
+}
+
+impl<K: Ord + Copy, V> VecMap<K, V> {
+    pub const fn new() -> Self {
+        VecMap { items: Vec::new() }
+    }
+
+    fn find(&self, key: K) -> Result<usize, usize> {
+        self.items.binary_search_by(|(k, _)| k.cmp(&key))
+    }
+
+    pub fn get(&self, key: K) -> Option<&V> {
+        self.find(key).ok().map(|at| &self.items[at].1)
+    }
+
+    pub fn get_mut(&mut self, key: K) -> Option<&mut V> {
+        self.find(key).ok().map(|at| &mut self.items[at].1)
+    }
+
+    /// Map `key` to `value`, replacing any value it had; ENOMEM changes
+    /// nothing.
+    pub fn insert(&mut self, key: K, value: V) -> Result<(), i32> {
+        match self.find(key) {
+            Ok(at) => self.items[at].1 = value,
+            Err(at) => {
+                self.items.try_reserve(1).map_err(|_| ENOMEM)?;
+                self.items.insert(at, (key, value));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn remove(&mut self, key: K) -> Option<V> {
+        self.find(key).ok().map(|at| self.items.remove(at).1)
+    }
+
+    /// Remove and return the first entry whose key `pick` accepts.
+    pub fn take_first(&mut self, pick: impl Fn(&K) -> bool) -> Option<(K, V)> {
+        let at = self.items.iter().position(|(k, _)| pick(k))?;
+        Some(self.items.remove(at))
+    }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool) {
+        self.items.retain_mut(|(k, v)| keep(k, v));
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &(K, V)> {
+        self.items.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut (K, V)> {
+        self.items.iter_mut()
+    }
+}
+
+impl<K: Ord + Copy, V> Default for VecMap<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// struct ipc_perm, less its layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,11 +212,17 @@ impl IpcPerm {
         euid == 0 || euid == self.uid || euid == self.cuid
     }
 
-    /// IPC_SET: the new owner, group and the low nine mode bits.
-    pub fn set(&mut self, uid: u32, gid: u32, mode: u32) {
+    /// IPC_SET: the new owner, group and the low nine mode bits. EINVAL,
+    /// changing nothing, for a uid or gid of -1, which names no one, as on
+    /// Linux.
+    pub fn set(&mut self, uid: u32, gid: u32, mode: u32) -> Result<(), i32> {
+        if uid == u32::MAX || gid == u32::MAX {
+            return Err(EINVAL);
+        }
         self.uid = uid;
         self.gid = gid;
         self.mode = (self.mode & !0o777) | (mode & 0o777);
+        Ok(())
     }
 }
 
@@ -125,14 +241,14 @@ pub struct Entry<T> {
 /// One class's objects by identifier, and the keys that name them.
 pub struct IpcIds<T> {
     slots: Vec<Option<Entry<T>>>,
-    keys: BTreeMap<i32, usize>,
+    keys: VecMap<i32, usize>,
     seq: u16,
     limit: usize,
 }
 
 impl<T> IpcIds<T> {
     pub const fn new(limit: usize) -> Self {
-        IpcIds { slots: Vec::new(), keys: BTreeMap::new(), seq: 0, limit }
+        IpcIds { slots: Vec::new(), keys: VecMap::new(), seq: 0, limit }
     }
 
     /// What an xxxget of `key` with `flags` finds: Some(id) of an existing
@@ -141,7 +257,7 @@ impl<T> IpcIds<T> {
         if key == IPC_PRIVATE {
             return Ok(None);
         }
-        match self.keys.get(&key) {
+        match self.keys.get(key) {
             None if flags & IPC_CREAT != 0 => Ok(None),
             None => Err(ENOENT),
             Some(_) if flags & IPC_CREAT != 0 && flags & IPC_EXCL != 0 => Err(EEXIST),
@@ -149,22 +265,22 @@ impl<T> IpcIds<T> {
         }
     }
 
-    /// Add an object: its new identifier, or ENOSPC when the class is full.
-    /// A key other than IPC_PRIVATE then names it.
+    /// Add an object: its new identifier, ENOSPC when the class is full or
+    /// ENOMEM. A key other than IPC_PRIVATE then names it.
     pub fn insert(&mut self, mut perm: IpcPerm, obj: T) -> Result<i32, i32> {
         let index = match self.slots.iter().position(Option::is_none) {
             Some(index) => index,
             None if self.slots.len() < self.limit => {
-                self.slots.push(None);
+                try_push(&mut self.slots, None)?;
                 self.slots.len() - 1
             }
             None => return Err(ENOSPC),
         };
+        if perm.key != IPC_PRIVATE {
+            self.keys.insert(perm.key, index)?;
+        }
         perm.seq = self.seq;
         self.seq = self.seq.wrapping_add(1);
-        if perm.key != IPC_PRIVATE {
-            self.keys.insert(perm.key, index);
-        }
         self.slots[index] = Some(Entry { perm, obj });
         Ok(self.id_of(index))
     }
@@ -183,8 +299,8 @@ impl<T> IpcIds<T> {
     pub fn remove(&mut self, id: i32) -> Option<Entry<T>> {
         let index = self.index(id)?;
         let entry = self.slots[index].take()?;
-        if self.keys.get(&entry.perm.key) == Some(&index) {
-            self.keys.remove(&entry.perm.key);
+        if self.keys.get(entry.perm.key) == Some(&index) {
+            self.keys.remove(entry.perm.key);
         }
         Some(entry)
     }
@@ -194,8 +310,8 @@ impl<T> IpcIds<T> {
     pub fn forget_key(&mut self, id: i32) {
         let Some(index) = self.index(id) else { return };
         let Some(entry) = self.slots[index].as_mut() else { return };
-        if self.keys.get(&entry.perm.key) == Some(&index) {
-            self.keys.remove(&entry.perm.key);
+        if self.keys.get(entry.perm.key) == Some(&index) {
+            self.keys.remove(entry.perm.key);
         }
         entry.perm.key = IPC_PRIVATE;
     }
@@ -206,6 +322,36 @@ impl<T> IpcIds<T> {
             let entry = slot.as_mut()?;
             Some((i32::from(entry.perm.seq) * SEQ_MULTIPLIER + index as i32, entry))
         })
+    }
+
+    /// Every object, with its identifier.
+    pub fn iter(&self) -> impl Iterator<Item = (i32, &Entry<T>)> {
+        self.slots.iter().enumerate().filter_map(|(index, slot)| {
+            let entry = slot.as_ref()?;
+            Some((i32::from(entry.perm.seq) * SEQ_MULTIPLIER + index as i32, entry))
+        })
+    }
+
+    /// How many objects the class holds.
+    pub fn in_use(&self) -> usize {
+        self.slots.iter().filter(|slot| slot.is_some()).count()
+    }
+
+    /// The highest index an object holds, or 0 when there is none: what
+    /// Linux's IPC_INFO and xxx_INFO commands return.
+    pub fn highest_index(&self) -> usize {
+        self.slots.iter().rposition(Option::is_some).unwrap_or(0)
+    }
+
+    /// The object at index `index`, as Linux's xxx_STAT commands take it
+    /// (the index bits of an identifier), with its identifier.
+    pub fn at_index(&self, index: i32) -> Option<(i32, &Entry<T>)> {
+        if index < 0 {
+            return None;
+        }
+        let index = (index % SEQ_MULTIPLIER) as usize;
+        let entry = self.slots.get(index)?.as_ref()?;
+        Some((self.id_of(index), entry))
     }
 
     fn id_of(&self, index: usize) -> i32 {
@@ -259,21 +405,23 @@ impl MsgQueue {
         self.cbytes + len <= self.qbytes && self.msgs.len() < self.qbytes
     }
 
-    pub fn push(&mut self, msg: Message, pid: i32, now: i64) {
+    /// Queue `msg` as sent by `pid`; ENOMEM, queueing nothing, when the
+    /// queue cannot grow.
+    pub fn push(&mut self, msg: Message, pid: i32, now: i64) -> Result<(), i32> {
+        self.msgs.try_reserve(1).map_err(|_| ENOMEM)?;
         self.cbytes += msg.text.len();
         self.msgs.push_back(msg);
         self.lspid = pid;
         self.stime = now;
+        Ok(())
     }
 
-    /// The message msgrcv with `msgtyp` takes: for 0 the first; for a
-    /// positive type the first of that type; for a negative one the first of
-    /// the lowest type no greater than its absolute value.
-    pub fn find(&self, msgtyp: i64) -> Option<usize> {
-        match msgtyp {
-            0 => (!self.msgs.is_empty()).then_some(0),
-            t if t > 0 => self.msgs.iter().position(|m| m.mtype == t),
-            t => {
+    /// The message `select` picks.
+    pub fn find(&self, select: Select) -> Option<usize> {
+        match select {
+            Select::Type(0) => (!self.msgs.is_empty()).then_some(0),
+            Select::Type(t) if t > 0 => self.msgs.iter().position(|m| m.mtype == t),
+            Select::Type(t) => {
                 let limit = t.unsigned_abs();
                 let mut best: Option<(usize, i64)> = None;
                 for (i, m) in self.msgs.iter().enumerate() {
@@ -283,16 +431,26 @@ impl MsgQueue {
                 }
                 best.map(|(i, _)| i)
             }
+            Select::Except(t) => self.msgs.iter().position(|m| m.mtype != t),
+            Select::Copy(n) => usize::try_from(n).ok().filter(|&n| n < self.msgs.len()),
         }
     }
 
-    /// msgrcv into `size` bytes: the message, cut to `size` when `noerror`;
-    /// None when no message matches; E2BIG, leaving it queued, when it is
-    /// longer than `size` without `noerror`.
-    pub fn receive(&mut self, msgtyp: i64, size: usize, noerror: bool, pid: i32, now: i64) -> Result<Option<Message>, i32> {
-        let Some(index) = self.find(msgtyp) else { return Ok(None) };
-        if self.msgs[index].text.len() > size && !noerror {
+    /// msgrcv into `size` bytes: the message `select` picks, cut to `size`
+    /// when `noerror`; None when no message matches; E2BIG, leaving it
+    /// queued, when it is longer than `size` without `noerror`. Select::Copy
+    /// leaves the message queued and the queue's times and pids unchanged,
+    /// and can fail with ENOMEM.
+    pub fn receive(&mut self, select: Select, size: usize, noerror: bool, pid: i32, now: i64) -> Result<Option<Message>, i32> {
+        let Some(index) = self.find(select) else { return Ok(None) };
+        let len = self.msgs[index].text.len();
+        if len > size && !noerror {
             return Err(E2BIG);
+        }
+        if let Select::Copy(_) = select {
+            let m = &self.msgs[index];
+            let text = try_copy(&m.text[..len.min(size)])?;
+            return Ok(Some(Message { mtype: m.mtype, text }));
         }
         let Some(mut msg) = self.msgs.remove(index) else { return Ok(None) };
         self.cbytes -= msg.text.len();
@@ -301,6 +459,35 @@ impl MsgQueue {
         self.rtime = now;
         Ok(Some(msg))
     }
+}
+
+/// Which message msgrcv takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Select {
+    /// msgtyp's meaning: for 0 the first message; for a positive type the
+    /// first of that type; for a negative one the first of the lowest type
+    /// no greater than its absolute value.
+    Type(i64),
+    /// MSG_EXCEPT with a positive type: the first message of another type.
+    Except(i64),
+    /// MSG_COPY: a copy of the message at this position, counting from 0.
+    Copy(i64),
+}
+
+/// What msgrcv's `msgtyp` and `flags` select, as Linux reads them:
+/// MSG_COPY takes a position and needs IPC_NOWAIT and no MSG_EXCEPT (EINVAL
+/// otherwise); MSG_EXCEPT applies to a positive type only.
+pub fn select(msgtyp: i64, flags: u32) -> Result<Select, i32> {
+    if flags & MSG_COPY != 0 {
+        if flags & MSG_EXCEPT != 0 || flags & IPC_NOWAIT == 0 {
+            return Err(EINVAL);
+        }
+        return Ok(Select::Copy(msgtyp));
+    }
+    if msgtyp > 0 && flags & MSG_EXCEPT != 0 {
+        return Ok(Select::Except(msgtyp));
+    }
+    Ok(Select::Type(msgtyp))
 }
 
 // ---------------------------------------------------------------------------
@@ -352,8 +539,9 @@ pub struct SemSet {
 }
 
 impl SemSet {
-    pub fn new(nsems: usize, now: i64) -> Self {
-        SemSet { vals: vec![0; nsems], pids: vec![0; nsems], otime: 0, ctime: now, waiters: Vec::new() }
+    /// A set of `nsems` semaphores, all 0, or ENOMEM.
+    pub fn try_new(nsems: usize, now: i64) -> Result<Self, i32> {
+        Ok(SemSet { vals: try_vec(nsems, 0)?, pids: try_vec(nsems, 0)?, otime: 0, ctime: now, waiters: Vec::new() })
     }
 
     pub fn nsems(&self) -> usize {
@@ -361,38 +549,49 @@ impl SemSet {
     }
 
     /// Apply all of `ops` or none of them, in order, as process `pid`.
-    /// `adj` is the caller's undo adjustments for this set, changed only
-    /// when every operation applies. ERANGE when a value would pass SEMVMX
-    /// or an adjustment leave i16's range. Every `num` is below nsems.
+    /// `adj` is the caller's undo adjustments for this set (empty when no
+    /// operation has SEM_UNDO), changed only when every operation applies.
+    /// ERANGE when a value would pass SEMVMX or an adjustment leave i16's
+    /// range; ENOMEM. Every `num` is below nsems.
     pub fn attempt(&mut self, ops: &[SemOp], adj: &mut [i16], pid: i32, now: i64) -> Result<Attempt, i32> {
-        let mut vals: Vec<i32> = self.vals.iter().map(|&v| i32::from(v)).collect();
-        let mut new_adj: Vec<i32> = adj.iter().map(|&a| i32::from(a)).collect();
+        // The semaphores the operations touch: number, value and adjustment
+        // as the operations so far leave them.
+        let mut touched: Vec<(usize, i32, i32)> = Vec::new();
+        touched.try_reserve_exact(ops.len()).map_err(|_| ENOMEM)?;
         for op in ops {
             let num = usize::from(op.num);
-            let val = vals[num];
-            let wait = if op.op == 0 { val != 0 } else { val + i32::from(op.op) < 0 };
+            let at = match touched.iter().position(|t| t.0 == num) {
+                Some(at) => at,
+                None => {
+                    let undo = adj.get(num).map_or(0, |&a| i32::from(a));
+                    touched.push((num, i32::from(self.vals[num]), undo));
+                    touched.len() - 1
+                }
+            };
+            let (_, val, undo) = &mut touched[at];
+            let wait = if op.op == 0 { *val != 0 } else { *val + i32::from(op.op) < 0 };
             if wait {
                 let nowait = op.flg as u16 as u32 & IPC_NOWAIT != 0;
                 return Ok(Attempt::Block { num: op.num, zero: op.op == 0, nowait });
             }
-            let next = val + i32::from(op.op);
+            let next = *val + i32::from(op.op);
             if next > SEMVMX {
                 return Err(ERANGE);
             }
             if op.flg & SEM_UNDO != 0 && op.op != 0 {
-                let undo = new_adj[num] - i32::from(op.op);
-                if undo < i32::from(i16::MIN) || undo > i32::from(i16::MAX) {
+                let next_undo = *undo - i32::from(op.op);
+                if next_undo < i32::from(i16::MIN) || next_undo > i32::from(i16::MAX) {
                     return Err(ERANGE);
                 }
-                new_adj[num] = undo;
+                *undo = next_undo;
             }
-            vals[num] = next;
+            *val = next;
         }
-        for (slot, v) in self.vals.iter_mut().zip(&vals) {
-            *slot = *v as u16;
-        }
-        for (slot, a) in adj.iter_mut().zip(&new_adj) {
-            *slot = *a as i16;
+        for &(num, val, undo) in &touched {
+            self.vals[num] = val as u16;
+            if let Some(slot) = adj.get_mut(num) {
+                *slot = undo as i16;
+            }
         }
         for op in ops {
             self.pids[usize::from(op.num)] = pid;
@@ -407,15 +606,11 @@ impl SemSet {
         (mine().filter(|w| !w.zero).count(), mine().filter(|w| w.zero).count())
     }
 
-    /// SETVAL: ERANGE outside 0..=SEMVMX.
-    pub fn set_val(&mut self, num: usize, val: i32, pid: i32, now: i64) -> Result<(), i32> {
-        if !(0..=SEMVMX).contains(&val) {
-            return Err(ERANGE);
-        }
+    /// SETVAL of a semaphore in the set; `in_range(val)` was checked first.
+    pub fn set_val(&mut self, num: usize, val: i32, pid: i32, now: i64) {
         self.vals[num] = val as u16;
         self.pids[num] = pid;
         self.ctime = now;
-        Ok(())
     }
 
     /// SETALL: ERANGE, changing nothing, if any value passes SEMVMX.
@@ -435,8 +630,9 @@ impl SemSet {
     }
 
     /// An exiting process's undo adjustments: each value moves by its
-    /// adjustment, held to 0..=SEMVMX. Whether any value changed.
-    pub fn apply_undo(&mut self, adj: &[i16], pid: i32) -> bool {
+    /// adjustment, held to 0..=SEMVMX, and sem_otime becomes `now`, as on
+    /// Linux. Whether any value changed.
+    pub fn apply_undo(&mut self, adj: &[i16], pid: i32, now: i64) -> bool {
         let mut changed = false;
         let nsems = self.vals.len();
         for (num, &a) in adj.iter().enumerate().filter(|&(num, &a)| a != 0 && num < nsems) {
@@ -445,49 +641,83 @@ impl SemSet {
             self.pids[num] = pid;
             changed = true;
         }
+        self.otime = now;
         changed
     }
 }
 
-/// The SEM_UNDO adjustments of every process, by thread group and set, and
-/// the thread groups whose rows are ending.
+/// Whether SETVAL accepts `val`: 0..=SEMVMX.
+pub fn in_range(val: i32) -> bool {
+    (0..=SEMVMX).contains(&val)
+}
+
+/// The SEM_UNDO adjustments, as Linux keeps them: each task (a row, one
+/// thread) refers to at most one undo list, which tasks made by clone with
+/// CLONE_SYSVSEM share and fork and exec leave as they are (a child of fork
+/// starts with none). A list holds an adjustment per semaphore of each set
+/// it has touched; the task that drops the last reference to it applies it.
 pub struct UndoLists {
-    lists: BTreeMap<(u64, i32), Vec<i16>>,
-    exiting: BTreeMap<u64, Vec<u64>>,
+    /// The list each task refers to, by row.
+    tasks: VecMap<u64, u64>,
+    /// The adjustments by list and set.
+    adj: VecMap<(u64, i32), Vec<i16>>,
+    next: u64,
 }
 
 impl UndoLists {
     pub const fn new() -> Self {
-        UndoLists { lists: BTreeMap::new(), exiting: BTreeMap::new() }
+        UndoLists { tasks: VecMap::new(), adj: VecMap::new(), next: 1 }
     }
 
-    /// The adjustments of thread group `tgid` for set `semid` of `nsems`
-    /// semaphores, made empty if it has none.
-    pub fn list(&mut self, tgid: u64, semid: i32, nsems: usize) -> &mut Vec<i16> {
-        self.lists.entry((tgid, semid)).or_insert_with(|| vec![0; nsems])
+    /// The list task `row` refers to, made for it if it has none.
+    pub fn join(&mut self, row: u64) -> Result<u64, i32> {
+        if let Some(&list) = self.tasks.get(row) {
+            return Ok(list);
+        }
+        let list = self.next;
+        self.tasks.insert(row, list)?;
+        self.next += 1;
+        Ok(list)
     }
 
-    /// A copy of those adjustments, all zero if there are none, made
-    /// without adding a list.
-    pub fn current(&self, tgid: u64, semid: i32, nsems: usize) -> Vec<i16> {
-        self.lists.get(&(tgid, semid)).cloned().unwrap_or_else(|| vec![0; nsems])
+    /// clone with CLONE_SYSVSEM: task `child` shares `parent`'s list, made
+    /// for the parent if it has none.
+    pub fn share(&mut self, parent: u64, child: u64) -> Result<(), i32> {
+        let list = self.join(parent)?;
+        self.tasks.insert(child, list)
     }
 
-    /// Take every list of thread group `tgid`.
-    pub fn take_group(&mut self, tgid: u64) -> Vec<(i32, Vec<i16>)> {
-        let keys: Vec<(u64, i32)> = self.lists.range((tgid, i32::MIN)..=(tgid, i32::MAX)).map(|(&k, _)| k).collect();
-        keys.into_iter().filter_map(|k| self.lists.remove(&k).map(|adj| (k.1, adj))).collect()
+    /// The adjustments list `list` holds for set `semid` of `nsems`
+    /// semaphores, made all zero if it has none.
+    pub fn adjustments(&mut self, list: u64, semid: i32, nsems: usize) -> Result<&mut Vec<i16>, i32> {
+        if self.adj.get((list, semid)).is_none() {
+            self.adj.insert((list, semid), try_vec(nsems, 0)?)?;
+        }
+        self.adj.get_mut((list, semid)).ok_or(ENOMEM)
     }
 
-    /// IPC_RMID: drop every process's list for `semid`.
+    /// Task `row` drops its reference: the list, when no other task refers
+    /// to it, whose adjustments are now to be applied (`take`).
+    pub fn leave(&mut self, row: u64) -> Option<u64> {
+        let list = self.tasks.remove(row)?;
+        (!self.tasks.iter().any(|&(_, l)| l == list)).then_some(list)
+    }
+
+    /// One set's adjustments of list `list`, which no task refers to any
+    /// more, taken from it; None once there are none left.
+    pub fn take(&mut self, list: u64) -> Option<(i32, Vec<i16>)> {
+        self.adj.take_first(|&(l, _)| l == list).map(|((_, semid), adj)| (semid, adj))
+    }
+
+    /// IPC_RMID: drop every list's adjustments for `semid`.
     pub fn drop_set(&mut self, semid: i32) {
-        self.lists.retain(|&(_, id), _| id != semid);
+        self.adj.retain(|&(_, id), _| id != semid);
     }
 
-    /// SETVAL and SETALL: clear every process's adjustment of semaphore
-    /// `num` of `semid`, or of all its semaphores.
+    /// SETVAL and SETALL: clear every list's adjustment of semaphore `num`
+    /// of `semid`, or of all its semaphores.
     pub fn clear(&mut self, semid: i32, num: Option<usize>) {
-        for (_, adj) in self.lists.iter_mut().filter(|((_, id), _)| *id == semid) {
+        for (_, adj) in self.adj.iter_mut().filter(|((_, id), _)| *id == semid) {
             match num {
                 Some(n) => {
                     if let Some(a) = adj.get_mut(n) {
@@ -497,23 +727,6 @@ impl UndoLists {
                 None => adj.iter_mut().for_each(|a| *a = 0),
             }
         }
-    }
-
-    /// Row `row` of thread group `tgid` is ending, and `live` lists the
-    /// group's rows that had not ended a moment before (`row` among them).
-    /// Whether the group ends with it: every live row has now reached here.
-    /// Two last rows ending at once each count the other as live, and the
-    /// second to arrive finds both recorded.
-    pub fn row_ending(&mut self, tgid: u64, row: u64, live: &[u64]) -> bool {
-        let ending = self.exiting.entry(tgid).or_default();
-        if !ending.contains(&row) {
-            ending.push(row);
-        }
-        let ends = live.iter().all(|r| ending.contains(r));
-        if ends {
-            self.exiting.remove(&tgid);
-        }
-        ends
     }
 }
 
@@ -529,6 +742,38 @@ impl Default for UndoLists {
 pub const IPC_PERM_SIZE: usize = 48;
 pub const MSQID_DS_SIZE: usize = 120;
 pub const SHMID_DS_SIZE: usize = 112;
+pub const MSGINFO_SIZE: usize = 32;
+pub const SEMINFO_SIZE: usize = 40;
+
+fn int(n: usize) -> i32 {
+    i32::try_from(n).unwrap_or(i32::MAX)
+}
+
+/// struct msginfo. IPC_INFO reports the limits (`usage` None); MSG_INFO
+/// reports in msgpool, msgmap and msgtql the queues, messages and bytes in
+/// use, as Linux does.
+pub fn msginfo(usage: Option<(usize, usize, usize)>) -> [u8; MSGINFO_SIZE] {
+    let mut buf = [0u8; MSGINFO_SIZE];
+    let (pool, map, tql) = usage.unwrap_or((MSGPOOL, MSGMNB, MSGMNB));
+    for (at, v) in [(0, pool), (4, map), (8, MSGMAX), (12, MSGMNB), (16, MSGMNI), (20, MSGSSZ), (24, tql)] {
+        put(&mut buf, at, &int(v).to_ne_bytes());
+    }
+    put(&mut buf, 28, &MSGSEG.to_ne_bytes());
+    buf
+}
+
+/// struct seminfo. IPC_INFO reports the limits (`usage` None); SEM_INFO
+/// reports in semusz and semaem the sets and semaphores in use, as Linux
+/// does.
+pub fn seminfo(usage: Option<(usize, usize)>) -> [u8; SEMINFO_SIZE] {
+    let mut buf = [0u8; SEMINFO_SIZE];
+    let (usz, aem) = usage.unwrap_or((SEMUSZ, SEMVMX as usize));
+    let fields = [SEMMNS, SEMMNI, SEMMNS, SEMMNS, SEMMSL, SEMOPM, SEMOPM, usz, SEMVMX as usize, aem];
+    for (i, v) in fields.into_iter().enumerate() {
+        put(&mut buf, i * 4, &int(v).to_ne_bytes());
+    }
+    buf
+}
 
 /// struct semid64_ds differs by architecture: x86-64 follows each time with
 /// a padding word.

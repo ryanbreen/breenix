@@ -1,17 +1,16 @@
 //! System V message queues: msgget, msgsnd, msgrcv and msgctl.
 
 use super::state::{
-    self, IpcIds, IpcPerm, Message, MsgQueue, IPC_64, IPC_NOWAIT, IPC_RMID, IPC_SET, IPC_STAT, MSGMAX, MSGMNB, MSGMNI,
-    MSG_NOERROR, MSQID_DS_SIZE, READ, WRITE,
+    self, try_vec, IpcIds, IpcPerm, Message, MsgQueue, IPC_64, IPC_INFO, IPC_NOWAIT, IPC_RMID, IPC_SET, IPC_STAT,
+    MSGMAX, MSGMNB, MSGMNI, MSG_INFO, MSG_NOERROR, MSG_STAT, MSG_STAT_ANY, MSQID_DS_SIZE, READ, WRITE,
 };
-use super::{caller, ipcperms, now, Waiters};
+use super::{caller, interrupted_unless_handled, ipcperms, now, Waiters};
 use crate::irq_safe_mutex::IrqSafeMutex;
 use crate::ipc::wait::{IpcDeadline, WaitEnd};
-use crate::syscall::errno::{EACCES, EAGAIN, EFAULT, EIDRM, EINTR, EINVAL, ENOMSG, EPERM};
+use crate::syscall::errno::{EACCES, EAGAIN, EFAULT, EIDRM, EINVAL, ENOMEM, ENOMSG, EPERM};
 use crate::syscall::userptr::{read_user_bytes, write_user_bytes};
 use crate::syscall::SyscallResult;
 use alloc::sync::Arc;
-use alloc::vec;
 
 pub(crate) struct Msq {
     q: MsgQueue,
@@ -48,7 +47,8 @@ pub fn sys_msgget(key: i32, flags: u32) -> SyscallResult {
         },
         Ok(None) => {
             let perm = IpcPerm::new(key, me.cred.euid, me.cred.egid, flags);
-            match ids.insert(perm, Msq { q: MsgQueue::new(t), waiters: Waiters::new() }) {
+            let Ok(waiters) = Waiters::new() else { return err(ENOMEM) };
+            match ids.insert(perm, Msq { q: MsgQueue::new(t), waiters }) {
                 Ok(id) => SyscallResult::Ok(id as u64),
                 Err(e) => err(e),
             }
@@ -70,7 +70,10 @@ pub fn sys_msgsnd(id: i32, msgp: u64, msgsz: u64, flags: u32) -> SyscallResult {
     if mtype < 1 {
         return err(EINVAL);
     }
-    let mut text = vec![0u8; msgsz as usize];
+    let mut text = match try_vec(msgsz as usize, 0u8) {
+        Ok(text) => text,
+        Err(e) => return err(e),
+    };
     if read_user_bytes(text.as_mut_ptr(), msgp.wrapping_add(8), text.len()).is_err() {
         return err(EFAULT);
     }
@@ -87,7 +90,9 @@ pub fn sys_msgsnd(id: i32, msgp: u64, msgsz: u64, flags: u32) -> SyscallResult {
         let len = msg.as_ref().map_or(0, |m| m.text.len());
         if entry.obj.q.has_room(len) {
             if let Some(m) = msg.take() {
-                entry.obj.q.push(m, me.pid, t);
+                if let Err(e) = entry.obj.q.push(m, me.pid, t) {
+                    return err(e);
+                }
             }
             let w = entry.obj.waiters.clone();
             w.note_change();
@@ -102,7 +107,7 @@ pub fn sys_msgsnd(id: i32, msgp: u64, msgsz: u64, flags: u32) -> SyscallResult {
         let seen = w.seen();
         drop(ids);
         if let WaitEnd::Interrupted = w.wait(seen, &IpcDeadline::Never) {
-            return err(EINTR);
+            return err(interrupted_unless_handled());
         }
         slept = Some(w);
     }
@@ -110,10 +115,15 @@ pub fn sys_msgsnd(id: i32, msgp: u64, msgsz: u64, flags: u32) -> SyscallResult {
 
 /// msgrcv: take the message `msgtyp` names into `msgp`, at most `msgsz`
 /// bytes of text, waiting for one unless IPC_NOWAIT. The text's length.
+/// Linux's MSG_EXCEPT and MSG_COPY select as `state::select` reads them.
 pub fn sys_msgrcv(id: i32, msgp: u64, msgsz: u64, msgtyp: i64, flags: u32) -> SyscallResult {
     if (msgsz as i64) < 0 || id < 0 {
         return err(EINVAL);
     }
+    let select = match state::select(msgtyp, flags) {
+        Ok(select) => select,
+        Err(e) => return err(e),
+    };
     let me = caller();
     let mut slept: Option<Arc<Waiters>> = None;
     let msg = loop {
@@ -123,7 +133,7 @@ pub fn sys_msgrcv(id: i32, msgp: u64, msgsz: u64, msgtyp: i64, flags: u32) -> Sy
         if !ipcperms(&entry.perm, &me.cred, READ) {
             return err(EACCES);
         }
-        match entry.obj.q.receive(msgtyp, msgsz as usize, flags & MSG_NOERROR != 0, me.pid, t) {
+        match entry.obj.q.receive(select, msgsz as usize, flags & MSG_NOERROR != 0, me.pid, t) {
             Err(e) => return err(e),
             Ok(Some(msg)) => {
                 let w = entry.obj.waiters.clone();
@@ -139,7 +149,7 @@ pub fn sys_msgrcv(id: i32, msgp: u64, msgsz: u64, msgtyp: i64, flags: u32) -> Sy
         let seen = w.seen();
         drop(ids);
         if let WaitEnd::Interrupted = w.wait(seen, &IpcDeadline::Never) {
-            return err(EINTR);
+            return err(interrupted_unless_handled());
         }
         slept = Some(w);
     };
@@ -152,24 +162,49 @@ pub fn sys_msgrcv(id: i32, msgp: u64, msgsz: u64, msgtyp: i64, flags: u32) -> Sy
     SyscallResult::Ok(msg.text.len() as u64)
 }
 
-/// msgctl: IPC_STAT, IPC_SET and IPC_RMID.
+/// msgctl: IPC_STAT, IPC_SET and IPC_RMID, and Linux's IPC_INFO, MSG_INFO,
+/// MSG_STAT and MSG_STAT_ANY.
 pub fn sys_msgctl(id: i32, cmd: u32, buf: u64) -> SyscallResult {
     if id < 0 {
         return err(EINVAL);
     }
     let me = caller();
-    match cmd & !IPC_64 {
-        IPC_STAT => {
-            let ds = {
+    let cmd = cmd & !IPC_64;
+    match cmd {
+        IPC_STAT | MSG_STAT | MSG_STAT_ANY => {
+            let (ds, result) = {
                 let ids = SYSV_MSG.lock();
-                let Some(entry) = ids.get(id) else { return err(EINVAL) };
-                if !ipcperms(&entry.perm, &me.cred, READ) {
+                // MSG_STAT and MSG_STAT_ANY take an index into the table and
+                // return the identifier of the queue there; MSG_STAT_ANY
+                // skips the read permission check.
+                let found = match cmd {
+                    IPC_STAT => ids.get(id).map(|entry| (id, entry)),
+                    _ => ids.at_index(id),
+                };
+                let Some((qid, entry)) = found else { return err(EINVAL) };
+                if cmd != MSG_STAT_ANY && !ipcperms(&entry.perm, &me.cred, READ) {
                     return err(EACCES);
                 }
-                state::msqid_ds(&entry.perm, &entry.obj.q)
+                let result = if cmd == IPC_STAT { 0 } else { qid as u64 };
+                (state::msqid_ds(&entry.perm, &entry.obj.q), result)
             };
             match write_user_bytes(buf, ds.as_ptr(), ds.len()) {
-                Ok(()) => SyscallResult::Ok(0),
+                Ok(()) => SyscallResult::Ok(result),
+                Err(_) => err(EFAULT),
+            }
+        }
+        IPC_INFO | MSG_INFO => {
+            let (info, max) = {
+                let ids = SYSV_MSG.lock();
+                let usage = (cmd == MSG_INFO).then(|| {
+                    let (msgs, bytes) =
+                        ids.iter().fold((0, 0), |(n, b), (_, e)| (n + e.obj.q.qnum(), b + e.obj.q.cbytes));
+                    (ids.in_use(), msgs, bytes)
+                });
+                (state::msginfo(usage), ids.highest_index())
+            };
+            match write_user_bytes(buf, info.as_ptr(), info.len()) {
+                Ok(()) => SyscallResult::Ok(max as u64),
                 Err(_) => err(EFAULT),
             }
         }
@@ -187,11 +222,15 @@ pub fn sys_msgctl(id: i32, cmd: u32, buf: u64) -> SyscallResult {
                 return err(EPERM);
             }
             // Raising msg_qbytes past the default takes privilege, as
-            // CAP_SYS_RESOURCE does on Linux.
+            // CAP_SYS_RESOURCE does on Linux; any owner may set it at or
+            // below the default, where POSIX asks privilege to raise it at
+            // all. Linux's rule.
             if qbytes > MSGMNB as u64 && me.cred.euid != 0 {
                 return err(EPERM);
             }
-            entry.perm.set(uid, gid, mode);
+            if let Err(e) = entry.perm.set(uid, gid, mode) {
+                return err(e);
+            }
             entry.obj.q.qbytes = qbytes as usize;
             entry.obj.q.ctime = t;
             let w = entry.obj.waiters.clone();

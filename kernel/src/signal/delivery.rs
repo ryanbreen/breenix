@@ -376,6 +376,8 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // But we use negative signal number to indicate signal death
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
             let exit_code = signal_death_exit_code(process, sig);
+            // The row is reapable once PM is released: SEM_UNDO first.
+            crate::ipc::sysv::row_dying_locked(process);
             process.terminate(exit_code);
 
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
@@ -408,6 +410,8 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             // The 0x80 flag indicates core dump
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
             let exit_code = signal_death_exit_code(process, sig);
+            // The row is reapable once PM is released: SEM_UNDO first.
+            crate::ipc::sysv::row_dying_locked(process);
             process.terminate(exit_code);
 
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
