@@ -17,7 +17,6 @@ pub mod serial_aarch64;
 pub mod serial_line;
 #[cfg(target_arch = "aarch64")]
 pub use serial_aarch64 as serial;
-pub mod serial_writer;
 pub mod arch_impl;
 pub mod drivers;
 #[cfg(target_arch = "x86_64")]
@@ -34,6 +33,7 @@ pub use per_cpu_aarch64 as per_cpu;
 #[cfg(target_arch = "x86_64")]
 pub mod elf;
 pub mod process;
+pub mod serial_writer;
 pub mod signal;
 pub mod task;
 #[cfg(target_arch = "x86_64")]

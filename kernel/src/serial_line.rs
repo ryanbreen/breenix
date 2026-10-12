@@ -27,8 +27,8 @@
 //! that finds it skipped queues again behind the CPUs now waiting. At most the
 //! byte already past that check can land inside another CPU's record. Fatal
 //! output therefore depends on no other CPU and on no scheduler progress.
-use core::mem::MaybeUninit;
 use crate::serial_writer::Writer;
+use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Assembly buffer size. Records up to this length are written in one owned piece.
@@ -307,7 +307,11 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8]) {
         return;
     }
     let mut ownership = Ownership::acquire();
-    write::<TEE>(writer, crate::serial_writer::lead(writer, bytes), &mut ownership);
+    write::<TEE>(
+        writer,
+        crate::serial_writer::lead(writer, bytes),
+        &mut ownership,
+    );
     write::<TEE>(writer, bytes, &mut ownership);
 }
 

@@ -597,7 +597,11 @@ impl TtyDevice {
         // Handle NL -> CR-NL translation if ONLCR is set
         let termios = self.ldisc.lock().termios().clone();
         let crlf = [b'\r', c];
-        let unit = if termios.is_opost() && termios.is_onlcr() && c == b'\n' { &crlf[..] } else { &crlf[1..] };
+        let unit = if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
+            &crlf[..]
+        } else {
+            &crlf[1..]
+        };
         crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
         #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
         for &byte in unit {
@@ -631,7 +635,10 @@ impl TtyDevice {
             for &c in line {
                 let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
                 if expanded_len + output_len > expanded.len() {
-                    crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &expanded[..expanded_len]);
+                    crate::serial::write_bytes_atomic(
+                        crate::serial::Writer::Tty,
+                        &expanded[..expanded_len],
+                    );
                     expanded_len = 0;
                 }
                 if output_len == 2 {
@@ -643,7 +650,10 @@ impl TtyDevice {
             }
 
             if expanded_len != 0 {
-                crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &expanded[..expanded_len]);
+                crate::serial::write_bytes_atomic(
+                    crate::serial::Writer::Tty,
+                    &expanded[..expanded_len],
+                );
             }
 
             // Both architectures use the render queue — it's lock-free on the

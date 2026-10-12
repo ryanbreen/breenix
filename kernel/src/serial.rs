@@ -515,7 +515,10 @@ pub fn write_str_bounded(s: &str) {
         // SAFETY: COM1's data port; the bytes may interleave with the holder's.
         unsafe {
             let mut port = x86_64::instructions::port::Port::<u8>::new(COM1_PORT);
-            for &byte in crate::serial_writer::lead(Writer::Kernel, s.as_bytes()).iter().chain(s.as_bytes()) {
+            for &byte in crate::serial_writer::lead(Writer::Kernel, s.as_bytes())
+                .iter()
+                .chain(s.as_bytes())
+            {
                 port.write(byte);
             }
         }

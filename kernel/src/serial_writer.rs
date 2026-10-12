@@ -38,5 +38,8 @@ pub fn lead(writer: Writer, unit: &[u8]) -> &'static [u8] {
 
 /// Note that `writer` wrote `byte` to the port last. Called while the port is held.
 pub fn wrote(writer: Writer, byte: u8) {
-    OPEN.store(if byte == b'\n' { 0 } else { writer as u8 }, Ordering::Relaxed);
+    OPEN.store(
+        if byte == b'\n' { 0 } else { writer as u8 },
+        Ordering::Relaxed,
+    );
 }
