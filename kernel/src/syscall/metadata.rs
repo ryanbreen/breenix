@@ -5,7 +5,7 @@ use super::{errno::*, SyscallResult};
 use crate::fs::{ext2, namei, permissions::Credentials};
 use crate::ipc::FdKind;
 
-const AT_FDCWD: i32 = -100;
+use super::at_path::AT_FDCWD;
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 const AT_EMPTY_PATH: u32 = 0x1000;
 
@@ -51,12 +51,13 @@ pub(crate) fn resolve_at(
     follow: bool,
     cred: &Credentials,
 ) -> Result<namei::Resolved, u64> {
-    let start = if fd == AT_FDCWD || path.starts_with('/') {
-        None
-    } else {
-        Some(directory(fd)?)
-    };
+    let start = super::at_path::directory_start(fd, path.starts_with('/'), directory)?;
     namei::resolve_from(path, follow, start, cred)
+}
+
+pub(crate) fn resolve_create_at(fd: i32, path: &str, cred: &Credentials) -> Result<namei::Resolved, u64> {
+    let start = super::at_path::directory_start(fd, path.starts_with('/'), directory)?;
+    namei::resolve_create_from(path, start, cred)
 }
 
 enum Change {
@@ -120,6 +121,15 @@ fn fifo(
     change: Change,
     cred: &Credentials,
 ) -> SyscallResult {
+    let handle = entry.lock().handle.clone();
+    if let Some(handle) = handle {
+        let mut guard = match ext2::write_mount(handle.object.mount) {
+            Ok(g) => g, Err(_) => return SyscallResult::Err(EIO as u64),
+        };
+        let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
+        let ino = match handle.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(EIO as u64) };
+        return update(fs, ino, change, cred);
+    }
     let mut entry = entry.lock();
     let mut inode = entry.inode();
     if let Err(errno) = apply(&mut inode, change, cred) {
@@ -225,7 +235,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             };
             update(fs, ino, change, &cred)
         }
-        FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) => {
+        FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) | FdKind::FifoReadWrite(_, _, entry) => {
             fifo(&entry, change, &cred)
         }
         _ => SyscallResult::Err(EOPNOTSUPP as u64),

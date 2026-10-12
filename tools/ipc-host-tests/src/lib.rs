@@ -1,5 +1,6 @@
 //! Host execution of production IPC logic with scheduler/user-copy shims.
 #![cfg(test)]
+#![feature(allocator_api)]
 extern crate alloc;
 pub use syscall::SyscallResult;
 include!(concat!(env!("OUT_DIR"), "/ipc_numbers.rs"));
@@ -272,3 +273,6 @@ fn ipc_file_defaults_and_downcast() {
 
 #[path = "../../../kernel/src/fs/devfs/entries.rs"]
 mod devfs_entries;
+
+#[path = "../../../kernel/src/syscall/at_path.rs"]
+mod at_path;

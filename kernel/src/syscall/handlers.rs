@@ -514,7 +514,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     != 0,
             },
             FdKind::PipeRead(_) => WriteOperation::Ebadf,
-            FdKind::FifoWrite(_path, pipe_buffer, _) => WriteOperation::Fifo {
+            FdKind::FifoWrite(_path, pipe_buffer, _) | FdKind::FifoReadWrite(_path, pipe_buffer, _) => WriteOperation::Fifo {
                 pipe_buffer: pipe_buffer.clone(),
                 is_nonblocking: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
@@ -1115,7 +1115,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Can't read from write end of pipe
             SyscallResult::Err(9) // EBADF
         }
-        FdKind::FifoRead(_path, pipe_buffer, _) => {
+        FdKind::FifoRead(_path, pipe_buffer, _) | FdKind::FifoReadWrite(_path, pipe_buffer, _) => {
             // FIFO read - with blocking support
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;

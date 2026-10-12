@@ -22,7 +22,7 @@ pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     // A FIFO is registered under the physical pathname of its new name.
-    let resolved = match crate::fs::namei::resolve_create(&raw_path) {
+    let resolved = match super::metadata::resolve_create_at(super::at_path::AT_FDCWD, &raw_path, &crate::fs::permissions::Credentials::current(false)) {
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
     };

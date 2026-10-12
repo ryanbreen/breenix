@@ -30,6 +30,8 @@ pub static FIFO_REGISTRY: FifoRegistry = FifoRegistry::new();
 
 /// A FIFO entry in the registry
 pub struct FifoEntry {
+    /// Held filesystem identity for a disk-backed FIFO, including after unlink.
+    pub handle: Option<crate::fs::ext2::live_inode::FileHandle>,
     /// The underlying pipe buffer (created on first open)
     pub buffer: Option<Arc<Mutex<PipeBuffer>>>,
     /// Number of processes that have opened for reading
@@ -57,6 +59,7 @@ impl FifoEntry {
     /// Create a new FIFO entry
     pub fn new(mode: u32, uid: u32, gid: u32) -> Self {
         FifoEntry {
+            handle: None,
             buffer: None,
             readers: 0,
             writers: 0,

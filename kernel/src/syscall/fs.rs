@@ -262,9 +262,12 @@ fn resolve_user(pathname: u64, follow: bool) -> Result<crate::fs::namei::Resolve
 
 /// Copy a pathname from userspace and resolve it to the directory entry an
 /// unlink, rmdir or rename acts on.
-fn resolve_user_entry(pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
-    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
-    crate::fs::namei::resolve_entry(&path).map_err(SyscallResult::Err)
+
+fn resolve_user_entry_at(dirfd: i32, pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+    let raw = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+    let start = super::at_path::directory_start(dirfd, raw.starts_with('/'), super::metadata::directory)
+        .map_err(SyscallResult::Err)?;
+    crate::fs::namei::resolve_entry_from(&raw, start, &current_file_credentials()).map_err(SyscallResult::Err)
 }
 
 /// Copy a pathname from userspace and resolve it to the directory entry a
@@ -508,6 +511,9 @@ fn sys_open_read_path(
 /// # Returns
 /// File descriptor on success, negative errno on failure
 pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
+    sys_open_from(AT_FDCWD, pathname, flags, mode)
+}
+fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     use super::errno::{EACCES, EEXIST, EISDIR, ELOOP, EMFILE, ENOENT, ENOTDIR};
     use crate::fs::ext2::FileType as Ext2FileType;
     use crate::fs::namei::Target;
@@ -519,9 +525,12 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     let want_excl = (flags & O_EXCL) != 0;
     // O_NOFOLLOW, and O_CREAT with O_EXCL, act on a final symlink itself.
     let follow = (flags & O_NOFOLLOW) == 0 && !(want_creat && want_excl);
-    let resolved = match resolve_user(pathname, follow) {
-        Ok(r) => r,
-        Err(e) => return e,
+    let raw = match super::userptr::copy_cstr_from_user(pathname) {
+        Ok(path) => path, Err(e) => return SyscallResult::Err(e),
+    };
+    let cred = current_file_credentials();
+    let resolved = match super::metadata::resolve_at(dirfd, &raw, follow, &cred) {
+        Ok(r) => r, Err(e) => return SyscallResult::Err(e),
     };
     let path = resolved.path.as_str();
 
@@ -1019,7 +1028,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
                 FstatKind::UnixSocket
             }
-            FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) => FstatKind::Fifo(entry.clone()),
+            FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) | FdKind::FifoReadWrite(_, _, entry) => FstatKind::Fifo(entry.clone()),
             FdKind::ProcfsFile { ref content, .. } => FstatKind::ProcfsFile {
                 size: content.len() as i64,
             },
@@ -1047,7 +1056,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         FstatKind::Pipe => {
             static PIPE_INODE_COUNTER: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(1000);
-            stat.st_dev = 0;
+            stat.st_dev = 0xffff0001; // anonymous pipefs, separate from ext2 mounts
             stat.st_ino = PIPE_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             stat.st_mode = S_IFIFO | 0o600; // FIFO with rw-------
             stat.st_nlink = 1;
@@ -1565,11 +1574,14 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
 /// * EACCES - Permission denied
 /// * EIO - I/O error
 pub fn sys_unlink(pathname: u64) -> SyscallResult {
+    sys_unlink_from(AT_FDCWD, pathname)
+}
+fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
     use super::errno::{EACCES, EIO, EISDIR, ENOENT, EPERM};
     use crate::fs::ext2::FileType;
     use crate::fs::namei::{Last, Target};
 
-    let resolved = match resolve_user_entry(pathname) {
+    let resolved = match resolve_user_entry_at(dirfd, pathname) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -1773,12 +1785,15 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
 /// * EINVAL - pathname is "." or ends with "/."
 /// * EIO - I/O error
 pub fn sys_rmdir(pathname: u64) -> SyscallResult {
+    sys_rmdir_from(AT_FDCWD, pathname)
+}
+fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
     use super::errno::{EACCES, EBUSY, EINVAL, EIO, ENOENT, ENOTDIR, ENOTEMPTY};
     use crate::fs::ext2::FileType;
     use crate::fs::namei::{Last, Target};
 
     // rmdir removes the name itself: a final symlink is not followed.
-    let resolved = match resolve_user_entry(pathname) {
+    let resolved = match resolve_user_entry_at(dirfd, pathname) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -3635,10 +3650,7 @@ const AT_REMOVEDIR: i32 = 0x200;
 
 /// openat(dirfd, pathname, flags, mode) - replacement for open
 pub fn sys_openat(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallResult {
-    if dirfd != AT_FDCWD {
-        return SyscallResult::Err(super::errno::ENOSYS as u64);
-    }
-    sys_open(pathname, flags, mode)
+    sys_open_from(dirfd, pathname, flags, mode)
 }
 
 /// faccessat(dirfd, pathname, mode, flags) - replacement for access
@@ -3678,14 +3690,8 @@ pub fn sys_mknodat(dirfd: i32, pathname: u64, mode: u32, dev: u64) -> SyscallRes
 /// If flags contains AT_REMOVEDIR, behaves like rmdir.
 /// Otherwise behaves like unlink.
 pub fn sys_unlinkat(dirfd: i32, pathname: u64, flags: i32) -> SyscallResult {
-    if dirfd != AT_FDCWD {
-        return SyscallResult::Err(super::errno::ENOSYS as u64);
-    }
-    if (flags & AT_REMOVEDIR) != 0 {
-        sys_rmdir(pathname)
-    } else {
-        sys_unlink(pathname)
-    }
+    if flags & !AT_REMOVEDIR != 0 { return SyscallResult::Err(super::errno::EINVAL as u64); }
+    if flags & AT_REMOVEDIR != 0 { sys_rmdir_from(dirfd, pathname) } else { sys_unlink_from(dirfd, pathname) }
 }
 
 /// symlinkat(target, newdirfd, linkpath) - replacement for symlink
@@ -4063,7 +4069,7 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
             statfs_pin(&pin)
         }
         // FIFOs currently live in the in-memory FIFO registry, not ext2.
-        FdKind::FifoRead(_, _, _) | FdKind::FifoWrite(_, _, _) => Ok(virtual_statfs(0x50495045)),
+        FdKind::FifoRead(_, _, _) | FdKind::FifoWrite(_, _, _) | FdKind::FifoReadWrite(_, _, _) => Ok(virtual_statfs(0x50495045)),
         FdKind::ProcfsFile { .. } | FdKind::ProcfsDirectory { .. } => Ok(virtual_statfs(0x9fa0)),
         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => Ok(virtual_statfs(0x50495045)),
         FdKind::Device(_) | FdKind::StdIo(_) | FdKind::DevfsDirectory { .. } => Ok(virtual_statfs(0x1373)),

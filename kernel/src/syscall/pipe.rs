@@ -272,6 +272,14 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     notifications.deliver();
                     log::debug!("sys_close: Closed FIFO read end fd={} ({})", fd, path);
                 }
+                FdKind::FifoReadWrite(_, buffer, entry) => {
+                    crate::ipc::fifo::close_fifo_read(&entry);
+                    crate::ipc::fifo::close_fifo_write(&entry);
+                    let read = buffer.lock().close_read();
+                    read.deliver();
+                    let write = buffer.lock().close_write();
+                    write.deliver();
+                }
                 FdKind::FifoWrite(path, buffer, entry) => {
                     // Close FIFO write end - decrement both FIFO entry and pipe buffer counts
                     crate::ipc::fifo::close_fifo_write(&entry);

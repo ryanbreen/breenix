@@ -151,6 +151,8 @@ pub enum FdKind {
     FifoRead(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// FIFO (named pipe) write end - path is stored for cleanup on close
     FifoWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
+    /// Linux O_RDWR FIFO endpoint: one reader and one writer reference.
+    FifoReadWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// Procfs virtual file (content generated at open time)
     ProcfsFile {
         content: alloc::string::String,
@@ -197,6 +199,7 @@ impl core::fmt::Debug for FdKind {
             }
             FdKind::FifoRead(path, _, _) => write!(f, "FifoRead({})", path),
             FdKind::FifoWrite(path, _, _) => write!(f, "FifoWrite({})", path),
+            FdKind::FifoReadWrite(path, _, _) => write!(f, "FifoReadWrite({})", path),
             FdKind::ProcfsFile { content, position } => {
                 write!(f, "ProcfsFile(len={}, pos={})", content.len(), position)
             }
@@ -286,6 +289,13 @@ impl FileDescriptor {
             flags: fd_flags,
             description: Arc::new(AtomicU32::new(word)),
         }
+    }
+
+    /// Create an open description without panicking on user-triggered OOM.
+    pub fn try_opened(kind: FdKind, open_flags: u32) -> Result<Self, u64> {
+        let flags = if open_flags & status_flags::O_CLOEXEC != 0 { flags::FD_CLOEXEC } else { 0 };
+        let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
+        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)? })
     }
 
     /// The open file description's flags word (F_GETFL): access mode and
@@ -494,6 +504,10 @@ impl Clone for FdTableInner {
                         // Increment both FIFO entry reader count and pipe buffer reader count
                         entry.lock().readers += 1;
                         buffer.lock().add_reader();
+                    }
+                    FdKind::FifoReadWrite(_, buffer, entry) => {
+                        { let mut e = entry.lock(); e.readers += 1; e.writers += 1; }
+                        { let mut p = buffer.lock(); p.add_reader(); p.add_writer(); }
                     }
                     FdKind::FifoWrite(_, buffer, entry) => {
                         // Increment both FIFO entry writer count and pipe buffer writer count
@@ -747,6 +761,10 @@ impl FdTableInner {
                 entry.lock().readers += 1;
                 buffer.lock().add_reader();
             }
+            FdKind::FifoReadWrite(_, buffer, entry) => {
+                { let mut e = entry.lock(); e.readers += 1; e.writers += 1; }
+                { let mut p = buffer.lock(); p.add_reader(); p.add_writer(); }
+            }
             FdKind::FifoWrite(_, buffer, entry) => {
                 entry.lock().writers += 1;
                 buffer.lock().add_writer();
@@ -820,6 +838,10 @@ impl FdTableInner {
             FdKind::FifoRead(_, buffer, entry) => {
                 entry.lock().readers += 1;
                 buffer.lock().add_reader();
+            }
+            FdKind::FifoReadWrite(_, buffer, entry) => {
+                { let mut e = entry.lock(); e.readers += 1; e.writers += 1; }
+                { let mut p = buffer.lock(); p.add_reader(); p.add_writer(); }
             }
             FdKind::FifoWrite(_, buffer, entry) => {
                 entry.lock().writers += 1;
@@ -1025,6 +1047,14 @@ impl Drop for FdTableInner {
                         let notifications = buffer.lock().close_read();
                         notifications.deliver();
                         log::debug!("FdTable::drop() - closed FIFO read fd {} ({})", i, path);
+                    }
+                    FdKind::FifoReadWrite(_, buffer, entry) => {
+                        super::fifo::close_fifo_read(&entry);
+                        super::fifo::close_fifo_write(&entry);
+                        let read = buffer.lock().close_read();
+                        read.deliver();
+                        let write = buffer.lock().close_write();
+                        write.deliver();
                     }
                     FdKind::FifoWrite(path, buffer, entry) => {
                         // Decrement FIFO writer count and pipe buffer writer count

@@ -314,6 +314,13 @@ pub(crate) fn resolve_from(
     walk_with(path, Mode::Lookup { follow }, start, cred)
 }
 
+pub(crate) fn resolve_create_from(path: &str, start: Option<WorkingDir>, cred: &super::permissions::Credentials) -> Result<Resolved, u64> {
+    walk_with(path, Mode::Create, start, cred)
+}
+pub(crate) fn resolve_entry_from(path: &str, start: Option<WorkingDir>, cred: &super::permissions::Credentials) -> Result<Resolved, u64> {
+    walk_with(path, Mode::Entry, start, cred)
+}
+
 fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
     let cred = super::permissions::Credentials::current(false);
     walk_with(path, mode, None, &cred)
@@ -430,7 +437,8 @@ fn walk_with(
                     let (pin, entry_dir) = match mode {
                         Mode::Lookup { .. } => (Some(dir_pin()?), None),
                         Mode::Rename => (None, Some(dir_pin()?)),
-                        Mode::Entry | Mode::Create => (None, None),
+                        Mode::Create => (None, Some(dir_pin()?)),
+                        Mode::Entry => (None, None),
                     };
                     let mut absent = join(&stack);
                     if !stack.is_empty() {

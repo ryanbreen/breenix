@@ -894,6 +894,14 @@ pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescripto
                 let notifications = buffer.lock().close_read();
                 notifications.deliver();
             }
+            FdKind::FifoReadWrite(_, buffer, entry) => {
+                crate::ipc::fifo::close_fifo_read(&entry);
+                crate::ipc::fifo::close_fifo_write(&entry);
+                let read = buffer.lock().close_read();
+                read.deliver();
+                let write = buffer.lock().close_write();
+                write.deliver();
+            }
             FdKind::FifoWrite(_, buffer, entry) => {
                 crate::ipc::fifo::close_fifo_write(&entry);
                 let notifications = buffer.lock().close_write();

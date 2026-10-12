@@ -103,6 +103,11 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLHUP;
             }
         }
+        FdKind::FifoReadWrite(_, buffer, _) => {
+            let pipe = buffer.lock();
+            if events & events::POLLIN != 0 && pipe.available() > 0 { revents |= events::POLLIN; }
+            if events & events::POLLOUT != 0 && pipe.space() >= super::pipe::PIPE_BUF { revents |= events::POLLOUT; }
+        }
         FdKind::FifoWrite(_, buffer, _) => {
             let pipe = buffer.lock();
             if (events & events::POLLOUT) != 0

@@ -813,6 +813,13 @@ impl Process {
                         let notifications = buffer.lock().close_read();
                         notifications.deliver_deferred();
                     }
+                    FdKind::FifoReadWrite(_, buffer, entry) => {
+                        crate::ipc::fifo::close_fifo_read(&entry);
+                        crate::ipc::fifo::close_fifo_write(&entry);
+                        let read = buffer.lock().close_read();
+                        read.deliver_deferred();
+                        let _should_notify = buffer.lock().close_write();
+                    }
                     FdKind::FifoWrite(_, buffer, entry) => {
                         crate::ipc::fifo::close_fifo_write(&entry);
                         // #919/P-2: no new-writer notification here either;
@@ -902,6 +909,13 @@ impl Process {
                         // (see the PipeRead arm above).
                         let notifications = buffer.lock().close_read();
                         notifications.deliver_deferred();
+                    }
+                    FdKind::FifoReadWrite(_, buffer, entry) => {
+                        crate::ipc::fifo::close_fifo_read(&entry);
+                        crate::ipc::fifo::close_fifo_write(&entry);
+                        let read = buffer.lock().close_read();
+                        read.deliver_deferred();
+                        let _should_notify = buffer.lock().close_write();
                     }
                     FdKind::FifoWrite(_, buffer, entry) => {
                         crate::ipc::fifo::close_fifo_write(&entry);

@@ -47,6 +47,7 @@ pub mod resource;
 pub mod ioctl;
 pub mod iovec;
 pub mod metadata;
+pub(crate) mod at_path;
 mod multiplex;
 pub mod pipe;
 pub mod priority;

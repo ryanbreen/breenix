@@ -111,7 +111,7 @@ fn new_writer_close_notifications_are_owned_and_deferred() {
         &function(&fifo, "get_or_create_buffer"),
         "PipeBuffer::new_zero_refs()"
     ));
-    let zero = compact(&function(&pipe, "new_zero_refs"));
+    let zero = compact(&function(&pipe, "try_new_zero_refs"));
     assert!(zero.contains("readers:0") && zero.contains("writers:0"));
     let anonymous = compact(&function(&pipe, "new"));
     assert!(anonymous.contains("pipe.readers=1") && anonymous.contains("pipe.writers=1"));
@@ -120,7 +120,7 @@ fn new_writer_close_notifications_are_owned_and_deferred() {
 fn writer_edges(pipe: &str, helper: &str) -> Result<(), &'static str> {
     let tokens = compact(&lex(pipe));
     if !tokens.contains("write_waiters:Arc<WaitQueueHead>")
-        || !tokens.contains("write_waiters:Arc::new(WaitQueueHead::new())")
+        || !tokens.contains("write_waiters:Arc::try_new(WaitQueueHead::new()).map_err(|_|12)?")
     {
         return Err("writer queue");
     }
@@ -174,7 +174,7 @@ fn queue_wake_copy_and_threshold_mutations_are_detected() {
     for (from, to, expected) in [
         ("pub write_waiters: Arc<WaitQueueHead>,", "", "writer queue"),
         (
-            "write_waiters: Arc::new(WaitQueueHead::new()),",
+            "write_waiters: Arc::try_new(WaitQueueHead::new()).map_err(|_| 12)?,",
             "",
             "writer queue",
         ),
@@ -548,12 +548,12 @@ fn close_call_census_requires_delivery_or_the_documented_fault_carveout() {
     }
     assert!(ordinary >= 12, "ordinary close census went blind");
     assert_eq!(
-        discarded, 4,
-        "close_write carveout restricted to two inline arms on each architecture"
+        discarded, 6,
+        "close_write carveout restricted to pipe, FIFO and duplex FIFO arms on each architecture"
     );
     assert_eq!(
-        deferred, 4,
-        "close_read PM-safe delivery restricted to two inline arms on each architecture"
+        deferred, 6,
+        "close_read PM-safe delivery restricted to pipe, FIFO and duplex FIFO arms on each architecture"
     );
 }
 
