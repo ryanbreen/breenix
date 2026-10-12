@@ -359,6 +359,30 @@ pub unsafe extern "C" fn stat(path: *const u8, buf: *mut u8) -> i32 {
     stat_by_path(path, buf, 0)
 }
 
+/// Create a FIFO with permissions filtered by the kernel's creation mask.
+#[no_mangle]
+pub unsafe extern "C" fn mkfifo(path: *const u8, mode: u32) -> i32 {
+    mkfifoat(-100, path, mode)
+}
+
+/// Create a FIFO using the Linux mknodat interface (AT_FDCWD selects cwd).
+#[no_mangle]
+pub unsafe extern "C" fn mkfifoat(dirfd: i32, path: *const u8, mode: u32) -> i32 {
+    if path.is_null() {
+        *__errno_location() = EFAULT;
+        return -1;
+    }
+    const S_IFIFO: u32 = 0o010000;
+    let result = libbreenix::raw::syscall4(
+        libbreenix::syscall::nr::MKNODAT,
+        dirfd as u64,
+        path as u64,
+        (S_IFIFO | mode) as u64,
+        0,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
 unsafe fn stat_by_path(path: *const u8, buf: *mut u8, flags: u64) -> i32 {
     if path.is_null() || buf.is_null() {
         *__errno_location() = EFAULT;
