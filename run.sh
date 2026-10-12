@@ -807,6 +807,8 @@ if [ "$VMWARE" = true ]; then
     if [ "${RETINA:-false}" = true ]; then VMWARE_NATIVE_RESOLUTION=TRUE; else VMWARE_NATIVE_RESOLUTION=FALSE; fi
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
     VM_MACHINES="$HOME/Virtual Machines.localized"
+    LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
+    KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 
     if [ "$NO_BUILD" = true ]; then
         echo "Skipping builds (--no-build)"
@@ -834,9 +836,6 @@ if [ "$VMWARE" = true ]; then
             -Z build-std=core,alloc \
             -Z build-std-features=compiler-builtins-mem \
             -p kernel --bin kernel-aarch64 ${KERNEL_FEATURE_ARGS[@]+"${KERNEL_FEATURE_ARGS[@]}"}
-
-        LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
-        KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 
         if [ ! -f "$LOADER_EFI" ]; then
             echo "ERROR: UEFI loader not found at $LOADER_EFI"
