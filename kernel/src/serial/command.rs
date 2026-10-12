@@ -1,7 +1,8 @@
 extern crate alloc;
 
-use super::{write_byte, SerialInputStream};
+use super::SerialInputStream;
 use crate::serial_println;
+use crate::serial_writer::console;
 use alloc::string::String;
 use alloc::vec::Vec;
 use futures_util::stream::StreamExt;
@@ -57,8 +58,7 @@ pub async fn serial_command_task() {
             // Enter/newline - process the command
             b'\r' | b'\n' => {
                 // Echo newline
-                write_byte(b'\r');
-                write_byte(b'\n');
+                console(b"\r\n");
 
                 if !line_buffer.is_empty() {
                     process_command(&line_buffer);
@@ -74,26 +74,21 @@ pub async fn serial_command_task() {
                     line_buffer.pop();
                     // Send backspace sequence: backspace, space, backspace
                     // This erases the character on most terminals
-                    write_byte(0x08);
-                    write_byte(b' ');
-                    write_byte(0x08);
+                    console(&[0x08, b' ', 0x08]);
                 }
             }
 
             // Ctrl+C (ASCII 0x03) - cancel current line
             0x03 => {
                 line_buffer.clear();
-                write_byte(b'^');
-                write_byte(b'C');
-                write_byte(b'\r');
-                write_byte(b'\n');
+                console(b"^C\r\n");
                 print_prompt();
             }
 
             // Regular printable characters
             0x20..=0x7E => {
                 // Echo the character
-                write_byte(byte);
+                console(&[byte]);
                 line_buffer.push(byte as char);
             }
 
@@ -103,11 +98,12 @@ pub async fn serial_command_task() {
     }
 }
 
+/// The prompt goes out as one unit, so no other writer's bytes land inside it,
+/// never between the chunks of a TTY write, and on a fresh line if another
+/// writer's line is open (`serial_writer`).
 #[allow(dead_code)] // Used by serial_command_task (conditionally compiled)
 fn print_prompt() {
-    for &b in b"breenix> " {
-        write_byte(b);
-    }
+    console(b"breenix> ");
 }
 
 #[allow(dead_code)] // Used by serial_command_task (conditionally compiled)

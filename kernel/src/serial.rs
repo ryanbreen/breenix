@@ -7,6 +7,8 @@ use futures_util::task::AtomicWaker;
 use spin::Mutex;
 use uart_16550::SerialPort;
 
+pub use crate::serial_writer::Writer;
+
 pub mod command;
 
 const COM1_PORT: u16 = 0x3F8;
@@ -322,12 +324,14 @@ pub fn add_serial_byte(byte: u8) {
     }
 }
 
-pub fn write_byte(byte: u8) {
-    write_bytes_atomic(core::slice::from_ref(&byte));
+pub fn write_byte(writer: Writer, byte: u8) {
+    write_bytes_atomic(writer, core::slice::from_ref(&byte));
 }
 
-/// Write one caller-defined output unit while holding the serial lock once.
-pub fn write_bytes_atomic(bytes: &[u8]) {
+/// Write one caller-defined output unit from `writer` while holding the serial
+/// lock once, starting a fresh line first if another writer's line is open
+/// (`serial_writer`).
+pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
     // CRITICAL: Check if interrupts are currently enabled
     // We must NOT re-enable interrupts if they were disabled by syscall entry
     let irq_enabled = crate::arch_interrupts_enabled();
@@ -338,6 +342,7 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
     }
 
     let mut serial = SERIAL1.lock();
+    let lead = crate::serial_writer::lead(writer, bytes);
     if SERIAL1_FIFO.load(core::sync::atomic::Ordering::Relaxed) {
         // THRE means the 16550 transmit FIFO is empty, so all sixteen slots
         // are available. Poll once per burst, avoiding a VM exit and a UART
@@ -348,7 +353,7 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
             let mut data = Port::<u8>::new(COM1_PORT);
             let mut chunk = [0u8; 16];
             let mut used = 0;
-            for &byte in bytes {
+            for &byte in lead.iter().chain(bytes) {
                 // uart_16550::send translates backspace and DEL to BS SPACE BS.
                 // Apply that translation before filling the hardware FIFO too.
                 let wire = if byte == 0x08 || byte == 0x7f {
@@ -374,10 +379,13 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
             }
         }
     } else {
-        for &byte in bytes {
+        for &byte in lead.iter().chain(bytes) {
             serial.send(byte);
             crate::log_buffer::capture_byte(byte);
         }
+    }
+    if let Some(&last) = bytes.last() {
+        crate::serial_writer::wrote(writer, last);
     }
     drop(serial);
 
@@ -387,6 +395,27 @@ pub fn write_bytes_atomic(bytes: &[u8]) {
         unsafe {
             crate::arch_enable_interrupts();
         }
+    }
+}
+
+/// One unit from `writer` written to COM1, which its caller holds: it starts a
+/// fresh line first if another writer's line is open (`serial_writer`).
+struct Unit<'a> {
+    serial: &'a mut SerialPort,
+    writer: Writer,
+}
+
+impl fmt::Write for Unit<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let Some(&last) = s.as_bytes().last() else {
+            return Ok(());
+        };
+        for &byte in crate::serial_writer::lead(self.writer, s.as_bytes()) {
+            self.serial.send(byte);
+        }
+        self.serial.write_str(s)?;
+        crate::serial_writer::wrote(self.writer, last);
+        Ok(())
     }
 }
 
@@ -404,10 +433,12 @@ pub fn _print(args: fmt::Arguments) {
         crate::arch_disable_interrupts();
     }
 
-    SERIAL1
-        .lock()
-        .write_fmt(args)
-        .expect("Printing to serial failed");
+    Unit {
+        serial: &mut SERIAL1.lock(),
+        writer: Writer::Kernel,
+    }
+    .write_fmt(args)
+    .expect("Printing to serial failed");
 
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
@@ -433,7 +464,12 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
 
     let result = match SERIAL1.try_lock() {
         Some(mut serial) => {
-            serial.write_fmt(args).map_err(|_| ())?;
+            Unit {
+                serial: &mut serial,
+                writer: Writer::Kernel,
+            }
+            .write_fmt(args)
+            .map_err(|_| ())?;
             Ok(())
         }
         None => Err(()), // Lock is held
@@ -467,12 +503,17 @@ pub fn write_str_bounded(s: &str) {
     crate::arch_without_interrupts(|| {
         for _ in 0..ATTEMPTS {
             if let Some(mut serial) = SERIAL1.try_lock() {
-                let _ = serial.write_str(s);
+                let _ = Unit {
+                    serial: &mut serial,
+                    writer: Writer::Kernel,
+                }
+                .write_str(s);
                 return;
             }
             core::hint::spin_loop();
         }
         // SAFETY: COM1's data port; the bytes may interleave with the holder's.
+        // Without SERIAL1 this neither reads nor updates `serial_writer`'s line state.
         unsafe {
             let mut port = x86_64::instructions::port::Port::<u8>::new(COM1_PORT);
             for byte in s.bytes() {

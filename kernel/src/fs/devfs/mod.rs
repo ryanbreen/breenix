@@ -228,9 +228,7 @@ pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
         }
         DeviceType::Console | DeviceType::Tty => {
             // Console/TTY write - output to serial port
-            for &byte in buf {
-                crate::serial::write_byte(byte);
-            }
+            crate::tty::driver::write_unprocessed(buf);
             Ok(buf.len())
         }
     }

@@ -3,8 +3,9 @@
 //! Every aarch64 UART writer goes through this module. A record (a line, or a
 //! caller-defined unterminated unit such as a TTY character or a breadcrumb)
 //! is assembled on the caller's stack, then written to the UART in one piece
-//! while this CPU owns the UART. Records from different CPUs therefore never
-//! interleave.
+//! while this CPU owns the UART, so other CPUs' bytes do not land inside it
+//! unless its owner stalls (below). A record that begins while another
+//! writer's line is still open starts a fresh line first (`serial_writer`).
 //!
 //! Emission is synchronous. Nothing is queued: a record reaches the UART
 //! before the call that completes it returns. A record longer than the
@@ -23,9 +24,12 @@
 //! An owner that writes nothing for [`STALL_NS`] (it halted, faulted and never
 //! returned, or its vCPU was descheduled) has its ticket skipped by a waiter.
 //! Skipping revokes it: an owner checks its ticket before every byte, and one
-//! that finds it skipped queues again behind the CPUs now waiting. At most the
-//! byte already past that check can land inside another CPU's record. Fatal
+//! that finds it skipped queues again behind the CPUs now waiting, and starts
+//! a fresh line if another writer's line was left open meanwhile; its record
+//! is then split around the other CPUs' output. At most the byte already past
+//! that check can land inside another CPU's record. Fatal
 //! output therefore depends on no other CPU and on no scheduler progress.
+use crate::serial_writer::Writer;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -283,27 +287,42 @@ fn capture(byte: u8, tag: u32) {
     CAPTURING.store(0, Ordering::Release);
 }
 
-fn write<const TEE: bool>(bytes: &[u8], ownership: &mut Ownership) {
-    for &byte in bytes {
+fn write<const TEE: bool>(writer: Writer, bytes: &[u8], ownership: &mut Ownership) {
+    for (index, &byte) in bytes.iter().enumerate() {
         if !ownership.held() {
             ownership.regain();
+            // Other CPUs wrote while this one waited; one may have left its line open.
+            for &lead in crate::serial_writer::lead(writer, &bytes[index..]) {
+                put::<TEE>(writer, lead, ownership);
+            }
         }
-        wait_ready();
-        crate::serial_aarch64::hardware_write(byte, ownership);
-        PROGRESS.fetch_add(1, Ordering::Relaxed);
-        if TEE {
-            capture(byte, ownership.tag);
-        }
+        put::<TEE>(writer, byte, ownership);
     }
 }
 
-/// Write one record to the UART while owning it.
-fn emit<const TEE: bool>(bytes: &[u8]) {
+fn put<const TEE: bool>(writer: Writer, byte: u8, ownership: &Ownership) {
+    wait_ready();
+    crate::serial_aarch64::hardware_write(byte, ownership);
+    crate::serial_writer::wrote(writer, byte);
+    PROGRESS.fetch_add(1, Ordering::Relaxed);
+    if TEE {
+        capture(byte, ownership.tag);
+    }
+}
+
+/// Write one record from `writer` to the UART while owning it, on a fresh
+/// line if another writer's line is open.
+fn emit<const TEE: bool>(writer: Writer, bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
     let mut ownership = Ownership::acquire();
-    write::<TEE>(bytes, &mut ownership);
+    write::<TEE>(
+        writer,
+        crate::serial_writer::lead(writer, bytes),
+        &mut ownership,
+    );
+    write::<TEE>(writer, bytes, &mut ownership);
 }
 
 /// Write `bytes` as one record if the UART can be owned without waiting, for
@@ -312,7 +331,9 @@ fn emit<const TEE: bool>(bytes: &[u8]) {
 pub fn try_write(bytes: &[u8]) -> bool {
     match Ownership::try_acquire() {
         Some(mut ownership) => {
-            write::<false>(bytes, &mut ownership);
+            let lead = crate::serial_writer::lead(Writer::Kernel, bytes);
+            write::<false>(Writer::Kernel, lead, &mut ownership);
+            write::<false>(Writer::Kernel, bytes, &mut ownership);
             true
         }
         None => false,
@@ -328,13 +349,20 @@ pub type TeeLine = Buffer<true>;
 pub struct Buffer<const TEE: bool> {
     bytes: [MaybeUninit<u8>; CAPACITY],
     len: usize,
+    writer: Writer,
 }
 
 impl<const TEE: bool> Buffer<TEE> {
+    /// A record of kernel output.
     pub const fn new() -> Self {
+        Self::for_writer(Writer::Kernel)
+    }
+
+    pub const fn for_writer(writer: Writer) -> Self {
         Self {
             bytes: [MaybeUninit::uninit(); CAPACITY],
             len: 0,
+            writer,
         }
     }
 
@@ -411,7 +439,7 @@ impl<const TEE: bool> Buffer<TEE> {
         // `char` initializes every byte below `len`.
         let record =
             unsafe { core::slice::from_raw_parts(self.bytes.as_ptr().cast::<u8>(), self.len) };
-        emit::<TEE>(record);
+        emit::<TEE>(self.writer, record);
         self.len = 0;
     }
 }
