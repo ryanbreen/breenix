@@ -18,6 +18,102 @@ pub const IDLE_GAP: u64 = 5;
 pub const POLL_FAIL: u64 = 6;
 pub const MUNMAP: u64 = 7;
 pub const HOUSEKEEP: u64 = 8;
+pub const TIMED: u64 = 9;
+pub const POST_EXIT: u64 = 10;
+pub static POLL_FAILS: AtomicU64 = AtomicU64::new(0);
+
+struct WaitSlot {
+    tid: AtomicU64,
+    start: AtomicU64,
+    wake: AtomicU64,
+    resume: AtomicU64,
+    exit: AtomicU64,
+    out: AtomicU64,
+    out_cpu: AtomicU64,
+}
+static WAITS: [WaitSlot; 64] = [const {
+    WaitSlot {
+        tid: AtomicU64::new(0),
+        start: AtomicU64::new(0),
+        wake: AtomicU64::new(0),
+        resume: AtomicU64::new(0),
+        exit: AtomicU64::new(0),
+        out: AtomicU64::new(0),
+        out_cpu: AtomicU64::new(0),
+    }
+}; 64];
+
+pub fn wait_begin(tid: u64, wake_ns: u64) {
+    let w = &WAITS[(tid % 64) as usize];
+    w.tid.store(tid, Ordering::Relaxed);
+    w.start.store(now_ns(), Ordering::Relaxed);
+    w.wake.store(wake_ns, Ordering::Relaxed);
+    w.resume.store(0, Ordering::Relaxed);
+    w.exit.store(0, Ordering::Relaxed);
+    w.out.store(0, Ordering::Relaxed);
+    POPS[(tid % 64) as usize][0].store(0, Ordering::Relaxed);
+}
+
+pub fn wait_resume(tid: u64) {
+    let w = &WAITS[(tid % 64) as usize];
+    if w.tid.load(Ordering::Relaxed) == tid && w.resume.load(Ordering::Relaxed) == 0 {
+        w.resume.store(now_ns(), Ordering::Relaxed);
+    }
+}
+
+pub fn wait_end(tid: u64) {
+    let w = &WAITS[(tid % 64) as usize];
+    if w.tid.load(Ordering::Relaxed) != tid {
+        return;
+    }
+    let now = now_ns();
+    w.exit.store(now, Ordering::Relaxed);
+    let wake = w.wake.load(Ordering::Relaxed);
+    let (pop_ns, pop_cpu, arm, target) = pop_of(tid);
+    let tcur = POP_TCUR[(tid % 64) as usize].load(Ordering::Relaxed);
+    push(
+        TIMED,
+        [
+            tid,
+            wake,
+            now.wrapping_sub(wake),
+            if pop_ns == 0 { u64::MAX } else { pop_ns.wrapping_sub(wake) },
+            pop_cpu | (arm << 8) | (target << 16),
+            tcur,
+            w.resume.load(Ordering::Relaxed).wrapping_sub(wake),
+            cpu(),
+            w.start.load(Ordering::Relaxed),
+        ],
+    );
+}
+
+/// A switch on this CPU from `old` to `new`.
+pub fn note_switch(old: u64, new: u64) {
+    let now = now_ns();
+    let w = &WAITS[(old % 64) as usize];
+    if w.tid.load(Ordering::Relaxed) == old {
+        let exit = w.exit.load(Ordering::Relaxed);
+        if exit != 0 && w.out.load(Ordering::Relaxed) == 0 && now.wrapping_sub(exit) < 5_000_000 {
+            w.out.store(now, Ordering::Relaxed);
+            w.out_cpu.store(cpu(), Ordering::Relaxed);
+        }
+    }
+    let w = &WAITS[(new % 64) as usize];
+    if w.tid.load(Ordering::Relaxed) == new {
+        let out = w.out.load(Ordering::Relaxed);
+        if out != 0 {
+            let exit = w.exit.load(Ordering::Relaxed);
+            push(POST_EXIT, [new, exit, out - exit, now - out, w.out_cpu.load(Ordering::Relaxed), cpu(), 0, 0, 0]);
+            w.out.store(0, Ordering::Relaxed);
+            w.exit.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+static POP_TCUR: [AtomicU64; 64] = [const { AtomicU64::new(0) }; 64];
+pub fn note_pop_tcur(tid: u64, tcur: u64) {
+    POP_TCUR[(tid % 64) as usize].store(tcur, Ordering::Relaxed);
+}
 pub static SHOOTDOWNS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static PM_SHOOT0: AtomicU64 = AtomicU64::new(0);
 pub static PM_OWNER_TID: AtomicU64 = AtomicU64::new(0);
@@ -134,6 +230,29 @@ pub fn drain() {
                 w[4],
                 w[5]
             ),
+            TIMED => log::info!(
+                "[P1401 TIMED tid={} start_ms={} wake_us={} exit_rel_us={} pop_rel_us={} pop_cpu={} arm={} target={} tcur={} resume_rel_us={} exit_cpu={}]",
+                w[1],
+                w[9] / 1_000_000,
+                w[2] / 1000,
+                w[3] as i64 / 1000,
+                w[4] as i64 / 1000,
+                w[5] & 0xff,
+                (w[5] >> 8) & 0xff,
+                w[5] >> 16,
+                w[6],
+                w[7] as i64 / 1000,
+                w[8]
+            ),
+            POST_EXIT => log::info!(
+                "[P1401 POST_EXIT tid={} exit_ms={} out_after_us={} back_after_us={} out_cpu={} in_cpu={}]",
+                w[1],
+                w[2] / 1_000_000,
+                w[3] / 1000,
+                w[4] / 1000,
+                w[5],
+                w[6]
+            ),
             POLL_FAIL => log::info!("[P1401 POLL_FAIL at_ms={} cpu={} holder_cpu={}]", w[1] / 1_000_000, w[2], w[3]),
             _ => {}
         }
@@ -196,7 +315,7 @@ pub fn note_shootdown() {
 pub fn pm_released() {
     let start = PM_ACQ_NS.load(Ordering::Relaxed);
     let held = now_ns().saturating_sub(start);
-    if start != 0 && held > 2_000_000 {
+    if start != 0 && held > 5_000_000 {
         push(
             PM_HOLD,
             [
@@ -235,7 +354,7 @@ pub fn step<R>(id: u64, f: impl FnOnce() -> R) -> R {
         STEPS[c].fetch_add(1, Ordering::Relaxed);
     }
     let dt = now_ns() - t0;
-    if dt > 3_000_000 {
+    if dt > 10_000_000 {
         let k1 = if c < 8 { ticks_on(c) } else { 0 };
         push(HOUSEKEEP, [id, dt, t0, c as u64, k1 - k0, 0, 0, 0, 0]);
     }
@@ -255,7 +374,7 @@ pub fn idle_pass(cpu: usize) {
     let last_tk = IDLE_TICKS[cpu].swap(tk, Ordering::Relaxed);
     let st = STEPS[cpu].load(Ordering::Relaxed);
     let last_st = IDLE_STEPS[cpu].swap(st, Ordering::Relaxed);
-    if last != 0 && now - last > 15_000_000 && sw == last_sw {
+    if last != 0 && now - last > 30_000_000 && sw == last_sw {
         push(IDLE_GAP, [now - last, last, cpu as u64, sw, tk - last_tk, st - last_st, 0, 0, 0]);
     }
 }

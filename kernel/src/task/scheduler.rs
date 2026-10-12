@@ -5692,9 +5692,11 @@ impl Scheduler {
                             self.per_cpu_queues[target].push_front(tid);
                             self.cpu_state[target].promoted_wake = Some(tid);
                             crate::scratch_probe::note_pop(tid, 2, target as u64);
+                            crate::scratch_probe::note_pop_tcur(tid, self.cpu_state[target].current_thread.unwrap_or(0));
                         } else {
                             self.per_cpu_queues[target].push_back(tid);
                             crate::scratch_probe::note_pop(tid, 3, target as u64);
+                            crate::scratch_probe::note_pop_tcur(tid, self.cpu_state[target].current_thread.unwrap_or(0));
                         }
                         // Discovery must preempt even a busy destination;
                         // otherwise its remaining quantum delays this deadline.
