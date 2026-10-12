@@ -150,12 +150,26 @@ pub(crate) fn raise_sigpipe() {
 /// left pending as SIGKILL instead and the victim's waits are woken: the
 /// thread finishes its syscall, and its return to user mode ends the process.
 pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
-    crate::process::with_process_manager(|manager| {
+    let force = crate::process::with_process_manager(|manager| {
+        let force = manager
+            .get_process(victim)
+            .is_some_and(|process| process.name.starts_with("sigkill_teardown_test"));
         if let Some(process) = manager.get_process_mut(victim) {
             // A deferred kill reports this status, not SIGKILL's own.
             process.group_exit_code.get_or_insert(exit_code);
         }
-    });
+        force
+    })
+    .unwrap_or(false);
+    // SCRATCH #1413 F1: hold the killer between the first PM acquisition and the claim.
+    let t0 = crate::signal::types::monotonic_nanos();
+    if force {
+        crate::signal::delivery::FORCE1413_DELIVER_PID.store(0, core::sync::atomic::Ordering::Release);
+        while crate::signal::types::monotonic_nanos().wrapping_sub(t0) < 5_000_000 {
+            core::hint::spin_loop();
+        }
+    }
+    let t1 = crate::signal::types::monotonic_nanos();
     // Claim before SIGKILL is published (#1413). A pending SIGKILL is the
     // victim's to act on: a thread running user code takes it at its next
     // interrupt return and ends the row there, before this kill has claimed
@@ -179,6 +193,9 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
         crate::task::scheduler::with_scheduler(|scheduler| {
             scheduler.wake_process_threads_for_kill(victim.as_u64());
         });
+        if force {
+            crate::serial_println!("FORCE1413 victim={} claimed=false", victim.as_u64());
+        }
         return;
     }
     crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
@@ -188,7 +205,26 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
 
     let batch = crate::task::scheduler::GroupBatchId::for_single_victim(victim.as_u64());
     crate::task::scheduler::Scheduler::send_exit_expedite_sgi(victim.as_u64(), batch);
-    let _ = crate::process::exit_process_and_retire(victim, exit_code);
+    let outcome = crate::process::exit_process_and_retire(victim, exit_code);
+    if force {
+        let t2 = crate::signal::types::monotonic_nanos();
+        let dpid = crate::signal::delivery::FORCE1413_DELIVER_PID.load(core::sync::atomic::Ordering::Acquire);
+        let dns = crate::signal::delivery::FORCE1413_DELIVER_NS.load(core::sync::atomic::Ordering::Acquire);
+        crate::serial_println!(
+            "FORCE1413 victim={} claimed={} self_delivered={} deliver_us={} claim_us={} retire_us={} outcome={}",
+            victim.as_u64(),
+            claimed,
+            dpid == victim.as_u64(),
+            if dpid == victim.as_u64() { dns.wrapping_sub(t0) / 1000 } else { 0 },
+            t1.wrapping_sub(t0) / 1000,
+            t2.wrapping_sub(t0) / 1000,
+            match outcome {
+                crate::process::ExitOutcome::Missing => "missing",
+                crate::process::ExitOutcome::FirstCommit => "first",
+                crate::process::ExitOutcome::RepeatCommit => "repeat",
+            },
+        );
+    }
     crate::task::scheduler::set_need_resched();
 }
 
