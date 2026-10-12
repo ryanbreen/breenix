@@ -40,6 +40,16 @@ pub fn access_path(path: &str, mode: u32, cred: &crate::fs::permissions::Credent
 pub fn mprotect_allowed(_vma: &crate::memory::vma::Vma, _prot: Protection) -> bool {
     true
 }
+/// A handled resident object page skips generic anonymous-page protection.
+/// SHMSEM updates private object CoW flags here without allocating under PM.
+pub fn protect_page(
+    _table: &mut crate::memory::process_memory::ProcessPageTable,
+    _vma: &crate::memory::vma::Vma,
+    _address: u64,
+    _prot: Protection,
+) -> Result<bool, u64> {
+    Ok(false)
+}
 /// Allocate lazy object pages outside PM, before revalidating their VMA.
 pub fn prepare_population(_thread: u64, _address: u64) -> Result<(), u64> {
     Ok(())

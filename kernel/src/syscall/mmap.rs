@@ -742,6 +742,19 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         let mut from = cursor;
         while let Some(page) = page_table.next_mapped_page(from, next) {
             from = page.start_address().as_u64() + PAGE_SIZE;
+            match crate::ipc::shmem::protect_page(
+                page_table,
+                &process.vmas[index],
+                page.start_address().as_u64(),
+                new_prot,
+            ) {
+                Ok(true) => {
+                    flush_tlb(page.start_address());
+                    continue;
+                }
+                Ok(false) => {}
+                Err(errno) => return SyscallResult::Err(errno),
+            }
             let Some((_, old_flags)) = page_table.get_page_info(page) else {
                 continue;
             };
