@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,6 +19,9 @@ fn tail_of(stream: &[u8]) -> String {
     }
     text
 }
+
+#[path = "stage_markers.rs"]
+mod stage_markers;
 
 fn main() {
     // Emit a unique build ID based on current timestamp (seconds + subsecond nanos).
@@ -48,6 +52,20 @@ fn main() {
     let kernel_dir = PathBuf::from(&manifest_dir);
     let target = env::var("TARGET").unwrap_or_default();
     let use_linux_xhci = env::var("CARGO_FEATURE_XHCI_LINUX_HARNESS").is_ok();
+
+    // The boot-path stage markers, so the kernel's output paths can keep the
+    // lines a stage depends on whole (`stage_lines`).
+    let repo_root = kernel_dir.parent().expect("kernel dir should have parent");
+    for source in stage_markers::sources(repo_root) {
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
+    let markers = stage_markers::boot_path_markers(repo_root)
+        .unwrap_or_else(|error| panic!("boot-path stage markers: {error}"));
+    fs::write(
+        PathBuf::from(&out_dir).join("stage_markers.rs"),
+        format!("&{markers:?}"),
+    )
+    .expect("write stage_markers.rs");
 
     // Only build x86_64 assembly for x86_64 targets
     if target.contains("x86_64") {
@@ -191,7 +209,6 @@ fn main() {
     // NOTE: Skipped for aarch64 targets - ARM64 userspace binaries are built
     // separately via `userspace/programs/build.sh --arch aarch64` and the xtask
     // arm64-boot-stages command handles this.
-    let repo_root = kernel_dir.parent().expect("kernel dir should have parent");
     let userspace_test_dir = repo_root.join("userspace/programs");
 
     if userspace_test_dir.exists() && !target.contains("aarch64") {
