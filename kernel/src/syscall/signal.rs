@@ -150,21 +150,38 @@ pub(crate) fn raise_sigpipe() {
 /// left pending as SIGKILL instead and the victim's waits are woken: the
 /// thread finishes its syscall, and its return to user mode ends the process.
 pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
-    // Publish before checking custody: a peer may leave its section and enter
-    // a blocking syscall while we acquire the scheduler lock. Its signal check
-    // must already see SIGKILL if immediate termination has to be deferred.
-    crate::process::with_process_manager(|manager| {
+    // Publish, claim, and withdraw the publication when the claim succeeds,
+    // all under one process-manager hold (#1413). Publishing before checking
+    // custody means a thread that leaves its section while the claim is
+    // refused finds SIGKILL at its syscall return, whose lock-free check reads
+    // the publication's hint. A claimed thread must never act on SIGKILL
+    // itself: ARM64's interrupt return ends the row in place, without the
+    // retirement receipt and report this kill's exit makes. That return needs
+    // this lock (`try_manager`), so it cannot see the publication before the
+    // withdrawal. A claimed victim dies only here, so the withdrawal loses no
+    // earlier SIGKILL.
+    let claimed = crate::process::with_process_manager(|manager| {
         if let Some(process) = manager.get_process_mut(victim) {
-            process.signals.set_pending(SIGKILL);
             // A deferred kill reports this status, not SIGKILL's own.
             process.group_exit_code.get_or_insert(exit_code);
+            process.signals.set_pending(SIGKILL);
         }
-    });
-    let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
-        scheduler.claim_process_threads_for_kill(victim.as_u64())
+        let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
+            scheduler.claim_process_threads_for_kill(victim.as_u64())
+        })
+        .unwrap_or(true);
+        if claimed {
+            if let Some(process) = manager.get_process_mut(victim) {
+                process.signals.clear_pending(SIGKILL);
+            }
+        }
+        claimed
     })
     .unwrap_or(true);
     if !claimed {
+        // Deferred: wake. A thread that has blocked is woken here, and one
+        // about to block refuses to (`Thread::mark_kill_pending`), so its
+        // signal check runs and finds SIGKILL.
         crate::task::scheduler::with_scheduler(|scheduler| {
             scheduler.wake_process_threads_for_kill(victim.as_u64());
         });

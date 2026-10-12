@@ -41,7 +41,37 @@ fn untrack_victim(pid: i32) {
     }
 }
 
+/// The CLONE_VM children this test has started and not yet seen end. Breenix's
+/// function-entry clone returns the child's thread ID, which is not its process
+/// ID, so these are ended by thread (`tkill`), never by `kill`.
+static LIVE_CLONES: [AtomicI32; 2] = [const { AtomicI32::new(0) }; 2];
+
+fn track_clone(tid: i32) {
+    for slot in LIVE_CLONES.iter() {
+        if slot
+            .compare_exchange(0, tid, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return;
+        }
+    }
+    let _ = tkill(tid, SIGKILL);
+    fail("clone table full");
+}
+
+fn untrack_clone(tid: i32) {
+    for slot in LIVE_CLONES.iter() {
+        let _ = slot.compare_exchange(tid, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
 fn kill_live_victims() {
+    for slot in LIVE_CLONES.iter() {
+        let tid = slot.swap(0, Ordering::AcqRel);
+        if tid > 0 {
+            let _ = tkill(tid, SIGKILL);
+        }
+    }
     for slot in LIVE_VICTIMS.iter() {
         let pid = slot.swap(0, Ordering::AcqRel);
         if pid > 0 {
@@ -387,6 +417,31 @@ extern "C" fn clone_sibling(arg: *mut u8) -> *mut u8 {
     }
 }
 
+fn tkill(tid: i32, signal: i32) -> i64 {
+    let result: i64;
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") 200i64 => result,
+            in("rdi") tid as i64,
+            in("rsi") signal as i64,
+            options(nostack),
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 130u64,
+            inlateout("x0") tid as i64 => result,
+            in("x1") signal as i64,
+            options(nostack),
+        );
+    }
+    result
+}
+
 unsafe fn raw_clone(
     function: extern "C" fn(*mut u8) -> *mut u8,
     argument: *mut u8,
@@ -449,7 +504,7 @@ fn clone_vm_sibling_survives() {
         if victim_clone < 0 {
             fail("CLONE_VM setup failed");
         }
-        track_victim(victim_clone as i32);
+        track_clone(victim_clone as i32);
         let sibling_clone = raw_clone(
             clone_sibling,
             shared.cast(),
@@ -459,7 +514,7 @@ fn clone_vm_sibling_survives() {
         if sibling_clone < 0 {
             fail("CLONE_VM setup failed");
         }
-        track_victim(sibling_clone as i32);
+        track_clone(sibling_clone as i32);
 
         for _ in 0..2_000_000 {
             if core::ptr::read_volatile(&(*shared).victim_pid) != 0
@@ -477,14 +532,18 @@ fn clone_vm_sibling_survives() {
         let heartbeat_before = core::ptr::read_volatile(&(*shared).sibling_heartbeat);
         kill(victim, SIGKILL).unwrap_or_else(|_| fail("CLONE_VM victim kill failed"));
         wait_killed(victim);
+        untrack_clone(victim_clone as i32);
         yield_many(64);
         let heartbeat_after = core::ptr::read_volatile(&(*shared).sibling_heartbeat);
         if heartbeat_after <= heartbeat_before {
+            eprintln!(
+                "SIGKILL_TEARDOWN_TEST: CLONE_VM victim pid={victim} tid={victim_clone} sibling tid={sibling_clone} heartbeat before={heartbeat_before} after={heartbeat_after}"
+            );
             fail("CLONE_VM sibling did not survive victim-only SIGKILL");
         }
         assert_kill_evidence(victim, wait_for_evidence(victim));
         core::ptr::write_volatile(&mut (*shared).sibling_release, 1);
-        untrack_victim(sibling_clone as i32);
+        untrack_clone(sibling_clone as i32);
         // Sibling survival is the P2 invariant. CLONE_CHILD_CLEARTID wake/clear
         // semantics are not part of this gate, so only give the released sibling
         // a scheduling window rather than treating that later ABI as evidence.
