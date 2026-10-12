@@ -55,6 +55,11 @@ pub fn lead(writer: Writer, unit: &[u8]) -> &'static [u8] {
     }
 }
 
+/// The port is in the middle of some writer's line. Called while the port is held.
+pub fn line_open() -> bool {
+    OPEN.load(Ordering::Relaxed) != 0
+}
+
 /// Note that `writer` wrote `byte` to the port last. Called while the port is held.
 pub fn wrote(writer: Writer, byte: u8) {
     OPEN.store(

@@ -27,8 +27,11 @@
 //! that finds it skipped queues again behind the CPUs now waiting, and starts
 //! a fresh line if another writer's line was left open meanwhile; its record
 //! is then split around the other CPUs' output. At most the byte already past
-//! that check can land inside another CPU's record. Fatal
-//! output therefore depends on no other CPU and on no scheduler progress.
+//! that check can land inside another CPU's record. Fatal output therefore
+//! depends on no other CPU and on no scheduler progress. A record carrying a
+//! boot-path stage marker (`stage_lines`) is not left split: it is written
+//! again from its start, on a fresh line, so the stage's line reaches the UART
+//! whole.
 use crate::serial_writer::Writer;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -288,15 +291,28 @@ fn capture(byte: u8, tag: u32) {
 }
 
 fn write<const TEE: bool>(writer: Writer, bytes: &[u8], ownership: &mut Ownership) {
-    for (index, &byte) in bytes.iter().enumerate() {
+    let mut index = 0;
+    while index < bytes.len() {
         if !ownership.held() {
             ownership.regain();
-            // Other CPUs wrote while this one waited; one may have left its line open.
-            for &lead in crate::serial_writer::lead(writer, &bytes[index..]) {
-                put::<TEE>(writer, lead, ownership);
+            // Other CPUs wrote while this one waited; one may have left its line
+            // open. A line a boot-path stage depends on is written again whole,
+            // on a line of its own, rather than finished as a fragment.
+            if index != 0 && crate::stage_lines::contains(crate::STAGE_MARKERS, bytes) {
+                index = 0;
+                if crate::serial_writer::line_open() {
+                    for &lead in b"\r\n" {
+                        put::<TEE>(writer, lead, ownership);
+                    }
+                }
+            } else {
+                for &lead in crate::serial_writer::lead(writer, &bytes[index..]) {
+                    put::<TEE>(writer, lead, ownership);
+                }
             }
         }
-        put::<TEE>(writer, byte, ownership);
+        put::<TEE>(writer, bytes[index], ownership);
+        index += 1;
     }
 }
 
