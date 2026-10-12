@@ -150,21 +150,32 @@ pub(crate) fn raise_sigpipe() {
 /// left pending as SIGKILL instead and the victim's waits are woken: the
 /// thread finishes its syscall, and its return to user mode ends the process.
 pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
-    // Publish before checking custody: a peer may leave its section and enter
-    // a blocking syscall while we acquire the scheduler lock. Its signal check
-    // must already see SIGKILL if immediate termination has to be deferred.
     crate::process::with_process_manager(|manager| {
         if let Some(process) = manager.get_process_mut(victim) {
-            process.signals.set_pending(SIGKILL);
             // A deferred kill reports this status, not SIGKILL's own.
             process.group_exit_code.get_or_insert(exit_code);
         }
     });
+    // Claim before SIGKILL is published (#1413). A pending SIGKILL is the
+    // victim's to act on: a thread running user code takes it at its next
+    // interrupt return and ends the row there, before this kill has claimed
+    // it, and then the row is gone or already terminated when this kill exits
+    // it, so the exit's retirement receipt and report are never made. A
+    // claimed thread is never told, and dies only here.
     let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
         scheduler.claim_process_threads_for_kill(victim.as_u64())
     })
     .unwrap_or(true);
     if !claimed {
+        // Deferred: publish, then wake. A thread that left its section after
+        // the claim was refused and has since blocked is woken here, and one
+        // about to block refuses to (`Thread::mark_kill_pending`), so its
+        // signal check runs after the publication and finds SIGKILL.
+        crate::process::with_process_manager(|manager| {
+            if let Some(process) = manager.get_process_mut(victim) {
+                process.signals.set_pending(SIGKILL);
+            }
+        });
         crate::task::scheduler::with_scheduler(|scheduler| {
             scheduler.wake_process_threads_for_kill(victim.as_u64());
         });

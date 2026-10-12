@@ -1457,10 +1457,15 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
             // Every peer is marked in this one acquisition, before any is
             // killed: a peer's clone refuses from here on, so the group gains
             // no thread the kills below would miss.
-            row.signals.set_pending(SIGKILL);
             row.group_exit_code.get_or_insert(exit_code);
             let runs_this = current.is_some()
                 && row.main_thread.as_ref().map(|thread| thread.id) == current;
+            // Only the peer running this is told here. The others are killed
+            // below, and `kill_process_now` publishes SIGKILL to a peer only
+            // when it cannot claim it (#1413).
+            if runs_this {
+                row.signals.set_pending(SIGKILL);
+            }
             !runs_this
         });
         peers
