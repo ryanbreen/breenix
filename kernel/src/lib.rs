@@ -579,8 +579,8 @@ pub fn arch_halt_with_interrupts() {
 /// as a tick taken in the halt would: on x86 through a software interrupt, on
 /// ARM64 through a reschedule SGI to its own CPU, pending before the WFI.
 pub fn arch_halt_while_blocked() {
-    // SAFETY: interrupts are masked only for the state read, and every path
-    // below unmasks them before returning.
+    // SAFETY: check the state and begin any handoff with interrupts masked.
+    // Every return path below unmasks them.
     unsafe { arch_disable_interrupts() };
     let current_blocked = |scheduler: &mut task::scheduler::Scheduler| {
         scheduler
@@ -597,7 +597,7 @@ pub fn arch_halt_while_blocked() {
         unsafe { arch_enable_interrupts() };
         return;
     }
-    // Counted only when the halt happens: a wake that already ended the wait
+    // Counted only when the wait parks: a wake that already ended the wait
     // is not a park.
     per_cpu::note_wait_loop_park();
     #[cfg(target_arch = "x86_64")]
@@ -618,17 +618,18 @@ pub fn arch_halt_while_blocked() {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if queued && per_cpu::preempt_count() == 0 {
-            task::scheduler::set_need_resched();
-            arch_impl::aarch64::gic::send_sgi(
-                arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
-                arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u8,
-            );
-        }
-        // SAFETY: WFI with IRQs masked wakes on a pending interrupt, which the
-        // unmask then takes.
-        unsafe {
-            core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
+        if per_cpu::preempt_count() == 0 {
+            // Save the blocked continuation now. Halting as current ties a
+            // timer or signal wake to this CPU's next IRQ even when another
+            // CPU has already made the thread ready. The inline handoff frees
+            // its stack for dispatch elsewhere and returns with IRQs enabled.
+            arch_impl::aarch64::context_switch::schedule_from_kernel();
+        } else {
+            // SAFETY: a non-preemptible caller must keep its CPU; a pending
+            // IRQ wakes the masked WFI and is taken by the following unmask.
+            unsafe {
+                core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
+            }
         }
     }
 }
