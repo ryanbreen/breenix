@@ -24,6 +24,26 @@ pub const STAGES: u64 = 11;
 pub const IPI_SLOW: u64 = 12;
 pub const NMI_SAMPLE: u64 = 13;
 pub const NMI_STACK: u64 = 14;
+// Page faults per thread.
+static PF_TID: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
+static PF_N: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
+static PF_CR2: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
+static PF_RIP: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
+static PF_ERR: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
+pub fn page_fault(tid: u64, cr2: u64, rip: u64, err: u64) {
+    let mut i = (tid as usize) % 32;
+    for _ in 0..32 {
+        let t = PF_TID[i].load(Ordering::Relaxed);
+        if t == tid || (t == 0 && PF_TID[i].compare_exchange(0, tid, Ordering::Relaxed, Ordering::Relaxed).is_ok()) {
+            PF_N[i].fetch_add(1, Ordering::Relaxed);
+            PF_CR2[i].store(cr2, Ordering::Relaxed);
+            PF_RIP[i].store(rip, Ordering::Relaxed);
+            PF_ERR[i].store(err, Ordering::Relaxed);
+            return;
+        }
+        i = (i + 1) % 32;
+    }
+}
 // PM occupancy by acquisition line (16 slots, by line % 16 collisions tolerated).
 static OCC_LINE: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static OCC_NS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
@@ -279,6 +299,20 @@ pub fn drain() {
         POLL_FAILS.swap(0, Ordering::Relaxed),
         nmi_sample as usize
     );
+    for i in 0..32 {
+        let n = PF_N[i].swap(0, Ordering::Relaxed);
+        if n > 1000 {
+            log::info!(
+                "[P1401 PF tid={} n={} cr2={:#x} rip={:#x} err={:#x}]",
+                PF_TID[i].load(Ordering::Relaxed),
+                n,
+                PF_CR2[i].load(Ordering::Relaxed),
+                PF_RIP[i].load(Ordering::Relaxed),
+                PF_ERR[i].load(Ordering::Relaxed)
+            );
+        }
+        PF_TID[i].store(0, Ordering::Relaxed);
+    }
     for i in 0..16 {
         let l = OCC_LINE[i].load(Ordering::Relaxed);
         let n = OCC_N[i].swap(0, Ordering::Relaxed);
