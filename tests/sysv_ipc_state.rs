@@ -377,6 +377,30 @@ fn info_structures_report_limits_or_use() {
 }
 
 #[test]
+fn shm_info_structures_report_limits_or_use() {
+    let u64_at = |b: &[u8], at: usize| u64::from_ne_bytes(b[at..at + 8].try_into().unwrap());
+    let i = shminfo();
+    assert_eq!((u64_at(&i, 0), u64_at(&i, 8), u64_at(&i, 16), u64_at(&i, 24)), (SHMMAX, 1, 4096, 4096));
+    assert_eq!(u64_at(&i, 32), u64::MAX - (1 << 24));
+    assert!(i[40..].iter().all(|&b| b == 0));
+    let u = shm_info(3, 10);
+    assert_eq!(i32::from_ne_bytes(u[0..4].try_into().unwrap()), 3);
+    assert_eq!((u64_at(&u, 8), u64_at(&u, 16), u64_at(&u, 24), u64_at(&u, 32), u64_at(&u, 40)), (10, 10, 0, 0, 0));
+    assert_eq!((SHMINFO_SIZE, SHM_INFO_SIZE), (72, 48));
+}
+
+#[test]
+fn the_highest_index_can_skip_objects_that_no_longer_exist() {
+    let mut ids: IpcIds<bool> = IpcIds::new(8);
+    ids.insert(perm(1, 0o600), true).unwrap();
+    ids.insert(perm(2, 0o600), true).unwrap();
+    ids.insert(perm(3, 0o600), false).unwrap();
+    assert_eq!(ids.highest_index(), 2);
+    assert_eq!(ids.highest_index_where(|e| e.obj), 1);
+    assert_eq!(ids.highest_index_where(|_| false), 0);
+}
+
+#[test]
 fn vec_map_keeps_keys_sorted_and_reports_enomem_instead_of_panicking() {
     let mut m: VecMap<i32, u8> = VecMap::new();
     for k in [5, 1, 3] {
@@ -443,6 +467,8 @@ fn constants_and_limits_have_linux_values() {
     assert_eq!((GETPID, GETVAL, GETALL, GETNCNT, GETZCNT, SETVAL, SETALL), (11, 12, 13, 14, 15, 16, 17));
     assert_eq!(SEM_UNDO, 0x1000);
     assert_eq!((SHM_RDONLY, SHM_RND, SHM_EXEC, SHM_DEST), (0o10000, 0o20000, 0o100000, 0o1000));
+    assert_eq!((SHM_LOCKED, SHM_REMAP), (0o2000, 0o40000));
+    assert_eq!((SHM_LOCK, SHM_UNLOCK, SHM_STAT, SHM_INFO, SHM_STAT_ANY), (11, 12, 13, 14, 15));
     assert_eq!((MSGMAX, MSGMNB, MSGMNI), (8192, 16384, 32000));
     assert_eq!((SEMMSL, SEMMNI, SEMOPM, SEMVMX), (32000, 32000, 500, 32767));
     assert_eq!((SHMMNI, SHMMIN, SHMMAX, SHMLBA), (4096, 1, u64::MAX - (1 << 24), 4096));
