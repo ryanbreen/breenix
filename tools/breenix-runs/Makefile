@@ -23,8 +23,8 @@ build:
 test: unit-test
 	$(MAKE) ui-smoke
 
-unit-test:
-	swift test
+unit-test: app-debug
+	swift test --jobs 6
 
 ui-smoke:
 	bash scripts/ui-smoke.sh
@@ -61,7 +61,7 @@ app-debug:
 	$(MAKE) bundle CONFIG=debug
 
 bundle:
-	swift build --product $(APP_EXECUTABLE) -c $(CONFIG)
+	swift build --jobs 6 --product $(APP_EXECUTABLE) -c $(CONFIG)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_MACOS)" "$(APP_RESOURCES)"
 	bin_path="$$(swift build --show-bin-path -c $(CONFIG))" && \
