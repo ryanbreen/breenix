@@ -100,6 +100,22 @@ impl QemuConfig {
     }
 
     /// Spawn QEMU with this configuration, returning the child process handle.
+    fn watched_command(&self, executable: &str) -> Command {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut command = Command::new("python3");
+        command.arg(root.join("scripts/watch-boot.py"));
+        for path in &self.serial_files {
+            command.arg("--serial").arg(path);
+        }
+        if !self.arch.is_arm64() {
+            if let Some(user) = self.serial_files.first() {
+                command.arg("--user-serial").arg(user);
+            }
+        }
+        command.arg("--").arg(executable);
+        command
+    }
+
     pub fn spawn_qemu(&self) -> Result<std::process::Child> {
         match &self.arch {
             Arch::Arm64 => {
@@ -153,7 +169,7 @@ impl QemuConfig {
                 // Add extra args
                 args.extend(self.extra_qemu_args.iter().cloned());
 
-                Command::new("qemu-system-aarch64")
+                self.watched_command("qemu-system-aarch64")
                     .args(&args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
@@ -162,18 +178,9 @@ impl QemuConfig {
                     .context("Failed to spawn qemu-system-aarch64")
             }
             Arch::X86_64 => {
-                let features = self.features.join(",");
-                let mut args = vec![
-                    "run".to_string(),
-                    "--release".to_string(),
-                    "-p".to_string(),
-                    "breenix".to_string(),
-                    "--features".to_string(),
-                    features,
-                    "--bin".to_string(),
-                    "qemu-uefi".to_string(),
-                    "--".to_string(),
-                ];
+                // build() has already produced this binary. Start the progress
+                // clock with the VM, not while Cargo might still be compiling.
+                let mut args = Vec::new();
 
                 // Add serial files
                 for path in &self.serial_files {
@@ -193,7 +200,7 @@ impl QemuConfig {
                 // Add extra args
                 args.extend(self.extra_qemu_args.iter().cloned());
 
-                Command::new("cargo")
+                self.watched_command("target/release/qemu-uefi")
                     .args(&args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())

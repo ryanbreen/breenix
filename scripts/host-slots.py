@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import selectors
 import shutil
 import signal
@@ -444,6 +445,9 @@ def supervise_worker(argv, parent):
     identity = {'worktree': worktree, 'commit': os.environ.get('BREENIX_SLOT_COMMIT') or command_output(['git', '-C', worktree, 'rev-parse', 'HEAD']) or 'unknown'}
     stop_commands = []
     serials = {}
+    progress = None
+    legacy_progress = {}
+    stalled_record = None
     pending = None
     received_signal = None
     child = None
@@ -513,6 +517,15 @@ def supervise_worker(argv, parent):
     counters = {}
 
     def start_boot(request):
+        nonlocal progress
+        # Load from the booted checkout, including when this supervisor is staged
+        # outside it by Run Inspector. Builds and lease waits are not boot time.
+        helper = Path(request.get("progress_helper", str(Path(worktree) / "scripts/boot_progress.py")))
+        if helper.exists():
+            Progress = runpy.run_path(str(helper))["BootProgress"]
+            serial = next((path for path, (count, _, _) in serials.items()
+                           if count == len(records)), str(Path(worktree) / "target/serial.log"))
+            progress = Progress(serial, track_completion=True)
         # Every launcher asks just before it starts its VM: record the host it starts
         # on, and whether a quiet host was required and found, in the open boot record.
         index = open_boot()
@@ -553,6 +566,10 @@ def supervise_worker(argv, parent):
                 continue
             lines = (partial + data).split(b'\n')
             serials[serial] = (count, offset + len(data), lines.pop()[-4096:])
+            if progress is not None and open_boot(count) is not None:
+                for line in lines:
+                    progress.line(line.decode(errors='replace'), serial,
+                                  userspace=Path(serial).name in ('serial_user.log', 'serial_user.txt'))
             if any(DONE_LINE.match(line.strip(b'\r')) for line in lines):
                 index = open_boot(count)
                 if index is not None:
@@ -564,8 +581,13 @@ def supervise_worker(argv, parent):
         except OSError:
             offset = 0
         serials[serial] = (len(records), offset, b'')
+        if progress is not None and progress.last_source is None:
+            progress.serial = Path(serial)
 
     def release_boot(resource):
+        nonlocal progress
+        progress = None
+        legacy_progress.clear()
         # The lease ends, which for Parallels and VMware can be long after the verdict.
         for index in range(len(records) - 1, -1, -1):
             entry = records[index]
@@ -635,13 +657,35 @@ def supervise_worker(argv, parent):
                 forwarded_signal = None
                 stop_deadline = None
                 while child.poll() is None:
-                    refresh()
+                    owned = refresh()
+                    # Older QEMU launchers use the shared lease but do not send
+                    # boot-start or serial requests. Enroll their owned VM's
+                    # file-backed serials at launch, never while it builds.
+                    if progress is None and open_boot() is not None:
+                        for row in owned.values():
+                            command = row[3]
+                            if not Path(command.split()[0]).name.startswith('qemu-system'):
+                                continue
+                            paths = re.findall(r'-serial\s+file:([^\s]+)', command)
+                            paths += re.findall(r'-chardev\s+file,[^\s]*path=([^,\s]+)', command)
+                            helper = Path(worktree) / 'scripts/boot_progress.py'
+                            if paths and helper.exists() and row[1] not in legacy_progress:
+                                Progress = runpy.run_path(str(helper))["BootProgress"]
+                                for serial in paths:
+                                    serial = str(Path(serial).resolve())
+                                    serials[serial] = (len(records), 0, b'')
+                                legacy_progress[row[1]] = (Progress(paths[0], track_completion=True), paths)
+                        for group, (watcher, paths) in list(legacy_progress.items()):
+                            if not any(row[1] == group for row in owned.values()):
+                                del legacy_progress[group]
+                            else:
+                                watcher.poll([(path, Path(path).name.startswith('serial_user')) for path in paths])
                     if os.getppid() != parent and received_signal is None:
                         received_signal = signal.SIGHUP
                     if received_signal is not None and received_signal != forwarded_signal:
                         signal_tree(received_signal)
                         forwarded_signal = received_signal
-                        stop_deadline = time.monotonic() + 120
+                        stop_deadline = time.monotonic() + (10 if stalled_record else 120)
                     if stop_deadline is not None and time.monotonic() >= stop_deadline:
                         signal_tree(signal.SIGKILL)
                         break
@@ -707,6 +751,16 @@ def supervise_worker(argv, parent):
                             client.sendall(b'{}\n')
                             client.close()
                     watch_serials()
+                    stalled = next((watcher for watcher, _ in legacy_progress.values() if watcher.stalled()), None)
+                    if progress is not None and progress.stalled():
+                        stalled = progress
+                    if stalled is not None and stalled_record is None:
+                        stalled_record = stalled.record()
+                        index = open_boot()
+                        if index is not None:
+                            records[index]["stall"] = stalled_record
+                            publish(index)
+                        received_signal = signal.SIGTERM
                     if pending is None:
                         continue
                     if pending['resource'] == 'quiet':
@@ -797,7 +851,7 @@ def supervise_worker(argv, parent):
                 for home in cargo_homes:
                     shutil.rmtree(home, ignore_errors=True)
                 slots.close()
-    return child.returncode if child.returncode >= 0 else 128 - child.returncode
+    return 124 if stalled_record else child.returncode if child.returncode >= 0 else 128 - child.returncode
 
 
 def main():
@@ -818,7 +872,8 @@ def main():
             print('[host-slot] the supervising helper predates boot-start records: no quiet-host wait, start not recorded',
                   file=sys.stderr, flush=True)
             return 0
-        send_request({'operation': 'quiet', 'manifests': values, 'policy': quiet_policy(os.environ)})
+        send_request({'operation': 'quiet', 'manifests': values, 'policy': quiet_policy(os.environ),
+                      'progress_helper': str(Path(__file__).resolve().with_name('boot_progress.py'))})
     elif args.operation == 'vm':
         send_request({'operation': 'vm', 'serial': values[0], 'stop': values[1:]})
     elif args.operation == 'serial':

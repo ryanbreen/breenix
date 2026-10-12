@@ -279,3 +279,23 @@ Nothing else tracks regressions.
   and the catalog, and name it in `boot-path.json`.
 
 Vigil's Breenix page reads this file, runs boots, and shows the ladder live.
+
+Every launcher stops an unfinished boot after 120 seconds without test progress,
+independently of its existing hard deadline or raw-serial idle exit. Progress is a
+complete new userspace line or a first-seen boot-stage marker. Loader announcements,
+periodic kernel census and diagnostics do not extend that deadline. The launcher
+exits nonzero and keeps its serial and a neighboring `*.stall.json` record with
+`status: stalled`, the last progress line and its source, the last progress time,
+and the UTC stop time. The shared host-slot supervisor also watches older QEMU
+launchers once their owned VM starts; build and queue time do not count. A completed
+suite's retained panel is outside the stall deadline; suite sequences resume the
+watch while waiting to exec the next suite.
+
+All eight current suite manifests use the runner's default 10-second case limit;
+none grants a longer silent case. The full testing boot's canonical programs have
+no intentional silent interval exceeding 120 seconds (the external HTTP receive
+limit is 20 seconds, DNS child startup is 30 seconds, and probe program mode is
+bounded at 60 seconds). An unbounded wait for a signal, child, pipe or socket is
+not a legitimate silent allowance: its supervising program must make progress.
+Any future legitimately longer operation must print meaningful userspace progress
+before two minutes elapse; periodic kernel output cannot satisfy that requirement.

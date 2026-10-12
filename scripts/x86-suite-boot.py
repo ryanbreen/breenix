@@ -14,6 +14,7 @@ import time
 import runpy
 
 WallClockCheck = runpy.run_path(str(Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
+BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))["BootProgress"]
 
 spec = importlib.util.spec_from_file_location('suite_verdict', Path(__file__).with_name('suite-verdict.py'))
 scorer = importlib.util.module_from_spec(spec)
@@ -62,6 +63,8 @@ def record(repo, out, suite, user, kernel, disk, started, ended, forced_failure=
         if forced_failure:
             ok, reason = False, forced_failure + '; ' + reason
         verdict = 'PASS' if ok else 'FAIL'
+    if forced_failure and forced_failure.startswith('stalled:'):
+        verdict = 'STALLED'
     result = dict(suite=suite, verdict=verdict, reason=reason, started=started, ended=ended)
     (directory / 'result.json').write_text(json.dumps(result) + '\n')
     print(f'  Suite {suite}: {verdict}: {reason}', flush=True)
@@ -71,6 +74,7 @@ def record(repo, out, suite, user, kernel, disk, started, ended, forced_failure=
 def main():
     repo, out, suites, timeout, command = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3].split(','), float(sys.argv[4]), sys.argv[5:]
     user_path, kernel_path = out / 'serial_user.log', out / 'serial_kernel.log'
+    progress = BootProgress(user_path)
     clock = WallClockCheck(user_path)
     offsets = [0, 0]
     started = time.time()
@@ -93,6 +97,11 @@ def main():
     try:
         while child.poll() is None and current < len(suites):
             data = read()
+            progress.poll([(kernel_path, False), (user_path, True)])
+            if progress.stalled():
+                progress.record()
+                forced_failure = "stalled: " + progress.last_line
+                break
             clock.observe(data[0].decode(errors="replace"))
             suite = suites[current]
             user = data[0][offsets[0]:].decode(errors='replace').replace('\r', '')
