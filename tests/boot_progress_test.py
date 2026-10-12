@@ -85,6 +85,15 @@ class ProgressTest(unittest.TestCase):
         self.assertTrue(self.progress.stalled(now=121))
         self.assertEqual(self.progress.last_line, 'SIGKILL_TEARDOWN_TEST: FAIL')
 
+    def test_x86_com1_kernel_debug_after_fail_is_not_progress(self):
+        self.feed('SIGKILL_TEARDOWN_TEST: FAIL\n', 1, 'serial_user.log', userspace=True)
+        for line in ('BP handler: About to call preempt_enable',
+                     'BP handler: Called preempt_enable, exiting handler',
+                     '[TIMER_SCALE_ORACLE:x86:PASS]', 'breenix> '):
+            self.feed(line + '\n', 119, line, userspace=True)
+        self.assertTrue(self.progress.stalled(now=121))
+        self.assertEqual(self.progress.last_line, 'SIGKILL_TEARDOWN_TEST: FAIL')
+
     def test_file_poll_keeps_incomplete_line_until_newline(self):
         self.serial.write_bytes(b'SIGKILL_TEARDOWN_TEST: FAIL\nSUITE threads CASE partial')
         self.progress.poll([(self.serial, True)], now=2, epoch=2)
