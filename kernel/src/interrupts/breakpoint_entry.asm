@@ -64,15 +64,6 @@ breakpoint_entry:
     mov rdi, rsp
     call rust_breakpoint_handler
     
-    ; Raw serial output: Rust handler returned
-    mov dx, 0x2F8
-    mov al, 'R'         ; 'R' for Return
-    out dx, al
-    mov al, 'E'         ; 'E' for rEturn
-    out dx, al
-    mov al, 'T'         ; 'T' for reTurn
-    out dx, al
-    
     ; Check if we need to swap GS back before returning
     ; Frame layout is same as above
     mov rax, [rsp + SAVED_REGS_SIZE + 16]  ; Get CS again
@@ -108,13 +99,6 @@ breakpoint_entry:
     
     ; Remove dummy error code
     add rsp, 8
-    
-    ; Raw serial output: About to IRETQ
-    mov dx, 0x2F8
-    mov al, 'I'         ; 'I' for IRETQ
-    out dx, al
-    mov al, 'Q'         ; 'Q' for iretQ
-    out dx, al
     
     ; Return from interrupt
     iretq
