@@ -57,6 +57,19 @@ pub mod ipc {
                 record(format!("msgctl {id} {cmd} {buf:#x}"))
             }
         }
+        pub mod sem {
+            use super::record;
+            use crate::SyscallResult;
+            pub fn sys_semget(key: i32, nsems: i32, flags: u32) -> SyscallResult {
+                record(format!("semget {key} {nsems} {flags:o}"))
+            }
+            pub fn sys_semtimedop(id: i32, sops: u64, nsops: u64, timeout: u64) -> SyscallResult {
+                record(format!("semtimedop {id} {sops:#x} {nsops} {timeout:#x}"))
+            }
+            pub fn sys_semctl(id: i32, num: i32, cmd: u32, arg: u64) -> SyscallResult {
+                record(format!("semctl {id} {num} {cmd} {arg:#x}"))
+            }
+        }
     }
 }
 pub mod syscall {
@@ -228,7 +241,6 @@ pub mod task {
 fn foundation_does_not_claim_unimplemented_calls() {
     for number in [
         dispatch::MQ_OPEN_SYSCALL_NUMBER,
-        dispatch::SEMTIMEDOP_SYSCALL_NUMBER,
         dispatch::SHMGET_SYSCALL_NUMBER,
         dispatch::SHMAT_SYSCALL_NUMBER,
         dispatch::SHMDT_SYSCALL_NUMBER,
@@ -248,6 +260,10 @@ fn sysv_dispatch_routes_each_call_with_linux_argument_types() {
         (dispatch::MSGSND_SYSCALL_NUMBER, [3, 0x1000, 64, wide(0o4000), 0, 0], "msgsnd 3 0x1000 64 4000"),
         (dispatch::MSGRCV_SYSCALL_NUMBER, [3, 0x1000, 64, neg(-2), wide(0o14000), 0], "msgrcv 3 0x1000 64 -2 14000"),
         (dispatch::MSGCTL_SYSCALL_NUMBER, [3, wide(0x102), 0x2000, 0, 0, 0], "msgctl 3 258 0x2000"),
+        (dispatch::SEMGET_SYSCALL_NUMBER, [wide(7), 3, 0o1600, 0, 0, 0], "semget 7 3 1600"),
+        (dispatch::SEMOP_SYSCALL_NUMBER, [5, 0x3000, wide(2), 0x4000, 0, 0], "semtimedop 5 0x3000 2 0x0"),
+        (dispatch::SEMTIMEDOP_SYSCALL_NUMBER, [5, 0x3000, 1, 0x4000, 0, 0], "semtimedop 5 0x3000 1 0x4000"),
+        (dispatch::SEMCTL_SYSCALL_NUMBER, [5, 1, 16, wide(65536), 0, 0], "semctl 5 1 16 0xdead00010000"),
     ];
     for (number, args, want) in cases {
         ipc::sysv::CALLS.with(|calls| calls.borrow_mut().clear());

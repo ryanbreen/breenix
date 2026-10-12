@@ -936,6 +936,9 @@ impl ProcessScheduler {
         // one it is blocked on stops counting it. Before PM: the futex table
         // is never taken under it.
         crate::syscall::futex::pi_thread_exit(thread_id);
+        // The last thread of a process applies its SEM_UNDO adjustments
+        // before Phase 1 makes the row a zombie its parent can reap.
+        crate::ipc::sysv::thread_exit(thread_id);
         // Capture the claimer before taking PM. This is a separate scheduler-only
         // acquisition; no scheduler state is consulted while PM is live.
         let report_claimer = scheduler::current_thread_id().unwrap_or(thread_id);
