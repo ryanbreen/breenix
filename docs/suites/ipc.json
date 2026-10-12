@@ -4,6 +4,7 @@
   "area": "XSI & message-queue IPC",
   "summary": "Processes talk through named pipes, POSIX message queues, semaphores and shared memory, and System V message queues, semaphore sets and shared memory segments, as POSIX requires, through Breenix's own C library, on every target.",
   "binary": "/sbin/suite-ipc",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "fifos",
