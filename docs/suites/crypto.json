@@ -1,0 +1,18 @@
+{
+  "id": "crypto",
+  "title": "Cryptographic randomness",
+  "area": "Runtimes",
+  "summary": "libbreenix CSPRNG uses Breenix getrandom to fill buffers across ChaCha20 block boundaries and independently seed instances.",
+  "binary": "/sbin/suite-crypto",
+  "categories": [
+    {
+      "id": "csprng",
+      "title": "CSPRNG",
+      "cases": [
+        { "id": "fill", "title": "fill produces nonzero output" },
+        { "id": "across-blocks", "title": "fill initializes every block across a 200-byte request" },
+        { "id": "independent", "title": "Independent CSPRNG instances produce different output" }
+      ]
+    }
+  ]
+}

@@ -352,6 +352,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         for i in 0..10 {
             vec.push(i);
         }
+        assert_eq!(vec.len(), 10, "heap vector length");
+        assert_eq!(vec.iter().sum::<i32>(), 45, "heap vector contents");
         log::info!("Heap test: created vector with {} elements", vec.len());
         log::info!("Heap test: sum of elements = {}", vec.iter().sum::<i32>());
     }
@@ -2388,6 +2390,22 @@ fn kernel_main_continue() -> ! {
     #[cfg(all(feature = "btrt", not(feature = "testing")))]
     kernel::test_framework::btrt::finalize();
 
+    // Initialize and run the async executor.
+    // Prime non-production console tasks while the boot continuation is still
+    // protected: releasing preemption may abandon the idle context permanently.
+    #[cfg(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))]
+    let mut executor = {
+        let mut executor = task::executor::Executor::new();
+        executor.spawn(task::Task::new(keyboard::keyboard_task()));
+        executor.spawn(task::Task::new(serial::command::serial_command_task()));
+        executor.start();
+        executor
+    };
+
     // Release the scheduling brake taken in the first RING3_SMOKE block
     // above (see its preempt_disable() comment) - this is the true,
     // intended start of preemption for userspace processes registered
@@ -2441,24 +2459,6 @@ fn kernel_main_continue() -> ! {
         "[PREEMPT_BRACKET_CENSUS:underflow={}]",
         kernel::per_cpu::preempt_underflow_count()
     );
-
-    // Initialize and run the async executor.
-    log::info!("Starting async executor...");
-
-    // Non-production profiles drive the console executor directly from the
-    // boot thread's own tail, exactly as they always have -- unaffected by
-    // the #673 B1 fix below.
-    #[cfg(any(
-        feature = "testing",
-        feature = "interactive",
-        feature = "disable_x86_prod_init"
-    ))]
-    let mut executor = {
-        let mut executor = task::executor::Executor::new();
-        executor.spawn(task::Task::new(keyboard::keyboard_task()));
-        executor.spawn(task::Task::new(serial::command::serial_command_task()));
-        executor
-    };
 
     // Release the SECOND, dedicated brake taken above (#673 review, B3) by
     // handing the console its OWN kernel thread instead of ever driving it
@@ -2711,32 +2711,6 @@ fn panic(info: &PanicInfo) -> ! {
     loop {
         x86_64::instructions::hlt();
     }
-}
-
-// Test function for exception handlers
-#[cfg(all(target_arch = "x86_64", feature = "test_all_exceptions"))]
-fn test_exception_handlers() {
-    log::info!("🧪 EXCEPTION_HANDLER_TESTS_START 🧪");
-
-    // Test divide by zero
-    log::info!("Testing divide by zero exception (simulated)...");
-    // We can't actually trigger it without halting, so we just verify the handler is installed
-    log::info!("EXCEPTION_TEST: DIVIDE_BY_ZERO handler installed ✓");
-
-    // Test invalid opcode
-    log::info!("Testing invalid opcode exception (simulated)...");
-    log::info!("EXCEPTION_TEST: INVALID_OPCODE handler installed ✓");
-
-    // Test page fault
-    log::info!("Testing page fault exception (simulated)...");
-    log::info!("EXCEPTION_TEST: PAGE_FAULT handler installed ✓");
-
-    // Test that we can read from a valid address (shouldn't page fault)
-    let test_addr = 0x1000 as *const u8;
-    let _ = unsafe { core::ptr::read_volatile(test_addr) };
-    log::info!("EXCEPTION_TEST: Valid memory access succeeded ✓");
-
-    log::info!("🧪 EXCEPTION_HANDLER_TESTS_COMPLETE 🧪");
 }
 
 // test_kthread_lifecycle and test_kthread_join moved to task/kthread_tests.rs

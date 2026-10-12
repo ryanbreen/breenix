@@ -36,6 +36,14 @@ impl Executor {
         self.task_queue.push(task_id).expect("queue full");
     }
 
+    /// Advance the console tasks to their first wait before boot can yield its
+    /// idle context permanently. Readiness is reported only after polling them.
+    #[allow(dead_code)] // The x86 console executor is not used on ARM64.
+    pub fn start(&mut self) {
+        self.run_ready_tasks();
+        log::info!("Console executor primed");
+    }
+
     /// Poll every currently-queued task once.
     ///
     /// Private (#673 review, mi2): the priming caller this doc used to
@@ -142,6 +150,7 @@ impl Executor {
         if let Some(handle) = super::kthread::current_kthread() {
             PARKING_EXECUTOR.call_once(|| handle);
         }
+        self.start();
         loop {
             self.run_ready_tasks();
             self.sleep_if_idle();

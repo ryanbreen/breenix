@@ -2,9 +2,6 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
-mod shared_qemu;
-use shared_qemu::get_kernel_output;
-
 /// Test that the kernel builds successfully with our custom target
 #[test]
 fn test_kernel_builds() {
@@ -76,33 +73,4 @@ fn test_kernel_builds_with_testing_feature() {
         "Kernel build with testing feature failed"
     );
     println!("✅ Kernel builds successfully with testing feature");
-}
-
-/// Test that we can run the kernel binary in QEMU using shared infrastructure
-#[test]
-#[ignore = "retired: four-target suites and boot-path gates replace Mac TCG serial checks (#1395)"]
-fn test_kernel_runs_in_qemu() {
-    println!("Testing kernel execution in QEMU...");
-
-    // Get kernel output from shared QEMU instance
-    let output = get_kernel_output();
-
-    println!("=== QEMU Output Sample ===");
-    for line in output.lines().take(20) {
-        println!("{}", line);
-    }
-    println!("=== End Output Sample ===");
-
-    // Look for any sign the kernel is running
-    assert!(
-        output.contains("Kernel entry point reached")
-            || output.contains("Serial port initialized")
-            || output.contains("[ INFO]")
-            || output.contains("Memory")
-            || output.contains("GDT")
-            || output.contains("Booting"),
-        "Expected kernel output not found"
-    );
-
-    println!("✅ Kernel runs successfully in QEMU");
 }
