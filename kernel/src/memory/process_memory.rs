@@ -1385,6 +1385,12 @@ impl ProcessPageTable {
     pub(crate) fn retain_file_vmas(&mut self, vmas: &mut alloc::vec::Vec<crate::memory::vma::Vma>) {
         self.assert_unclaimed();
         assert!(self.retired_vmas.is_empty());
+        // User mappings end at exit/exec, before wait4 can observe completion.
+        // Retired PTEs retain their own frame references through the grace
+        // period, but must not keep System V attachment tokens alive.
+        for vma in vmas.iter_mut() {
+            vma.shm = None;
+        }
         self.retired_vmas = core::mem::take(vmas);
     }
 

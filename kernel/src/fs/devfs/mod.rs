@@ -187,17 +187,24 @@ pub fn lookup_by_inode(inode: u64) -> Option<DeviceNode> {
 /// List all device names (for /dev directory listing)
 pub fn list_devices() -> Vec<String> {
     let devfs = DEVFS.lock();
-    devfs
+    let mut names: Vec<String> = devfs
         .devices
         .iter()
         .map(|d| String::from(d.device_type.name()))
-        .collect()
+        .collect();
+    names.push(String::from("shm"));
+    names
 }
 
 /// Snapshot directory metadata without allocating per-name strings.
 pub fn directory_entries() -> Result<Vec<entries::DirectoryEntry>, u64> {
     let devfs = DEVFS.lock();
-    entries::entries(devfs.devices.iter().map(|d| (d.device_type.name(), d.device_type.inode())))
+    entries::entries(
+        devfs
+            .devices
+            .iter()
+            .map(|d| (d.device_type.name(), d.device_type.inode())),
+    )
 }
 
 /// Check if devfs is initialized

@@ -61,7 +61,9 @@ static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 pub(crate) fn copying(root: u64) -> bool {
     ACTIVE.load(Ordering::Acquire) != 0
         && root != 0
-        && CLAIMS.iter().any(|claim| claim.load(Ordering::Acquire) == root)
+        && CLAIMS
+            .iter()
+            .any(|claim| claim.load(Ordering::Acquire) == root)
 }
 
 /// Wait until no fork is copying the address space rooted at `root`. The CPU
@@ -93,6 +95,15 @@ pub(crate) fn forming(space: u64) -> bool {
             .any(|forming| forming.load(Ordering::Acquire) == space)
 }
 
+/// Under PM, no unpublished fork table can escape a global shm revocation.
+/// The caller releases PM and retries while this is true, allowing a child
+/// whose pages were copied outside PM to publish before the revocation scans.
+pub(crate) fn any_forming() -> bool {
+    FORMING
+        .iter()
+        .any(|space| space.load(Ordering::Acquire) != 0)
+}
+
 /// A fork's claim on its parent's address space, from its taking under
 /// PROCESS_MANAGER to the end of the copy, and on its child's table until the
 /// child is published or abandoned under the lock again.
@@ -108,7 +119,11 @@ impl CopyClaim {
     /// before it can switch away.
     pub(crate) fn take(root: u64, child: u64) -> Self {
         let cpu = crate::task::scheduler::current_cpu();
-        assert!(cpu < MAX_CPUS, "fork copy on CPU {} past the claim table", cpu);
+        assert!(
+            cpu < MAX_CPUS,
+            "fork copy on CPU {} past the claim table",
+            cpu
+        );
         let previous = CLAIMS[cpu].swap(root, Ordering::AcqRel);
         assert_eq!(previous, 0, "a CPU makes one fork copy at a time");
         FORMING[cpu].store(child, Ordering::Release);
