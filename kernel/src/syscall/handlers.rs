@@ -3112,7 +3112,7 @@ fn dup_to(old_fd: u32, new_fd: u32, set_cloexec: bool) -> SyscallResult {
     };
 
     // Call the fd_table's dup2 implementation
-    let close_pid = process.pid();
+    let close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
     let duplicated = process
         .fd_table
         .dup2(old_fd as i32, new_fd as i32, set_cloexec);

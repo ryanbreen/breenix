@@ -88,6 +88,10 @@ pub mod process {
     use alloc::sync::Arc;
     #[derive(Clone, Copy, Debug)]
     pub struct ProcessId(pub u64);
+    impl ProcessId {
+        pub fn new(value: u64) -> Self { Self(value) }
+        pub fn as_u64(self) -> u64 { self.0 }
+    }
     pub struct Ids {
         pub uid: u32,
         pub gid: u32,

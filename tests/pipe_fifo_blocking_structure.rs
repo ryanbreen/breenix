@@ -377,7 +377,7 @@ fn dup_exec_and_row_drop_keep_cleanup_outside_pm() {
     );
     for (name, body) in execs {
         assert!(
-            contains(body, "close_cloexec(pid,closes)"),
+            contains(body, "close_cloexec(ipc_close_pid,closes)"),
             "{name} lost caller-owned cleanup"
         );
         assert!(

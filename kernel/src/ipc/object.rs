@@ -13,3 +13,25 @@ pub trait IpcFile: Send + Sync + core::fmt::Debug {
     }
     fn on_close(&self, _pid: crate::process::ProcessId) {}
 }
+
+/// IPC registrations belong to the process, including a close by another row
+/// of a CLONE_THREAD group. Capture this before exec clears group membership.
+pub fn close_owner(
+    row: crate::process::ProcessId,
+    thread_group_id: Option<u64>,
+) -> crate::process::ProcessId {
+    crate::process::ProcessId::new(thread_group_id.unwrap_or(row.as_u64()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::close_owner;
+    use crate::process::ProcessId;
+
+    #[test]
+    fn close_owner_is_the_group_for_leaders_and_nonleaders() {
+        assert_eq!(close_owner(ProcessId::new(20), None).as_u64(), 20);
+        assert_eq!(close_owner(ProcessId::new(20), Some(20)).as_u64(), 20);
+        assert_eq!(close_owner(ProcessId::new(21), Some(20)).as_u64(), 20);
+    }
+}

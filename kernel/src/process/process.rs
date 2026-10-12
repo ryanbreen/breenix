@@ -723,7 +723,7 @@ impl Process {
         let entries = self.fd_table.take_all();
         for (_, entry) in &entries {
             if let crate::ipc::FdKind::Ipc(object) = &entry.kind {
-                object.on_close(self.pid());
+                object.on_close(crate::ipc::object::close_owner(self.id, self.thread_group_id));
             }
         }
         if crate::process::process_manager_held_on_current_cpu() {
@@ -755,7 +755,7 @@ impl Process {
                     crate::trace_count!(crate::tracing::providers::teardown::FD_CLOSES_UNDER_PM);
                 }
                 match fd_entry.kind {
-                    FdKind::Ipc(object) => object.on_close(self.pid()),
+                    FdKind::Ipc(object) => object.on_close(crate::ipc::object::close_owner(self.id, self.thread_group_id)),
                     FdKind::PipeRead(buffer) => {
                         // #919/P-2: deliver the reader-closed notification now,
                         // via the PM-safe deferred path. Process::terminate()
@@ -845,7 +845,7 @@ impl Process {
                     crate::trace_count!(crate::tracing::providers::teardown::FD_CLOSES_UNDER_PM);
                 }
                 match fd_entry.kind {
-                    FdKind::Ipc(object) => object.on_close(self.pid()),
+                    FdKind::Ipc(object) => object.on_close(crate::ipc::object::close_owner(self.id, self.thread_group_id)),
                     FdKind::PipeRead(buffer) => {
                         // #919/P-2: deliver the reader-closed notification now,
                         // via the PM-safe deferred path. Process::terminate()
