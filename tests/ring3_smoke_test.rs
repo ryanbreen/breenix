@@ -6,7 +6,6 @@ use shared_qemu::get_kernel_output;
 /// This test validates that Ring 3 execution works correctly by checking for:
 /// 1. Two breakpoints from userspace with CS=0x33 (RPL=3)  
 /// 2. Correct RIP progression showing userspace instruction execution
-/// 4. Clean IRETQ returns between kernel and userspace
 ///
 /// This serves as a regression test to ensure Ring 3 execution doesn't break
 /// as we add new features like syscalls and ELF loading.
@@ -38,9 +37,6 @@ fn test_ring3_smoke() {
     let found_userspace_output = output.contains("Hello from userspace!")
         || output.contains("Current time:")
         || output.contains("ticks");
-
-    // Check for clean IRETQ returns
-    let found_iretq_returns = output.contains("RETIQ");
 
     // Check for proper swapgs handling (no double-swap issues)
     let no_swapgs_issues = !output.contains("Invalid GS")
@@ -90,10 +86,6 @@ fn test_ring3_smoke() {
 
         if found_ring3_entry {
             println!("   ✓ IRETQ to Ring 3 logged");
-        }
-
-        if found_iretq_returns {
-            println!("   ✓ Clean IRETQ returns confirmed");
         }
 
         if no_swapgs_issues {
