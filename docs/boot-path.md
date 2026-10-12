@@ -293,7 +293,7 @@ delay a short userspace line past the watchdog's poll. Run Inspector preserves
 the gate's stop time and last progress line in a `stalled` verdict. The shared host-slot supervisor also watches older QEMU
 launchers once their owned VM starts; build and queue time do not count. A completed
 suite's retained panel is outside the stall deadline; suite sequences resume the
-watch while waiting to exec the next suite.
+watch when the next suite prints START.
 
 All eight current suite manifests use the runner's default 10-second case limit;
 none grants a longer silent case. The full testing boot's canonical programs have
