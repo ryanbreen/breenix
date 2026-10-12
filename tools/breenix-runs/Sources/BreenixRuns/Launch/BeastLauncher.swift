@@ -274,7 +274,8 @@ public struct BeastLauncher {
         } else {
             gateVerdictString = "PASS"
         }
-        let verdict = Verdict.projectGateVerdict(gateVerdictString, exitCode: Int(finishStatus), command: command)
+        let verdict = Verdict.projectGateOutput(gateStdoutText, verdict: gateVerdictString,
+                                                exitCode: Int(finishStatus), command: command)
 
         let manifest = RunManifest(
             id: id,
