@@ -125,7 +125,9 @@ class ProgressTest(unittest.TestCase):
         self.feed('SUITE threads DONE passed=141 failed=0 skipped=0 total=141\n', 0)
         self.assertFalse(self.progress.stalled(now=1000))
         self.feed('SUITE_SEQUENCE READY threads\n', 2)
-        self.assertTrue(self.progress.stalled(now=122))
+        self.assertFalse(self.progress.stalled(now=122))
+        self.feed('SUITE time START cases=89\n', 123)
+        self.assertTrue(self.progress.stalled(now=243))
 
 
 if __name__ == '__main__':

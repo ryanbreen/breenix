@@ -89,8 +89,6 @@ class BootProgress:
         if self.track_completion:
             if terminal or line == "[init] Boot script completed":
                 self.completed = True
-            if line.startswith("SUITE_SEQUENCE READY "):
-                self.completed = False
 
     def observe(self, text, source=None, *, userspace=False, now=None, epoch=None):
         """Consume only newly appended, newline-terminated records from a snapshot."""
