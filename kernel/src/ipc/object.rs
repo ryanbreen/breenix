@@ -26,6 +26,11 @@ pub trait IpcFile: Send + Sync + core::fmt::Debug {
     fn getdents(&self, _dirp: u64, _count: usize) -> Result<u64, u64> {
         Err(20)
     }
+    /// Serialize F_SETFL with object attribute changes. Called after releasing
+    /// PROCESS_MANAGER; queues hold their attribute lock while invoking update.
+    fn update_status_flags(&self, update: &mut dyn FnMut()) {
+        update();
+    }
     fn on_close(&self, _pid: crate::process::ProcessId) {}
 }
 

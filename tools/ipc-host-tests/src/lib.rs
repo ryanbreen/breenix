@@ -260,6 +260,9 @@ fn ipc_file_defaults_and_downcast() {
     assert_eq!(object.chown(1, 2, &cred), Err(22));
     assert_eq!(object.getdents(0, 4096), Err(20));
     assert_eq!(object.statfs_magic(), 0x01021994);
+    let mut updates = 0;
+    object.update_status_flags(&mut || updates += 1);
+    assert_eq!(updates, 1);
     object.on_close(process::ProcessId(7));
     #[derive(Debug)]
     struct Queue;
