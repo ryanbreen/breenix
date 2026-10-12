@@ -447,6 +447,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
     // to other processes while we're doing serial writes.
     enum WriteOperation {
         StdIo,
+        Einval,
         Pipe {
             pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
             is_nonblocking: bool,
@@ -504,6 +505,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         };
 
         match &fd_entry.kind {
+            FdKind::Ipc(_) => WriteOperation::Einval,
             FdKind::StdIo(n) if *n == 1 || *n == 2 => WriteOperation::StdIo,
             FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
             FdKind::PipeWrite(pipe_buffer) => WriteOperation::Pipe {
@@ -554,6 +556,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
 
     // Now perform the actual I/O operation without holding the manager lock
     match write_op {
+        WriteOperation::Einval => SyscallResult::Err(super::errno::EINVAL as u64),
         WriteOperation::StdIo => write_to_stdio(fd, &buffer),
         WriteOperation::Ebadf => SyscallResult::Err(9), // EBADF
         WriteOperation::Enotconn => SyscallResult::Err(super::errno::ENOTCONN as u64),
@@ -829,6 +832,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     };
 
     match &fd_entry.kind {
+        FdKind::Ipc(_) => SyscallResult::Err(super::errno::EINVAL as u64),
         FdKind::StdIo(0) => {
             // stdin - read from stdin ring buffer
             //
@@ -3108,6 +3112,7 @@ fn dup_to(old_fd: u32, new_fd: u32, set_cloexec: bool) -> SyscallResult {
     };
 
     // Call the fd_table's dup2 implementation
+    let close_pid = process.pid();
     let duplicated = process
         .fd_table
         .dup2(old_fd as i32, new_fd as i32, set_cloexec);
@@ -3116,6 +3121,9 @@ fn dup_to(old_fd: u32, new_fd: u32, set_cloexec: bool) -> SyscallResult {
     match duplicated {
         Ok((fd, overwritten)) => {
             if let Some(entry) = overwritten {
+                if let crate::ipc::FdKind::Ipc(object) = &entry.kind {
+                    object.on_close(close_pid);
+                }
                 // dup2 closes new_fd first, and that close drops record locks.
                 crate::fs::locks::release_closed(lock_owner, &entry.kind);
                 crate::task::process_task::close_extracted_fds(alloc::vec![(

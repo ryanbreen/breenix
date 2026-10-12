@@ -86,6 +86,9 @@ pub fn sys_mmap(
     let file = if flags.contains(MmapFlags::ANONYMOUS) {
         None
     } else {
+        if let Some(r) = crate::ipc::shmem::mmap_fd(fd as i32, addr, length, prot, flags, offset) {
+            return r;
+        }
         match file_mapping(fd as i32, length, prot, flags, offset) {
             Ok(handle) => Some(handle),
             Err(errno) => return SyscallResult::Err(errno),

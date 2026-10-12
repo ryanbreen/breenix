@@ -40,6 +40,9 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
     let mut revents: i16 = 0;
 
     match &fd_entry.kind {
+        FdKind::Ipc(object) => {
+            revents = object.poll_events() & (events | events::POLLERR | events::POLLHUP);
+        }
         FdKind::StdIo(n) => {
             match *n {
                 0 => {

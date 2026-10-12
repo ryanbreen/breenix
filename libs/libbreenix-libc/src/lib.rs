@@ -24,6 +24,10 @@
 #![no_std]
 
 mod alloc_cache;
+mod mqueue;
+mod shm;
+mod semaphore;
+mod sysv;
 
 use libbreenix::types::Fd;
 use libbreenix::error::Error;
@@ -1575,6 +1579,8 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
         // The kernel reserves a quarter of its fixed 2 MiB stack cap for exec.
         _SC_ARG_MAX => 512 * 1024,
         _SC_PAGESIZE => 4096,
+        28 => 32768, // _SC_MQ_PRIO_MAX
+        33 => 0x7fff_ffff, // _SC_SEM_VALUE_MAX
         _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => 1,
         _SC_GETPW_R_SIZE_MAX | _SC_GETGR_R_SIZE_MAX => 1024,
         67 | 77 | 78 | 133 | 153 | 164 => 200809, // threads, stack attributes, barriers, rwlocks, timeouts

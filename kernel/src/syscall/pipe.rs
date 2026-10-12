@@ -162,6 +162,7 @@ pub fn sys_close(fd: i32) -> SyscallResult {
             crate::fs::locks::release_closed(lock_owner, &fd_entry.kind);
             // Handle cleanup for specific fd types
             match fd_entry.kind {
+                FdKind::Ipc(object) => object.on_close(process_pid),
                 FdKind::PipeRead(buffer) => {
                     // Mark reader as closed
                     let notifications = buffer.lock().close_read();

@@ -99,6 +99,8 @@ pub struct DirectoryFile {
 /// and cannot be cloned (they contain unique socket handles and rx queues).
 #[derive(Clone)]
 pub enum FdKind {
+    /// An IPC object with shared open-description status flags.
+    Ipc(Arc<dyn super::object::IpcFile>),
     /// Standard I/O (stdin, stdout, stderr)
     StdIo(i32),
     /// Read end of a pipe
@@ -166,6 +168,7 @@ pub enum FdKind {
 impl core::fmt::Debug for FdKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            FdKind::Ipc(object) => write!(f, "Ipc({:?})", object),
             FdKind::StdIo(n) => write!(f, "StdIo({})", n),
             FdKind::PipeRead(_) => write!(f, "PipeRead"),
             FdKind::PipeWrite(_) => write!(f, "PipeWrite"),
@@ -869,7 +872,7 @@ impl FdTableInner {
     /// Close all file descriptors marked with FD_CLOEXEC.
     /// Called during exec() per POSIX semantics.
     /// Properly decrements pipe/fifo reference counts.
-    pub fn close_cloexec(&mut self, closes: &mut DeferredFdCloses) {
+    pub fn close_cloexec(&mut self, pid: crate::process::ProcessId, closes: &mut DeferredFdCloses) {
         for i in 0..self.fds.len() {
             let should_close = self.fds[i]
                 .as_ref()
@@ -877,6 +880,9 @@ impl FdTableInner {
                 .unwrap_or(false);
             if should_close {
                 if let Some(entry) = self.fds[i].take() {
+                    if let FdKind::Ipc(object) = &entry.kind {
+                        object.on_close(pid);
+                    }
                     closes.entries.push((i, entry));
                 }
             }
@@ -906,6 +912,7 @@ impl Drop for FdTableInner {
         for i in 0..self.fds.len() {
             if let Some(fd_entry) = self.fds[i].take() {
                 match fd_entry.kind {
+                    FdKind::Ipc(_) => {}
                     FdKind::PipeRead(buffer) => {
                         let notifications = buffer.lock().close_read();
                         notifications.deliver();

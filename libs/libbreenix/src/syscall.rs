@@ -20,6 +20,25 @@ use core::arch::asm;
 /// ARM64: Uses Linux ARM64 (asm-generic/unistd.h) numbers for musl libc compatibility.
 #[cfg(target_arch = "x86_64")]
 pub mod nr {
+    pub const MQ_OPEN: u64 = 240;
+    pub const MQ_UNLINK: u64 = 241;
+    pub const MQ_TIMEDSEND: u64 = 242;
+    pub const MQ_TIMEDRECEIVE: u64 = 243;
+    pub const MQ_NOTIFY: u64 = 244;
+    pub const MQ_GETSETATTR: u64 = 245;
+    pub const MSGGET: u64 = 68;
+    pub const MSGSND: u64 = 69;
+    pub const MSGRCV: u64 = 70;
+    pub const MSGCTL: u64 = 71;
+    pub const SEMGET: u64 = 64;
+    pub const SEMOP: u64 = 65;
+    pub const SEMCTL: u64 = 66;
+    pub const SEMTIMEDOP: u64 = 220;
+    pub const SHMGET: u64 = 29;
+    pub const SHMAT: u64 = 30;
+    pub const SHMDT: u64 = 67;
+    pub const SHMCTL: u64 = 31;
+
     // Linux x86_64 ABI numbers
     pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
@@ -172,6 +191,25 @@ pub mod nr {
 
 #[cfg(target_arch = "aarch64")]
 pub mod nr {
+    pub const MQ_OPEN: u64 = 180;
+    pub const MQ_UNLINK: u64 = 181;
+    pub const MQ_TIMEDSEND: u64 = 182;
+    pub const MQ_TIMEDRECEIVE: u64 = 183;
+    pub const MQ_NOTIFY: u64 = 184;
+    pub const MQ_GETSETATTR: u64 = 185;
+    pub const MSGGET: u64 = 186;
+    pub const MSGSND: u64 = 189;
+    pub const MSGRCV: u64 = 188;
+    pub const MSGCTL: u64 = 187;
+    pub const SEMGET: u64 = 190;
+    pub const SEMOP: u64 = 193;
+    pub const SEMCTL: u64 = 191;
+    pub const SEMTIMEDOP: u64 = 192;
+    pub const SHMGET: u64 = 194;
+    pub const SHMAT: u64 = 196;
+    pub const SHMDT: u64 = 197;
+    pub const SHMCTL: u64 = 195;
+
     // Linux ARM64 ABI numbers (asm-generic/unistd.h)
     // ARM64 Linux has NO legacy syscalls: use *at variants instead of
     // open/mkdir/rmdir/link/unlink/symlink/readlink/mknod/rename/access.

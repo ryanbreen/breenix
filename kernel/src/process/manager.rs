@@ -4060,7 +4060,7 @@ impl ProcessManager {
         // descriptors alone.
         process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec(closes);
+        process.fd_table.close_cloexec(pid, closes);
         closes.release_record_locks(process.lock_owner.id());
         log::debug!(
             "exec_process: Reset signal/heap/mmap for process {}, heap_start={:#x}",
@@ -4519,7 +4519,7 @@ impl ProcessManager {
         // descriptors alone.
         process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec(closes);
+        process.fd_table.close_cloexec(pid, closes);
         closes.release_record_locks(process.lock_owner.id());
 
         // Replace the page table with the new one
@@ -4917,7 +4917,7 @@ impl ProcessManager {
         // descriptors alone.
         process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec(closes);
+        process.fd_table.close_cloexec(pid, closes);
         closes.release_record_locks(process.lock_owner.id());
 
         process.page_table = Some(new_page_table.publish());
@@ -5272,7 +5272,7 @@ impl ProcessManager {
         // descriptors alone.
         process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec(closes);
+        process.fd_table.close_cloexec(pid, closes);
         closes.release_record_locks(process.lock_owner.id());
         log::debug!(
             "exec_process [ARM64]: Reset signal/heap/mmap for process {}, heap_start={:#x}",

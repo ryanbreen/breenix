@@ -533,6 +533,9 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     );
 
     if resolved.target == Target::Virtual {
+        if let Some(result) = crate::ipc::shmem::open_path(path, flags, mode) {
+            return result;
+        }
         if path == "/dev" {
             return handle_devfs_directory_open(flags);
         }
@@ -953,6 +956,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         ProcfsFile { size: i64 },
         ProcfsDirectory,
         Epoll,
+        Ipc(alloc::sync::Arc<dyn crate::ipc::object::IpcFile>),
     }
 
     let kind = {
@@ -977,6 +981,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         };
 
         match &fd_entry.kind {
+            FdKind::Ipc(object) => FstatKind::Ipc(object.clone()),
             FdKind::StdIo(io_fd) => FstatKind::StdIo(*io_fd),
             FdKind::PipeRead(_) | FdKind::PipeWrite(_) => FstatKind::Pipe,
             FdKind::UdpSocket(_) => FstatKind::UdpSocket,
@@ -1030,6 +1035,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     stat.st_blksize = 4096; // Standard block size
 
     match kind {
+        FstatKind::Ipc(object) => object.fill_stat(&mut stat),
         FstatKind::StdIo(io_fd) => {
             // stdin/stdout/stderr are character devices (TTY)
             stat.st_dev = 0;
@@ -1562,6 +1568,12 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
     let path = resolved.path.as_str();
 
     log::debug!("sys_unlink: path={:?}", path);
+
+    if let Some(result) = crate::ipc::shmem::unlink_path(path) {
+
+        return result;
+
+    }
 
     // Check if this is a FIFO - if so, remove from registry
     {
@@ -3535,6 +3547,12 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
     };
     let full_path = resolved.path.as_str();
 
+    if let Some(result) = crate::ipc::shmem::stat_path(full_path, statbuf) {
+
+        return result;
+
+    }
+
     // Paths outside ext2 have no inode to read. A FIFO is described without
     // opening it, since an open could block or release a waiting writer.
     // devfs and procfs paths are described by the descriptor an open of them
@@ -4026,6 +4044,7 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
         match entry { Some(e) => e.kind.clone(), None => return SyscallResult::Err(9) }
     };
     let stat = match kind {
+        FdKind::Ipc(_) => Ok(virtual_statfs(0x01021994)),
         FdKind::RegularFile(file) => {
             let pin = file.lock().handle.clone();
             statfs_pin(&pin)
@@ -4125,6 +4144,33 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
     use crate::fs::ext2;
     if length < 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    let ipc = {
+        let Some(tid) = crate::task::scheduler::current_thread_id() else {
+            return SyscallResult::Err(super::errno::ESRCH as u64);
+        };
+        let guard = crate::process::manager();
+        let Some((_, process)) = guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) else {
+            return SyscallResult::Err(super::errno::ESRCH as u64);
+        };
+        let Some(entry) = process.fd_table.get(fd) else {
+            return SyscallResult::Err(super::errno::EBADF as u64);
+        };
+        match &entry.kind {
+            FdKind::Ipc(object) => {
+                if !entry.writable() {
+                    return SyscallResult::Err(super::errno::EINVAL as u64);
+                }
+                Some(object.clone())
+            }
+            _ => None,
+        }
+    };
+    if let Some(object) = ipc {
+        return match object.truncate(length as u64) {
+            Ok(()) => SyscallResult::Ok(0),
+            Err(errno) => SyscallResult::Err(errno),
+        };
     }
     let (ino, _, handle) = match ext2_fd_info(fd, true) {
         Ok(info) => info,

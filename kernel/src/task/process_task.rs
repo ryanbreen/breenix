@@ -854,6 +854,8 @@ pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescripto
 
     for (_fd, fd_entry) in entries {
         match fd_entry.kind {
+            // IPC hooks ran at extraction while the process identity was held.
+            FdKind::Ipc(_) => {}
             FdKind::PipeRead(buffer) => {
                 let notifications = buffer.lock().close_read();
                 notifications.deliver();
