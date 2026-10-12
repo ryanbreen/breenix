@@ -215,6 +215,7 @@ fn hold_exit_kick_test_publisher(pid: u64) {
 pub(crate) struct KickSlot {
     pub(crate) pid: AtomicU64,
     pub(crate) at: AtomicU64,
+    sender_cpu: AtomicU64,
     pub(crate) state: AtomicU64,
 }
 
@@ -242,6 +243,7 @@ impl KickSlot {
         Self {
             pid: AtomicU64::new(0),
             at: AtomicU64::new(0),
+            sender_cpu: AtomicU64::new(u64::MAX),
             state: AtomicU64::new(0),
         }
     }
@@ -285,6 +287,7 @@ impl KickSlot {
             && self.pid.load(Ordering::Relaxed) != pid;
         self.pid.store(pid, Ordering::Relaxed);
         self.at.store(at, Ordering::Relaxed);
+        self.sender_cpu.store(crate::task::scheduler::current_cpu() as u64, Ordering::Relaxed);
         self.state
             .store(reservation.generation << 2, Ordering::Release);
         KickPublishResult::Published {
@@ -306,7 +309,18 @@ impl KickSlot {
     }
 
     #[inline(always)]
+    pub(crate) fn observe_from_peer(&self, expected_pid: u64) -> Option<KickObservation> {
+        self.observe_inner(expected_pid, true)
+    }
+
+    #[cfg(feature = "boot_tests")]
+    #[inline(always)]
     pub(crate) fn observe(&self, expected_pid: u64) -> Option<KickObservation> {
+        self.observe_inner(expected_pid, false)
+    }
+
+    #[inline(always)]
+    fn observe_inner(&self, expected_pid: u64, require_peer: bool) -> Option<KickObservation> {
         let first_state = self.state.load(Ordering::Acquire);
         if first_state >> 2 == 0 || first_state & (EXIT_KICK_LOCK | EXIT_KICK_OBSERVED_BIT) != 0 {
             return None;
@@ -314,8 +328,10 @@ impl KickSlot {
 
         let pid = self.pid.load(Ordering::Relaxed);
         let at = self.at.load(Ordering::Relaxed);
+        let sender_cpu = self.sender_cpu.load(Ordering::Relaxed);
         let second_state = self.state.load(Ordering::Acquire);
-        if second_state != first_state || pid != expected_pid {
+        if second_state != first_state || pid != expected_pid
+            || (require_peer && sender_cpu == crate::task::scheduler::current_cpu() as u64) {
             return None;
         }
 
@@ -917,10 +933,10 @@ fn emit_reclaim_drain_census() {
     );
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
 const BOOT_TEST_PID_COUNT_SLOTS: usize = 256;
 
-#[cfg(feature = "boot_tests")]
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
 struct BootTestPidCountSlot {
     pid: AtomicU64,
     defer_count: AtomicU64,
@@ -938,7 +954,7 @@ struct BootTestPidCountSlot {
     kernel_stack_slot_returns: AtomicU64,
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
 impl BootTestPidCountSlot {
     const fn new() -> Self {
         Self {
@@ -960,11 +976,11 @@ impl BootTestPidCountSlot {
     }
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
 static BOOT_TEST_PID_COUNTS: [BootTestPidCountSlot; BOOT_TEST_PID_COUNT_SLOTS] =
     [const { BootTestPidCountSlot::new() }; BOOT_TEST_PID_COUNT_SLOTS];
 
-#[cfg(feature = "boot_tests")]
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
 static BOOT_TEST_PID_COUNTS_ACTIVE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "boot_tests")]
@@ -977,7 +993,7 @@ impl Drop for BootTestPidCountsGuard {
     }
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
 enum BootTestPidCountKind {
     Defer,
     Reclaim,
@@ -993,7 +1009,7 @@ enum BootTestPidCountKind {
     KernelStackSlotReturn,
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
 #[inline(always)]
 fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
     if BOOT_TEST_PID_COUNTS_ACTIVE.load(Ordering::Acquire) == 0 || pid == 0 {
@@ -1078,7 +1094,7 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
     BootTestPidCountsGuard
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
 fn track_boot_test_pid(pid: u64) -> bool {
     if pid == 0 {
         return false;
@@ -1145,36 +1161,36 @@ fn boot_test_pid_counts_complete(pids: &[u64]) -> bool {
 
 #[inline(always)]
 pub fn record_pt_retire_started(pid: u64, table_frames: u64) {
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::TableFramesRecorded(table_frames));
-    #[cfg(not(feature = "boot_tests"))]
+    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
     let _ = (pid, table_frames);
 }
 
 #[inline(always)]
 pub fn record_pt_frame_returned(pid: u64) {
     crate::trace_count!(PT_TABLE_FRAMES_RETURNED);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::TableFrameReturned);
-    #[cfg(not(feature = "boot_tests"))]
+    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
     let _ = pid;
 }
 
 #[inline(always)]
 pub fn record_pt_frame_lost(pid: u64) {
     crate::trace_count!(PT_RETIRE_FRAMES_LOST);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::TableFrameLost);
-    #[cfg(not(feature = "boot_tests"))]
+    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
     let _ = pid;
 }
 
 #[inline(always)]
 pub fn record_pt_root_retired(pid: u64) {
     crate::trace_count!(PT_ROOTS_RETIRED);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::RootRetired);
-    #[cfg(not(feature = "boot_tests"))]
+    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
     let _ = pid;
 }
 
@@ -1182,7 +1198,7 @@ pub fn record_pt_root_retired(pid: u64) {
 pub fn record_defer(pid: u64) {
     crate::trace_count!(TEARDOWN_DEFER);
     crate::trace_event!(TEARDOWN_PROVIDER, TEARDOWN_DEFER_EVENT, pid as u32);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Defer);
 }
 
@@ -1190,25 +1206,25 @@ pub fn record_defer(pid: u64) {
 pub fn record_reclaim(pid: u64) {
     crate::trace_count!(TEARDOWN_RECLAIM);
     crate::trace_event!(TEARDOWN_PROVIDER, TEARDOWN_RECLAIM_EVENT, pid as u32);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Reclaim);
 }
 
 #[inline(always)]
 pub fn record_kernel_stack_slot_return(pid: u64) {
     // Called from `KernelStack::drop`; keep this allocation-free and lock-light.
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::KernelStackSlotReturn);
-    #[cfg(not(feature = "boot_tests"))]
+    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
     let _ = pid;
 }
 
 #[inline(always)]
 pub fn record_quarantine(pid: u64) {
     crate::trace_count!(TEARDOWN_QUARANTINE);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Quarantine);
-    #[cfg(not(feature = "boot_tests"))]
+    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
     let _ = pid;
 }
 
@@ -1216,7 +1232,7 @@ pub fn record_quarantine(pid: u64) {
 pub fn record_exit_sgi_sent(pid: u64, batch: u64) {
     crate::trace_event!(TEARDOWN_PROVIDER, EXIT_SGI_SENT_EVENT, pid as u32);
     crate::trace_event!(TEARDOWN_PROVIDER, EXIT_SGI_BATCH_EVENT, batch as u32);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::SgiSent);
 }
 
@@ -1237,30 +1253,30 @@ pub fn record_exit_kick_observed(pid: u64, interval: u64) {
     EXIT_KICK_BUCKET_OBSERVED_COUNTS[pid as usize % EXIT_KICK_BUCKETS]
         .fetch_add(1, Ordering::Relaxed);
     crate::trace_event!(TEARDOWN_PROVIDER, EXIT_KICK_OBSERVED_EVENT, pid as u32);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::KickObserved(interval));
-    #[cfg(not(feature = "boot_tests"))]
+    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
     let _ = interval;
 }
 
 #[inline(always)]
 pub fn record_masked_frames_walked(pid: u64) {
     crate::trace_count!(TEARDOWN_MASKED_FRAMES_WALKED);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::MaskedFramesWalked);
-    #[cfg(not(feature = "boot_tests"))]
+    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
     let _ = pid;
 }
 
 #[inline(always)]
 pub fn record_report(pid: u64) {
-    #[cfg(feature = "boot_tests")]
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Report);
-    #[cfg(not(feature = "boot_tests"))]
+    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
     let _ = pid;
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
 #[derive(Clone, Copy)]
 pub struct TeardownPidEvidence {
     pub defer_count: u64,
@@ -1277,7 +1293,7 @@ pub struct TeardownPidEvidence {
     pub kernel_stack_slot_returns: u64,
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
 pub fn teardown_pid_evidence(pid: u64) -> Option<TeardownPidEvidence> {
     // Reading the per-pid procfs file is the test's explicit opt-in. It occurs
     // before the kill, so every hot-path recorder remains bounded and lock-free.

@@ -3,7 +3,8 @@
 
 Fatal output and a missing completion line are failures. A testing-kernel boot
 completes at its "USERSPACE TEST REPORT DONE" line; its stages are scored from
-the serial against docs/boot-path.json, so the line itself is the whole verdict.
+the serial against docs/boot-path.json. Completion also requires full exit accounting
+and rejects skips, missing binaries and unexpected process exits.
 """
 
 import argparse
@@ -31,7 +32,34 @@ def completion(serial, mode, suite):
         if not any(line == TESTS_DONE for line in lines):
             return None
         tally = [line for line in lines if line.startswith("TEST_TALLY: ")]
-        return True, tally[0] if tally else TESTS_DONE
+        # Child programs deliberately test signal deaths and nonzero exits;
+        # their supervising canonical tests must exit zero after verifying them.
+        canonical = set(re.findall(r'^    "([^"]+)",',
+                         (ROOT / "kernel/src/boot/test_list.rs").read_text(), re.MULTILINE))
+        for line in lines:
+            if re.search(r"\bSKIP\b", line):
+                return False, f"skipped test: {line}"
+        loaded_lines = [line for line in lines if line.startswith("[test] Loaded ")
+                        and "test binaries" in line]
+        if len(loaded_lines) != 1:
+            return False, "expected exactly one test-binary loader summary"
+        loaded = re.fullmatch(r"\[test\] Loaded (\d+)/(\d+) test binaries \((\d+) failed, (\d+) not found\)", loaded_lines[0])
+        if not loaded or tuple(map(int, loaded.groups())) != (len(canonical), len(canonical), 0, 0):
+            return False, f"unloaded test programs: {loaded_lines[0]}"
+        for line in tally:
+            failures = re.search(r"failed=\[(.*?)\]", line)
+            if failures:
+                for failure in failures[1].split(","):
+                    name, _, status = failure.rpartition(":")
+                    if name in canonical and status != "0":
+                        return False, f"canonical test failed: {failure}"
+        try:
+            classify = runpy.run_path(str(ROOT / "scripts/x86-gate-exits.py"))["classify_serial"]
+            if not classify(serial, ROOT / "scripts/x86-gate-allowlist.txt"):
+                return False, "unexpected process exit"
+        except (OSError, ValueError) as error:
+            return False, f"incomplete exit accounting: {error}"
+        return True, tally[0]
     prefix = "PROBE DONE " if mode == "probe" else f"SUITE {suite} DONE "
     done = [line for line in lines if line.startswith(prefix)]
     if not done:

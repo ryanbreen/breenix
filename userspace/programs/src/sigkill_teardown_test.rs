@@ -18,8 +18,7 @@ const CLONE_FLAGS: u64 = 0x0000_0100 | 0x0000_0400 | 0x0020_0000 | 0x0100_0000;
 
 static SIGCHLD_RECEIVED: AtomicBool = AtomicBool::new(false);
 
-/// Children of this test that spin in userspace until killed. `fail()` and
-/// `skip()` kill what is still listed here: a victim left spinning outlives the test
+/// Children of this test that spin in userspace until killed. `fail()` kills what is still listed here: a victim left spinning outlives the test
 /// and keeps its CPU busy for the rest of the boot.
 static LIVE_VICTIMS: [AtomicI32; 4] = [const { AtomicI32::new(0) }; 4];
 
@@ -60,14 +59,6 @@ fn kill_live_victims() {
     }
 }
 
-/// The per-PID evidence is kept only by a `boot_tests` kernel; any other kernel
-/// answers `unavailable: 1`, and the test cannot measure the teardown there.
-fn skip(reason: &str) -> ! {
-    kill_live_victims();
-    println!("SIGKILL_TEARDOWN_TEST: SKIP: {reason}");
-    std::process::exit(0);
-}
-
 extern "C" fn sigchld_handler(_signal: i32) {
     SIGCHLD_RECEIVED.store(true, Ordering::Release);
 }
@@ -86,6 +77,7 @@ fn yield_many(count: usize) {
 
 #[derive(Clone, Copy, Default)]
 struct Evidence {
+    online_cpus: u64,
     defer: u64,
     reclaim: u64,
     quarantine: u64,
@@ -117,9 +109,10 @@ fn evidence(pid: i32) -> Evidence {
     let contents = std::fs::read_to_string(path)
         .unwrap_or_else(|_| fail("could not read per-PID teardown evidence"));
     if contents.lines().any(|line| line.trim() == "unavailable: 1") {
-        skip("this kernel does not keep per-PID teardown evidence (boot_tests only)");
+        fail("this kernel does not keep per-PID teardown evidence");
     }
     Evidence {
+        online_cpus: parse_value(&contents, "online_cpus"),
         defer: parse_value(&contents, "defer"),
         reclaim: parse_value(&contents, "reclaim"),
         quarantine: parse_value(&contents, "quarantine"),
@@ -148,8 +141,8 @@ fn wait_for_evidence(pid: i32) -> Evidence {
         if current.defer == 1
             && current.reclaim == 1
             && current.quarantine == 1
-            && current.sgi_sent == 1
-            && current.kick_observed == 1
+            && current.sgi_sent == u64::from(current.online_cpus > 1)
+            && current.kick_observed == u64::from(current.online_cpus > 1)
             && current.report == 1
         {
             return current;
@@ -172,10 +165,12 @@ fn assert_kill_evidence(pid: i32, current: Evidence) {
     if current.defer != 1 || current.reclaim != 1 {
         fail("defer/reclaim were not paired exactly once for victim");
     }
-    if current.quarantine != 1 || current.sgi_sent != 1 || current.kick_observed != 1 {
+    let peer_kick = u64::from(current.online_cpus > 1);
+    if current.quarantine != 1 || current.sgi_sent != peer_kick || current.kick_observed != peer_kick {
         fail("quarantine/send/observe were not attributed exactly once to victim");
     }
-    if current.kick_interval == 0 || current.kick_interval >= current.tick_period {
+    if (peer_kick == 1 && (current.kick_interval == 0 || current.kick_interval >= current.tick_period))
+        || (peer_kick == 0 && current.kick_interval != 0) {
         fail("send-to-observe interval was not strictly shorter than one tick");
     }
     if current.masked_frames_walked != 0 {
@@ -522,7 +517,25 @@ fn self_kill_child() {
             let _ = io::close(write_fd);
             wait_killed(raw_pid);
             println!("SIGKILL_TEARDOWN_TEST: self-kill waitpid reaped");
-            assert_kill_evidence(raw_pid, wait_for_evidence(raw_pid));
+            // Self death leaves the userspace root and pivots to the neutral
+            // stack through ordinary exit. It has no peer quarantine or kick.
+            let mut current = evidence(raw_pid);
+            for _ in 0..20_000 {
+                if current.report == 1 && current.defer == current.reclaim { break; }
+                let _ = process::yield_now();
+                current = evidence(raw_pid);
+            }
+            // ARM64 has already released TTBR0 and reclaims synchronously;
+            // x86 ordinary exit retains its deferred receipt. Score each real
+            // route exactly instead of forcing production into the peer path.
+            let expected_defer = u64::from(cfg!(target_arch = "x86_64"));
+            let expected_masked = u64::from(cfg!(target_arch = "aarch64"));
+            if current.report != 1 || current.defer != expected_defer
+                || current.reclaim != expected_defer
+                || current.quarantine != 0 || current.sgi_sent != 0
+                || current.kick_observed != 0 || current.masked_frames_walked != expected_masked {
+                fail("self-death retirement/report contract failed");
+            }
         }
     }
 }
@@ -543,11 +556,12 @@ fn main() {
     parent_kill_and_observe_sigchld(victim_one);
     let first = wait_for_evidence(victim_one);
     assert_kill_evidence(victim_one, first);
-    if first.bucket_published - bucket_before.bucket_published != 1
-        || first.bucket_observed - bucket_before.bucket_observed != 1
+    let peer_kick = u64::from(first.online_cpus > 1);
+    if first.bucket_published - bucket_before.bucket_published != peer_kick
+        || first.bucket_observed - bucket_before.bucket_observed != peer_kick
         || first.bucket_collision - bucket_before.bucket_collision != 0
-        || counter("EXIT_KICK_PUBLISHED") - published_before != 1
-        || counter("EXIT_KICK_OBSERVED") - observed_before != 1
+        || counter("EXIT_KICK_PUBLISHED") - published_before != peer_kick
+        || counter("EXIT_KICK_OBSERVED") - observed_before != peer_kick
         || counter("EXIT_KICK_BUCKET_COLLISION") - collision_before != 0
     {
         fail("single-victim kick accounting was not exactly one-to-one");
@@ -564,13 +578,13 @@ fn main() {
     let second = wait_for_evidence(victim_two);
     assert_kill_evidence(victim_two, second);
     if victim_one as u64 % EXIT_KICK_BUCKETS != victim_two as u64 % EXIT_KICK_BUCKETS
-        || second.bucket_published - bucket_before.bucket_published != 2
-        || second.bucket_observed - bucket_before.bucket_observed != 2
+        || second.bucket_published - bucket_before.bucket_published != 2 * peer_kick
+        || second.bucket_observed - bucket_before.bucket_observed != 2 * peer_kick
         || second.bucket_collision - bucket_before.bucket_collision != 0
-        || second.bucket_published - second_before.bucket_published != 1
-        || second.bucket_observed - second_before.bucket_observed != 1
-        || counter("EXIT_KICK_PUBLISHED") - published_before != 2
-        || counter("EXIT_KICK_OBSERVED") - observed_before != 2
+        || second.bucket_published - second_before.bucket_published != peer_kick
+        || second.bucket_observed - second_before.bucket_observed != peer_kick
+        || counter("EXIT_KICK_PUBLISHED") - published_before != 2 * peer_kick
+        || counter("EXIT_KICK_OBSERVED") - observed_before != 2 * peer_kick
         || counter("EXIT_KICK_BUCKET_COLLISION") - collision_before != 0
     {
         fail("sequential same-bucket reuse accounting failed");

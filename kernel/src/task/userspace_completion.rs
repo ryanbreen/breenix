@@ -28,6 +28,8 @@ const EXIT_COMMIT_POLLS: u32 = 5;
 #[cfg(feature = "testing")]
 fn report_when_finished() {
     let mut commit_polls = 0;
+    #[cfg(target_arch = "x86_64")]
+    let mut teardown_test_started = false;
     loop {
         let finished = super::scheduler::with_scheduler(|scheduler| {
             !scheduler.has_userspace_threads()
@@ -42,6 +44,21 @@ fn report_when_finished() {
         if finished {
             let (exited, _) = super::exit_tally::totals();
             if exited >= super::exit_tally::started() || commit_polls >= EXIT_COMMIT_POLLS {
+                #[cfg(target_arch = "x86_64")]
+                if !teardown_test_started {
+                    // Its exact per-victim/bucket accounting must not race
+                    // other tests that deliberately kill their own children.
+                    if exited < super::exit_tally::started() {
+                        panic!("exit accounting incomplete before teardown test");
+                    }
+                    let binary = crate::userspace_test::get_test_binary("sigkill_teardown_test");
+                    crate::process::creation::create_user_process(
+                        alloc::string::String::from("sigkill_teardown_test"), &binary,
+                    ).expect("cannot start canonical SIGKILL teardown test");
+                    teardown_test_started = true;
+                    commit_polls = 0;
+                    continue;
+                }
                 crate::syscall::handlers::report_userspace_completion();
                 return;
             }

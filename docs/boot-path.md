@@ -100,6 +100,13 @@ thread. The other modes therefore list the scheduler milestone's stages themselv
 it; the `suite` list names markers for both arches, since x86-64 suite boots are scored
 against it too.
 
+The required testing programs use Breenix's Rust runtime; legacy musl C
+programs are outside this gate, pending replacement by Breenix's own C library.
+The DNS tests fork a UDP resolver bound to guest loopback; they verify exact
+local A answers and NXDOMAIN responses without external DNS or Google access.
+This also exercises DNS on VMware while its host NAT repair (#1202) is pending;
+it does not establish that VMware can reach an external network.
+
 ## Shared host slots
 
 Use `docker/qemu/run-x86-gate.sh` for queued x86 builds and boots: the helper

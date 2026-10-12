@@ -101,31 +101,26 @@ impl GroupBatchId {
         Self(pid)
     }
 
-    #[cfg(target_arch = "aarch64")]
     const fn as_u64(self) -> u64 {
         self.0
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn observe_exit_kick(thread_pid: u64) -> bool {
+    if online_cpus() <= 1 {
+        return true;
+    }
     use crate::tracing::providers::teardown::{EXIT_KICK_BUCKETS, EXIT_KICK_SLOTS};
 
     let slot = &EXIT_KICK_SLOTS[thread_pid as usize % EXIT_KICK_BUCKETS];
-    if let Some(observation) = slot.observe(thread_pid) {
+    if let Some(observation) = slot.observe_from_peer(thread_pid) {
         let interval = crate::tracing::trace_timestamp().wrapping_sub(observation.at);
         crate::tracing::providers::teardown::record_exit_kick_observed(thread_pid, interval);
         true
     } else {
         slot.is_observed_for(thread_pid)
     }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-#[inline(always)]
-fn observe_exit_kick(_thread_pid: u64) -> bool {
-    true
 }
 
 // Architecture-generic HAL wrappers for interrupt control.
@@ -4578,33 +4573,32 @@ impl Scheduler {
     /// to every other online CPU. This is intentionally separate from the two
     /// generic wakeup helpers and must be called with no lock held.
     pub fn send_exit_expedite_sgi(victim_pid: u64, batch: GroupBatchId) {
+        if online_cpus() <= 1 {
+            return;
+        }
+        use crate::tracing::providers::teardown::{
+            KickPublishResult, EXIT_KICK_BUCKETS, EXIT_KICK_PUBLISHED, EXIT_KICK_SLOTS,
+        };
+
+        let bucket = victim_pid as usize % EXIT_KICK_BUCKETS;
+        let slot = &EXIT_KICK_SLOTS[bucket];
+        let at = crate::tracing::trace_timestamp();
+        match slot.publish(victim_pid, at) {
+            KickPublishResult::Published { displaced, .. } => {
+                if displaced {
+                    crate::tracing::providers::teardown::record_exit_kick_collision(bucket);
+                }
+                crate::trace_count!(EXIT_KICK_PUBLISHED);
+                crate::tracing::providers::teardown::record_exit_kick_published(bucket);
+            }
+            KickPublishResult::ReservationLost => {
+                crate::tracing::providers::teardown::record_exit_kick_collision(bucket);
+            }
+        }
+        let current_cpu = Self::current_cpu_id();
         #[cfg(target_arch = "aarch64")]
         {
             use crate::arch_impl::aarch64::{constants::SGI_RESCHEDULE, gic, smp};
-            use crate::tracing::providers::teardown::{
-                KickPublishResult, EXIT_KICK_BUCKETS, EXIT_KICK_PUBLISHED, EXIT_KICK_SLOTS,
-            };
-
-            let bucket = victim_pid as usize % EXIT_KICK_BUCKETS;
-            let slot = &EXIT_KICK_SLOTS[bucket];
-            let at = crate::tracing::trace_timestamp();
-            match slot.publish(victim_pid, at) {
-                KickPublishResult::Published { displaced, .. } => {
-                    if displaced {
-                        crate::tracing::providers::teardown::record_exit_kick_collision(bucket);
-                    }
-                    crate::trace_count!(EXIT_KICK_PUBLISHED);
-                    crate::tracing::providers::teardown::record_exit_kick_published(bucket);
-                }
-                KickPublishResult::ReservationLost => {
-                    crate::tracing::providers::teardown::record_exit_kick_collision(bucket);
-                }
-            }
-
-            crate::trace_count!(crate::tracing::providers::teardown::EXIT_SGI_SENT);
-            crate::tracing::providers::teardown::record_exit_sgi_sent(victim_pid, batch.as_u64());
-
-            let current_cpu = Self::current_cpu_id();
             let online = smp::cpus_online() as usize;
             for cpu in 0..online.min(MAX_CPUS) {
                 if cpu != current_cpu {
@@ -4612,9 +4606,15 @@ impl Scheduler {
                 }
             }
         }
-
-        #[cfg(not(target_arch = "aarch64"))]
-        let _ = (victim_pid, batch);
+        #[cfg(target_arch = "x86_64")]
+        for cpu in 0..MAX_CPUS {
+            if cpu != current_cpu && crate::arch_impl::x86_64::smp::is_cpu_online(cpu) {
+                request_resched_x86(cpu);
+            }
+        }
+        // One request may send to several peers; account only after the sends.
+        crate::trace_count!(crate::tracing::providers::teardown::EXIT_SGI_SENT);
+        crate::tracing::providers::teardown::record_exit_sgi_sent(victim_pid, batch.as_u64());
     }
 
     /// Block current thread until a signal is delivered

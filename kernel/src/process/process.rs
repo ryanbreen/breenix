@@ -211,7 +211,12 @@ impl ExitNotificationObligations {
     }
 }
 
-/// A process represents a running program with its own address space
+/// Stable identity and counted ownership of a CLONE_VM address space.
+pub(crate) struct AddressSpaceLifetime {
+    pub(crate) id: u64,
+}
+
+/// A process represents a running program and an address-space owner.
 pub struct Process {
     pub limits: alloc::sync::Arc<super::limits::Limits>,
     pub memory_locks: crate::memory::locked::MemoryLocks,
@@ -300,6 +305,10 @@ pub struct Process {
 
     /// Stack allocated for this process
     pub stack: Option<Box<GuardedStack>>,
+
+    /// One reference per row that can use this address space. Serialized by PM;
+    /// exit releases it only after handing table custody to a remaining owner.
+    pub(crate) address_space_lifetime: Option<alloc::sync::Arc<AddressSpaceLifetime>>,
 
     /// Per-process page table
     pub page_table: Option<Box<ProcessPageTable>>,
@@ -450,6 +459,7 @@ impl Process {
             memory_usage: MemoryUsage::default(),
             stack: None,
             page_table: None,
+            address_space_lifetime: Some(alloc::sync::Arc::new(AddressSpaceLifetime { id: id.as_u64() })),
             heap_start: 0,
             heap_end: 0,
             vmas: alloc::vec::Vec::new(),
@@ -565,7 +575,8 @@ impl Process {
 
         // Another live row of the thread group runs on the address space this
         // row owns: its frames stay until the row's exit hook hands them on.
-        let address_space_shared = self.page_table.is_some() && self.lock_owner.live_rows() > 1;
+        let address_space_shared = self.page_table.is_some() && self.address_space_lifetime.as_ref()
+            .is_some_and(|owners| alloc::sync::Arc::strong_count(owners) > 1);
 
         // Close all file descriptors before setting state to Terminated
         // This ensures pipe counts are properly decremented so readers get EOF

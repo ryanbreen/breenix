@@ -14,6 +14,8 @@ use alloc::boxed::Box;
 
 /// Clone flags (Linux-compatible)
 const CLONE_VM: u64 = 0x00000100;
+const CLONE_THREAD: u64 = 0x00010000;
+const CLONE_SIGHAND: u64 = 0x00000800;
 const CLONE_FS: u64 = 0x00000200;
 const CLONE_FILES: u64 = 0x00000400;
 const CLONE_SETTLS: u64 = 0x00080000;
@@ -72,6 +74,10 @@ pub fn sys_clone_thread(
     if flags & CLONE_VM == 0 {
         // Without CLONE_VM, use fork instead
         log::warn!("clone: called without CLONE_VM, use fork instead");
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+
+    if flags & CLONE_THREAD != 0 && flags & CLONE_SIGHAND == 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
 
@@ -142,7 +148,11 @@ pub fn sys_clone_thread(
                 process.cwd.copy()
             },
             process.lock_owner.clone(),
-            process.signals.new_thread(),
+            if flags & CLONE_SIGHAND != 0 {
+                process.signals.new_thread()
+            } else {
+                process.signals.fork()
+            },
         )
     };
 
@@ -310,13 +320,14 @@ pub fn sys_clone_thread(
     #[cfg(not(target_arch = "x86_64"))]
     let entry_point = crate::memory::arch_stub::VirtAddr::new(fn_ptr);
 
-    let mut child_process = Process::new(
-        child_pid,
-        alloc::format!("thread-{}", child_pid.as_u64()),
-        entry_point,
-    );
     let parent = manager.get_process(parent_pid)
         .expect("parent remains present under PM during clone");
+    let child_name = if flags & CLONE_THREAD != 0 {
+        alloc::format!("thread-{}", child_pid.as_u64())
+    } else {
+        alloc::format!("{}_child_{}", parent.name, child_pid.as_u64())
+    };
+    let mut child_process = Process::new(child_pid, child_name, entry_point);
     child_process.limits = parent.limits.clone();
     child_process.cred = parent.cred.clone();
     child_process.nice = parent.nice;
@@ -328,17 +339,22 @@ pub fn sys_clone_thread(
         child_process.nice = child_process.nice.max(0);
     }
     // A thread's CPU time is its process's: the group shares one account.
-    child_process.cpu = parent.cpu.clone();
-    child_process.itimers = parent.itimers.clone();
+    if flags & CLONE_THREAD != 0 {
+        child_process.cpu = parent.cpu.clone();
+        child_process.itimers = parent.itimers.clone();
+    }
     child_process.umask = parent.umask;
     // A thread is in its process's process group and session.
     child_process.pgid = parent.pgid;
     child_process.sid = parent.sid;
     child_process.parent = Some(parent_pid);
     child_process.inherited_cr3 = Some(parent_cr3);
-    child_process.thread_group_id = Some(parent_tg_id);
+    child_process.address_space_lifetime = parent.address_space_lifetime.clone();
+    child_process.thread_group_id = (flags & CLONE_THREAD != 0).then_some(parent_tg_id);
     // A thread shares its process's record locks (POSIX fcntl).
-    child_process.lock_owner = parent_lock_owner;
+    if flags & CLONE_THREAD != 0 {
+        child_process.lock_owner = parent_lock_owner;
+    }
     child_process.cwd = parent_cwd;
     // Threads of a process share its signal dispositions (sys_sigaction keeps
     // the group's copies in step) and start with the creator's signal mask.
@@ -394,7 +410,9 @@ pub fn sys_clone_thread(
 
     // Add child to process manager. From here the row is published and leaves
     // its lock owner through the terminated-state transition, so it joins now.
-    child_process.lock_owner.join();
+    if flags & CLONE_THREAD != 0 {
+        child_process.lock_owner.join();
+    }
     manager.insert_process(child_pid, child_process);
 
     // Publication is complete only after the row exists. Make both the row and

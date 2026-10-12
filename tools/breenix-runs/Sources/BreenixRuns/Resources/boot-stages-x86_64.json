@@ -741,15 +741,15 @@
       "checkHint": "Check userspace/programs/tcp_socket_test.rs for which step failed"
     },
     {
-      "name": "DNS google resolve",
-      "marker": "DNS_TEST: google_resolve OK|DNS_TEST: google_resolve SKIP",
-      "failureMeaning": "DNS resolution of www.google.com failed",
+      "name": "DNS local resolve",
+      "marker": "DNS_TEST: local_resolve OK",
+      "failureMeaning": "DNS resolution against the local UDP fixture failed",
       "checkHint": "Check libs/libbreenix/src/dns.rs:resolve() and UDP socket path"
     },
     {
       "name": "DNS example resolve",
-      "marker": "DNS_TEST: example_resolve OK|DNS_TEST: example_resolve SKIP",
-      "failureMeaning": "DNS resolution of example.com failed",
+      "marker": "DNS_TEST: example_resolve OK",
+      "failureMeaning": "DNS resolution of example.breenix.test failed",
       "checkHint": "Check libs/libbreenix/src/dns.rs"
     },
     {
@@ -772,7 +772,7 @@
     },
     {
       "name": "DNS txid varies",
-      "marker": "DNS_TEST: txid_varies OK|DNS_TEST: txid_varies SKIP",
+      "marker": "DNS_TEST: txid_varies OK",
       "failureMeaning": "Transaction ID variation test failed",
       "checkHint": "Check dns.rs generate_txid() produces different IDs"
     },

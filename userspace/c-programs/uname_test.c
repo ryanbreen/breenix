@@ -2,7 +2,7 @@
 #include <string.h>
 #include <sys/utsname.h>
 
-int main(int argc, char *argv[]) {
+int main(void) {
     int pass = 0;
     int fail = 0;
     struct utsname buf;
@@ -36,12 +36,19 @@ int main(int argc, char *argv[]) {
         fail++;
     }
 
-    /* Test 3: machine == "aarch64" */
-    if (strcmp(buf.machine, "aarch64") == 0) {
+    /* Test 3: uname identifies the architecture this ELF was built for. */
+#if defined(__aarch64__)
+    const char *expected_machine = "aarch64";
+#elif defined(__x86_64__)
+    const char *expected_machine = "x86_64";
+#else
+#error Unsupported test architecture
+#endif
+    if (strcmp(buf.machine, expected_machine) == 0) {
         printf("PASS: machine = \"%s\"\n", buf.machine);
         pass++;
     } else {
-        printf("FAIL: machine = \"%s\" (expected \"aarch64\")\n", buf.machine);
+        printf("FAIL: machine = \"%s\" (expected \"%s\")\n", buf.machine, expected_machine);
         fail++;
     }
 

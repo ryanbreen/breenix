@@ -66,15 +66,15 @@ pub fn get_dns_stages() -> Vec<BootStage> {
                 "Check scheduler is running userspace, check userspace/programs/dns_test.rs",
         },
         BootStage {
-            name: "DNS google resolve",
-            marker: "DNS_TEST: google_resolve OK|DNS_TEST: google_resolve SKIP",
-            failure_meaning: "DNS resolution of www.google.com failed (not timeout/network issue)",
+            name: "DNS local resolve",
+            marker: "DNS_TEST: local_resolve OK",
+            failure_meaning: "DNS resolution against the local UDP fixture failed",
             check_hint: "Check libs/libbreenix/src/dns.rs:resolve() and UDP socket/softirq path",
         },
         BootStage {
             name: "DNS example resolve",
-            marker: "DNS_TEST: example_resolve OK|DNS_TEST: example_resolve SKIP",
-            failure_meaning: "DNS resolution of example.com failed (not timeout/network issue)",
+            marker: "DNS_TEST: example_resolve OK",
+            failure_meaning: "DNS resolution of example.breenix.test failed",
             check_hint: "Check libs/libbreenix/src/dns.rs - may be DNS server or parsing issue",
         },
         BootStage {
@@ -1002,15 +1002,15 @@ fn shared_userspace_stages() -> Vec<BootStage> {
 
         // DNS resolution tests
         BootStage {
-            name: "DNS google resolve",
-            marker: "DNS_TEST: google_resolve OK|DNS_TEST: google_resolve SKIP",
-            failure_meaning: "DNS resolution of www.google.com failed",
+            name: "DNS local resolve",
+            marker: "DNS_TEST: local_resolve OK",
+            failure_meaning: "DNS resolution against the local UDP fixture failed",
             check_hint: "Check libs/libbreenix/src/dns.rs:resolve() and UDP socket path",
         },
         BootStage {
             name: "DNS example resolve",
-            marker: "DNS_TEST: example_resolve OK|DNS_TEST: example_resolve SKIP",
-            failure_meaning: "DNS resolution of example.com failed",
+            marker: "DNS_TEST: example_resolve OK",
+            failure_meaning: "DNS resolution of example.breenix.test failed",
             check_hint: "Check libs/libbreenix/src/dns.rs",
         },
         BootStage {
@@ -1033,7 +1033,7 @@ fn shared_userspace_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "DNS txid varies",
-            marker: "DNS_TEST: txid_varies OK|DNS_TEST: txid_varies SKIP",
+            marker: "DNS_TEST: txid_varies OK",
             failure_meaning: "Transaction ID variation test failed",
             check_hint: "Check dns.rs generate_txid() produces different IDs",
         },

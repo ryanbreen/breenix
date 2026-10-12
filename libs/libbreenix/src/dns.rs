@@ -539,7 +539,7 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
         return Err(DnsError::SendError);
     }
 
-    // Receive response with 500ms timeout
+    // Retry an unanswered UDP query three times; packet validation remains strict.
     let mut resp_buf = [0u8; DNS_BUF_SIZE];
     let mut received = false;
     let mut resp_len = 0;
@@ -549,7 +549,8 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
     // Hypervisor DNS resolvers respond in <50ms; public DNS in <200ms.
     const TIMEOUT_MS: u64 = 500;
     let start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
-    let start_ms = start.tv_sec as u64 * 1000 + start.tv_nsec as u64 / 1_000_000;
+    let mut start_ms = start.tv_sec as u64 * 1000 + start.tv_nsec as u64 / 1_000_000;
+    let mut attempts = 1;
 
     loop {
         match recvfrom(fd, &mut resp_buf, None) {
@@ -563,7 +564,15 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
                 let now = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
                 let now_ms = now.tv_sec as u64 * 1000 + now.tv_nsec as u64 / 1_000_000;
                 if now_ms >= start_ms + TIMEOUT_MS {
-                    break; // Timeout
+                    if attempts == 3 {
+                        break;
+                    }
+                    if sendto(fd, &query_buf[..query_len], &dns_addr).is_err() {
+                        close_fd(fd);
+                        return Err(DnsError::SendError);
+                    }
+                    attempts += 1;
+                    start_ms = now_ms;
                 }
                 // Yield to scheduler - allows timer interrupt to fire and process softirqs
                 let _ = yield_now();

@@ -55,8 +55,8 @@ const FUTEX_CMD_MASK: u32 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
 const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
 
 /// Key for futex wait queues. A private futex, and any futex outside a shared
-/// mapping, is (thread_group_id, virtual address): threads sharing an address
-/// space (CLONE_VM) share the thread group id. A futex in a shared mapping is
+/// mapping, is (address_space_id, virtual address): threads sharing an address
+/// space (CLONE_VM) share the address-space id independently of thread groups. A futex in a shared mapping is
 /// (`SHARED_FUTEX`, physical address), which every process mapping the page
 /// reaches.
 type FutexKey = (u64, u64);
@@ -580,7 +580,7 @@ fn futex_key(uaddr: u64, private: bool) -> Option<FutexKey> {
     let manager = manager_guard.as_mut()?;
     let group = {
         let (pid, process) = manager.find_process_by_thread(thread_id)?;
-        process.thread_group_id.unwrap_or(pid.as_u64())
+        process.address_space_lifetime.as_ref().map_or(pid.as_u64(), |owners| owners.id)
     };
     if private {
         return Some((group, uaddr));

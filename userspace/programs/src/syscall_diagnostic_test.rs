@@ -10,7 +10,7 @@
 //! - 41d: Register preservation across syscall
 //! - 41e: Second clock_gettime call (the failing case)
 //!
-//! NOTE: This is an x86_64-only test due to inline assembly using int 0x80.
+//! Uses int 0x80 on x86-64 and the native svc ABI on ARM64.
 
 // System call numbers
 #[cfg(target_arch = "x86_64")]
@@ -21,11 +21,9 @@ const SYS_GETPID: u64 = 39;
 const SYS_CLOCK_GETTIME: u64 = 228;
 
 // Clock IDs
-#[cfg(target_arch = "x86_64")]
 const CLOCK_MONOTONIC: u32 = 1;
 
 /// Timespec structure for clock_gettime
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 struct Timespec {
     tv_sec: i64,
@@ -42,22 +40,6 @@ unsafe fn syscall0(n: u64) -> u64 {
     std::arch::asm!(
         "int 0x80",
         in("rax") n,
-        lateout("rax") ret,
-        lateout("rcx") _,
-        lateout("r11") _,
-        options(nostack)
-    );
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-unsafe fn syscall1(n: u64, arg1: u64) -> u64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") n,
-        in("rdi") arg1,
         lateout("rax") ret,
         lateout("rcx") _,
         lateout("r11") _,
@@ -100,7 +82,6 @@ unsafe fn syscall3(n: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
 }
 
 // Helper to write a string via raw syscall
-#[cfg(target_arch = "x86_64")]
 fn write_str(s: &str) {
     unsafe {
         syscall3(SYS_WRITE, 1, s.as_ptr() as u64, s.len() as u64);
@@ -108,7 +89,6 @@ fn write_str(s: &str) {
 }
 
 // Helper to write a number via raw syscall
-#[cfg(target_arch = "x86_64")]
 fn write_num(mut n: u64) {
     if n == 0 {
         write_str("0");
@@ -132,7 +112,6 @@ fn write_num(mut n: u64) {
 }
 
 // Helper to write a signed number via raw syscall
-#[cfg(target_arch = "x86_64")]
 fn write_signed(n: i64) {
     if n < 0 {
         write_str("-");
@@ -143,7 +122,6 @@ fn write_signed(n: i64) {
 }
 
 // Helper to write a hex number via raw syscall
-#[cfg(target_arch = "x86_64")]
 fn write_hex(n: u64) {
     const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
     let mut buf = [0u8; 18];
@@ -162,7 +140,6 @@ fn write_hex(n: u64) {
 // ────────────────────────────────────────────────────────────────────────────
 // Test 41a: Multiple getpid calls
 // ────────────────────────────────────────────────────────────────────────────
-#[cfg(target_arch = "x86_64")]
 fn test_41a_getpid() -> bool {
     write_str("\nTest 41a: Multiple no-arg syscalls (getpid)\n");
 
@@ -195,7 +172,6 @@ fn test_41a_getpid() -> bool {
 // ────────────────────────────────────────────────────────────────────────────
 // Test 41b: Multiple sys_write calls
 // ────────────────────────────────────────────────────────────────────────────
-#[cfg(target_arch = "x86_64")]
 fn test_41b_write() -> bool {
     write_str("\nTest 41b: Multiple sys_write calls\n");
 
@@ -228,7 +204,6 @@ fn test_41b_write() -> bool {
 // ────────────────────────────────────────────────────────────────────────────
 // Test 41c: Single clock_gettime + verify memory
 // ────────────────────────────────────────────────────────────────────────────
-#[cfg(target_arch = "x86_64")]
 fn test_41c_single_clock_gettime() -> bool {
     write_str("\nTest 41c: Single clock_gettime + verify memory\n");
     write_str("  Calling clock_gettime once...\n");
@@ -278,17 +253,11 @@ fn test_41d_register_preservation() -> bool {
 
     unsafe {
         std::arch::asm!(
-            "mov r12, {r12_in}",
-            "mov r13, {r13_in}",
-            "mov rax, 39",          // SYS_GETPID
             "int 0x80",
-            "mov {r12_out}, r12",
-            "mov {r13_out}, r13",
-            r12_in = in(reg) r12_before,
-            r13_in = in(reg) r13_before,
-            r12_out = out(reg) r12_after,
-            r13_out = out(reg) r13_after,
-            out("rax") _,
+            in("rax") SYS_GETPID,
+            inlateout("r12") r12_before => r12_after,
+            inlateout("r13") r13_before => r13_after,
+            lateout("rax") _,
             lateout("rcx") _,
             lateout("r11") _,
             options(nostack, preserves_flags)
@@ -315,7 +284,6 @@ fn test_41d_register_preservation() -> bool {
 // ────────────────────────────────────────────────────────────────────────────
 // Test 41e: Second clock_gettime call (the critical test)
 // ────────────────────────────────────────────────────────────────────────────
-#[cfg(target_arch = "x86_64")]
 fn test_41e_second_clock_gettime() -> bool {
     write_str("\nTest 41e: Second clock_gettime call\n");
     write_str("  Calling clock_gettime again...\n");
@@ -353,7 +321,6 @@ fn test_41e_second_clock_gettime() -> bool {
 // ────────────────────────────────────────────────────────────────────────────
 // Main entry point
 // ────────────────────────────────────────────────────────────────────────────
-#[cfg(target_arch = "x86_64")]
 fn main() {
     write_str("=== SYSCALL DIAGNOSTIC TEST SEQUENCE ===\n");
 
@@ -410,10 +377,55 @@ fn main() {
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-fn main() {
-    println!("=== SYSCALL DIAGNOSTIC TEST SEQUENCE ===");
-    println!("SKIP: This test is x86_64-only (uses int 0x80 inline asm)");
-    println!("\n✓ All diagnostic tests passed");
-    std::process::exit(0);
+#[cfg(target_arch = "aarch64")]
+const SYS_WRITE: u64 = 64;
+#[cfg(target_arch = "aarch64")]
+const SYS_GETPID: u64 = 172;
+#[cfg(target_arch = "aarch64")]
+const SYS_CLOCK_GETTIME: u64 = 113;
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn syscall0(n: u64) -> u64 {
+    let ret;
+    std::arch::asm!("svc #0", in("x8") n, lateout("x0") ret, options(nostack));
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn syscall2(n: u64, a: u64, b: u64) -> u64 {
+    let ret;
+    std::arch::asm!("svc #0", in("x8") n, inlateout("x0") a => ret, in("x1") b, options(nostack));
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn syscall3(n: u64, a: u64, b: u64, c: u64) -> u64 {
+    let ret;
+    std::arch::asm!("svc #0", in("x8") n, inlateout("x0") a => ret, in("x1") b, in("x2") c, options(nostack));
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+fn test_41d_register_preservation() -> bool {
+    write_str("\nTest 41d: Register preservation across svc\n");
+    let x9: u64;
+    let x10: u64;
+    let pid: u64;
+    unsafe {
+        std::arch::asm!(
+            "svc #0",
+            in("x8") SYS_GETPID,
+            inlateout("x9") 0xDEADBEEF_DEADBEEFu64 => x9,
+            inlateout("x10") 0xCAFEBABE_CAFEBABEu64 => x10,
+            lateout("x0") pid,
+            options(nostack),
+        );
+    }
+    write_str("  After svc: X9=");
+    write_hex(x9);
+    write_str(", X10=");
+    write_hex(x10);
+    let pass = pid > 0 && x9 == 0xDEADBEEF_DEADBEEF && x10 == 0xCAFEBABE_CAFEBABE;
+    write_str(if pass { "\n  Result: PASS\n" } else { "\n  Result: FAIL\n" });
+    pass
 }

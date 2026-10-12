@@ -15,8 +15,7 @@
 /// loading pattern). The ARM64 path iterates this list directly in
 /// `load_test_binaries_from_ext2()`.
 ///
-/// Binaries not present on a given architecture's disk/filesystem are
-/// silently skipped.
+/// Missing binaries are loader failures; every entry must execute on ARM64.
 pub const TEST_BINARIES: &[&str] = &[
     // Core functionality tests
     "hello_time",
@@ -78,12 +77,6 @@ pub const TEST_BINARIES: &[&str] = &[
     "ls_test",
     // Rust std library test (installed as hello_world.elf on ext2)
     "hello_world",
-    // musl libc C programs (cross-compiled with musl libc for aarch64)
-    "hello_musl",
-    "env_musl_test",
-    "uname_musl_test",
-    "rlimit_musl_test",
-    "identity_musl_test",
     // Fork / CoW tests
     "fork_memory_test",
     "fork_state_test",

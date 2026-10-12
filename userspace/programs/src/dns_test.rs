@@ -1,173 +1,124 @@
-//! DNS resolution userspace test (std version)
-//!
-//! Tests the DNS client from userspace using libbreenix::dns::resolve:
-//! 1. Resolve a well-known hostname (www.google.com)
-//! 2. Verify we get a valid IPv4 address
-//! 3. Test NXDOMAIN handling for nonexistent domains
-//! 4. Test empty hostname returns error
-//! 5. Test hostname too long returns error
-//! 6. Test transaction ID variation
-//!
-//! Network tests use SKIP markers when network is unavailable (e.g., CI flakiness).
-//! Validation-only tests (empty hostname, hostname too long) must always pass.
-//!
-//! Requires QEMU SLIRP networking (10.0.2.3 is SLIRP's DNS server)
+//! Exercise the real DNS client against a local UDP resolver fixture.
+//! Loopback works with every NIC profile, including a disconnected VMware NIC.
+//! A missing response, wrong answer, wrong RCODE or repeated transaction ID fails.
+use libbreenix::dns::{self, DnsError};
+use libbreenix::process::{fork, waitpid, wexitstatus, wifexited, yield_now, ForkResult};
+use libbreenix::signal::{kill, SIGKILL};
+use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_DGRAM, SOCK_NONBLOCK};
+use std::time::{Duration, Instant};
 
-use libbreenix::dns::{self, DnsError, SLIRP_DNS};
-use std::process;
+const LOCAL: [u8; 4] = [127, 0, 0, 1];
+const ANSWER: [u8; 4] = [192, 0, 2, 42];
 
-/// Resolve a hostname and return the result
-fn resolve(hostname: &str) -> Result<[u8; 4], DnsError> {
-    dns::resolve(hostname, SLIRP_DNS).map(|result| result.addr)
+struct Resolver(i32);
+impl Drop for Resolver {
+    fn drop(&mut self) {
+        if self.0 != 0 {
+            let _ = kill(self.0, SIGKILL);
+            let mut status = 0;
+            let _ = waitpid(self.0, &mut status, 0);
+        }
+    }
 }
 
-/// Print an IPv4 address
-fn format_ip(ip: [u8; 4]) -> String {
-    format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
+fn serve(fd: libbreenix::types::Fd) -> Result<(), &'static str> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut previous_id = None;
+    for index in 0..5 {
+        let mut query = [0u8; dns::DNS_BUF_SIZE];
+        let mut source = SockAddrIn::default();
+        let len = loop {
+            match socket::recvfrom(fd, &mut query, Some(&mut source)) {
+                Ok(len) => break len,
+                Err(_) if Instant::now() < deadline => { let _ = yield_now(); }
+                Err(_) => return Err("resolver receive deadline"),
+            }
+        };
+        let id = u16::from_be_bytes([query[0], query[1]]);
+        let hostname = match index {
+            0 => "www.breenix.test",
+            2 => "missing.breenix.test",
+            _ => "example.breenix.test",
+        };
+        let mut expected = [0u8; dns::DNS_BUF_SIZE];
+        let expected_len = dns::encode_query(hostname, id, &mut expected);
+        if len != expected_len || query[..len] != expected[..len] {
+            return Err("resolver received an incorrect question");
+        }
+        if index == 4 && previous_id == Some(id) {
+            return Err("transaction ID did not change");
+        }
+        previous_id = Some(id);
+        query[2] = 0x81;
+        query[3] = if index == 2 { 0x83 } else { 0x80 };
+        query[7] = if index == 2 { 0 } else { 1 };
+        let mut response_len = len;
+        if index != 2 {
+            // Compressed name, A/IN, TTL 60, four octets of RDATA.
+            let answer = [0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4,
+                ANSWER[0], ANSWER[1], ANSWER[2], ANSWER[3]];
+            query[len..len + answer.len()].copy_from_slice(&answer);
+            response_len += answer.len();
+        }
+        if socket::sendto(fd, &query[..response_len], &source).ok() != Some(response_len) {
+            return Err("resolver send failed");
+        }
+    }
+    Ok(())
 }
 
-/// Check if a DNS error is a network-related error (timeout, send, recv, socket)
-fn is_network_error(e: &DnsError) -> bool {
-    matches!(
-        e,
-        DnsError::Timeout
-            | DnsError::SendError
-            | DnsError::RecvError
-            | DnsError::SocketError
-            | DnsError::BindError
-    )
+fn run() -> Result<(), String> {
+    let fd = socket::socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0)
+        .map_err(|e| format!("resolver socket: {e:?}"))?;
+    socket::bind_inet(fd, &SockAddrIn::new(LOCAL, dns::DNS_PORT))
+        .map_err(|e| format!("resolver bind: {e:?}"))?;
+    let mut resolver = match fork().map_err(|e| format!("resolver fork: {e:?}"))? {
+        ForkResult::Child => {
+            let result = serve(fd);
+            let _ = libbreenix::io::close(fd);
+            if let Err(message) = result { eprintln!("DNS_TEST: fixture FAILED {message}"); }
+            std::process::exit(if result.is_ok() { 0 } else { 1 });
+        }
+        ForkResult::Parent(pid) => Resolver(pid.raw() as i32),
+    };
+    let _ = libbreenix::io::close(fd);
+    for (name, hostname) in [("local_resolve", "www.breenix.test"),
+        ("example_resolve", "example.breenix.test")] {
+        let result = dns::resolve(hostname, LOCAL).map_err(|e| format!("{name}: {e:?}"))?;
+        if result.addr != ANSWER || result.ttl != 60 { return Err(format!("{name}: wrong answer")); }
+        println!("DNS_TEST: {name} OK");
+    }
+    if !matches!(dns::resolve("missing.breenix.test", LOCAL), Err(DnsError::ServerError(3))) {
+        return Err("NXDOMAIN did not return RCODE 3".into());
+    }
+    println!("DNS_TEST: nxdomain OK");
+    if !matches!(dns::resolve("", LOCAL), Err(DnsError::InvalidHostname)) {
+        return Err("empty hostname accepted".into());
+    }
+    println!("DNS_TEST: empty_hostname OK");
+    if !matches!(dns::resolve(&"a".repeat(256), LOCAL), Err(DnsError::HostnameTooLong)) {
+        return Err("long hostname accepted".into());
+    }
+    println!("DNS_TEST: long_hostname OK");
+    for _ in 0..2 {
+        let answer = dns::resolve("example.breenix.test", LOCAL)
+            .map_err(|e| format!("transaction query: {e:?}"))?;
+        if answer.addr != ANSWER { return Err("transaction query returned wrong answer".into()); }
+    }
+    let mut status = 0;
+    let reaped = waitpid(resolver.0, &mut status, 0).map_err(|e| format!("resolver wait: {e:?}"))?;
+    if reaped.raw() as i32 != resolver.0 || !wifexited(status) || wexitstatus(status) != 0 {
+        return Err("resolver failed its question/transaction assertions".into());
+    }
+    resolver.0 = 0;
+    println!("DNS_TEST: txid_varies OK");
+    Ok(())
 }
 
 fn main() {
-    println!("DNS Test: Starting");
-
-    // Test 1: Resolve www.google.com
-    // This is a network-dependent test - SKIP on timeout/network failure
-    println!("DNS_TEST: resolving www.google.com...");
-    match resolve("www.google.com") {
-        Ok(addr) => {
-            println!("DNS_TEST: resolved ip={}", format_ip(addr));
-
-            // Verify it's a valid public IP (not 0.0.0.0 or 127.x.x.x)
-            if addr[0] != 0 && addr[0] != 127 {
-                println!("DNS_TEST: google_resolve OK");
-            } else {
-                println!("DNS_TEST: google_resolve FAILED (invalid IP)");
-                process::exit(1);
-            }
-        }
-        Err(e) => {
-            // Network may be unavailable - SKIP, not fail
-            if is_network_error(&e) {
-                println!("DNS_TEST: google_resolve SKIP (network unavailable)");
-            } else {
-                println!("DNS_TEST: google_resolve FAILED err={:?}", e);
-                process::exit(1);
-            }
-        }
+    println!("DNS Test: Starting local resolver");
+    match run() {
+        Ok(()) => println!("DNS Test: All tests passed!"),
+        Err(message) => { eprintln!("DNS_TEST: FAILED {message}"); std::process::exit(1); }
     }
-
-    // Test 2: Resolve example.com (another reliable domain)
-    // This is a network-dependent test - SKIP on timeout/network failure
-    println!("DNS_TEST: resolving example.com...");
-    match resolve("example.com") {
-        Ok(addr) => {
-            println!("DNS_TEST: resolved ip={}", format_ip(addr));
-
-            // example.com should resolve to a valid public IP
-            if addr[0] != 0 && addr[0] != 127 {
-                println!("DNS_TEST: example_resolve OK");
-            } else {
-                println!("DNS_TEST: example_resolve FAILED (invalid IP)");
-                process::exit(2);
-            }
-        }
-        Err(e) => {
-            if is_network_error(&e) {
-                println!("DNS_TEST: example_resolve SKIP (network unavailable)");
-            } else {
-                println!("DNS_TEST: example_resolve FAILED err={:?}", e);
-                process::exit(2);
-            }
-        }
-    }
-
-    // Test 3: NXDOMAIN test - nonexistent domain should fail
-    println!("DNS_TEST: testing NXDOMAIN...");
-    match resolve("this.domain.does.not.exist.invalid") {
-        Err(e) => {
-            println!("DNS_TEST: nxdomain OK (error={:?})", e);
-        }
-        Ok(addr) => {
-            println!("DNS_TEST: nxdomain FAILED (should not resolve, got {})", format_ip(addr));
-            process::exit(3);
-        }
-    }
-
-    // Test 4: Empty hostname should return InvalidHostname
-    println!("DNS_TEST: testing empty hostname...");
-    match resolve("") {
-        Err(DnsError::InvalidHostname) => {
-            println!("DNS_TEST: empty_hostname OK");
-        }
-        Err(e) => {
-            println!("DNS_TEST: empty_hostname FAILED wrong err={:?}", e);
-            process::exit(4);
-        }
-        Ok(_) => {
-            println!("DNS_TEST: empty_hostname FAILED (should not resolve)");
-            process::exit(4);
-        }
-    }
-
-    // Test 5: Hostname too long should return error
-    println!("DNS_TEST: testing long hostname...");
-    // Create a hostname > 255 chars: 260 'a's + ".com" = 264 chars
-    let long_hostname = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com";
-    match resolve(long_hostname) {
-        Err(_) => {
-            // Any error is acceptable (InvalidHostname or HostnameTooLong)
-            println!("DNS_TEST: long_hostname OK");
-        }
-        Ok(_) => {
-            println!("DNS_TEST: long_hostname FAILED (should not resolve)");
-            process::exit(5);
-        }
-    }
-
-    // Test 6: Verify transaction IDs vary between queries
-    // We verify this by doing two consecutive resolves and ensuring both succeed
-    // (if txid was static and broken, the second query might fail due to txid mismatch)
-    // This is a network-dependent test - SKIP on timeout/network failure
-    println!("DNS_TEST: testing txid variation...");
-    let mut txid_ok = true;
-    let mut network_skip = false;
-    for _i in 0..2u8 {
-        match resolve("example.com") {
-            Ok(_) => {
-                // Success - txid matched
-            }
-            Err(e) => {
-                if is_network_error(&e) {
-                    // Network unavailable - SKIP, not fail
-                    network_skip = true;
-                    break;
-                } else {
-                    txid_ok = false;
-                    break;
-                }
-            }
-        }
-    }
-    if network_skip {
-        println!("DNS_TEST: txid_varies SKIP (network unavailable)");
-    } else if txid_ok {
-        println!("DNS_TEST: txid_varies OK");
-    } else {
-        println!("DNS_TEST: txid_varies FAILED");
-        process::exit(6);
-    }
-
-    println!("DNS Test: All tests passed!");
-    process::exit(0);
 }

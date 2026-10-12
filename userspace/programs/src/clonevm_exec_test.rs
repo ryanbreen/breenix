@@ -1,11 +1,10 @@
 //! Runtime proof that exec detaches a former CLONE_VM process cleanly.
 //!
-//! ARM64 first proves that a live CLONE_VM sibling prevents exec. Both
-//! architectures then release that sibling, exec, and exercise both futex
-//! entry points with keys derived from the post-exec thread group.
+//! Both architectures prove that a borrowed non-thread child can exec while
+//! its parent lives, and that an owner cannot retire a live sibling's root.
+//! After exec they exercise futex keys from the new address-space identity.
 
 use libbreenix::errno::Errno;
-#[cfg(target_arch = "aarch64")]
 use libbreenix::error::Error;
 use libbreenix::memory;
 use libbreenix::process;
@@ -376,7 +375,7 @@ extern "C" fn phase_one_child(arg: *mut u8) -> *mut u8 {
     unsafe {
         let alive = arg.add(SHARED_ALIVE_OFFSET) as *mut u64;
         let command = arg.add(SHARED_COMMAND_OFFSET) as *mut u64;
-        core::ptr::write_volatile(alive, 1);
+        core::ptr::write_volatile(alive, process::getpid().unwrap().raw());
 
         let mut iteration = 0;
         // Bounded like every other wait here, by yields. sched_yield with no
@@ -384,6 +383,13 @@ extern "C" fn phase_one_child(arg: *mut u8) -> *mut u8 {
         // ran out in well under a second, before the parent's exec probe was
         // done; it only held while each such yield idled the CPU for a tick.
         while iteration < SPIN_LIMIT {
+            if core::ptr::read_volatile(command) == 3 {
+                let argv = second_stage_argv();
+                let result = process::execv(PROGRAM, argv.as_ptr());
+                drop(result);
+                raw_msg(b"CLONEVM_EXEC_TEST: ERROR borrowed child exec returned\n");
+                thread_exit(1);
+            }
             if core::ptr::read_volatile(command) == 2 {
                 thread_exit(0);
             }
@@ -400,7 +406,6 @@ fn second_stage_argv() -> [*const u8; 3] {
     [ARG0.as_ptr(), SECOND_STAGE_ARG.as_ptr(), ptr::null()]
 }
 
-#[cfg(target_arch = "aarch64")]
 unsafe fn probe_live_sibling_exec() {
     let argv = second_stage_argv();
     match process::execv(PROGRAM, argv.as_ptr()) {
@@ -413,11 +418,6 @@ unsafe fn probe_live_sibling_exec() {
         }
         Ok(infallible) => match infallible {},
     }
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn probe_live_sibling_exec() {
-    raw_msg(b"CLONEVM_EXEC_TEST: SKIP live-sibling probe (no x86 guard, see #468)\n");
 }
 
 unsafe fn second_stage() -> ! {
@@ -532,6 +532,11 @@ unsafe fn second_stage() -> ! {
 
 unsafe fn first_stage() -> ! {
     raw_msg(b"CLONEVM_EXEC_TEST: start\n");
+    let invalid = raw::syscall6(nr::CLONE, 0x100 | 0x10000, 0x1000,
+                               phase_one_child as *const () as u64, 0, 0, 0) as i64;
+    if invalid != -(Errno::EINVAL as i64) {
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR CLONE_THREAD accepted without CLONE_SIGHAND\n");
+    }
 
     let stack = map_region(
         CHILD_STACK_SIZE,
@@ -544,6 +549,27 @@ unsafe fn first_stage() -> ! {
     let alive = shared.add(SHARED_ALIVE_OFFSET) as *mut u64;
     let command = shared.add(SHARED_COMMAND_OFFSET) as *mut u64;
     let tid_addr = shared.add(SHARED_TID_OFFSET) as *mut u32;
+    core::ptr::write_volatile(alive, 0);
+    core::ptr::write_volatile(command, 0);
+    core::ptr::write_volatile(tid_addr, u32::MAX);
+
+    // A non-thread child must detach while its owning parent is still live.
+    // The new image runs the complete post-exec futex test, and must exit zero.
+    let child = clone_vm_child(stack, phase_one_child, shared, tid_addr);
+    if child < 0 {
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR borrowed clone failed\n");
+    }
+    wait_for_nonzero_u64(alive, b"CLONEVM_EXEC_TEST: ERROR borrowed child not live\n");
+    // clone returns a TID in Breenix's function-entry ABI; waitpid selects
+    // the PID published by the child, never that scheduler identity.
+    let child_pid = core::ptr::read_volatile(alive) as i32;
+    core::ptr::write_volatile(command, 3);
+    let mut status = 0;
+    if process::waitpid(child_pid, &mut status, 0).map(|pid| pid.raw() as i32).ok() != Some(child_pid)
+        || !process::wifexited(status) || process::wexitstatus(status) != 0 {
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR borrowed child image failed\n");
+    }
+    raw_msg(b"CLONEVM_EXEC_TEST: borrowed child exec passed while parent live\n");
     core::ptr::write_volatile(alive, 0);
     core::ptr::write_volatile(command, 0);
     core::ptr::write_volatile(tid_addr, u32::MAX);

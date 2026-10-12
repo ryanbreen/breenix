@@ -454,7 +454,7 @@ for i in $(seq 1 "$COUNT"); do
   elif [ "$MODE" = "full" ]; then
     # #1119 measured 181 exits before rebasing; also require publication/exit
     # equality, which detects unfinished processes without relying on a floor.
-    if REQUIRE_PROCESS_ACCOUNTING=1 EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-181}" \
+    if EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-181}" \
         "$REPO_DIR/scripts/x86-gate-verdict.sh" \
         "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log"; then
       verdict_ok=true

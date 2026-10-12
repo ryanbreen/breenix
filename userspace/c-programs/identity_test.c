@@ -6,7 +6,7 @@
 #include <pwd.h>
 #include <grp.h>
 
-int main(int argc, char *argv[]) {
+int main(void) {
     int pass = 0;
     int fail = 0;
 
