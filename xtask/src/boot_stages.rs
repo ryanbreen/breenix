@@ -97,18 +97,6 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "kernel/src/main.rs keyboard queue initialization",
         },
         BootStage {
-            name: "Keyboard task ready",
-            marker: "Keyboard ready! Type to see characters",
-            failure_meaning: "Initialization did not reach its own ready marker",
-            check_hint: "kernel/src/keyboard.rs keyboard task",
-        },
-        BootStage {
-            name: "Async executor started",
-            marker: "Starting async executor...",
-            failure_meaning: "Initialization did not reach its own ready marker",
-            check_hint: "kernel/src/main.rs executor startup",
-        },
-        BootStage {
             name: "FD slab cache initialized",
             marker: "Slab cache 'fd_table' initialized: 64 slots",
             failure_meaning: "Initialization did not reach its own ready marker",

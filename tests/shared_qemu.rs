@@ -162,9 +162,12 @@ fn capture_kernel_output() -> String {
     }
     drop(qemu);
 
-    // Read the final serial output from file
-    let output = fs::read_to_string(serial_output_file).expect("Failed to read serial output file");
+    // Keep userspace COM1 output as well as the kernel COM2 log.
+    let mut output = fs::read_to_string(serial_output_file).expect("Failed to read serial output file");
 
+    if let Ok(userspace) = fs::read_to_string("target/shared_kernel_test_com1.txt") {
+        output.push_str(&userspace);
+    }
     println!(
         "✅ Captured {} bytes of kernel output for all tests",
         output.len()
@@ -173,6 +176,7 @@ fn capture_kernel_output() -> String {
     // Clean up the output file
     let _ = fs::remove_file(serial_output_file);
     let _ = fs::remove_file(stderr_path);
+    let _ = fs::remove_file("target/shared_kernel_test_com1.txt");
 
     output
 }

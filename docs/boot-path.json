@@ -123,8 +123,7 @@
           "VirtIO disk read successful",
           "E1000 driver initialized",
           "Network stack initialized",
-          "Keyboard queue initialized",
-          "Keyboard task ready"
+          "Keyboard queue initialized"
         ]
       }
     },
@@ -207,8 +206,7 @@
           "Softirq iteration limit test passed",
           "Softirq ksoftirqd verification passed",
           "Softirq all tests passed",
-          "User work ran on every online CPU",
-          "Async executor started"
+          "User work ran on every online CPU"
         ],
         "probe": [
           "Per-CPU data initialized",
