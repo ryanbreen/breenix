@@ -162,7 +162,7 @@ public enum RemoteCommand {
         } ?? ""
         let progressRoot = paths.gateTmpPath + "/watchdog"
         let installProgress = progressBundleBase64.map {
-            " && python3 -c 'import base64,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); [( (root/k).parent.mkdir(parents=True,exist_ok=True), (root/k).write_bytes(base64.b64decode(v))) for k,v in json.loads(base64.b64decode(sys.argv[2])).items()]' \(progressRoot) \($0)"
+            " && python3 -c \"import base64,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); [( (root/k).parent.mkdir(parents=True,exist_ok=True), (root/k).write_bytes(base64.b64decode(v))) for k,v in json.loads(base64.b64decode(sys.argv[2])).items()]\" \(progressRoot) \($0)"
         } ?? ""
         let progressEnv = progressBundleBase64 == nil ? "" : " BREENIX_SLOT_PROGRESS_HELPER=\(progressRoot)/scripts/boot_progress.py"
         let gate: String
