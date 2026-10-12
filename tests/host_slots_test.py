@@ -38,13 +38,16 @@ class HostSlotsTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def launch(self, script, bypass=False, miss_first_snapshot=False, temporary_directory=None, settings=None):
-        # Only tests inject a directory and disable observational VM discovery.
+        # Only tests inject a directory and disable observational VM discovery and
+        # the Linux vCPU gap sampler, so the host's own guests and load can't decide them.
         # Production's fixed directory has no environment override.
         program = f'''import importlib.util, sys
 spec = importlib.util.spec_from_file_location('host_slots', {str(HELPER)!r})
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.SLOT_DIR = m.Path({str(self.root / 'locks')!r})
 m.mac_vms = lambda: []
+m.x86_vms = lambda: []
+m.vcpu_gap_ms = lambda seconds: 0.0
 m.WAIT_MESSAGE_SECONDS = 0.2
 for name, value in {settings or {}!r}.items():
     setattr(m, name, value)
@@ -538,9 +541,13 @@ sys.stdin.readline()
         with mock.patch.object(slots.sys, 'platform', 'darwin'):
             self.assertNotIn('vcpu_gap_ms', slots.host_sample({}))
 
-    @unittest.skipUnless(hasattr(os, 'sched_setaffinity'), 'Linux only')
     def test_vcpu_gap_sampler_reports_a_gap(self):
-        self.assertGreaterEqual(slots.vcpu_gap_ms(0.05), 0.0)
+        if sys.platform.startswith('linux'):
+            self.assertGreaterEqual(slots.vcpu_gap_ms(0.05), 0.0)
+        else:
+            # Without sched_setaffinity the sampler fails rather than report no gap.
+            with self.assertRaises(AttributeError):
+                slots.vcpu_gap_ms(0.05)
 
     def test_zombie_only_process_group_cleanup_succeeds(self):
         # Keep the zombie's parent outside its group so the group persists.
