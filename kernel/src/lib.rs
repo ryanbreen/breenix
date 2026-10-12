@@ -606,9 +606,9 @@ pub fn arch_halt_while_blocked() {
     if per_cpu::preempt_count() == 0 {
         // Save the blocked continuation now. Otherwise its timer can make it
         // ready on a peer CPU, but cannot dispatch it until this CPU takes an
-        // interrupt and saves the still-current stack.
+        // interrupt and saves the still-current stack. Do not reclaim here:
+        // teardown can disable preemption and delay this wait before its save.
         unsafe { arch_enable_interrupts() };
-        arch_impl::aarch64::context_switch::run_deferred_reclamation();
         arch_impl::aarch64::context_switch::schedule_from_kernel();
         return;
     }

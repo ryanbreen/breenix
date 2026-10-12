@@ -6640,23 +6640,11 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 /// window; `schedule_from_kernel` deliberately contains no reclamation work.
 #[inline]
 pub fn run_deferred_reclamation() {
-    // A waiting or already-woken continuation still owns its unsaved stack.
-    // Reclamation may retain the CPU with preemption disabled. Save that
-    // continuation first; idle/replacement contexts service the pending work.
-    if Aarch64PerCpu::current_thread_ptr().is_null()
-        || crate::task::scheduler::with_scheduler(|sched| {
-            sched
-                .current_thread_mut()
-                .is_some_and(|thread| thread.state == ThreadState::Running)
-        })
-        .unwrap_or(false)
-    {
-        drain_asm_resume_pc_refusals();
-        emit_resume_pc_census_if_due();
-        crate::task::process_task::drain_deferred_fault_sigsegv_exits();
-        crate::task::process_task::reclaim_deferred_process_resources();
-        crate::task::scheduler::reclaim_terminated_threads();
-    }
+    drain_asm_resume_pc_refusals();
+    emit_resume_pc_census_if_due();
+    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+    crate::task::process_task::reclaim_deferred_process_resources();
+    crate::task::scheduler::reclaim_terminated_threads();
 }
 
 pub fn schedule_from_kernel() {

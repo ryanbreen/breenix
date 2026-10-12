@@ -14935,6 +14935,30 @@ fn validate_run_deferred_reclamation_census(context_switch: &str) -> Result<(), 
             ));
         }
     }
+    // These drains are unconditional task-context work. Counting a call
+    // nested in a branch or closure would accept a helper that does nothing.
+    for reclamation_call in REQUIRED_DEFERRED_RECLAMATION_CALLS
+        .into_iter()
+        .chain(["drain_asm_resume_pc_refusals", "emit_resume_pc_census_if_due"])
+    {
+        let offsets = call_offsets(reclamation, &reclamation_mask, reclamation_call);
+        if offsets.len() != 1 {
+            return Err(format!("missing unconditional drain {reclamation_call}"));
+        }
+        let mut depth = 0;
+        for (offset, byte) in reclamation.bytes().enumerate().take(offsets[0]) {
+            if reclamation_mask[offset] {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+            }
+        }
+        if depth != 1 {
+            return Err(format!("{reclamation_call} must be an unconditional function-body statement"));
+        }
+    }
     let statements = reclamation
         .char_indices()
         .filter(|(offset, character)| {
@@ -15043,7 +15067,7 @@ fn deferred_reclamation_census_rejects_an_added_operation() {
 }
 
 #[test]
-fn every_external_schedule_from_kernel_call_reclaims_immediately_beforehand() {
+fn external_schedule_from_kernel_calls_keep_reclamation_off_blocked_handoffs() {
     let sources = rust_sources_below("kernel/src");
     let mut schedule_sites = 0usize;
     let mut paired_sites = 0usize;
@@ -15053,6 +15077,22 @@ fn every_external_schedule_from_kernel_call_reclaims_immediately_beforehand() {
         }
         let mask = code_mask(source);
         for call_offset in call_offsets(source, &mask, "schedule_from_kernel") {
+            // A blocked waiter must save its continuation before teardown can
+            // disable preemption. This handoff deliberately leaves reclamation
+            // to the existing idle and scheduler task-context callers.
+            if path == "kernel/src/lib.rs" {
+                let blocked = function_body(source, "arch_halt_while_blocked");
+                let blocked_start = source.find(blocked).expect("blocked handoff body");
+                assert!(
+                    (blocked_start..blocked_start + blocked.len()).contains(&call_offset),
+                    "only the blocked-wait handoff may omit pre-schedule reclamation"
+                );
+                assert!(
+                    call_offsets(blocked, &code_mask(blocked), "run_deferred_reclamation").is_empty(),
+                    "blocked waits must not run teardown before saving their continuation"
+                );
+                continue;
+            }
             schedule_sites += 1;
             if call_is_immediately_preceded_by(
                 source,

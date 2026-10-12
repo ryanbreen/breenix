@@ -53,7 +53,7 @@ impl MutSite {
 
 /// Sites counted at a harness call site rather than inside the registered host.
 ///
-/// `CpuIdentity` lives in the permanently prohibited AArch64 context-switch
+/// `CpuIdentity` lives in the Tier-2 AArch64 context-switch
 /// file, so neither `proof_cover!` nor a direct `crate::proof::` call may be
 /// placed there. The adversarial peer counts a completed
 /// `scheduler::schedule()` call in `proof/quiesce.rs` instead. On AArch64 that
@@ -62,7 +62,7 @@ impl MutSite {
 /// harness-side increment is therefore an exact lower bound on executions of
 /// the mutation site without weakening the prohibited-file ratchet.
 ///
-/// `OutgoingFallbackRequeue` also lives in the permanently prohibited context-switch file.
+/// `OutgoingFallbackRequeue` also lives in the Tier-2 context-switch file.
 /// Component H counts it from `driver_h.rs` using the delta of the existing
 /// `INLINE_SCHED_NULL_FALLBACK` production trace counter. Unlike `CpuIdentity`'s lower-bound
 /// proxy, this is an EXACT count of entries into the mutated block's containing arm.
