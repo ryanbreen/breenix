@@ -432,7 +432,30 @@ static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0
 
 #[inline(always)]
 fn lock_scheduler() -> spin::MutexGuard<'static, Option<Scheduler>> {
-    let guard = SCHEDULER.lock();
+    let guard = match SCHEDULER.try_lock() {
+        Some(guard) => guard,
+        None => {
+            let t0 = crate::scratch_probe::now_ns();
+            let mut sampled = false;
+            loop {
+                if let Some(guard) = SCHEDULER.try_lock() {
+                    break guard;
+                }
+                #[cfg(target_arch = "x86_64")]
+                if !sampled && crate::scratch_probe::now_ns().wrapping_sub(t0) > 10_000_000 {
+                    sampled = true;
+                    crate::scratch_probe::request_sample(
+                        crate::scratch_probe::SCHED_OWNER.load(Ordering::Relaxed),
+                        1,
+                    );
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                let _ = (&mut sampled, t0);
+                core::hint::spin_loop();
+            }
+        }
+    };
+    crate::scratch_probe::sched_acquired();
     crate::tracing::providers::teardown::note_scheduler_acquire();
     guard
 }
@@ -440,6 +463,7 @@ fn lock_scheduler() -> spin::MutexGuard<'static, Option<Scheduler>> {
 #[inline(always)]
 fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> {
     let guard = SCHEDULER.try_lock()?;
+    crate::scratch_probe::sched_acquired();
     crate::tracing::providers::teardown::note_scheduler_acquire();
     Some(guard)
 }
