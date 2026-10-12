@@ -7728,6 +7728,17 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
 
     let map = function_body(process_memory, "map_page");
     let reserve = map.find(".try_reserve_page(page_addr)").ok_or(())?;
+    // The reservation makes every level of the page's record path, each by a
+    // fallible allocation, so the insert after the frame reference cannot fail.
+    let reserve_page = function_body(process_memory, "try_reserve_page");
+    let slot = function_body(process_memory, "leaf_slot");
+    if !reserve_page.contains("leaf_slot(&mut leaf_slot(&mut self.root)?.slots[root])?")
+        || !reserve_page.contains("leaf_slot(&mut leaf_slot(&mut gigs.slots[gig])?.slots[span])?")
+        || !slot.contains("Box::<T>::try_new_zeroed().map_err(")
+        || !slot.contains("slot.insert(node)")
+    {
+        return Err(());
+    }
     let acquire = map.find("acquire_leaf_mapping(frame)").ok_or(())?;
     let insert = map.find("self.leaves.insert(LeafRecord {").ok_or(())?;
     let publish = map.find("mapper.map_to_with_table_flags(").ok_or(())?;
@@ -7778,7 +7789,7 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
         || bounded_drain.matches("Self::release_leaf_record(").count() != 1
         || bounded_drain.contains("frame_decref(")
         || bounded_drain.contains("deallocate_leaf_frame(")
-        || !bounded_drain.contains("self.leaves.clear();")
+        || !bounded_drain.contains("self.leaves.clear_bounded(budget)")
         || !bounded_drain.contains("self.leaves.released = true;")
     {
         return Err(());
@@ -11901,6 +11912,28 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         no_leaf_reserve,
     );
     assert!(validate_leaf_custody(&no_leaf_reserve).is_err());
+    let hollow_leaf_reserve = process_memory.replacen(
+        "leaf_slot(&mut leaf_slot(&mut gigs.slots[gig])?.slots[span])?;",
+        "",
+        1,
+    );
+    let hollow_leaf_reserve = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        hollow_leaf_reserve,
+    );
+    assert!(validate_leaf_custody(&hollow_leaf_reserve).is_err());
+    let infallible_leaf_slot = process_memory.replacen(
+        "Box::<T>::try_new_zeroed().map_err(",
+        "Ok::<_, ()>(Box::<T>::new_zeroed()).map_err(",
+        1,
+    );
+    let infallible_leaf_slot = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        infallible_leaf_slot,
+    );
+    assert!(validate_leaf_custody(&infallible_leaf_slot).is_err());
     let post_publish_record = process_memory.replacen(
         "let mapping = match acquire_leaf_mapping(frame)",
         "let mapping = match classify_after_descriptor(frame)",

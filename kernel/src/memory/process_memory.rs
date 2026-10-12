@@ -257,35 +257,96 @@ impl FlushedLeaf {
 /// User pages per leaf chunk: the span of one last-level table, 2 MiB.
 const LEAF_CHUNK_PAGES: u64 = 512;
 const LEAF_CHUNK_WORDS: usize = (LEAF_CHUNK_PAGES / 64) as usize;
+/// Children per node of the record tree, as per page-table level.
+const LEAF_FANOUT: usize = 512;
 
 /// The custody records of the user pages in one 2 MiB-aligned span: which
 /// pages are recorded, and which of those own their frame.
 struct LeafChunk {
-    base: u64,
     recorded: [u64; LEAF_CHUNK_WORDS],
     owned: [u64; LEAF_CHUNK_WORDS],
-    count: u32,
 }
 
 impl LeafChunk {
-    fn base_of(page: u64) -> u64 {
-        page & !(LEAF_CHUNK_PAGES * 4096 - 1)
-    }
-
     fn bit(page: u64) -> (usize, u64) {
         let index = (page >> 12) % LEAF_CHUNK_PAGES;
         ((index / 64) as usize, 1 << (index % 64))
     }
 }
 
-/// The leaf custody records of an address space, one per mapped user page,
-/// kept by 2 MiB span. Recording or dropping a page changes bits in its span's
-/// chunk, found by binary search over the spans, so a fault's or a
-/// copy-on-write break's update under PROCESS_MANAGER does not grow with the
-/// number of pages mapped (#1365). A span's chunk is made with its first
-/// record and freed with its last.
+/// One level of the record tree, indexed by the same address bits as the
+/// page-table level it shadows. `next` is the teardown cursor.
+struct LeafNode<T> {
+    slots: [Option<Box<T>>; LEAF_FANOUT],
+    next: usize,
+}
+
+/// Record-tree types whose all-zero bit pattern is a valid empty value.
+///
+/// # Safety
+/// Implementors must hold only integers and `Option<Box<_>>`, for which all
+/// zero bits is `0` and `None`.
+unsafe trait LeafZeroed: Sized {}
+unsafe impl LeafZeroed for LeafChunk {}
+unsafe impl<T> LeafZeroed for LeafNode<T> {}
+
+/// The value in `slot`, made empty first if there is none. The only step of
+/// the record tree that allocates, and it can fail.
+fn leaf_slot<T: LeafZeroed>(slot: &mut Option<Box<T>>) -> Result<&mut T, &'static str> {
+    let node = match slot.take() {
+        Some(node) => node,
+        None => {
+            let node =
+                Box::<T>::try_new_zeroed().map_err(|_| "Failed to reserve leaf custody")?;
+            // SAFETY: `LeafZeroed` makes all-zero bits a valid empty `T`.
+            unsafe { node.assume_init() }
+        }
+    };
+    Ok(&mut **slot.insert(node))
+}
+
+/// Teardown of the record tree, one freed allocation per call.
+trait LeafDrain {
+    /// Free one allocation below this one. False if there is none left.
+    fn drain_one(&mut self) -> bool;
+}
+
+impl LeafDrain for LeafChunk {
+    fn drain_one(&mut self) -> bool {
+        false
+    }
+}
+
+impl<T: LeafDrain> LeafDrain for LeafNode<T> {
+    fn drain_one(&mut self) -> bool {
+        while self.next < LEAF_FANOUT {
+            if let Some(child) = self.slots[self.next].as_deref_mut() {
+                if !child.drain_one() {
+                    self.slots[self.next] = None;
+                    self.next += 1;
+                }
+                return true;
+            }
+            self.next += 1;
+        }
+        false
+    }
+}
+
+/// Spans of 2 MiB, 1 GiB and 512 GiB.
+type LeafSpans = LeafNode<LeafChunk>;
+type LeafGigs = LeafNode<LeafSpans>;
+type LeafRoot = LeafNode<LeafGigs>;
+
+/// The leaf custody records of an address space, one per mapped user page.
+/// They are bitmaps per 2 MiB span, in a tree shaped like the page tables
+/// above the last level, so finding, recording or dropping a page's record
+/// takes the same few steps however many pages are mapped (#1365). A span's
+/// chunk, and the nodes above it, are made with its first record and kept
+/// until teardown, as its page tables are: dropping a record (a copy-on-write
+/// break, an unmap) never frees, and recording one again never allocates.
 struct OwnedLeafFrames {
-    chunks: Vec<Box<LeafChunk>>,
+    root: Option<Box<LeafRoot>>,
     released: bool,
     release_cursor: u64,
 }
@@ -293,19 +354,34 @@ struct OwnedLeafFrames {
 impl OwnedLeafFrames {
     fn new() -> Self {
         Self {
-            chunks: Vec::new(),
+            root: None,
             released: false,
             release_cursor: 0,
         }
     }
 
-    fn chunk(&self, base: u64) -> Result<usize, usize> {
-        self.chunks.binary_search_by_key(&base, |chunk| chunk.base)
+    /// The tree indices of `page`'s span, or None outside the 48-bit user range.
+    fn path(page: u64) -> Option<[usize; 3]> {
+        if page >> 48 != 0 {
+            return None;
+        }
+        let index = |shift: u64| ((page >> shift) as usize) % LEAF_FANOUT;
+        Some([index(39), index(30), index(21)])
+    }
+
+    fn chunk(&self, page: u64) -> Option<&LeafChunk> {
+        let [root, gig, span] = Self::path(page)?;
+        self.root.as_ref()?.slots[root].as_ref()?.slots[gig].as_ref()?.slots[span].as_deref()
+    }
+
+    fn chunk_mut(&mut self, page: u64) -> Option<&mut LeafChunk> {
+        let [root, gig, span] = Self::path(page)?;
+        self.root.as_mut()?.slots[root].as_mut()?.slots[gig].as_mut()?.slots[span].as_deref_mut()
     }
 
     /// The custody record of `page`, if it has one.
     fn search(&self, page: u64) -> Option<LeafRecord> {
-        let chunk = &self.chunks[self.chunk(LeafChunk::base_of(page)).ok()?];
+        let chunk = self.chunk(page)?;
         let (word, bit) = LeafChunk::bit(page);
         if chunk.recorded[word] & bit == 0 {
             return None;
@@ -319,68 +395,54 @@ impl OwnedLeafFrames {
     }
 
     /// Make sure `page`'s span has a chunk, so that `insert` cannot fail.
-    /// The only step that allocates.
     fn try_reserve_page(&mut self, page: u64) -> Result<(), &'static str> {
-        let base = LeafChunk::base_of(page);
-        if let Err(at) = self.chunk(base) {
-            self.chunks
-                .try_reserve(1)
-                .map_err(|_| "Failed to reserve leaf custody")?;
-            let chunk = Box::try_new(LeafChunk {
-                base,
-                recorded: [0; LEAF_CHUNK_WORDS],
-                owned: [0; LEAF_CHUNK_WORDS],
-                count: 0,
-            })
-            .map_err(|_| "Failed to reserve leaf custody")?;
-            self.chunks.insert(at, chunk);
-        }
+        let [root, gig, span] = Self::path(page).ok_or("User page outside leaf custody")?;
+        let gigs = leaf_slot(&mut leaf_slot(&mut self.root)?.slots[root])?;
+        leaf_slot(&mut leaf_slot(&mut gigs.slots[gig])?.slots[span])?;
         Ok(())
     }
 
     /// Record `record`'s page, which has no record, in the chunk
     /// `try_reserve_page` made sure of. Returns false if there is none.
     fn insert(&mut self, record: LeafRecord) -> bool {
-        let Ok(at) = self.chunk(LeafChunk::base_of(record.page)) else {
+        let Some(chunk) = self.chunk_mut(record.page) else {
             return false;
         };
-        let chunk = &mut self.chunks[at];
         let (word, bit) = LeafChunk::bit(record.page);
         chunk.recorded[word] |= bit;
         if let LeafMapping::Owned = record.mapping {
             chunk.owned[word] |= bit;
         }
-        chunk.count += 1;
         true
     }
 
-    /// Drop `page`'s record, returning it, and its span's chunk with its last
-    /// record.
+    /// Drop `page`'s record, returning it. Its chunk stays.
     fn remove(&mut self, page: u64) -> Option<LeafRecord> {
         let record = self.search(page)?;
-        let at = self.chunk(LeafChunk::base_of(page)).ok()?;
-        let chunk = &mut self.chunks[at];
+        let chunk = self.chunk_mut(page)?;
         let (word, bit) = LeafChunk::bit(page);
         chunk.recorded[word] &= !bit;
         chunk.owned[word] &= !bit;
-        chunk.count -= 1;
-        if chunk.count == 0 {
-            self.chunks.remove(at);
-        }
         Some(record)
     }
 
-    /// Free a chunk `try_reserve_page` made for `page` that holds no record.
-    fn drop_if_empty(&mut self, page: u64) {
-        if let Ok(at) = self.chunk(LeafChunk::base_of(page)) {
-            if self.chunks[at].count == 0 {
-                self.chunks.remove(at);
-            }
-        }
+    fn clear(&mut self) {
+        self.root = None;
     }
 
-    fn clear(&mut self) {
-        self.chunks.clear();
+    /// Free the tree an allocation at a time, each charged to `budget`. True
+    /// once it is all freed.
+    fn clear_bounded(&mut self, budget: &mut u32) -> bool {
+        while *budget > 0 {
+            let Some(root) = self.root.as_deref_mut() else {
+                return true;
+            };
+            if !root.drain_one() {
+                self.root = None;
+            }
+            *budget -= 1;
+        }
+        self.root.is_none()
     }
 }
 
@@ -1787,10 +1849,7 @@ impl ProcessPageTable {
                 let mapping = match acquire_leaf_mapping(frame) {
                     Ok(LeafMappingClass::Owned) => LeafMapping::Owned,
                     Ok(LeafMappingClass::External) => LeafMapping::External,
-                    Err(error) => {
-                        self.leaves.drop_if_empty(page_addr);
-                        return Err(error);
-                    }
+                    Err(error) => return Err(error),
                 };
                 let recorded = self.leaves.insert(LeafRecord {
                     page: page_addr,
@@ -2103,8 +2162,7 @@ impl ProcessPageTable {
                 scans = 0;
             }
         }
-        if self.leaves.release_cursor == END {
-            self.leaves.clear();
+        if self.leaves.release_cursor == END && self.leaves.clear_bounded(budget) {
             self.leaves.released = true;
             RetireProgress::Complete
         } else {
