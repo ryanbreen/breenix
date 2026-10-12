@@ -1,0 +1,238 @@
+//! The aarch64 UART owner (`kernel/src/uart_owner.rs`) under a stalled owner.
+//!
+//! Threads stand in for CPUs and a vector for the UART. A thread "stalls" by
+//! sleeping inside the UART-ready wait, which is after its byte's ownership
+//! check and before the byte, as a descheduled vCPU would. Time is scaled so
+//! a waiter skips an owner after 10 ms rather than 100 ms.
+
+// uart_owner uses only the scanner's `contains`.
+#[allow(dead_code)]
+#[path = "../kernel/src/stage_lines.rs"]
+mod stage_lines;
+#[path = "../kernel/src/uart_owner.rs"]
+mod uart_owner;
+
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
+use uart_owner::{Kind, Ownership, Port, State};
+
+const STAGE: &str = "Kernel initialization complete";
+const UDP: &str = "UDP: Delivered packet to socket on port 54321";
+/// Sorted by last byte, as `stage_lines` scans them.
+static MARKERS: [&str; 2] = [UDP, STAGE];
+
+static STATE: State = State::new();
+static WIRE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+static OPEN: AtomicU8 = AtomicU8::new(0);
+static NEXT_CPU: AtomicU32 = AtomicU32::new(1);
+
+thread_local! {
+    static CPU: u32 = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
+    /// Bytes this thread has been cleared to write.
+    static READIED: Cell<usize> = const { Cell::new(0) };
+    /// Stall before this thread's byte with this number (1-based).
+    static STALL_AT: Cell<usize> = const { Cell::new(0) };
+    static STALL: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    /// How long the UART takes to accept each of this thread's bytes.
+    static PER_BYTE: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    static STALLED: Cell<Option<&'static AtomicBool>> = const { Cell::new(None) };
+}
+
+enum Test {}
+
+impl Port for Test {
+    type Writer = u8;
+
+    fn state() -> &'static State {
+        &STATE
+    }
+
+    fn cpu_tag() -> u32 {
+        CPU.with(|cpu| *cpu)
+    }
+
+    fn counter() -> u64 {
+        static START: OnceLock<Instant> = OnceLock::new();
+        START.get_or_init(Instant::now).elapsed().as_nanos() as u64
+    }
+
+    fn ticks(ns: u64) -> u64 {
+        ns / 10
+    }
+
+    fn mask_interrupts() -> u64 {
+        0
+    }
+
+    fn restore_interrupts(_: u64) {}
+
+    fn ready() -> bool {
+        let n = READIED.with(|n| {
+            n.set(n.get() + 1);
+            n.get()
+        });
+        if n == STALL_AT.with(Cell::get) {
+            if let Some(flag) = STALLED.with(Cell::get) {
+                flag.store(true, Ordering::Release);
+            }
+            thread::sleep(STALL.with(Cell::get));
+        } else {
+            thread::sleep(PER_BYTE.with(Cell::get));
+        }
+        true
+    }
+
+    fn write(byte: u8, _: &Ownership<Self>) {
+        WIRE.lock().unwrap().push(byte);
+    }
+
+    fn capture(_: u8) {}
+
+    fn lead(writer: u8, unit: &[u8]) -> &'static [u8] {
+        let open = OPEN.load(Ordering::Relaxed);
+        let ends_line = matches!(unit, [] | [b'\n', ..] | [b'\r', b'\n', ..]);
+        if open == 0 || open == writer || ends_line {
+            b""
+        } else {
+            b"\r\n"
+        }
+    }
+
+    fn line_open() -> bool {
+        OPEN.load(Ordering::Relaxed) != 0
+    }
+
+    fn wrote(writer: u8, byte: u8) {
+        OPEN.store(if byte == b'\n' { 0 } else { writer }, Ordering::Relaxed);
+    }
+
+    fn markers() -> &'static [&'static str] {
+        &MARKERS
+    }
+}
+
+/// The wire is global: one test at a time.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn record(writer: u8, bytes: &[u8], kind: Kind) {
+    uart_owner::write::<Test, false>(writer, bytes, kind, &mut Ownership::acquire());
+}
+
+/// CPU 1 writes `first`, stalling for 60 ms before its byte number `stall_at`.
+/// Once it has stalled, CPU 2 writes `second`, 2 ms a byte, so CPU 2 skips
+/// CPU 1 and is part way through `second` when CPU 1 wakes. Returns the wire's lines.
+fn race(first: (&'static [u8], Kind), stall_at: usize, second: (&'static [u8], Kind)) -> Vec<String> {
+    WIRE.lock().unwrap().clear();
+    OPEN.store(0, Ordering::Relaxed);
+    let stalled: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    let one = thread::spawn(move || {
+        STALL_AT.with(|at| at.set(stall_at));
+        STALL.with(|stall| stall.set(Duration::from_millis(60)));
+        STALLED.with(|flag| flag.set(Some(stalled)));
+        record(1, first.0, first.1);
+    });
+    while !stalled.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    let two = thread::spawn(move || {
+        PER_BYTE.with(|per| per.set(Duration::from_millis(2)));
+        record(2, second.0, second.1);
+    });
+    one.join().unwrap();
+    two.join().unwrap();
+    let wire = WIRE.lock().unwrap().clone();
+    String::from_utf8(wire)
+        .unwrap()
+        .split('\n')
+        .map(|line| line.trim_end_matches('\r').to_string())
+        .collect()
+}
+
+fn stage_line() -> &'static [u8] {
+    Box::leak(format!("[ INFO] kernel: {STAGE}\n").into_bytes().into_boxed_slice())
+}
+
+#[test]
+fn a_stale_byte_from_a_skipped_owner_does_not_leave_a_stage_line_broken() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let line = format!("[ INFO] kernel: {STAGE}");
+    let lines = race(
+        (b"aaaaaaaaaaaaaaaaaaaa\n", Kind::Plain),
+        5,
+        (stage_line(), Kind::Plain),
+    );
+    // CPU 1's fifth byte, checked before CPU 2 skipped it, landed inside CPU 2's line.
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("[ INFO] kernel:") && l.contains('a') && *l != line),
+        "the stalled CPU's byte never landed inside the stage line: {lines:?}"
+    );
+    assert!(lines.contains(&line), "no whole stage line: {lines:?}");
+}
+
+#[test]
+fn a_stage_line_that_loses_its_ownership_is_written_again_whole() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let line = format!("[ INFO] kernel: {STAGE}");
+    let lines = race(
+        (stage_line(), Kind::Plain),
+        12,
+        (b"bbbbbbbbbbbbbbbbbbbb\n", Kind::Plain),
+    );
+    assert!(lines.contains(&line), "no whole stage line: {lines:?}");
+}
+
+#[test]
+fn a_notice_stays_one_whole_line_when_its_owner_stalls_before_the_newline() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let notice: &'static [u8] = Box::leak(format!("{UDP}\n").into_bytes().into_boxed_slice());
+    // Stall before the newline, the notice's last byte, while CPU 2 writes an
+    // unterminated record.
+    let lines = race((notice, Kind::Line), notice.len(), (b"bbbbbbbbbb", Kind::Plain));
+    assert!(
+        lines.iter().any(|l| l == UDP),
+        "the notice is not a whole line of its own: {lines:?}"
+    );
+}
+
+#[test]
+fn a_notice_starts_its_own_line_after_the_same_writers_open_line() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    WIRE.lock().unwrap().clear();
+    OPEN.store(0, Ordering::Relaxed);
+    record(1, b"prompt> ", Kind::Plain);
+    record(1, format!("{UDP}\n").as_bytes(), Kind::Line);
+    let wire = String::from_utf8(WIRE.lock().unwrap().clone()).unwrap();
+    assert_eq!(wire, format!("prompt> \r\n{UDP}\n"));
+}
+
+#[test]
+fn an_ordinary_record_is_written_once_when_nothing_else_writes() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    WIRE.lock().unwrap().clear();
+    OPEN.store(0, Ordering::Relaxed);
+    record(1, stage_line(), Kind::Plain);
+    let wire = String::from_utf8(WIRE.lock().unwrap().clone()).unwrap();
+    assert_eq!(wire, format!("[ INFO] kernel: {STAGE}\n"));
+}
+
+#[test]
+fn a_breadcrumb_does_not_wait_for_another_cpus_record() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (owned_tx, owned_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = thread::spawn(move || {
+        let _ownership = Ownership::<Test>::acquire();
+        owned_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    });
+    owned_rx.recv().unwrap();
+    assert!(Ownership::<Test>::try_acquire().is_none());
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    assert!(Ownership::<Test>::try_acquire().is_some());
+}
