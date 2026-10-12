@@ -9,6 +9,8 @@ use uart_16550::SerialPort;
 
 pub use crate::serial_writer::Writer;
 
+use crate::log_ring::LogRing;
+
 pub mod command;
 
 const COM1_PORT: u16 = 0x3F8;
@@ -41,44 +43,9 @@ static SERIAL2_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::Atomic
 /// (`_log_print`) waits for the UART between bursts.
 const LOG_RING_BYTES: usize = 64 * 1024;
 
-struct LogRing {
-    bytes: [u8; LOG_RING_BYTES],
-    head: usize,
-    len: usize,
-    dropped: u64,
-    /// Bytes ever appended; compared with `LOG_SENT`.
-    pushed: u64,
-}
-
-impl LogRing {
-    fn push(&mut self, byte: u8) -> bool {
-        if self.len == LOG_RING_BYTES {
-            return false;
-        }
-        self.bytes[(self.head + self.len) % LOG_RING_BYTES] = byte;
-        self.len += 1;
-        self.pushed += 1;
-        true
-    }
-
-    fn pop(&mut self, out: &mut [u8]) -> usize {
-        let n = out.len().min(self.len);
-        for slot in &mut out[..n] {
-            *slot = self.bytes[self.head];
-            self.head = (self.head + 1) % LOG_RING_BYTES;
-        }
-        self.len -= n;
-        n
-    }
-}
-
-static LOG_RING: Mutex<LogRing> = Mutex::new(LogRing {
-    bytes: [0; LOG_RING_BYTES],
-    head: 0,
-    len: 0,
-    dropped: 0,
-    pushed: 0,
-});
+/// Which lines the ring takes and which it drops: `log_ring`. A line a
+/// boot-path stage depends on is never dropped.
+static LOG_RING: Mutex<LogRing<LOG_RING_BYTES>> = Mutex::new(LogRing::new());
 
 /// Held by the one context taking a burst from the ring and writing it to
 /// COM2, so bursts reach the UART in the order they left the ring. It is held
@@ -95,26 +62,6 @@ static LOG_SENT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::
 /// ring, so every caller waits on the UART for its own line, as the boot
 /// CPU's early, interrupts-masked initialisation does.
 static LOG_IDLE_DRAIN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
-/// Appends one formatted line to the log ring, which its caller holds. What
-/// does not fit is dropped and counted: nothing waits on the UART while the
-/// ring lock is held.
-struct RingWriter<'a>(&'a mut LogRing);
-
-impl fmt::Write for RingWriter<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        for byte in s.bytes() {
-            // uart_16550::send translates backspace and DEL to BS SPACE BS.
-            let wire: &[u8] = if byte == 0x08 || byte == 0x7f { &[0x08, b' ', 0x08] } else { core::slice::from_ref(&byte) };
-            for &b in wire {
-                if !self.0.push(b) {
-                    self.0.dropped += 1;
-                }
-            }
-        }
-        Ok(())
-    }
-}
 
 fn log_burst() -> usize {
     if SERIAL2_FIFO.load(core::sync::atomic::Ordering::Relaxed) { 16 } else { 1 }
@@ -157,7 +104,7 @@ fn write_burst() -> Burst {
             return Burst::Busy;
         }
         let burst = if log_uart_status() & 0x20 == 0 {
-            if LOG_RING.lock().len == 0 { Burst::Empty } else { Burst::Busy }
+            if LOG_RING.lock().len() == 0 { Burst::Empty } else { Burst::Busy }
         } else {
             let mut chunk = [0u8; 16];
             let n = LOG_RING.lock().pop(&mut chunk[..log_burst()]);
@@ -611,7 +558,7 @@ pub fn _log_print(args: fmt::Arguments) {
         // Make room first, so a backlog does not drop this line.
         let backlog = crate::arch_without_interrupts(|| {
             let ring = LOG_RING.lock();
-            (ring.len > LOG_RING_BYTES / 2).then_some(ring.pushed)
+            (ring.len() > LOG_RING_BYTES / 2).then_some(ring.pushed())
         });
         if let Some(target) = backlog {
             drain_until(target);
@@ -625,36 +572,40 @@ pub fn _log_print(args: fmt::Arguments) {
     }
 }
 
-/// Append a COM2 record without waiting for the UART, dropping the whole
-/// record when it does not fit. The caller arranges delivery via the drainers.
-/// Interrupts are masked while formatting into the existing fixed ring.
+/// Append a COM2 line without waiting for the UART: an ordinary line that
+/// does not fit is dropped whole, and the caller arranges delivery via the
+/// drainers. Interrupts are masked while formatting into the fixed ring.
+///
+/// A line a boot-path stage depends on is never dropped (`log_ring`): when
+/// even the ring's reserve cannot take it, this writes the ring out until it
+/// can, waiting on the UART with interrupts as the caller has them. The
+/// reserve makes that a last resort.
 pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
-    use core::fmt::Write;
-    crate::arch_without_interrupts(|| {
-        let mut ring = LOG_RING.lock();
-        if ring.dropped != 0 {
-            let dropped = core::mem::take(&mut ring.dropped);
-            let _ = write!(RingWriter(&mut ring), "[log: {} bytes dropped]\n", dropped);
+    loop {
+        let appended =
+            crate::arch_without_interrupts(|| LOG_RING.lock().append(args, crate::STAGE_MARKERS));
+        match appended {
+            Ok(end) => return end,
+            Err(needed) => make_room(needed),
         }
-        let start_len = ring.len;
-        let start_pushed = ring.pushed;
-        let start_dropped = ring.dropped;
-        let _ = RingWriter(&mut ring).write_fmt(args);
-        if ring.dropped != start_dropped {
-            // Roll back the prefix too: a census consumer needs a whole record.
-            ring.dropped += ring.pushed - start_pushed;
-            ring.len = start_len;
-            ring.pushed = start_pushed;
+    }
+}
+
+/// Write the ring out until it has `needed` free bytes.
+fn make_room(needed: usize) {
+    while crate::arch_without_interrupts(|| LOG_RING_BYTES - LOG_RING.lock().len() < needed) {
+        match write_burst() {
+            Burst::Empty | Burst::Wrote => {}
+            Burst::Busy => core::hint::spin_loop(),
         }
-        ring.pushed
-    })
+    }
 }
 
 /// Try one FIFO burst without polling UART readiness, then report whether
 /// bytes remain. Thread-context housekeeping sleeps between calls.
 pub(crate) fn drain_log_once() -> bool {
     let _ = write_burst();
-    crate::arch_without_interrupts(|| LOG_RING.lock().len != 0)
+    crate::arch_without_interrupts(|| LOG_RING.lock().len() != 0)
 }
 
 /// Macros for writing to the log serial port (COM2).
