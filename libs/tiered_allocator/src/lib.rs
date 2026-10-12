@@ -29,6 +29,7 @@ use alloc::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
+/// Free-list heap API for clients that manage their own backing memory.
 pub mod heap;
 mod hole;
 
@@ -64,6 +65,9 @@ static mut SLAB_DEALLOCATE: Option<unsafe fn(*mut u8, usize, usize)> = None;
 ///
 /// # Safety
 /// Call before concurrent allocations begin. Callbacks must accept the same layouts.
+/// The allocation callback must never return memory in the bootstrap heap range
+/// `[HEAP_START, HEAP_START + HEAP_SIZE)`: deallocation uses that range to select
+/// the bootstrap heap rather than the slab callback.
 pub unsafe fn init(
     allocate: fn(usize, usize) -> *mut u8,
     deallocate: unsafe fn(*mut u8, usize, usize),

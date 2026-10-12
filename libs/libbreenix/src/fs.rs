@@ -219,7 +219,6 @@ impl Stat {
 ///
 /// ```rust,no_run
 /// use libbreenix::fs::*;
-/// use libbreenix::io::close;
 /// # fn main() -> Result<(), libbreenix::error::Error> {
 /// let fd = open("/hello.txt\0", O_RDONLY)?;
 /// # Ok(())
@@ -276,7 +275,6 @@ pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Error> {
 ///
 /// ```rust,no_run
 /// use libbreenix::fs::*;
-/// use libbreenix::io::close;
 /// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Check if file exists
 /// access("/hello.txt\0", F_OK)?;
@@ -570,7 +568,6 @@ pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
 ///
 /// ```rust,no_run
 /// use libbreenix::fs::*;
-/// use libbreenix::io::close;
 /// # fn main() -> Result<(), libbreenix::error::Error> {
 /// unlink("/tmp/myfile.txt\0")?;
 /// # Ok(())
@@ -658,7 +655,6 @@ impl<'a> Iterator for DirentIter<'a> {
 ///
 /// ```rust,no_run
 /// use libbreenix::fs::*;
-/// use libbreenix::io::close;
 /// # fn main() -> Result<(), libbreenix::error::Error> {
 /// mkdir("/tmp/newdir\0", 0o755)?;
 /// # Ok(())
@@ -699,7 +695,6 @@ pub fn mkdir(path: &str, mode: u32) -> Result<(), Error> {
 ///
 /// ```rust,no_run
 /// use libbreenix::fs::*;
-/// use libbreenix::io::close;
 /// # fn main() -> Result<(), libbreenix::error::Error> {
 /// rmdir("/tmp/olddir\0")?;
 /// # Ok(())
@@ -743,7 +738,6 @@ pub fn rmdir(path: &str) -> Result<(), Error> {
 ///
 /// ```rust,no_run
 /// use libbreenix::fs::*;
-/// use libbreenix::io::close;
 /// # fn main() -> Result<(), libbreenix::error::Error> {
 /// rename("/tmp/oldname.txt\0", "/tmp/newname.txt\0")?;
 /// # Ok(())
@@ -789,7 +783,6 @@ pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Error> {
 ///
 /// ```rust,no_run
 /// use libbreenix::fs::*;
-/// use libbreenix::io::close;
 /// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Create a hard link to an existing file
 /// link("/original.txt\0", "/link_to_original.txt\0")?;
@@ -836,7 +829,6 @@ pub fn link(oldpath: &str, newpath: &str) -> Result<(), Error> {
 ///
 /// ```rust,no_run
 /// use libbreenix::fs::*;
-/// use libbreenix::io::close;
 /// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Create a symlink to an existing file
 /// symlink("/etc/passwd\0", "/tmp/passwd_link\0")?;
@@ -887,7 +879,6 @@ pub fn symlink(target: &str, linkpath: &str) -> Result<(), Error> {
 ///
 /// ```rust,no_run
 /// use libbreenix::fs::*;
-/// use libbreenix::io::close;
 /// # fn main() -> Result<(), libbreenix::error::Error> {
 /// let mut buf = [0u8; 256];
 /// let len = readlink("/tmp/mylink\0", &mut buf)?;
@@ -930,7 +921,6 @@ pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Error> {
 ///
 /// ```rust,no_run
 /// use libbreenix::fs::*;
-/// use libbreenix::io::close;
 /// # fn main() -> Result<(), libbreenix::error::Error> {
 /// // Create a FIFO at /tmp/myfifo
 /// mkfifo("/tmp/myfifo\0", 0o644)?;

@@ -517,7 +517,6 @@ s_no_extra_traits! {
     }
 }
 
-// include/sys/mman.h
 // Standard file descriptor constants (POSIX unistd.h)
 pub const STDIN_FILENO: c_int = 0;
 pub const STDOUT_FILENO: c_int = 1;
@@ -527,6 +526,7 @@ pub const STDERR_FILENO: c_int = 2;
 pub const SOCK_STREAM: c_int = 1;
 pub const SOCK_DGRAM: c_int = 2;
 
+// include/sys/mman.h
 /*
  * Huge page size encoding when MAP_HUGETLB is specified, and a huge page
  * size other than the default is desired.  See hugetlb_encode.h.

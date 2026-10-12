@@ -45,7 +45,16 @@ use crate::theme::Theme;
 /// };
 /// let theme = Theme::dark();
 /// bar.draw(&mut fb, &theme);
-/// assert!(pixels.iter().any(|&byte| byte != 0));
+/// // At offset 80, the 96px thumb starts at y=32; check its interior and
+/// // the track above and below it so a misplaced thumb fails the example.
+/// let pixel = |y: usize| {
+///     let start = (y * win_w as usize + (win_w - 6) as usize) * 4;
+///     &pixels[start..start + 3]
+/// };
+/// assert_eq!(pixel(20), &[40, 42, 48]);
+/// assert_eq!(pixel(40), &[80, 85, 100]);
+/// assert_eq!(pixel(120), &[80, 85, 100]);
+/// assert_eq!(pixel(140), &[40, 42, 48]);
 /// ```
 pub struct ScrollBar {
     /// Position and size of the scroll bar track.
