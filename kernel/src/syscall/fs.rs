@@ -1399,9 +1399,11 @@ pub(crate) fn touch_fifo(
     entry: &alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>,
     read: bool,
 ) {
-    if let Some(handle) = &entry.lock().handle {
-        handle.object.touch(read);
-    }
+    crate::arch_without_interrupts(|| {
+        if let Some(handle) = &entry.lock().handle {
+            handle.object.touch(read);
+        }
+    });
 }
 
 /// Helper to create device ID from major/minor numbers
@@ -4203,13 +4205,17 @@ pub fn sys_linkat(
 ) -> SyscallResult {
     if flags == 0x1000 {
         let old = match super::userptr::copy_cstr_from_user(oldpath) {
-            Ok(s) => s, Err(e) => return SyscallResult::Err(e),
+            Ok(s) => s,
+            Err(e) => return SyscallResult::Err(e),
         };
         if old.is_empty() {
             let new = match resolve_user_create_at(newdirfd, newpath) {
-                Ok(r) => r, Err(e) => return e,
+                Ok(r) => r,
+                Err(e) => return e,
             };
-            if let Some(result) = crate::ipc::shmem::link_fd(olddirfd, &new.path) { return result; }
+            if let Some(result) = crate::ipc::shmem::link_fd(olddirfd, &new.path) {
+                return result;
+            }
         }
     }
     sys_link_from(olddirfd, oldpath, newdirfd, newpath)

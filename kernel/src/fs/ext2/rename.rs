@@ -453,7 +453,7 @@ impl Ext2Fs {
     }
 
     /// Perform one planned write, or with `undo` restore what it replaced.
-    fn apply(&self, write: &Write, undo: bool) -> Result<(), ()> {
+    fn apply(&mut self, write: &Write, undo: bool) -> Result<(), ()> {
         match write {
             Write::Block { block, old, new } => write_ext2_block(
                 self.device.as_ref(),
@@ -462,14 +462,12 @@ impl Ext2Fs {
                 if undo { old } else { new },
             )
             .map_err(|_| ()),
-            Write::Inode { ino, old, new } => (if undo { old } else { new })
-                .write_to(
-                    self.device.as_ref(),
-                    *ino,
-                    &self.superblock,
-                    &self.block_groups,
-                )
-                .map_err(|_| ()),
+            Write::Inode { ino, old, new } => if undo {
+                self.write_inode_disk(*ino, old)
+            } else {
+                self.write_inode(*ino, new)
+            }
+            .map_err(|_| ()),
         }
     }
 }

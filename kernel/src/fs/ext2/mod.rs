@@ -7,6 +7,7 @@ pub mod block_group;
 pub mod create_node;
 pub mod dir;
 mod directory_io;
+mod fifo_times;
 pub mod file;
 pub mod inode;
 mod inode_index;
@@ -422,7 +423,8 @@ impl Ext2Fs {
         };
         let atime = object.atime_pending.swap(0, Ordering::AcqRel);
         let mtime = object.mtime_pending.swap(0, Ordering::AcqRel);
-        if atime == 0 && mtime == 0 {
+        let ctime = object.ctime_pending.swap(0, Ordering::AcqRel);
+        if atime == 0 && mtime == 0 && ctime == 0 {
             return Ok(());
         }
         let result = (|| {
@@ -433,18 +435,28 @@ impl Ext2Fs {
                 &self.block_groups,
             )
             .map_err(|_| "Failed to read inode")?;
-            if atime != 0 {
-                inode.i_atime = atime as u32;
-            }
-            if mtime != 0 {
-                inode.i_mtime = mtime as u32;
-                inode.i_ctime = mtime as u32;
-            }
+            fifo_times::apply(&mut inode, atime, mtime, ctime);
             self.write_inode_disk(inode_num, &inode)
         })();
         if result.is_err() {
-            object.atime_pending.fetch_max(atime, Ordering::Release);
-            object.mtime_pending.fetch_max(mtime, Ordering::Release);
+            let _ = object.atime_pending.compare_exchange(
+                0,
+                atime,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            let _ = object.mtime_pending.compare_exchange(
+                0,
+                mtime,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            let _ = object.ctime_pending.compare_exchange(
+                0,
+                ctime,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
         }
         result
     }
@@ -872,8 +884,12 @@ impl Ext2Fs {
     pub fn write_inode(&mut self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
         if let Some(object) = self.live_inodes.get(inode_num) {
             object.map.note_disk_write(self.durable_epoch());
+            fifo_times::write_metadata(&object.ctime_pending, || {
+                self.write_inode_disk(inode_num, inode)
+            })
+        } else {
+            self.write_inode_disk(inode_num, inode)
         }
-        self.write_inode_disk(inode_num, inode)
     }
 
     fn write_inode_disk(&self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
@@ -1204,12 +1220,14 @@ impl Ext2Fs {
             )
             .map_err(|_| "Failed to write parent inode")?;
 
-        let links = decrement_inode_links(
-            self.device.as_ref(),
-            target_inode_num,
-            &self.superblock,
-            &mut self.block_groups,
-        )?;
+        let links = fifo_times::write_metadata(&handle.object.ctime_pending, || {
+            decrement_inode_links(
+                self.device.as_ref(),
+                target_inode_num,
+                &self.superblock,
+                &mut self.block_groups,
+            )
+        })?;
         if links == 0 {
             handle.object.orphan.store(true, Ordering::Release);
             // The last observer queues reclamation; writers settle pending
@@ -1697,12 +1715,20 @@ impl Ext2Fs {
             .map_err(|_| "Failed to write parent inode")?;
 
         // Increment the source inode's link count
-        increment_inode_links(
-            self.device.as_ref(),
-            source_inode_num,
-            &self.superblock,
-            &self.block_groups,
-        )?;
+        let source_object = self.live_inodes.get(source_inode_num);
+        let increment = || {
+            increment_inode_links(
+                self.device.as_ref(),
+                source_inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+        };
+        if let Some(object) = source_object {
+            fifo_times::write_metadata(&object.ctime_pending, increment)?;
+        } else {
+            increment()?;
+        }
 
         log::debug!(
             "ext2: created hard link {} (inode {})",

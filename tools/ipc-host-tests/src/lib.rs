@@ -5,6 +5,7 @@ extern crate alloc;
 pub mod irq_safe_mutex {
     pub type IrqSafeMutex<T> = spin::Mutex<T>;
 }
+pub use ext2::Ext2Inode;
 pub use syscall::SyscallResult;
 include!(concat!(env!("OUT_DIR"), "/ipc_numbers.rs"));
 #[path = "../../ext2-host-tests/src/block.rs"]
@@ -630,3 +631,6 @@ mod allocation;
 
 #[path = "../../../kernel/src/fs/ext2/namespace_alloc.rs"]
 mod namespace_alloc;
+
+#[path = "../../../kernel/src/fs/ext2/fifo_times.rs"]
+mod fifo_times;

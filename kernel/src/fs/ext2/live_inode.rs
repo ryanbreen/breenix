@@ -53,6 +53,7 @@ pub struct LiveInode {
     pub size_epoch: AtomicU64,
     pub atime_pending: AtomicU64,
     pub mtime_pending: AtomicU64,
+    pub ctime_pending: AtomicU64,
     /// Cached pages and reverse map for file mappings.
     pub map: crate::memory::file_map::MapState,
     external_handles: AtomicUsize,
@@ -62,28 +63,27 @@ pub struct LiveInode {
 
 impl LiveInode {
     pub fn touch(&self, read: bool) {
-        let now = crate::time::current_unix_time().max(1) as u64;
+        let now = super::fifo_times::encode(crate::time::current_unix_time_coarse() as u32);
         if read {
             self.atime_pending.store(now, Ordering::Release);
         } else {
             self.mtime_pending.store(now, Ordering::Release);
+            self.ctime_pending.store(now, Ordering::Release);
         }
         super::writeback::request();
     }
     fn times_pending(&self) -> bool {
         self.atime_pending.load(Ordering::Acquire) != 0
             || self.mtime_pending.load(Ordering::Acquire) != 0
+            || self.ctime_pending.load(Ordering::Acquire) != 0
     }
     pub(super) fn overlay_times(&self, inode: &mut super::Ext2Inode) {
-        let atime = self.atime_pending.load(Ordering::Acquire);
-        let mtime = self.mtime_pending.load(Ordering::Acquire);
-        if atime != 0 {
-            inode.i_atime = atime as u32;
-        }
-        if mtime != 0 {
-            inode.i_mtime = mtime as u32;
-            inode.i_ctime = mtime as u32;
-        }
+        super::fifo_times::apply(
+            inode,
+            self.atime_pending.load(Ordering::Acquire),
+            self.mtime_pending.load(Ordering::Acquire),
+            self.ctime_pending.load(Ordering::Acquire),
+        );
     }
 
     pub(super) fn unused(&self) -> bool {
@@ -250,6 +250,7 @@ impl LiveInodes {
                 size_epoch: AtomicU64::new(0),
                 atime_pending: AtomicU64::new(0),
                 mtime_pending: AtomicU64::new(0),
+                ctime_pending: AtomicU64::new(0),
                 map: crate::memory::file_map::MapState::new(size, self.durable_epoch()),
                 external_handles: AtomicUsize::new(0),
                 pending: AtomicBool::new(false),
