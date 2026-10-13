@@ -42,7 +42,7 @@ const MAX_RX_QUEUE_SIZE: usize = 32;
 /// sendmsg, recvmsg, local_name); `boot_tests`' `udp_socket_lock_oracle`
 /// calls it directly, so removing the mask here mutates the exact code those
 /// production callers run, not a test-only stand-in for it.
-pub fn with_locked_masked<F, R>(socket: &Arc<Mutex<UdpSocket>>, f: F) -> R
+pub fn with_locked_masked<F, R>(udp: &UdpSock, f: F) -> R
 where
     F: FnOnce(&mut UdpSocket) -> R,
 {
@@ -52,7 +52,34 @@ where
     type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
     use crate::arch_impl::traits::CpuOps;
 
-    Cpu::without_interrupts(|| f(&mut socket.lock()))
+    Cpu::without_interrupts(|| f(&mut udp.inner.lock()))
+}
+
+/// Boot-oracle accessor: how many datagrams with exactly `payload` wait in
+/// the receive queue, counted under the same masked hold.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn queued_matching(udp: &UdpSock, payload: &[u8]) -> u64 {
+    with_locked_masked(udp, |socket| {
+        socket
+            .rx_queue
+            .lock()
+            .iter()
+            .filter(|packet| packet.data.as_slice() == payload)
+            .count() as u64
+    })
+}
+
+/// Boot-oracle accessor: empty the receive queue under the masked hold.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn clear_queue(udp: &UdpSock) {
+    with_locked_masked(udp, |socket| socket.rx_queue.lock().clear());
+}
+
+/// Boot-oracle accessor: run `f` holding the UDP port registry's lock through
+/// its production masked primitive (#908).
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn with_ports_masked<R>(f: impl FnOnce() -> R) -> R {
+    SOCKET_REGISTRY.with_udp_ports_masked(|_ports| f())
 }
 
 /// A received UDP packet
@@ -267,7 +294,7 @@ impl ProtoOps for UdpSock {
             return Err(errno::EAFNOSUPPORT);
         };
         let pid = super::object::caller_pid();
-        crate::socket::udp::with_locked_masked(&self.inner, |socket| socket.bind(pid, addr, port))
+        crate::socket::udp::with_locked_masked(self, |socket| socket.bind(pid, addr, port))
             .map(|_| ())
     }
 
@@ -284,9 +311,8 @@ impl ProtoOps for UdpSock {
         if msg.data.len() > UDP_MAX_PAYLOAD {
             return Err(errno::EMSGSIZE);
         }
-        let src_port = crate::socket::udp::with_locked_masked(&self.inner, |socket| {
-            socket.local_port().unwrap_or(0)
-        });
+        let src_port =
+            crate::socket::udp::with_locked_masked(self, |socket| socket.local_port().unwrap_or(0));
         let udp_packet = crate::net::udp::build_udp_packet(src_port, dst_port, msg.data);
         let result = crate::net::send_ipv4(dst_addr, crate::net::ipv4::PROTOCOL_UDP, &udp_packet);
         // Loopback delivery runs here, with no socket lock held.
@@ -298,7 +324,7 @@ impl ProtoOps for UdpSock {
 
     fn recvmsg(&self, sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32> {
         let packet = super::wait::wait_until(sk, msg.nonblock, sk.common.rcv_deadline(), || {
-            crate::socket::udp::with_locked_masked(&self.inner, |socket| socket.recv_from()).map(Ok)
+            crate::socket::udp::with_locked_masked(self, |socket| socket.recv_from()).map(Ok)
         })?;
         let copied = packet.data.len().min(msg.cap);
         msg.data = packet.data;
@@ -315,7 +341,7 @@ impl ProtoOps for UdpSock {
     }
 
     fn local_name(&self, _sk: &Socket) -> SockAddr {
-        crate::socket::udp::with_locked_masked(&self.inner, |socket| SockAddr::Inet {
+        crate::socket::udp::with_locked_masked(self, |socket| SockAddr::Inet {
             addr: socket.local_addr.unwrap_or([0; 4]),
             port: socket.local_port.unwrap_or(0),
         })
@@ -326,8 +352,7 @@ impl ProtoOps for UdpSock {
     }
 
     fn poll(&self, _sk: &Socket) -> u16 {
-        let has_data =
-            crate::socket::udp::with_locked_masked(&self.inner, |socket| socket.has_data());
+        let has_data = crate::socket::udp::with_locked_masked(self, |socket| socket.has_data());
         let mut bits = POLLOUT;
         if has_data {
             bits |= POLLIN;
