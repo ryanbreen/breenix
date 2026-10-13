@@ -177,9 +177,10 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
         // Snapshot under PROCESS_MANAGER, then write to userspace after the
         // lock is dropped because the tid address may reference a CoW page.
         let clear_child_tid = {
-            let manager_guard = crate::process::manager();
-            if let Some(ref manager) = *manager_guard {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    process.exit_started = true;
                     if let Some(tid_addr) = process.clear_child_tid {
                         let tg_id = process.address_space_lifetime.as_ref().map_or(_pid.as_u64(), |owners| owners.id);
                         Some((tg_id, tid_addr))
@@ -2439,6 +2440,9 @@ pub fn sys_execv_with_frame(
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
         };
+        if let Err(errno) = super::exec::await_exiting_siblings(current_pid) {
+            return SyscallResult::Err(errno);
+        }
 
         // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
         // masked together, same shape as the production arm below (#721 K3/K10).
@@ -2608,6 +2612,9 @@ pub fn sys_execv_with_frame(
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
         };
+        if let Err(errno) = super::exec::await_exiting_siblings(current_pid) {
+            return SyscallResult::Err(errno);
+        }
 
         // Mask only publication, scheduler commit, CR3 install and frame patch.
         // The replacement image and arguments were built above without PM held.

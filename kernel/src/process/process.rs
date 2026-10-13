@@ -369,6 +369,12 @@ pub struct Process {
     /// Address to write 0 to and futex-wake when this thread exits (CLONE_CHILD_CLEARTID).
     pub clear_child_tid: Option<u64>,
 
+    /// Set by exit, under PROCESS_MANAGER, before the thread's
+    /// clear_child_tid word is cleared: a thread that has joined this one may
+    /// exec at once, and the exec then waits for this row to finish leaving
+    /// the address space instead of refusing (`exec_waits_for_exiting_sibling`).
+    pub exit_started: bool,
+
     /// Bottom of the user stack (lowest mapped address, grows downward via demand paging)
     pub user_stack_bottom: u64,
 
@@ -487,6 +493,7 @@ impl Process {
             lock_owner: crate::fs::locks::LockOwner::new(id.as_u64()),
             inherited_cr3: None,
             clear_child_tid: None,
+            exit_started: false,
             user_stack_bottom: 0,
             user_stack_top: 0,
             pending_old_page_tables: Vec::new(),

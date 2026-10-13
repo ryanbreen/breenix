@@ -214,6 +214,21 @@ impl ProcessManager {
         pid: ProcessId,
         old_cr3: u64,
     ) -> Option<(ProcessId, u64)> {
+        self.live_clone_vm_siblings_holding_cr3(pid, old_cr3)?
+            .map(|(candidate_pid, candidate)| {
+                (candidate_pid, candidate.main_thread.as_ref().map_or(0, |thread| thread.id))
+            })
+            .next()
+    }
+
+    /// The live `CLONE_VM` siblings of `pid` that hold its address-space
+    /// root `old_cr3`, which its exec would retire; `None` when exec retires
+    /// no root another row shares.
+    fn live_clone_vm_siblings_holding_cr3(
+        &self,
+        pid: ProcessId,
+        old_cr3: u64,
+    ) -> Option<impl Iterator<Item = (ProcessId, &Process)> + '_> {
         let caller = self.processes.live_row(&pid)?;
         // A non-thread CLONE_VM child borrows its parent's root. Exec gives
         // it a new root without retiring the parent's table (vfork/spawn).
@@ -224,7 +239,7 @@ impl ProcessManager {
         if alloc::sync::Arc::strong_count(owners) == 1 {
             return None;
         }
-        self.processes.iter().find_map(|(&candidate_pid, candidate)| {
+        Some(self.processes.iter().filter_map(move |(&candidate_pid, candidate)| {
             if candidate_pid == pid || candidate.is_terminated()
                 || candidate.main_thread.as_ref().is_some_and(|thread| {
                     thread.state == crate::task::thread::ThreadState::Terminated
@@ -235,8 +250,27 @@ impl ProcessManager {
             {
                 return None;
             }
-            Some((candidate_pid, candidate.main_thread.as_ref().map_or(0, |thread| thread.id)))
-        })
+            Some((candidate_pid, candidate))
+        }))
+    }
+
+    /// Whether an exec by `pid` should wait rather than refuse: the siblings
+    /// that would make it refuse (`find_live_clone_vm_sibling_holding_cr3`)
+    /// all exist, and every one of them has begun to exit. Such a thread may
+    /// already have cleared its clear_child_tid word, so a thread that joined
+    /// it can exec straight away; it leaves the address space shortly.
+    pub(crate) fn exec_waits_for_exiting_sibling(&self, pid: ProcessId) -> bool {
+        let Some(old_cr3) = self.processes.live_row(&pid).and_then(|row| row.cr3_value()) else {
+            return false;
+        };
+        let Some(mut siblings) = self.live_clone_vm_siblings_holding_cr3(pid, old_cr3) else {
+            return false;
+        };
+        let mut any = false;
+        siblings.all(|(_, sibling)| {
+            any = true;
+            sibling.exit_started
+        }) && any
     }
 
     #[cfg(target_arch = "aarch64")]

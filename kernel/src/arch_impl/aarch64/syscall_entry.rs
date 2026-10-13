@@ -418,9 +418,10 @@ fn sys_exit_aarch64(
         // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID).
         // Extract info under PM lock, but do NOT log while holding it.
         let (pid_for_log, name_for_log, clear_child_tid) = {
-            let manager_guard = crate::process::manager();
-            if let Some(ref manager) = *manager_guard {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    process.exit_started = true;
                     let pid_val = _pid.as_u64();
                     let name_val = process.name.clone();
                     let clear_child_tid = process.clear_child_tid.map(|tid_addr| {
@@ -1428,6 +1429,9 @@ fn sys_exec_aarch64(
         Ok(image) => Some(image),
         Err(error) => return (-(crate::syscall::exec::manager_errno(error) as i64)) as u64,
     };
+    if let Err(errno) = crate::syscall::exec::await_exiting_siblings(current_pid) {
+        return (-(errno as i64)) as u64;
+    }
 
     let result = without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
