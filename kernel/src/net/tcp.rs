@@ -19,12 +19,16 @@
 
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
+use alloc::sync::Weak;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::ipv4::{Ipv4Packet, PROTOCOL_TCP};
-use crate::syscall::errno::{EAGAIN, ECONNREFUSED, ECONNRESET, EPIPE, ETIMEDOUT};
+use crate::socket::object::Socket;
+use crate::syscall::errno::{
+    EADDRINUSE, EAGAIN, ECONNREFUSED, ECONNRESET, EPIPE, ETIMEDOUT,
+};
 
 // ============================================================================
 // Deferred TX queue: packets queued during RX processing for later sending.
@@ -257,7 +261,8 @@ fn note_timer_deadline(deadline: u64) {
 /// the earliest deadline still pending, published under the table lock as the
 /// one `ktcptimerd` sleeps until so that an earlier arm finds it.
 fn run_timers() -> Option<u64> {
-    with_tcp_connections(|connections| {
+    let mut notices: Vec<Notice> = Vec::new();
+    let next = with_tcp_connections(|connections| {
         reap_expired(connections, true);
         let now = now_ms();
         let mut next: Option<u64> = None;
@@ -265,13 +270,27 @@ fn run_timers() -> Option<u64> {
             if conn.rtx_deadline_ms != 0 && now >= conn.rtx_deadline_ms {
                 conn.retransmit_timeout(now);
             }
+            // A notice that finds no room stays pending for the next pass,
+            // which comes at once.
+            if conn.notify_pending && notices.try_reserve(1).is_ok() {
+                if let Some(notice) = take_notice(conn) {
+                    notices.push(notice);
+                }
+            }
+            if conn.notify_pending && conn.owner.is_some() {
+                next = Some(now);
+            }
             if let Some(deadline) = conn.next_deadline() {
                 next = Some(next.map_or(deadline, |n: u64| n.min(deadline)));
             }
         }
         TIMER_SLEEP_UNTIL_MS.store(next.unwrap_or(u64::MAX), Ordering::Release);
         next
-    })
+    });
+    for notice in notices {
+        notice.deliver();
+    }
+    next
 }
 
 fn tcp_timer_thread() {
@@ -792,12 +811,16 @@ pub struct TcpConnection {
     pub send_shutdown: bool,
     /// True if SHUT_RD was called (no more receiving)
     pub recv_shutdown: bool,
-    /// Reference count for fork() support - connection is only closed when last fd is closed
-    pub refcount: core::sync::atomic::AtomicUsize,
     /// Threads waiting for recv data or connection state change (connect/recv blocking)
     pub waiting_threads: Mutex<Vec<u64>>,
-    /// The errno a reset left, reported once by the next operation that fails on it.
+    /// The errno a reset left. With an owner it moves to the socket's SO_ERROR
+    /// at the next notice; without one, the next operation reports it once.
     pub error: Option<i32>,
+    /// The socket this connection belongs to, told of every change that can
+    /// end a wait: data, space, a FIN, a reset, the handshake's end.
+    owner: Option<Weak<Socket>>,
+    /// A change the owner has not been told of yet.
+    notify_pending: bool,
     /// Bytes the receive buffer holds at most.
     rcv_cap: usize,
     /// Bytes the send buffer holds at most.
@@ -922,9 +945,10 @@ impl TcpConnection {
             owner_pid,
             send_shutdown: false,
             recv_shutdown: false,
-            refcount: core::sync::atomic::AtomicUsize::new(1),
             waiting_threads: Mutex::new(Vec::new()),
             error: None,
+            owner: None,
+            notify_pending: false,
             rcv_cap: DEFAULT_RCVBUF,
             snd_cap: DEFAULT_SNDBUF,
             fin_queued: false,
@@ -1365,6 +1389,8 @@ pub struct ListenSocket {
     /// Reference count - number of fds pointing to this listener (for fork support)
     /// When this reaches 0, the listener is removed from TCP_LISTENERS
     pub ref_count: core::sync::atomic::AtomicUsize,
+    /// The listening socket, told when a connection is queued for accept.
+    owner: Option<Weak<Socket>>,
 }
 
 /// Global TCP connection table
@@ -1405,6 +1431,142 @@ fn reap_expired(connections: &mut BTreeMap<ConnectionId, TcpConnection>, force: 
     connections.retain(|_, conn| !conn.expired(now));
 }
 
+/// Ports bound by sockets that neither listen nor connect yet: the number of
+/// such sockets, and whether every one of them set SO_REUSEADDR.
+static TCP_BOUND: Mutex<BTreeMap<u16, (u32, bool)>> = Mutex::new(BTreeMap::new());
+
+/// Bound sockets are thread-context only, but the guard keeps every TCP table
+/// under the same exclusion.
+fn with_tcp_bound<R>(f: impl FnOnce(&mut BTreeMap<u16, (u32, bool)>) -> R) -> R {
+    let _guard = super::net_lock_guard();
+    let mut bound = TCP_BOUND.lock();
+    let result = f(&mut bound);
+    drop(bound);
+    result
+}
+
+/// The first port an unbound socket is given: the bottom of Linux's default
+/// `ip_local_port_range`, 32768-60999.
+const EPHEMERAL_FIRST: u16 = 32768;
+const EPHEMERAL_LAST: u16 = 60999;
+static NEXT_EPHEMERAL: core::sync::atomic::AtomicU16 =
+    core::sync::atomic::AtomicU16::new(EPHEMERAL_FIRST);
+
+/// Take `port` for a socket that binds it. EADDRINUSE when a listener or a
+/// connection holds it (`tcp_port_in_use`), or another bound socket does,
+/// unless both set SO_REUSEADDR.
+pub fn tcp_bind_port(port: u16, reuse: bool) -> Result<(), i32> {
+    if tcp_port_in_use(port, reuse) {
+        return Err(EADDRINUSE);
+    }
+    with_tcp_bound(|bound| match bound.get_mut(&port) {
+        Some((count, all_reuse)) => {
+            if !(reuse && *all_reuse) {
+                return Err(EADDRINUSE);
+            }
+            *count += 1;
+            Ok(())
+        }
+        None => {
+            bound.insert(port, (1, reuse));
+            Ok(())
+        }
+    })
+}
+
+/// Give back a port `tcp_bind_port` or `tcp_bind_ephemeral` took: its socket
+/// closed, or a listener or connection now holds the port instead.
+pub fn tcp_unbind_port(port: u16) {
+    with_tcp_bound(|bound| {
+        if let Some((count, _)) = bound.get_mut(&port) {
+            *count -= 1;
+            if *count == 0 {
+                bound.remove(&port);
+            }
+        }
+    });
+}
+
+/// Bind an unbound socket to a free port from the ephemeral range, as connect
+/// and listen do for a socket that was never bound. EADDRINUSE when every port
+/// in the range is taken (Linux's EAGAIN is for connect's port search; listen
+/// reports EADDRINUSE).
+pub fn tcp_bind_ephemeral() -> Result<u16, i32> {
+    let span = (EPHEMERAL_LAST - EPHEMERAL_FIRST) as u32 + 1;
+    for _ in 0..span {
+        let candidate = NEXT_EPHEMERAL
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |port| {
+                Some(if port >= EPHEMERAL_LAST { EPHEMERAL_FIRST } else { port + 1 })
+            })
+            .unwrap_or(EPHEMERAL_FIRST);
+        if tcp_bind_port(candidate, false).is_ok() {
+            return Ok(candidate);
+        }
+    }
+    Err(EADDRINUSE)
+}
+
+/// Size a connection's buffers from SO_RCVBUF and SO_SNDBUF. Those report
+/// Linux's doubled values, of which half carries data.
+pub fn tcp_set_buffer_sizes(conn_id: &ConnectionId, rcvbuf: usize, sndbuf: usize) {
+    with_tcp_connections(|connections| {
+        if let Some(conn) = connections.get_mut(conn_id) {
+            conn.set_buffer_sizes(rcvbuf / 2, sndbuf / 2);
+        }
+    });
+}
+
+/// poll's view of a connection, as Linux's `tcp_poll` reports it: POLLHUP once
+/// both directions are shut (or the connection is closed), POLLIN and POLLRDHUP
+/// once the peer's FIN or SHUT_RD ends the input, POLLIN for queued bytes,
+/// POLLOUT when the send buffer has room or sending is shut (the call then
+/// fails at once), and POLLERR while a reset's errno is pending. None for a
+/// connection the table no longer holds.
+pub fn tcp_poll_events(conn_id: &ConnectionId) -> Option<u16> {
+    use crate::ipc::poll::events::{POLLERR, POLLHUP, POLLIN, POLLOUT, POLLRDHUP};
+    with_tcp_connections(|connections| {
+        let conn = connections.get(conn_id)?;
+        let closed = conn.state == TcpState::Closed;
+        let input_done = conn.peer_fin || conn.recv_shutdown || closed;
+        let output_done = conn.send_shutdown || closed;
+        let mut bits: i16 = 0;
+        if input_done && output_done {
+            bits |= POLLHUP;
+        }
+        if input_done {
+            bits |= POLLIN | POLLRDHUP;
+        }
+        if !matches!(conn.state, TcpState::SynSent | TcpState::SynReceived) {
+            if !conn.rx_buffer.is_empty() {
+                bits |= POLLIN;
+            }
+            // Linux's sk_stream_is_writeable: free space at least half of what
+            // is queued.
+            let space = conn.tx_space();
+            if output_done || (space > 0 && space >= conn.tx_buffer.len() / 2) {
+                bits |= POLLOUT;
+            }
+        }
+        if conn.error.is_some() {
+            bits |= POLLERR;
+        }
+        Some(bits as u16)
+    })
+}
+
+/// True when a connection has finished its handshake and has not been reset:
+/// it has a peer to name.
+pub fn tcp_has_peer(conn_id: &ConnectionId) -> bool {
+    with_tcp_connections(|connections| {
+        connections.get(conn_id).is_some_and(|conn| {
+            !matches!(
+                conn.state,
+                TcpState::SynSent | TcpState::SynReceived | TcpState::Closed | TcpState::Listen
+            )
+        })
+    })
+}
+
 /// True when a socket may not bind `port`: a listener holds it, or a connection
 /// on it is in any state but TIME_WAIT. A connection in TIME_WAIT holds the port
 /// only against a socket without SO_REUSEADDR (`reuse` false), as on Linux.
@@ -1435,20 +1597,81 @@ pub fn generate_isn() -> u32 {
     isn
 }
 
+/// What a socket must be told once the TCP tables are released: that its
+/// state changed, and the errno a reset left, which becomes its SO_ERROR.
+pub(crate) struct Notice {
+    owner: Weak<Socket>,
+    error: Option<i32>,
+}
+
+impl Notice {
+    /// Tell the socket, if it still exists. Thread or softirq context, with no
+    /// TCP lock held (the wait queue lock is never held across a protocol lock).
+    fn deliver(self) {
+        if let Some(socket) = self.owner.upgrade() {
+            if let Some(error) = self.error {
+                socket.common.set_error(error);
+            }
+            socket.common.notify();
+        }
+    }
+}
+
+/// The notice a connection owes its socket, if a change is pending.
+fn take_notice(conn: &mut TcpConnection) -> Option<Notice> {
+    if !conn.notify_pending {
+        return None;
+    }
+    let owner = conn.owner.clone()?;
+    conn.notify_pending = false;
+    Some(Notice {
+        owner,
+        error: conn.error.take(),
+    })
+}
+
 /// Process a segment for an existing connection, then drop the connection from
-/// the table if that left it closed with no owner. True if a connection matched.
-fn deliver_to_connection(conn_id: &ConnectionId, header: &TcpHeader, payload: &[u8]) -> bool {
+/// the table if that left it closed with no owner. None if no connection
+/// matched; otherwise the notice its socket is owed.
+fn deliver_to_connection(
+    conn_id: &ConnectionId,
+    header: &TcpHeader,
+    payload: &[u8],
+) -> Option<Option<Notice>> {
     with_tcp_connections(|connections| {
         reap_expired(connections, false);
-        let Some(conn) = connections.get_mut(conn_id) else {
-            return false;
-        };
+        let conn = connections.get_mut(conn_id)?;
         handle_tcp_for_connection(conn, header, payload);
+        let notice = take_notice(conn);
         if conn.expired(now_ms()) {
             connections.remove(conn_id);
         }
-        true
+        Some(notice)
     })
+}
+
+/// Tie a connection to the socket that carries it: from now on the socket's
+/// wait queue hears of its changes and its SO_ERROR of its resets. A reset that
+/// came before is handed over at once.
+pub fn tcp_set_owner(conn_id: &ConnectionId, owner: Weak<Socket>) {
+    let notice = with_tcp_connections(|connections| {
+        let conn = connections.get_mut(conn_id)?;
+        conn.owner = Some(owner);
+        conn.notify_pending = true;
+        take_notice(conn)
+    });
+    if let Some(notice) = notice {
+        notice.deliver();
+    }
+}
+
+/// Tie a listener to its socket, which hears when a connection is queued.
+pub fn tcp_set_listener_owner(port: u16, owner: Weak<Socket>) {
+    with_tcp_listeners(|listeners| {
+        if let Some(listener) = listeners.get_mut(&port) {
+            listener.owner = Some(owner);
+        }
+    });
 }
 
 /// Handle an incoming TCP packet
@@ -1467,18 +1690,26 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     };
 
     // First, check for an existing connection
-    if !take_forced_connection_lookup_miss(&conn_id)
-        && deliver_to_connection(&conn_id, &header, payload)
-    {
-        return;
+    if !take_forced_connection_lookup_miss(&conn_id) {
+        if let Some(notice) = deliver_to_connection(&conn_id, &header, payload) {
+            if let Some(notice) = notice {
+                notice.deliver();
+            }
+            return;
+        }
     }
+
+    // The listening socket to tell, when a SYN queues a connection on it.
+    let mut accept_owner: Option<Weak<Socket>> = None;
 
     // No existing connection - check for listening socket
     let (listener_found, retry_connection_lookup) = with_tcp_listeners(|listeners| {
         if let Some(listener) = listeners.get_mut(&header.dst_port) {
             if header.flags.syn && !header.flags.ack {
                 // SYN received on listening socket - add to pending queue
-                handle_syn_for_listener(listener, local_ip, ip.src_ip, &header);
+                if handle_syn_for_listener(listener, local_ip, ip.src_ip, &header) {
+                    accept_owner = listener.owner.clone();
+                }
                 (true, false)
             } else if !header.flags.syn {
                 if let Some(pending) = listener.pending.iter_mut().find(|pending| {
@@ -1543,19 +1774,24 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
         // child publication visible to this subsequent TCP_CONNECTIONS acquire.
         // One re-check is sufficient; no polling or retransmit delay is needed.
         let recovered = with_tcp_connections(|connections| {
-            if let Some(conn) = connections.get_mut(&conn_id) {
-                handle_tcp_for_connection(conn, &header, payload);
-                if conn.expired(now_ms()) {
-                    connections.remove(&conn_id);
-                }
-                true
-            } else {
-                false
+            let conn = connections.get_mut(&conn_id)?;
+            handle_tcp_for_connection(conn, &header, payload);
+            let notice = take_notice(conn);
+            if conn.expired(now_ms()) {
+                connections.remove(&conn_id);
             }
+            Some(notice)
         });
-        if recovered {
+        if let Some(notice) = recovered {
             TCP_ACCEPT_PUBLISH_RACE_RECOVERED.fetch_add(1, Ordering::Relaxed);
+            if let Some(notice) = notice {
+                notice.deliver();
+            }
         }
+    }
+
+    if let Some(socket) = accept_owner.and_then(|owner| owner.upgrade()) {
+        socket.common.notify();
     }
 
     if listener_found {
@@ -1736,13 +1972,14 @@ fn handle_tcp_for_connection(
     }
 }
 
-/// Handle SYN packet for a listening socket
+/// Handle SYN packet for a listening socket. True when it queued a new
+/// connection for accept.
 fn handle_syn_for_listener(
     listener: &mut ListenSocket,
     local_ip: [u8; 4],
     src_ip: [u8; 4],
     header: &TcpHeader,
-) {
+) -> bool {
     let local_port = listener.local_port;
     let syn_ack = |send_isn: u32| {
         try_build_segment(
@@ -1768,19 +2005,19 @@ fn handle_syn_for_listener(
             let src_mac = super::current_packet_src_mac();
             queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), segment);
         }
-        return;
+        return false;
     }
 
     if listener.pending.len() >= listener.backlog {
         // Send RST to tell client the connection was refused
         send_rst(local_ip, src_ip, header);
-        return;
+        return false;
     }
 
     let send_isn = generate_isn();
     let Some(segment) = syn_ack(send_isn) else {
         // No memory to answer: the peer's SYN retransmission tries again.
-        return;
+        return false;
     };
 
     // Add to pending queue
@@ -1807,6 +2044,7 @@ fn handle_syn_for_listener(
 
     // Wake threads blocked in accept() - connection is now pending
     wake_accept_waiters(listener);
+    true
 }
 
 /// Answer a segment no connection or listener takes with a reset
@@ -1916,6 +2154,8 @@ pub fn tcp_listen(
     backlog: usize,
     owner_pid: crate::process::process::ProcessId,
 ) -> Result<(), &'static str> {
+    // Accepted connections retransmit; the timer thread must be there for them.
+    ensure_timer_thread();
     let config = super::config();
 
     let inserted = with_tcp_listeners(|listeners| {
@@ -1935,6 +2175,7 @@ pub fn tcp_listen(
                 owner_pid,
                 waiting_threads: Mutex::new(Vec::new()),
                 ref_count: core::sync::atomic::AtomicUsize::new(1),
+                owner: None,
             },
         );
         true
@@ -1948,7 +2189,6 @@ pub fn tcp_listen(
 
 /// Accept a pending connection (called from accept syscall)
 pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
-    ensure_timer_thread();
     let pending = with_tcp_listeners(|listeners| {
         listeners.get_mut(&local_port).and_then(|listener| {
             listener
@@ -2253,46 +2493,27 @@ pub fn tcp_shutdown(conn_id: &ConnectionId, shut_rd: bool, shut_wr: bool) {
     });
 }
 
-/// Increment reference count on a TCP connection (called during fork)
-pub fn tcp_add_ref(conn_id: &ConnectionId) {
-    with_tcp_connections(|connections| {
-        if let Some(conn) = connections.get(conn_id) {
-            conn.refcount
-                .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-        }
-    });
-}
-
-/// Close a connection (decrement refcount, only actually close when last reference dropped)
+/// Close a connection: its owner has let go of it.
 ///
-/// The last close sends a FIN after the queued data, unless bytes the owner never
-/// read are still queued: then it resets the connection, as Linux does (RFC 2525
-/// 2.17), and the peer's next operation fails with ECONNRESET.
-pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
+/// It sends a FIN after the queued data, unless bytes the owner never read are
+/// still queued or `abort` is set (SO_LINGER with a zero timeout): then it
+/// resets the connection, as Linux does (RFC 2525 2.17, RFC 9293 3.6), and the
+/// peer's next operation fails with ECONNRESET.
+pub fn tcp_close_connection(conn_id: &ConnectionId, abort: bool) -> Result<(), &'static str> {
     with_tcp_connections(|connections| {
         let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
-
-        // Decrement reference count
-        let old_count = conn
-            .refcount
-            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-
-        // Only actually close when last reference is dropped
-        if old_count > 1 {
-            return Ok(());
-        }
-
-        // Last reference - actually close the connection
         conn.orphaned = true;
+        conn.owner = None;
         conn.recv_shutdown = true;
-        let unread = !conn.rx_buffer.is_empty();
+        let reset = abort || !conn.rx_buffer.is_empty();
         match conn.state {
-            TcpState::Established | TcpState::CloseWait if unread => {
-                conn.send_reset();
-                conn.close_now();
-            }
-            TcpState::FinWait1 | TcpState::FinWait2 | TcpState::Closing | TcpState::LastAck
-                if unread =>
+            TcpState::Established
+            | TcpState::CloseWait
+            | TcpState::FinWait1
+            | TcpState::FinWait2
+            | TcpState::Closing
+            | TcpState::LastAck
+                if reset =>
             {
                 conn.send_reset();
                 conn.close_now();
@@ -2308,15 +2529,17 @@ pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
                 conn.close_now();
             }
             TcpState::SynSent | TcpState::Listen => conn.close_now(),
-            TcpState::FinWait1
-            | TcpState::Closing
-            | TcpState::LastAck
-            | TcpState::Closed => {}
+            TcpState::FinWait1 | TcpState::Closing | TcpState::LastAck | TcpState::Closed => {}
         }
         reap_expired(connections, true);
 
         Ok(())
     })
+}
+
+/// Close a connection gracefully: `tcp_close_connection` without abort.
+pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
+    tcp_close_connection(conn_id, false)
 }
 
 /// Check if there's a pending connection to accept
@@ -2416,8 +2639,10 @@ fn wake_accept_waiters(listener: &ListenSocket) {
     }
 }
 
-/// Wake all threads waiting on a connection (called when data arrives or state changes)
-fn wake_connection_waiters(conn: &TcpConnection) {
+/// Wake all threads waiting on a connection (called when data arrives or state
+/// changes), and mark the change for the owning socket's next notice.
+fn wake_connection_waiters(conn: &mut TcpConnection) {
+    conn.notify_pending = true;
     let readers: Vec<u64> = {
         let waiting = conn.waiting_threads.lock();
         waiting.iter().copied().collect()
@@ -2441,17 +2666,6 @@ fn wake_waiting_threads(readers: &[u64]) -> Vec<u64> {
         }
     }
     rejected
-}
-
-/// Increment the reference count for a TCP listener (called when fd is duplicated via fork)
-pub fn tcp_listener_ref_inc(port: u16) {
-    with_tcp_listeners(|listeners| {
-        if let Some(listener) = listeners.get(&port) {
-            listener
-                .ref_count
-                .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-        }
-    });
 }
 
 /// Decrement the reference count for a TCP listener and remove if it reaches 0

@@ -109,10 +109,10 @@ impl Socket {
     }
 
     /// Whether the protocol reports every state change through
-    /// `common.notify()`. TCP (T2) and Unix (X2) still wake waiters by thread
-    /// id; poll and select keep a short rescan for them until they move over.
+    /// `common.notify()`. Unix (X2) still wakes waiters by thread id; poll
+    /// and select keep a short rescan for it until it moves over.
     pub(crate) fn notifies(&self) -> bool {
-        matches!(self.proto, SocketProto::Udp(_))
+        matches!(self.proto, SocketProto::Udp(_) | SocketProto::Tcp(_))
     }
 }
 
