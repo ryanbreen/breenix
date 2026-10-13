@@ -623,7 +623,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             return handle_devfs_directory_open(flags);
         }
         if let Some(device_name) = path.strip_prefix("/dev/") {
-            return handle_devfs_open(device_name, flags);
+            return handle_devfs_open(device_name, flags, None, None);
         }
         return handle_procfs_open(path, flags);
     }
@@ -829,14 +829,14 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         if let Err(e) = check_open_access(&inode, flags, &cred) {
             return e;
         }
-        if file_type == Ext2FileType::Socket {
+        if matches!(file_type, Ext2FileType::Socket | Ext2FileType::BlockDevice) {
             return SyscallResult::Err(6);
         }
         let rdev = crate::fs::ext2::create_node::node_device(&inode);
         let device = crate::fs::devfs::lookup_by_rdev(rdev).map(|device| device.device_type.name());
         drop(guard);
         match device {
-            Some(name) => handle_devfs_open(name, flags),
+            Some(name) => handle_devfs_open(name, flags, resolved.handle().cloned(), reserved),
             None => SyscallResult::Err(6),
         }
     } else if !matches!(file_type, Ext2FileType::Regular) {
@@ -1139,6 +1139,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         ProcfsDirectory,
         Epoll,
         Ipc(alloc::sync::Arc<dyn crate::ipc::object::IpcFile>),
+        Native(crate::fs::ext2::live_inode::FileHandle),
     }
 
     let kind = {
@@ -1162,53 +1163,57 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             None => return SyscallResult::Err(EBADF as u64),
         };
 
-        match &fd_entry.kind {
-            FdKind::Ipc(object) => FstatKind::Ipc(object.clone()),
-            FdKind::StdIo(io_fd) => FstatKind::StdIo(*io_fd),
-            FdKind::PipeRead(_) | FdKind::PipeWrite(_) => FstatKind::Pipe,
-            FdKind::UdpSocket(_) => FstatKind::UdpSocket,
-            FdKind::RegularFile(file) => {
-                let file_guard = file.lock();
-                FstatKind::RegularFile {
-                    inode_num: file_guard.inode_num,
-                    mount_id: file_guard.mount_id,
-                    handle: file_guard.handle.clone(),
+        if let Some(handle) = &fd_entry.native_inode {
+            FstatKind::Native(handle.clone())
+        } else {
+            match &fd_entry.kind {
+                FdKind::Ipc(object) => FstatKind::Ipc(object.clone()),
+                FdKind::StdIo(io_fd) => FstatKind::StdIo(*io_fd),
+                FdKind::PipeRead(_) | FdKind::PipeWrite(_) => FstatKind::Pipe,
+                FdKind::UdpSocket(_) => FstatKind::UdpSocket,
+                FdKind::RegularFile(file) => {
+                    let file_guard = file.lock();
+                    FstatKind::RegularFile {
+                        inode_num: file_guard.inode_num,
+                        mount_id: file_guard.mount_id,
+                        handle: file_guard.handle.clone(),
+                    }
                 }
-            }
-            FdKind::Directory(dir) => {
-                let dir_guard = dir.lock();
-                FstatKind::Directory {
-                    inode_num: dir_guard.inode_num,
-                    mount_id: dir_guard.mount_id,
+                FdKind::Directory(dir) => {
+                    let dir_guard = dir.lock();
+                    FstatKind::Directory {
+                        inode_num: dir_guard.inode_num,
+                        mount_id: dir_guard.mount_id,
+                    }
                 }
-            }
-            FdKind::Device(device_type) => {
-                use crate::fs::devfs;
-                let device_node = devfs::lookup_by_inode(device_type.inode());
-                FstatKind::Device {
-                    inode: device_type.inode(),
-                    rdev: device_node.map(|d| d.rdev()).unwrap_or(0),
+                FdKind::Device(device_type) => {
+                    use crate::fs::devfs;
+                    let device_node = devfs::lookup_by_inode(device_type.inode());
+                    FstatKind::Device {
+                        inode: device_type.inode(),
+                        rdev: device_node.map(|d| d.rdev()).unwrap_or(0),
+                    }
                 }
+                FdKind::DevfsDirectory { .. } => FstatKind::DevfsDirectory,
+                FdKind::DevptsDirectory { .. } => FstatKind::DevptsDirectory,
+                FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
+                    FstatKind::TcpSocket
+                }
+                FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
+                    FstatKind::PtyDevice { pty_num: *pty_num }
+                }
+                FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
+                    FstatKind::UnixSocket
+                }
+                FdKind::FifoRead(_, _, entry)
+                | FdKind::FifoWrite(_, _, entry)
+                | FdKind::FifoReadWrite(_, _, entry) => FstatKind::Fifo(entry.clone()),
+                FdKind::ProcfsFile { ref content, .. } => FstatKind::ProcfsFile {
+                    size: content.len() as i64,
+                },
+                FdKind::ProcfsDirectory { .. } => FstatKind::ProcfsDirectory,
+                FdKind::Epoll(_) => FstatKind::Epoll,
             }
-            FdKind::DevfsDirectory { .. } => FstatKind::DevfsDirectory,
-            FdKind::DevptsDirectory { .. } => FstatKind::DevptsDirectory,
-            FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
-                FstatKind::TcpSocket
-            }
-            FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
-                FstatKind::PtyDevice { pty_num: *pty_num }
-            }
-            FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
-                FstatKind::UnixSocket
-            }
-            FdKind::FifoRead(_, _, entry)
-            | FdKind::FifoWrite(_, _, entry)
-            | FdKind::FifoReadWrite(_, _, entry) => FstatKind::Fifo(entry.clone()),
-            FdKind::ProcfsFile { ref content, .. } => FstatKind::ProcfsFile {
-                size: content.len() as i64,
-            },
-            FdKind::ProcfsDirectory { .. } => FstatKind::ProcfsDirectory,
-            FdKind::Epoll(_) => FstatKind::Epoll,
         }
         // manager_guard drops here — PM lock released, IRQs restored
     };
@@ -1220,6 +1225,11 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
 
     match kind {
         FstatKind::Ipc(object) => object.fill_stat(&mut stat),
+        FstatKind::Native(handle) => {
+            if let Err(e) = fill_handle_stat(&mut stat, &handle) {
+                return SyscallResult::Err(e);
+            }
+        }
         FstatKind::StdIo(io_fd) => {
             // stdin/stdout/stderr have a distinct pseudo-device namespace.
             stat.st_dev = 0xffff0007;
@@ -1379,7 +1389,13 @@ fn fill_fifo_stat(
     stat: &mut Stat,
     entry: &alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>,
 ) -> Result<(), u64> {
-    let handle = entry.lock().handle.clone().ok_or(5u64)?;
+    let handle = crate::arch_without_interrupts(|| entry.lock().handle.clone()).ok_or(5u64)?;
+    fill_handle_stat(stat, &handle)
+}
+fn fill_handle_stat(
+    stat: &mut Stat,
+    handle: &crate::fs::ext2::live_inode::FileHandle,
+) -> Result<(), u64> {
     let inode = load_ext2_inode_stat_for_handle(&handle).ok_or(5u64)?;
     stat.st_dev = (handle.object.mount.mount_id as u64) + 1;
     stat.st_ino = handle.object.key.inode as u64;
@@ -1387,11 +1403,12 @@ fn fill_fifo_stat(
     stat.st_uid = inode.uid;
     stat.st_gid = inode.gid;
     stat.st_nlink = inode.nlink as _;
-    stat.st_size = 0;
+    stat.st_size = inode.size;
     stat.st_atime = inode.atime;
     stat.st_mtime = inode.mtime;
     stat.st_ctime = inode.ctime;
     stat.st_blocks = inode.blocks;
+    stat.st_rdev = inode.rdev;
     Ok(())
 }
 
@@ -2792,7 +2809,12 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
-fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
+fn handle_devfs_open(
+    device_name: &str,
+    flags: u32,
+    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    reserved: Option<ReservedSlot>,
+) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devfs;
     use crate::ipc::fd::FileDescriptor;
@@ -2861,7 +2883,10 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
 
         // Search active PTYs for one controlled by this session.
         // controlling_pid stores the session leader's PID (== SID).
-        for pty_num in crate::tty::pty::list_active() {
+        for pty_num in match crate::tty::pty::try_list_active() {
+            Ok(numbers) => numbers,
+            Err(e) => return SyscallResult::Err(e),
+        } {
             if let Some(pair) = crate::tty::pty::get(pty_num) {
                 if pair.controlling_pid.lock().map_or(false, |p| p == sid) {
                     // Found the controlling PTY — open as PtySlave
@@ -2899,8 +2924,11 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
                     // /dev/tty opened O_NONBLOCK must read non-blocking too.
                     // Exercised on every production boot by the TTY oracle's
                     // `ctty` arm (arm 13), which drives exactly this branch.
-                    let entry = FileDescriptor::opened(FdKind::PtySlave(pty_num), flags);
-                    return match proc2.fd_table.alloc_with_entry(entry) {
+                    let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pty_num), flags) {
+                        Ok(entry) => entry.with_inode(native_inode),
+                        Err(e) => return SyscallResult::Err(e),
+                    };
+                    return match install_descriptor(&mut proc2.fd_table, reserved, entry) {
                         Ok(fd) => {
                             // #704 (found and fixed on feat/green-tty): this
                             // site handed out an FdKind::PtySlave fd without a
@@ -2953,8 +2981,11 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
                 return SyscallResult::Err(3); // ESRCH
             }
         };
-        let fd_kind = FileDescriptor::opened(FdKind::Device(device.device_type), flags);
-        return match process.fd_table.alloc_with_entry(fd_kind) {
+        let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
+            Ok(entry) => entry.with_inode(native_inode),
+            Err(e) => return SyscallResult::Err(e),
+        };
+        return match install_descriptor(&mut process.fd_table, reserved, fd_kind) {
             Ok(fd) => {
                 log::info!("handle_devfs_open: /dev/tty (no ctty) as fd {}", fd);
                 SyscallResult::Ok(fd as u64)
@@ -2964,8 +2995,11 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
     }
 
     // Allocate file descriptor with Device kind
-    let fd_kind = FileDescriptor::opened(FdKind::Device(device.device_type), flags);
-    match process.fd_table.alloc_with_entry(fd_kind) {
+    let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
+        Ok(entry) => entry.with_inode(native_inode),
+        Err(e) => return SyscallResult::Err(e),
+    };
+    match install_descriptor(&mut process.fd_table, reserved, fd_kind) {
         Ok(fd) => {
             // Debug level: written under the process manager (see sys_open).
             log::debug!(
@@ -4327,6 +4361,9 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             if let Some(ref manager) = *manager_guard {
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
                     if let Some(fd_entry) = process.fd_table.get(dirfd) {
+                        if let Some(handle) = &fd_entry.native_inode {
+                            return Some(handle.clone());
+                        }
                         if let FdKind::RegularFile(file_ref) = &fd_entry.kind {
                             let file = file_ref.lock();
                             return Some(file.handle.clone());
@@ -4582,7 +4619,7 @@ pub fn sys_statfs(pathname: u64, buf: u64) -> SyscallResult {
 
 pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
     // Validate and snapshot before filesystem I/O, even for a non-file fd.
-    let kind = {
+    let (native, kind) = {
         let tid = match crate::task::scheduler::current_thread_id() {
             Some(t) => t,
             None => return SyscallResult::Err(9),
@@ -4593,42 +4630,48 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
             .and_then(|m| m.find_process_by_thread(tid))
             .and_then(|(_, p)| p.fd_table.get(fd));
         match entry {
-            Some(e) => e.kind.clone(),
+            Some(e) => (e.native_inode.clone(), e.kind.clone()),
             None => return SyscallResult::Err(9),
         }
     };
-    let stat = match kind {
-        FdKind::Ipc(object) => Ok(virtual_statfs(object.statfs_magic())),
-        FdKind::RegularFile(file) => {
-            let pin = file.lock().handle.clone();
-            statfs_pin(&pin)
+    let stat = if let Some(handle) = native {
+        statfs_pin(&handle)
+    } else {
+        match kind {
+            FdKind::Ipc(object) => Ok(virtual_statfs(object.statfs_magic())),
+            FdKind::RegularFile(file) => {
+                let pin = file.lock().handle.clone();
+                statfs_pin(&pin)
+            }
+            FdKind::Directory(dir) => {
+                let pin = dir.lock().handle.clone();
+                statfs_pin(&pin)
+            }
+            FdKind::FifoRead(_, _, entry)
+            | FdKind::FifoWrite(_, _, entry)
+            | FdKind::FifoReadWrite(_, _, entry) => {
+                let pin = entry.lock().handle.clone();
+                pin.as_ref().ok_or(5u64).and_then(statfs_pin)
+            }
+            FdKind::ProcfsFile { .. } | FdKind::ProcfsDirectory { .. } => {
+                Ok(virtual_statfs(0x9fa0))
+            }
+            FdKind::PipeRead(_) | FdKind::PipeWrite(_) => Ok(virtual_statfs(0x50495045)),
+            FdKind::Device(_) | FdKind::StdIo(_) | FdKind::DevfsDirectory { .. } => {
+                Ok(virtual_statfs(0x1373))
+            }
+            FdKind::DevptsDirectory { .. } | FdKind::PtyMaster(_) | FdKind::PtySlave(_) => {
+                Ok(virtual_statfs(0x1cd1))
+            }
+            FdKind::Epoll(_) => Ok(virtual_statfs(0x09041934)),
+            FdKind::UdpSocket(_)
+            | FdKind::TcpSocket(_)
+            | FdKind::TcpListener(_)
+            | FdKind::TcpConnection(_)
+            | FdKind::UnixStream(_)
+            | FdKind::UnixSocket(_)
+            | FdKind::UnixListener(_) => Ok(virtual_statfs(0x534f434b)),
         }
-        FdKind::Directory(dir) => {
-            let pin = dir.lock().handle.clone();
-            statfs_pin(&pin)
-        }
-        FdKind::FifoRead(_, _, entry)
-        | FdKind::FifoWrite(_, _, entry)
-        | FdKind::FifoReadWrite(_, _, entry) => {
-            let pin = entry.lock().handle.clone();
-            pin.as_ref().ok_or(5u64).and_then(statfs_pin)
-        }
-        FdKind::ProcfsFile { .. } | FdKind::ProcfsDirectory { .. } => Ok(virtual_statfs(0x9fa0)),
-        FdKind::PipeRead(_) | FdKind::PipeWrite(_) => Ok(virtual_statfs(0x50495045)),
-        FdKind::Device(_) | FdKind::StdIo(_) | FdKind::DevfsDirectory { .. } => {
-            Ok(virtual_statfs(0x1373))
-        }
-        FdKind::DevptsDirectory { .. } | FdKind::PtyMaster(_) | FdKind::PtySlave(_) => {
-            Ok(virtual_statfs(0x1cd1))
-        }
-        FdKind::Epoll(_) => Ok(virtual_statfs(0x09041934)),
-        FdKind::UdpSocket(_)
-        | FdKind::TcpSocket(_)
-        | FdKind::TcpListener(_)
-        | FdKind::TcpConnection(_)
-        | FdKind::UnixStream(_)
-        | FdKind::UnixSocket(_)
-        | FdKind::UnixListener(_) => Ok(virtual_statfs(0x534f434b)),
     };
     match stat.and_then(|s| super::userptr::copy_to_user(buf as *mut Statfs, &s)) {
         Ok(()) => SyscallResult::Ok(0),

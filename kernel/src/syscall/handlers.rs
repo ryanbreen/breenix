@@ -892,7 +892,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // no PROCESS_MANAGER while it touches the TTY's own locks.
             crate::tty::driver::adopt_foreground_pgrp_from_reader(reader_pid);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             // Blocking read loop: keep trying until we get data or an error
             // Similar to pause() implementation - block, HLT loop, check for data
@@ -1023,7 +1027,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // process that needs to write to the pipe).
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             // Try to read - if empty and blocking, we'll enter blocking path
             loop {
@@ -1436,7 +1444,14 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            if device_type == crate::fs::devfs::DeviceType::Null {
+                return SyscallResult::Ok(0);
+            }
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
             let result = match device_type {
                 crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
                     super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
@@ -1483,7 +1498,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             // Read loop (may block if O_NONBLOCK not set)
             loop {
@@ -1630,7 +1649,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             };
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             loop {
                 pair.register_master_waiter(thread_id);
@@ -1729,7 +1752,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             };
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             loop {
                 pair.register_slave_waiter(thread_id);
@@ -1823,7 +1850,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Drop manager guard before potentially blocking
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             loop {
                 // Register as waiter FIRST to avoid race condition

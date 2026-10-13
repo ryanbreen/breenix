@@ -24,8 +24,11 @@ fn unlink(fd: u64, name: &str, flags: u64) -> i64 {
     unsafe { raw::syscall3(nr::UNLINKAT, fd, p.as_ptr() as u64, flags) as i64 }
 }
 fn node(fd: u64, name: &str, mode: u64) -> i64 {
+    node_dev(fd, name, mode, 0)
+}
+fn node_dev(fd: u64, name: &str, mode: u64, dev: u64) -> i64 {
     let p = path(name);
-    unsafe { raw::syscall4(nr::MKNODAT, fd, p.as_ptr() as u64, mode, 0) as i64 }
+    unsafe { raw::syscall4(nr::MKNODAT, fd, p.as_ptr() as u64, mode, dev) as i64 }
 }
 fn stat(name: &str) -> Stat {
     let p = path(name);
@@ -79,6 +82,30 @@ fn main() {
         0
     );
     assert_eq!(unlink(CWD, &absolute, 0), 0);
+    assert_eq!(node_dev(dir, "null-alias", 0o020600, 0x103), 0);
+    let null = open(dir, "null-alias", RDWR);
+    assert!(null >= 0);
+    let by_path = stat(&format!("{base}/null-alias"));
+    let by_fd = fstat(null as u64);
+    assert_eq!(
+        (by_fd.st_dev, by_fd.st_ino),
+        (by_path.st_dev, by_path.st_ino)
+    );
+    assert_eq!(by_fd.st_rdev, 0x103);
+    assert_eq!(unlink(dir, "null-alias", 0), 0);
+    assert_eq!(fstat(null as u64).st_nlink, 0);
+    let mut byte = [0u8; 1];
+    assert_eq!(
+        unsafe { raw::syscall3(nr::READ, null as u64, byte.as_mut_ptr() as u64, 1) as i64 },
+        0
+    );
+    close(null as u64);
+    assert_eq!(node_dev(dir, "block-alias", 0o060600, 0x103), 0);
+    assert_eq!(open(dir, "block-alias", 0), -6);
+    assert_eq!(unlink(dir, "block-alias", 0), 0);
+    assert_eq!(node(dir, "socket-node", 0o140600), 0);
+    assert_eq!(open(dir, "socket-node", 0), -6);
+    assert_eq!(unlink(dir, "socket-node", 0), 0);
     assert_eq!(node(dir, "regular", 0o100600), 0);
     let regular = open(dir, "regular", RDWR);
     assert!(regular >= 0);
@@ -149,6 +176,23 @@ fn main() {
     close(blocking as u64);
     let endpoint = open(dir, "fifo", RDWR | NONBLOCK);
     assert!(endpoint >= 0);
+    let mut capped = vec![0u8; 3];
+    assert_eq!(
+        unsafe { raw::syscall3(nr::WRITE, endpoint as u64, b"cap".as_ptr() as u64, 3) as i64 },
+        3
+    );
+    assert_eq!(
+        unsafe {
+            raw::syscall3(
+                nr::READ,
+                endpoint as u64,
+                capped.as_mut_ptr() as u64,
+                1 << 30,
+            ) as i64
+        },
+        3
+    );
+    assert_eq!(&capped, b"cap");
     let endpoint = endpoint as u64;
     assert_eq!(fstat(endpoint).st_ino, st.st_ino);
     assert_eq!(fstat(endpoint).st_dev, st.st_dev);
