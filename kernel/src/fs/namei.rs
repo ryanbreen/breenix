@@ -156,6 +156,15 @@ impl Resolved {
         }
     }
 
+    /// The parent held by a lookup of an absent final name. This is distinct
+    /// from handle(), whose callers require an existing target inode.
+    pub fn lookup_parent(&self) -> Option<&FileHandle> {
+        match self.target {
+            Target::Absent { .. } => self.pin.as_ref(),
+            _ => None,
+        }
+    }
+
     /// The directory a rename resolution holds for its final name.
     pub fn entry_dir(&self) -> Option<&FileHandle> {
         self.entry_dir.as_ref()
