@@ -338,6 +338,12 @@ impl FileDescriptor {
         super::fd_flags::replace(&self.description, flags, SETTABLE_STATUS_FLAGS)
     }
 
+    /// Atomically replace only the settable status flags in `mask` and
+    /// return the previous word.
+    pub fn update_status_flags(&self, mask: u32, flags: u32) -> u32 {
+        super::fd_flags::replace(&self.description, flags, mask & SETTABLE_STATUS_FLAGS)
+    }
+
     pub fn set_status_flags(&self, flags: u32) {
         let _ = self
             .description

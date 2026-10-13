@@ -26,14 +26,6 @@ pub trait IpcFile: Send + Sync + core::fmt::Debug {
     ) -> Result<(), u64> {
         Err(EINVAL as u64)
     }
-    /// Called after PM is released; the implementation owns its shared
-    /// directory cookie and advances it only after copying records succeeds.
-    fn getdents(&self, _dirp: u64, _count: usize) -> Result<u64, u64> {
-        Err(20)
-    }
-    fn read(&self, _buf: u64, _count: usize) -> Result<u64, u64> {
-        Err(EINVAL as u64)
-    }
     fn write(&self, _bytes: &[u8], _append: bool) -> Result<u64, u64> {
         Err(EINVAL as u64)
     }
@@ -44,6 +36,11 @@ pub trait IpcFile: Send + Sync + core::fmt::Debug {
     /// PROCESS_MANAGER; queues hold their attribute lock while invoking update.
     fn update_status_flags(&self, update: &mut dyn FnMut()) {
         update();
+    }
+    /// Called after PM is released; the implementation owns its shared
+    /// directory cookie and advances it only after copying records succeeds.
+    fn getdents(&self, _dirp: u64, _count: usize) -> Result<u64, u64> {
+        Err(20)
     }
     fn on_close(&self, _pid: crate::process::ProcessId) {}
 }

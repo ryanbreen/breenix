@@ -847,17 +847,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     };
 
     match &fd_entry.kind {
-        FdKind::Ipc(file) => {
-            if !fd_entry.readable() {
-                return SyscallResult::Err(super::errno::EBADF as u64);
-            }
-            let file = file.clone();
-            drop(manager_guard);
-            match file.read(buf_ptr, count as usize) {
-                Ok(n) => SyscallResult::Ok(n),
-                Err(e) => SyscallResult::Err(e),
-            }
-        }
+        FdKind::Ipc(_) => SyscallResult::Err(super::errno::EINVAL as u64),
         FdKind::StdIo(0) => {
             // stdin - read from stdin ring buffer
             //

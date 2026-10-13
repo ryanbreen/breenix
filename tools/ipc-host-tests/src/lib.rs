@@ -260,7 +260,6 @@ fn ipc_file_defaults_and_downcast() {
     assert_eq!(object.chown(1, 2, &cred), Err(22));
     assert_eq!(object.getdents(0, 4096), Err(20));
     assert_eq!(object.statfs_magic(), 0x01021994);
-    assert_eq!(object.read(0, 0), Err(22));
     assert_eq!(object.write(&[], false), Err(22));
     assert_eq!(object.seek(0, 0), Err(29));
     let mut updates = 0;
