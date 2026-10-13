@@ -21,11 +21,11 @@ final class LiveX86SerialsTests: XCTestCase {
                 XCTAssertLessThan(events.firstIndex(of: "harvest")!, events.firstIndex(of: "finish")!)
             }
             if status == 255 {
-                XCTAssertFalse(events.contains("quiesce"))
-                XCTAssertFalse(events.contains("harvest"))
+                XCTAssertTrue(events.contains("quiesce"))
+                XCTAssertTrue(events.contains("harvest"))
             }
             let directory = try XCTUnwrap(result.runDirectory)
-            for stream in status == 255 ? [] : ["user", "kernel"] {
+            for stream in ["user", "kernel"] {
                 let expected = "==== breenix-runs boot 1: breenix_gate_1/serial_\(stream).log ====\nfinal \(stream)\n\n"
                 XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("serial_\(stream).txt")), Data(expected.utf8))
             }
@@ -112,6 +112,79 @@ final class LiveX86SerialsTests: XCTestCase {
         XCTAssertTrue(serial.contains("live user"))
     }
 
+    func testOwnerDeathStopsHarvestsAndCleansWithoutReconnect() throws {
+        let fixture = try Fixture(status: 0)
+        defer { fixture.remove() }
+        fixture.runner.followStatuses = [76]
+        let result = try fixture.launcher.runX86(options: fixture.options)
+        XCTAssertTrue(result.manifest.verdict.isFailure)
+        XCTAssertEqual(fixture.runner.followOffsets.count, 1)
+        for event in ["quiesce", "harvest", "remove"] { XCTAssertTrue(fixture.runner.events.contains(event)) }
+    }
+
+    func testSignalDuringLaunchRetriesStopTransportAndIgnoresSecondSignal() throws {
+        let fixture = try Fixture(status: 0)
+        defer { fixture.remove() }
+        fixture.runner.interruptLaunch = true
+        fixture.runner.stopStatuses = [255, 0]
+        let result = try fixture.launcher.runX86(options: fixture.options)
+        XCTAssertTrue(result.manifest.verdict.isFailure)
+        XCTAssertEqual(fixture.runner.events.filter { $0 == "quiesce" }.count, 2)
+        XCTAssertTrue(fixture.runner.events.contains("harvest"))
+        XCTAssertTrue(fixture.runner.events.contains("remove"))
+        let signals = X86LaunchSignals(runner: fixture.runner, installHandlers: false)
+        signals.receive(SIGINT)
+        fixture.runner.interrupted = false
+        signals.receive(SIGINT)
+        XCTAssertFalse(fixture.runner.interrupted)
+    }
+
+    func testLaunchExitOneRetriesAndInvalidRequestPreservesExitTwo() throws {
+        for statuses: [Int32] in [[1, 75, 0], [2]] {
+            let fixture = try Fixture(status: 0)
+            defer { fixture.remove() }
+            fixture.runner.launchStatuses = statuses
+            let result = try fixture.launcher.runX86(options: fixture.options)
+            XCTAssertEqual(fixture.runner.launchRequests.count, statuses.count)
+            XCTAssertEqual(result.manifest.verdict.isFailure, statuses == [2])
+            if statuses == [2] { XCTAssertEqual(fixture.runner.finishStatus, "2") }
+        }
+    }
+
+    func testHealthyFollowResetsConsecutiveGateFailureBudget() throws {
+        let fixture = try Fixture(status: 0)
+        defer { fixture.remove() }
+        fixture.runner.followStatuses = [9, 75, 9, 75, 9, 75, 0]
+        let result = try fixture.launcher.runX86(options: fixture.options)
+        XCTAssertFalse(result.manifest.verdict.isFailure)
+        XCTAssertEqual(fixture.runner.followOffsets.count, 7)
+    }
+
+    func testSerialFailureCannotExhaustGateRetries() throws {
+        let fixture = try Fixture(status: 0)
+        defer { fixture.remove() }
+        fixture.stream.isReading = false
+        fixture.runner.followStatuses = [75, 75, 75, 75, 0]
+        let result = try fixture.launcher.runX86(options: fixture.options)
+        XCTAssertFalse(result.manifest.verdict.isFailure)
+        XCTAssertEqual(fixture.runner.followOffsets.count, 5)
+    }
+
+    func testRecoverStopsHarvestsAndRemovesPreviouslyUnreachableRun() throws {
+        let fixture = try Fixture(status: 255)
+        defer { fixture.remove() }
+        fixture.runner.quiesceStatus = 1
+        let result = try fixture.launcher.runX86(options: fixture.options)
+        XCTAssertEqual(result.manifest.env["BREENIX_REMOTE_QUIESCED"], "0")
+        fixture.runner.quiesceStatus = 0
+        try fixture.launcher.recoverX86(id: result.manifest.id)
+        let recovered = try fixture.launcher.store.readManifest(id: result.manifest.id)
+        XCTAssertEqual(recovered.env["BREENIX_REMOTE_QUIESCED"], "1")
+        XCTAssertTrue(recovered.verdict.isFailure)
+        XCTAssertTrue(fixture.runner.events.contains("harvest"))
+        XCTAssertTrue(fixture.runner.events.contains("remove"))
+    }
+
     func testFailedExtractionPreservesLiveSerialsAndFinishesWithFailure() throws {
         let fixture = try Fixture(status: 0)
         defer { fixture.remove() }
@@ -132,9 +205,9 @@ final class LiveX86SerialsTests: XCTestCase {
         XCTAssertTrue(result.manifest.verdict.isFailure)
         XCTAssertEqual(fixture.stream.stops, 1)
         XCTAssertEqual(fixture.runner.events.filter { $0 == "finish" }.count, 1)
-        XCTAssertFalse(fixture.runner.events.contains("quiesce"))
-        XCTAssertFalse(fixture.runner.events.contains("remove"))
-        XCTAssertFalse(fixture.runner.events.contains("harvest"))
+        XCTAssertTrue(fixture.runner.events.contains("quiesce"))
+        XCTAssertTrue(fixture.runner.events.contains("remove"))
+        XCTAssertTrue(fixture.runner.events.contains("harvest"))
     }
 
     func testInterruptUnwindsOwnedStreamAndRetainsFailureStatus() throws {
@@ -370,6 +443,8 @@ private final class LaunchRunner: ProcessRunner {
     var extractionStatus: Int32 = 0
     var throwGate = false
     var interruptGate = false
+    var interruptLaunch = false
+    var stopStatuses: [Int32] = []
     var registers = true
     var startNoise = false
     var sendsFrames = true
@@ -417,14 +492,15 @@ private final class LaunchRunner: ProcessRunner {
         if remote.hasSuffix("# gate-start") {
             events.append("launch")
             launchRequests.append(request)
+            if interruptLaunch { onInterruptGate?() }
             return ProcessResult(exitCode: launchStatuses.isEmpty ? 0 : launchStatuses.removeFirst())
         }
         if remote.hasSuffix("# gate-follow") {
             let offset = UInt64(remote.split(separator: " ").dropLast(3).last ?? "0") ?? 0
             followOffsets.append(offset)
             let next = followStatuses.isEmpty ? status : followStatuses.removeFirst()
-            let chunk = followChunks.isEmpty ? Data("GATE: PASS (1/1 boot tests passed)\n".utf8) : followChunks.removeFirst()
-            if !finalOwnerStatus && (next == 9 || next == 75) {
+            let chunk = followChunks.isEmpty ? ((next == 255 && !finalOwnerStatus) || throwGate ? Data() : Data("GATE: PASS (1/1 boot tests passed)\n".utf8)) : followChunks.removeFirst()
+            if !finalOwnerStatus && (next == 9 || next == 75 || next == 76) {
                 if dropFirstStream { stream.isReading = false; dropFirstStream = false }
                 outputHandler?(chunk)
                 events.append("gate.end")
@@ -443,9 +519,9 @@ private final class LaunchRunner: ProcessRunner {
             outputHandler?(chunk)
             events.append("gate.end")
             if throwGate { throw NSError(domain: "fake gate", code: 1) }
-            return ProcessResult(stdout: chunk, stderr: next == 255 && !finalOwnerStatus ? Data() : Data("BREENIX_GATE_FINISHED=\(next)\n".utf8), exitCode: next == 255 && !finalOwnerStatus ? 255 : 0)
+            return ProcessResult(stdout: chunk, stderr: (next == 255 && !finalOwnerStatus) || throwGate ? Data() : Data("BREENIX_GATE_FINISHED=\(next)\n".utf8), exitCode: next == 255 && !finalOwnerStatus ? 255 : 0)
         }
-        if remote.contains("python3 -c 'import base64") { events.append("quiesce"); return ProcessResult(exitCode: quiesceStatus) }
+        if remote.contains("python3 -c 'import base64") { events.append("quiesce"); return ProcessResult(exitCode: stopStatuses.isEmpty ? quiesceStatus : stopStatuses.removeFirst()) }
         if remote.contains("tar -czf -") { events.append("harvest"); return ProcessResult(stdout: Data([1]), exitCode: pullStatus) }
         if remote.contains("rm -rf") && !remote.contains("git clone") { events.append("remove") }
         return ProcessResult(exitCode: 0)

@@ -245,10 +245,14 @@ Run Inspector streams both beast serial logs into its local run directory over a
 owned SSH connection. It registers the gate with Vigil at launch, before building or receiving
 serial bytes, with the launcher's PID and links to the local files. The gate runs in a detached remote session with an exclusive per-run launch claim,
 so losing either SSH connection cannot cancel it or start a second gate. The Mac
-reconnects with bounded retries, resumes build/boot output at its byte offset and
-deduplicates serial replay; `reconnects.jsonl` records each attempt. `--host beast-lan`
-selects the LAN SSH alias to the same execution environment. Only an explicit local
-signal requests cancellation; exhausted transport retries leave the remote run intact.
+reconnects with bounded consecutive retries, resumes build/boot output and serials at
+their byte offsets, and deduplicates serial replay; `reconnects.jsonl` records each attempt. The single `beast` SSH alias follows the Mac's SSH configuration.
+Local signals, owner death and exhausted gate retries request cancellation with a durable
+owner marker, then harvest evidence after quiescence. Serial failures only degrade the live
+view. If cancellation cannot reach beast, the launcher names the remote evidence and owner,
+warns about the lane lock and provides `breenix-runs recover x86 <run-id>` to stop, harvest
+and clean up later. Completed launch tombstones are retained for seven days and pruned on
+subsequent launches; running owners are never pruned.
 After the remote owner records its final result it stops the stream and pulls the remote evidence before finishing Vigil. Interrupted gates,
 failed builds and failed evidence pulls finish with nonzero status; captured remote evidence
 is harvested after the supervisor has stopped. Runs with no boot directories still receive a

@@ -32,6 +32,9 @@ final class BeastLauncherTests: XCTestCase {
         let helper = try Data(contentsOf: repo.appendingPathComponent("scripts/host-slots.py")).base64EncodedString()
         let request = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: BeastPaths(clonePath: "/root/run"), slotHelperBase64: helper, progressBundleBase64: bundle)
         XCTAssertLessThan(try XCTUnwrap(request.arguments.last).utf8.count, 65_536)
+        let detached = RemoteCommand.startGateRequest(gate: request, paths: BeastPaths(clonePath: "/root/run"))
+        XCTAssertLessThan(try XCTUnwrap(detached.arguments.last).utf8.count, 120_000,
+                          "leave headroom below Linux's 128 KiB single-argument limit")
         let syntax = try RealProcessRunner().run(ProcessRequest(executable: "/bin/bash", arguments: ["-n", "-c", try XCTUnwrap(request.arguments.last)]))
         XCTAssertEqual(syntax.exitCode, 0)
         let code = """

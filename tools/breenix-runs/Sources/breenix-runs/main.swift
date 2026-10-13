@@ -24,7 +24,6 @@ struct RunX86Arguments {
     var mode: RemoteGateMode = .full
     var fresh = false
     var suite: String?
-    var host = "beast"
     var dryRun = false
     var tags: [String] = []
     var persist = true
@@ -48,7 +47,8 @@ func usage() -> String {
     """
     Usage:
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
-      breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full|suite] [--suite ID[,ID...]] [--fresh] [--host HOST] [--dry-run] [--tag T] [--no-store]
+      breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full|suite] [--suite ID[,ID...]] [--fresh] [--dry-run] [--tag T] [--no-store]
+      breenix-runs recover x86 <run-id>
       breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
       breenix-runs list [--arch aarch64|x86_64] [--profile NAME] [--verdict pass|fail|attributed|running|unknown]
       breenix-runs facts <run-id|latest> [--json]
@@ -155,11 +155,6 @@ func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
                 throw CLIError(description: "--suite requires a suite id (lowercase words joined by '-')")
             }
             parsed.suite = value
-        case "--host":
-            guard let value = iterator.next(), !value.isEmpty else {
-                throw CLIError(description: "--host requires a non-empty value")
-            }
-            parsed.host = value
         case "--dry-run":
             parsed.dryRun = true
         case "--tag":
@@ -405,7 +400,7 @@ func main() -> Int32 {
             throw CLIError(description: usage())
         }
 
-        let commands = ["run", "show", "facts", "compare", "tail", "import", "list"]
+        let commands = ["run", "recover", "show", "facts", "compare", "tail", "import", "list"]
         if subcommand == "--help" || subcommand == "-h"
             || (commands.contains(subcommand) && args.dropFirst().contains(where: { $0 == "--help" || $0 == "-h" })) {
             print(usage())
@@ -413,6 +408,13 @@ func main() -> Int32 {
         }
         let store = RunStore.defaultStore()
         switch subcommand {
+        case "recover":
+            guard args.count == 3, args[1] == "x86" else {
+                throw CLIError(description: "recover requires x86 and an exact run id")
+            }
+            try BeastLauncher(store: store).recoverX86(id: args[2])
+            print("Remote run stopped, evidence harvested, and cleanup completed.")
+            return 0
         case "run":
             guard args.count >= 2 else {
                 throw CLIError(description: "run requires an arch\n\(usage())")
@@ -445,9 +447,6 @@ func main() -> Int32 {
                 }
             case "x86":
                 let runArgs = try parseRunX86(args.dropFirst(2))
-                guard ["beast", "beast-lan"].contains(runArgs.host) else {
-                    throw CLIError(description: "unsupported x86 host \(runArgs.host); this command supports beast and beast-lan and does not fall back to local TCG on this Mac")
-                }
                 let root = try repoRoot(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
                 let runner = RealProcessRunner()
                 let explicitSHA = runArgs.sha != nil
@@ -471,7 +470,7 @@ func main() -> Int32 {
                     store: store,
                     runner: runner,
                     timeoutSecs: runArgs.gateTimeout,
-                    pathsTemplate: BeastPaths(host: runArgs.host, clonePath: ""),
+                    pathsTemplate: BeastPaths(clonePath: ""),
                     slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString(),
                     progressBundleBase64: try BeastLauncher.progressBundle(repoRoot: root),
                     treeHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/gate-tree.py")).base64EncodedString(),

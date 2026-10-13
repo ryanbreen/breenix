@@ -167,6 +167,11 @@ final class LiveX86Serials: @unchecked Sendable {
         }
     }
 
+    var resumeOffsets: [String: Int] {
+        lock.lock(); defer { lock.unlock() }
+        return offsets
+    }
+
     func resetConnection() {
         lock.lock(); defer { lock.unlock() }
         pending.removeAll()
@@ -195,8 +200,12 @@ final class X86LaunchSignals: @unchecked Sendable {
     var signalNumber: Int32? { lock.lock(); defer { lock.unlock() }; return received }
 
     func receive(_ number: Int32) {
-        lock.lock(); received = number; lock.unlock()
-        runner.interrupt()
+        lock.lock()
+        let first = received == nil
+        if first { received = number }
+        lock.unlock()
+        // Further signals must not kill cancellation or evidence recovery.
+        if first { runner.interrupt() }
     }
 
     init(runner: ProcessRunner, installHandlers: Bool = true) {

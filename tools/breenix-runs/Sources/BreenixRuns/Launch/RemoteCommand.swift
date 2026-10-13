@@ -214,49 +214,77 @@ public enum RemoteCommand {
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }
 
-    /// The exclusive claim is permanent for this run, including after completion.
+    /// The exclusive claim is retained for seven days after completion.
     /// A lost launch acknowledgement can safely repeat this request without rerunning it.
     static let detachedOwner = #"""
-import base64, fcntl, json, os, pathlib, subprocess, sys, time
+import base64, fcntl, json, os, pathlib, signal, subprocess, sys, time
 root = pathlib.Path(sys.argv[1])
 owners = pathlib.Path(sys.argv[4]) if len(sys.argv) > 4 else root
 owners.mkdir(parents=True, exist_ok=True)
 record = owners / "gate-owner.json"
+boot_path = pathlib.Path("/proc/sys/kernel/random/boot_id")
+boot_id = boot_path.read_text().strip()
 def publish(value):
     temporary = record.with_suffix(".tmp")
     temporary.write_text(json.dumps(value))
     temporary.replace(record)
+def birth(pid):
+    try:
+        return pathlib.Path("/proc/%d/stat" % pid).read_text().rsplit(")",1)[1].split()[19]
+    except FileNotFoundError:
+        return None
 if sys.argv[2] == "worker":
     with (owners / "gate-launch.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if record.exists():
             sys.exit(0)
-        owner = dict(pid=os.getpid(), birth=pathlib.Path("/proc/self/stat").read_text().rsplit(")",1)[1].split()[19], state="running")
-        publish(owner)
-    try:
+        owner = dict(pid=os.getpid(), birth=pathlib.Path("/proc/self/stat").read_text().rsplit(")",1)[1].split()[19], boot_id=boot_id, state="running")
         root.mkdir(parents=True, exist_ok=True)
-        with (root / "gate-output.log").open("wb") as output:
-            child = subprocess.Popen(["bash", "-lc", base64.b64decode(sys.argv[3]).decode()], stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
-            status = child.wait()
-        owner.update(state="finished", exit_code=status if status >= 0 else 128 - status)
-    except BaseException as error:
-        owner.update(state="finished", exit_code=1, error=str(error))
+        if (owners / "cancel").exists():
+            owner.update(state="finished", exit_code=130)
+            publish(owner)
+            sys.exit(0)
+        child = None
+        def stop(number, frame):
+            if child is not None and child.poll() is None:
+                child.send_signal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, stop)
+        publish(owner)
+        try:
+            with (root / "gate-output.log").open("wb") as output:
+                child = subprocess.Popen(["bash", "-lc", base64.b64decode(sys.argv[3]).decode()], start_new_session=True, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
+                owner.update(child_pid=child.pid, child_birth=birth(child.pid))
+                publish(owner)
+        except BaseException as error:
+            owner.update(state="finished", exit_code=1, error=str(error))
+            publish(owner)
+            sys.exit(0)
+    status = child.wait()
+    owner.update(state="finished", exit_code=status if status >= 0 else 128 - status)
     publish(owner)
 else:
-    # Detach before claiming. Losing SSH before spawn leaves no claim; losing it
-    # after spawn can create another bootstrap, but only one detached owner wins.
+    # Keep completed claims for seven days: retries remain idempotent while
+    # terminal tombstones have bounded retention. Never prune running owners.
+    import shutil
+    for directory in owners.parent.glob("breenix-*"):
+        candidate = directory / "gate-owner.json"
+        try:
+            if time.time() - candidate.stat().st_mtime > 7 * 86400 and json.loads(candidate.read_text()).get("state") == "finished":
+                shutil.rmtree(directory)
+        except (OSError, ValueError):
+            pass
     child = subprocess.Popen([sys.executable, "-c", base64.b64decode(sys.argv[3]).decode(), str(root), "worker", sys.argv[2], str(owners)], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
     deadline = time.monotonic() + 10
     while not record.exists():
         if child.poll() is not None or time.monotonic() >= deadline:
-            sys.exit(1)
+            sys.exit(75)
         time.sleep(.05)
 
 """#
 
     public static func startGateRequest(gate: ProcessRequest, paths: BeastPaths) -> ProcessRequest {
         guard let remote = gate.arguments.last,
-              let begin = remote.range(of: "-- bash -lc '") else { return gate }
+              let begin = remote.range(of: "-- bash -lc '") else { return sshRequest(paths: paths, remote: "exit 2") }
         let script = String(remote[begin.upperBound...].dropLast())
         let owner = Data(detachedOwner.utf8).base64EncodedString()
         let command = Data(script.utf8).base64EncodedString()
@@ -272,7 +300,7 @@ import json, pathlib, sys, time
 root = pathlib.Path(sys.argv[1])
 offset = int(sys.argv[2])
 owners = pathlib.Path(sys.argv[3]) if len(sys.argv) > 3 else root
-deadline = time.monotonic() + 5
+deadline = time.monotonic() + 60
 while True:
     try:
         owner = json.loads((owners / "gate-owner.json").read_text())
@@ -294,7 +322,7 @@ while True:
     if owner["state"] == "running":
         try:
             fields = pathlib.Path("/proc/%d/stat" % owner["pid"]).read_text().rsplit(")",1)[1].split()
-            if fields[19] != owner["birth"] or fields[0] == "Z":
+            if owner.get("boot_id") != pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip() or fields[19] != owner["birth"] or fields[0] == "Z":
                 sys.exit(76)
         except FileNotFoundError:
             sys.exit(76)
@@ -306,7 +334,7 @@ while True:
     public static func followGateRequest(paths: BeastPaths, offset: UInt64) -> ProcessRequest {
         let encoded = Data(gateFollower.utf8).base64EncodedString()
         var request = sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath) \(offset) \(paths.ownerPath) # gate-follow", combineOutput: false, liveStream: true)
-        request.timeoutSecs = 30
+        request.timeoutSecs = 75
         return request
     }
 
@@ -316,7 +344,7 @@ while True:
 import base64, json, os, pathlib, select, sys, time
 root = pathlib.Path(sys.argv[1])
 count = int(sys.argv[2])
-offsets = {}
+offsets = {tuple([int(k.split(":")[0]), k.split(":")[1]]): v for k, v in json.loads(sys.argv[3] if len(sys.argv) > 3 else "{}").items()}
 last = time.monotonic()
 pending = bytearray()
 os.set_blocking(1, False)
@@ -353,10 +381,11 @@ while time.monotonic() - last < 5:
             break
 """#
 
-    public static func streamSerialsRequest(paths: BeastPaths, boots: Int) -> ProcessRequest {
+    public static func streamSerialsRequest(paths: BeastPaths, boots: Int, offsets: [String: Int] = [:]) -> ProcessRequest {
+        let resume = String(data: try! JSONSerialization.data(withJSONObject: offsets, options: [.sortedKeys]), encoding: .utf8)!
         let encoded = Data(serialReader.utf8).base64EncodedString()
         let python = "import base64;exec(base64.b64decode(\"\(encoded)\"))"
-        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -u -c '\(python)' \(paths.gateTmpPath) \(boots)", combineOutput: false, liveStream: true)
+        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -u -c '\(python)' \(paths.gateTmpPath) \(boots) '\(resume)'", combineOutput: false, liveStream: true)
     }
 
     /// Signal this run's supervisor and detached worker, including a worker whose
@@ -403,13 +432,65 @@ def stop_gate(record, proc):
         time.sleep(.2)
     return 1 if any(alive(p, t) for p, t in targets.items()) else 0
 
+def cancel(root, owners, proc):
+    import fcntl
+    owners.mkdir(parents=True, exist_ok=True)
+    record = owners / "gate-owner.json"
+    with (owners / "gate-launch.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        # The marker closes the pre-owner/pre-identity race, including delayed bootstraps.
+        (owners / "cancel").touch()
+        try:
+            owner = json.loads(record.read_text())
+        except FileNotFoundError:
+            owner = dict(state="finished", exit_code=130)
+            record.write_text(json.dumps(owner))
+        same_boot = owner.get("boot_id") == (proc / "sys/kernel/random/boot_id").read_text().strip()
+    def alive(pid, birth):
+        if not same_boot or pid is None:
+            return False
+        try:
+            fields = (proc / str(pid) / "stat").read_text().rsplit(")",1)[1].split()
+            return fields[19] == birth and fields[0] != "Z"
+        except FileNotFoundError:
+            return False
+    if owner.get("state") != "finished":
+        pid, token = owner.get("pid"), owner.get("birth")
+        if alive(pid, token):
+            os.kill(pid, signal.SIGTERM)
+        else:
+            # A surviving child is still ours even when its owner died.
+            child, birth = owner.get("child_pid"), owner.get("child_birth")
+            if alive(child, birth):
+                os.kill(child, signal.SIGTERM)
+        identity = root / "launcher-gate.json"
+        if same_boot and identity.exists() and stop_gate(identity, proc) != 0:
+            return 1
+        deadline = time.monotonic() + 130
+        while (alive(pid, token) or alive(owner.get("child_pid"), owner.get("child_birth"))) and time.monotonic() < deadline:
+            time.sleep(.2)
+        if alive(pid, token) or alive(owner.get("child_pid"), owner.get("child_birth")):
+            return 1
+        # Preserve the worker's terminal verdict if it finished during cancellation.
+        owner = json.loads(record.read_text())
+        if owner.get("state") != "finished":
+            owner.update(state="finished", exit_code=76)
+            record.write_text(json.dumps(owner))
+    # gate-tree's evidence guard must also see the abandoned lane as finished.
+    lane = root / "run-owner.json"
+    if lane.exists():
+        value = json.loads(lane.read_text())
+        value["state"] = "finished"
+        lane.write_text(json.dumps(value))
+    return 0
+
 if __name__ == "__main__":
-    sys.exit(stop_gate(pathlib.Path(sys.argv[1]), pathlib.Path("/proc")))
+    sys.exit(cancel(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path("/proc")))
 """#
 
     public static func stopGateRequest(paths: BeastPaths) -> ProcessRequest {
         let encoded = Data(gateStopper.utf8).base64EncodedString()
-        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath)/launcher-gate.json")
+        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath) \(paths.ownerPath)")
     }
 
     // No `bash -lc` needed: a single command, no env sourcing, no shell

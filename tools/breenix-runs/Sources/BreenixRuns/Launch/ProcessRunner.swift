@@ -98,18 +98,19 @@ public final class RealProcessRunner: ProcessRunner, @unchecked Sendable {
         let stdoutBuffer = LockedBuffer()
         let stderrBuffer = request.combineOutput ? stdoutBuffer : LockedBuffer()
 
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
-            stdoutBuffer.append(data)
-            outputHandler?(data)
-        }
-
-        if !request.combineOutput {
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { handle.readabilityHandler = nil; return }
-                stderrBuffer.append(data)
+        // Dedicated readers own each pipe through EOF. Joining them also drains
+        // output callbacks before the caller computes a resume offset.
+        let readers = DispatchGroup()
+        func read(_ pipe: Pipe, _ buffer: LockedBuffer, _ callback: (@Sendable (Data) -> Void)?) {
+            readers.enter()
+            DispatchQueue.global().async {
+                defer { readers.leave() }
+                while true {
+                    let data = pipe.fileHandleForReading.availableData
+                    if data.isEmpty { break }
+                    buffer.append(data)
+                    callback?(data)
+                }
             }
         }
 
@@ -127,14 +128,10 @@ public final class RealProcessRunner: ProcessRunner, @unchecked Sendable {
             active.removeAll { $0 === process }
             processLock.unlock()
         }
+        read(stdoutPipe, stdoutBuffer, outputHandler)
+        if !request.combineOutput { read(stderrPipe, stderrBuffer, nil) }
         process.waitUntilExit()
-
-        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        appendRemaining(from: stdoutPipe, to: stdoutBuffer, outputHandler: outputHandler)
-        if !request.combineOutput {
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
-            appendRemaining(from: stderrPipe, to: stderrBuffer, outputHandler: nil)
-        }
+        readers.wait()
 
         return ProcessResult(
             stdout: stdoutBuffer.data,
@@ -165,13 +162,7 @@ except ProcessLookupError: pass
 sys.exit(status if status >= 0 else 128 - status)
 """#
 
-    private func appendRemaining(from pipe: Pipe, to buffer: LockedBuffer, outputHandler: (@Sendable (Data) -> Void)?) {
-        let data = pipe.fileHandleForReading.availableData
-        if !data.isEmpty {
-            buffer.append(data)
-            outputHandler?(data)
-        }
-    }
+
 }
 
 // All mutable state (`storage`) is only ever touched while holding `lock`, in
