@@ -159,6 +159,7 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32, claimed: Optio
         })
         .unwrap_or(true)
     });
+    crate::tracing::providers::scratch1413::rec(victim.as_u64(), crate::tracing::providers::scratch1413::CLAIM, claimed as u64);
     if !claimed {
         // Deferred: wake. A thread that has blocked is woken here, and one
         // about to block refuses to (`Thread::mark_kill_pending`), so its
@@ -175,7 +176,12 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32, claimed: Optio
 
     let batch = crate::task::scheduler::GroupBatchId::for_single_victim(victim.as_u64());
     crate::task::scheduler::Scheduler::send_exit_expedite_sgi(victim.as_u64(), batch);
-    let _ = crate::process::exit_process_and_retire(victim, exit_code);
+    let outcome = crate::process::exit_process_and_retire(victim, exit_code);
+    crate::tracing::providers::scratch1413::rec(victim.as_u64(), crate::tracing::providers::scratch1413::RETIRE, match outcome {
+        crate::process::ExitOutcome::FirstCommit => 1,
+        crate::process::ExitOutcome::RepeatCommit => 2,
+        crate::process::ExitOutcome::Missing => 3,
+    });
     crate::task::scheduler::set_need_resched();
 }
 
@@ -386,8 +392,34 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
         // here and claiming only after the release let the target take
         // SIGKILL itself at an interrupt return in between (#1414).
         if sig == SIGKILL {
+            let mut scratch_hold = false;
+            if let Some(row) = manager.get_process(target) {
+                if row.name.starts_with("sigkill_teardown_test_child")
+                    && row.main_thread.as_ref().map(|thread| thread.id) != caller_tid
+                {
+                    crate::tracing::providers::scratch1413::track(target.as_u64());
+                    crate::tracing::providers::scratch1413::rec(target.as_u64(), crate::tracing::providers::scratch1413::SEND_PUBLISH, 0);
+                    scratch_hold = true;
+                }
+            }
             let claimed = claim_kill_locked(manager, target, -(SIGKILL as i32));
+            crate::tracing::providers::scratch1413::rec(target.as_u64(), crate::tracing::providers::scratch1413::CLAIM_IN_SEND, claimed as u64);
             drop(manager_guard);
+            if scratch_hold {
+                // Hold until the victim's threads have retired, or 200 ms.
+                let until = crate::signal::monotonic_nanos() + 200_000_000;
+                while crate::signal::monotonic_nanos() < until
+                    && crate::task::scheduler::with_scheduler(|s| s.scratch_has_threads_of(target.as_u64()))
+                        .unwrap_or(false)
+                {
+                    let pause = crate::signal::monotonic_nanos() + 100_000;
+                    while crate::signal::monotonic_nanos() < pause {
+                        core::hint::spin_loop();
+                    }
+                }
+                crate::tracing::providers::scratch1413::rec(target.as_u64(), crate::tracing::providers::scratch1413::HOLD_END, 0);
+                crate::tracing::providers::scratch1413::start_busy_peers(target.as_u64());
+            }
             crate::signal::delivery::terminate_thread_group_peers(target, -(SIGKILL as i32));
             kill_process_now(target, -(SIGKILL as i32), Some(claimed));
             return SyscallResult::Ok(0);

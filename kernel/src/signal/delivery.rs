@@ -354,6 +354,9 @@ fn write_signal_stack(
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+    if sig == SIGKILL {
+        crate::tracing::providers::scratch1413::rec(process.id.as_u64(), crate::tracing::providers::scratch1413::SELF_DELIVER, 0);
+    }
     #[cfg(target_arch = "x86_64")]
     if fatal_exit_code(sig).is_some() {
         let exit_code = signal_death_exit_code(process, sig);
