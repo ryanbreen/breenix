@@ -952,14 +952,13 @@ impl ProcessManager {
         if !crate::process::limits::fork_allowed(self, parent_pid) {
             return Err("Process limit exceeded");
         }
-        let (parent_pgid, (parent_sid, parent_ctty), parent_cwd, (cred, nice), umask, limits) = {
+        let (parent_pgid, parent_cwd, (cred, nice), umask, limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
             (
                 parent.pgid,
-                (parent.sid, parent.ctty),
                 parent.cwd.copy(),
                 (parent.cred.clone(), parent.nice),
                 parent.umask,
@@ -971,11 +970,23 @@ impl ProcessManager {
         let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred)?;
 
         // Set up the parent-child relationship and inherit attributes.
+        {
+            let mut rows = self.processes.range_mut(
+                parent_pid.min(child_pid)..=parent_pid.max(child_pid),
+            );
+            let (_, first) = rows.next().ok_or("Parent process not found")?;
+            let (_, last) = rows.next_back().ok_or("Child process not found")?;
+            let (parent, child) = if parent_pid < child_pid {
+                (first, last)
+            } else {
+                (last, first)
+            };
+            crate::tty::ctty::inherit(child, parent);
+        }
+
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
             child.parent = Some(parent_pid);
             child.pgid = parent_pgid;
-            child.sid = parent_sid;
-            child.ctty = parent_ctty;
             child.cwd = parent_cwd;
             child.nice = nice;
             child.umask = umask;
@@ -1510,14 +1521,13 @@ impl ProcessManager {
         if !crate::process::limits::fork_allowed(self, parent_pid) {
             return Err("Process limit exceeded");
         }
-        let (parent_pgid, (parent_sid, parent_ctty), parent_cwd, (cred, nice), umask, limits) = {
+        let (parent_pgid, parent_cwd, (cred, nice), umask, limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
             (
                 parent.pgid,
-                (parent.sid, parent.ctty),
                 parent.cwd.copy(),
                 (parent.cred.clone(), parent.nice),
                 parent.umask,
@@ -1529,11 +1539,23 @@ impl ProcessManager {
         let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred)?;
 
         // Set up parent-child relationship and inherit attributes
+        {
+            let mut rows = self.processes.range_mut(
+                parent_pid.min(child_pid)..=parent_pid.max(child_pid),
+            );
+            let (_, first) = rows.next().ok_or("Parent process not found")?;
+            let (_, last) = rows.next_back().ok_or("Child process not found")?;
+            let (parent, child) = if parent_pid < child_pid {
+                (first, last)
+            } else {
+                (last, first)
+            };
+            crate::tty::ctty::inherit(child, parent);
+        }
+
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
             child.parent = Some(parent_pid);
             child.pgid = parent_pgid;
-            child.sid = parent_sid;
-            child.ctty = parent_ctty;
             child.cwd = parent_cwd;
             child.nice = nice;
             child.umask = umask;
@@ -2823,7 +2845,6 @@ impl ProcessManager {
             parent_name,
             parent_entry_point,
             parent_pgid,
-            (parent_sid, parent_ctty),
             parent_cwd,
             parent_thread_info,
             parent_heap_start,
@@ -2850,7 +2871,6 @@ impl ProcessManager {
                 parent.name.clone(),
                 parent.entry_point,
                 parent.pgid,
-                (parent.sid, parent.ctty),
                 parent.cwd.copy(),
                 _parent_thread.clone(),
                 parent.heap_start,
@@ -2893,8 +2913,10 @@ impl ProcessManager {
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
-        child_process.sid = parent_sid;
-        child_process.ctty = parent_ctty;
+        crate::tty::ctty::inherit(
+            &mut child_process,
+            self.processes.live_row(&parent_pid).ok_or("Parent process not found")?,
+        );
         child_process.cwd = parent_cwd;
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
@@ -3583,8 +3605,6 @@ impl ProcessManager {
 
         // Capture parent's pgid, sid, and cwd before borrowing page_table
         let parent_pgid = parent.pgid;
-        let parent_sid = parent.sid;
-        let parent_ctty = parent.ctty;
         let parent_cwd = parent.cwd.copy();
 
         // Create the child process with the same entry point
@@ -3592,8 +3612,7 @@ impl ProcessManager {
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
-        child_process.sid = parent_sid;
-        child_process.ctty = parent_ctty;
+        crate::tty::ctty::inherit(&mut child_process, parent);
         child_process.cwd = parent_cwd;
 
         // Extract parent heap/mmap bounds and memory usage before we drop the parent borrow

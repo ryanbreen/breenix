@@ -84,6 +84,8 @@ pub fn sys_setsid() -> SyscallResult {
         return SyscallResult::Err(EPERM);
     }
 
+    crate::tty::ctty::set_group_ctty(manager, group, None);
+
     // Create new session: set sid = pgid = pid, for every thread of the
     // process.
     let new_sid = pid;

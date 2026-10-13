@@ -217,11 +217,7 @@ fn arm(path: &str, name: &str) -> TestResult<usize> {
     })
 }
 pub fn run(arch: &str) -> bool {
-    // Driver is an init child; a new session cannot own an existing controlling PTY.
-    if cv(process::setsid()).is_err() {
-        super::emit("[CONSOLE_READ_SETUP:FAIL:setsid]");
-        return false;
-    }
+    // As an init child, the driver inherits the console controlling terminal.
     let mut passed = 0;
     for path in ["/dev/console", "/dev/tty"] {
         for name in ARMS {

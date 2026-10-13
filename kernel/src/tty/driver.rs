@@ -569,8 +569,15 @@ impl TtyDevice {
 
     /// Set the session leader
     #[allow(dead_code)]
-    pub fn set_session(&self, pid: ProcessId) {
-        *self.session.lock() = Some(pid);
+    pub fn set_session(&self, session: Option<ProcessId>) {
+        *self.session.lock() = session;
+    }
+
+    /// Detach the console foreground group while keeping its IRQ snapshot current.
+    pub fn clear_foreground_pgrp(&self) -> Option<ProcessId> {
+        let old = self.get_foreground_pgrp().map(ProcessId::new);
+        self.store_foreground_pgrp(None);
+        old
     }
 
     /// Get the session leader
@@ -1087,6 +1094,7 @@ pub fn adopt_foreground_pgrp_from_reader(pid: ProcessId) {
 /// Initialize the console TTY device
 pub fn init_console() {
     let tty = Arc::new(TtyDevice::new(0));
+    tty.set_session(Some(ProcessId::new(crate::process::RESERVED_INIT_PID)));
     *CONSOLE_TTY.lock() = Some(tty);
     log::info!("Console TTY initialized");
 }
@@ -1168,12 +1176,12 @@ mod tests {
 
         // Set session
         let pid = ProcessId::new(42);
-        tty.set_session(pid);
+        tty.set_session(Some(pid));
         assert_eq!(tty.get_session(), Some(ProcessId::new(42)));
 
         // Can change session
         let new_pid = ProcessId::new(99);
-        tty.set_session(new_pid);
+        tty.set_session(Some(new_pid));
         assert_eq!(tty.get_session(), Some(ProcessId::new(99)));
     }
 
