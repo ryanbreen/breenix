@@ -41,8 +41,10 @@ pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
 
 /// sys_grantpt - Grant access to the slave PTY
 ///
-/// In a full implementation, this would change ownership and permissions
-/// of the slave device. For Breenix, we just validate the fd is a PTY master.
+/// POSIX grantpt: the slave's owner becomes the caller's real user ID and its
+/// mode owner read and write, group write (0620). Its group stays the one it
+/// was allocated with (the master opener's), as Breenix has no tty group.
+/// Opening the slave checks this ownership.
 ///
 /// # Arguments
 /// * `fd` - PTY master file descriptor
@@ -51,56 +53,30 @@ pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
 /// * `Ok(0)` - Success
 /// * `Err(errno)` on failure:
 ///   - EBADF (9): Bad file descriptor
-///   - ENOTTY (25): fd is not a PTY master
+///   - ENOTTY (25): fd is not a PTY master (the C library reports EINVAL)
 ///   - ESRCH (3): Process not found
 pub fn sys_grantpt(fd: u64) -> SyscallResult {
     let fd_i32 = fd as i32;
 
-    // Get current process
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("sys_grantpt: No current thread");
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3); // ESRCH
+    };
+    let (pair, uid) = {
+        let manager_guard = manager();
+        let Some((_, process)) = manager_guard
+            .as_ref()
+            .and_then(|manager| manager.find_process_by_thread(thread_id))
+        else {
             return SyscallResult::Err(3); // ESRCH
+        };
+        match process.fd_table.get(fd_i32).map(|entry| &entry.kind) {
+            Some(FdKind::PtyMaster(pair)) => (pair.clone(), process.cred.uid),
+            Some(_) => return SyscallResult::Err(ENOTTY as u64),
+            None => return SyscallResult::Err(9), // EBADF
         }
     };
-    let manager_guard = manager();
-    let process = match &*manager_guard {
-        Some(manager) => match manager.find_process_by_thread(thread_id) {
-            Some((_pid, p)) => p,
-            None => {
-                log::error!("sys_grantpt: Process not found for thread {}", thread_id);
-                return SyscallResult::Err(3); // ESRCH
-            }
-        },
-        None => {
-            log::error!("sys_grantpt: Process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-
-    // Get fd entry
-    let fd_entry = match process.fd_table.get(fd_i32) {
-        Some(entry) => entry,
-        None => {
-            log::error!("sys_grantpt: Bad file descriptor {}", fd_i32);
-            return SyscallResult::Err(9); // EBADF
-        }
-    };
-
-    // Verify it's a PTY master
-    match &fd_entry.kind {
-        FdKind::PtyMaster(pair) => {
-            log::debug!("sys_grantpt: fd {} is PTY master (pty {})", fd_i32, pair.pty_num);
-            // In a real system: chown slave to current user, chmod 0620
-            // For now, just succeed
-            SyscallResult::Ok(0)
-        }
-        _ => {
-            log::error!("sys_grantpt: fd {} is not a PTY master", fd_i32);
-            SyscallResult::Err(ENOTTY as u64)
-        }
-    }
+    pair.grant(uid);
+    SyscallResult::Ok(0)
 }
 
 /// sys_unlockpt - Unlock the slave PTY for opening
