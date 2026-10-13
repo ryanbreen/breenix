@@ -20,7 +20,8 @@
 use super::SyscallResult;
 
 // x86_64: one routine serves both directions. `rep movsb` is restartable, so a
-// fault leaves RIP on it with RCX holding the bytes still to copy.
+// fault leaves RIP on it with RCX holding the bytes still to copy, which the
+// copy's fault exit returns.
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
     r#"
@@ -31,8 +32,9 @@ core::arch::global_asm!(
     .global breenix_uaccess_cmpxchg_insn
     .global breenix_uaccess_load32
     .global breenix_uaccess_load32_insn
+    .global breenix_uaccess_copy_fixup
     .global breenix_uaccess_fixup
-// breenix_uaccess_copy(dst: RDI, src: RSI, len: RDX) -> RAX (0 = copied, 1 = faulted)
+// breenix_uaccess_copy(dst: RDI, src: RSI, len: RDX) -> RAX (the bytes not copied)
 breenix_uaccess_copy:
     mov rcx, rdx
 breenix_uaccess_insn:
@@ -55,6 +57,9 @@ breenix_uaccess_load32_insn:
     mov dword ptr [rsi], eax
     xor eax, eax
     ret
+breenix_uaccess_copy_fixup:
+    mov rax, rcx
+    ret
 breenix_uaccess_fixup:
     mov eax, 1
     ret
@@ -64,7 +69,10 @@ breenix_uaccess_fixup:
 
 // aarch64: the user side of each copy is a single unprivileged access, so only
 // those instructions are recognised; the kernel-side access is not. When both
-// pointers are 8-byte aligned the copy moves words, then the tail in bytes.
+// pointers are 8-byte aligned the copy moves words, then the tail in bytes. An
+// aligned word never crosses a page, and x2 counts the bytes still to copy
+// until the access that writes them succeeds, so the copy's fault exit
+// returns exactly the bytes not copied.
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
     r#"
@@ -80,8 +88,9 @@ core::arch::global_asm!(
     .global breenix_uaccess_cmpxchg_store
     .global breenix_uaccess_load32
     .global breenix_uaccess_load32_insn
+    .global breenix_uaccess_copy_fixup
     .global breenix_uaccess_fixup
-// breenix_uaccess_read(dst: x0 kernel, src: x1 user, len: x2) -> x0 (0 = copied, 1 = faulted)
+// breenix_uaccess_read(dst: x0 kernel, src: x1 user, len: x2) -> x0 (the bytes not copied)
 breenix_uaccess_read:
     orr x4, x0, x1
     tst x4, #7
@@ -107,7 +116,7 @@ breenix_uaccess_load:
 4:
     mov x0, #0
     ret
-// breenix_uaccess_write(dst: x0 user, src: x1 kernel, len: x2) -> x0 (0 = copied, 1 = faulted)
+// breenix_uaccess_write(dst: x0 user, src: x1 kernel, len: x2) -> x0 (the bytes not copied)
 breenix_uaccess_write:
     orr x4, x0, x1
     tst x4, #7
@@ -160,6 +169,9 @@ breenix_uaccess_load32_insn:
     str w2, [x1]
     mov x0, #0
     ret
+breenix_uaccess_copy_fixup:
+    mov x0, x2
+    ret
 breenix_uaccess_fixup:
     mov x0, #1
     ret
@@ -193,6 +205,7 @@ extern "C" {
     fn breenix_uaccess_cmpxchg(word: *mut u32, expected: u32, new: u32, seen: *mut u32) -> usize;
     static breenix_uaccess_load32_insn: u8;
     fn breenix_uaccess_load32(word: *const u32, value: *mut u32) -> usize;
+    static breenix_uaccess_copy_fixup: u8;
     static breenix_uaccess_fixup: u8;
 }
 
@@ -203,28 +216,35 @@ pub fn uaccess_fixup(pc: u64, addr: u64) -> Option<u64> {
     if addr >= crate::memory::layout::USER_STACK_REGION_END {
         return None;
     }
-    // Only the addresses of these assembly labels are taken.
+    // Only the addresses of these assembly labels are taken. A copy's fault
+    // exit returns the bytes it did not copy; the others return 1.
     #[cfg(target_arch = "x86_64")]
-    let hit = [
-        core::ptr::addr_of!(breenix_uaccess_insn),
+    let copies = [core::ptr::addr_of!(breenix_uaccess_insn)];
+    #[cfg(target_arch = "x86_64")]
+    let others = [
         core::ptr::addr_of!(breenix_uaccess_cmpxchg_insn),
         core::ptr::addr_of!(breenix_uaccess_load32_insn),
-    ]
-    .iter()
-    .any(|&insn| pc == insn as u64);
+    ];
     #[cfg(target_arch = "aarch64")]
-    let hit = [
+    let copies = [
         core::ptr::addr_of!(breenix_uaccess_load8),
         core::ptr::addr_of!(breenix_uaccess_load),
         core::ptr::addr_of!(breenix_uaccess_store8),
         core::ptr::addr_of!(breenix_uaccess_store),
+    ];
+    #[cfg(target_arch = "aarch64")]
+    let others = [
         core::ptr::addr_of!(breenix_uaccess_cmpxchg_load),
         core::ptr::addr_of!(breenix_uaccess_cmpxchg_store),
         core::ptr::addr_of!(breenix_uaccess_load32_insn),
-    ]
-    .iter()
-    .any(|&insn| pc == insn as u64);
-    hit.then(|| core::ptr::addr_of!(breenix_uaccess_fixup) as u64)
+    ];
+    if copies.iter().any(|&insn| pc == insn as u64) {
+        Some(core::ptr::addr_of!(breenix_uaccess_copy_fixup) as u64)
+    } else if others.iter().any(|&insn| pc == insn as u64) {
+        Some(core::ptr::addr_of!(breenix_uaccess_fixup) as u64)
+    } else {
+        None
+    }
 }
 
 /// Copy `len` bytes from user address `src` into the kernel buffer `dst`. The
@@ -242,10 +262,10 @@ pub fn read_user_bytes(dst: *mut u8, src: u64, len: usize) -> Result<(), u64> {
     // SAFETY: `dst` is a kernel buffer of `len` bytes owned by the caller; the
     // user side faults into the routine's fault exit rather than the kernel.
     #[cfg(target_arch = "x86_64")]
-    let faulted = unsafe { breenix_uaccess_copy(dst, src as *const u8, len) };
+    let left = unsafe { breenix_uaccess_copy(dst, src as *const u8, len) };
     #[cfg(target_arch = "aarch64")]
-    let faulted = unsafe { breenix_uaccess_read(dst, src as *const u8, len) };
-    if faulted == 0 {
+    let left = unsafe { breenix_uaccess_read(dst, src as *const u8, len) };
+    if left == 0 {
         Ok(())
     } else {
         Err(14) // EFAULT
@@ -259,23 +279,29 @@ pub fn read_user_bytes(dst: *mut u8, src: u64, len: usize) -> Result<(), u64> {
 /// copied by the fault handler and the write goes ahead. A fault part way
 /// through leaves the bytes before it written.
 pub fn write_user_bytes(dst: u64, src: *const u8, len: usize) -> Result<(), u64> {
-    if len == 0 {
-        return Ok(());
-    }
-    if dst == 0 || !crate::memory::layout::is_valid_user_range(dst, len) {
-        return Err(14); // EFAULT
-    }
-    // SAFETY: `src` is a kernel buffer of `len` bytes owned by the caller; the
-    // user side faults into the routine's fault exit rather than the kernel.
-    #[cfg(target_arch = "x86_64")]
-    let faulted = unsafe { breenix_uaccess_copy(dst as *mut u8, src, len) };
-    #[cfg(target_arch = "aarch64")]
-    let faulted = unsafe { breenix_uaccess_write(dst as *mut u8, src, len) };
-    if faulted == 0 {
+    if write_user_prefix(dst, src, len) == len {
         Ok(())
     } else {
         Err(14) // EFAULT
     }
+}
+
+/// Copy up to `len` bytes from the kernel buffer `src` to user address `dst`,
+/// stopping at the first byte the process cannot write, and return how many
+/// were written (Linux's copy_to_user reports the rest): `len` when all were,
+/// none when the range is not a legitimate user range. A copy-on-write page is
+/// copied by the fault handler and the write goes ahead.
+pub fn write_user_prefix(dst: u64, src: *const u8, len: usize) -> usize {
+    if len == 0 || dst == 0 || !crate::memory::layout::is_valid_user_range(dst, len) {
+        return 0;
+    }
+    // SAFETY: `src` is a kernel buffer of `len` bytes owned by the caller; the
+    // user side faults into the routine's fault exit rather than the kernel.
+    #[cfg(target_arch = "x86_64")]
+    let left = unsafe { breenix_uaccess_copy(dst as *mut u8, src, len) };
+    #[cfg(target_arch = "aarch64")]
+    let left = unsafe { breenix_uaccess_write(dst as *mut u8, src, len) };
+    len - left
 }
 
 /// Atomically replace the user word at `word` with `new` if it holds

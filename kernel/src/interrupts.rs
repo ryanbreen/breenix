@@ -1395,7 +1395,7 @@ extern "x86-interrupt" fn page_fault_handler(
             crate::per_cpu::preempt_enable();
             if !resolved {
                 // SAFETY: redirects this kernel-mode frame to a label in the
-                // same routine, which returns to its caller with RAX = 1.
+                // same routine, which returns to its caller with RAX nonzero.
                 unsafe {
                     stack_frame.as_mut().update(|frame| {
                         frame.instruction_pointer = x86_64::VirtAddr::new(fixup);
