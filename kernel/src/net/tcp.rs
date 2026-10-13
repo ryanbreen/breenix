@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::ipv4::{Ipv4Packet, PROTOCOL_TCP};
-use crate::syscall::errno::{EAGAIN, ECONNREFUSED, ECONNRESET, EPIPE};
+use crate::syscall::errno::{EAGAIN, ECONNREFUSED, ECONNRESET, EPIPE, ETIMEDOUT};
 
 // ============================================================================
 // Deferred TX queue: packets queued during RX processing for later sending.
@@ -204,7 +204,105 @@ const REAP_INTERVAL_MS: u64 = 1_000;
 /// Linux's SOMAXCONN, the largest backlog a listener takes.
 const MAX_BACKLOG: usize = 4096;
 
+/// The retransmission timeout before any round trip is measured (RFC 6298 2.1).
+const RTO_INITIAL_MS: u64 = 1_000;
+/// Bounds on the retransmission timeout: Linux's `TCP_RTO_MIN` and `TCP_RTO_MAX`.
+const RTO_MIN_MS: u64 = 200;
+const RTO_MAX_MS: u64 = 120_000;
+/// The clock granularity term of RFC 6298 2.2.
+const RTO_GRANULARITY_MS: u64 = 1;
+/// Timeouts tolerated before a connection gives up with ETIMEDOUT: Linux's
+/// `tcp_retries2`, and `tcp_syn_retries` during the handshake.
+const MAX_RETRIES: u32 = 15;
+const MAX_SYN_RETRIES: u32 = 6;
+
 static LAST_REAP_MS: AtomicU64 = AtomicU64::new(0);
+
+// ============================================================================
+// Timers: one kernel thread, `ktcptimerd`, sleeps until the earliest deadline of
+// any connection (a retransmission timeout, the end of TIME_WAIT, an orphan's
+// FIN_WAIT_2 limit) and runs the timers that are due.
+// ============================================================================
+
+static TIMER_THREAD: spin::Once<u64> = spin::Once::new();
+/// The deadline `ktcptimerd` sleeps until, u64::MAX when it sleeps with none.
+static TIMER_SLEEP_UNTIL_MS: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Set when a deadline earlier than the one slept for was armed.
+static TIMER_KICK: AtomicBool = AtomicBool::new(false);
+
+/// Start `ktcptimerd` if it is not running. Thread context, no TCP lock held.
+fn ensure_timer_thread() {
+    TIMER_THREAD.call_once(|| {
+        crate::task::kthread::kthread_run(tcp_timer_thread, "ktcptimerd")
+            .map(|handle| handle.tid())
+            .unwrap_or(0)
+    });
+}
+
+/// A connection armed a timer for `deadline`: wake `ktcptimerd` if it sleeps
+/// past it. Called with the connection table held, from thread or softirq.
+fn note_timer_deadline(deadline: u64) {
+    if deadline >= TIMER_SLEEP_UNTIL_MS.load(Ordering::Acquire) {
+        return;
+    }
+    TIMER_KICK.store(true, Ordering::Release);
+    if let Some(&tid) = TIMER_THREAD.get() {
+        if tid != 0 {
+            crate::task::scheduler::wake_thread_any_context(tid);
+        }
+    }
+}
+
+/// Run every connection timer that is due, and reap what has expired. Returns
+/// the earliest deadline still pending, published under the table lock as the
+/// one `ktcptimerd` sleeps until so that an earlier arm finds it.
+fn run_timers() -> Option<u64> {
+    with_tcp_connections(|connections| {
+        reap_expired(connections, true);
+        let now = now_ms();
+        let mut next: Option<u64> = None;
+        for conn in connections.values_mut() {
+            if conn.rtx_deadline_ms != 0 && now >= conn.rtx_deadline_ms {
+                conn.retransmit_timeout(now);
+            }
+            if let Some(deadline) = conn.next_deadline() {
+                next = Some(next.map_or(deadline, |n: u64| n.min(deadline)));
+            }
+        }
+        TIMER_SLEEP_UNTIL_MS.store(next.unwrap_or(u64::MAX), Ordering::Release);
+        next
+    })
+}
+
+fn tcp_timer_thread() {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return;
+    };
+    loop {
+        TIMER_KICK.store(false, Ordering::Release);
+        let next = run_timers();
+        // Retransmissions over loopback are queued for delivery; deliver them
+        // and send what the deferred queue holds.
+        crate::net::drain_loopback_queue();
+
+        crate::arch_without_interrupts(|| {
+            crate::task::scheduler::with_scheduler(|sched| match next {
+                Some(deadline) => {
+                    sched.block_current_for_timer(deadline.saturating_mul(1_000_000))
+                }
+                None => sched.block_current(),
+            });
+            if TIMER_KICK.load(Ordering::Acquire) {
+                crate::task::scheduler::with_scheduler(|sched| {
+                    sched.unblock(tid);
+                });
+            }
+        });
+        // A halting waiter keeps its CPU until it yields: yield before halting.
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
+    }
+}
 
 /// `a` precedes `b` in sequence space (RFC 9293 3.4).
 #[inline]
@@ -212,9 +310,11 @@ fn seq_lt(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) < 0
 }
 
+/// Monotonic milliseconds, on the clock the scheduler's timed sleeps use.
 #[inline]
 fn now_ms() -> u64 {
-    crate::time::get_monotonic_time()
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs.saturating_mul(1_000).saturating_add(nanos / 1_000_000)
 }
 
 /// TCP flags
@@ -701,10 +801,25 @@ pub struct TcpConnection {
     snd_cap: usize,
     /// The owner has finished sending: a FIN follows the queued data.
     fin_queued: bool,
-    /// The FIN is on the wire; it occupies the sequence number before `send_next`.
-    fin_sent: bool,
+    /// The sequence number our FIN occupies, once it has been sent.
+    fin_seq: Option<u32>,
     /// The peer acknowledged the FIN.
     fin_acked: bool,
+    /// The highest sequence number sent: `send_next` falls back to `send_unack`
+    /// when a retransmission timeout resends, and an ACK up to here is valid.
+    send_max: u32,
+    /// Retransmission timeout (RFC 6298).
+    rto_ms: u64,
+    /// Smoothed round-trip time and its variation, 0 before the first sample.
+    srtt_ms: u64,
+    rttvar_ms: u64,
+    /// The segment being timed: the sequence number its ACK reaches, and when it
+    /// was sent. Retransmitted segments are never timed (Karn's rule).
+    rtt_probe: Option<(u32, u64)>,
+    /// When the retransmission timer fires, 0 when it is not running.
+    rtx_deadline_ms: u64,
+    /// Consecutive timeouts without progress.
+    retries: u32,
     /// The peer's FIN arrived: after the queued bytes, the stream is at its end.
     peer_fin: bool,
     /// No descriptor refers to the connection any more.
@@ -810,8 +925,15 @@ impl TcpConnection {
             rcv_cap: DEFAULT_RCVBUF,
             snd_cap: DEFAULT_SNDBUF,
             fin_queued: false,
-            fin_sent: false,
+            fin_seq: None,
             fin_acked: false,
+            send_max: initial_seq.wrapping_add(1),
+            rto_ms: RTO_INITIAL_MS,
+            srtt_ms: 0,
+            rttvar_ms: 0,
+            rtt_probe: None,
+            rtx_deadline_ms: 0,
+            retries: 0,
             peer_fin: false,
             orphaned: false,
             timer_since_ms: 0,
@@ -869,6 +991,12 @@ impl TcpConnection {
         )
     }
 
+    /// True once the FIN is on the wire past `send_next`'s current value: sent and
+    /// not yet due for retransmission.
+    fn fin_in_flight(&self) -> bool {
+        self.fin_seq.is_some_and(|fin| seq_lt(fin, self.send_next))
+    }
+
     /// True when queued data or a queued FIN has not been sent.
     fn has_output(&self) -> bool {
         let sending = matches!(
@@ -879,7 +1007,9 @@ impl TcpConnection {
                 | TcpState::Closing
                 | TcpState::LastAck
         );
-        sending && (self.tx_buffer.len() > self.tx_sent || (self.fin_queued && !self.fin_sent))
+        sending
+            && (self.tx_buffer.len() > self.tx_sent
+                || (self.fin_queued && !self.fin_in_flight() && !self.fin_acked))
     }
 
     /// Queue as much of `data` as the send buffer takes and memory allows.
@@ -892,6 +1022,34 @@ impl TcpConnection {
         take
     }
 
+    /// Send `len` queued bytes starting `offset` bytes after `send_unack`, at
+    /// `send_next`. False when IP output refused them.
+    fn send_data(&mut self, offset: usize, len: usize) -> bool {
+        let seg = self.segment(self.send_next, TcpFlags::ack_psh());
+        let (front, back) = self.tx_buffer.as_slices();
+        let end = offset + len;
+        let parts: [&[u8]; 2] = if end <= front.len() {
+            [&front[offset..end], &[]]
+        } else if offset >= front.len() {
+            [&back[offset - front.len()..end - front.len()], &[]]
+        } else {
+            [&front[offset..], &back[..end - front.len()]]
+        };
+        transmit(&seg, &[], parts)
+    }
+
+    /// Note that sequence space up to `send_next` has been sent: time it if it is
+    /// new and nothing else is being timed, and run the retransmission timer.
+    fn sent_through_next(&mut self) {
+        if seq_lt(self.send_max, self.send_next) {
+            self.send_max = self.send_next;
+            if self.rtt_probe.is_none() && self.retries == 0 {
+                self.rtt_probe = Some((self.send_next, now_ms()));
+            }
+        }
+        self.arm_retransmit();
+    }
+
     /// Send what the peer's window allows of the unsent data, then the FIN once
     /// every byte before it is out. False when IP output refused a segment: the
     /// bytes stay queued and `drain_deferred_tx` sends them later.
@@ -902,37 +1060,29 @@ impl TcpConnection {
         while self.tx_sent < self.tx_buffer.len() {
             let room = (self.send_window as usize).saturating_sub(self.tx_sent);
             if room == 0 {
-                // The peer's window is full. Its next ACK opens it and sets TX_RETRY.
+                // The peer's window is full. Its next ACK opens it and sets
+                // TX_RETRY; the retransmission timer probes it meanwhile.
+                self.arm_retransmit();
                 return true;
             }
             let len = (self.tx_buffer.len() - self.tx_sent)
                 .min(room)
                 .min(self.mss as usize);
-            let seq = self.send_next;
-            let seg = self.segment(seq, TcpFlags::ack_psh());
-            let (front, back) = self.tx_buffer.as_slices();
-            let start = self.tx_sent;
-            let end = start + len;
-            let parts: [&[u8]; 2] = if end <= front.len() {
-                [&front[start..end], &[]]
-            } else if start >= front.len() {
-                [&back[start - front.len()..end - front.len()], &[]]
-            } else {
-                [&front[start..], &back[..end - front.len()]]
-            };
-            if !transmit(&seg, &[], parts) {
+            if !self.send_data(self.tx_sent, len) {
                 return false;
             }
-            self.tx_sent = end;
+            self.tx_sent += len;
             self.send_next = self.send_next.wrapping_add(len as u32);
+            self.sent_through_next();
         }
-        if self.fin_queued && !self.fin_sent {
+        if self.fin_queued && !self.fin_in_flight() && !self.fin_acked {
             let seg = self.segment(self.send_next, TcpFlags::fin_ack());
             if !transmit(&seg, &[], [&[], &[]]) {
                 return false;
             }
-            self.fin_sent = true;
+            self.fin_seq = Some(self.send_next);
             self.send_next = self.send_next.wrapping_add(1);
+            self.sent_through_next();
         }
         true
     }
@@ -974,18 +1124,116 @@ impl TcpConnection {
         self.tx_buffer.clear();
         self.tx_sent = 0;
         self.send_shutdown = true;
+        self.rtx_deadline_ms = 0;
         wake_connection_waiters(self);
     }
 
     fn enter_time_wait(&mut self) {
         self.state = TcpState::TimeWait;
         self.timer_since_ms = now_ms();
+        self.rtx_deadline_ms = 0;
+        note_timer_deadline(self.timer_since_ms + TIME_WAIT_MS);
+    }
+
+    /// Fold a round-trip sample into the timeout (RFC 6298 2.2-2.4).
+    fn sample_rtt(&mut self, rtt: u64) {
+        if self.srtt_ms == 0 {
+            self.srtt_ms = rtt.max(1);
+            self.rttvar_ms = rtt / 2;
+        } else {
+            let delta = self.srtt_ms.abs_diff(rtt);
+            self.rttvar_ms = (3 * self.rttvar_ms + delta) / 4;
+            self.srtt_ms = ((7 * self.srtt_ms + rtt) / 8).max(1);
+        }
+        self.rto_ms = (self.srtt_ms + (4 * self.rttvar_ms).max(RTO_GRANULARITY_MS))
+            .clamp(RTO_MIN_MS, RTO_MAX_MS);
+    }
+
+    /// True while something sent awaits its acknowledgement, or the peer's
+    /// window is shut on data waiting to go.
+    fn needs_retransmit_timer(&self) -> bool {
+        let outstanding = self.send_unack != self.send_max;
+        let probing = self.send_window == 0 && self.tx_buffer.len() > self.tx_sent;
+        outstanding || probing
+    }
+
+    /// Start the retransmission timer if it should run and is not running, or
+    /// stop it if nothing needs it (RFC 6298 5.1).
+    fn arm_retransmit(&mut self) {
+        if !self.needs_retransmit_timer() {
+            self.rtx_deadline_ms = 0;
+        } else if self.rtx_deadline_ms == 0 {
+            self.rtx_deadline_ms = now_ms() + self.rto_ms;
+            note_timer_deadline(self.rtx_deadline_ms);
+        }
+    }
+
+    /// Restart the retransmission timer: an ACK acknowledged new data
+    /// (RFC 6298 5.3).
+    fn restart_retransmit(&mut self) {
+        self.rtx_deadline_ms = 0;
+        self.arm_retransmit();
+    }
+
+    /// The retransmission timer fired: resend from the oldest unacknowledged
+    /// byte with the timeout doubled (RFC 6298 5.4-5.6), or give up with
+    /// ETIMEDOUT after as many tries as Linux makes.
+    fn retransmit_timeout(&mut self, now: u64) {
+        self.retries += 1;
+        let limit = if matches!(self.state, TcpState::SynSent | TcpState::SynReceived) {
+            MAX_SYN_RETRIES
+        } else {
+            MAX_RETRIES
+        };
+        if self.retries > limit {
+            if !matches!(self.state, TcpState::SynSent) {
+                self.send_reset();
+            }
+            self.error = Some(ETIMEDOUT);
+            self.close_now();
+            return;
+        }
+        self.rto_ms = (self.rto_ms * 2).min(RTO_MAX_MS);
+        self.rtt_probe = None;
+        self.rtx_deadline_ms = now + self.rto_ms;
+        note_timer_deadline(self.rtx_deadline_ms);
+        match self.state {
+            TcpState::SynSent => {
+                let seg = self.segment(self.send_initial, TcpFlags::syn());
+                transmit(&seg, &mss_option(local_mss(self.id.remote_ip)), [&[], &[]]);
+            }
+            TcpState::SynReceived => {
+                let seg = self.segment(self.send_initial, TcpFlags::syn_ack());
+                transmit(&seg, &mss_option(local_mss(self.id.remote_ip)), [&[], &[]]);
+            }
+            _ if self.send_window == 0 && !self.tx_buffer.is_empty() => {
+                // The peer's window is shut: probe it with the oldest unacknowledged
+                // byte (RFC 9293 3.8.6.1). Its answer carries the window.
+                self.send_next = self.send_unack;
+                self.tx_sent = 0;
+                if self.send_data(0, 1) {
+                    self.tx_sent = 1;
+                    self.send_next = self.send_unack.wrapping_add(1);
+                    if seq_lt(self.send_max, self.send_next) {
+                        self.send_max = self.send_next;
+                    }
+                }
+            }
+            _ if self.send_unack != self.send_max => {
+                // Go back to the oldest unacknowledged byte and send again what
+                // the window allows; the peer drops what it already holds.
+                self.send_next = self.send_unack;
+                self.tx_sent = 0;
+                self.push_output();
+            }
+            _ => self.rtx_deadline_ms = 0,
+        }
     }
 
     /// Process the acknowledgement field of a segment in a synchronized state.
     fn process_ack(&mut self, header: &TcpHeader) {
         let ack = header.ack_num;
-        if seq_lt(self.send_next, ack) {
+        if seq_lt(self.send_max, ack) {
             // Acknowledges something never sent (RFC 9293 3.10.7.4): answer with
             // an ACK and otherwise ignore it.
             self.send_ack();
@@ -997,23 +1245,45 @@ impl TcpConnection {
         }
         let window_was = self.send_window;
         self.send_window = header.window_size;
+        if self.send_window == 0 {
+            // The peer answers while its window stays shut: it is alive, so the
+            // probes it answers do not count toward giving up.
+            self.retries = 0;
+        }
         let acked = ack.wrapping_sub(self.send_unack) as usize;
         let mut freed = false;
         if acked > 0 {
-            let data = acked.min(self.tx_sent);
+            let data = acked.min(self.tx_buffer.len());
             self.tx_buffer.drain(..data);
-            self.tx_sent -= data;
             self.send_unack = ack;
+            if seq_lt(self.send_next, ack) {
+                self.send_next = ack;
+            }
+            self.tx_sent = (self.send_next.wrapping_sub(self.send_unack) as usize)
+                .min(self.tx_buffer.len());
             freed = data > 0;
-            if self.fin_sent && ack == self.send_next {
+            if self.fin_seq.is_some_and(|fin| seq_lt(fin, ack)) {
                 self.fin_acked = true;
             }
+            if let Some((end, sent)) = self.rtt_probe {
+                if !seq_lt(ack, end) {
+                    self.rtt_probe = None;
+                    self.sample_rtt(now_ms().saturating_sub(sent));
+                }
+            }
+            self.retries = 0;
+            self.restart_retransmit();
+        } else if self.send_window != window_was {
+            self.arm_retransmit();
         }
         if self.fin_acked {
             match self.state {
                 TcpState::FinWait1 => {
                     self.state = TcpState::FinWait2;
                     self.timer_since_ms = now_ms();
+                    if self.orphaned {
+                        note_timer_deadline(self.timer_since_ms + ORPHAN_FIN_WAIT2_MS);
+                    }
                 }
                 TcpState::Closing => self.enter_time_wait(),
                 TcpState::LastAck => self.close_now(),
@@ -1025,6 +1295,18 @@ impl TcpConnection {
         }
         if freed {
             wake_connection_waiters(self);
+        }
+    }
+
+    /// The next instant a timer of this connection is due, if any runs.
+    fn next_deadline(&self) -> Option<u64> {
+        match self.state {
+            TcpState::TimeWait if self.orphaned => Some(self.timer_since_ms + TIME_WAIT_MS),
+            TcpState::FinWait2 if self.orphaned => {
+                Some(self.timer_since_ms + ORPHAN_FIN_WAIT2_MS)
+            }
+            _ if self.rtx_deadline_ms != 0 => Some(self.rtx_deadline_ms),
+            _ => None,
         }
     }
 
@@ -1210,14 +1492,32 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
                         }
                         // Buffer any data that arrived with this packet, as far as
                         // the window the SYN+ACK offered reaches.
-                        if !payload.is_empty() && header.seq_num == pending.recv_next {
+                        if !payload.is_empty() {
                             let room = DEFAULT_RCVBUF.saturating_sub(pending.early_data.len());
-                            let take = payload.len().min(room);
-                            if pending.early_data.try_reserve(take).is_ok() {
-                                pending.early_data.extend_from_slice(&payload[..take]);
-                                pending.recv_next =
-                                    pending.recv_next.wrapping_add(take as u32);
+                            if header.seq_num == pending.recv_next {
+                                let take = payload.len().min(room);
+                                if pending.early_data.try_reserve(take).is_ok() {
+                                    pending.early_data.extend_from_slice(&payload[..take]);
+                                    pending.recv_next =
+                                        pending.recv_next.wrapping_add(take as u32);
+                                }
                             }
+                            // Acknowledge what is held, so the peer does not
+                            // resend it while the connection waits for accept.
+                            let window = DEFAULT_RCVBUF
+                                .saturating_sub(pending.early_data.len())
+                                .min(u16::MAX as usize) as u16;
+                            send_tcp_packet(
+                                local_ip,
+                                ip.src_ip,
+                                header.dst_port,
+                                header.src_port,
+                                pending.send_initial.wrapping_add(1),
+                                pending.recv_next,
+                                TcpFlags::ack(),
+                                window,
+                                &[],
+                            );
                         }
                     }
 
@@ -1278,6 +1578,8 @@ fn handle_syn_sent(conn: &mut TcpConnection, header: &TcpHeader) {
     conn.send_unack = header.ack_num;
     conn.mss = effective_mss(conn.id.remote_ip, header.mss_option);
     conn.state = TcpState::Established;
+    conn.retries = 0;
+    conn.restart_retransmit();
     conn.send_ack();
 
     // Wake threads blocked in connect()
@@ -1322,6 +1624,8 @@ fn handle_tcp_for_connection(
             conn.state = TcpState::Established;
             conn.send_unack = header.ack_num;
             conn.send_window = header.window_size;
+            conn.retries = 0;
+            conn.restart_retransmit();
             wake_connection_waiters(conn);
             // The ACK that completes the handshake may carry data or a FIN.
         }
@@ -1339,6 +1643,10 @@ fn handle_tcp_for_connection(
         return;
     }
     if header.flags.syn {
+        // A SYN on a synchronized connection gets a challenge ACK (RFC 5961 4.2);
+        // it is also how a peer that never saw our final ACK completes its
+        // handshake when it sends its SYN+ACK again.
+        conn.send_ack();
         return;
     }
 
@@ -1349,11 +1657,21 @@ fn handle_tcp_for_connection(
         }
     }
 
+    // Drop the front of a segment that repeats bytes already received: after a
+    // retransmission, segment boundaries need not match the first sending.
+    let mut seq = header.seq_num;
+    let mut payload = payload;
+    let behind = conn.recv_next.wrapping_sub(seq) as usize;
+    if !payload.is_empty() && seq_lt(seq, conn.recv_next) && behind < payload.len() {
+        payload = &payload[behind..];
+        seq = conn.recv_next;
+    }
+
     let mut need_ack = false;
     let mut in_sequence = payload.is_empty();
     if !payload.is_empty() {
         need_ack = true;
-        if conn.may_receive_data() && header.seq_num == conn.recv_next {
+        if conn.may_receive_data() && seq == conn.recv_next {
             if conn.recv_shutdown
                 && matches!(conn.state, TcpState::FinWait1 | TcpState::FinWait2)
             {
@@ -1374,7 +1692,7 @@ fn handle_tcp_for_connection(
 
     if header.flags.fin {
         need_ack = true;
-        let fin_seq = header.seq_num.wrapping_add(payload.len() as u32);
+        let fin_seq = seq.wrapping_add(payload.len() as u32);
         if in_sequence && fin_seq == conn.recv_next && !conn.peer_fin {
             conn.recv_next = conn.recv_next.wrapping_add(1); // FIN consumes sequence
             conn.peer_fin = true;
@@ -1535,6 +1853,7 @@ pub fn tcp_connect(
     remote_port: u16,
     owner_pid: crate::process::process::ProcessId,
 ) -> Result<ConnectionId, &'static str> {
+    ensure_timer_thread();
     let config = super::config();
 
     // A connection to the loopback network is made from 127.0.0.1, so its
@@ -1551,6 +1870,8 @@ pub fn tcp_connect(
     let mut conn = TcpConnection::new_outgoing(conn_id, isn, owner_pid);
     conn.mss = local_mss(remote_ip);
     let syn = conn.segment(isn, TcpFlags::syn());
+    // The SYN is outstanding until the SYN+ACK comes; the timer resends it.
+    conn.arm_retransmit();
 
     // Add connection to table. An earlier incarnation of the same four-tuple
     // that only waits out TIME_WAIT with no owner gives way to the new one.
@@ -1568,8 +1889,7 @@ pub fn tcp_connect(
         return Err("Connection already exists");
     }
 
-    // Send SYN. One lost here leaves the connection in SYN_SENT until connect's
-    // own timeout.
+    // Send SYN. One lost here is sent again by the retransmission timer.
     transmit(&syn, &mss_option(local_mss(remote_ip)), [&[], &[]]);
 
     Ok(conn_id)
@@ -1613,6 +1933,7 @@ pub fn tcp_listen(
 
 /// Accept a pending connection (called from accept syscall)
 pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
+    ensure_timer_thread();
     let pending = with_tcp_listeners(|listeners| {
         listeners.get_mut(&local_port).and_then(|listener| {
             listener
@@ -1652,6 +1973,10 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
         conn.send_unack = conn.send_next;
     } else {
         conn.state = TcpState::SynReceived;
+        // The SYN+ACK is outstanding until the final ACK comes.
+        conn.send_max = conn.send_next;
+        conn.send_unack = pending.send_initial;
+        conn.arm_retransmit();
     }
     conn.recv_initial = pending.recv_initial;
     // Use the recv_next from pending, which accounts for any early data
@@ -1682,6 +2007,7 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
                     conn.state = TcpState::Established;
                     conn.send_unack = conn.send_next;
                     conn.send_window = final_pending.peer_window;
+                    conn.restart_retransmit();
                 }
 
                 if final_pending.early_data.len() > copied_early_data_len {
@@ -1957,7 +2283,11 @@ pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
                 conn.close_now();
             }
             TcpState::Established | TcpState::CloseWait => conn.queue_fin(),
-            TcpState::FinWait2 => conn.timer_since_ms = now_ms(),
+            TcpState::FinWait2 => {
+                conn.timer_since_ms = now_ms();
+                note_timer_deadline(conn.timer_since_ms + ORPHAN_FIN_WAIT2_MS);
+            }
+            TcpState::TimeWait => note_timer_deadline(conn.timer_since_ms + TIME_WAIT_MS),
             TcpState::SynReceived => {
                 conn.send_reset();
                 conn.close_now();
@@ -1966,7 +2296,6 @@ pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
             TcpState::FinWait1
             | TcpState::Closing
             | TcpState::LastAck
-            | TcpState::TimeWait
             | TcpState::Closed => {}
         }
         reap_expired(connections, true);
