@@ -85,8 +85,3 @@ libc = "0.2"
 serde_json = "1.0"
 syn = { version = "2", features = ["full"] }
 proc-macro2 = "1"
-
-# Cargo profiles are scoped to packages, not individual integration targets.
-# Optimize the root host test crates without changing the kernel's profile.
-[profile.test.package.breenix]
-opt-level = 2

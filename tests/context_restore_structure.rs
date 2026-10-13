@@ -11,13 +11,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 type SourceCache<T> = OnceLock<Mutex<HashMap<String, Arc<T>>>>;
 
 fn cached_source<T>(cache: &SourceCache<T>, source: &str, build: impl FnOnce() -> T) -> Arc<T> {
-    let mut entries = cache.get_or_init(Mutex::default).lock().unwrap();
-    if let Some(value) = entries.get(source) {
-        return Arc::clone(value);
+    let entries = cache.get_or_init(Mutex::default);
+    if let Some(value) = entries.lock().unwrap().get(source).cloned() {
+        return value;
     }
+    // Build without the cache lock: analysis may panic or consult other caches.
     let value = Arc::new(build());
-    entries.insert(source.to_owned(), Arc::clone(&value));
-    value
+    Arc::clone(entries.lock().unwrap().entry(source.to_owned()).or_insert(value))
 }
 
 fn repo_root() -> PathBuf {
@@ -31,13 +31,12 @@ fn repo_text(relative: &str) -> String {
 
 fn read_source(path: &std::path::Path) -> std::io::Result<String> {
     static SOURCES: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
-    let mut sources = SOURCES.get_or_init(Mutex::default).lock().unwrap();
-    if let Some(source) = sources.get(path) {
-        return Ok(source.clone());
+    let sources = SOURCES.get_or_init(Mutex::default);
+    if let Some(source) = sources.lock().unwrap().get(path).cloned() {
+        return Ok(source);
     }
     let source = fs::read_to_string(path)?;
-    sources.insert(path.to_path_buf(), source.clone());
-    Ok(source)
+    Ok(sources.lock().unwrap().entry(path.to_path_buf()).or_insert(source).clone())
 }
 
 fn rust_sources_below(relative: &str) -> &'static Vec<(PathBuf, String)> {
@@ -5808,12 +5807,14 @@ fn fatal_source_analysis(source: &str) -> Arc<FatalSourceAnalysis> {
 
 impl FatalSourceAnalysis {
     fn call_offsets(&self, source: &str, name: &str) -> Arc<Vec<usize>> {
-        let mut calls = self.calls.lock().unwrap();
-        Arc::clone(calls.entry(name.to_owned()).or_insert_with(|| {
-            // Keep the original matcher, including its byte boundaries and
-            // treatment of comments, strings and compiled-out mutation legs.
-            Arc::new(call_offsets(source, &self.mask, name))
-        }))
+        if let Some(calls) = self.calls.lock().unwrap().get(name).cloned() {
+            return calls;
+        }
+        // Keep the original matcher, including its byte boundaries and
+        // treatment of comments, strings and compiled-out mutation legs.
+        let calls = Arc::new(call_offsets(source, &self.mask, name));
+        debug_assert!(calls.windows(2).all(|pair| pair[0] < pair[1]));
+        Arc::clone(self.calls.lock().unwrap().entry(name.to_owned()).or_insert(calls))
     }
 }
 
