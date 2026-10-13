@@ -76,7 +76,7 @@ const HOLD_WINDOW_US: u64 = 50_000;
 const EXEC_WAIT_US: u64 = 30_000_000;
 const STUCK_DUMP_AFTER_US: u64 = 200_000;
 const STUCK_DUMP_EVERY_US: u64 = 1_000_000;
-const STUCK_DUMPS: u32 = 8;
+const STUCK_DUMPS: u32 = 15;
 
 pub fn holder_enter(site: u8) {
     HOLDER_SITE.store(site, Ordering::Relaxed);
@@ -377,14 +377,16 @@ fn arm(cpu: usize) -> bool {
 }
 
 /// The forcing condition holds: on the unfixed driver the target CPU's e1000
-/// interrupt is spinning on the lock the forcing thread holds; on the fixed
+/// interrupt is spinning on the lock the forcing thread holds on that CPU, at
+/// any of the driver's sites; on the fixed
 /// driver the forcing thread held the lock through its window and the target
 /// CPU then took an e1000 interrupt.
 fn exercised() -> bool {
     let target = TARGET_CPU.load(Ordering::Acquire);
     let state = STATE.load(Ordering::Acquire);
     let unfixed = state == TX_ENTERED
-        && HOLD_BEGAN.load(Ordering::Acquire)
+        && HOLDER_TID.load(Ordering::Acquire) == FORCE_TID.load(Ordering::Relaxed)
+        && HOLDER_CPU.load(Ordering::Relaxed) == target
         && IRQ_LOCK_WAIT_CPU.load(Ordering::Acquire) == target.wrapping_add(1);
     let fixed = state == TX_RETURNED
         && HOLD_DONE.load(Ordering::Acquire)
@@ -420,10 +422,12 @@ pub fn arm_and_wait(program: &str) -> bool {
         target,
         apic_id
     );
+    // Poll with interrupts enabled rather than sleep: on the unfixed driver
+    // the wedge can stop timer wakes from arriving.
     let begin = ARMED_US.load(Ordering::Relaxed);
     let mut ok = exercised();
     while !ok && now_us().saturating_sub(begin) < EXEC_WAIT_US {
-        sleep_ms();
+        core::hint::spin_loop();
         ok = exercised();
     }
     if ok {
