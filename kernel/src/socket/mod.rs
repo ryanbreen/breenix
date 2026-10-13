@@ -3,9 +3,13 @@
 //! Provides socket management and networking infrastructure.
 
 pub mod addr;
+pub mod object;
+pub mod opts;
+pub mod tcp;
 pub mod types;
 pub mod udp;
 pub mod unix;
+pub mod wait;
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
