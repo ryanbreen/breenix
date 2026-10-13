@@ -192,15 +192,22 @@ fn empty_messages_are_messages() {
     assert!(q.is_empty());
 }
 
+/// Ranks by thread ID, as the scheduler would report them.
+fn ranks(table: &'static [(u64, u8)]) -> impl Fn(u64) -> u8 {
+    move |id| table.iter().find(|e| e.0 == id).map_or(0, |e| e.1)
+}
+
+const UNRANKED: &[(u64, u8)] = &[];
+
 #[test]
 fn the_highest_ranked_waiter_that_waited_longest_is_served_first() {
     let mut w = WaitList::new();
-    w.add(10, 1, None).unwrap();
-    w.add(11, 50, None).unwrap();
-    w.add(12, 50, None).unwrap();
-    w.add(13, 1, None).unwrap();
+    for id in [10, 11, 12, 13] {
+        w.add(id, None).unwrap();
+    }
+    let rank = ranks(&[(10, 1), (11, 50), (12, 50), (13, 1)]);
     let mut order = Vec::new();
-    while let Some(next) = w.next_waiting() {
+    while let Some(next) = w.next_waiting(&rank) {
         next.done = true;
         order.push(next.id);
     }
@@ -212,47 +219,117 @@ fn the_highest_ranked_waiter_that_waited_longest_is_served_first() {
 }
 
 #[test]
+fn a_rank_changed_while_waiting_decides_who_is_served() {
+    // Thread 30 began waiting first at the higher rank; thread 31 has been
+    // raised above it since.
+    let mut w = WaitList::new();
+    w.add(30, None).unwrap();
+    w.add(31, None).unwrap();
+    assert_eq!(w.next_waiting(&ranks(&[(30, 50), (31, 1)])).map(|e| e.id), Some(30));
+    assert_eq!(w.next_waiting(&ranks(&[(30, 50), (31, 60)])).map(|e| e.id), Some(31));
+}
+
+#[test]
+fn a_reserved_place_takes_a_message_past_maxmsg_without_allocating() {
+    let mut q = MessageStore::new(1);
+    q.reserve().unwrap();
+    q.reserve().unwrap();
+    q.push(0, b"sent".to_vec()).unwrap();
+    assert!(q.is_full());
+    assert_eq!(q.reserved(), 2);
+    let expected_len = q.len() + 2;
+    q.push_reserved(0, b"cookie-1".to_vec());
+    q.push_reserved(0, b"cookie-2".to_vec());
+    assert_eq!((q.len(), q.reserved()), (expected_len, 0));
+    // A sent message still finds the queue full.
+    assert_eq!(q.push(0, b"more".to_vec()), Err(Refused::Full(b"more".to_vec())));
+    assert_eq!(q.pop(), Some((b"sent".to_vec(), 0)));
+    assert_eq!(q.pop(), Some((b"cookie-1".to_vec(), 0)));
+}
+
+#[test]
+fn a_place_given_back_is_not_kept() {
+    let mut q = MessageStore::new(4);
+    q.reserve().unwrap();
+    q.unreserve();
+    assert_eq!(q.reserved(), 0);
+    q.unreserve();
+    assert_eq!(q.reserved(), 0);
+}
+
+#[test]
+fn a_delivery_left_queued_goes_to_the_best_waiting_receiver() {
+    let mut c: Channel<()> = Channel::new(1);
+    c.receivers.add(40, None).unwrap();
+    c.receivers.add(41, None).unwrap();
+    c.msgs.reserve().unwrap();
+    c.msgs.push_reserved(0, b"cookie".to_vec());
+    assert_eq!(c.serve(&ranks(&[(41, 9)])), (true, false));
+    assert_eq!(c.msgs.len(), 0);
+    assert_eq!(c.receivers.get(41).and_then(|w| w.msg.clone()), Some((b"cookie".to_vec(), 0)));
+    assert!(c.receivers.get(40).is_some_and(|w| !w.done));
+    assert_eq!(c.serve(&ranks(UNRANKED)), (false, false));
+}
+
+#[test]
+fn a_send_behind_a_queued_delivery_keeps_the_order() {
+    // A delivery sits queued while a receiver waits; a send then queues
+    // behind it, and the receiver is served the older message.
+    let mut c: Channel<()> = Channel::new(4);
+    c.receivers.add(50, None).unwrap();
+    c.msgs.reserve().unwrap();
+    c.msgs.push_reserved(0, b"older".to_vec());
+    assert_eq!(c.send(0, b"newer".to_vec(), &ranks(UNRANKED)), Sent::Queued { notify: None, served: true });
+    assert_eq!(c.receivers.get(50).and_then(|w| w.msg.clone()), Some((b"older".to_vec(), 0)));
+    assert_eq!(c.receive(&ranks(UNRANKED)), Some(((b"newer".to_vec(), 0), false)));
+}
+
+#[test]
 fn a_send_with_a_receiver_waiting_hands_the_message_over() {
     // Capacity 1 and one blocked receiver: the first send goes to the
     // receiver, so a second, nonblocking send still finds room.
     let mut c: Channel<&str> = Channel::new(1);
     c.notify = Some("registration");
-    c.receivers.add(7, 1, None).unwrap();
-    assert_eq!(c.send(3, b"first".to_vec()), Sent::HandedOff);
+    c.receivers.add(7, None).unwrap();
+    assert_eq!(c.send(3, b"first".to_vec(), &ranks(UNRANKED)), Sent::HandedOff);
     assert_eq!(c.msgs.len(), 0);
     assert_eq!(c.receivers.get(7).and_then(|w| w.msg.clone()), Some((b"first".to_vec(), 3)));
     // The handed-off message used no registration; the second arrives at an
     // empty queue no receiver waits on, and uses it.
-    assert_eq!(c.send(0, b"second".to_vec()), Sent::Queued { notify: Some("registration") });
+    assert_eq!(
+        c.send(0, b"second".to_vec(), &ranks(UNRANKED)),
+        Sent::Queued { notify: Some("registration"), served: false }
+    );
     assert_eq!(c.msgs.len(), 1);
-    assert_eq!(c.send(0, b"third".to_vec()), Sent::Full(b"third".to_vec()));
+    assert_eq!(c.send(0, b"third".to_vec(), &ranks(UNRANKED)), Sent::Full(b"third".to_vec()));
 }
 
 #[test]
 fn a_message_into_a_nonempty_queue_uses_no_registration() {
     let mut c: Channel<u8> = Channel::new(4);
-    assert_eq!(c.send(0, b"a".to_vec()), Sent::Queued { notify: None });
+    assert_eq!(c.send(0, b"a".to_vec(), &ranks(UNRANKED)), Sent::Queued { notify: None, served: false });
     c.notify = Some(1);
-    assert_eq!(c.send(0, b"b".to_vec()), Sent::Queued { notify: None });
+    assert_eq!(c.send(0, b"b".to_vec(), &ranks(UNRANKED)), Sent::Queued { notify: None, served: false });
     assert_eq!(c.notify, Some(1));
 }
 
 #[test]
 fn a_receive_from_a_full_queue_queues_the_next_senders_message() {
     let mut c: Channel<()> = Channel::new(1);
-    assert_eq!(c.send(0, b"full".to_vec()), Sent::Queued { notify: None });
-    c.senders.add(20, 1, Some((b"low".to_vec(), 9))).unwrap();
-    c.senders.add(21, 60, Some((b"high".to_vec(), 1))).unwrap();
-    let (taken, served) = c.receive().unwrap();
+    assert_eq!(c.send(0, b"full".to_vec(), &ranks(UNRANKED)), Sent::Queued { notify: None, served: false });
+    c.senders.add(20, Some((b"low".to_vec(), 9))).unwrap();
+    c.senders.add(21, Some((b"high".to_vec(), 1))).unwrap();
+    let rank = ranks(&[(20, 1), (21, 60)]);
+    let (taken, served) = c.receive(&rank).unwrap();
     assert_eq!(taken, (b"full".to_vec(), 0));
     assert!(served);
     // The higher-ranked sender got the room, though its message's priority
     // is lower.
     assert!(c.senders.get(21).is_some_and(|w| w.done));
     assert!(c.senders.get(20).is_some_and(|w| !w.done));
-    assert_eq!(c.receive(), Some(((b"high".to_vec(), 1), true)));
-    assert_eq!(c.receive(), Some(((b"low".to_vec(), 9), false)));
-    assert_eq!(c.receive(), None);
+    assert_eq!(c.receive(&rank), Some(((b"high".to_vec(), 1), true)));
+    assert_eq!(c.receive(&rank), Some(((b"low".to_vec(), 9), false)));
+    assert_eq!(c.receive(&rank), None);
 }
 
 #[test]

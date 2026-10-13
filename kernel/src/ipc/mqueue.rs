@@ -9,15 +9,26 @@
 //! A send finds a waiting receiver before it queues: the message goes to the
 //! receiver directly and the queue's depth does not change. A receive that
 //! makes room moves a waiting sender's message into the queue. Either way the
-//! waiter served is the one of highest scheduling rank that has waited
-//! longest, and the waiters of that side are woken to check their own entries.
+//! waiter served is the one of highest scheduling rank, read when it is
+//! served, that has waited longest, and the waiters of that side are woken to
+//! check their own entries.
+//!
+//! A SIGEV_THREAD registration names a second queue, the notification queue
+//! its process's C library reads, and a 32-byte cookie. The registration
+//! sends that queue exactly one message: the cookie with its last byte set to
+//! NOTIFY_WOKENUP when it notifies, or to NOTIFY_REMOVED when it is removed
+//! without notifying (Linux's protocol, which Linux runs over a netlink
+//! socket). The message is allocated and its place in the notification queue
+//! reserved when the process registers (`Delivery`), so sending it needs no
+//! memory and cannot find the queue full.
 //!
 //! Locks: `MQ_NAMES`, then a queue's `inner`, then `MQ_USAGE`, then a wait
 //! queue's lock, then the scheduler. No queue lock is held while user memory
 //! is copied, a thread is woken, a signal is sent or PROCESS_MANAGER is
-//! taken. The queue locks taken under PROCESS_MANAGER are `inner`, by
-//! `on_close`, and `MQ_USAGE`, when a queue is freed; neither takes another
-//! lock under it.
+//! taken, and no two queues' `inner` locks are held at once. The locks taken
+//! under PROCESS_MANAGER are a queue's `inner`, by `on_close` and by a
+//! SIGEV_THREAD delivery, `MQ_USAGE`, when a queue is freed, and a wait
+//! queue's lock, for a deferred wake; none takes the scheduler.
 
 mod calls;
 pub mod dev;
@@ -30,7 +41,6 @@ pub use self::calls::{
 use self::store::{Channel, MqAttr, NameTable, Sent, Usage, WaitList};
 use super::fd::{status_flags, FileDescriptor};
 use super::object::IpcFile;
-use super::pipe::PipeBuffer;
 use super::wait::{wait_on, IpcDeadline, WaitEnd};
 use crate::fs::permissions::Credentials;
 use crate::irq_safe_mutex::IrqSafeMutex;
@@ -40,7 +50,6 @@ use crate::task::waitqueue::WaitQueueHead;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use spin::Mutex;
 
 /// Queue names, without their leading slash, and the queues they name.
 pub static MQ_NAMES: IrqSafeMutex<NameTable<Arc<MessageQueue>>> = IrqSafeMutex::new(NameTable::new());
@@ -61,30 +70,82 @@ const O_EXCL: u32 = 0o200;
 /// a queue's file in its mqueue filesystem reads as.
 const QUEUE_FILE_SIZE: i64 = 80;
 
+/// The length of a SIGEV_THREAD cookie (Linux's NOTIFY_COOKIE_LEN).
+pub const NOTIFY_COOKIE_LEN: usize = 32;
+/// What the last byte of a delivered cookie says (Linux's values): the
+/// registration notified, or it was removed without notifying.
+const NOTIFY_WOKENUP: u8 = 1;
+const NOTIFY_REMOVED: u8 = 2;
+
 /// How a registered process is told a message arrived.
-#[derive(Clone)]
+#[derive(Debug)]
 pub enum NotifyKind {
     /// SIGEV_NONE: the registration is used up and no signal is sent.
     Nothing,
-    /// SIGEV_SIGNAL: this signal is sent with SI_MESGQ and the value.
+    /// SIGEV_SIGNAL: this signal is sent with SI_MESGQ and the value. Signal
+    /// 0 is accepted and sends nothing, as on Linux.
     Signal(u32),
-    /// SIGEV_THREAD: the value is written, as 8 bytes, to this pipe, whose
-    /// reader in the C library starts the notification thread.
-    Thread(Arc<Mutex<PipeBuffer>>),
+    /// SIGEV_THREAD: the cookie message for the notification queue.
+    Thread(Delivery),
 }
 
-impl core::fmt::Debug for NotifyKind {
+/// A SIGEV_THREAD registration's one message: its cookie, allocated when
+/// the process registered, and the place in the notification queue reserved
+/// for it then. Dropped unsent, it gives the place back. It takes the
+/// notification queue's lock, so it is never sent or dropped while another
+/// queue's lock is held.
+pub struct Delivery {
+    channel: Arc<MessageQueue>,
+    cookie: Option<Vec<u8>>,
+}
+
+impl core::fmt::Debug for Delivery {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            NotifyKind::Nothing => write!(f, "Nothing"),
-            NotifyKind::Signal(signo) => write!(f, "Signal({signo})"),
-            NotifyKind::Thread(_) => write!(f, "Thread"),
+        write!(f, "Delivery(ino={})", self.channel.ino)
+    }
+}
+
+impl Delivery {
+    /// The message `cookie` for `channel`: EINVAL for a queue whose messages
+    /// cannot hold a cookie, ENOMEM with no memory for it or its place.
+    fn new(channel: Arc<MessageQueue>, cookie: &[u8; NOTIFY_COOKIE_LEN]) -> Result<Self, u64> {
+        if channel.msgsize < NOTIFY_COOKIE_LEN {
+            return Err(EINVAL as u64);
+        }
+        let mut msg = Vec::new();
+        msg.try_reserve_exact(NOTIFY_COOKIE_LEN).map_err(|_| ENOMEM as u64)?;
+        msg.extend_from_slice(cookie);
+        channel.inner.lock().chan.msgs.reserve()?;
+        Ok(Self { channel, cookie: Some(msg) })
+    }
+
+    /// Queue the cookie, its last byte set to `status`, in its reserved
+    /// place, and return the notification queue, whose receivers the caller
+    /// wakes. A receiver already waiting is served by the queue's next
+    /// operation (`Channel::serve`), so this reads no thread's rank and may
+    /// run under PROCESS_MANAGER.
+    fn send(mut self, status: u8) -> Arc<MessageQueue> {
+        if let Some(mut msg) = self.cookie.take() {
+            msg[NOTIFY_COOKIE_LEN - 1] = status;
+            let mut inner = self.channel.inner.lock();
+            inner.chan.msgs.push_reserved(0, msg);
+            self.channel.events.fetch_add(1, Ordering::Release);
+            self.channel.touched(&inner);
+        }
+        self.channel.clone()
+    }
+}
+
+impl Drop for Delivery {
+    fn drop(&mut self) {
+        if self.cookie.take().is_some() {
+            self.channel.inner.lock().chan.msgs.unreserve();
         }
     }
 }
 
 /// An mq_notify registration.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MqNotify {
     /// The registered process (its thread group ID).
     pub pid: u64,
@@ -145,13 +206,14 @@ impl MqInner {
     }
 }
 
-/// The calling thread, as a waiter on a queue.
-#[derive(Clone, Copy, Debug)]
-pub struct Caller {
-    /// Its thread ID.
-    pub tid: u64,
-    /// Its scheduling rank (`SchedPolicy::rank`).
-    pub rank: u8,
+/// Thread `tid`'s scheduling rank now (`SchedPolicy::rank`), which decides
+/// the order waiters are served in; 0 for a thread the scheduler no longer
+/// has. It takes the scheduler's lock, so it is never called under
+/// PROCESS_MANAGER.
+fn rank_of(tid: u64) -> u8 {
+    crate::task::scheduler::with_scheduler(|sched| sched.get_thread(tid).map(|t| t.sched.rank()))
+        .flatten()
+        .unwrap_or(0)
 }
 
 fn realtime_ns() -> i64 {
@@ -209,17 +271,20 @@ impl MessageQueue {
 
     /// mq_getsetattr on descriptor `fd`: the attributes, with its O_NONBLOCK
     /// as mq_flags, and with `nonblock` the descriptor's O_NONBLOCK set from
-    /// it. The queue's lock is held across both, so a concurrent call sees
-    /// the flags as one call or the other left them.
+    /// it. The flag is read and set in one atomic step on the description
+    /// word that F_SETFL also changes, which leaves the word's other flags
+    /// alone, so neither call can undo the other; the queue's lock makes the
+    /// reported attributes and that step one snapshot.
     pub fn getsetattr(&self, fd: &FileDescriptor, nonblock: Option<bool>) -> MqAttr {
         let inner = self.inner.lock();
-        let flags = fd.status_flags();
-        let attr = self.attr(&inner, flags & status_flags::O_NONBLOCK != 0);
-        if let Some(nonblock) = nonblock {
-            let kept = flags & status_flags::O_APPEND;
-            fd.set_status_flags(kept | if nonblock { status_flags::O_NONBLOCK } else { 0 });
-        }
-        attr
+        let flags = match nonblock {
+            Some(nonblock) => fd.update_status_flags(
+                status_flags::O_NONBLOCK,
+                if nonblock { status_flags::O_NONBLOCK } else { 0 },
+            ),
+            None => fd.status_flags(),
+        };
+        self.attr(&inner, flags & status_flags::O_NONBLOCK != 0)
     }
 
     /// Record the queue's depth and the time of a send or receive.
@@ -228,10 +293,31 @@ impl MessageQueue {
         self.changed_ns.store(realtime_ns(), Ordering::Relaxed);
     }
 
+    /// Wake the waiters `served` (receivers, senders) says were completed.
+    fn wake(&self, served: (bool, bool)) {
+        if served.0 {
+            self.receivers.wake_up();
+        }
+        if served.1 {
+            self.senders.wake_up();
+        }
+    }
+
+    /// Hand any messages a delivery left queued to the receivers waiting,
+    /// under `inner` (`Channel::serve`): the waiters completed.
+    fn serve(&self, inner: &mut MqInner) -> (bool, bool) {
+        let served = inner.chan.serve(&rank_of);
+        if served.0 || served.1 {
+            self.events.fetch_add(1, Ordering::Release);
+            self.touched(inner);
+        }
+        served
+    }
+
     /// Queue `msg` at `prio`, or hand it to a waiting receiver, waiting while
     /// the queue is full unless `nonblock`, until `deadline`. `sender` is the
     /// calling process's thread group ID and real user ID, for a
-    /// notification.
+    /// notification; `me` is the calling thread.
     pub fn send(
         &self,
         msg: Vec<u8>,
@@ -239,10 +325,10 @@ impl MessageQueue {
         nonblock: bool,
         deadline: &IpcDeadline,
         sender: (u64, u32),
-        me: Caller,
+        me: u64,
     ) -> Result<(), u64> {
         let mut inner = self.inner.lock();
-        let msg = match inner.chan.send(prio, msg) {
+        let msg = match inner.chan.send(prio, msg, &rank_of) {
             Sent::HandedOff => {
                 self.events.fetch_add(1, Ordering::Release);
                 self.touched(&inner);
@@ -250,9 +336,13 @@ impl MessageQueue {
                 self.receivers.wake_up();
                 return Ok(());
             }
-            Sent::Queued { notify } => {
+            Sent::Queued { notify, served } => {
+                if served {
+                    self.events.fetch_add(1, Ordering::Release);
+                }
                 self.touched(&inner);
                 drop(inner);
+                self.wake((served, served));
                 if let Some(n) = notify {
                     notify_owner(n, sender);
                 }
@@ -264,36 +354,39 @@ impl MessageQueue {
         if nonblock {
             return Err(EAGAIN as u64);
         }
-        if inner.chan.senders.add(me.tid, me.rank, Some((msg, prio))).is_err() {
+        if inner.chan.senders.add(me, Some((msg, prio))).is_err() {
             return Err(ENOMEM as u64);
         }
         drop(inner);
-        self.wait_done(&self.senders, deadline, me.tid, Side::Senders).map(|_| ())
+        self.wait_done(&self.senders, deadline, me, Side::Senders).map(|_| ())
     }
 
     /// Take the oldest message of the highest priority, waiting while the
-    /// queue is empty unless `nonblock`, until `deadline`.
-    pub fn receive(&self, nonblock: bool, deadline: &IpcDeadline, me: Caller) -> Result<(Vec<u8>, u32), u64> {
+    /// queue is empty unless `nonblock`, until `deadline`. Receivers already
+    /// waiting are served first.
+    pub fn receive(&self, nonblock: bool, deadline: &IpcDeadline, me: u64) -> Result<(Vec<u8>, u32), u64> {
         let mut inner = self.inner.lock();
-        if let Some((taken, served)) = inner.chan.receive() {
-            if served {
+        let mut served = self.serve(&mut inner);
+        if let Some((taken, sender)) = inner.chan.receive(&rank_of) {
+            if sender {
                 self.events.fetch_add(1, Ordering::Release);
+                served.1 = true;
             }
             self.touched(&inner);
             drop(inner);
-            if served {
-                self.senders.wake_up();
-            }
+            self.wake(served);
             return Ok(taken);
         }
+        let queued = !nonblock && inner.chan.receivers.add(me, None).is_ok();
+        drop(inner);
+        self.wake(served);
         if nonblock {
             return Err(EAGAIN as u64);
         }
-        if inner.chan.receivers.add(me.tid, me.rank, None).is_err() {
+        if !queued {
             return Err(ENOMEM as u64);
         }
-        drop(inner);
-        self.wait_done(&self.receivers, deadline, me.tid, Side::Receivers)?
+        self.wait_done(&self.receivers, deadline, me, Side::Receivers)?
             .msg
             .ok_or(EINVAL as u64)
     }
@@ -312,12 +405,21 @@ impl MessageQueue {
     ) -> Result<store::Waiter, u64> {
         loop {
             let seen = self.events.load(Ordering::Acquire);
-            {
+            let (entry, served) = {
                 let mut inner = self.inner.lock();
+                // A delivery can leave a message queued while receivers
+                // wait; a woken receiver serves it.
+                let served = match side {
+                    Side::Receivers => self.serve(&mut inner),
+                    Side::Senders => (false, false),
+                };
                 let list = inner.waiters(side);
-                if list.get(tid).is_some_and(|w| w.done) {
-                    return list.remove(tid).ok_or(EINVAL as u64);
-                }
+                let entry = if list.get(tid).is_some_and(|w| w.done) { list.remove(tid) } else { None };
+                (entry, served)
+            };
+            self.wake(served);
+            if let Some(entry) = entry {
+                return Ok(entry);
             }
             let end = wait_on(q, deadline, || self.events.load(Ordering::Acquire) == seen);
             let failed = match end {
@@ -340,23 +442,45 @@ impl MessageQueue {
     /// process is registered is EBUSY.
     pub fn set_notify(&self, pid: u64, request: Option<MqNotify>) -> Result<(), u64> {
         let mut inner = self.inner.lock();
-        let removed = match request {
-            None => {
-                if inner.chan.notify.as_ref().is_some_and(|n| n.pid == pid) {
-                    inner.chan.notify.take()
-                } else {
-                    None
-                }
-            }
-            Some(_) if inner.chan.notify.is_some() => return Err(EBUSY as u64),
+        let outcome = match request {
+            None => Ok(inner.chan.notify.take_if(|n| n.pid == pid)),
+            Some(n) if inner.chan.notify.is_some() => Err(n),
             Some(n) => {
                 inner.chan.notify = Some(n);
-                None
+                Ok(None)
             }
         };
         drop(inner);
-        drop(removed);
-        Ok(())
+        // A refused or removed registration's message is sent or dropped
+        // only now, with this queue's lock released.
+        match outcome {
+            Ok(removed) => {
+                if let Some(n) = removed {
+                    removed_without_notifying(n, false);
+                }
+                Ok(())
+            }
+            Err(refused) => {
+                drop(refused);
+                Err(EBUSY as u64)
+            }
+        }
+    }
+}
+
+/// Tell the process of registration `n`, removed without notifying, that it
+/// is gone: a SIGEV_THREAD registration sends its cookie with
+/// NOTIFY_REMOVED, so the C library can release what it kept for it.
+/// `deferred` says the caller holds PROCESS_MANAGER, so the notification
+/// queue's receivers are woken through the deferred path.
+fn removed_without_notifying(n: MqNotify, deferred: bool) {
+    if let NotifyKind::Thread(delivery) = n.kind {
+        let channel = delivery.send(NOTIFY_REMOVED);
+        if deferred {
+            channel.receivers.wake_up_deferred();
+        } else {
+            channel.receivers.wake_up();
+        }
     }
 }
 
@@ -367,24 +491,26 @@ impl Drop for MessageQueue {
 }
 
 /// Tell a registered process a message arrived: `sender` is the sending
-/// process's thread group ID and real user ID. A process that has exited or
-/// exec'd since it registered is not told.
+/// process's thread group ID and real user ID. A process that has exec'd
+/// since it registered is not told: the program image is checked, and the
+/// signal generated or the cookie queued, under PROCESS_MANAGER, which exec
+/// holds while it changes the image.
 fn notify_owner(n: MqNotify, sender: (u64, u32)) {
     match n.kind {
-        NotifyKind::Nothing => {}
+        NotifyKind::Nothing | NotifyKind::Signal(0) => {}
         NotifyKind::Signal(signo) => {
             let info = crate::signal::SigInfo::mesgq(sender.0 as u32, sender.1, n.value);
             let _ = crate::syscall::signal::send_kernel_signal(ProcessId::new(n.pid), signo, info, n.exec_id);
         }
-        NotifyKind::Thread(pipe) => {
-            let same_image = crate::process::with_process_manager(|manager| {
-                manager.get_process(ProcessId::new(n.pid)).is_some_and(|p| p.exec_id == n.exec_id)
+        NotifyKind::Thread(delivery) => {
+            let (pid, exec_id) = (ProcessId::new(n.pid), n.exec_id);
+            let channel = crate::process::with_process_manager(move |manager| {
+                let same_image = manager.get_process(pid).is_some_and(|p| p.exec_id == exec_id);
+                same_image.then(|| delivery.send(NOTIFY_WOKENUP))
             })
-            .unwrap_or(false);
-            if same_image {
-                // A pipe with no reader or no room loses the notification;
-                // the sender is not signalled for it.
-                let _ = pipe.lock().try_write(&n.value.to_ne_bytes(), true);
+            .flatten();
+            if let Some(channel) = channel {
+                channel.receivers.wake_up();
             }
         }
     }
@@ -523,15 +649,12 @@ impl IpcFile for MqFile {
     /// Any close by the registered process removes its registration
     /// (POSIX), including the closes of exit and exec. `pid` is the closing
     /// process's thread group ID (`ipc::object::close_owner`), whichever of
-    /// its threads closed.
+    /// its threads closed. This runs under PROCESS_MANAGER, so a SIGEV_THREAD
+    /// registration's NOTIFY_REMOVED wake is deferred.
     fn on_close(&self, pid: ProcessId) {
-        let mut inner = self.0.inner.lock();
-        let removed = if inner.chan.notify.as_ref().is_some_and(|n| n.pid == pid.as_u64()) {
-            inner.chan.notify.take()
-        } else {
-            None
-        };
-        drop(inner);
-        drop(removed);
+        let removed = self.0.inner.lock().chan.notify.take_if(|n| n.pid == pid.as_u64());
+        if let Some(n) = removed {
+            removed_without_notifying(n, true);
+        }
     }
 }

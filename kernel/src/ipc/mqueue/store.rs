@@ -174,19 +174,33 @@ impl Ord for Stored {
     }
 }
 
-/// A queue's messages: at most `maxmsg`, taken highest priority first and
-/// oldest first within a priority. The heap grows fallibly and keeps its
-/// capacity, so a push into room a pop made needs no memory.
+/// A queue's messages: at most `maxmsg` sent ones, taken highest priority
+/// first and oldest first within a priority. The heap grows fallibly and
+/// keeps its capacity, so a push into room a pop made needs no memory.
+///
+/// A place can also be reserved for a message the kernel will deliver later
+/// (a SIGEV_THREAD notification, `push_reserved`): the heap always has room
+/// for every reserved place, and a reserved message is queued even past
+/// `maxmsg`, so delivering one needs no memory and cannot find the queue
+/// full.
 #[derive(Debug)]
 pub struct MessageStore {
     maxmsg: usize,
     next_seq: u64,
+    reserved: usize,
     heap: BinaryHeap<Stored>,
 }
 
 impl MessageStore {
     pub const fn new(maxmsg: usize) -> Self {
-        Self { maxmsg, next_seq: 0, heap: BinaryHeap::new() }
+        Self { maxmsg, next_seq: 0, reserved: 0, heap: BinaryHeap::new() }
+    }
+
+    /// Make room in the heap for the queued messages, the reserved places
+    /// and `more`.
+    fn room(&mut self, more: usize) -> bool {
+        let wanted = self.reserved + more;
+        self.heap.capacity() - self.heap.len() >= wanted || self.heap.try_reserve(wanted).is_ok()
     }
 
     /// The messages queued.
@@ -207,17 +221,44 @@ impl MessageStore {
         if self.is_full() {
             return Err(Refused::Full(msg));
         }
-        let len = self.heap.len();
-        if len == self.heap.capacity() {
-            let grow = len.max(4).min(self.maxmsg - len);
-            if self.heap.try_reserve_exact(grow).is_err() {
-                return Err(Refused::NoMemory(msg));
-            }
+        if !self.room(1) {
+            return Err(Refused::NoMemory(msg));
         }
+        self.queue(prio, msg);
+        Ok(())
+    }
+
+    fn queue(&mut self, prio: u32, msg: Vec<u8>) {
         let seq = self.next_seq;
         self.next_seq += 1;
         self.heap.push(Stored { prio, seq, msg });
+    }
+
+    /// Reserve a place for a message `push_reserved` queues later: ENOMEM
+    /// with no memory for it.
+    pub fn reserve(&mut self) -> Result<(), u64> {
+        if !self.room(1) {
+            return Err(ENOMEM as u64);
+        }
+        self.reserved += 1;
         Ok(())
+    }
+
+    /// Give back a place `reserve` took and no message used.
+    pub fn unreserve(&mut self) {
+        self.reserved = self.reserved.saturating_sub(1);
+    }
+
+    /// Queue `msg` at `prio` in a place `reserve` took: no memory is
+    /// allocated, and `maxmsg` does not apply.
+    pub fn push_reserved(&mut self, prio: u32, msg: Vec<u8>) {
+        self.unreserve();
+        self.queue(prio, msg);
+    }
+
+    /// The places reserved and not yet used.
+    pub fn reserved(&self) -> usize {
+        self.reserved
     }
 
     /// Take the oldest message of the highest priority, with its priority.
@@ -231,8 +272,6 @@ impl MessageStore {
 pub struct Waiter {
     /// The waiting thread's ID.
     pub id: u64,
-    /// Its scheduling rank when it began to wait: higher is served first.
-    rank: u8,
     seq: u64,
     /// The operation was completed for it: a receiver was handed a message,
     /// or a sender's message was queued.
@@ -242,7 +281,10 @@ pub struct Waiter {
 }
 
 /// The senders or the receivers waiting on a queue. The one served next is
-/// the waiting one of highest scheduling rank that has waited longest.
+/// the waiting one of highest scheduling rank that has waited longest. A
+/// waiter's rank is read when a waiter is chosen, not when it began to wait,
+/// so a priority changed while it waits counts (POSIX mq_send and
+/// mq_receive).
 #[derive(Debug, Default)]
 pub struct WaitList {
     next_seq: u64,
@@ -254,15 +296,15 @@ impl WaitList {
         Self { next_seq: 0, list: Vec::new() }
     }
 
-    /// Add thread `id` at `rank`, carrying `msg` for a sender. With no memory
-    /// for its entry the message is handed back.
-    pub fn add(&mut self, id: u64, rank: u8, msg: Option<(Vec<u8>, u32)>) -> Result<(), Option<(Vec<u8>, u32)>> {
+    /// Add thread `id`, carrying `msg` for a sender. With no memory for its
+    /// entry the message is handed back.
+    pub fn add(&mut self, id: u64, msg: Option<(Vec<u8>, u32)>) -> Result<(), Option<(Vec<u8>, u32)>> {
         if self.list.try_reserve(1).is_err() {
             return Err(msg);
         }
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.list.push(Waiter { id, rank, seq, done: false, msg });
+        self.list.push(Waiter { id, seq, done: false, msg });
         Ok(())
     }
 
@@ -271,17 +313,24 @@ impl WaitList {
         self.list.iter().any(|w| !w.done)
     }
 
-    /// The still-waiting waiter to serve next.
-    pub fn next_waiting(&mut self) -> Option<&mut Waiter> {
+    /// The still-waiting waiter to serve next, given each thread's current
+    /// scheduling rank (`rank`, higher first).
+    pub fn next_waiting(&mut self, rank: &dyn Fn(u64) -> u8) -> Option<&mut Waiter> {
         self.list
             .iter_mut()
             .filter(|w| !w.done)
-            .max_by(|a, b| a.rank.cmp(&b.rank).then(b.seq.cmp(&a.seq)))
+            .map(|w| (rank(w.id), w))
+            .max_by(|a, b| a.0.cmp(&b.0).then(b.1.seq.cmp(&a.1.seq)))
+            .map(|(_, w)| w)
     }
 
     /// Thread `id`'s entry.
     pub fn get(&self, id: u64) -> Option<&Waiter> {
         self.list.iter().find(|w| w.id == id)
+    }
+
+    fn get_mut(&mut self, id: u64) -> Option<&mut Waiter> {
+        self.list.iter_mut().find(|w| w.id == id)
     }
 
     /// Remove thread `id`'s entry.
@@ -297,8 +346,9 @@ pub enum Sent<N> {
     /// A waiting receiver was handed the message: the queue did not change.
     HandedOff,
     /// The message was queued; `notify` is the registration it used up,
-    /// when it arrived at an empty queue.
-    Queued { notify: Option<N> },
+    /// when it arrived at an empty queue. `served` says waiting receivers
+    /// were handed messages a delivery had left queued (`Channel::serve`).
+    Queued { notify: Option<N>, served: bool },
     /// The queue is full; the message is handed back.
     Full(Vec<u8>),
     /// No memory for the message's place in the queue.
@@ -309,7 +359,10 @@ pub enum Sent<N> {
 /// decisions a send or a receive makes. A message for a waiting receiver goes
 /// to it directly, and the room a receive makes goes to a waiting sender, so
 /// the queue holds messages only while no receiver waits and has room only
-/// while no sender waits.
+/// while no sender waits. The one exception is a reserved delivery
+/// (`MessageStore::push_reserved`), which is queued without serving a
+/// receiver because it may be made where the receivers' ranks cannot be
+/// read; the next operation on the queue serves it (`serve`).
 #[derive(Debug)]
 pub struct Channel<N> {
     pub msgs: MessageStore,
@@ -326,27 +379,51 @@ impl<N> Channel<N> {
     /// Send `msg` at `prio`: to the next waiting receiver, or into the queue.
     /// Only a message queued into an empty queue uses the registration (POSIX
     /// mq_notify: a waiting receiver takes the message and no notification
-    /// is sent).
-    pub fn send(&mut self, prio: u32, msg: Vec<u8>) -> Sent<N> {
-        if let Some(receiver) = self.receivers.next_waiting() {
-            receiver.msg = Some((msg, prio));
-            receiver.done = true;
-            return Sent::HandedOff;
+    /// is sent). `rank` gives each waiting thread's scheduling rank.
+    pub fn send(&mut self, prio: u32, msg: Vec<u8>, rank: &dyn Fn(u64) -> u8) -> Sent<N> {
+        if self.msgs.is_empty() {
+            if let Some(receiver) = self.receivers.next_waiting(rank) {
+                receiver.msg = Some((msg, prio));
+                receiver.done = true;
+                return Sent::HandedOff;
+            }
         }
         match self.msgs.push(prio, msg) {
-            Ok(()) => Sent::Queued { notify: if self.msgs.len() == 1 { self.notify.take() } else { None } },
+            Ok(()) => {
+                let notify = if self.msgs.len() == 1 { self.notify.take() } else { None };
+                let served = self.serve(rank).0;
+                Sent::Queued { notify, served }
+            }
             Err(Refused::Full(msg)) => Sent::Full(msg),
             Err(Refused::NoMemory(_)) => Sent::NoMemory,
         }
     }
 
+    /// Hand queued messages to waiting receivers, best message to the
+    /// receiver served next, while both remain: whether a receiver and
+    /// whether a sender (whose message took the room) was served.
+    pub fn serve(&mut self, rank: &dyn Fn(u64) -> u8) -> (bool, bool) {
+        let (mut receivers, mut senders) = (false, false);
+        while !self.msgs.is_empty() {
+            let Some(id) = self.receivers.next_waiting(rank).map(|w| w.id) else { break };
+            let Some((taken, sender)) = self.receive(rank) else { break };
+            if let Some(receiver) = self.receivers.get_mut(id) {
+                receiver.msg = Some(taken);
+                receiver.done = true;
+            }
+            receivers = true;
+            senders |= sender;
+        }
+        (receivers, senders)
+    }
+
     /// Take the next message, and queue the next waiting sender's message in
     /// the room that leaves: the message, and whether a sender was served.
     /// The heap keeps the place the pop freed, so that push needs no memory.
-    pub fn receive(&mut self) -> Option<((Vec<u8>, u32), bool)> {
+    pub fn receive(&mut self, rank: &dyn Fn(u64) -> u8) -> Option<((Vec<u8>, u32), bool)> {
         let taken = self.msgs.pop()?;
         let mut served = false;
-        if let Some(sender) = self.senders.next_waiting() {
+        if let Some(sender) = self.senders.next_waiting(rank) {
             if let Some((msg, prio)) = sender.msg.take() {
                 match self.msgs.push(prio, msg) {
                     Ok(()) => {

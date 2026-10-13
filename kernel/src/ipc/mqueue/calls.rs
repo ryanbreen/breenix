@@ -6,7 +6,7 @@
 //! copies results out with no queue lock held.
 
 use super::store::{self, MqAttr, MQ_PRIO_MAX, NAME_MAX, PATH_MAX};
-use super::{Caller, Creator, MessageQueue, MqFile, MqNotify, NotifyKind};
+use super::{Creator, Delivery, MessageQueue, MqFile, MqNotify, NotifyKind, NOTIFY_COOKIE_LEN};
 use crate::fs::permissions::Credentials;
 use crate::ipc::fd::{status_flags, FdKind, FileDescriptor};
 use crate::ipc::object::{close_owner, IpcFile};
@@ -87,13 +87,9 @@ fn read_name(ptr: u64) -> Result<Name, u64> {
     Err(ENAMETOOLONG as u64)
 }
 
-/// The calling thread's ID and scheduling rank.
-fn caller() -> Result<Caller, u64> {
-    let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)?;
-    let rank = crate::task::scheduler::with_scheduler(|sched| sched.current_thread_mut().map(|t| t.sched.rank()))
-        .flatten()
-        .unwrap_or(0);
-    Ok(Caller { tid, rank })
+/// The calling thread's ID.
+fn caller() -> Result<u64, u64> {
+    crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)
 }
 
 /// mq_open(name, oflag, mode, attr): a descriptor for the queue `name`
@@ -262,27 +258,35 @@ fn mq_timedreceive(mqd: i32, msg: u64, len: u64, prio: u64, ts: u64) -> Result<u
     Ok(data.len() as u64)
 }
 
-/// The pipe whose write end is the calling process's descriptor `fd`, for a
-/// SIGEV_THREAD registration: EBADF if `fd` is not open, EINVAL if it is not
-/// a pipe's write end.
-fn notify_pipe(fd: i32) -> Result<Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, u64> {
+/// The message queue that is the calling process's descriptor `fd`, as a
+/// SIGEV_THREAD registration's notification queue: EBADF if `fd` is not
+/// open, EINVAL if it is not a message queue.
+fn notify_channel(fd: i32) -> Result<Arc<MessageQueue>, u64> {
     let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)?;
     crate::process::with_process_manager(|manager| {
         let (_, process) = manager.find_process_by_thread(tid).ok_or(ESRCH as u64)?;
-        match &process.fd_table.get(fd).ok_or(EBADF as u64)?.kind {
-            FdKind::PipeWrite(pipe) => Ok(pipe.clone()),
-            _ => Err(EINVAL as u64),
-        }
+        let FdKind::Ipc(file) = &process.fd_table.get(fd).ok_or(EBADF as u64)?.kind else {
+            return Err(EINVAL as u64);
+        };
+        Ok(file.as_any().downcast_ref::<MqFile>().ok_or(EINVAL as u64)?.0.clone())
     })
     .ok_or(ESRCH as u64)?
 }
 
 /// mq_notify(mqd, sevp): register the calling process to be told when a
 /// message arrives on the empty queue, or with a null `sevp` remove its
-/// registration. SIGEV_NONE and SIGEV_SIGNAL (a signal from 1 to NSIG) are
-/// as Linux has them. SIGEV_THREAD is the C library's interface to its
-/// notification thread: sigev_signo is the write end of a pipe the library
-/// reads, and the notification writes sigev_value to it as 8 bytes.
+/// registration. SIGEV_NONE and SIGEV_SIGNAL are as Linux has them,
+/// including signal 0, which Linux accepts and which sends nothing.
+///
+/// SIGEV_THREAD is the C library's interface to its notification thread, in
+/// Linux's form except for the descriptor: sigev_value points to a 32-byte
+/// cookie, read now, and sigev_signo is the descriptor the cookie is sent
+/// to. Linux takes a netlink socket there, which Breenix does not have; here
+/// it is a message queue, which receives the cookie as one message, its
+/// last byte NOTIFY_WOKENUP when the registration notifies or
+/// NOTIFY_REMOVED when it is removed without notifying. The arguments are
+/// checked in Linux's order: the sigevent, then the cookie and its
+/// descriptor, then `mqd`.
 pub fn sys_mq_notify(mqd: i32, sevp: u64) -> SyscallResult {
     result(mq_notify(mqd, sevp))
 }
@@ -294,12 +298,13 @@ fn mq_notify(mqd: i32, sevp: u64) -> Result<u64, u64> {
         let ev = copy_from_user(sevp as *const SigEvent).map_err(|_| EFAULT as u64)?;
         let kind = match ev.notify {
             SIGEV_NONE => NotifyKind::Nothing,
-            // Signal 0 is the null signal, which is not delivered, so a
-            // registration with it could not notify: EINVAL.
-            SIGEV_SIGNAL if (1..=crate::signal::constants::NSIG as i32).contains(&ev.signo) => {
+            SIGEV_SIGNAL if (0..=crate::signal::constants::NSIG as i32).contains(&ev.signo) => {
                 NotifyKind::Signal(ev.signo as u32)
             }
-            SIGEV_THREAD => NotifyKind::Thread(notify_pipe(ev.signo)?),
+            SIGEV_THREAD => {
+                let cookie = copy_from_user(ev.value as *const [u8; NOTIFY_COOKIE_LEN]).map_err(|_| EFAULT as u64)?;
+                NotifyKind::Thread(Delivery::new(notify_channel(ev.signo)?, &cookie)?)
+            }
             _ => return Err(EINVAL as u64),
         };
         Some((kind, ev.value))
