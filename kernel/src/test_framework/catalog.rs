@@ -178,6 +178,7 @@ pub const UTEST_PIPE_FORK: u16 = 373;
 pub const UTEST_PIPE_CONCURRENT: u16 = 374;
 pub const UTEST_JOB_CONTROL: u16 = 375;
 pub const UTEST_SIGKILL_TEARDOWN: u16 = 376;
+pub const UTEST_FIFO_FS: u16 = 377;
 
 // =============================================================================
 // Full Catalog
@@ -642,6 +643,11 @@ pub static CATALOG: &[BootTestDef] = &[
         category: BootTestCategory::UserspaceResult,
     },
     BootTestDef {
+        id: UTEST_FIFO_FS,
+        name: "utest_fifo_fs",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
         id: UTEST_FIFO,
         name: "utest_fifo",
         category: BootTestCategory::UserspaceResult,
@@ -822,6 +828,7 @@ pub fn utest_name_to_id(name: &str) -> Option<u16> {
         // hello_std_real is installed as hello_world on the ext2 disk
         "hello_world" | "hello_std_real" => Some(UTEST_HELLO_STD_REAL),
         "fifo_test" => Some(UTEST_FIFO),
+        "fifo_fs_test" => Some(UTEST_FIFO_FS),
         "kill_process_group_test" => Some(UTEST_KILL_PROCESS_GROUP),
         "exec_from_ext2_test" => Some(UTEST_EXEC_FROM_EXT2),
         "fs_block_alloc_test" => Some(UTEST_FS_BLOCK_ALLOC),

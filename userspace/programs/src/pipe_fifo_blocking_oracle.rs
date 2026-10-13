@@ -177,6 +177,7 @@ fn object(kind: &str, ordinal: usize) -> TestResult<(Fd, Fd)> {
             "FIFO reader before first writer must return EOF",
         )?;
         let writer = cv(fs::open(&path, fs::O_WRONLY | fs::O_NONBLOCK))?;
+        cv(fs::unlink(&path))?;
         (reader, writer)
     };
     mode(pair.0, true)?;

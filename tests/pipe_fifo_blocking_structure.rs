@@ -109,7 +109,7 @@ fn new_writer_close_notifications_are_owned_and_deferred() {
     }
     assert!(contains(
         &function(&fifo, "get_or_create_buffer"),
-        "PipeBuffer::new_zero_refs()"
+        "PipeBuffer::try_new_zero_refs()?"
     ));
     let zero = compact(&function(&pipe, "try_new_zero_refs"));
     assert!(zero.contains("readers:0") && zero.contains("writers:0"));
@@ -894,7 +894,7 @@ fn aggregate_writev(source: &str) -> bool {
         && body.contains("forvectorin&vectors")
         && body.contains("copy_from_user(addressas*constu8)")
         && body.contains(
-            "return super::blocking_io::write_pipe(&buffer,&gathered,nonblocking);"
+            "let result=super::blocking_io::write_pipe(&buffer,&gathered,nonblocking);"
                 .replace(' ', "")
                 .as_str(),
         )
@@ -910,7 +910,7 @@ fn writev_aggregate_atomicity_rejects_per_iovec_mutation() {
         "small pipe/FIFO writev must gather into one transfer"
     );
     let mutation = source.replace(
-        "return super::blocking_io::write_pipe(&buffer, &gathered, nonblocking);",
+        "let result = super::blocking_io::write_pipe(&buffer, &gathered, nonblocking);",
         "for vector in &vectors { handlers::write_vector(fd, vector.iov_base, vector.iov_len, true); }",
     );
     assert_ne!(mutation, source);

@@ -2016,6 +2016,7 @@ fn kernel_main_continue() -> ! {
         // Test FIFO (named pipe) functionality
         log::info!("=== IPC TEST: FIFO (named pipe) functionality ===");
         test_exec::test_fifo();
+        test_exec::test_fifo_fs();
 
         // Test SIGTERM delivery with default handler (kill test)
         log::info!("=== SIGNAL TEST: SIGTERM delivery with default handler ===");
