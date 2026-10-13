@@ -106,7 +106,6 @@ impl StdinBuffer {
     }
 
     /// Get number of bytes available to read
-    #[allow(dead_code)]
     pub(super) fn available(&self) -> usize {
         self.len
     }

@@ -8335,8 +8335,8 @@ fn test_syscall_dispatch() -> TestResult {
 }
 
 /// Verify sys_ioctl routes a master request to the guarded PTY handler.
-/// This security check requires EFAULT and an unchanged kernel sentinel;
-/// successful userspace requests are covered by pty_test.
+/// This security test requires EFAULT and an unchanged kernel sentinel;
+/// successful ioctl results are covered with real pointers by pty_test.
 fn test_arm64_pty_ioctl_path() -> TestResult {
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -8729,6 +8729,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
 fn test_pty_support_aarch64() -> TestResult {
     use crate::tty::ioctl::{Side, TIOCGPTLCK, TIOCGPTN, TIOCSPTLCK};
     use crate::tty::pty;
+    pty::init();
     let pair = match pty::allocate() {
         Ok(pair) => pair,
         Err(_) => return TestResult::Fail("pty allocation failed"),
@@ -8791,31 +8792,20 @@ fn test_telnetd_dependencies_aarch64() -> TestResult {
         _ => return TestResult::Fail("FdKind::TcpSocket not matching correctly"),
     }
 
-    // Step 2: Verify PTY allocation infrastructure exists
-    // Try to allocate a PTY - this tests the allocator, not syscalls
-    match pty::allocate() {
-        Ok(pair) => {
-            // PTY allocation succeeded
-            if pair.pty_num > 255 {
-                return TestResult::Fail("PTY number out of range on ARM64");
-            }
-            log::info!("PTY allocation succeeded: PTY #{}", pair.pty_num);
-        }
-        Err(e) => {
-            // PTY allocation may fail in boot context (no tty subsystem fully init)
-            // Just verify the FdKind variants exist
-            log::info!(
-                "PTY allocate returned error {} - verifying FdKind variants",
-                e
-            );
-        }
-    }
-
-    // Step 3: Verify FdKind variants exist for telnetd (compile-time check)
-    // These checks ensure the ARM64 build has all required variants
+    // Allocate a real pair for the Arc-valued descriptor variants.
+    pty::init();
+    let pair = match pty::allocate() {
+        Ok(pair) => pair,
+        Err(_) => return TestResult::Fail("PTY allocation failed on ARM64"),
+    };
+    let valid_number = pair.pty_num <= 255;
     let _ = FdKind::TcpSocket(0);
-    let _: fn(alloc::sync::Arc<crate::tty::pty::PtyPair>) -> FdKind = FdKind::PtyMaster;
-    let _: fn(alloc::sync::Arc<crate::tty::pty::PtyPair>) -> FdKind = FdKind::PtySlave;
+    let _ = FdKind::PtyMaster(pair.clone());
+    let _ = FdKind::PtySlave(pair.clone());
+    pty::close_master_ref(&pair);
+    if !valid_number {
+        return TestResult::Fail("PTY number out of range on ARM64");
+    }
 
     // Step 4: Verify socket types are available
     use crate::socket::types::{AF_INET, SOCK_STREAM};
