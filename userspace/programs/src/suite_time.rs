@@ -1120,7 +1120,6 @@ fn counter_frequency() -> Result<(u64, u64, u64), String> {
             if seconds < RTC_SPAN_S { continue; }
             value("rtc-start-edge", (first.width as u128 * 1_000_000 / freq as u128) as i64, "us", None);
             value("rtc-end-edge", (edge.width as u128 * 1_000_000 / freq as u128) as i64, "us", None);
-            value("rtc-edge-brackets", ((first.width as u128 + edge.width as u128) * 1_000_000 / freq as u128) as i64, "us", None);
             return rtc_counter::frequency(first, edge);
         }
     })();
