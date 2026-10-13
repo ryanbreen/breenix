@@ -63,22 +63,19 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
     use crate::tty::ctty::TtyRef;
     use crate::tty::ioctl::Side;
 
+    if fd > i32::MAX as u64 { return SyscallResult::Err(EBADF); }
+
     // Resolve the fd to a terminal and the side the ioctl is made on.
     let resolved = match get_fd_kind(fd as i32) {
         Some(FdKind::PtyMaster(pair)) => Ok((TtyRef::Pty(pair), Side::Master)),
         Some(FdKind::PtySlave(pair)) => Ok((TtyRef::Pty(pair), Side::Slave)),
         Some(FdKind::Device(crate::fs::devfs::DeviceType::Rtc)) => return rtc_ioctl(request, arg),
-        Some(FdKind::StdIo(_)) => console().map(|tty| (tty, Side::Console)),
+        Some(FdKind::Device(crate::fs::devfs::DeviceType::Tty)) | Some(FdKind::StdIo(_)) => console().map(|tty| (tty, Side::Console)),
         Some(_) => {
             log::debug!("sys_ioctl: fd {} is not a TTY/PTY device", fd);
             return SyscallResult::Err(ENOTTY);
         }
-        // Check if this fd is a TTY (stdin/stdout/stderr)
-        None if is_tty_fd(fd) => console().map(|tty| (tty, Side::Console)),
-        None => {
-            log::debug!("sys_ioctl: fd {} is not a TTY", fd);
-            return SyscallResult::Err(ENOTTY);
-        }
+        None => return SyscallResult::Err(EBADF),
     };
     let (tty, side) = match resolved {
         Ok(resolved) => resolved,
@@ -129,15 +126,6 @@ fn get_fd_kind(fd: i32) -> Option<FdKind> {
     Some(process.fd_table.get(fd)?.kind.clone())
 }
 
-/// Check if a file descriptor is a TTY
-///
-/// Currently, only fd 0, 1, 2 (stdin, stdout, stderr) are considered TTYs.
-/// This will be expanded when we have a proper fd table.
-#[inline]
-pub(crate) fn is_tty_fd(fd: u64) -> bool {
-    fd <= 2
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,89 +141,55 @@ mod tests {
     }
 
     // =============================================================================
-    // TTY FD Detection Tests
-    // =============================================================================
-
-    #[test]
-    fn test_is_tty_fd_stdin() {
-        assert!(is_tty_fd(0), "fd 0 (stdin) should be a TTY");
-    }
-
-    #[test]
-    fn test_is_tty_fd_stdout() {
-        assert!(is_tty_fd(1), "fd 1 (stdout) should be a TTY");
-    }
-
-    #[test]
-    fn test_is_tty_fd_stderr() {
-        assert!(is_tty_fd(2), "fd 2 (stderr) should be a TTY");
-    }
-
-    #[test]
-    fn test_is_tty_fd_first_non_tty() {
-        assert!(!is_tty_fd(3), "fd 3 should not be a TTY");
-    }
-
-    #[test]
-    fn test_is_tty_fd_large_fd() {
-        assert!(!is_tty_fd(100), "fd 100 should not be a TTY");
-    }
-
-    #[test]
-    fn test_is_tty_fd_max_u64() {
-        assert!(!is_tty_fd(u64::MAX), "fd u64::MAX should not be a TTY");
-    }
-
-    // =============================================================================
     // sys_ioctl Non-TTY FD Tests
     //
-    // These tests verify that sys_ioctl returns ENOTTY for non-TTY file descriptors.
+    // These tests verify that sys_ioctl returns EBADF for unopened file descriptors.
     // Note: Full sys_ioctl tests require the TTY subsystem to be initialized,
     // which happens during kernel boot. These tests focus on the fd validation
     // logic that happens before TTY dispatch.
     // =============================================================================
 
     #[test]
-    fn test_sys_ioctl_non_tty_fd_returns_enotty() {
+    fn test_sys_ioctl_non_tty_fd_returns_ebadf() {
         // fd 3 is not a TTY
         let result = sys_ioctl(3, 0x5401, 0); // TCGETS
-        assert_eq!(result, SyscallResult::Err(ENOTTY));
+        assert_eq!(result, SyscallResult::Err(EBADF));
     }
 
     #[test]
-    fn test_sys_ioctl_fd_4_returns_enotty() {
+    fn test_sys_ioctl_fd_4_returns_ebadf() {
         let result = sys_ioctl(4, 0x5401, 0);
-        assert_eq!(result, SyscallResult::Err(ENOTTY));
+        assert_eq!(result, SyscallResult::Err(EBADF));
     }
 
     #[test]
-    fn test_sys_ioctl_large_fd_returns_enotty() {
-        // Large fd values should return ENOTTY (not a TTY)
+    fn test_sys_ioctl_large_fd_returns_ebadf() {
+        // Large fd values should return EBADF (not a TTY)
         let result = sys_ioctl(1000, 0x5401, 0);
-        assert_eq!(result, SyscallResult::Err(ENOTTY));
+        assert_eq!(result, SyscallResult::Err(EBADF));
     }
 
     #[test]
-    fn test_sys_ioctl_max_fd_returns_enotty() {
-        // Max u64 fd should return ENOTTY
+    fn test_sys_ioctl_max_fd_returns_ebadf() {
+        // Max u64 fd should return EBADF
         let result = sys_ioctl(u64::MAX, 0x5401, 0);
-        assert_eq!(result, SyscallResult::Err(ENOTTY));
+        assert_eq!(result, SyscallResult::Err(EBADF));
     }
 
     #[test]
-    fn test_sys_ioctl_boundary_fd_3_returns_enotty() {
-        // fd 3 is the first non-TTY fd
+    fn test_sys_ioctl_boundary_fd_3_returns_ebadf() {
+        // fd 3 is the first unopened fd
         let result = sys_ioctl(3, 0x5402, 0); // TCSETS
-        assert_eq!(result, SyscallResult::Err(ENOTTY));
+        assert_eq!(result, SyscallResult::Err(EBADF));
     }
 
     // =============================================================================
-    // sys_ioctl with various request codes on non-TTY fd
+    // sys_ioctl with various request codes on unopened fd
     // =============================================================================
 
     #[test]
-    fn test_sys_ioctl_non_tty_fd_all_tty_requests_return_enotty() {
-        // All TTY ioctl requests should fail with ENOTTY on non-TTY fd
+    fn test_sys_ioctl_non_tty_fd_all_tty_requests_return_ebadf() {
+        // All TTY ioctl requests should fail with EBADF on unopened fd
         let requests = [
             0x5401, // TCGETS
             0x5402, // TCSETS
@@ -250,18 +204,23 @@ mod tests {
             let result = sys_ioctl(5, request, 0);
             assert_eq!(
                 result,
-                SyscallResult::Err(ENOTTY),
-                "Request {:#x} on non-TTY fd should return ENOTTY",
+                SyscallResult::Err(EBADF),
+                "Request {:#x} on unopened fd should return EBADF",
                 request
             );
         }
     }
 
     #[test]
-    fn test_sys_ioctl_non_tty_fd_unknown_request_returns_enotty() {
-        // Unknown request on non-TTY fd should still return ENOTTY
-        // (not ENOTTY from "unknown request", but from "not a TTY")
+    fn test_sys_ioctl_non_tty_fd_unknown_request_returns_ebadf() {
+        // Unknown request on unopened fd should still return EBADF
+        // (not EBADF from "unknown request", but from "not a TTY")
         let result = sys_ioctl(10, 0xDEAD, 0);
-        assert_eq!(result, SyscallResult::Err(ENOTTY));
+        assert_eq!(result, SyscallResult::Err(EBADF));
     }
+    #[test]
+    fn closed_standard_descriptors_are_ebadf() {
+        for fd in 0..=2 { assert_eq!(sys_ioctl(fd, 0x5401, 0), SyscallResult::Err(EBADF)); }
+    }
+
 }
