@@ -164,11 +164,15 @@ fn a_stale_byte_from_a_skipped_owner_does_not_leave_a_stage_line_broken() {
         5,
         (stage_line(), Kind::Plain),
     );
-    // CPU 1's fifth byte, checked before CPU 2 skipped it, landed inside CPU 2's line.
+    // CPU 1's fifth byte, checked before CPU 2 skipped it, landed inside CPU 2's
+    // line, including its prefix. Removing exactly that one byte must recover
+    // the complete original line; unrelated corruption is not evidence.
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("[ INFO] kernel:") && l.contains('a') && *l != line),
+            .any(|l| l.char_indices().any(|(at, byte)| {
+                byte == 'a' && format!("{}{}", &l[..at], &l[at + 1..]) == line
+            })),
         "the stalled CPU's byte never landed inside the stage line: {lines:?}"
     );
     assert!(lines.contains(&line), "no whole stage line: {lines:?}");

@@ -160,7 +160,15 @@ pub const fn category(id: &'static str, title: &'static str, cases: &'static [Ca
 }
 
 /// How long a case may run before it is killed and fails, unless the suite sets its own.
+/// A named allowance overrides both this default and the suite's own limit.
 pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;
+
+/// Named exceptions to case limits, checked by host tests against the stall deadline.
+/// RTC edge selection can span sixteen seconds plus three starting edges;
+/// allow reporter headroom without extending any other time-suite case.
+pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
+    ("time", "clocks/rate-counter", 25_000),
+];
 
 /// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.
 static CASE_DEADLINE_NS: AtomicU64 = AtomicU64::new(0);
@@ -302,7 +310,10 @@ impl Suite {
                 feed.start(&name);
                 screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed);
 
-                let outcome = run_case(case, self.case_limit_ms, self.id, &name, &mut screen, &mut feed);
+                let limit_ms = NAMED_CASE_ALLOWANCES.iter()
+                    .find(|&&(suite, case, _)| suite == self.id && case == name)
+                    .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
+                let outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
                 match &outcome {
                     Outcome::Pass { ms } => {
                         counts.passed += 1;

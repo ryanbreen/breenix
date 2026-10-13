@@ -56,7 +56,8 @@ lines.
 Each case runs in a forked child whose stdout and stderr go to `/dev/null`, so nothing a
 case prints can look like a suite line; only the VALUE and WAIT records below, which the
 runner writes for it, reach the serial while a case runs. A case that crashes or runs past the suite's time
-limit (10 seconds unless the suite sets its own) is a FAIL whose message says so, and so is
+limit (10 seconds, with a named 25-second allowance for `time/clocks/rate-counter`
+to bound the RTC measurement) is a FAIL whose message says so, and so is
 one that cannot be started in a child; the suite goes on. The suite waits on a case by
 polling, not sleeping, so a monotonic clock that stops is reported as a FAIL too. If the
 suite itself stops, the missing CASE lines show where.

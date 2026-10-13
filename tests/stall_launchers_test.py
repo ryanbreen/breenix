@@ -41,7 +41,7 @@ class StallLaunchers(unittest.TestCase):
         source = (ROOT / 'run.sh').read_text()
         functions = dict(re.findall(r'(?ms)^(\w+)\(\) \{\n(.*?)^\}', source))
         definitions = '\n'.join(f'{name}() {{\n{functions[name]}}}' for name in
-                                ('wait_boot_done', 'bounded_vm_command', 'finish_vm_boot',
+                                ('wait_boot_done', 'bounded_vm_command', 'score_vm_suite_disk', 'finish_vm_boot',
                                  'install_vm_boot_traps', 'hold_suite_panel', 'vm_is_running')
                                 if name in functions)
         blocks = re.findall(r'(?ms)^    if \[ "\$BOOT_MODE" = probe \].*?^    fi$', source)
@@ -52,6 +52,7 @@ class StallLaunchers(unittest.TestCase):
         for index, platform in enumerate(('parallels', 'vmware')):
             with self.subTest(platform=platform), tempfile.TemporaryDirectory() as tmp:
                 out = Path(tmp); scripts = out / 'scripts'; scripts.mkdir()
+                (out / 'docs').symlink_to(ROOT / 'docs')
                 for name in ('wait-boot-done.py', 'bounded-vm-command.py', 'wall_clock.py', 'boot_progress.py'):
                     (scripts / name).symlink_to(ROOT / 'scripts' / name)
                 recorder = scripts / 'vigil-record.sh'
