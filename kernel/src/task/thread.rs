@@ -1266,6 +1266,11 @@ impl Drop for TrapTime {
 
 /// The calling thread's own user and system nanoseconds, charged up to now
 /// first. None from a kernel thread.
+/// The calling thread's lock-free signal words.
+pub fn current_thread_signals() -> Option<&'static crate::signal::ThreadSignals> {
+    current_cpu_thread().map(|thread| &*thread.signals)
+}
+
 pub fn current_thread_cpu_split_ns() -> Option<(u64, u64)> {
     let thread = current_cpu_thread()?;
     thread.charge_timer_cpu();

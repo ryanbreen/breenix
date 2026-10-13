@@ -12,6 +12,7 @@ use super::SyscallResult;
 use crate::process::process::JobReport;
 use crate::process::ProcessId;
 use crate::signal::constants::{CLD_CONTINUED, CLD_STOPPED};
+use core::sync::atomic::Ordering;
 
 /// Ensure TTBR0 is set to the current thread's process page tables.
 ///
@@ -108,9 +109,12 @@ struct Found {
 /// Look once through the calling thread's process's children for a state
 /// change `options` asks for. A stop or continue it reports is consumed here,
 /// unless WNOWAIT; an exit is left for `reap` to claim. ECHILD when no child
-/// matches the selector.
-fn scan(thread_id: u64, selector: Selector, options: u32) -> Result<Option<Found>, u64> {
+/// matches the selector. `releases` is set to
+/// `process::process_manager_releases()` as the scan's own hold ends.
+fn scan(thread_id: u64, selector: Selector, options: u32, releases: &mut u64) -> Result<Option<Found>, u64> {
     crate::process::with_process_manager(|manager| {
+        // Read under the lock: the release ending this hold adds one.
+        *releases = crate::process::process_manager_releases() + 1;
         let (reaper, caller_pgid, children) = match manager.find_process_by_thread(thread_id) {
             Some((pid, caller)) => (pid, caller.pgid, caller.children.clone()),
             None => return Err(EINVAL as u64),
@@ -198,26 +202,65 @@ fn unblock_self() {
     });
 }
 
+/// The key a WNOHANG wait is remembered by between calls: its selector and
+/// options, or None for a selector too wide to pack. Never zero.
+fn quiet_wait_query(selector: Selector, options: u32) -> Option<u64> {
+    let (kind, id) = match selector {
+        Selector::Any => (1u64, 0),
+        Selector::CallerGroup => (2, 0),
+        Selector::Pid(pid) => (3, pid.as_u64()),
+        Selector::Group(pgid) => (4, pgid.as_u64()),
+    };
+    (id < 1 << 29).then(|| u64::from(options) << 32 | kind << 29 | id)
+}
+
 /// Wait for a state change `options` asks for, blocking unless WNOHANG.
 /// Ok(None) only for WNOHANG with nothing to report. A signal interrupts the
 /// wait with EINTR, or ERESTARTSYS when it is to be restarted.
+///
+/// A parent polling with WNOHANG asks the same question over and over, and
+/// each scan holds PROCESS_MANAGER, with interrupts masked on x86. Every
+/// change to the children a scan reads is made under that lock, so when the
+/// last scan of this same wait found nothing and the lock has not been
+/// released since, the answer is still nothing and is given without taking
+/// it. A poller then holds the lock only after something has changed, and a
+/// stall of the poller's CPU no longer holds up every other user of the lock:
+/// a woken thread's dispatch, signal delivery, getrusage (#1474, #1478).
 ///
 /// Blocking marks the thread BlockedOnChildExit first and scans again after,
 /// so a change landing between the two is seen by the scan or wakes the thread
 /// (`unblock_for_child_exit`); the scheduler lock orders the two.
 fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64> {
+    let quiet = if options & WNOHANG != 0 {
+        quiet_wait_query(selector, options).zip(crate::task::thread::current_thread_signals())
+    } else {
+        None
+    };
+    if let Some((query, signals)) = quiet {
+        if signals.quiet_wait_query.load(Ordering::Relaxed) == query
+            && signals.quiet_wait_releases.load(Ordering::Relaxed)
+                == crate::process::process_manager_releases()
+        {
+            return Ok(None);
+        }
+    }
     let thread_id = crate::task::scheduler::current_thread_id().ok_or(EINVAL as u64)?;
     let selector = bind_caller_group(thread_id, selector)?;
-    if let Some(found) = scan(thread_id, selector, options)? {
+    let mut releases = 0;
+    if let Some(found) = scan(thread_id, selector, options, &mut releases)? {
         return Ok(Some(found));
     }
     if options & WNOHANG != 0 {
+        if let Some((query, signals)) = quiet {
+            signals.quiet_wait_releases.store(releases, Ordering::Relaxed);
+            signals.quiet_wait_query.store(query, Ordering::Relaxed);
+        }
         return Ok(None);
     }
     loop {
         crate::task::scheduler::with_scheduler(|sched| sched.block_current_for_child_exit());
         crate::tracing::providers::process::trace_waitpid_block(thread_id as u16, 0);
-        match scan(thread_id, selector, options) {
+        match scan(thread_id, selector, options, &mut releases) {
             Ok(None) => {}
             done => {
                 unblock_self();
@@ -230,7 +273,7 @@ fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64
             // wait whose child is now reportable: wait/interrupted's second
             // waitpid returned EINTR once on x86. Report the child instead;
             // the signal stays pending for the return to user mode.
-            let found = scan(thread_id, selector, options);
+            let found = scan(thread_id, selector, options, &mut releases);
             unblock_self();
             return match found {
                 Ok(None) => Err(e as u64),
