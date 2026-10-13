@@ -476,6 +476,8 @@ pub struct TcpHeader {
     pub urgent_ptr: u16,
     /// The MSS option's value, when the segment carries one.
     pub mss_option: Option<u16>,
+    /// Bytes of data after the header.
+    pub payload_len: usize,
 }
 
 impl TcpHeader {
@@ -518,6 +520,7 @@ impl TcpHeader {
                 checksum,
                 urgent_ptr,
                 mss_option,
+                payload_len: payload.len(),
             },
             payload,
         ))
@@ -1539,7 +1542,18 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
         // pending entry gone after acquiring TCP_LISTENERS therefore makes the
         // child publication visible to this subsequent TCP_CONNECTIONS acquire.
         // One re-check is sufficient; no polling or retransmit delay is needed.
-        if deliver_to_connection(&conn_id, &header, payload) {
+        let recovered = with_tcp_connections(|connections| {
+            if let Some(conn) = connections.get_mut(&conn_id) {
+                handle_tcp_for_connection(conn, &header, payload);
+                if conn.expired(now_ms()) {
+                    connections.remove(&conn_id);
+                }
+                true
+            } else {
+                false
+            }
+        });
+        if recovered {
             TCP_ACCEPT_PUBLISH_RACE_RECOVERED.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -1555,7 +1569,7 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     }
 
     // No connection and no listener - send RST
-    send_rst(local_ip, ip.src_ip, &header, payload.len());
+    send_rst(local_ip, ip.src_ip, &header);
 }
 
 /// Handle a segment that arrived in SYN_SENT.
@@ -1759,7 +1773,7 @@ fn handle_syn_for_listener(
 
     if listener.pending.len() >= listener.backlog {
         // Send RST to tell client the connection was refused
-        send_rst(local_ip, src_ip, header, 0);
+        send_rst(local_ip, src_ip, header);
         return;
     }
 
@@ -1796,12 +1810,13 @@ fn handle_syn_for_listener(
 }
 
 /// Answer a segment no connection or listener takes with a reset
-/// (RFC 9293 3.10.7.1): `payload_len` is the segment's data length.
-fn send_rst(src_ip: [u8; 4], dst_ip: [u8; 4], header: &TcpHeader, payload_len: usize) {
+/// (RFC 9293 3.10.7.1).
+fn send_rst(src_ip: [u8; 4], dst_ip: [u8; 4], header: &TcpHeader) {
     let (seq, ack, flags) = if header.flags.ack {
         (header.ack_num, 0, TcpFlags::rst())
     } else {
-        let length = payload_len as u32 + header.flags.syn as u32 + header.flags.fin as u32;
+        let length =
+            header.payload_len as u32 + header.flags.syn as u32 + header.flags.fin as u32;
         (0, header.seq_num.wrapping_add(length), TcpFlags::rst_ack())
     };
 
