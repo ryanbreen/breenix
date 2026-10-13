@@ -166,7 +166,7 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
         // Short critical sections normally release on another CPU before a
         // futex sleep can return. Bound this work, then use the same SeqCst
         // registration/recheck protocol; an idle semaphore still parks.
-        for _ in 0..128 {
+        for _ in 0..4096 {
             if sem.take() {
                 return 0;
             }
