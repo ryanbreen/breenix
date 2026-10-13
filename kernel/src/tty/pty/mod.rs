@@ -78,6 +78,17 @@ pub fn release(pty_num: u32) {
     }
 }
 
+/// Fallible snapshot for userspace directory and device operations.
+pub fn try_list_active() -> Result<alloc::vec::Vec<u32>, u64> {
+    let mut numbers = alloc::vec::Vec::new();
+    if let Some(alloc) = PTY_ALLOCATOR.get() {
+        let alloc = alloc.lock();
+        numbers.try_reserve_exact(alloc.pairs.len()).map_err(|_| 12u64)?;
+        numbers.extend(alloc.pairs.keys().copied());
+    }
+    Ok(numbers)
+}
+
 /// List all active (allocated) PTY numbers
 /// Used by devpts filesystem for directory listing
 pub fn list_active() -> alloc::vec::Vec<u32> {

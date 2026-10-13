@@ -23,6 +23,7 @@
 #   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop
 #   --no-build           boot the kernel and disk already in target/
+#   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
 #
 # Ctrl-A X quits QEMU; Ctrl-A C toggles the QEMU monitor. Ctrl-C goes to the guest.
 # Each step prints a "==> " line so a watcher can tell building from booting.
@@ -46,11 +47,12 @@ FBCONSOLE=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole)
+        --mode|--program|--suite|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
         --mode) MODE="$2"; shift 2 ;;
+        --accel) export BREENIX_ARM64_QEMU_ACCEL="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; shift 2 ;;
@@ -190,7 +192,9 @@ else
     host_slot_quiet
 fi
 # Vigil shows the boot while it runs and scores it when it ends (does nothing without Vigil).
-VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG")
+QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu max)
+QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
+VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
 [ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $QMP_SOCKET out.png)"
 # Wait interruptibly and register the watcher so a signal to this script also
@@ -201,8 +205,8 @@ trap 'exit 130' INT
 exec 3<&0
 set +e
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
-    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- "$QEMU_UI" "$QEMU" \
-    -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
+    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
+    -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp 4 \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \

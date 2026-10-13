@@ -1005,6 +1005,12 @@
       "checkHint": "Check syscall/process.rs session/pgid functions"
     },
     {
+      "name": "FIFO filesystem test passed",
+      "marker": "FIFO_FS PASS",
+      "failureMeaning": "native FIFO directory descriptors or inode lifecycle failed",
+      "checkHint": "Read fifo_fs_test output; require its own completion marker"
+    },
+    {
       "name": "File read test passed",
       "marker": "FILE_READ_TEST_PASSED",
       "failureMeaning": "ext2 file read test failed",

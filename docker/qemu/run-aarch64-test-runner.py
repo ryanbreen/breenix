@@ -41,7 +41,8 @@ def run_test(test_name, timeout=45):
     launcher = subprocess.run([os.path.join(breenix_root, "scripts", "qemu-ui-launch.sh")],
                               capture_output=True, text=True, check=True).stdout.strip()
     cmd = [
-        launcher,
+        sys.executable, os.path.join(breenix_root, "scripts/qemu-arm64.py"),
+        "--launcher", launcher,
         "qemu-system-aarch64",
         "-M", "virt",
         "-cpu", "cortex-a72",

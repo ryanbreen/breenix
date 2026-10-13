@@ -102,6 +102,8 @@ pub const SI_USER: i32 = 0;
 pub const SI_KERNEL: i32 = 0x80;
 /// Sent by sigqueue
 pub const SI_QUEUE: i32 = -1;
+/// Sent when a message arrives on an empty message queue (mq_notify)
+pub const SI_MESGQ: i32 = -3;
 /// Sent by tkill or tgkill
 pub const SI_TKILL: i32 = -6;
 /// SIGSEGV: address not mapped

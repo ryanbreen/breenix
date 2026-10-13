@@ -11,6 +11,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+ARM64 QEMU uses HVF on native Apple Silicon hosts in [#1452](https://github.com/ryanbreen/breenix/issues/1452),
+with the testing kernel, production probe and effort suites as its gates. Native
+launchers retain the shared QoS launcher and explicit TCG selection
+([target configuration](../boot-path.md#arm64-qemu-acceleration)).
+
 Threads P2 implements the assigned C thread interfaces in
 `libs/libbreenix-libc` (issues #1302–#1306, #1308–#1310, #1312–#1319).
 It runs on the kernel interfaces #1327 added: exit_group ending every thread,

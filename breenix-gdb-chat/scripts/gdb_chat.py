@@ -237,7 +237,8 @@ class GDBChat:
         launcher = subprocess.run([str(self.breenix_dir / "scripts" / "qemu-ui-launch.sh")],
                                   capture_output=True, text=True, check=True).stdout.strip()
         cmd = [
-            launcher,
+            sys.executable, str(self.breenix_dir / "scripts" / "qemu-arm64.py"), "--accel", "tcg",
+            "--launcher", launcher,
             "qemu-system-aarch64",
             "-M", "virt",
             "-cpu", "cortex-a72",

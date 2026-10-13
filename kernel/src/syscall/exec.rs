@@ -17,6 +17,32 @@ pub(crate) fn manager_errno(error: &str) -> u64 {
     }
 }
 
+/// Nothing wakes this queue: an exec waiting for an exiting sibling sleeps on
+/// it for one interval at a time and checks again.
+static EXITING_SIBLING_WAIT: crate::task::waitqueue::WaitQueueHead = crate::task::waitqueue::WaitQueueHead::new();
+
+/// Before exec `pid` retires its address space, wait while every sibling
+/// that still holds it has begun to exit
+/// (`ProcessManager::exec_waits_for_exiting_sibling`), so a thread that has
+/// joined the others execs instead of finding them still present. The wait
+/// sleeps a millisecond at a time, so a sibling of lower priority runs, and
+/// a signal ends it with the errno its wait decided. A sibling that has not
+/// begun to exit is left for exec to refuse, as before.
+pub(crate) fn await_exiting_siblings(pid: crate::process::ProcessId) -> Result<(), u64> {
+    use crate::ipc::wait::{wait_on, IpcDeadline, WaitEnd};
+    const INTERVAL_NS: u64 = 1_000_000;
+    while crate::process::with_process_manager(|manager| manager.exec_waits_for_exiting_sibling(pid))
+        .unwrap_or(false)
+    {
+        let (sec, nsec) = crate::time::get_monotonic_time_ns();
+        let at = sec.saturating_mul(1_000_000_000).saturating_add(nsec).saturating_add(INTERVAL_NS);
+        if let WaitEnd::Interrupted(errno) = wait_on(&EXITING_SIBLING_WAIT, &IpcDeadline::Monotonic(at), || true) {
+            return Err(errno);
+        }
+    }
+    Ok(())
+}
+
 // Strings share one allocation; ranges are offsets within that owned buffer.
 pub(crate) struct Arguments {
     bytes: Vec<u8>,

@@ -26,7 +26,7 @@
 //! | 0x0fc | ConfigGeneration | R |
 //! | 0x100+ | Config | RW |
 
-use core::ptr::{read_volatile, write_volatile};
+use crate::arch_impl::aarch64::mmio::{read8 as read_mmio8, read32 as read_mmio32, write32 as write_mmio32};
 
 /// VirtIO MMIO magic value ("virt" in little-endian)
 pub const VIRTIO_MMIO_MAGIC: u32 = 0x74726976;
@@ -121,13 +121,13 @@ impl VirtioMmioDevice {
     /// Read a 32-bit register
     #[inline]
     fn read32(&self, offset: usize) -> u32 {
-        unsafe { read_volatile((self.base + offset as u64) as *const u32) }
+        unsafe { read_mmio32((self.base + offset as u64) as *const u32) }
     }
 
     /// Write a 32-bit register
     #[inline]
     fn write32(&self, offset: usize, value: u32) {
-        unsafe { write_volatile((self.base + offset as u64) as *mut u32, value) }
+        unsafe { write_mmio32((self.base + offset as u64) as *mut u32, value) }
     }
 
     /// Probe a VirtIO MMIO device at the given base address
@@ -317,12 +317,12 @@ impl VirtioMmioDevice {
 
     /// Read a byte from device config space
     pub fn read_config_u8(&self, offset: usize) -> u8 {
-        unsafe { read_volatile((self.base + regs::CONFIG as u64 + offset as u64) as *const u8) }
+        unsafe { read_mmio8((self.base + regs::CONFIG as u64 + offset as u64) as *const u8) }
     }
 
     /// Read a u32 from device config space
     pub fn read_config_u32(&self, offset: usize) -> u32 {
-        unsafe { read_volatile((self.base + regs::CONFIG as u64 + offset as u64) as *const u32) }
+        unsafe { read_mmio32((self.base + regs::CONFIG as u64 + offset as u64) as *const u32) }
     }
 
     /// Read a u64 from device config space

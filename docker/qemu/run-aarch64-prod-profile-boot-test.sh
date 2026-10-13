@@ -544,7 +544,7 @@ qemu_host_lock_acquire
 PROD_HOST_MS_START="$(gbf_host_ms_now)"
 PROD_QEMU_AT_START="$(qemu_host_lock_count)"
 PROD_LOAD_AT_START="$(gbf_load_1m)"
-timeout 120 "$QEMU_UI" qemu-system-aarch64 \
+timeout 120 python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     -display none -no-reboot \

@@ -70,7 +70,7 @@ pub fn probe_mmio_u32(phys_addr: usize) -> Option<u32> {
     MMIO_PROBE_ACTIVE.store(true, Ordering::SeqCst);
     core::sync::atomic::fence(Ordering::SeqCst);
 
-    let val = unsafe { core::ptr::read_volatile(virt_addr) };
+    let val = unsafe { super::mmio::read32(virt_addr) };
 
     core::sync::atomic::fence(Ordering::SeqCst);
     // Disarm — we either got the value or the handler already set FAULTED.
@@ -298,7 +298,7 @@ fn gicd_read(offset: usize) -> u32 {
     unsafe {
         let base = crate::platform_config::gicd_base_phys() as usize;
         let addr = (GIC_HHDM + base + offset) as *const u32;
-        core::ptr::read_volatile(addr)
+        super::mmio::read32(addr)
     }
 }
 
@@ -308,7 +308,7 @@ fn gicd_write(offset: usize, value: u32) {
     unsafe {
         let base = crate::platform_config::gicd_base_phys() as usize;
         let addr = (GIC_HHDM + base + offset) as *mut u32;
-        core::ptr::write_volatile(addr, value);
+        super::mmio::write32(addr, value);
     }
 }
 
@@ -318,7 +318,7 @@ fn gicc_read(offset: usize) -> u32 {
     unsafe {
         let base = crate::platform_config::gicc_base_phys() as usize;
         let addr = (GIC_HHDM + base + offset) as *const u32;
-        core::ptr::read_volatile(addr)
+        super::mmio::read32(addr)
     }
 }
 
@@ -328,7 +328,7 @@ fn gicc_write(offset: usize, value: u32) {
     unsafe {
         let base = crate::platform_config::gicc_base_phys() as usize;
         let addr = (GIC_HHDM + base + offset) as *mut u32;
-        core::ptr::write_volatile(addr, value);
+        super::mmio::write32(addr, value);
     }
 }
 
@@ -346,7 +346,7 @@ fn gicr_read(cpu_offset: usize, offset: usize) -> u32 {
     unsafe {
         let base = crate::platform_config::gicr_base_phys() as usize;
         let addr = (GIC_HHDM + base + cpu_offset + offset) as *const u32;
-        core::ptr::read_volatile(addr)
+        super::mmio::read32(addr)
     }
 }
 
@@ -363,7 +363,7 @@ fn gicr_write(cpu_offset: usize, offset: usize, value: u32) {
     unsafe {
         let base = crate::platform_config::gicr_base_phys() as usize;
         let addr = (GIC_HHDM + base + cpu_offset + offset) as *mut u32;
-        core::ptr::write_volatile(addr, value);
+        super::mmio::write32(addr, value);
     }
 }
 
@@ -1345,7 +1345,7 @@ fn expected_gicr_affinity_for_cpu(cpu_id: usize) -> u32 {
 fn gicr_read_at_rd_base(rd_base_phys: usize, offset: usize) -> u32 {
     unsafe {
         let addr = (GIC_HHDM + rd_base_phys + offset) as *const u32;
-        core::ptr::read_volatile(addr)
+        super::mmio::read32(addr)
     }
 }
 
@@ -1353,7 +1353,7 @@ fn gicr_read_at_rd_base(rd_base_phys: usize, offset: usize) -> u32 {
 fn gicr_write_at_rd_base(rd_base_phys: usize, offset: usize, value: u32) {
     unsafe {
         let addr = (GIC_HHDM + rd_base_phys + offset) as *mut u32;
-        core::ptr::write_volatile(addr, value);
+        super::mmio::write32(addr, value);
     }
 }
 
@@ -1361,7 +1361,7 @@ fn gicr_write_at_rd_base(rd_base_phys: usize, offset: usize, value: u32) {
 fn gicr_read_u64_at_rd_base(rd_base_phys: usize, offset: usize) -> u64 {
     unsafe {
         let addr = (GIC_HHDM + rd_base_phys + offset) as *const u64;
-        core::ptr::read_volatile(addr)
+        super::mmio::read64(addr)
     }
 }
 

@@ -9,7 +9,7 @@
 //!   -fw_cfg name=opt/breenix/resolution,string=1728x1080
 
 #[cfg(target_arch = "aarch64")]
-use core::ptr::{read_volatile, write_volatile};
+use crate::arch_impl::aarch64::mmio::{read8, write16};
 
 /// MMIO base address for fw_cfg on QEMU ARM64 virt machine
 #[cfg(target_arch = "aarch64")]
@@ -46,7 +46,7 @@ fn fw_cfg_virt(offset: u64) -> *mut u8 {
 fn select(sel: u16) {
     unsafe {
         let addr = fw_cfg_virt(FW_CFG_SELECTOR) as *mut u16;
-        write_volatile(addr, sel.to_be());
+        write16(addr, sel.to_be());
     }
 }
 
@@ -62,7 +62,7 @@ fn select(sel: u16) {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 fn read_byte() -> u8 {
-    unsafe { read_volatile(fw_cfg_virt(FW_CFG_DATA)) }
+    unsafe { read8(fw_cfg_virt(FW_CFG_DATA)) }
 }
 
 /// Read one byte from the data port

@@ -56,9 +56,11 @@ fn fixture(fd: u64, arg: u64) -> Result<(), u64> {
             .ok_or(errno::ESRCH as u64)?;
         caller.fd_table.get(fd as i32).ok_or(errno::EBADF as u64)?;
     }
-    crate::ipc::fifo::FIFO_REGISTRY
-        .create(&path, 0o600, 0, 0)
-        .map_err(|e| e as u64)
+    match super::fifo::mknodat_path(super::at_path::AT_FDCWD, &path, 0o010600, 0) {
+        SyscallResult::Ok(0) => Ok(()),
+        SyscallResult::Err(e) => Err(e),
+        _ => Err(errno::EIO as u64),
+    }
 }
 
 fn query(fd: u64, arg: u64) -> Result<(), u64> {

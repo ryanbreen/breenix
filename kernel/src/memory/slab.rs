@@ -248,6 +248,23 @@ impl<T: ?Sized> SlabBox<T> {
     }
 }
 
+impl<T, const N: usize> SlabBox<[T; N]> {
+    /// An array on the global heap whose slot `i` holds `init(i)`, written in
+    /// place. `Box::new` of an array value builds the whole array in the
+    /// caller's frame first, and a 256-descriptor table copied there overflows
+    /// a kernel stack.
+    pub fn heap_from_fn(mut init: impl FnMut(usize) -> T) -> Self {
+        let mut boxed = Box::<[T; N]>::new_uninit();
+        let dst = boxed.as_mut_ptr() as *mut T;
+        for i in 0..N {
+            // SAFETY: `dst` addresses the box's N slots; each is written once.
+            unsafe { dst.add(i).write(init(i)) };
+        }
+        // SAFETY: the loop above initialized every slot.
+        SlabBox::from_box(unsafe { boxed.assume_init() })
+    }
+}
+
 impl<T: ?Sized> Deref for SlabBox<T> {
     type Target = T;
     #[inline]
@@ -322,7 +339,7 @@ impl<T: Clone, const N: usize> Clone for SlabBox<[T; N]> {
             }
         }
         // Fall back to heap
-        SlabBox::from_box(Box::new((**self).clone()))
+        SlabBox::heap_from_fn(|i| self[i].clone())
     }
 }
 

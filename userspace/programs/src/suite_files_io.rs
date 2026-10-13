@@ -4251,7 +4251,7 @@ fn metadata_statfs_missing() -> CaseResult {
     let by_path = fs_stats(Some(&f.path), BAD)?;
     let by_fd = fs_stats(None, fd)?;
     io::close(fd)?;
-    check(by_path[0] == 0x50495045 && by_path == by_fd, "FIFO statfs identity differs from fstatfs")?;
+    check(by_path[0] == 0xef53 && by_path == by_fd, "FIFO statfs identity differs from fstatfs")?;
     fs::unlink(&f.path)?;
     let pts = fs::open("/dev/pts", O_RDONLY | O_DIRECTORY)?;
     let by_fd = fs_stats(None, pts)?;

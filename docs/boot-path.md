@@ -27,6 +27,32 @@ stage list and shown alongside, but does not block moving on.
 
 ## Boot modes
 
+### ARM64 QEMU acceleration
+
+On an Apple Silicon Mac, ARM64 QEMU defaults to `-accel hvf -cpu host` with
+`virt,gic-version=3`, including `scripts/boot-interactive.sh` and `run.sh`.
+Use `--accel tcg` to select software emulation explicitly. All native ARM64
+launchers and xtask accept `BREENIX_ARM64_QEMU_ACCEL=hvf|tcg` through
+`scripts/qemu-arm64.py`. Named CPU profiles default to TCG, preserving their
+CPU and GIC coverage; explicit HVF refuses CPUs other than `max` or `host`.
+Debugger and watchpoint-oracle helpers explicitly select TCG. Each launch
+prints `BREENIX_QEMU_CONFIG` with its effective accelerator and CPU for host records. An explicit HVF request on another host
+fails instead of falling back to TCG. The Linux Docker launchers select TCG:
+Apple's Hypervisor framework is available only to native macOS processes.
+
+The shared accelerator wrapper runs `scripts/qemu-ui-launch.sh`'s launcher
+immediately before QEMU, so its vCPU threads retain the user-interactive QoS
+class. `BREENIX_QEMU_UI=0` selects the default host priority for diagnostics;
+it does not change the accelerator. The Mac boot slot still covers the full
+VM lifetime, and boots do not wait for host load to fall.
+
+QEMU-HVF remains a separate target from Parallels and VMware: its VirtIO
+devices and emulated GICv3 remain QEMU's. QEMU 11.0.3 supports that GIC with
+HVF. Its MMIO emulator requires ESR.ISV=1. ARM64 VirtIO device registers,
+GIC registers and fw_cfg use shared register-indirect assembly helpers;
+DMA-ring RAM retains Rust volatile accesses. Compiler-selected address-writeback
+instructions cannot be emulated by this QEMU version.
+
 `scripts/boot-interactive.sh --mode MODE` boots the same disk six ways (`modes` in
 `boot-path.json`):
 

@@ -148,7 +148,7 @@ fi
 # enumeration discovers them (needed for interactive shell and device
 # driver tests). qemu_host_lock_acquire already ran above, before the
 # PID-file-based pre-launch cleanup.
-"$QEMU_UI" qemu-system-aarch64 \
+python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -M virt \
     -cpu cortex-a72 \
     -m 512M \

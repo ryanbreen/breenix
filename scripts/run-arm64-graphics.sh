@@ -113,7 +113,7 @@ esac
 # /dev/null unless the command carries its own explicit stdin redirection,
 # and this session's serial monitor needs this script's own stdin attached.
 qemu_host_lock_acquire
-"$QEMU_UI" qemu-system-aarch64 \
+python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -M virt \
     -cpu cortex-a72 \
     -m 512M \

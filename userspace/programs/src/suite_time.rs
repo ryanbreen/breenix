@@ -1,7 +1,8 @@
 //! Time & timers: clocks and their resolution, nanosleep and clock_nanosleep, POSIX
 //! per-process timers, and alarm with the interval timers, as POSIX specifies them.
 //!
-//! Each case runs in its own forked child under the runner's default 10-second limit.
+//! Each case runs in its own forked child under a 25-second limit, allowing the
+//! x86 counter measurement to span up to sixteen RTC seconds plus edge selection.
 //! Every wait inside a case is bounded and stops early enough to leave the case time to
 //! clean up and report. The processes a case starts are killed when it ends, and the
 //! runner, which a suite runs as PID 1, kills and reaps any that remain before the next
@@ -1028,26 +1029,17 @@ fn counter_now() -> u64 {
 
 /// The processor's own counter's frequency in Hz: CNTFRQ_EL0 on ARM64.
 #[cfg(target_arch = "aarch64")]
-fn counter_frequency() -> Result<u64, String> {
+fn counter_frequency() -> Result<(u64, u64, u64), String> {
     let freq: u64;
     // SAFETY: a read of the counter's frequency, which Linux lets user mode make.
     unsafe { core::arch::asm!("mrs {f}, cntfrq_el0", f = out(reg) freq, options(nostack)) };
     if freq == 0 { return Err("CNTFRQ_EL0 reads 0".into()); }
-    Ok(freq)
+    Ok((freq, freq, freq))
 }
 
-/// RTC seconds the x86-64 counter frequency is measured across.
+/// Up to sixteen RTC seconds, an initial edge and two passed-over edges.
 #[cfg(target_arch = "x86_64")]
-const RTC_SPAN_S: u64 = 4;
-/// The widest two-read RTC_RD_TIME bracket that may time a seconds edge, as a
-/// fraction of a second: 1/500 s. Each edge is timed to within half its bracket, so the two edges
-/// of the span add at most 1/(500 * RTC_SPAN_S), 500 ppm, to the measured frequency.
-#[cfg(target_arch = "x86_64")]
-const RTC_EDGE_DIVISOR: u64 = 500;
-/// How long the counter case waits: on x86-64 the frequency measurement, up to a
-/// second for the first RTC edge plus the span, and two passed-over edges.
-#[cfg(target_arch = "x86_64")]
-const COUNTER_WAIT_MS: u64 = (RTC_SPAN_S + 3) * 1000;
+const COUNTER_WAIT_MS: u64 = 19_000;
 #[cfg(target_arch = "aarch64")]
 const COUNTER_WAIT_MS: u64 = 2000;
 
@@ -1059,7 +1051,6 @@ fn rtc_seconds(fd: Fd) -> Result<i64, String> {
     Ok(i64::from(tm[2]) * 3600 + i64::from(tm[1]) * 60 + i64::from(tm[0]))
 }
 
-#[cfg(target_arch = "x86_64")]
 mod rtc_counter;
 #[cfg(target_arch = "x86_64")]
 use rtc_counter::{RtcEdge, RtcPoll};
@@ -1080,57 +1071,30 @@ fn rtc_counter_edge(fd: Fd) -> Result<RtcEdge, String> {
 
 /// The TSC's frequency in Hz on x86-64, measured against the RTC, a clock the
 /// kernel does not derive CLOCK_MONOTONIC from: counter cycles between two RTC
-/// seconds edges RTC_SPAN_S or more seconds apart. An edge timed by a bracket wider
-/// than 1/RTC_EDGE_DIVISOR s, because the thread was descheduled, is passed over:
-/// a wide starting edge is replaced by the next one, a wide ending edge by the one
-/// after it, at most twice total.
+/// seconds edges at least four seconds apart. Prefer narrower brackets
+/// within the existing two-pass-over budget, then retain the complete bounds
+/// even when RTC reads are slow. Return midpoint, lower and upper frequencies.
 #[cfg(target_arch = "x86_64")]
-fn counter_frequency() -> Result<u64, String> {
+fn counter_frequency() -> Result<(u64, u64, u64), String> {
     let fd = libbreenix::fs::open("/dev/rtc0", libbreenix::fs::O_RDONLY).map_err(|e| format!("open(/dev/rtc0) failed: {e}"))?;
-    let mut passed_over = 0;
-    let mut rejected_width = 0;
-    let result = (|| -> Result<u64, String> {
+    let result = (|| -> Result<(u64, u64, u64), String> {
         // A bounded sample reports RTC_RD_TIME cost without serial output in
         // the edge-polling loop or changing its acceptance criteria.
-        let mut total = 0;
         let mut maximum = 0;
         for _ in 0..32 {
             let before = clock_ns(CLOCK_MONOTONIC)?;
             rtc_seconds(fd)?;
             let cost = clock_ns(CLOCK_MONOTONIC)? - before;
-            total += cost;
             maximum = maximum.max(cost);
         }
-        value("rtc-read-mean", total / 32, "ns", None);
         value("rtc-read-max", maximum, "ns", None);
-        let mut first = rtc_counter_edge(fd)?;
-        loop {
-            let edge = rtc_counter_edge(fd)?;
-            let seconds = (edge.second - first.second).rem_euclid(86_400) as u64;
-            if seconds == 0 { return Err(format!("two RTC seconds edges both read {}", edge.second)); }
-            let cycles = edge.at.checked_sub(first.at)
-                .ok_or("the counter went backwards between RTC edges")?;
-            let freq = cycles / seconds;
-            if freq == 0 { return Err("the counter did not advance between RTC edges".into()); }
-            let limit = freq / RTC_EDGE_DIVISOR;
-            if first.width > limit || (seconds >= RTC_SPAN_S && edge.width > limit) {
-                passed_over += 1;
-                rejected_width = rejected_width.max(first.width.max(edge.width));
-                if passed_over > 2 {
-                    return Err(format!("RTC_RD_TIME two-read edge brackets of {} and {} counter cycles exceed the {limit} bound after {passed_over} passed-over edges", first.width, edge.width));
-                }
-                if first.width > limit { first = edge; }
-                continue;
-            }
-            if seconds < RTC_SPAN_S { continue; }
-            value("rtc-start-edge", (first.width as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 1_000_000 / RTC_EDGE_DIVISOR as i64)));
-            value("rtc-end-edge", (edge.width as u128 * 1_000_000 / freq as u128) as i64, "us", Some((0, 1_000_000 / RTC_EDGE_DIVISOR as i64)));
-            value("rtc-edge-brackets", ((first.width as u128 + edge.width as u128) * 1_000_000 / freq as u128) as i64, "us", Some((0, 2_000_000 / RTC_EDGE_DIVISOR as i64)));
-            return Ok(freq);
-        }
+        let (first, last, passed_over) = rtc_counter::select_edges(|| rtc_counter_edge(fd))?;
+        let (freq, lower, upper) = rtc_counter::frequency(first, last)?;
+        value("rtc-start-edge", (first.width as u128 * 1_000_000 / freq as u128) as i64, "us", None);
+        value("rtc-end-edge", (last.width as u128 * 1_000_000 / freq as u128) as i64, "us", None);
+        value("rtc-passed-over", passed_over as i64, "", None);
+        Ok((freq, lower, upper))
     })();
-    value("rtc-passed-over", passed_over, "", Some((0, 2)));
-    value("rtc-rejected-edge-max", rejected_width.min(i64::MAX as u64) as i64, "cycles", None);
     let _ = io::close(fd);
     result
 }
@@ -1146,7 +1110,7 @@ fn counter_pair() -> Result<(u64, i64), String> {
 fn clk_rate_counter() -> CaseResult {
     wait_for(COUNTER_WAIT_MS, "drift");
     let (c0, m0) = counter_pair()?;
-    let freq = counter_frequency()?;
+    let (freq, lower, upper) = counter_frequency()?;
     // Measuring the x86-64 frequency already spans the RTC seconds; follow the
     // counter for at least 2 s on either architecture.
     let spent = (clock_ns(CLOCK_MONOTONIC)? - m0) / MS;
@@ -1155,8 +1119,13 @@ fn clk_rate_counter() -> CaseResult {
     let counted = ((c1.wrapping_sub(c0)) as u128 * NS as u128 / freq as u128) as i64;
     let drift = ppm(m1 - m0, counted);
     value("frequency", freq as i64, "hz", None);
+    value("frequency-lower", lower as i64, "hz", None);
+    value("frequency-upper", upper as i64, "hz", None);
+    let (drift_lower, drift_upper) = rtc_counter::drift_interval(m1 - m0, c1.wrapping_sub(c0), lower, upper)?;
     value("drift", drift, "ppm", Some((-1000, 1000)));
-    check(drift.abs() <= 1000, &format!("over {} ms of the counter at {freq} Hz, CLOCK_MONOTONIC advanced {} ms: {drift} ppm apart", counted / MS, (m1 - m0) / MS))
+    value("drift-lower", drift_lower, "ppm", Some((-1000, 1000)));
+    value("drift-upper", drift_upper, "ppm", Some((-1000, 1000)));
+    check(drift_lower >= -1000 && drift_upper <= 1000, &format!("over {} ms of the counter at {freq} Hz, CLOCK_MONOTONIC advanced {} ms: midpoint {drift} ppm, interval {drift_lower}..{drift_upper} ppm", counted / MS, (m1 - m0) / MS))
 }
 
 /// The most processors the counter case follows.
@@ -2646,6 +2615,6 @@ static SUITE: Suite = suite(
             case("exec-cpu", "Linux policy: exec keeps ITIMER_VIRTUAL and ITIMER_PROF", it_exec_cpu),
         ]),
     ],
-);
+).case_limit_ms(25000);
 
 fn main() { SUITE.run() }

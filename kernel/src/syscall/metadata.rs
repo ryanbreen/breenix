@@ -125,24 +125,14 @@ fn fifo(
     change: Change,
     cred: &Credentials,
 ) -> SyscallResult {
-    let handle = entry.lock().handle.clone();
-    if let Some(handle) = handle {
-        let mut guard = match ext2::write_mount(handle.object.mount) {
-            Ok(g) => g, Err(_) => return SyscallResult::Err(EIO as u64),
-        };
-        let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
-        let ino = match handle.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(EIO as u64) };
-        return update(fs, ino, change, cred);
-    }
-    let mut entry = entry.lock();
-    let mut inode = entry.inode();
-    if let Err(errno) = apply(&mut inode, change, cred) {
-        return SyscallResult::Err(errno);
-    }
-    entry.mode = inode.permissions() as u32;
-    entry.uid = inode.uid();
-    entry.gid = inode.gid();
-    SyscallResult::Ok(0)
+    let Some(handle) = entry.lock().handle.clone() else { return SyscallResult::Err(EIO as u64); };
+    let mut guard = match ext2::write_mount(handle.object.mount) {
+        Ok(g) => g, Err(_) => return SyscallResult::Err(EIO as u64),
+    };
+    let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
+    let ino = match handle.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(EIO as u64) };
+    update(fs, ino, change, cred)
+
 }
 
 fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -> SyscallResult {
@@ -158,9 +148,6 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    if let Some(entry) = crate::ipc::fifo::FIFO_REGISTRY.get(&resolved.path) {
-        return fifo(&entry, change, &cred);
-    }
     let (mount, ino) = match resolved.target {
         namei::Target::Inode { mount, ino, .. } => (mount, ino),
         namei::Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),

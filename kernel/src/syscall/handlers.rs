@@ -177,11 +177,15 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
         // Snapshot under PROCESS_MANAGER, then write to userspace after the
         // lock is dropped because the tid address may reference a CoW page.
         let clear_child_tid = {
-            let manager_guard = crate::process::manager();
-            if let Some(ref manager) = *manager_guard {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    process.exit_started = true;
                     if let Some(tid_addr) = process.clear_child_tid {
-                        let tg_id = process.address_space_lifetime.as_ref().map_or(_pid.as_u64(), |owners| owners.id);
+                        let tg_id = process
+                            .address_space_lifetime
+                            .as_ref()
+                            .map_or(_pid.as_u64(), |owners| owners.id);
                         Some((tg_id, tid_addr))
                     } else {
                         None
@@ -233,7 +237,6 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-
 /// One line of the userspace report. x86 sends it through `log`, as the gate
 /// scorers expect; ARM64 installs no `log` backend, so it prints to serial.
 macro_rules! report_line {
@@ -260,13 +263,15 @@ pub(crate) fn report_userspace_completion() {
         #[cfg(target_arch = "x86_64")]
         {
             crate::keyboard::stream::wake_keyboard_task();
-            report_line!(info, "Woke keyboard task to ensure input processing continues");
+            report_line!(
+                info,
+                "Woke keyboard task to ensure input processing continues"
+            );
         }
 
         // Signal that userspace testing is complete with clear markers
         report_line!(info, "🎯 USERSPACE TEST COMPLETE - All processes finished");
         let (exited, nonzero) = crate::task::exit_tally::totals();
-
 
         report_line!(
             info,
@@ -300,7 +305,10 @@ pub(crate) fn report_userspace_completion() {
             report_line!(info, "✅ System calls working correctly   ✅");
             report_line!(info, "✅ Process lifecycle complete       ✅");
             report_line!(info, "=====================================");
-            report_line!(info, "🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁");
+            report_line!(
+                info,
+                "🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁"
+            );
         } else {
             report_line!(
                 error,
@@ -386,7 +394,11 @@ pub(crate) fn validate_fd_for_degenerate_transfer(fd: i32, write: bool) -> Resul
         match process.fd_table.get(fd) {
             Some(entry)
                 if matches!(entry.kind, crate::ipc::FdKind::RegularFile(_))
-                    && !(if write { entry.writable() } else { entry.readable() }) =>
+                    && !(if write {
+                        entry.writable()
+                    } else {
+                        entry.readable()
+                    }) =>
             {
                 Err(super::errno::EBADF as u64)
             }
@@ -484,6 +496,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         Eopnotsupp, // Operation not supported
     }
 
+    let mut fifo_to_touch = None;
     let write_op = {
         let manager_guard = crate::process::manager();
         let process = match &*manager_guard {
@@ -522,15 +535,21 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
             FdKind::PipeWrite(pipe_buffer) => WriteOperation::Pipe {
                 pipe_buffer: pipe_buffer.clone(),
-                is_nonblocking: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK)
+                is_nonblocking: (fd_entry.status_flags()
+                    & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
             },
             FdKind::PipeRead(_) => WriteOperation::Ebadf,
-            FdKind::FifoWrite(_path, pipe_buffer, _) | FdKind::FifoReadWrite(_path, pipe_buffer, _) => WriteOperation::Fifo {
-                pipe_buffer: pipe_buffer.clone(),
-                is_nonblocking: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK)
-                    != 0,
-            },
+            FdKind::FifoWrite(_path, pipe_buffer, entry)
+            | FdKind::FifoReadWrite(_path, pipe_buffer, entry) => {
+                fifo_to_touch = Some(entry.clone());
+                WriteOperation::Fifo {
+                    pipe_buffer: pipe_buffer.clone(),
+                    is_nonblocking: (fd_entry.status_flags()
+                        & crate::ipc::fd::status_flags::O_NONBLOCK)
+                        != 0,
+                }
+            }
             FdKind::FifoRead(_, _, _) => WriteOperation::Ebadf,
             FdKind::TcpSocket(_) => WriteOperation::Enotconn,
             FdKind::TcpListener(_) => WriteOperation::Enotconn,
@@ -538,7 +557,8 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp, // UDP must use sendto
             FdKind::UnixStream(socket) => WriteOperation::UnixStream {
                 socket: socket.clone(),
-                is_nonblocking: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK)
+                is_nonblocking: (fd_entry.status_flags()
+                    & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
             },
             FdKind::UnixSocket(_) => WriteOperation::Enotconn, // Unconnected Unix socket
@@ -567,7 +587,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
     };
 
     // Now perform the actual I/O operation without holding the manager lock
-    match write_op {
+    let result = match write_op {
         WriteOperation::Ipc { file, append } => match file.write(&buffer, append) {
             Ok(n) => SyscallResult::Ok(n),
             Err(e) => SyscallResult::Err(e),
@@ -678,7 +698,9 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
                 };
-                if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
+                if handle.verify(fs).is_err() {
+                    return SyscallResult::Err(super::errno::EIO as u64);
+                }
                 let wo = if append {
                     match fs.read_inode(inode_num as u32) {
                         Ok(inode) => inode.size(),
@@ -715,7 +737,9 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
                 };
-                if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
+                if handle.verify(fs).is_err() {
+                    return SyscallResult::Err(super::errno::EIO as u64);
+                }
                 let wo = if append {
                     match fs.read_inode(inode_num as u32) {
                         Ok(inode) => inode.size(),
@@ -761,7 +785,13 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             );
             SyscallResult::Ok(bytes_written as u64)
         }
+    };
+    if matches!(result, SyscallResult::Ok(n) if n > 0) {
+        if let Some(entry) = fifo_to_touch {
+            super::fs::touch_fifo(&entry, false);
+        }
     }
+    result
 }
 
 /// Helper function to write to stdio through TTY layer
@@ -873,7 +903,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // no PROCESS_MANAGER while it touches the TTY's own locks.
             crate::tty::driver::adopt_foreground_pgrp_from_reader(reader_pid);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             // Blocking read loop: keep trying until we get data or an error
             // Similar to pause() implementation - block, HLT loop, check for data
@@ -1004,7 +1038,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // process that needs to write to the pipe).
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             // Try to read - if empty and blocking, we'll enter blocking path
             loop {
@@ -1140,11 +1178,13 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Can't read from write end of pipe
             SyscallResult::Err(9) // EBADF
         }
-        FdKind::FifoRead(_path, pipe_buffer, _) | FdKind::FifoReadWrite(_path, pipe_buffer, _) => {
+        FdKind::FifoRead(_path, pipe_buffer, entry)
+        | FdKind::FifoReadWrite(_path, pipe_buffer, entry) => {
             // FIFO read - with blocking support
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let pipe_buffer_clone = pipe_buffer.clone();
+            let entry = entry.clone();
 
             // CRITICAL: Release process manager lock before blocking!
             // If we hold the lock while blocked in the HLT loop, timer interrupts
@@ -1152,7 +1192,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // process that needs to write to the FIFO).
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let read_count = (count as usize).min(crate::ipc::pipe::PIPE_BUF_SIZE);
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(read_count).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(read_count, 0);
 
             // Try to read - if empty and blocking, we'll enter blocking path
             loop {
@@ -1169,6 +1214,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }
                         }
                         log::debug!("sys_read: Read {} bytes from FIFO", n);
+                        if n > 0 {
+                            super::fs::touch_fifo(&entry, true);
+                        }
                         return SyscallResult::Ok(n as u64);
                     }
                     Err(11) => {
@@ -1192,7 +1240,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // Register as waiter BEFORE setting blocked state (race condition fix)
                         {
                             let mut pipe = pipe_buffer_clone.lock();
-                            pipe.add_read_waiter(thread_id);
+                            if let Err(e) = pipe.try_add_read_waiter(thread_id) {
+                                return SyscallResult::Err(e as u64);
+                            }
                         }
 
                         // Block the thread
@@ -1322,7 +1372,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Err(super::errno::ENOSYS as u64);
                     }
                 };
-                if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
+                if handle.verify(fs).is_err() {
+                    return SyscallResult::Err(super::errno::EIO as u64);
+                }
                 let inode = match fs.read_inode(inode_num as u32) {
                     Ok(inode) => inode,
                     Err(e) => {
@@ -1346,7 +1398,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Err(super::errno::ENOSYS as u64);
                     }
                 };
-                if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
+                if handle.verify(fs).is_err() {
+                    return SyscallResult::Err(super::errno::EIO as u64);
+                }
                 let inode = match fs.read_inode(inode_num as u32) {
                     Ok(inode) => inode,
                     Err(e) => {
@@ -1401,7 +1455,14 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            if device_type == crate::fs::devfs::DeviceType::Null {
+                return SyscallResult::Ok(0);
+            }
+            let mut user_buf = alloc::vec![];
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
             let result = match device_type {
                 crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
                     super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
@@ -1448,7 +1509,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             // Read loop (may block if O_NONBLOCK not set)
             loop {
@@ -1595,7 +1660,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             };
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             loop {
                 pair.register_master_waiter(thread_id);
@@ -1694,7 +1763,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             };
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             loop {
                 pair.register_slave_waiter(thread_id);
@@ -1788,7 +1861,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Drop manager guard before potentially blocking
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut user_buf = alloc::vec::Vec::new();
+            if user_buf.try_reserve_exact(count as usize).is_err() {
+                return SyscallResult::Err(12);
+            }
+            user_buf.resize(count as usize, 0);
 
             loop {
                 // Register as waiter FIRST to avoid race condition
@@ -2365,34 +2442,36 @@ pub fn sys_execv_with_frame(
 
     log::info!("sys_execv: Loading program '{}'", program_name);
 
-    let mut arguments = match super::exec::Arguments::copy_from_user(program_name, argv_ptr, envp_ptr) {
-        Ok(arguments) => arguments,
-        Err(errno) => return SyscallResult::Err(errno),
-    };
+    let mut arguments =
+        match super::exec::Arguments::copy_from_user(program_name, argv_ptr, envp_ptr) {
+            Ok(arguments) => arguments,
+            Err(errno) => return SyscallResult::Err(errno),
+        };
 
     #[cfg(feature = "testing")]
     {
         // Load ELF binary WITH interrupts enabled - ext2 I/O needs timer interrupts
         // for proper VirtIO operation
-        let (elf_vec, image_identity) = match super::exec::read_image(program_name, &mut arguments, |path| {
-            if path.contains('/') {
-                load_elf_from_ext2(path)
-            } else {
-                let bin_path = alloc::format!("/bin/{}", path);
-                match load_elf_from_ext2(&bin_path) {
-                    Ok(data) => Ok(data),
-                    Err(errno) if errno == super::errno::ENOENT => {
-                        crate::userspace_test::load_test_binary_from_disk(path)
-                            .map(|data| (data, Default::default()))
-                            .map_err(|_| errno)
+        let (elf_vec, image_identity) =
+            match super::exec::read_image(program_name, &mut arguments, |path| {
+                if path.contains('/') {
+                    load_elf_from_ext2(path)
+                } else {
+                    let bin_path = alloc::format!("/bin/{}", path);
+                    match load_elf_from_ext2(&bin_path) {
+                        Ok(data) => Ok(data),
+                        Err(errno) if errno == super::errno::ENOENT => {
+                            crate::userspace_test::load_test_binary_from_disk(path)
+                                .map(|data| (data, Default::default()))
+                                .map_err(|_| errno)
+                        }
+                        Err(errno) => Err(errno),
                     }
-                    Err(errno) => Err(errno),
                 }
-            }
-        }) {
-            Ok(data) => data,
-            Err(errno) => return SyscallResult::Err(errno),
-        };
+            }) {
+                Ok(data) => data,
+                Err(errno) => return SyscallResult::Err(errno),
+            };
         let elf_data = elf_vec.as_slice();
 
         // Find current process
@@ -2442,6 +2521,9 @@ pub fn sys_execv_with_frame(
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
         };
+        if let Err(errno) = super::exec::await_exiting_siblings(current_pid) {
+            return SyscallResult::Err(errno);
+        }
 
         // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
         // masked together, same shape as the production arm below (#721 K3/K10).
@@ -2452,20 +2534,17 @@ pub fn sys_execv_with_frame(
                 return SyscallResult::Err(12); // ENOMEM
             };
 
-            let (new_entry_point, new_rsp, commit) = match manager.exec_process_with_argv(
-                current_pid,
-                &mut prepared,
-                &mut closes,
-            ) {
-                Ok(value) => value,
-                Err("exec blocked while CLONE_VM sibling shares old address space") => {
-                    return SyscallResult::Err(11); // EAGAIN
-                }
-                Err(e) => {
-                    log::error!("sys_execv: Failed to exec process: {}", e);
-                    return SyscallResult::Err(super::exec::manager_errno(e));
-                }
-            };
+            let (new_entry_point, new_rsp, commit) =
+                match manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes) {
+                    Ok(value) => value,
+                    Err("exec blocked while CLONE_VM sibling shares old address space") => {
+                        return SyscallResult::Err(11); // EAGAIN
+                    }
+                    Err(e) => {
+                        log::error!("sys_execv: Failed to exec process: {}", e);
+                        return SyscallResult::Err(super::exec::manager_errno(e));
+                    }
+                };
 
             let new_cr3 = commit.new_page_table_root();
 
@@ -2538,16 +2617,17 @@ pub fn sys_execv_with_frame(
         // section 2.1, #713 anti-vacuity / precheck section 4.6). This read happens with
         // interrupts enabled, before any lock is taken — see this function's own
         // top-of-file comment; do not move it inside the masked section below (X2).
-        let (elf_vec, image_identity) = match super::exec::read_image(program_name, &mut arguments, |path| {
-            if path.contains('/') {
-                crate::boot::init_image::read_program_image(path)
-            } else {
-                crate::boot::init_image::read_program_image(&alloc::format!("/bin/{}", path))
-            }
-        }) {
-            Ok(data) => data,
-            Err(errno) => return SyscallResult::Err(errno),
-        };
+        let (elf_vec, image_identity) =
+            match super::exec::read_image(program_name, &mut arguments, |path| {
+                if path.contains('/') {
+                    crate::boot::init_image::read_program_image(path)
+                } else {
+                    crate::boot::init_image::read_program_image(&alloc::format!("/bin/{}", path))
+                }
+            }) {
+                Ok(data) => data,
+                Err(errno) => return SyscallResult::Err(errno),
+            };
         let elf_data = elf_vec.as_slice();
 
         // #721 K12: reclaim scheduler-owned kernel stacks and deferred process resources
@@ -2611,6 +2691,9 @@ pub fn sys_execv_with_frame(
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
         };
+        if let Err(errno) = super::exec::await_exiting_siblings(current_pid) {
+            return SyscallResult::Err(errno);
+        }
 
         // Mask only publication, scheduler commit, CR3 install and frame patch.
         // The replacement image and arguments were built above without PM held.
@@ -2621,20 +2704,17 @@ pub fn sys_execv_with_frame(
                 return SyscallResult::Err(12); // ENOMEM
             };
 
-            let (new_entry_point, new_rsp, commit) = match manager.exec_process_with_argv(
-                current_pid,
-                &mut prepared,
-                &mut closes,
-            ) {
-                Ok(value) => value,
-                Err("exec blocked while CLONE_VM sibling shares old address space") => {
-                    return SyscallResult::Err(11); // EAGAIN
-                }
-                Err(e) => {
-                    log::error!("sys_execv: Failed to exec process: {}", e);
-                    return SyscallResult::Err(super::exec::manager_errno(e));
-                }
-            };
+            let (new_entry_point, new_rsp, commit) =
+                match manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes) {
+                    Ok(value) => value,
+                    Err("exec blocked while CLONE_VM sibling shares old address space") => {
+                        return SyscallResult::Err(11); // EAGAIN
+                    }
+                    Err(e) => {
+                        log::error!("sys_execv: Failed to exec process: {}", e);
+                        return SyscallResult::Err(super::exec::manager_errno(e));
+                    }
+                };
 
             let new_cr3 = commit.new_page_table_root();
 
@@ -2924,10 +3004,17 @@ pub fn sys_getpid() -> SyscallResult {
         #[cfg(target_arch = "aarch64")]
         let ptr = crate::per_cpu_aarch64::current_thread_ptr();
         let ptr = ptr as *const crate::task::thread::Thread;
-        if ptr.is_null() { return None; }
+        if ptr.is_null() {
+            return None;
+        }
         // SAFETY: IRQ masking keeps the current thread alive on this CPU;
         // reading its immutable Arc target does not create a mutable alias.
-        unsafe { (*ptr).cpu_account.as_ref().map(|account| account.process_id) }
+        unsafe {
+            (*ptr)
+                .cpu_account
+                .as_ref()
+                .map(|account| account.process_id)
+        }
     });
     if let Some(group) = group.filter(|&id| id != 0) {
         return SyscallResult::Ok(group);
@@ -2957,7 +3044,11 @@ pub fn sys_getpid() -> SyscallResult {
                     // manager, which every other CPU waits for while a serial
                     // line is written.
                     let tgid = process.thread_group_id.unwrap_or(pid.as_u64());
-                    log::debug!("sys_getpid: Found process {} for thread {}", tgid, thread_id);
+                    log::debug!(
+                        "sys_getpid: Found process {} for thread {}",
+                        tgid,
+                        thread_id
+                    );
                     return SyscallResult::Ok(tgid);
                 }
             }
@@ -3039,7 +3130,9 @@ pub(crate) fn end_thread_group_peers(exit_code: i32) {
         return;
     };
     let pid = crate::process::with_process_manager(|manager| {
-        manager.find_process_by_thread(thread_id).map(|(pid, _)| pid)
+        manager
+            .find_process_by_thread(thread_id)
+            .map(|(pid, _)| pid)
     })
     .flatten();
     if let Some(pid) = pid {
@@ -3703,7 +3796,14 @@ pub fn sys_select(nfds: i32, read: u64, write: u64, except: u64, timeout: u64) -
     super::multiplex::select(nfds, read, write, except, timeout)
 }
 
-pub fn sys_pselect6(nfds: i32, read: u64, write: u64, except: u64, timeout: u64, mask: u64) -> SyscallResult {
+pub fn sys_pselect6(
+    nfds: i32,
+    read: u64,
+    write: u64,
+    except: u64,
+    timeout: u64,
+    mask: u64,
+) -> SyscallResult {
     super::multiplex::pselect6(nfds, read, write, except, timeout, mask)
 }
 
@@ -4060,7 +4160,10 @@ fn change_credentials(
             return SyscallResult::Err(super::errno::ESRCH as u64);
         };
         let mut manager_guard = crate::process::manager();
-        match manager_guard.as_mut().and_then(|m| m.find_process_by_thread_mut(thread_id)) {
+        match manager_guard
+            .as_mut()
+            .and_then(|m| m.find_process_by_thread_mut(thread_id))
+        {
             Some((_, process)) => match change(&mut process.cred) {
                 Ok(()) => SyscallResult::Ok(0),
                 Err(errno) => SyscallResult::Err(errno),
@@ -4093,8 +4196,12 @@ pub fn sys_setregid(real: u32, effective: u32) -> SyscallResult {
 /// Report supplementary groups without holding PM across a faultable user copy.
 pub fn sys_getgroups(size: i32, list: u64) -> SyscallResult {
     use super::errno::{EINVAL, ESRCH};
-    if size < 0 { return SyscallResult::Err(EINVAL as u64); }
-    let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(ESRCH as u64); };
+    if size < 0 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(ESRCH as u64);
+    };
     let groups = {
         let guard = crate::process::manager();
         match guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) {
@@ -4102,9 +4209,17 @@ pub fn sys_getgroups(size: i32, list: u64) -> SyscallResult {
             None => return SyscallResult::Err(ESRCH as u64),
         }
     };
-    if size == 0 { return SyscallResult::Ok(groups.len() as u64); }
-    if (size as usize) < groups.len() { return SyscallResult::Err(EINVAL as u64); }
-    match super::userptr::write_user_bytes(list, groups.as_ptr() as *const u8, groups.len() * core::mem::size_of::<u32>()) {
+    if size == 0 {
+        return SyscallResult::Ok(groups.len() as u64);
+    }
+    if (size as usize) < groups.len() {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    match super::userptr::write_user_bytes(
+        list,
+        groups.as_ptr() as *const u8,
+        groups.len() * core::mem::size_of::<u32>(),
+    ) {
         Ok(()) => SyscallResult::Ok(groups.len() as u64),
         Err(errno) => SyscallResult::Err(errno),
     }
@@ -4122,7 +4237,9 @@ pub fn sys_setgroups(count: u64, list: u64) -> SyscallResult {
     }
     let mut groups = alloc::vec![0u32; count as usize];
     if let Err(errno) = super::userptr::read_user_bytes(
-        groups.as_mut_ptr() as *mut u8, list, groups.len() * core::mem::size_of::<u32>(),
+        groups.as_mut_ptr() as *mut u8,
+        list,
+        groups.len() * core::mem::size_of::<u32>(),
     ) {
         return SyscallResult::Err(errno);
     }
@@ -4131,7 +4248,10 @@ pub fn sys_setgroups(count: u64, list: u64) -> SyscallResult {
         return SyscallResult::Err(ESRCH as u64);
     };
     let mut guard = crate::process::manager();
-    let Some((_, process)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) else {
+    let Some((_, process)) = guard
+        .as_mut()
+        .and_then(|m| m.find_process_by_thread_mut(tid))
+    else {
         return SyscallResult::Err(ESRCH as u64);
     };
     if !process.cred.privileged() {
@@ -4190,32 +4310,33 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
     };
 
     // Extract file info from fd table under process lock
-    let fd_result: Result<crate::fs::ext2::live_inode::FileHandle, u64> = crate::arch_without_interrupts(|| {
-        let manager_guard = crate::process::manager();
-        if let Some(ref manager) = *manager_guard {
-            if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                if let Some(fd_entry) = process.fd_table.get(fd) {
-                    match &fd_entry.kind {
-                        FdKind::RegularFile(_) if !fd_entry.readable() => {
-                            return Err(super::errno::EBADF as u64);
+    let fd_result: Result<crate::fs::ext2::live_inode::FileHandle, u64> =
+        crate::arch_without_interrupts(|| {
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    if let Some(fd_entry) = process.fd_table.get(fd) {
+                        match &fd_entry.kind {
+                            FdKind::RegularFile(_) if !fd_entry.readable() => {
+                                return Err(super::errno::EBADF as u64);
+                            }
+                            FdKind::RegularFile(file_ref) => {
+                                let file = file_ref.lock();
+                                return Ok(file.handle.clone());
+                            }
+                            FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
+                                return Err(super::errno::ESPIPE as u64);
+                            }
+                            _ => return Err(super::errno::ESPIPE as u64),
                         }
-                        FdKind::RegularFile(file_ref) => {
-                            let file = file_ref.lock();
-                            return Ok(file.handle.clone());
-                        }
-                        FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
-                            return Err(super::errno::ESPIPE as u64);
-                        }
-                        _ => return Err(super::errno::ESPIPE as u64),
                     }
+                    return Err(super::errno::EBADF as u64);
                 }
-                return Err(super::errno::EBADF as u64);
+                Err(super::errno::EBADF as u64)
+            } else {
+                Err(super::errno::EBADF as u64)
             }
-            Err(super::errno::EBADF as u64)
-        } else {
-            Err(super::errno::EBADF as u64)
-        }
-    });
+        });
 
     let handle = match fd_result {
         Ok(handle) => handle,
@@ -4230,7 +4351,9 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
     use crate::fs::ext2;
     let mut update_atime = false;
     let mut read_fn = |fs: &ext2::Ext2Fs| -> SyscallResult {
-        if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
+        if handle.verify(fs).is_err() {
+            return SyscallResult::Err(super::errno::EIO as u64);
+        }
         let inode = match fs.read_inode(inode_num as u32) {
             Ok(i) => i,
             Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
@@ -4295,32 +4418,33 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     };
 
     // Extract file info from fd table under process lock
-    let fd_result: Result<(crate::fs::ext2::live_inode::FileHandle, bool), u64> = crate::arch_without_interrupts(|| {
-        let manager_guard = crate::process::manager();
-        if let Some(ref manager) = *manager_guard {
-            if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                if let Some(fd_entry) = process.fd_table.get(fd) {
-                    match &fd_entry.kind {
-                        FdKind::RegularFile(_) if !fd_entry.writable() => {
-                            return Err(super::errno::EBADF as u64);
+    let fd_result: Result<(crate::fs::ext2::live_inode::FileHandle, bool), u64> =
+        crate::arch_without_interrupts(|| {
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    if let Some(fd_entry) = process.fd_table.get(fd) {
+                        match &fd_entry.kind {
+                            FdKind::RegularFile(_) if !fd_entry.writable() => {
+                                return Err(super::errno::EBADF as u64);
+                            }
+                            FdKind::RegularFile(file_ref) => {
+                                let file = file_ref.lock();
+                                return Ok((file.handle.clone(), !process.cred.privileged()));
+                            }
+                            FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
+                                return Err(super::errno::ESPIPE as u64);
+                            }
+                            _ => return Err(super::errno::ESPIPE as u64),
                         }
-                        FdKind::RegularFile(file_ref) => {
-                            let file = file_ref.lock();
-                            return Ok((file.handle.clone(), !process.cred.privileged()));
-                        }
-                        FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
-                            return Err(super::errno::ESPIPE as u64);
-                        }
-                        _ => return Err(super::errno::ESPIPE as u64),
                     }
+                    return Err(super::errno::EBADF as u64);
                 }
-                return Err(super::errno::EBADF as u64);
+                Err(super::errno::EBADF as u64)
+            } else {
+                Err(super::errno::EBADF as u64)
             }
-            Err(super::errno::EBADF as u64)
-        } else {
-            Err(super::errno::EBADF as u64)
-        }
-    });
+        });
 
     let (handle, unprivileged) = match fd_result {
         Ok(info) => info,
@@ -4350,7 +4474,9 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
 
     use crate::fs::ext2;
     let write_fn = |fs: &mut ext2::Ext2Fs| -> SyscallResult {
-        if handle.verify(fs).is_err() { return SyscallResult::Err(super::errno::EIO as u64); }
+        if handle.verify(fs).is_err() {
+            return SyscallResult::Err(super::errno::EIO as u64);
+        }
         match fs.write_file_range_as(inode_num as u32, file_offset, &data, unprivileged) {
             Ok(written) => SyscallResult::Ok(written as u64),
             Err(error) => SyscallResult::Err(crate::memory::file_map::mutation_errno(error)),

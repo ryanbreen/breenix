@@ -22,6 +22,8 @@ public struct HostFactsSample: Codable, Equatable, Sendable {
     public var hostModel: String?
     public var physMem: UInt64?
     public var qemuVersion: String?
+    public var qemuAccelerator: String?
+    public var qemuCPU: String?
     public var gitSHA: String?
     public var gitDirty: Bool?
     public var clockRatio: Double?
@@ -38,6 +40,8 @@ public struct HostFactsSample: Codable, Equatable, Sendable {
         hostModel: String? = nil,
         physMem: UInt64? = nil,
         qemuVersion: String? = nil,
+        qemuAccelerator: String? = nil,
+        qemuCPU: String? = nil,
         gitSHA: String? = nil,
         gitDirty: Bool? = nil,
         clockRatio: Double? = nil
@@ -53,6 +57,8 @@ public struct HostFactsSample: Codable, Equatable, Sendable {
         self.hostModel = hostModel
         self.physMem = physMem
         self.qemuVersion = qemuVersion
+        self.qemuAccelerator = qemuAccelerator
+        self.qemuCPU = qemuCPU
         self.gitSHA = gitSHA
         self.gitDirty = gitDirty
         self.clockRatio = clockRatio
@@ -110,6 +116,17 @@ public enum HostFacts {
             gitDirty: git.dirty,
             clockRatio: nil
         )
+    }
+
+    // Consume the wrapper's effective argv, not the requested environment.
+    static func qemuConfiguration(_ output: String) -> (accelerator: String, cpu: String)? {
+        for line in output.split(whereSeparator: \.isNewline).reversed() {
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count == 3, fields[0] == "BREENIX_QEMU_CONFIG",
+                  fields[1].hasPrefix("accel="), fields[2].hasPrefix("cpu=") else { continue }
+            return (String(fields[1].dropFirst(6)), String(fields[2].dropFirst(4)))
+        }
+        return nil
     }
 
     static func qemuPeerCount(processName: String, runner: ProcessRunner) throws -> Int {

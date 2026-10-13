@@ -1,6 +1,6 @@
 # Breenix OS
 
-An experimental x86_64 operating system written in Rust.
+An ARM64 and x86_64 operating system written in Rust.
 
 ## Project Status
 
@@ -26,7 +26,13 @@ cargo test
 
 # Build with userspace programs
 cargo build --features testing
+
+# ARM64 testing kernel on Apple Silicon QEMU-HVF
+scripts/boot-interactive.sh --mode tests
 ```
+
+See [the boot path](docs/boot-path.md) for production probes, suites, and
+explicit TCG selection.
 
 ### Forked Rust standard library
 

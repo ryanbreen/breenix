@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicU8, Ordering::Rel
 
 #[cfg(target_arch = "x86_64")]
 mod nr {
+    #[cfg(not(libc_has = "mq_close"))]
     pub const CLOSE: u64 = 3;
     pub const MMAP: u64 = 9;
     pub const RT_SIGPROCMASK: u64 = 14;
@@ -61,17 +62,25 @@ mod nr {
     pub const SEMTIMEDOP: u64 = 220;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const EXIT_GROUP: u64 = 231;
+    #[cfg(not(libc_has = "mq_open"))]
     pub const MQ_OPEN: u64 = 240;
+    #[cfg(not(libc_has = "mq_unlink"))]
     pub const MQ_UNLINK: u64 = 241;
+    #[cfg(not(all(libc_has = "mq_send", libc_has = "mq_timedsend")))]
     pub const MQ_TIMEDSEND: u64 = 242;
+    #[cfg(not(all(libc_has = "mq_receive", libc_has = "mq_timedreceive")))]
     pub const MQ_TIMEDRECEIVE: u64 = 243;
+    #[cfg(not(libc_has = "mq_notify"))]
     pub const MQ_NOTIFY: u64 = 244;
+    #[cfg(not(all(libc_has = "mq_getattr", libc_has = "mq_setattr")))]
     pub const MQ_GETSETATTR: u64 = 245;
+    #[cfg(not(libc_has = "mkfifo"))]
     pub const MKNODAT: u64 = 259;
     pub const GETCPU: u64 = 309;
 }
 #[cfg(target_arch = "aarch64")]
 mod nr {
+    #[cfg(not(libc_has = "mq_close"))]
     pub const CLOSE: u64 = 57;
     pub const MMAP: u64 = 222;
     pub const RT_SIGPROCMASK: u64 = 135;
@@ -98,12 +107,19 @@ mod nr {
     pub const SEMTIMEDOP: u64 = 192;
     pub const CLOCK_GETTIME: u64 = 113;
     pub const EXIT_GROUP: u64 = 94;
+    #[cfg(not(libc_has = "mq_open"))]
     pub const MQ_OPEN: u64 = 180;
+    #[cfg(not(libc_has = "mq_unlink"))]
     pub const MQ_UNLINK: u64 = 181;
+    #[cfg(not(all(libc_has = "mq_send", libc_has = "mq_timedsend")))]
     pub const MQ_TIMEDSEND: u64 = 182;
+    #[cfg(not(all(libc_has = "mq_receive", libc_has = "mq_timedreceive")))]
     pub const MQ_TIMEDRECEIVE: u64 = 183;
+    #[cfg(not(libc_has = "mq_notify"))]
     pub const MQ_NOTIFY: u64 = 184;
+    #[cfg(not(all(libc_has = "mq_getattr", libc_has = "mq_setattr")))]
     pub const MQ_GETSETATTR: u64 = 185;
+    #[cfg(not(libc_has = "mkfifo"))]
     pub const MKNODAT: u64 = 33;
     pub const GETCPU: u64 = 168;
 }
@@ -135,6 +151,7 @@ const O_CREAT: i32 = 0o100;
 const O_EXCL: i32 = 0o200;
 const O_TRUNC: i32 = 0o1000;
 const O_NONBLOCK: i32 = 0o4000;
+#[cfg(not(libc_has = "mkfifo"))]
 const AT_FDCWD: i64 = -100;
 const S_IFMT: u32 = 0o170000;
 const S_IFIFO: u32 = 0o010000;
@@ -1210,10 +1227,16 @@ fn fifo_eof_blocked_reader() -> CaseResult {
     let mut reader = spawn(|| {
         let _ = close(w as i32)?;
         let r = open_fifo(&f, O_RDONLY, "O_RDONLY in the reader")?;
+        pg.set(1, 1);
         let (n, _) = get(r, 64)?;
         pg.set(0, mono());
         check(n == 0, &format!("the blocked read returned {}, expected end of file", shown(n)))
     })?;
+    // The reader's open looks the FIFO up in the filesystem, and can block there
+    // first. Closing the last writer before that open returns would leave the
+    // open waiting for a writer, so the reader is checked as blocked only once
+    // it has opened the FIFO and can block nowhere but in the read.
+    check(until(3000, || pg.get(1) == 1 || reader.reap().is_some()), "the reader did not open the FIFO within 3 s")?;
     reader.blocks("the read of the empty FIFO")?;
     let t0 = mono();
     zero("close of the last writer", close(w as i32)?)?;

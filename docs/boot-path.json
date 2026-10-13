@@ -515,6 +515,7 @@
       "summary": "Programs read, write, list, rename and link files on ext2 and exec binaries from it.",
       "stages": {
         "aarch64": [
+          "FIFO filesystem test passed",
           "File read test passed",
           "Getdents test passed",
           "Lseek test passed",
@@ -536,6 +537,7 @@
           "Exec ext2 test passed"
         ],
         "x86_64": [
+          "FIFO filesystem test passed",
           "File read test passed",
           "Getdents test passed",
           "Lseek test passed",

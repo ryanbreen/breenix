@@ -721,3 +721,7 @@ path = "src/suite_crypto.rs"
 [[bin]]
 name = "suite-ipc"
 path = "src/suite_ipc.rs"
+
+[[bin]]
+name = "fifo_fs_test"
+path = "src/fifo_fs_test.rs"
