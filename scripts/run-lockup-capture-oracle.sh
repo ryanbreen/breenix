@@ -166,7 +166,7 @@ echo "  out:      $OUT_DIR"
 echo "  gdb port: $GDB_PORT"
 
 qemu_host_lock_acquire
-python3 "$REPO_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
+python3 "$REPO_ROOT/scripts/qemu-arm64.py" --accel tcg qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 2 \
     -kernel "$KERNEL_ELF" \
     -display none -no-reboot \

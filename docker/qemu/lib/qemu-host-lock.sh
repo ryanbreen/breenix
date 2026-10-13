@@ -108,8 +108,7 @@ source "$_QHL_REPO/scripts/host-slots.sh"
 # On a Mac it gives QEMU's vCPU threads user-interactive priority; elsewhere,
 # or with BREENIX_QEMU_UI=0, it execs QEMU unchanged. Preparation is lazy,
 # so sourcing this file does no work for x86 or other backends.
-QEMU_UI="$_QHL_REPO/scripts/qemu-ui-launch.sh"
-export BREENIX_QEMU_UI_LAUNCHER="$QEMU_UI"
+export BREENIX_QEMU_UI_LAUNCHER="$_QHL_REPO/scripts/qemu-ui-launch.sh"
 # Entries capture argv before parsing. Already-supervised interactive runners
 # share their existing session; shell-only helper tests need no supervisor.
 _QHL_SLOT_ENROLLED=0

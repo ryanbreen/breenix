@@ -281,7 +281,7 @@ pub fn handle_interrupt() {
         return;
     }
 
-    let interrupt_status = unsafe { read_volatile((base + 0x60) as *const u32) };
+    let interrupt_status = unsafe { crate::arch_impl::aarch64::mmio::read32((base + 0x60) as *const u32) };
     if interrupt_status == 0 {
         return;
     }
@@ -289,7 +289,7 @@ pub fn handle_interrupt() {
     GPU_MMIO_IRQ_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     unsafe {
-        core::ptr::write_volatile((base + 0x64) as *mut u32, interrupt_status);
+        crate::arch_impl::aarch64::mmio::write32((base + 0x64) as *mut u32, interrupt_status);
     }
     crate::arch_impl::aarch64::cpu::dsb_sy();
     fence(core::sync::atomic::Ordering::SeqCst);

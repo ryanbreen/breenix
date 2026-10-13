@@ -154,6 +154,18 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual(values[name], "46", name)
         self.assertEqual(values["pid"], str(pid))
 
+    def test_accelerator_wrapper_uses_exported_qos_launcher(self):
+        process = subprocess.Popen([sys.executable, str(ROOT / "scripts/qemu-arm64.py"), str(self.probe)],
+                                   stdout=subprocess.PIPE, text=True,
+                                   env={**os.environ, "BREENIX_QEMU_UI_LAUNCHER": self.launcher})
+        out, _ = process.communicate(timeout=30)
+        self.assertEqual(process.returncode, 0)
+        values = dict(line.split("=", 1) for line in out.splitlines())
+        for name in ("main", "child", "grandchild"):
+            self.assertEqual(values[name], "46", name)
+        self.assertEqual(values["pid"], str(process.pid))
+        self.assertEqual(values["inserted"], "")
+
     def test_the_program_does_not_pass_the_library_on(self):
         _, values = self.run_probe(self.launcher)
         self.assertEqual(values["inserted"], "")
@@ -203,7 +215,7 @@ class LauncherTest(unittest.TestCase):
             env = {key: value for key, value in os.environ.items()
                    if key not in ("BREENIX_HOST_ENTRY", "BREENIX_SLOT_SESSION")}
             result = subprocess.run(
-                ["bash", "-c", 'source "$1/docker/qemu/lib/qemu-host-lock.sh" && echo "$QEMU_UI"', "_", str(ROOT)],
+                ["bash", "-c", 'source "$1/docker/qemu/lib/qemu-host-lock.sh" && echo "$BREENIX_QEMU_UI_LAUNCHER"', "_", str(ROOT)],
                 capture_output=True, text=True, env={**env, "BREENIX_QEMU_APP_DIR": cache})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), str(HELPER))

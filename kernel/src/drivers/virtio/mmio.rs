@@ -26,30 +26,7 @@
 //! | 0x0fc | ConfigGeneration | R |
 //! | 0x100+ | Config | RW |
 
-// Keep MMIO accesses in the plain register-indirect form, as Linux ARM64's
-// raw I/O helpers do. LLVM can give a volatile access address writeback;
-// those instructions have ESR.ISV=0 and QEMU HVF cannot emulate them.
-#[inline]
-unsafe fn read_mmio32(address: *const u32) -> u32 {
-    let value: u32;
-    core::arch::asm!("ldr {value:w}, [{address}]", value = out(reg) value,
-                     address = in(reg) address, options(nostack, preserves_flags));
-    value
-}
-
-#[inline]
-unsafe fn read_mmio8(address: *const u8) -> u8 {
-    let value: u32;
-    core::arch::asm!("ldrb {value:w}, [{address}]", value = out(reg) value,
-                     address = in(reg) address, options(nostack, preserves_flags));
-    value as u8
-}
-
-#[inline]
-unsafe fn write_mmio32(address: *mut u32, value: u32) {
-    core::arch::asm!("str {value:w}, [{address}]", value = in(reg) value,
-                     address = in(reg) address, options(nostack, preserves_flags));
-}
+use crate::arch_impl::aarch64::mmio::{read8 as read_mmio8, read32 as read_mmio32, write32 as write_mmio32};
 
 /// VirtIO MMIO magic value ("virt" in little-endian)
 pub const VIRTIO_MMIO_MAGIC: u32 = 0x74726976;

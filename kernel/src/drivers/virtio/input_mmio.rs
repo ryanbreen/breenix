@@ -277,11 +277,11 @@ fn is_pointing_device(device: &VirtioMmioDevice) -> bool {
         let config_size = (base + 0x102) as *const u8;
 
         // Query EV_BITS for EV_ABS (event type 3)
-        core::ptr::write_volatile(config_select, input_cfg::EV_BITS);
-        core::ptr::write_volatile(config_subsel, event_type::EV_ABS as u8);
+        crate::arch_impl::aarch64::mmio::write8(config_select, input_cfg::EV_BITS);
+        crate::arch_impl::aarch64::mmio::write8(config_subsel, event_type::EV_ABS as u8);
 
         // If size > 0, the device reports supported ABS axis codes → it's a pointer
-        let size = core::ptr::read_volatile(config_size);
+        let size = crate::arch_impl::aarch64::mmio::read8(config_size);
         size > 0
     }
 }
@@ -496,7 +496,7 @@ fn init_input_device_queue(
     unsafe {
         *device_base_ptr = virt_base;
         let notify_addr = (virt_base + 0x50) as *mut u32;
-        core::ptr::write_volatile(notify_addr, 0);
+        crate::arch_impl::aarch64::mmio::write32(notify_addr, 0);
     }
 
     device.driver_ok();
@@ -562,7 +562,7 @@ pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
             if count > 0 && base != 0 {
                 fence(Ordering::SeqCst);
                 let notify_addr = (base + 0x50) as *mut u32;
-                core::ptr::write_volatile(notify_addr, 0);
+                crate::arch_impl::aarch64::mmio::write32(notify_addr, 0);
             }
         }
     }
@@ -637,9 +637,9 @@ pub fn handle_interrupt() {
         let base = *(&raw const KBD_DEVICE_BASE);
         if base != 0 {
             let status_addr = (base + 0x60) as *const u32;
-            let status = core::ptr::read_volatile(status_addr);
+            let status = crate::arch_impl::aarch64::mmio::read32(status_addr);
             let ack_addr = (base + 0x64) as *mut u32;
-            core::ptr::write_volatile(ack_addr, status);
+            crate::arch_impl::aarch64::mmio::write32(ack_addr, status);
         }
     }
 
@@ -779,7 +779,7 @@ fn poll_tablet_events() -> TabletEventIterator {
             if count > 0 && base != 0 {
                 fence(Ordering::SeqCst);
                 let notify_addr = (base + 0x50) as *mut u32;
-                core::ptr::write_volatile(notify_addr, 0);
+                crate::arch_impl::aarch64::mmio::write32(notify_addr, 0);
             }
         }
     }
@@ -858,9 +858,9 @@ pub fn handle_tablet_interrupt() {
         let base = *(&raw const TABLET_DEVICE_BASE);
         if base != 0 {
             let status_addr = (base + 0x60) as *const u32;
-            let status = core::ptr::read_volatile(status_addr);
+            let status = crate::arch_impl::aarch64::mmio::read32(status_addr);
             let ack_addr = (base + 0x64) as *mut u32;
-            core::ptr::write_volatile(ack_addr, status);
+            crate::arch_impl::aarch64::mmio::write32(ack_addr, status);
         }
     }
 

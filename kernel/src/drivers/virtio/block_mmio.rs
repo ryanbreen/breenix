@@ -11,7 +11,7 @@ use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::traits::{CpuOps, InterruptController};
 use crate::task::completion::Completion;
 use crate::task::waitqueue::WaitQueueHead;
-use core::ptr::{read_volatile, write_volatile};
+use core::ptr::read_volatile;
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 
 /// Maximum number of block devices supported
@@ -1191,7 +1191,7 @@ fn block_mmio_virt_base(state: &BlockDeviceState) -> u64 {
 fn device_has_failed(state: &BlockDeviceState) -> bool {
     use super::mmio::status::{DEVICE_NEEDS_RESET, DRIVER_OK};
     // Offset 0x70 is the MMIO transport's Status register.
-    let status = unsafe { read_volatile((block_mmio_virt_base(state) + 0x70) as *const u32) };
+    let status = unsafe { crate::arch_impl::aarch64::mmio::read32((block_mmio_virt_base(state) + 0x70) as *const u32) };
     status == u32::MAX || status & DRIVER_OK == 0 || status & DEVICE_NEEDS_RESET != 0
 }
 
@@ -1232,13 +1232,13 @@ pub fn handle_interrupt(device_index: usize) {
     };
 
     let base = block_mmio_virt_base(state);
-    let interrupt_status = unsafe { read_volatile((base + 0x60) as *const u32) };
+    let interrupt_status = unsafe { crate::arch_impl::aarch64::mmio::read32((base + 0x60) as *const u32) };
     if interrupt_status == 0 {
         return;
     }
 
     unsafe {
-        write_volatile((base + 0x64) as *mut u32, interrupt_status);
+        crate::arch_impl::aarch64::mmio::write32((base + 0x64) as *mut u32, interrupt_status);
     }
     dsb_sy();
 

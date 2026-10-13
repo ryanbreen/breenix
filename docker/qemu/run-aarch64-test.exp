@@ -21,6 +21,7 @@ set ext2_disk "$breenix_root/target/ext2-aarch64.img"
 set ext2_writable "/tmp/breenix_aarch64_test_[pid]_ext2.img"
 file copy -force $ext2_disk $ext2_writable
 
+# The accelerator wrapper applies macOS user-interactive QoS immediately before QEMU.
 # Start QEMU
 spawn python3 "$breenix_root/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -m 512 \

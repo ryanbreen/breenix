@@ -22,6 +22,7 @@ def command(binary, arguments, accelerator, system=None, machine=None):
     if accelerator == "hvf" and (system != "Darwin" or machine != "arm64"):
         raise ValueError("ARM64 HVF requires an Apple Silicon macOS host")
     result = [binary, "-accel", accelerator]
+    has_cpu = False
     index = 0
     while index < len(arguments):
         option = arguments[index]
@@ -31,12 +32,19 @@ def command(binary, arguments, accelerator, system=None, machine=None):
             if index + 1 == len(arguments):
                 raise ValueError(f"{option} needs a value")
             value = arguments[index + 1]
+            if option == "-cpu":
+                has_cpu = True
+            else:
+                if any(part.startswith("accel=") for part in value.split(",")):
+                    raise ValueError("select the accelerator with BREENIX_ARM64_QEMU_ACCEL")
             if accelerator == "hvf":
                 if option == "-cpu":
+                    if value not in ("max", "host"):
+                        raise ValueError(f"HVF cannot run CPU profile {value}; select TCG")
                     value = "host"
                 else:
                     parts = value.split(",")
-                    if parts[0] != "virt":
+                    if parts[0] not in ("virt", "type=virt"):
                         raise ValueError("ARM64 HVF launcher requires the virt machine")
                     parts = [part for part in parts if not part.startswith("gic-version=")]
                     value = ",".join(parts + ["gic-version=3"])
@@ -45,21 +53,32 @@ def command(binary, arguments, accelerator, system=None, machine=None):
         else:
             result.append(option)
             index += 1
+    if accelerator == "hvf" and not has_cpu:
+        result.extend(("-cpu", "host"))
     return result
 
 
 def main():
     arguments = sys.argv[1:]
     launcher = None
-    if arguments[:1] == ["--launcher"]:
+    accelerator = os.environ.get("BREENIX_ARM64_QEMU_ACCEL")
+    while arguments[:1] in (["--launcher"], ["--accel"]):
         if len(arguments) < 3:
-            sys.exit("--launcher needs a program followed by the QEMU binary")
-        launcher, arguments = arguments[1], arguments[2:]
+            sys.exit(f"{arguments[0]} needs a value followed by the QEMU binary")
+        if arguments[0] == "--accel":
+            accelerator, arguments = arguments[1], arguments[2:]
+        else:
+            launcher, arguments = arguments[1], arguments[2:]
     if not arguments:
         sys.exit("usage: qemu-arm64.py [--launcher PROGRAM] QEMU [QEMU arguments...]")
     try:
-        argv = command(arguments[0], arguments[1:],
-                       os.environ.get("BREENIX_ARM64_QEMU_ACCEL", default_accelerator()))
+        # A named CPU is a coverage requirement, not a request for the host CPU.
+        if accelerator is None:
+            cpus = [arguments[i + 1] for i, arg in enumerate(arguments[:-1]) if arg == "-cpu"]
+            accelerator = "tcg" if any(cpu not in ("max", "host") for cpu in cpus) else default_accelerator()
+        argv = command(arguments[0], arguments[1:], accelerator)
+        cpu = argv[argv.index("-cpu") + 1] if "-cpu" in argv else "default"
+        print(f"BREENIX_QEMU_CONFIG accel={accelerator} cpu={cpu}", file=sys.stderr, flush=True)
         if launcher is None:
             launcher = os.environ.get("BREENIX_QEMU_UI_LAUNCHER")
         if not launcher:

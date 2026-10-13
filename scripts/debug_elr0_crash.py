@@ -58,7 +58,7 @@ def main():
 
     # Start QEMU with serial to file and monitor on UNIX socket
     qemu_cmd = [
-        sys.executable, os.path.join(BREENIX_ROOT, "scripts/qemu-arm64.py"),
+        sys.executable, os.path.join(BREENIX_ROOT, "scripts/qemu-arm64.py"), "--accel", "tcg",
         "--launcher", qemu_ui_launcher(),
         "qemu-system-aarch64",
         "-M", "virt", "-cpu", "cortex-a72", "-m", "512", "-smp", "4",

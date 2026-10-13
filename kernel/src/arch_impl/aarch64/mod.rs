@@ -22,6 +22,7 @@ pub mod exception_frame;
 pub mod fpsimd;
 pub mod gic;
 pub mod mmu;
+pub mod mmio;
 pub mod paging;
 pub mod percpu;
 pub mod percpu_custody;

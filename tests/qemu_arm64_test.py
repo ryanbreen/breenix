@@ -30,6 +30,20 @@ class AcceleratorTests(unittest.TestCase):
         self.assertEqual(result, ["qemu", "-accel", "hvf", "-M", "virt,highmem=off,gic-version=3",
                                   "-cpu", "host", "-smp", "4", "-device", "virtio-blk-device,drive=ext2"])
 
+    def test_hvf_requires_a_representable_profile(self):
+        for cpu in ("cortex-a72", "cortex-a57", "max,pauth=off"):
+            with self.subTest(cpu=cpu), self.assertRaisesRegex(ValueError, "select TCG"):
+                command("qemu", ["-cpu", cpu], "hvf", "Darwin", "arm64")
+
+    def test_hvf_injects_host_cpu_and_accepts_machine_type(self):
+        self.assertEqual(command("qemu", ["-machine", "type=virt"], "hvf", "Darwin", "arm64"),
+                         ["qemu", "-accel", "hvf", "-machine", "type=virt,gic-version=3", "-cpu", "host"])
+
+    def test_machine_accelerator_cannot_override_selection(self):
+        for option in ("-M", "-machine"):
+            with self.subTest(option=option), self.assertRaises(ValueError):
+                command("qemu", [option, "virt,accel=tcg"], "hvf", "Darwin", "arm64")
+
     def test_tcg_preserves_cpu_and_gic_profiles(self):
         args = ["-machine", "virt,gic-version=3", "-cpu", "cortex-a72", "-smp", "4"]
         self.assertEqual(command("qemu", args, "tcg", "Darwin", "arm64"),
@@ -45,6 +59,18 @@ class AcceleratorTests(unittest.TestCase):
                                   ("tcg", ["-accel", "hvf"]), ("hvf", ["-M", "vmapple"])):
             with self.subTest(accelerator=accelerator, args=args), self.assertRaises(ValueError):
                 command("qemu", args, accelerator, "Darwin", "arm64")
+
+    def test_default_named_cpu_runs_tcg_and_reports_effective_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "qemu"
+            binary.write_text(f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
+            binary.chmod(0o755)
+            env = {key: value for key, value in os.environ.items() if key != "BREENIX_ARM64_QEMU_ACCEL"}
+            result = subprocess.run([sys.executable, str(LAUNCHER), "--launcher", "env", str(binary),
+                                     "-cpu", "cortex-a72"], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), ["-accel", "tcg", "-cpu", "cortex-a72"])
+            self.assertIn("BREENIX_QEMU_CONFIG accel=tcg cpu=cortex-a72", result.stderr)
 
     def test_exec_preserves_arguments_and_exit_status(self):
         with tempfile.TemporaryDirectory() as directory:
