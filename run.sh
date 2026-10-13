@@ -671,16 +671,15 @@ if [ "$PARALLELS" = true ]; then
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
 
     # VirtIO GPU with 3D acceleration (required for VirGL)
-    prlctl set "$PARALLELS_VM" --3d-accelerate highest 2>/dev/null || true
-    prlctl set "$PARALLELS_VM" --videosize 2048 2>/dev/null || true
-    # Set both Retina controls together: host drawing alone leaves guest Retina
-    # mode enabled. The console latches this policy when it is created.
+    prlctl set "$PARALLELS_VM" --3d-accelerate highest
+    prlctl set "$PARALLELS_VM" --videosize 2048
+    # Select host and guest Retina policy explicitly before starting the VM.
     if [ "${RETINA:-false}" = true ]; then
         prlctl set "$PARALLELS_VM" --high-resolution on --high-resolution-in-guest on
     else
         prlctl set "$PARALLELS_VM" --high-resolution off --high-resolution-in-guest off
     fi
-    prlctl set "$PARALLELS_VM" --vertical-sync on 2>/dev/null || true
+    prlctl set "$PARALLELS_VM" --vertical-sync on
 
     # Remove any default devices Parallels created (cdrom, hdd, serial) to avoid conflicts
     for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do
@@ -724,13 +723,9 @@ if [ "$PARALLELS" = true ]; then
     else
         prlctl set "$PARALLELS_VM" --startup-view window
     fi
-    # create publishes Parallels' native-resolution defaults to the GUI before
-    # the set commands above run. Reload this stopped VM's fully configured
-    # definition so a new console cannot inherit that earlier Retina policy.
-    VM_HOME=$(prlctl list -i "$PARALLELS_VM" | sed -n 's/^Home: //p')
+    VM_INFO=$(prlctl list -i "$PARALLELS_VM") || { echo "ERROR: cannot query configured Parallels VM"; exit 1; }
+    VM_HOME=$(sed -n 's/^Home: //p' <<< "$VM_INFO")
     [ -d "$VM_HOME" ] || { echo "ERROR: cannot locate configured Parallels VM"; exit 1; }
-    prlctl unregister "$PARALLELS_VM"
-    prlctl register "$VM_HOME" --preserve-uuid
     CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
     prlctl start "$PARALLELS_VM"
     echo ""
@@ -799,8 +794,7 @@ if [ "$PARALLELS" = true ]; then
         echo ""
 
         # Monitor Parallels VM log for VCPU exceptions in background
-        VM_DIR="$HOME/Parallels/${PARALLELS_VM}.pvm"
-        VM_LOG="$VM_DIR/parallels.log"
+        VM_LOG="$VM_HOME/parallels.log"
         if [ -f "$VM_LOG" ]; then
             python3 -u "$BREENIX_ROOT/scripts/vm-log-monitor.py" parallels "$VM_LOG" "$$" &
             LOGMON_PID=$!
@@ -1071,10 +1065,18 @@ usb_xhci:6.deviceType = "mouse"
 usb_xhci:6.port = "6"
 
 svga.vramSize = "268435456"
-# Match Parallels' 1280x960 framebuffer instead of selecting a larger GOP mode.
+VMXEOF
+
+    # Keep the default scaled viewport bounded; --retina retains GOP autodetection.
+    if [ "${RETINA:-false}" != true ]; then
+        cat >> "$VMX_FILE" <<VMXEOF
 svga.autodetect = "FALSE"
 svga.maxWidth = "1280"
 svga.maxHeight = "960"
+VMXEOF
+    fi
+
+    cat >> "$VMX_FILE" <<VMXEOF
 gui.fitGuestUsingNativeDisplayResolution = "${VMWARE_NATIVE_RESOLUTION}"
 mks.enable3d = "TRUE"
 
