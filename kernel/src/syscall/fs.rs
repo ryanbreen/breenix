@@ -2887,7 +2887,7 @@ fn handle_devfs_open(
         return match (id, tty) {
             (TtyId::Pty(_), TtyRef::Pty(pair)) => {
                 drop(manager_guard);
-                open_tty_slave(&pair, flags, native_inode, reserved)
+                return open_tty_slave(&pair, flags, native_inode, reserved);
             }
             (TtyId::Console, TtyRef::Console(_)) => {
                 let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {

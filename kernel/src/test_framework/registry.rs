@@ -8363,7 +8363,7 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
                 None => return TestResult::Fail("scheduler not initialized"),
             };
 
-        let (pid, fd, pty_num, original_main_thread) = {
+        let (pid, fd, pair, original_main_thread) = {
             let mut manager_guard = crate::process::manager();
             let manager = match manager_guard.as_mut() {
                 Some(m) => m,
@@ -8393,14 +8393,12 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
                 Err(_) => return TestResult::Fail("pty allocate failed"),
             };
 
-            let pty_num = pair.pty_num;
-
-            let fd = match process.fd_table.alloc(FdKind::PtyMaster(pty_num)) {
+            let fd = match process.fd_table.alloc(FdKind::PtyMaster(pair.clone())) {
                 Ok(fd) => fd,
                 Err(_) => return TestResult::Fail("pty fd alloc failed"),
             };
 
-            (pid, fd, pty_num, original_main_thread)
+            (pid, fd, pair, original_main_thread)
         };
 
         let mut pty_num_out: u32 = 0xFFFF_FFFF;
@@ -8431,7 +8429,7 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
             }
         }
 
-        pty::close_master_ref(pty_num);
+        pty::close_master_ref(&pair);
 
         result
     }
@@ -8744,7 +8742,7 @@ fn test_pty_support_aarch64() -> TestResult {
             && pty::ioctl::ioctl(&pair, Side::Slave, request, arg)
                 == Err(crate::syscall::errno::ENOTTY)
     });
-    pty::close_master_ref(pair.pty_num);
+    pty::close_master_ref(&pair);
     if result { TestResult::Pass } else { TestResult::Fail("PTY ioctl pointer/side validation failed") }
 }
 
@@ -8816,8 +8814,8 @@ fn test_telnetd_dependencies_aarch64() -> TestResult {
     // Step 3: Verify FdKind variants exist for telnetd (compile-time check)
     // These checks ensure the ARM64 build has all required variants
     let _ = FdKind::TcpSocket(0);
-    let _ = FdKind::PtyMaster(0);
-    let _ = FdKind::PtySlave(0);
+    let _: fn(alloc::sync::Arc<crate::tty::pty::PtyPair>) -> FdKind = FdKind::PtyMaster;
+    let _: fn(alloc::sync::Arc<crate::tty::pty::PtyPair>) -> FdKind = FdKind::PtySlave;
 
     // Step 4: Verify socket types are available
     use crate::socket::types::{AF_INET, SOCK_STREAM};
