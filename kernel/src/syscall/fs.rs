@@ -4127,10 +4127,13 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
             return result;
         }
     };
-    let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
-    let mount_id = match guard.as_ref() {
-        Some(fs) => fs.mount_id,
-        None => return SyscallResult::Err(ENOENT as u64),
+    // Released before load_ext2_inode_stat_for_mount takes its own guard.
+    let mount_id = match mount.read() {
+        Ok(guard) => match guard.as_ref() {
+            Some(fs) => fs.mount_id,
+            None => return SyscallResult::Err(ENOENT as u64),
+        },
+        Err(errno) => return SyscallResult::Err(errno),
     };
 
     // Build stat from inode
