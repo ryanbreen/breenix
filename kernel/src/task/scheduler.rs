@@ -1868,6 +1868,9 @@ pub fn x86_idle_pass() -> bool {
     scheduler.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
     scheduler.apply_isr_wakeups();
     scheduler.wake_expired_timers();
+    // An idle peer the kill's kick reaches goes no further than this pass
+    // when no queue has work, so it observes the kick here.
+    scheduler.observe_watched_exit_kicks();
     PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) != 0
         || scheduler
             .per_cpu_queues
@@ -2226,6 +2229,13 @@ pub struct Scheduler {
     /// Per-thread all-CPU grace targets for kernel-stack reclamation.
     retirement_grace: alloc::vec::Vec<RetirementGrace>,
 
+    /// Victims a kill has quarantined whose exit kick no peer has observed
+    /// yet, one per kick bucket: the victim's pid and the bucket's generation
+    /// when it was quarantined. Bit `b` of `exit_kick_watched` marks bucket
+    /// `b` in use. See `observe_watched_exit_kicks`.
+    exit_kick_watch: [(u64, u64); crate::tracing::providers::teardown::EXIT_KICK_BUCKETS],
+    exit_kick_watched: u64,
+
     /// Whether `schedule_deferred_requeue` drains the global per-CPU wake
     /// inboxes (held pinned wakes and the ISR wakeup buffers). Only the live
     /// scheduler may: a scheduler built by a boot test would take wakeups that
@@ -2343,6 +2353,8 @@ impl Scheduler {
             timer_heap: BinaryHeap::new(),
             signal_timer_groups: alloc::vec::Vec::new(),
             retirement_grace: alloc::vec::Vec::new(),
+            exit_kick_watch: [(0, 0); crate::tracing::providers::teardown::EXIT_KICK_BUCKETS],
+            exit_kick_watched: 0,
             #[cfg(target_arch = "aarch64")]
             drains_wake_inboxes: true,
         };
@@ -2987,6 +2999,7 @@ impl Scheduler {
 
         // Drain lock-free ISR wakeup buffers (see schedule_deferred_requeue for rationale).
         self.apply_isr_wakeups();
+        self.observe_watched_exit_kicks();
 
         if crate::net::loopback_queue_has_work() {
             let pump_tid = crate::net::loopback_pump_tid();
@@ -3031,7 +3044,7 @@ impl Scheduler {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
                 // Check the state and determine what to do
-                let (is_terminated, is_blocked, published_ready, terminated_owner_pid) =
+                let (is_terminated, is_blocked, published_ready) =
                     if let Some(current) = self.get_thread_mut(current_id) {
                         let was_terminated = current.state == ThreadState::Terminated;
                         // Check for any blocked state
@@ -3055,26 +3068,10 @@ impl Scheduler {
                             false
                         };
 
-                        (
-                            was_terminated,
-                            was_blocked,
-                            published_ready,
-                            was_terminated.then_some(current.owner_pid).flatten(),
-                        )
+                        (was_terminated, was_blocked, published_ready)
                     } else {
-                        (true, false, false, None)
+                        (true, false, false)
                     };
-
-                // This pass switches away from a thread a kill quarantined
-                // (`terminate_process_threads`): the kill's kick has reached
-                // the CPU that ran it. Consume the kick here, as
-                // `schedule_deferred_requeue` does, rather than leave it to
-                // whichever pass reaches the quarantine token: a peer with
-                // threads of its own queued never looks at another CPU's
-                // queue, and the sender never observes its own kick (#1413).
-                if let Some(owner_pid) = terminated_owner_pid {
-                    observe_exit_kick(owner_pid);
-                }
 
                 // Put non-terminated, non-blocked threads back in ready queue
                 // CRITICAL: Check for duplicates! If unblock() already added this thread
@@ -3653,6 +3650,7 @@ impl Scheduler {
         if self.drains_wake_inboxes {
             self.apply_isr_wakeups();
         }
+        self.observe_watched_exit_kicks();
 
         // If current thread is still runnable, mark it as Ready but DON'T add to queue.
         //
@@ -5908,17 +5906,47 @@ impl Scheduler {
         }
     }
 
+    /// Observe the exit kick of every victim `terminate_process_threads` has
+    /// watched and no peer has yet observed. Every scheduling pass runs this,
+    /// and the kick's reschedule request makes every peer run one after the
+    /// publication, so a peer observes the kick whatever became of the
+    /// victim's threads: one that left its CPU before the publication, one
+    /// that was queued when the kill came, or a token on a queue no peer
+    /// looks at (#1413). A bucket is released once the kick is observed, or
+    /// once a later publication has displaced it.
+    fn observe_watched_exit_kicks(&mut self) {
+        let mut watched = self.exit_kick_watched;
+        while watched != 0 {
+            let bucket = watched.trailing_zeros() as usize;
+            watched &= watched - 1;
+            let (pid, since) = self.exit_kick_watch[bucket];
+            if observe_exit_kick(pid)
+                || crate::tracing::providers::teardown::EXIT_KICK_SLOTS[bucket]
+                    .superseded_for(pid, since)
+            {
+                self.exit_kick_watched &= !(1 << bucket);
+            }
+        }
+    }
+
     /// Make every scheduler-owned thread for a process non-runnable.
     pub fn terminate_process_threads(&mut self, owner_pid: u64) {
         crate::tracing::providers::teardown::record_quarantine(owner_pid);
+        {
+            use crate::tracing::providers::teardown::{EXIT_KICK_BUCKETS, EXIT_KICK_SLOTS};
+            const _: () = assert!(EXIT_KICK_BUCKETS <= u64::BITS as usize);
+            let bucket = owner_pid as usize % EXIT_KICK_BUCKETS;
+            self.exit_kick_watch[bucket] = (owner_pid, EXIT_KICK_SLOTS[bucket].generation());
+            self.exit_kick_watched |= 1 << bucket;
+        }
         if crate::process::process_manager_held_on_current_cpu() {
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_LOCK_ORDER_SUSPECT);
         }
         // Preserve one scheduler-visible quarantine token per victim thread. A
         // peer can take SCHEDULER in the intentional gap before EXIT_KICK is
-        // published; a pre-publication decline requeues this token, and the SGI
-        // pass after publication consumes it. No CPU-residency predicate is
-        // needed, and unobserved collision cases age out with thread retirement.
+        // published; a pre-publication decline requeues this token. The kick
+        // itself is observed through the watch above, whichever queue the
+        // token is on; a token stops being declined once that has happened.
         let online_cpus = self.online_cpu_count();
         let now = crate::time::get_cpu_ticks();
         for index in 0..self.threads.len() {
@@ -5941,8 +5969,8 @@ impl Scheduler {
                 // A quarantine pass may not allocate while SCHEDULER is held.
                 // A running thread was previously popped from a queue, so the
                 // normal path has retained capacity for this token. If every
-                // queue is genuinely full, the outgoing-current observation
-                // hook remains the evidence path for a running victim.
+                // queue is genuinely full, the watch above still observes
+                // the kick.
                 if let Some(target) = (0..online_cpus)
                     .filter(|&cpu| {
                         self.per_cpu_queues[cpu].len() < self.per_cpu_queues[cpu].capacity()

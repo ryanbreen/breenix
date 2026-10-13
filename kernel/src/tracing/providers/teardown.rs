@@ -368,6 +368,26 @@ impl KickSlot {
         let second_state = self.state.load(Ordering::Acquire);
         second_state == first_state && pid == expected_pid
     }
+
+    /// The slot's current publication generation.
+    #[inline(always)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.state.load(Ordering::Acquire) >> 2
+    }
+
+    /// Whether a publication after generation `since` left this slot naming a
+    /// pid other than `pid`: a kick for `pid` was displaced or lost its
+    /// reservation, and can no longer be observed here.
+    #[inline(always)]
+    pub(crate) fn superseded_for(&self, pid: u64, since: u64) -> bool {
+        let first_state = self.state.load(Ordering::Acquire);
+        if first_state & EXIT_KICK_LOCK != 0 || first_state >> 2 == since {
+            return false;
+        }
+        let slot_pid = self.pid.load(Ordering::Relaxed);
+        let second_state = self.state.load(Ordering::Acquire);
+        second_state == first_state && slot_pid != pid
+    }
 }
 
 pub(crate) static EXIT_KICK_SLOTS: [KickSlot; EXIT_KICK_BUCKETS] =
