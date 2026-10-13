@@ -64,6 +64,7 @@ fn wait_for(done: impl Fn() -> bool) {
     while !done() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
+    assert!(done(), "race coordination timed out");
 }
 
 enum Test {}
@@ -160,7 +161,7 @@ fn record(writer: u8, bytes: &[u8], kind: Kind) {
 }
 
 /// CPU 1 writes `first`, stalling before its byte number `stall_at`. Once it
-/// has stalled, CPU 2 writes `second`, 2 ms a byte. CPU 1 stays stalled for
+/// has stalled, CPU 2 writes `second` without per-byte sleeps. CPU 1 stays stalled for
 /// at least 60 ms and until CPU 2 has skipped it and written `wake_after`
 /// bytes, so CPU 2 is part way through `second` when CPU 1 wakes. With
 /// `hold_at` nonzero, CPU 2 waits before its byte with that number until
@@ -185,12 +186,10 @@ fn race(
         STALLED.with(|flag| flag.set(Some(stalled)));
         record(1, first.0, first.1);
     });
-    while !stalled.load(Ordering::Acquire) {
-        thread::yield_now();
-    }
+    wait_for(|| stalled.load(Ordering::Acquire));
     let two = thread::spawn(move || {
         SECOND.with(|second| second.set(true));
-        PER_BYTE.with(|per| per.set(Duration::from_millis(2)));
+        PER_BYTE.with(|per| per.set(Duration::ZERO));
         record(2, second.0, second.1);
     });
     one.join().unwrap();
@@ -224,7 +223,9 @@ fn a_stale_byte_from_a_skipped_owner_does_not_leave_a_stage_line_broken() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("[ INFO] kernel:") && l.contains('a') && *l != line),
+            .any(|l| l.char_indices().any(|(at, byte)| {
+                byte == 'a' && format!("{}{}", &l[..at], &l[at + 1..]) == line
+            })),
         "the stalled CPU's byte never landed inside the stage line: {lines:?}"
     );
     assert!(lines.contains(&line), "no whole stage line: {lines:?}");

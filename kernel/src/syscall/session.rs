@@ -9,8 +9,7 @@
 //! the session (via setsid()).
 
 use super::SyscallResult;
-use crate::process::{manager, ProcessId, ProcessManager};
-use alloc::vec::Vec;
+use crate::process::{manager, ProcessId};
 
 /// EPERM - Operation not permitted
 const EPERM: u64 = 1;
@@ -23,16 +22,6 @@ const EACCES: u64 = 13;
 
 /// EINVAL - Invalid argument
 const EINVAL: u64 = 22;
-
-/// Every retained row of the process, including an exited leader while its
-/// other threads run. Session and group IDs are process-wide metadata.
-fn group_row_ids(pm: &ProcessManager, group: u64) -> Vec<ProcessId> {
-    pm.all_processes()
-        .iter()
-        .filter(|row| row.thread_group_id.unwrap_or(row.id.as_u64()) == group)
-        .map(|row| row.id)
-        .collect()
-}
 
 /// setsid() - Create a new session
 ///
@@ -88,9 +77,8 @@ pub fn sys_setsid() -> SyscallResult {
     // A process group whose ID is the caller's PID exists: the caller leads
     // it, or it outlived the caller's leadership. Zombies are still members.
     if manager
-        .all_processes()
-        .iter()
-        .any(|process| process.pgid == pid)
+        .iter_processes()
+        .any(|(_, process)| process.pgid == pid)
     {
         return SyscallResult::Err(EPERM);
     }
@@ -100,8 +88,8 @@ pub fn sys_setsid() -> SyscallResult {
     // Create new session: set sid = pgid = pid, for every thread of the
     // process.
     let new_sid = pid;
-    for pid in group_row_ids(manager, group) {
-        if let Some(row) = manager.get_process_mut(pid) {
+    for (_, row) in manager.iter_processes_mut() {
+        if row.thread_group_id.unwrap_or(row.id.as_u64()) == group {
             row.sid = new_sid;
             row.pgid = new_sid;
         }
@@ -327,16 +315,15 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
     // are still members of their group.
     if new_pgid != target_pid
         && !manager
-            .all_processes()
-            .iter()
-            .any(|process| process.pgid == new_pgid && process.sid == caller_sid)
+            .iter_processes()
+            .any(|(_, process)| process.pgid == new_pgid && process.sid == caller_sid)
     {
         return SyscallResult::Err(EPERM);
     }
 
     // Every thread of the target process joins the group.
-    for pid in group_row_ids(manager, target_pid.as_u64()) {
-        if let Some(row) = manager.get_process_mut(pid) {
+    for (_, row) in manager.iter_processes_mut() {
+        if row.thread_group_id.unwrap_or(row.id.as_u64()) == target_pid.as_u64() {
             row.pgid = new_pgid;
         }
     }

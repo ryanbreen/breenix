@@ -1118,12 +1118,11 @@ impl ProcessScheduler {
                 }
             }
 
+            // Linux closes descriptors before disassociating the terminal.
+            close_extracted_fds(fd_entries);
             if let Some(exit) = terminal_exit {
                 crate::tty::ctty::finish_exit(exit);
             }
-
-            // Close FDs outside PM lock (pipe close_write wakes readers, etc.)
-            close_extracted_fds(fd_entries);
 
             // Clean up window buffers so the compositor stops reading freed pages
             #[cfg(target_arch = "aarch64")]

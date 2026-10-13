@@ -280,7 +280,7 @@ impl TtyDevice {
                         }
                     }
                     Err(super::line_discipline::EOF_MARKER) => {
-                        // EOF on empty line - don't push anything, read() will return 0
+                        crate::ipc::stdin::push_eof_from_irq();
                         break;
                     }
                     Err(_) => break, // Other error, stop reading
@@ -354,7 +354,7 @@ impl TtyDevice {
                         }
                     }
                     Err(super::line_discipline::EOF_MARKER) => {
-                        // EOF on empty line - don't push anything, read() will return 0
+                        crate::ipc::stdin::push_eof_from_irq();
                         break;
                     }
                     Err(_) => break, // Other error, stop reading
@@ -568,20 +568,20 @@ impl TtyDevice {
     }
 
     /// Set the session leader
-    #[allow(dead_code)]
     pub fn set_session(&self, session: Option<ProcessId>) {
         *self.session.lock() = session;
     }
 
     /// Detach the console foreground group while keeping its IRQ snapshot current.
     pub fn clear_foreground_pgrp(&self) -> Option<ProcessId> {
-        let old = self.get_foreground_pgrp().map(ProcessId::new);
-        self.store_foreground_pgrp(None);
+        note_foreground_pgrp_acquisition(true);
+        let mut guard = self.foreground_pgrp.lock();
+        let old = guard.take().map(ProcessId::new);
+        self.foreground_pgrp_snapshot.store(FOREGROUND_PGRP_UNSET, Ordering::Release);
         old
     }
 
     /// Get the session leader
-    #[allow(dead_code)]
     pub fn get_session(&self) -> Option<ProcessId> {
         *self.session.lock()
     }
@@ -592,6 +592,7 @@ impl TtyDevice {
     #[allow(dead_code)]
     pub fn flush_input(&self) {
         self.ldisc.lock().flush_input();
+        crate::ipc::stdin::flush_input();
     }
 
     /// Write a character to the terminal output
