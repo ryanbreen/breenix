@@ -100,6 +100,7 @@ public struct BeastLauncher {
     public var fullBackstopSecs: Int
     public var pathsTemplate: BeastPaths
     public var slotHelperBase64: String?
+    public var progressBundleBase64: String?
     public var vigilScript: URL?
     public var treeHelperBase64: String?
     var makeSignals: (ProcessRunner) -> X86LaunchSignals = { X86LaunchSignals(runner: $0) }
@@ -112,6 +113,7 @@ public struct BeastLauncher {
         timeoutSecs: Int = 900,
         pathsTemplate: BeastPaths = BeastPaths(clonePath: ""),
         slotHelperBase64: String? = nil,
+        progressBundleBase64: String? = nil,
         treeHelperBase64: String? = nil,
         vigilScript: URL? = nil,
         serialStreaming: X86SerialStreaming = SSHSerialStreaming(),
@@ -124,6 +126,7 @@ public struct BeastLauncher {
             .flatMap { $0 > 0 ? $0 : nil } ?? max(1800, timeoutSecs)
         self.pathsTemplate = pathsTemplate
         self.slotHelperBase64 = slotHelperBase64
+        self.progressBundleBase64 = progressBundleBase64
         self.treeHelperBase64 = treeHelperBase64
         self.vigilScript = vigilScript
         self.serialStreaming = serialStreaming
@@ -132,6 +135,52 @@ public struct BeastLauncher {
 
     public static func localGitIdentity(repoRoot: URL, runner: ProcessRunner) throws -> (sha: String?, dirty: Bool?) {
         try HostFacts.gitIdentity(repoRoot: repoRoot, runner: runner)
+    }
+
+    public static func progressBundle(repoRoot: URL) throws -> String {
+        let paths = ["scripts/boot_progress.py", "docs/boot-path.json",
+                     "tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-aarch64.json",
+                     "tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json"]
+        var files = try Dictionary(uniqueKeysWithValues: paths.map { path in
+            var data = try Data(contentsOf: repoRoot.appendingPathComponent(path))
+            if path.hasSuffix(".json") {
+                guard let source = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                let compact: [String: Any]
+                if let stages = source["stages"] as? [[String: Any]] {
+                    compact = ["stages": try stages.map { stage in
+                        guard let marker = stage["marker"] as? String else { throw CocoaError(.fileReadCorruptFile) }
+                        return ["marker": marker]
+                    }]
+                } else if let milestones = source["milestones"] as? [[String: Any]] {
+                    compact = ["milestones": try milestones.map { milestone in
+                        guard let stages = milestone["stages"] as? [String: [Any]] else { throw CocoaError(.fileReadCorruptFile) }
+                        return ["stages": stages.mapValues { $0.compactMap { ($0 as? [String: Any])?["marker"] as? String }.map { ["marker": $0] } }]
+                    }]
+                } else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                // Keep only the classifier's marker inputs so the SSH command
+                // stays below Linux's per-argument limit.
+                data = try JSONSerialization.data(withJSONObject: compact, options: [.sortedKeys])
+            }
+            return (path, data.base64EncodedString())
+        })
+        let programRoot = repoRoot.appendingPathComponent("userspace/programs/src")
+        let enumerator = FileManager.default.enumerator(at: programRoot, includingPropertiesForKeys: nil)
+        let tagExpression = try NSRegularExpression(pattern: #""\[([A-Za-z][A-Za-z0-9_-]*)\]"#)
+        var tags: Set<String> = ["parent", "child"]
+        while let source = enumerator?.nextObject() as? URL {
+            guard source.pathExtension == "rs" else { continue }
+            tags.insert(source.deletingPathExtension().lastPathComponent.lowercased())
+            let text = try String(contentsOf: source, encoding: .utf8)
+            for match in tagExpression.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                if let range = Range(match.range(at: 1), in: text) { tags.insert(String(text[range]).lowercased()) }
+            }
+        }
+        files["docs/boot-progress-userspace.json"] = try JSONSerialization.data(withJSONObject: tags.sorted()).base64EncodedString()
+        return try JSONSerialization.data(withJSONObject: files, options: [.sortedKeys]).base64EncodedString()
     }
 
     /// Builds the exact plan a real `runX86(options:)` call would execute,
@@ -154,6 +203,7 @@ public struct BeastLauncher {
             suite: options.suite,
             fullBackstopSecs: fullBackstopSecs,
             slotHelperBase64: slotHelperBase64,
+            progressBundleBase64: progressBundleBase64,
             treeHelperBase64: treeHelperBase64,
             quietOverride: quietOverride
         )
@@ -274,7 +324,8 @@ public struct BeastLauncher {
         } else {
             gateVerdictString = "PASS"
         }
-        let verdict = Verdict.projectGateVerdict(gateVerdictString, exitCode: Int(finishStatus), command: command)
+        let verdict = Verdict.projectGateOutput(gateStdoutText, verdict: gateVerdictString,
+                                                exitCode: Int(finishStatus), command: command)
 
         let manifest = RunManifest(
             id: id,

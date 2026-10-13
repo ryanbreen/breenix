@@ -1,5 +1,6 @@
 """Exercise launcher outcomes without booting a VM."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -15,22 +16,34 @@ DONE = '[ INFO] kernel::syscall::handlers: USERSPACE TEST REPORT DONE\n'
 
 
 class BootOutcomes(unittest.TestCase):
-    def run_gate(self, serial, poll, times, deadline='10', offset=0, report_clock=True, backstop='20'):
+    def run_gate(self, serial, poll, times, deadline='10', offset=0, report_clock=True, backstop='20', user_output=''):
         with tempfile.TemporaryDirectory() as directory:
             kernel = Path(directory) / 'kernel'
             user = Path(directory) / 'user'
             kernel.write_text(serial)
-            user.write_text(f'[clock] UTC epoch={int(time.time()) + offset} source=CMOS\n' if report_clock else '')
+            user.write_text((f'[clock] UTC epoch={int(time.time()) + offset} source=CMOS\n' if report_clock else '') + user_output)
             process = Mock(returncode=7)
-            process.poll.return_value = poll
+            if isinstance(poll, list):
+                process.poll.side_effect = poll
+            else:
+                process.poll.return_value = poll
+            readings = iter(times)
+            last = times[-1]
+            def monotonic():
+                return next(readings, last)
             with patch.object(gate.sys, 'argv', ['gate', str(kernel), str(user), 'launcher']), \
                  patch.object(gate.subprocess, 'Popen', return_value=process), \
                  patch.object(gate.subprocess, 'run'), \
                  patch.object(gate, 'stop') as stop, \
-                 patch.object(gate.time, 'monotonic', side_effect=times), \
+                 patch.object(gate.time, 'monotonic', side_effect=monotonic), \
                  patch.dict(os.environ, {'BREENIX_GATE_TIMEOUT': deadline, 'BREENIX_FULL_BACKSTOP': backstop}):
                 status = gate.main()
                 stop.assert_called_once_with(process)
+                if status == 124 and user_output:
+                    record = json.loads(Path(str(user) + '.stall.json').read_text())
+                    self.assertEqual(record['status'], 'stalled')
+                    self.assertEqual(record['last_progress_line'], user_output.rstrip())
+                    self.assertGreaterEqual(record['inactivity_seconds'], 120)
                 return status
 
     def test_completion_with_interleaved_prefix(self):
@@ -55,16 +68,12 @@ class BootOutcomes(unittest.TestCase):
         self.assertEqual(self.run_gate('kernel::test_exec: -> Userspace will emit USERSPACE TEST COMPLETE marker\n', None, [0, 21]), 1)
 
     def test_silent_userspace_fails_before_the_backstop(self):
-        self.assertEqual(self.run_gate(COMPLETE, None, [0, 1, 50, 121], backstop='1800'), 1)
+        self.assertEqual(self.run_gate('', None, [0, 0, 121, 121], backstop='1800',
+                                      user_output='SIGKILL_TEARDOWN_TEST: FAIL\n'), 124)
 
     def test_quiet_userspace_under_the_limit_keeps_running(self):
-        with self.assertRaises(StopIteration):
-            self.run_gate(COMPLETE, None, [0, 1, 50, 120.5], backstop='1800')
-
-    def test_census_records_are_not_userspace_output(self):
-        census = '[TOMBSTONE_CENSUS:resident=0:removed=165]\n[PT_ROOT_CUSTODY:no_proof=0:retired=306]\r\n'
-        self.assertEqual(gate.userspace_output(census + 'SIGKILL_TEARDOWN_TEST: FAIL\n[CHILD] x\n'),
-                         '\n\nSIGKILL_TEARDOWN_TEST: FAIL\n[CHILD] x\n')
+        self.assertEqual(self.run_gate('', [None, 7], [0, 1, 120.5, 120.5], backstop='1800',
+                                      user_output='SIGKILL_TEARDOWN_TEST: FAIL\n'), 1)
 
 
 if __name__ == '__main__':

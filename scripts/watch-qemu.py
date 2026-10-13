@@ -12,6 +12,7 @@ import subprocess
 import time
 
 WallClockCheck = runpy.run_path(str(Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
+BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))["BootProgress"]
 
 ROOT = Path(__file__).resolve().parents[1]
 DONE = runpy.run_path(str(ROOT / "scripts/wait-boot-done.py"))
@@ -30,7 +31,7 @@ def stop(process):
 
 # Modes that print a completion record. Their kernels keep logging after it (the
 # periodic census), so the idle timer alone would leave a finished VM running.
-COMPLETING_MODES = ("suite", "probe", "tests")
+COMPLETING_MODES = ("suite", "probe", "tests", "program")
 
 
 def label(mode, suite):
@@ -38,6 +39,7 @@ def label(mode, suite):
 
 
 def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clock):
+    progress = BootProgress(serial)
     last_size = 0
     started = last_output = time.monotonic()
     done_at = None
@@ -59,8 +61,9 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
                 data = source.read()
             last_size += len(data)
             last_output = now
+            text += decoder.decode(data)
+            progress.observe(text)
             if mode in COMPLETING_MODES:
-                text += decoder.decode(data)
                 clock.observe(text)
                 result = DONE["completion"](text, mode, suite)
                 if result is not None:
@@ -76,6 +79,9 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             if now - done_at >= 2 + suite_hold:
                 print(f"==> {label(mode, suite)} completed; stopping the VM", flush=True)
                 return "done"
+        elif mode in COMPLETING_MODES and progress.stalled():
+            progress.record()
+            return "stalled"
         elif mode == "suite" and gate_timeout > 0 and now - started >= gate_timeout:
             print(f"==> No suite DONE within {gate_timeout:g}s; stopping the VM", flush=True)
             return "deadline"
@@ -120,9 +126,11 @@ def main():
     if args.mode in COMPLETING_MODES:
         clock_ok, clock_reason = clock.verdict()
         print(clock_reason, flush=True)
+    if reason == "stalled":
+        return 124
     if reason == "fatal":
         return 1
-    if args.mode in ("probe", "tests"):
+    if args.mode in ("probe", "tests", "program"):
         serial = args.serial.read_bytes().decode("utf-8", errors="replace") if args.serial.exists() else ""
         result = DONE["completion"](serial, args.mode, args.suite)
         print(f"{'PASS' if result and result[0] else 'FAIL'}: {result[1] if result else 'no completion record'}", flush=True)

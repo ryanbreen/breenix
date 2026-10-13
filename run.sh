@@ -356,7 +356,6 @@ finish_vm_boot() {
         "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
-        sweep_vmware_bundles
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
@@ -368,13 +367,6 @@ install_vm_boot_traps() {
     trap 'exit 130' INT
     trap 'exit 129' HUP
     trap 'exit 143' TERM
-}
-
-# Suite panels stay visible until the caller leaves; no log-monitor job is needed.
-hold_suite_panel() {
-    echo "Suite complete; scored panel remains visible. Ctrl-C stops the VM."
-    trap 'exit 0' INT
-    while vm_is_running; do sleep 1; done
 }
 
 vm_is_running() {
@@ -435,7 +427,7 @@ if [ "$PARALLELS" = true ]; then
     fi
 
     PARALLELS_DIR="$BREENIX_ROOT/target/parallels"
-    SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-parallels-serial.log}"
+    SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-parallels-serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}"
     HDD_DIR="$PARALLELS_DIR/breenix-efi.hdd"
     EXT2_HDD_DIR="$PARALLELS_DIR/breenix-ext2.hdd"
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
@@ -707,7 +699,7 @@ if [ "$PARALLELS" = true ]; then
     if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ]; then
         wait_boot_done || exit $?
         if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
-        if [ "$PARALLELS_TEST" != true ]; then hold_suite_panel; exit 0; fi
+        if [ "$PARALLELS_TEST" != true ]; then exit 0; fi
     fi
 
     if [ "$PARALLELS_TEST" = true ]; then
@@ -802,7 +794,7 @@ if [ "$VMWARE" = true ]; then
     vmware_check_nat_config "/Library/Preferences/VMware Fusion/networking"
 
     VMWARE_DIR="$BREENIX_ROOT/target/vmware"
-    SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial.log}"
+    SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}"
     # Fusion's "Use full resolution for Retina display": off by default so the guest is scaled 2x.
     if [ "${RETINA:-false}" = true ]; then VMWARE_NATIVE_RESOLUTION=TRUE; else VMWARE_NATIVE_RESOLUTION=FALSE; fi
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
@@ -935,8 +927,8 @@ if [ "$VMWARE" = true ]; then
     # Delete earlier boots' VM bundles, which nothing else removes (one per boot, about 100 MB each): only
     # breenix-<epoch> bundles that are not running and were created more than 30 minutes ago, so a caller still
     # scoring a just-stopped VM's data disk keeps it. Age comes from the epoch in the name, because VMware Fusion
-    # rewrites files in every bundle its library lists, so file times never age. Never a named VM. Sweep
-    # at launch and again from finish_vm_boot, so a burst of boots leaves at most its last half hour.
+    # rewrites listed bundle files, so their modification times are unsuitable. Sweep
+    # before VM startup, so housekeeping cannot delay recording a completed boot or releasing its slot.
     sweep_vmware_bundles() {
         local now old_bundle old_name old_vmx VM_BUNDLE_LIST
         VM_BUNDLE_LIST=$(mktemp)
@@ -1092,7 +1084,6 @@ VMXEOF
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
         if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
-        hold_suite_panel
         exit 0
     fi
 
@@ -1473,7 +1464,8 @@ if [ "$ARCH" = "x86_64" ] && [ "$HEADLESS" = false ] && [ "$(uname)" = "Darwin" 
 fi
 
 # Wait for QEMU to finish
-wait $QEMU_PID 2>/dev/null || true
+QEMU_STATUS=0
+wait "$QEMU_PID" 2>/dev/null || QEMU_STATUS=$?
 
 echo ""
 echo "========================================="
@@ -1487,3 +1479,5 @@ if [ -f "$HOME_SESSION" ]; then
     echo "Home session disk: $HOME_SESSION"
     echo "Extract saved files: ./scripts/extract-saves.sh"
 fi
+
+exit "$QEMU_STATUS"

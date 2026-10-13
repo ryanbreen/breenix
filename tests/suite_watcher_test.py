@@ -168,10 +168,19 @@ class SuiteWatcherTest(unittest.TestCase):
         self.assertLess(elapsed, 2)
 
     def test_interactive_modes_idle_without_a_clock_verdict(self):
-        for mode in ("shell", "desktop", "program"):
+        for mode in ("shell", "desktop"):
             result, _ = self.replay(b"interactive output\n", idle=0.2, mode=mode, split=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertNotIn("UTC clock", result.stdout)
+
+    def test_program_requires_done_and_scores_actual_guest_path(self):
+        missing, _ = self.replay(b"RUN /usr/bin/true START\n", idle=.2, mode="program", split=False)
+        self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+        self.assertIn("no completion record", missing.stdout)
+        for state, expected in (("PASS exit 0; no FAIL output", 0), ("FAIL exit 1", 1)):
+            result, _ = self.replay(f"RUN /usr/bin/true DONE {state}\n".encode(), mode="program")
+            self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+            self.assertIn("completed; stopping", result.stdout)
 
     def test_bad_clock_preserves_probe_and_testing_verdicts(self):
         for mode, data, expected in (

@@ -141,8 +141,14 @@ final class LiveX86SerialsTests: XCTestCase {
     }
 
     func testVigilTimeoutReapsHungScriptAndItsChildWithoutSSH() throws {
-        let result = try RealProcessRunner().run(ProcessRequest(executable: "/bin/bash", arguments: ["-c", "sleep 30 & wait"], timeoutSecs: 0.1))
-        XCTAssertEqual(result.exitCode, 124)
+        let pidFile = FileManager.default.temporaryDirectory.appendingPathComponent("breenix-timeout-\(UUID().uuidString).pid")
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+        let command = "sleep 30 & echo $! > '\(pidFile.path)'; wait"
+        let result = try RealProcessRunner().run(ProcessRequest(executable: "/bin/bash", arguments: ["-c", command], timeoutSecs: 1))
+        XCTAssertEqual(result.exitCode, 124, String(decoding: result.stderr, as: UTF8.self))
+        let pid = try XCTUnwrap(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        XCTAssertEqual(Darwin.kill(pid, 0), -1, "the timed-out script left its sleep child running")
+        XCTAssertEqual(errno, ESRCH)
     }
 
     func testHeartbeatDeadlineWorksWithoutEOFWhenOutputPipeIsFull() throws {

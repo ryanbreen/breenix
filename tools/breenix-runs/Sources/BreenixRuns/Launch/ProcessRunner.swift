@@ -159,7 +159,7 @@ except subprocess.TimeoutExpired:
     try: os.killpg(child.pid, signal.SIGKILL)
     except ProcessLookupError: pass
     child.wait()
-    status = 124
+    sys.exit(124)
 try: os.killpg(child.pid, signal.SIGKILL)
 except ProcessLookupError: pass
 sys.exit(status if status >= 0 else 128 - status)

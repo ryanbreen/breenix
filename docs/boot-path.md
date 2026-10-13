@@ -70,8 +70,9 @@ stage list and shown alongside, but does not block moving on.
   to watch for fatal output. It stops the VM, validates the records against the
   manifest and releases the shared boot slot. A missing DONE or fatal kernel
   output fails the boot; its idle exit and `--gate-timeout` DONE deadline also
-  stop unfinished suites. Parallels and VMware retain their scored panel until
-  Ctrl-C stops the VM. `--suite --test` on Parallels
+  stop unfinished suites. Parallels and VMware stop the VM, record the result and
+  release the boot slot after scoring DONE. VMware sweeps older bundles before VM
+  startup, so housekeeping does not delay completion. `--suite --test` on Parallels
   waits for DONE before its timed screenshot and exit; VMware rejects `--test`.
   `--gate-timeout N` sets the DONE deadline (default 1800 seconds for ARM64 QEMU
   suites and Parallels/VMware suites and probes); QEMU enforces it even when
@@ -279,3 +280,35 @@ Nothing else tracks regressions.
   and the catalog, and name it in `boot-path.json`.
 
 Vigil's Breenix page reads this file, runs boots, and shows the ladder live.
+
+`boot-interactive.sh`, native `run.sh` gates and x86 gate runners stop
+an unfinished boot after
+120 seconds without classified test progress, independently of the hard deadline
+or raw-serial idle exit. Shell and desktop sessions keep their interactive idle
+policy (`--idle-exit 0` disables idle shutdown). GDB-halted sessions are excluded
+from historical supervision. Queue and build time do not start the watchdog. xtask keeps its existing
+launch policy: #1450 tracks its BTRT caller accepting partial startup KTAP after
+a failed boot. Its watchdog integration requires that caller to propagate
+failure and complete guest-memory extraction before stopping a successful VM.
+Progress on a mixed UART requires a userspace record, a tag found in the
+userspace program sources, or a first-seen
+boot-stage marker. Unlabelled lines have no trustworthy producer even on COM1,
+which also carries kernel debug output.
+Loader announcements and diagnostic records do not extend the deadline.
+A stall exits nonzero and retains serial plus a neighboring `*.stall.json`
+record containing the last progress line, last userspace progress line, their
+sources and timestamps, and the UTC stop time. x86 gate watchers use the userspace
+serial as the sidecar's stable location. Mac serial defaults include run identity.
+The x86 gate relays Unix socket serial channels into files as bytes arrive.
+Run Inspector retains a typed `stalled` verdict and installs a compressed helper
+bundle outside the tested checkout. Historical source keeps its original policy
+unless the caller sets `BREENIX_WATCH_HISTORICAL=1`; that option enrolls owned
+file-serial QEMU processes at launch. Generic qemu-host-lock launchers are otherwise
+unchanged. A completed panel is outside the stall deadline; a suite sequence
+resumes monitoring when the next suite prints START.
+
+The suite runner's default case deadline is 10 seconds. The host source check
+looks for builder calls, public-field struct literals and assignments throughout
+`userspace/programs/src`, including helper modules. Silent operations that exceed
+the watchdog window require meaningful userspace progress before the deadline;
+periodic kernel output cannot provide that allowance.
