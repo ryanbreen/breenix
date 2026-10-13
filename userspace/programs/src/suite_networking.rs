@@ -25,9 +25,10 @@
 //! process ID so no two cases share one.
 //!
 //! Each case runs in its own forked child under the runner's default 10-second limit.
-//! Waits for data poll the socket with MSG_DONTWAIT and nap between looks, so a case
-//! whose data never comes fails saying what is missing, and every wait stops 1.5 seconds
-//! before the case's deadline. A call whose point is that it blocks (a receive timeout,
+//! Waits for data poll the socket with MSG_DONTWAIT and nap between looks, and every wait
+//! stops 1.5 seconds before the case's deadline, so on a kernel that honours MSG_DONTWAIT
+//! a case whose data never comes fails saying what is missing; on one that ignores it the
+//! receive blocks and the runner fails the case at its deadline. A call whose point is that it blocks (a receive timeout,
 //! a refused blocking connect) runs in a process of its own the case waits on and kills.
 //! Every Unix path a case binds is unlinked when the case ends, and a case that edits
 //! /etc/hosts puts it back; the next resolve case restores it if a killed case could not.
