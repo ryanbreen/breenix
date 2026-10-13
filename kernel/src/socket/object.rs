@@ -68,6 +68,16 @@ fn with_release_queue<R>(f: impl FnOnce(&mut Vec<Socket>) -> R) -> R {
 }
 
 impl Socket {
+    /// The socket accept makes from the listener `parent`: as on Linux, it
+    /// starts with the listener's options (buffer sizes, timeouts, linger,
+    /// keepalive, TCP_NODELAY and the rest).
+    pub fn new_child(parent: &Socket, proto: SocketProto) -> Result<Arc<Socket>, i32> {
+        let socket = Socket::new(parent.family, parent.kind, parent.protocol, proto)?;
+        let opts = parent.common.with_opts(|o| o.clone());
+        socket.common.with_opts(|o| *o = opts);
+        Ok(socket)
+    }
+
     /// A new socket. ENOMEM when the object or its release slot cannot be
     /// allocated; then no socket existed, so nothing was released, and the
     /// caller still owns whatever `proto` refers to.
@@ -114,12 +124,73 @@ impl Socket {
     pub(crate) fn notifies(&self) -> bool {
         self.ops().notifies()
     }
+
+    /// The protocol's readiness, with POLLIN while a receive left stream
+    /// bytes in the stash, and POLLERR while an error is pending.
+    pub fn poll(&self) -> u16 {
+        let mut bits = self.ops().poll(self);
+        if self.common.has_stash() {
+            bits |= POLLIN;
+        }
+        if self.common.peek_error() != 0 {
+            bits |= POLLERR;
+        }
+        bits
+    }
 }
+
+const POLLIN: u16 = 0x001;
+const POLLERR: u16 = 0x008;
+const SOCK_STREAM: u16 = 1;
+const MSG_PEEK: u32 = 0x2;
 
 fn release_may_run_here() -> bool {
     !(crate::per_cpu::in_interrupt()
         || crate::process::process_manager_held_on_current_cpu()
-        || crate::tracing::providers::teardown::scheduler_scope_active())
+        || crate::tracing::providers::teardown::scheduler_scope_active()
+        || DEFER_RELEASE_DEPTH[defer_slot()].load(Ordering::Relaxed) != 0)
+}
+
+const DEFER_RELEASE_CPUS: usize = crate::tracing::MAX_CPUS;
+
+/// Per CPU: open `DeferRelease` scopes.
+static DEFER_RELEASE_DEPTH: [AtomicUsize; DEFER_RELEASE_CPUS] =
+    [const { AtomicUsize::new(0) }; DEFER_RELEASE_CPUS];
+
+fn defer_slot() -> usize {
+    crate::task::softirqd::current_cpu().min(DEFER_RELEASE_CPUS - 1)
+}
+
+/// A region in which a socket's last reference goes to the release queue
+/// rather than releasing inline: a waiter that has published its blocked
+/// state and rechecks its condition with preemption disabled
+/// (`wait::wait_until`). A release there could block or take the scheduler
+/// as a blocked thread. Open and closed on the same CPU.
+pub(crate) struct DeferRelease {
+    slot: usize,
+}
+
+impl DeferRelease {
+    pub(crate) fn enter() -> Self {
+        let slot = defer_slot();
+        DEFER_RELEASE_DEPTH[slot].fetch_add(1, Ordering::Relaxed);
+        DeferRelease { slot }
+    }
+}
+
+impl Drop for DeferRelease {
+    fn drop(&mut self) {
+        DEFER_RELEASE_DEPTH[self.slot].fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Socket {
+    /// The protocol's release, then the descriptors a failed receive left in
+    /// the stash. Thread context, PROCESS_MANAGER not held.
+    fn finish(&self) {
+        self.ops().release(self);
+        self.common.discard_stash();
+    }
 }
 
 impl Drop for Socket {
@@ -129,14 +200,16 @@ impl Drop for Socket {
         }
         if release_may_run_here() {
             LIVE_SOCKETS.fetch_sub(1, Ordering::Relaxed);
-            self.ops().release(self);
+            self.finish();
             return;
         }
+        // The carcass takes the socket's own common state, so the release
+        // sees its linger, shutdown directions and pending error.
         let carcass = Socket {
             family: self.family,
             kind: self.kind,
             protocol: self.protocol,
-            common: SocketCommon::new(),
+            common: core::mem::replace(&mut self.common, SocketCommon::inert()),
             proto: self.proto.detach(),
         };
         // Capacity for this push was reserved when the socket was created.
@@ -160,7 +233,7 @@ pub(crate) fn drain_release_queue() {
         let Some(carcass) = with_release_queue(|queue| queue.pop()) else {
             break;
         };
-        carcass.ops().release(&carcass);
+        carcass.finish();
         carcass.common.released.store(true, Ordering::Relaxed);
     }
 }
@@ -217,8 +290,40 @@ pub trait ProtoOps: Send + Sync {
     fn sendmsg(&self, sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32>;
     /// Bytes received; a datagram's whole length under MSG_TRUNC.
     fn recvmsg(&self, sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32>;
+    /// A receive that hands the message to `deliver`, which copies it to the
+    /// caller. A protocol that can leave the message queued until `deliver`
+    /// succeeds overrides this. The default receives, and when `deliver`
+    /// fails on a stream it puts the bytes and descriptors back in the
+    /// socket's stash, ahead of the queue, as Linux leaves stream bytes it
+    /// could not copy queued. A datagram that could not be copied is gone,
+    /// as on Linux.
+    fn recvmsg_with(
+        &self,
+        sk: &Arc<Socket>,
+        msg: &mut RecvMsg,
+        deliver: &mut dyn FnMut(&mut RecvMsg) -> Result<(), i32>,
+    ) -> Result<usize, i32> {
+        let received = self.recvmsg(sk, msg)?;
+        if let Err(errno) = deliver(msg) {
+            if sk.kind == SOCK_STREAM && msg.flags & MSG_PEEK == 0 {
+                let data = core::mem::take(&mut msg.data);
+                let rights = core::mem::take(&mut msg.rights);
+                if let Err((data, rights)) = sk.common.put_back(data, rights) {
+                    msg.data = data;
+                    msg.rights = rights;
+                }
+            }
+            return Err(errno);
+        }
+        Ok(received)
+    }
     fn shutdown(&self, sk: &Arc<Socket>, how: u8) -> Result<(), i32>;
     fn local_name(&self, sk: &Socket) -> SockAddr;
+    /// `local_name` for a protocol whose name may need memory: ENOMEM when
+    /// it cannot be copied.
+    fn try_local_name(&self, sk: &Socket) -> Result<SockAddr, i32> {
+        Ok(self.local_name(sk))
+    }
     /// ENOTCONN when there is no peer.
     fn peer_name(&self, sk: &Socket) -> Result<SockAddr, i32>;
     /// POLLIN, POLLOUT, POLLERR, POLLHUP and POLLRDHUP bits.
@@ -245,6 +350,9 @@ pub trait ProtoOps: Send + Sync {
     fn setsockopt(&self, _sk: &Socket, _level: i32, _name: i32, _val: &[u8]) -> Result<(), i32> {
         Err(ENOPROTOOPT)
     }
+    /// A shared option (`socket::opts`) changed: the protocol applies it to
+    /// state it already has (a connection's buffers, keepalive, Nagle).
+    fn option_set(&self, _sk: &Socket, _level: i32, _name: i32) {}
     /// Thread context, PROCESS_MANAGER not held. Runs once per socket.
     fn release(&self, sk: &Socket);
 }
@@ -316,6 +424,16 @@ pub struct UCred {
 const SHUT_RD_BIT: u8 = 1;
 const SHUT_WR_BIT: u8 = 2;
 
+/// Stream bytes a receive took from the protocol but could not copy to the
+/// caller, and the descriptors that rode with them. The next receive takes
+/// them before the protocol's queue, as Linux leaves bytes it could not copy
+/// on the queue.
+#[derive(Default)]
+struct Stash {
+    data: Vec<u8>,
+    rights: Vec<FileDescriptor>,
+}
+
 /// The state every protocol shares: options, the pending error, the shutdown
 /// directions and the wait queue that `notify` wakes.
 pub struct SocketCommon {
@@ -323,21 +441,113 @@ pub struct SocketCommon {
     so_error: AtomicI32,
     shut: AtomicU8,
     seq: AtomicU64,
+    rx_seq: AtomicU64,
+    tx_seq: AtomicU64,
     ino: u64,
     released: AtomicBool,
+    stash: spin::Mutex<Stash>,
     pub wq: WaitQueueHead,
 }
 
 impl SocketCommon {
     fn new() -> Self {
         SocketCommon {
+            ino: NEXT_SOCKET_INO.fetch_add(1, Ordering::Relaxed),
+            ..SocketCommon::inert()
+        }
+    }
+
+    /// State left in a socket whose own moved to its release carcass.
+    fn inert() -> Self {
+        SocketCommon {
             opts: spin::Mutex::new(SockOpts::new()),
             so_error: AtomicI32::new(0),
             shut: AtomicU8::new(0),
             seq: AtomicU64::new(0),
-            ino: NEXT_SOCKET_INO.fetch_add(1, Ordering::Relaxed),
+            rx_seq: AtomicU64::new(0),
+            tx_seq: AtomicU64::new(0),
+            ino: 0,
             released: AtomicBool::new(false),
+            stash: spin::Mutex::new(Stash {
+                data: Vec::new(),
+                rights: Vec::new(),
+            }),
             wq: WaitQueueHead::new(),
+        }
+    }
+
+    fn with_stash<R>(&self, f: impl FnOnce(&mut Stash) -> R) -> R {
+        crate::arch_without_interrupts(|| f(&mut self.stash.lock()))
+    }
+
+    /// Whether a receive left bytes for the next one.
+    pub(crate) fn has_stash(&self) -> bool {
+        self.with_stash(|stash| !stash.data.is_empty())
+    }
+
+    /// Up to `cap` stashed bytes, and with them the stashed descriptors;
+    /// `peek` leaves both in place and returns no descriptors. None when
+    /// nothing is stashed; ENOMEM when a part cannot be split off.
+    pub(crate) fn take_stash(
+        &self,
+        cap: usize,
+        peek: bool,
+    ) -> Option<Result<(Vec<u8>, Vec<FileDescriptor>), i32>> {
+        self.with_stash(|stash| {
+            if stash.data.is_empty() {
+                return None;
+            }
+            if !peek && cap >= stash.data.len() {
+                return Some(Ok((
+                    core::mem::take(&mut stash.data),
+                    core::mem::take(&mut stash.rights),
+                )));
+            }
+            let n = cap.min(stash.data.len());
+            let mut part = Vec::new();
+            if part.try_reserve_exact(n).is_err() {
+                return Some(Err(ENOMEM));
+            }
+            part.extend_from_slice(&stash.data[..n]);
+            if peek {
+                return Some(Ok((part, Vec::new())));
+            }
+            stash.data.drain(..n);
+            Some(Ok((part, core::mem::take(&mut stash.rights))))
+        })
+    }
+
+    /// Put bytes a receive could not copy back at the front of the stream,
+    /// before anything stashed since. Gives them back when the two cannot be
+    /// joined.
+    pub(crate) fn put_back(
+        &self,
+        mut data: Vec<u8>,
+        mut rights: Vec<FileDescriptor>,
+    ) -> Result<(), (Vec<u8>, Vec<FileDescriptor>)> {
+        let result = self.with_stash(|stash| {
+            if data.try_reserve_exact(stash.data.len()).is_err()
+                || rights.try_reserve_exact(stash.rights.len()).is_err()
+            {
+                return Err((data, rights));
+            }
+            data.append(&mut stash.data);
+            rights.append(&mut stash.rights);
+            stash.data = data;
+            stash.rights = rights;
+            Ok(())
+        });
+        if result.is_ok() {
+            self.notify();
+        }
+        result
+    }
+
+    /// Close the descriptors a stash still holds. Thread context, no PM.
+    fn discard_stash(&self) {
+        let stash = self.with_stash(core::mem::take);
+        for right in stash.rights {
+            crate::task::process_task::close_extracted_fd(right);
         }
     }
 
@@ -379,17 +589,38 @@ impl SocketCommon {
     }
 
     /// Publish a state change and wake every waiter. Thread or softirq
-    /// context, with no protocol lock held.
+    /// context, with no protocol lock and no PROCESS_MANAGER held.
     pub fn notify(&self) {
+        self.rx_seq.fetch_add(1, Ordering::AcqRel);
+        self.tx_seq.fetch_add(1, Ordering::AcqRel);
         self.seq.fetch_add(1, Ordering::AcqRel);
         self.wq.wake_up();
     }
 
-    /// `notify` for a caller under PROCESS_MANAGER: the wakes go through the
-    /// scheduler's lock-free deferred path.
-    pub fn notify_deferred(&self) {
+    /// `notify` for a change on the receive side only (data, a FIN, a queued
+    /// connection): an edge-triggered epoll watching only for output does
+    /// not report it.
+    pub fn notify_readable(&self) {
+        self.rx_seq.fetch_add(1, Ordering::AcqRel);
         self.seq.fetch_add(1, Ordering::AcqRel);
-        self.wq.wake_up_deferred();
+        self.wq.wake_up();
+    }
+
+    /// `notify` for send space freed: an edge-triggered epoll watching only
+    /// for input does not report it.
+    pub fn notify_writable(&self) {
+        self.tx_seq.fetch_add(1, Ordering::AcqRel);
+        self.seq.fetch_add(1, Ordering::AcqRel);
+        self.wq.wake_up();
+    }
+
+    /// The receive-side and send-side change counts, for edge-triggered
+    /// epoll.
+    pub(crate) fn edges(&self) -> (u64, u64) {
+        (
+            self.rx_seq.load(Ordering::Acquire),
+            self.tx_seq.load(Ordering::Acquire),
+        )
     }
 
     /// The number of state changes published so far.

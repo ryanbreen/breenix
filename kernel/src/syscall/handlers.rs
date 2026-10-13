@@ -1464,6 +1464,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             log::debug!("sys_read: Cannot read from /dev/pts directory, use getdents instead");
             SyscallResult::Err(super::errno::EISDIR as u64)
         }
+        // A description opened O_WRONLY is not readable (EBADF).
+        FdKind::PtyMaster(_) | FdKind::PtySlave(_) if !fd_entry.readable() => {
+            SyscallResult::Err(super::errno::EBADF as u64)
+        }
         FdKind::PtyMaster(pair) | FdKind::PtySlave(pair) => {
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;

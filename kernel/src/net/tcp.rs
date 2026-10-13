@@ -283,7 +283,7 @@ fn run_timers() -> Option<u64> {
                 if conn.keepalive_due(now) {
                     conn.keepalive_timeout();
                 }
-                if conn.notify_pending && taken < NOTICE_BATCH {
+                if conn.notify_pending != 0 && taken < NOTICE_BATCH {
                     if let Some(notice) = take_notice(conn) {
                         notices[taken] = Some(notice);
                         taken += 1;
@@ -834,8 +834,8 @@ pub struct TcpConnection {
     /// The socket this connection belongs to, told of every change that can
     /// end a wait: data, space, a FIN, a reset, the handshake's end.
     owner: Option<Weak<Socket>>,
-    /// A change the owner has not been told of yet.
-    notify_pending: bool,
+    /// Changes the owner has not been told of yet: `CHANGED_RX`, `CHANGED_TX`.
+    notify_pending: u8,
     /// The listener this connection came from, until accept takes it.
     parent: Option<ListenerId>,
     /// The listening socket, told once the handshake finishes.
@@ -999,7 +999,7 @@ impl TcpConnection {
             waiting_threads: Mutex::new(Vec::new()),
             error: None,
             owner: None,
-            notify_pending: false,
+            notify_pending: 0,
             parent: None,
             parent_owner: None,
             accept_order: 0,
@@ -1490,7 +1490,7 @@ impl TcpConnection {
             TX_RETRY.store(true, Ordering::Release);
         }
         if freed {
-            wake_connection_waiters(self);
+            wake_connection_writers(self);
         }
     }
 
@@ -1925,37 +1925,55 @@ pub fn generate_isn() -> u32 {
 /// no one sees the connection closed before the error is there to read.
 pub(crate) struct Notice {
     socket: Arc<Socket>,
+    changed: u8,
 }
 
 impl Notice {
-    /// Wake the socket's waiters. Thread or softirq context, with no TCP lock
-    /// held: dropping the reference here may release the socket, whose release
-    /// takes the TCP lock.
+    /// Wake the socket's waiters, telling edge-triggered epoll which side
+    /// changed. Thread or softirq context, with no TCP lock held: dropping the
+    /// reference here may release the socket, whose release takes the TCP lock.
     fn deliver(self) {
-        self.socket.common.notify();
+        match self.changed {
+            CHANGED_RX => self.socket.common.notify_readable(),
+            CHANGED_TX => self.socket.common.notify_writable(),
+            _ => self.socket.common.notify(),
+        }
     }
 }
+
+/// A connection change that can make its socket readable: data, a FIN, a
+/// connection ready for accept.
+const CHANGED_RX: u8 = 1;
+/// A change that can make it writable: send space freed.
+const CHANGED_TX: u8 = 2;
+/// A change of state, which can do both.
+const CHANGED_ANY: u8 = CHANGED_RX | CHANGED_TX;
 
 /// The notice a connection owes its socket, if a change is pending: to its
 /// owner, or, for a child accept has not taken, to the listener once accept
 /// can take it. Called with the table lock held; the returned reference must
 /// leave the lock before it is dropped.
 fn take_notice(conn: &mut TcpConnection) -> Option<Notice> {
-    if !conn.notify_pending {
+    let changed = conn.notify_pending;
+    if changed == 0 {
         return None;
     }
     if let Some(owner) = conn.owner.as_ref() {
-        conn.notify_pending = false;
+        conn.notify_pending = 0;
         let socket = owner.upgrade()?;
         if let Some(error) = conn.error.take() {
             socket.common.set_error(error);
         }
-        return Some(Notice { socket });
+        return Some(Notice { socket, changed });
     }
     if conn.parent.is_some() && conn.acceptable() {
-        conn.notify_pending = false;
+        conn.notify_pending = 0;
         let socket = conn.parent_owner.as_ref()?.upgrade()?;
-        return Some(Notice { socket });
+        // A connection ready for accept is input to the listener.
+        return Some(Notice {
+            socket,
+            changed: CHANGED_RX,
+        });
     }
     None
 }
@@ -1982,7 +2000,7 @@ fn with_connection_notify<R>(
 pub fn tcp_set_owner(conn_id: &ConnectionId, owner: Weak<Socket>) {
     with_connection_notify(conn_id, |conn| {
         conn.owner = Some(owner);
-        conn.notify_pending = true;
+        conn.notify_pending = CHANGED_ANY;
     });
 }
 
@@ -2222,7 +2240,7 @@ fn handle_tcp_for_connection(conn: &mut TcpConnection, header: &TcpHeader, paylo
             conn.recv_next = conn.recv_next.wrapping_add(taken as u32);
             in_sequence = taken == payload.len();
             if taken > 0 {
-                wake_connection_waiters(conn);
+                wake_connection_readers(conn);
             }
         }
     }
@@ -2246,7 +2264,7 @@ fn handle_tcp_for_connection(conn: &mut TcpConnection, header: &TcpHeader, paylo
                 _ => {}
             }
             // Wake threads blocked in recv() so they see EOF
-            wake_connection_waiters(conn);
+            wake_connection_readers(conn);
         }
     }
 
@@ -2955,10 +2973,24 @@ pub fn tcp_has_data(conn_id: &ConnectionId) -> bool {
     })
 }
 
-/// Wake all threads waiting on a connection (called when data arrives or state
-/// changes), and mark the change for the owning socket's next notice.
+/// Wake all threads waiting on a connection (called when its state changes),
+/// and mark the change for the owning socket's next notice.
 fn wake_connection_waiters(conn: &mut TcpConnection) {
-    conn.notify_pending = true;
+    wake_connection(conn, CHANGED_ANY);
+}
+
+/// `wake_connection_waiters` for data or a FIN that arrived.
+fn wake_connection_readers(conn: &mut TcpConnection) {
+    wake_connection(conn, CHANGED_RX);
+}
+
+/// `wake_connection_waiters` for send space the peer's ACK freed.
+fn wake_connection_writers(conn: &mut TcpConnection) {
+    wake_connection(conn, CHANGED_TX);
+}
+
+fn wake_connection(conn: &mut TcpConnection, changed: u8) {
+    conn.notify_pending |= changed;
     let mut waiting = conn.waiting_threads.lock();
     wake_waiting_threads(&mut waiting);
 }

@@ -1,20 +1,30 @@
-//! epoll implementation for Breenix
+//! epoll: epoll_create1, epoll_ctl and epoll_wait/epoll_pwait.
 //!
-//! Provides epoll_create1, epoll_ctl, and epoll_wait/epoll_pwait syscalls
-//! for I/O event notification.
+//! An epoll instance is shared by every descriptor for it (dup, fork) and
+//! goes with the last one. As on Linux it watches open file descriptions: an
+//! interest is the descriptor number it was added under and the description
+//! that number referred to then. Closing that number while another
+//! descriptor for the description stays open keeps the interest; a new file
+//! opened under the same number is a different file. The interest goes when
+//! the description is closed everywhere.
 //!
-//! This implementation reuses the existing poll infrastructure
-//! (`ipc::poll::poll_fd`) for readiness checking, providing an epoll-compatible
-//! API on top.
+//! Readiness comes from `ipc::poll::poll_fd` on a descriptor in the caller's
+//! table that refers to the description. A wait records what it reports
+//! under the instance lock, checking each interest's generation, so two
+//! concurrent waits never both take one edge or one-shot event, and an
+//! EPOLL_CTL_MOD made while a wait looked is never overwritten.
 
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicU32;
 use spin::Mutex;
 
 use super::errno;
+use super::multiplex::{with_mask, WaitSet};
 use super::SyscallResult;
-use crate::ipc::fd::{FdKind, FileDescriptor};
+use crate::ipc::fd::{flags, FdKind, FileDescriptor};
 use crate::ipc::poll;
+use crate::task::waitqueue::WaitQueueHead;
 
 // =============================================================================
 // epoll constants (matching Linux ABI)
@@ -24,6 +34,9 @@ use crate::ipc::poll;
 const EPOLL_CTL_ADD: i32 = 1;
 const EPOLL_CTL_DEL: i32 = 2;
 const EPOLL_CTL_MOD: i32 = 3;
+
+/// epoll_create1's only flag, O_CLOEXEC's value.
+const EPOLL_CLOEXEC: u32 = 0o2000000;
 
 /// epoll event flags
 const EPOLLIN: u32 = 0x001;
@@ -35,8 +48,15 @@ const EPOLLRDHUP: u32 = 0x2000;
 const EPOLLONESHOT: u32 = 1 << 30;
 const EPOLLET: u32 = 1 << 31;
 
-/// `last_seq` of an entry that has never reported.
-const NEVER_REPORTED: u64 = u64::MAX;
+/// The conditions a receive-side change can raise, and a send-side one.
+const IN_SIDE: u32 = EPOLLIN | EPOLLPRI | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
+const OUT_SIDE: u32 = EPOLLOUT | EPOLLHUP | EPOLLERR;
+
+/// A change count an interest has never seen.
+const NEVER_SEEN: u64 = u64::MAX;
+
+/// Linux's EP_MAX_EVENTS: the most events one wait may ask for.
+const MAX_EVENTS: usize = i32::MAX as usize / core::mem::size_of::<EpollEvent>();
 
 // =============================================================================
 // Data structures
@@ -51,158 +71,325 @@ pub struct EpollEvent {
     pub data: u64,
 }
 
-/// A single entry in an epoll instance's interest list
+/// One watched file.
 #[derive(Clone)]
-struct EpollEntry {
+struct Interest {
     fd: i32,
+    file: Weak<AtomicU32>,
     events: u32,
     data: u64,
-    /// EPOLLET on a socket: the socket's `common.seq()` when this entry last
-    /// reported, so it reports again only after a new state change.
-    last_seq: u64,
-    /// EPOLLET on a descriptor that is not a socket: the readiness last seen,
-    /// so it reports again only when a condition newly appears.
-    last_revents: u32,
-    /// EPOLLONESHOT: the entry reported and waits for EPOLL_CTL_MOD.
+    /// EPOLLET: the file's receive-side and send-side change counts when this
+    /// interest last looked (sockets, pipes and FIFOs keep them).
+    last_rx: u64,
+    last_tx: u64,
+    /// EPOLLONESHOT: reported, and waiting for EPOLL_CTL_MOD.
     disabled: bool,
+    /// Changed by EPOLL_CTL_MOD and by every state a wait records.
+    gen: u64,
 }
 
-impl EpollEntry {
-    fn new(fd: i32, events: u32, data: u64) -> Self {
-        EpollEntry {
-            fd,
-            events,
-            data,
-            last_seq: NEVER_REPORTED,
-            last_revents: 0,
-            disabled: false,
-        }
+impl Interest {
+    fn same_state(&self, other: &Interest) -> bool {
+        self.last_rx == other.last_rx
+            && self.last_tx == other.last_tx
+            && self.disabled == other.disabled
+    }
+
+    fn set_state(&mut self, from: &Interest) {
+        self.last_rx = from.last_rx;
+        self.last_tx = from.last_tx;
+        self.disabled = from.disabled;
     }
 }
 
-/// An epoll instance containing registered file descriptors
-struct EpollInstance {
-    entries: Vec<EpollEntry>,
+struct Interests {
+    entries: Vec<Interest>,
+    next_gen: u64,
+}
+
+impl Interests {
+    fn next_gen(&mut self) -> u64 {
+        self.next_gen += 1;
+        self.next_gen
+    }
+
+    /// Forget interests whose file is closed everywhere.
+    fn prune(&mut self) {
+        self.entries.retain(|entry| entry.file.strong_count() != 0);
+    }
+
+    fn find(&mut self, fd: i32, file: &FileDescriptor) -> Option<&mut Interest> {
+        self.entries
+            .iter_mut()
+            .find(|entry| entry.fd == fd && file.refers_to(&entry.file))
+    }
+}
+
+/// An epoll instance: what `FdKind::Epoll` refers to.
+pub struct EpollInstance {
+    interests: Mutex<Interests>,
+    /// Threads in epoll_wait; EPOLL_CTL_ADD and MOD wake them.
+    waiters: Arc<WaitQueueHead>,
 }
 
 impl EpollInstance {
-    fn new() -> Self {
-        EpollInstance {
-            entries: Vec::new(),
-        }
+    fn new() -> Result<Arc<Self>, i32> {
+        let waiters = Arc::try_new(WaitQueueHead::new()).map_err(|_| errno::ENOMEM)?;
+        Arc::try_new(EpollInstance {
+            interests: Mutex::new(Interests {
+                entries: Vec::new(),
+                next_gen: 0,
+            }),
+            waiters,
+        })
+        .map_err(|_| errno::ENOMEM)
     }
 
-    fn add(&mut self, fd: i32, events: u32, data: u64) -> Result<(), i32> {
-        // Check for duplicate
-        if self.entries.iter().any(|e| e.fd == fd) {
-            return Err(errno::EEXIST);
+    fn ctl(&self, op: i32, fd: i32, file: &FileDescriptor, events: u32, data: u64) -> Result<(), i32> {
+        let mut interests = self.interests.lock();
+        interests.prune();
+        match op {
+            EPOLL_CTL_ADD => {
+                if interests.find(fd, file).is_some() {
+                    return Err(errno::EEXIST);
+                }
+                interests.entries.try_reserve(1).map_err(|_| errno::ENOMEM)?;
+                let gen = interests.next_gen();
+                interests.entries.push(Interest {
+                    fd,
+                    file: file.description_ref(),
+                    events,
+                    data,
+                    last_rx: NEVER_SEEN,
+                    last_tx: NEVER_SEEN,
+                    disabled: false,
+                    gen,
+                });
+            }
+            EPOLL_CTL_MOD => {
+                let gen = interests.next_gen();
+                let entry = interests.find(fd, file).ok_or(errno::ENOENT)?;
+                // Modifying an interest re-arms it, one-shot or edge-triggered.
+                entry.events = events;
+                entry.data = data;
+                entry.last_rx = NEVER_SEEN;
+                entry.last_tx = NEVER_SEEN;
+                entry.disabled = false;
+                entry.gen = gen;
+            }
+            EPOLL_CTL_DEL => {
+                let before = interests.entries.len();
+                interests
+                    .entries
+                    .retain(|entry| !(entry.fd == fd && file.refers_to(&entry.file)));
+                if interests.entries.len() == before {
+                    return Err(errno::ENOENT);
+                }
+            }
+            _ => return Err(errno::EINVAL),
         }
-        self.entries.try_reserve(1).map_err(|_| errno::ENOMEM)?;
-        self.entries.push(EpollEntry::new(fd, events, data));
         Ok(())
     }
 
-    fn modify(&mut self, fd: i32, events: u32, data: u64) -> Result<(), i32> {
-        for entry in self.entries.iter_mut() {
-            if entry.fd == fd {
-                // Modifying an entry re-arms it, one-shot or edge-triggered.
-                *entry = EpollEntry::new(fd, events, data);
-                return Ok(());
+    /// The live interests.
+    fn snapshot(&self) -> Result<Vec<Interest>, i32> {
+        let mut interests = self.interests.lock();
+        interests.prune();
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(interests.entries.len())
+            .map_err(|_| errno::ENOMEM)?;
+        copy.extend(interests.entries.iter().cloned());
+        Ok(copy)
+    }
+
+    /// Record what a wait saw, interest by interest, and take the events it
+    /// reports, at most `max`. An interest whose generation moved since the
+    /// snapshot (MOD, DEL, or another wait recorded it) is skipped: what this
+    /// wait saw of it is stale, and its event, if any, belongs to the other.
+    fn commit(&self, seen: Vec<(Interest, u32)>, max: usize) -> Result<Vec<Taken>, i32> {
+        let mut taken = Vec::new();
+        taken.try_reserve_exact(seen.len().min(max)).map_err(|_| errno::ENOMEM)?;
+        let mut interests = self.interests.lock();
+        for (next, report) in seen {
+            if report != 0 && taken.len() == max {
+                // No room: leave it to report at the next wait.
+                continue;
+            }
+            let gen = interests.next_gen();
+            let Some(entry) = interests.entries.iter_mut().find(|e| e.gen == next.gen) else {
+                continue;
+            };
+            let before = entry.clone();
+            if !entry.same_state(&next) {
+                entry.set_state(&next);
+                entry.gen = gen;
+            }
+            if report != 0 {
+                taken.push(Taken {
+                    event: EpollEvent {
+                        events: report,
+                        data: entry.data,
+                    },
+                    before,
+                    gen: entry.gen,
+                });
             }
         }
-        Err(errno::ENOENT)
+        Ok(taken)
     }
 
-    fn delete(&mut self, fd: i32) -> Result<(), i32> {
-        let len_before = self.entries.len();
-        self.entries.retain(|e| e.fd != fd);
-        if self.entries.len() == len_before {
-            Err(errno::ENOENT)
-        } else {
-            Ok(())
+    /// Put back the state of events that never reached the caller, so they
+    /// report again; an interest changed since is left as it is.
+    fn restore(&self, untaken: &[Taken]) {
+        let mut interests = self.interests.lock();
+        for item in untaken {
+            let gen = interests.next_gen();
+            if let Some(entry) = interests.entries.iter_mut().find(|e| e.gen == item.gen) {
+                entry.set_state(&item.before);
+                entry.gen = gen;
+            }
         }
     }
 }
 
-// =============================================================================
-// Global epoll instance registry
-// =============================================================================
-
-/// Next unique epoll instance ID
-static NEXT_EPOLL_ID: AtomicU64 = AtomicU64::new(1);
-
-/// Global registry of epoll instances, keyed by instance ID.
-/// Protected by a spinlock. The Vec is small (typically <10 entries).
-static EPOLL_INSTANCES: Mutex<Vec<(u64, EpollInstance)>> = Mutex::new(Vec::new());
-
-fn alloc_instance() -> u64 {
-    let id = NEXT_EPOLL_ID.fetch_add(1, Ordering::Relaxed);
-    let mut instances = EPOLL_INSTANCES.lock();
-    instances.push((id, EpollInstance::new()));
-    id
+/// An event a wait took, and the interest's state before it took it.
+struct Taken {
+    event: EpollEvent,
+    before: Interest,
+    gen: u64,
 }
 
-/// Remove an epoll instance by ID. Called from FdTable::Drop.
-pub fn remove_instance(id: u64) {
-    let mut instances = EPOLL_INSTANCES.lock();
-    instances.retain(|(iid, _)| *iid != id);
+// =============================================================================
+// Readiness
+// =============================================================================
+
+/// The receive-side and send-side change counts of what `file` refers to.
+/// None for a kind that keeps none, or a socket whose protocol does not
+/// publish its changes through `notify`.
+fn change_counts(file: &FileDescriptor) -> Option<(u64, u64)> {
+    match &file.kind {
+        FdKind::Socket(socket) if socket.notifies() => Some(socket.common.edges()),
+        FdKind::PipeRead(pipe)
+        | FdKind::PipeWrite(pipe)
+        | FdKind::FifoRead(_, pipe, _)
+        | FdKind::FifoWrite(_, pipe, _)
+        | FdKind::FifoReadWrite(_, pipe, _) => Some(pipe.lock().edges()),
+        _ => None,
+    }
 }
 
-fn with_instance<F, R>(id: u64, f: F) -> Result<R, i32>
-where
-    F: FnOnce(&mut EpollInstance) -> Result<R, i32>,
-{
-    let mut instances = EPOLL_INSTANCES.lock();
-    for (iid, instance) in instances.iter_mut() {
-        if *iid == id {
-            return f(instance);
+/// What `interest` reports for `file` now, and its state afterwards.
+///
+/// Edge-triggered: a report needs a change on the side of a condition that
+/// is now present since the interest last looked. The counts are read before
+/// readiness, so a change that lands between the two moves them and the next
+/// wait reports again. A file with no change counts reports at every wait
+/// while it is ready, as level-triggered does: an edge-triggered caller reads
+/// until EAGAIN, so a repeated report costs it a read where a missed one
+/// would leave it waiting for good.
+fn evaluate(interest: &Interest, file: &FileDescriptor) -> (Interest, u32) {
+    let counts = change_counts(file);
+    let revents = poll_to_epoll_events(poll::poll_fd(file, epoll_to_poll_events(interest.events)));
+    let mut next = interest.clone();
+    let mut report = revents;
+    if interest.events & EPOLLET != 0 {
+        if let Some((rx, tx)) = counts {
+            let mut changed = 0;
+            if rx != interest.last_rx {
+                changed |= IN_SIDE;
+            }
+            if tx != interest.last_tx {
+                changed |= OUT_SIDE;
+            }
+            if revents & changed == 0 {
+                report = 0;
+            }
+            next.last_rx = rx;
+            next.last_tx = tx;
         }
     }
-    Err(errno::EBADF)
+    if report != 0 && interest.events & EPOLLONESHOT != 0 {
+        next.disabled = true;
+    }
+    (next, report)
+}
+
+/// The caller's descriptor for each interest's file: the number it was added
+/// under while that still refers to it, else the lowest that does. None for
+/// a file the caller no longer has open.
+fn resolve(snapshot: &[Interest]) -> Result<Vec<Option<FileDescriptor>>, i32> {
+    let mut files = Vec::new();
+    files
+        .try_reserve_exact(snapshot.len())
+        .map_err(|_| errno::ENOMEM)?;
+    let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH)?;
+    let guard = crate::process::manager();
+    let manager = guard.as_ref().ok_or(errno::ESRCH)?;
+    let (_, process) = manager.find_process_by_thread(tid).ok_or(errno::ESRCH)?;
+    for interest in snapshot {
+        let file = process
+            .fd_table
+            .get(interest.fd)
+            .filter(|entry| entry.refers_to(&interest.file))
+            .or_else(|| {
+                process
+                    .fd_table
+                    .find_description(&interest.file)
+                    .map(|(_, entry)| entry)
+            })
+            .cloned();
+        files.push(file);
+    }
+    Ok(files)
 }
 
 // =============================================================================
 // Syscall implementations
 // =============================================================================
 
-/// epoll_create1(flags) -> fd
-///
-/// Creates a new epoll instance. Returns a file descriptor referring to the
-/// new epoll instance. The flags argument is currently ignored (EPOLL_CLOEXEC
-/// would be the only valid flag).
-pub fn sys_epoll_create1(_flags: u32) -> SyscallResult {
-    let epoll_id = alloc_instance();
+fn current_entry(fd: i32) -> Result<FileDescriptor, i32> {
+    let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH)?;
+    let guard = crate::process::manager();
+    let manager = guard.as_ref().ok_or(errno::ESRCH)?;
+    let (_, process) = manager.find_process_by_thread(tid).ok_or(errno::ESRCH)?;
+    process.fd_table.get(fd).cloned().ok_or(errno::EBADF)
+}
 
-    // Get current thread to find its process and fd table
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => return SyscallResult::Err(errno::ESRCH as u64),
-    };
-
-    let mut manager_guard = crate::process::manager();
-    let manager = match manager_guard.as_mut() {
-        Some(m) => m,
-        None => {
-            remove_instance(epoll_id);
-            return SyscallResult::Err(errno::ENOMEM as u64);
-        }
-    };
-
-    let (_pid, process) = match manager.find_process_by_thread_mut(thread_id) {
-        Some(p) => p,
-        None => {
-            remove_instance(epoll_id);
-            return SyscallResult::Err(errno::ESRCH as u64);
-        }
-    };
-
-    match process.fd_table.alloc(FdKind::Epoll(epoll_id)) {
-        Ok(fd) => SyscallResult::Ok(fd as u64),
-        Err(e) => {
-            remove_instance(epoll_id);
-            SyscallResult::Err(e as u64)
-        }
+/// The epoll instance `epfd` refers to: EBADF for no descriptor, EINVAL for
+/// one that is not an epoll instance.
+fn instance(epfd: i32) -> Result<Arc<EpollInstance>, i32> {
+    match current_entry(epfd)?.kind {
+        FdKind::Epoll(instance) => Ok(instance),
+        _ => Err(errno::EINVAL),
     }
+}
+
+fn to_result(result: Result<u64, i32>) -> SyscallResult {
+    match result {
+        Ok(value) => SyscallResult::Ok(value),
+        Err(errno) => SyscallResult::Err(errno as u64),
+    }
+}
+
+/// epoll_create1(flags) -> fd. EPOLL_CLOEXEC sets FD_CLOEXEC; any other flag
+/// is EINVAL.
+pub fn sys_epoll_create1(epoll_flags: u32) -> SyscallResult {
+    to_result((|| {
+        if epoll_flags & !EPOLL_CLOEXEC != 0 {
+            return Err(errno::EINVAL);
+        }
+        let fd_flags = if epoll_flags & EPOLL_CLOEXEC != 0 {
+            flags::FD_CLOEXEC
+        } else {
+            0
+        };
+        let entry = FileDescriptor::try_with_flags(FdKind::Epoll(EpollInstance::new()?), fd_flags, 0)?;
+        let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH)?;
+        let mut guard = crate::process::manager();
+        let manager = guard.as_mut().ok_or(errno::ESRCH)?;
+        let (_, process) = manager.find_process_by_thread_mut(tid).ok_or(errno::ESRCH)?;
+        Ok(process.fd_table.alloc_with_entry(entry)? as u64)
+    })())
 }
 
 /// epoll_ctl(epfd, op, fd, event_ptr) -> 0 or -errno
@@ -210,273 +397,134 @@ pub fn sys_epoll_create1(_flags: u32) -> SyscallResult {
 /// Control interface for an epoll instance. Adds, modifies, or removes
 /// entries in the interest list of the epoll instance referred to by epfd.
 pub fn sys_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: u64) -> SyscallResult {
-    // Look up the epoll instance ID from the fd
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => return SyscallResult::Err(errno::ESRCH as u64),
-    };
-
-    let manager_guard = crate::process::manager();
-    let manager = match manager_guard.as_ref() {
-        Some(m) => m,
-        None => return SyscallResult::Err(errno::ENOMEM as u64),
-    };
-
-    let (_pid, process) = match manager.find_process_by_thread(thread_id) {
-        Some(p) => p,
-        None => return SyscallResult::Err(errno::ESRCH as u64),
-    };
-
-    // Validate epfd is an epoll fd
-    let epoll_id = match process.fd_table.get(epfd) {
-        Some(entry) => match &entry.kind {
-            FdKind::Epoll(id) => *id,
-            _ => return SyscallResult::Err(errno::EINVAL as u64),
-        },
-        None => return SyscallResult::Err(errno::EBADF as u64),
-    };
-
-    // Validate the target fd exists (except for DEL which doesn't need event)
-    if op != EPOLL_CTL_DEL {
-        if process.fd_table.get(fd).is_none() {
-            return SyscallResult::Err(errno::EBADF as u64);
+    to_result((|| {
+        let epoll = instance(epfd)?;
+        let file = current_entry(fd)?;
+        if let FdKind::Epoll(target) = &file.kind {
+            if Arc::ptr_eq(target, &epoll) {
+                return Err(errno::EINVAL);
+            }
         }
-    }
-
-    // Drop manager guard before any faultable user copy or EPOLL_INSTANCES access.
-    drop(manager_guard);
-
-    // Read the event structure from userspace after dropping the process-manager
-    // lock. A userspace page fault here may need that lock.
-    let (events, data) = if op != EPOLL_CTL_DEL {
-        if event_ptr == 0 {
-            return SyscallResult::Err(errno::EFAULT as u64);
-        }
-        let event: EpollEvent = match super::userptr::copy_from_user(event_ptr as *const EpollEvent)
-        {
-            Ok(e) => e,
-            Err(e) => return SyscallResult::Err(e),
+        // The event is read with PM released: a fault here may need it.
+        let (events, data) = if op != EPOLL_CTL_DEL {
+            let event: EpollEvent = super::userptr::copy_from_user(event_ptr as *const EpollEvent)
+                .map_err(|e| e as i32)?;
+            (event.events, event.data)
+        } else {
+            (0, 0)
         };
-        (event.events, event.data)
-    } else {
-        (0, 0)
-    };
-
-    let result = match op {
-        EPOLL_CTL_ADD => with_instance(epoll_id, |inst| inst.add(fd, events, data)),
-        EPOLL_CTL_MOD => with_instance(epoll_id, |inst| inst.modify(fd, events, data)),
-        EPOLL_CTL_DEL => with_instance(epoll_id, |inst| inst.delete(fd)),
-        _ => Err(errno::EINVAL),
-    };
-
-    match result {
-        Ok(()) => SyscallResult::Ok(0),
-        Err(e) => SyscallResult::Err(e as u64),
-    }
+        epoll.ctl(op, fd, &file, events, data)?;
+        drop(file);
+        if op != EPOLL_CTL_DEL {
+            // A waiter re-reads the interests, and reports one already ready.
+            epoll.waiters.wake_up();
+        }
+        Ok(0)
+    })())
 }
 
-/// epoll_pwait(epfd, events_ptr, maxevents, timeout, sigmask_ptr, sigsetsize) -> count or -errno
-///
-/// Wait for events on an epoll instance. Returns ready events in the
-/// user-provided buffer. Reuses poll_fd for readiness checking.
+/// epoll_pwait(epfd, events_ptr, maxevents, timeout, sigmask_ptr,
+/// sigsetsize). A signal mask is in force for the wait, as ppoll's is.
 pub fn sys_epoll_pwait(
     epfd: i32,
     events_ptr: u64,
     maxevents: i32,
     timeout: i32,
-    _sigmask_ptr: u64,
-    _sigsetsize: u64,
+    sigmask_ptr: u64,
+    sigsetsize: u64,
 ) -> SyscallResult {
-    if maxevents <= 0 {
-        return SyscallResult::Err(errno::EINVAL as u64);
+    let result = with_mask(sigmask_ptr, sigsetsize, || {
+        wait(epfd, events_ptr, maxevents, timeout).map_err(|errno| errno as u64)
+    });
+    match result {
+        Ok(count) => SyscallResult::Ok(count),
+        Err(errno) => SyscallResult::Err(errno),
     }
-    if events_ptr == 0 {
-        return SyscallResult::Err(errno::EFAULT as u64);
+}
+
+fn now_ns() -> u64 {
+    let (s, n) = crate::time::get_monotonic_time_ns();
+    (s as u64)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(n as u64)
+}
+
+fn wait(epfd: i32, events_ptr: u64, maxevents: i32, timeout: i32) -> Result<u64, i32> {
+    if maxevents <= 0 || maxevents as usize > MAX_EVENTS {
+        return Err(errno::EINVAL);
     }
-
-    let maxevents = maxevents as usize;
-
-    // Look up the epoll instance ID
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => return SyscallResult::Err(errno::ESRCH as u64),
-    };
-
-    let epoll_id = {
-        let manager_guard = crate::process::manager();
-        let manager = match manager_guard.as_ref() {
-            Some(m) => m,
-            None => return SyscallResult::Err(errno::ENOMEM as u64),
-        };
-        let (_pid, process) = match manager.find_process_by_thread(thread_id) {
-            Some(p) => p,
-            None => return SyscallResult::Err(errno::ESRCH as u64),
-        };
-        match process.fd_table.get(epfd) {
-            Some(entry) => match &entry.kind {
-                FdKind::Epoll(id) => *id,
-                _ => return SyscallResult::Err(errno::EINVAL as u64),
-            },
-            None => return SyscallResult::Err(errno::EBADF as u64),
-        }
-    }; // manager guard dropped
-
-    // Calculate wake-up deadline for timeouts
-    let deadline_ns = if timeout > 0 {
-        let (s, n) = crate::time::get_monotonic_time_ns();
-        let now = (s as u64) * 1_000_000_000 + (n as u64);
-        Some(now + (timeout as u64) * 1_000_000)
-    } else if timeout == 0 {
-        Some(0) // non-blocking
-    } else {
-        None // infinite
+    let max = maxevents as usize;
+    if !crate::memory::layout::is_valid_user_range(
+        events_ptr,
+        max * core::mem::size_of::<EpollEvent>(),
+    ) {
+        return Err(errno::EFAULT);
+    }
+    let epoll = instance(epfd)?;
+    let deadline = match timeout {
+        0 => Some(0),
+        t if t > 0 => Some(now_ns().saturating_add(t as u64 * 1_000_000)),
+        _ => None,
     };
 
     loop {
-        // Snapshot the registered entries from the epoll instance
-        let entries: Vec<EpollEntry> = {
-            let instances = EPOLL_INSTANCES.lock();
-            let mut found = None;
-            for (iid, instance) in instances.iter() {
-                if *iid == epoll_id {
-                    found = Some(instance.entries.clone());
-                    break;
-                }
-            }
-            match found {
-                Some(e) => e,
-                None => return SyscallResult::Err(errno::EBADF as u64),
-            }
-        };
+        crate::net::drain_loopback_queue();
+        let snapshot = epoll.snapshot()?;
+        let files = resolve(&snapshot)?;
 
-        // Snapshot fd table entries for the registered fds
-        let fd_snapshots: Vec<(EpollEntry, Option<FileDescriptor>)> = {
-            let manager_guard = crate::process::manager();
-            let manager = match manager_guard.as_ref() {
-                Some(m) => m,
-                None => return SyscallResult::Err(errno::ENOMEM as u64),
-            };
-            let (_pid, process) = match manager.find_process_by_thread(thread_id) {
-                Some(p) => p,
-                None => return SyscallResult::Err(errno::ESRCH as u64),
-            };
-
-            entries
-                .into_iter()
-                .map(|entry| {
-                    let fd_entry = process.fd_table.get(entry.fd).cloned();
-                    (entry, fd_entry)
-                })
-                .collect()
-        }; // manager guard dropped
-
-        // Check readiness for each registered fd
-        let mut ready_events: Vec<EpollEvent> = Vec::new();
-        let mut updates: Vec<EpollEntry> = Vec::new();
-        for (entry, fd_entry) in fd_snapshots.iter() {
-            if entry.disabled {
+        let mut seen = Vec::new();
+        seen.try_reserve_exact(snapshot.len())
+            .map_err(|_| errno::ENOMEM)?;
+        for (interest, file) in snapshot.iter().zip(&files) {
+            if interest.disabled {
                 continue;
             }
-            let Some(ref fd) = fd_entry else {
+            let Some(file) = file else {
                 continue;
             };
-            // The sequence number is read before readiness: a change that
-            // lands after the read moves it, and the next wait reports again.
-            let seq = match &fd.kind {
-                FdKind::Socket(socket) => Some(socket.common.seq()),
-                _ => None,
-            };
-            let poll_events = epoll_to_poll_events(entry.events);
-            let revents = poll::poll_fd(fd, poll_events);
-            let epoll_revents = poll_to_epoll_events(revents);
-
-            let report = epoll_revents != 0
-                && (entry.events & EPOLLET == 0
-                    || match seq {
-                        Some(seq) => seq != entry.last_seq,
-                        None => epoll_revents & !entry.last_revents != 0,
-                    });
-            let mut updated = entry.clone();
-            if entry.events & EPOLLET != 0 {
-                updated.last_revents = epoll_revents;
-                if report {
-                    updated.last_seq = seq.unwrap_or(NEVER_REPORTED);
-                }
-            }
-            if report && entry.events & EPOLLONESHOT != 0 {
-                updated.disabled = true;
-            }
-            if entry.events & (EPOLLET | EPOLLONESHOT) != 0 {
-                if updates.try_reserve(1).is_err() {
-                    return SyscallResult::Err(errno::ENOMEM as u64);
-                }
-                updates.push(updated);
-            }
-            if report {
-                if ready_events.try_reserve(1).is_err() {
-                    return SyscallResult::Err(errno::ENOMEM as u64);
-                }
-                ready_events.push(EpollEvent {
-                    events: epoll_revents,
-                    data: entry.data,
-                });
-                if ready_events.len() >= maxevents {
-                    break;
-                }
+            let (next, report) = evaluate(interest, file);
+            if report != 0 || !next.same_state(interest) {
+                seen.push((next, report));
             }
         }
+        let taken = epoll.commit(seen, max)?;
 
-        // Record what edge-triggered and one-shot entries reported, unless
-        // EPOLL_CTL_MOD or DEL changed the entry while this wait looked.
-        if !updates.is_empty() {
-            let _ = with_instance(epoll_id, |inst| {
-                for update in &updates {
-                    if let Some(entry) = inst.entries.iter_mut().find(|e| {
-                        e.fd == update.fd && e.events == update.events && e.data == update.data
-                    }) {
-                        if !entry.disabled {
-                            entry.last_seq = update.last_seq;
-                            entry.last_revents = update.last_revents;
-                            entry.disabled = update.disabled;
-                        }
-                    }
-                }
-                Ok(())
-            });
-        }
-
-        // If events are ready, copy to userspace and return
-        if !ready_events.is_empty() {
-            let count = ready_events.len();
+        if !taken.is_empty() {
             let dst = events_ptr as *mut EpollEvent;
-            for (i, event) in ready_events.iter().enumerate() {
-                if let Err(errno) = super::userptr::copy_to_user(dst.wrapping_add(i), event) {
-                    return SyscallResult::Err(errno);
+            for (i, item) in taken.iter().enumerate() {
+                if let Err(fault) = super::userptr::copy_to_user(dst.wrapping_add(i), &item.event) {
+                    // The events not delivered report again; those delivered
+                    // are the result, as Linux's ep_send_events gives.
+                    epoll.restore(&taken[i..]);
+                    return if i == 0 { Err(fault as i32) } else { Ok(i as u64) };
                 }
             }
-            return SyscallResult::Ok(count as u64);
+            return Ok(taken.len() as u64);
         }
 
-        // No events ready - check timeout
-        if let Some(deadline) = deadline_ns {
-            if deadline == 0 {
-                // Non-blocking (timeout=0)
-                return SyscallResult::Ok(0);
+        if deadline == Some(0) || deadline.is_some_and(|d| now_ns() >= d) {
+            return Ok(0);
+        }
+        if super::check_signals_for_eintr().is_some() {
+            return Err(errno::EINTR);
+        }
+
+        let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH)?;
+        let mut waits = WaitSet::new(tid);
+        waits.watch_queue(epoll.waiters.clone());
+        for (interest, file) in snapshot.iter().zip(&files) {
+            if let (false, Some(file)) = (interest.disabled, file) {
+                waits.watch(file, epoll_to_poll_events(interest.events));
             }
-            let (s, n) = crate::time::get_monotonic_time_ns();
-            let now = (s as u64) * 1_000_000_000 + (n as u64);
-            if now >= deadline {
-                return SyscallResult::Ok(0);
-            }
         }
-
-        // Check for pending signals that should interrupt the wait
-        if let Some(_eintr) = super::check_signals_for_eintr() {
-            return SyscallResult::Err(errno::EINTR as u64);
-        }
-
-        // Yield and retry
-        crate::task::scheduler::yield_current();
+        waits
+            .park(deadline.unwrap_or(u64::MAX), || {
+                snapshot.iter().zip(&files).any(|(interest, file)| match file {
+                    Some(file) if !interest.disabled => evaluate(interest, file).1 != 0,
+                    _ => false,
+                })
+            })
+            .map_err(|errno| errno as i32)?;
     }
 }
 

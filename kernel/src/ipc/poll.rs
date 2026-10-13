@@ -123,12 +123,9 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
         }
         FdKind::Socket(socket) => {
             // The protocol reports its readiness, and a pending SO_ERROR is
-            // POLLERR on every protocol. POLLERR and POLLHUP are reported
-            // whether or not they were asked for.
-            let mut bits = socket.ops().poll(socket) as i16;
-            if socket.common.peek_error() != 0 {
-                bits |= events::POLLERR;
-            }
+            // POLLERR on every protocol (`Socket::poll`). POLLERR and POLLHUP
+            // are reported whether or not they were asked for.
+            let bits = socket.poll() as i16;
             revents = bits & (events | events::POLLERR | events::POLLHUP);
         }
         FdKind::RegularFile(_file) => {

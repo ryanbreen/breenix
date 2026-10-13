@@ -5,7 +5,7 @@
 //! to underlying file objects (pipes, stdio, sockets, etc.).
 
 use crate::memory::slab::{SlabBox, FD_TABLE_SLAB};
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
@@ -142,8 +142,9 @@ pub enum FdKind {
         path: alloc::string::String,
         position: u64,
     },
-    /// Epoll instance file descriptor
-    Epoll(u64),
+    /// An epoll instance. dup and fork clone the Arc; the instance goes when
+    /// the last descriptor for it closes.
+    Epoll(Arc<crate::syscall::epoll::EpollInstance>),
 }
 
 impl core::fmt::Debug for FdKind {
@@ -174,7 +175,7 @@ impl core::fmt::Debug for FdKind {
             FdKind::ProcfsDirectory { path, position } => {
                 write!(f, "ProcfsDirectory(path={}, pos={})", path, position)
             }
-            FdKind::Epoll(id) => write!(f, "Epoll({})", id),
+            FdKind::Epoll(_) => write!(f, "Epoll"),
         }
     }
 }
@@ -243,6 +244,29 @@ impl FileDescriptor {
             description: Arc::new(AtomicU32::new(word)),
             native_inode: None,
         }
+    }
+
+    /// `with_flags`, giving ENOMEM rather than a panic when the open file
+    /// description cannot be allocated.
+    pub fn try_with_flags(kind: FdKind, flags: u32, status_flags: u32) -> Result<Self, i32> {
+        let word = inherent_access_mode(&kind) | (status_flags & SETTABLE_STATUS_FLAGS);
+        Ok(FileDescriptor {
+            kind,
+            flags,
+            description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12)?,
+            native_inode: None,
+        })
+    }
+
+    /// The open file description this descriptor refers to, as a reference
+    /// that does not keep it open: epoll watches descriptions this way.
+    pub(crate) fn description_ref(&self) -> Weak<AtomicU32> {
+        Arc::downgrade(&self.description)
+    }
+
+    /// Whether this descriptor refers to the open file description `of`.
+    pub(crate) fn refers_to(&self, of: &Weak<AtomicU32>) -> bool {
+        core::ptr::eq(Arc::as_ptr(&self.description), of.as_ptr())
     }
 
     /// Create the descriptor for a new open file description from an open(2)
@@ -616,6 +640,38 @@ impl FdTableInner {
         Some(slot as i32)
     }
 
+    /// `reserve_slot`, giving the reason when no slot can be held: EMFILE at
+    /// the limit, ENOMEM when the table cannot grow.
+    pub fn try_reserve_slot(&mut self) -> Result<i32, i32> {
+        let slot = self.free_slot(0)?;
+        self.reserved.try_reserve(1).map_err(|_| 12)?;
+        self.reserved.push(slot);
+        Ok(slot as i32)
+    }
+
+    /// Install `entry` in slot `fd`, held by `reserve_slot`. Hands the entry
+    /// back when the slot is not held, so nothing it counts is lost.
+    pub fn install_held(&mut self, fd: i32, entry: FileDescriptor) -> Result<i32, FileDescriptor> {
+        let Some(index) = self.reserved.iter().position(|&slot| slot as i32 == fd) else {
+            return Err(entry);
+        };
+        let slot = self.reserved.swap_remove(index);
+        self.fds[slot] = Some(entry);
+        Ok(fd)
+    }
+
+    /// The lowest descriptor number that refers to the open file description
+    /// `of`.
+    pub(crate) fn find_description(&self, of: &Weak<AtomicU32>) -> Option<(i32, &FileDescriptor)> {
+        self.fds
+            .iter()
+            .enumerate()
+            .find_map(|(fd, entry)| match entry {
+                Some(entry) if entry.refers_to(of) => Some((fd as i32, entry)),
+                _ => None,
+            })
+    }
+
     /// Install `entry` in slot `fd`, held by `reserve_slot`. A slot that is
     /// not held is allocated as `alloc_with_entry` would.
     pub fn install_reserved(&mut self, fd: i32, entry: FileDescriptor) -> Result<i32, i32> {
@@ -911,9 +967,8 @@ impl Drop for FdTableInner {
                     FdKind::ProcfsDirectory { .. } => {
                         // Procfs directory doesn't need cleanup
                     }
-                    FdKind::Epoll(id) => {
-                        // Clean up the epoll instance
-                        crate::syscall::epoll::remove_instance(id);
+                    FdKind::Epoll(_) => {
+                        // The instance goes with its last descriptor.
                     }
                 }
             }

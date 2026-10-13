@@ -74,6 +74,10 @@ pub struct PipeBuffer {
     read_waiters: Vec<u64>,
     /// Data writers, distinct from FIFO open waiters and legacy pipe readers.
     pub write_waiters: Arc<WaitQueueHead>,
+    /// Changes on the read side (data written, a writer gone) and on the
+    /// write side (data read, a reader gone), for edge-triggered epoll.
+    rx_changes: u64,
+    tx_changes: u64,
 }
 
 impl PipeBuffer {
@@ -105,6 +109,8 @@ impl PipeBuffer {
             hangup: false,
             read_waiters: Vec::new(),
             write_waiters: Arc::try_new(WaitQueueHead::new()).map_err(|_| 12)?,
+            rx_changes: 0,
+            tx_changes: 0,
         })
     }
 
@@ -137,6 +143,7 @@ impl PipeBuffer {
         }
 
         self.len -= read;
+        self.tx_changes = self.tx_changes.wrapping_add(u64::from(read > 0));
         if read > 0 {
             self.write_waiters.wake_up();
         }
@@ -186,6 +193,7 @@ impl PipeBuffer {
         self.len += written;
 
         // Wake any threads waiting to read
+        self.rx_changes = self.rx_changes.wrapping_add(u64::from(written > 0));
         if written > 0 {
             self.wake_read_waiters();
         }
@@ -220,6 +228,7 @@ impl PipeBuffer {
         let last_reader = self.readers == 1;
         if self.readers > 0 {
             self.readers -= 1;
+            self.tx_changes = self.tx_changes.wrapping_add(1);
         }
         if self.readers == 0 {
             self.hangup = false;
@@ -236,6 +245,7 @@ impl PipeBuffer {
     pub fn close_write(&mut self) -> CloseNotifications {
         if self.writers > 0 {
             self.writers -= 1;
+            self.rx_changes = self.rx_changes.wrapping_add(1);
             if self.writers == 0 {
                 self.hangup = self.readers > 0;
                 self.wake_read_waiters();
@@ -257,6 +267,11 @@ impl PipeBuffer {
 
     pub fn has_hung_up(&self) -> bool {
         self.hangup
+    }
+
+    /// The read-side and write-side change counts.
+    pub fn edges(&self) -> (u64, u64) {
+        (self.rx_changes, self.tx_changes)
     }
 
     /// Register a thread as waiting to read from this pipe

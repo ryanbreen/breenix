@@ -67,7 +67,13 @@ pub fn wait_until<R>(
 
         let tid = crate::task::scheduler::current_thread_id()
             .expect("queued wait requires a current thread");
-        if let Some(result) = check() {
+        // A socket whose last reference this check drops is released later,
+        // not here, with the blocked state published.
+        let second = {
+            let _defer = super::object::DeferRelease::enter();
+            check()
+        };
+        if let Some(result) = second {
             queue.take_waiter(tid);
             queue.finish_wait_for(tid);
             return result;

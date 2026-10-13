@@ -11,7 +11,7 @@
 //! on a socket that is not listening fails with EINVAL, send on a socket that
 //! never connected fails with EPIPE (POSIX says ENOTCONN), a close with
 //! SO_LINGER of 0 seconds, or with unread data, resets the connection, a socket
-//! accept returns takes the listener's options, connect to AF_UNSPEC
+//! accept returns starts with the listener's options, connect to AF_UNSPEC
 //! dissolves a connection, and MSG_TRUNC on a stream discards the bytes.
 
 use alloc::sync::Arc;
@@ -19,14 +19,9 @@ use spin::Mutex;
 
 use super::addr::SockAddr;
 use super::object::{ProtoOps, RecvMsg, SendMsg, Socket, SocketProto};
-use super::opts::SockOpts;
 use super::wait::{now_ns, wait_until};
 use crate::net::tcp::{self, ConnectionId, ListenerId, RecvInto, RecvResult};
 use crate::syscall::errno;
-
-const AF_INET: u16 = 2;
-const SOCK_STREAM: u16 = 1;
-const IPPROTO_TCP: u16 = 6;
 
 const POLLIN: u16 = crate::ipc::poll::events::POLLIN as u16;
 const POLLOUT: u16 = crate::ipc::poll::events::POLLOUT as u16;
@@ -148,8 +143,8 @@ fn is_local_addr(addr: [u8; 4]) -> bool {
 }
 
 /// Bring the connection up to date with the socket's SO_RCVBUF, SO_SNDBUF,
-/// SO_KEEPALIVE and SO_REUSEADDR. Every operation on the connection does this
-/// first, so an option set on a connected socket takes effect.
+/// SO_KEEPALIVE and SO_REUSEADDR: when it is made, and whenever one of them
+/// is set (`option_set`).
 fn apply_options(sk: &Socket, conn: &ConnectionId) {
     let options = sk.common.with_opts(|o| tcp::ConnOptions {
         rcvbuf: o.rcvbuf,
@@ -158,23 +153,6 @@ fn apply_options(sk: &Socket, conn: &ConnectionId) {
         reuse: o.reuseaddr,
     });
     tcp::tcp_set_options(conn, options);
-}
-
-/// A socket accept returns starts with the listener's options, as Linux's
-/// sk_clone_lock copies them; its status flags are its own.
-fn inherit_options(listener: &Socket, child: &Socket) {
-    let options = listener.common.with_opts(|o| SockOpts {
-        reuseaddr: o.reuseaddr,
-        broadcast: o.broadcast,
-        keepalive: o.keepalive,
-        nodelay: o.nodelay,
-        linger: o.linger,
-        rcvbuf: o.rcvbuf,
-        sndbuf: o.sndbuf,
-        rcvtimeo_ns: o.rcvtimeo_ns,
-        sndtimeo_ns: o.sndtimeo_ns,
-    });
-    child.common.with_opts(|o| *o = options);
 }
 
 /// SO_LINGER with a positive time: wait, at most that long, for the peer to
@@ -272,14 +250,9 @@ impl ProtoOps for TcpSock {
             addr: conn.remote_ip,
             port: conn.remote_port,
         };
-        match Socket::new(
-            AF_INET,
-            SOCK_STREAM,
-            IPPROTO_TCP,
-            SocketProto::Tcp(TcpSock::connected(conn)),
-        ) {
+        // The socket starts with the listener's options, as on Linux.
+        match Socket::new_child(sk, SocketProto::Tcp(TcpSock::connected(conn))) {
             Ok(socket) => {
-                inherit_options(sk, &socket);
                 tcp::tcp_set_owner(&conn, Arc::downgrade(&socket));
                 apply_options(&socket, &conn);
                 Ok((socket, peer))
@@ -365,7 +338,6 @@ impl ProtoOps for TcpSock {
         let Some(conn) = self.connection() else {
             return Err(errno::EPIPE);
         };
-        apply_options(sk, &conn);
         let oob = msg.flags & MSG_OOB != 0;
         let deadline = sk.common.snd_deadline();
         let mut sent = 0;
@@ -403,7 +375,6 @@ impl ProtoOps for TcpSock {
         let Some(conn) = self.connection() else {
             return Err(errno::ENOTCONN);
         };
-        apply_options(sk, &conn);
         let peek = msg.flags & MSG_PEEK != 0;
         if msg.flags & MSG_OOB != 0 {
             return recv_oob(&conn, msg, peek);
@@ -524,6 +495,12 @@ impl ProtoOps for TcpSock {
 
     fn notifies(&self) -> bool {
         true
+    }
+
+    fn option_set(&self, sk: &Socket, _level: i32, _name: i32) {
+        if let Some(conn) = self.connection() {
+            apply_options(sk, &conn);
+        }
     }
 
     fn release(&self, sk: &Socket) {

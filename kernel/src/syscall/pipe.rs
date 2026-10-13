@@ -234,8 +234,8 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                 FdKind::ProcfsDirectory { .. } => {
                     log::debug!("sys_close: Closed procfs directory fd={}", fd);
                 }
-                FdKind::Epoll(id) => {
-                    crate::syscall::epoll::remove_instance(id);
+                FdKind::Epoll(_) => {
+                    // The instance goes with its last descriptor.
                     log::debug!("sys_close: Closed epoll fd={}", fd);
                 }
             }
