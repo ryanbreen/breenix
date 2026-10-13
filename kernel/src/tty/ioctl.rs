@@ -1076,12 +1076,12 @@ mod tests {
         let mut attrs = pair.termios_snapshot();
         attrs.set_raw();
         pair.ldisc.lock().set_termios(attrs);
-        pair.master_write(b"input").unwrap();
+        assert_eq!(pair.master_write(b"input"), 5);
         assert_eq!(pair.slave_to_master.lock().write(b"output"), 6);
         assert_eq!(dispatch(&t, Side::Slave, TCFLSH, 0), Ok(0));
         assert!(!pair.ldisc.lock().has_data());
         assert!(!pair.slave_to_master.lock().is_empty());
-        pair.master_write(b"input").unwrap();
+        assert_eq!(pair.master_write(b"input"), 5);
         assert_eq!(dispatch(&t, Side::Slave, TCFLSH, 1), Ok(0));
         assert!(pair.ldisc.lock().has_data());
         assert!(pair.slave_to_master.lock().is_empty());
@@ -1089,9 +1089,9 @@ mod tests {
         assert_eq!(dispatch(&t, Side::Slave, TCFLSH, 2), Ok(0));
         assert!(!pair.ldisc.lock().has_data());
         assert!(pair.slave_to_master.lock().is_empty());
-        pair.master_write(b"input").unwrap();
+        assert_eq!(pair.master_write(b"input"), 5);
         attrs.c_cc[super::super::termios::VERASE] = 8;
-        assert_eq!(dispatch(&t, Side::Slave, TCSETSF, &attrs as *const Termios as u64), Ok(0));
+        assert_eq!(dispatch(&t, Side::Slave, TCSETSF, &IoctlTermios::from(attrs) as *const IoctlTermios as u64), Ok(0));
         assert!(!pair.ldisc.lock().has_data());
         assert_eq!(pair.termios_snapshot().c_cc[super::super::termios::VERASE], 8);
     }
@@ -1123,20 +1123,21 @@ mod tests {
         attrs.c_lflag |= ISIG | ECHO;
         pair.ldisc.lock().set_termios(attrs);
         pair.slave_to_master.lock().write(b"old output");
-        pair.master_write(b"old input\x03fresh").unwrap();
+        assert_eq!(pair.master_write(b"old input\x03fresh"), 10);
+        assert_eq!(pair.master_write(b"fresh"), 5);
         let mut buf = [0; 32];
         let n = pair.ldisc.lock().read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"fresh");
         let n = pair.slave_to_master.lock().read(&mut buf);
-        assert_eq!(&buf[..n], b"^C\nfresh");
+        assert_eq!(&buf[..n], b"^C\r\nfresh");
         attrs.c_lflag |= NOFLSH;
         pair.ldisc.lock().set_termios(attrs);
         pair.slave_to_master.lock().write(b"kept");
-        pair.master_write(b"xy\x03").unwrap();
+        assert_eq!(pair.master_write(b"xy\x03"), 3);
         let n = pair.ldisc.lock().read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"xy");
         let n = pair.slave_to_master.lock().read(&mut buf);
-        assert_eq!(&buf[..n], b"keptxy^C\n");
+        assert_eq!(&buf[..n], b"keptxy^C\r\n");
     }
 
     #[test]
@@ -1146,7 +1147,7 @@ mod tests {
         let mut attrs = pair.termios_snapshot();
         attrs.set_raw();
         pair.ldisc.lock().set_termios(attrs);
-        pair.master_write(b"input").unwrap();
+        assert_eq!(pair.master_write(b"input"), 5);
         pair.slave_to_master.lock().write(b"output");
         assert_eq!(dispatch(&terminal, Side::Master, TCFLSH, 0), Ok(0));
         assert!(pair.ldisc.lock().has_data());

@@ -2882,14 +2882,14 @@ fn handle_devfs_open(
         return match (id, tty) {
             (TtyId::Pty(_), TtyRef::Pty(pair)) => {
                 drop(manager_guard);
-                open_tty_slave(&pair, flags, native_inode, reserved)
+                return open_tty_slave(&pair, flags, native_inode, reserved);
             }
             (TtyId::Console, TtyRef::Console(_)) => {
-                let entry = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
+                let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
                     Ok(entry) => entry.with_inode(native_inode),
                     Err(e) => return SyscallResult::Err(e),
                 };
-                match install_descriptor(&mut process.fd_table, reserved, entry) {
+                match install_descriptor(&mut process.fd_table, reserved, fd_kind) {
                     Ok(fd) => SyscallResult::Ok(fd as u64),
                     Err(_) => SyscallResult::Err(EMFILE as u64),
                 }
