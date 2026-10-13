@@ -45,8 +45,15 @@ pub fn read_master(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: b
             let n = ring.read(&mut buf);
             if n > 0 {
                 drop(ring);
+                let result = copy_out(buf_ptr, &buf, n);
+                if matches!(result, SyscallResult::Err(_)) {
+                    // EFAULT: the output was not delivered, so it goes back
+                    // to the front of the ring (all of it, unless a writer
+                    // filled the room meanwhile).
+                    pair.slave_to_master.lock().unread(&buf[..n]);
+                }
                 pair.slave_writers.wake_up();
-                return copy_out(buf_ptr, &buf, n);
+                return result;
             }
             // Linux: once the slave has been opened and every slave fd is
             // closed, the master reads the buffered output and then EIO.
@@ -77,7 +84,8 @@ fn progress_or(done: usize, error: i32) -> SyscallResult {
 }
 
 /// write(2) on a master: input to the slave, through the line discipline.
-/// A blocking write waits for room in the slave's input queue until all of
+/// A blocking write waits for room in the slave's input queue, and while
+/// master output is stopped (TCXONC on the master), until all of
 /// `data` is consumed. Once the slave has hung up nothing will make room, so
 /// a write that finds no room then fails with EIO, as on Linux.
 pub fn write_master(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> SyscallResult {
@@ -98,7 +106,7 @@ pub fn write_master(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> Sysc
             let ldisc = pair.ldisc.lock();
             pair.master_writers
                 .prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
-                    !ldisc.input_room() && !pair.has_slave_hung_up()
+                    (!ldisc.input_room() || pair.master_output_stopped()) && !pair.has_slave_hung_up()
                 })
         };
         if let Err(error) = wait_prepared(&pair.master_writers, outcome) {

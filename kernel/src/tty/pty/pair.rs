@@ -16,6 +16,10 @@ use alloc::sync::Arc;
 /// Ring buffer size for PTY data transfer
 const PTY_BUFFER_SIZE: usize = 4096;
 
+/// A slave's permission bits after allocation and grantpt: owner read and
+/// write, group write (POSIX grantpt).
+const SLAVE_MODE: u32 = 0o620;
+
 /// Simple ring buffer for PTY I/O
 pub struct PtyBuffer {
     data: [u8; PTY_BUFFER_SIZE],
@@ -61,6 +65,17 @@ impl PtyBuffer {
 
     pub fn is_empty(&self) -> bool {
         self.read_pos == self.write_pos
+    }
+
+    /// Put `bytes`, just read, back at the front, as many as there is room
+    /// for, first bytes first. Returns how many went back.
+    pub fn unread(&mut self, bytes: &[u8]) -> usize {
+        let n = bytes.len().min(self.space());
+        for &byte in bytes[..n].iter().rev() {
+            self.read_pos = (self.read_pos + PTY_BUFFER_SIZE - 1) % PTY_BUFFER_SIZE;
+            self.data[self.read_pos] = byte;
+        }
+        n
     }
 
     /// Discard everything unread.
@@ -126,6 +141,16 @@ pub struct PtyPair {
     /// Slave output suspended by TCXONC(TCOOFF).
     output_stopped: AtomicBool,
 
+    /// Master output (input to the slave) suspended by TCXONC(TCOOFF) on
+    /// the master.
+    master_output_stopped: AtomicBool,
+
+    /// The slave device's owner, group and permission bits: set from the
+    /// opener of the master, changed by grantpt, checked by a slave open.
+    slave_uid: AtomicU32,
+    slave_gid: AtomicU32,
+    slave_mode: AtomicU32,
+
     /// The terminal's session and foreground process group.
     pub ctl: spin::Mutex<TermCtl>,
 
@@ -144,11 +169,15 @@ pub struct PtyPair {
 }
 
 impl PtyPair {
-    pub fn new(pty_num: u32) -> Self {
-        Self {
+    /// A new pair whose slave belongs to `uid` and `gid`, mode 0620 (owner
+    /// read and write, group write, as grantpt leaves it). Fails with ENOMEM
+    /// instead of panicking when the line discipline's queues cannot be
+    /// allocated.
+    pub fn try_new(pty_num: u32, uid: u32, gid: u32) -> Result<Self, i32> {
+        Ok(Self {
             pty_num,
             slave_to_master: spin::Mutex::new(PtyBuffer::new()),
-            ldisc: spin::Mutex::new(LineDiscipline::new()),
+            ldisc: spin::Mutex::new(LineDiscipline::try_new()?),
             winsize: spin::Mutex::new(Winsize::default_pty()),
             locked: AtomicBool::new(true), // Locked until unlockpt()
             master_refcount: AtomicU32::new(1),
@@ -157,12 +186,31 @@ impl PtyPair {
             master_gone: AtomicBool::new(false),
             hangup_pending: AtomicBool::new(false),
             output_stopped: AtomicBool::new(false),
+            master_output_stopped: AtomicBool::new(false),
+            slave_uid: AtomicU32::new(uid),
+            slave_gid: AtomicU32::new(gid),
+            slave_mode: AtomicU32::new(SLAVE_MODE),
             ctl: spin::Mutex::new(TermCtl::new()),
             master_readers: WaitQueueHead::new(),
             slave_readers: WaitQueueHead::new(),
             slave_writers: WaitQueueHead::new(),
             master_writers: WaitQueueHead::new(),
-        }
+        })
+    }
+
+    /// The slave device's (uid, gid, mode), mode without the file type.
+    pub fn slave_owner(&self) -> (u32, u32, u32) {
+        (
+            self.slave_uid.load(Ordering::SeqCst),
+            self.slave_gid.load(Ordering::SeqCst),
+            self.slave_mode.load(Ordering::SeqCst),
+        )
+    }
+
+    /// grantpt: the slave belongs to `uid`, with mode 0620.
+    pub fn grant(&self, uid: u32) {
+        self.slave_uid.store(uid, Ordering::SeqCst);
+        self.slave_mode.store(SLAVE_MODE, Ordering::SeqCst);
     }
 
     /// The pair's termios (the line discipline's copy).
@@ -174,6 +222,19 @@ impl PtyPair {
     pub fn slave_open(&self) {
         self.slave_was_opened.store(true, Ordering::SeqCst);
         self.slave_refcount.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Take a slave reference for an open that has not installed its
+    /// descriptor yet. The slave counts as opened (for the master's EIO and
+    /// POLLHUP) only once `mark_slave_opened` follows, so an open that fails
+    /// and gives the reference back leaves the pair as it found it.
+    pub(super) fn take_slave_ref(&self) {
+        self.slave_refcount.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The open that took a slave reference installed its descriptor.
+    pub fn mark_slave_opened(&self) {
+        self.slave_was_opened.store(true, Ordering::SeqCst);
     }
 
     /// Decrement slave reference count. Returns true if this was the last slave.
@@ -240,6 +301,31 @@ impl PtyPair {
         self.output_stopped.load(Ordering::SeqCst)
     }
 
+    /// Suspend or resume master output, the slave's input (TCXONC on the
+    /// master). Resuming wakes blocked master writers.
+    pub fn set_master_output_stopped(&self, stopped: bool) {
+        self.master_output_stopped.store(stopped, Ordering::SeqCst);
+        if !stopped {
+            self.master_writers.wake_up();
+        }
+    }
+
+    /// True while master output is suspended.
+    pub fn master_output_stopped(&self) -> bool {
+        self.master_output_stopped.load(Ordering::SeqCst)
+    }
+
+    /// TCIOFF/TCION on the slave: send the STOP or START character `c` to
+    /// the master, ahead of stopped output, as Linux sends it out of band.
+    /// False when the master's buffer is full.
+    pub fn send_flow_char_to_master(&self, c: u8) -> bool {
+        let sent = self.slave_to_master.lock().write(core::slice::from_ref(&c)) == 1;
+        if sent {
+            self.master_readers.wake_up();
+        }
+        sent
+    }
+
     /// Feed `data` from the master to the slave's line discipline. Stops
     /// when the input queue has no room (`LineDiscipline::input_room`), or
     /// just after a signal character, so that each signal character's signal
@@ -254,6 +340,18 @@ impl PtyPair {
     /// after the flush. Signals and wakes follow after both locks are
     /// released.
     pub fn master_write(self: &Arc<Self>, data: &[u8]) -> usize {
+        self.feed_slave(data, false)
+    }
+
+    /// TCIOFF/TCION on the master: send the STOP or START character `c` to
+    /// the slave's input, even while master output is stopped. False when
+    /// the slave's input queue has no room.
+    pub fn send_flow_char_to_slave(self: &Arc<Self>, c: u8) -> bool {
+        self.feed_slave(core::slice::from_ref(&c), true) == 1
+    }
+
+    /// `master_write`, ignoring a TCOOFF on the master when `ignore_stop`.
+    fn feed_slave(self: &Arc<Self>, data: &[u8], ignore_stop: bool) -> usize {
         let mut signal_to_deliver = None;
         let mut echoed = false;
         let mut flushed = false;
@@ -264,7 +362,7 @@ impl PtyPair {
             // Echo is output, so OPOST|ONLCR translate it as they do output.
             let onlcr = ldisc.termios().is_opost() && ldisc.termios().is_onlcr();
             for &byte in data {
-                if !ldisc.input_room() {
+                if !ldisc.input_room() || (!ignore_stop && self.master_output_stopped()) {
                     break;
                 }
                 let mut echo_len = 0;

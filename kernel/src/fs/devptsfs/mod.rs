@@ -25,8 +25,6 @@
 //!     Return PtySlave file descriptor
 //! ```
 
-use alloc::string::String;
-use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::tty::pty;
@@ -41,9 +39,19 @@ pub struct PtsEntry {
 }
 
 impl PtsEntry {
-    /// Get the entry name (just the number as string)
-    pub fn name(&self) -> String {
-        alloc::format!("{}", self.pty_num)
+    /// The entry name (the number in decimal), written into `buf`.
+    pub fn name<'a>(&self, buf: &'a mut [u8; 10]) -> &'a [u8] {
+        let mut n = self.pty_num;
+        let mut start = buf.len();
+        loop {
+            start -= 1;
+            buf[start] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        &buf[start..]
     }
 }
 
@@ -114,21 +122,20 @@ pub fn get_inode(pty_num: u32) -> u64 {
     PTY_INODE_BASE + pty_num as u64
 }
 
-/// List the visible PTY slave entries
-pub fn list_entries() -> Vec<PtsEntry> {
-    pty::list_active()
-        .into_iter()
-        .filter(|&pty_num| visible(pty_num))
-        .map(|pty_num| PtsEntry {
-            pty_num,
-            inode: get_inode(pty_num),
-        })
-        .collect()
-}
-
-/// List all PTY slave names (for directory listing)
-pub fn list_names() -> Vec<String> {
-    list_entries().into_iter().map(|e| e.name()).collect()
+/// The first visible PTY slave entry numbered above `after` (or the lowest,
+/// for None). Listing walks these without allocating.
+pub fn next_entry(after: Option<u32>) -> Option<PtsEntry> {
+    let mut after = after;
+    while let Some(pty_num) = pty::next_active(after) {
+        if visible(pty_num) {
+            return Some(PtsEntry {
+                pty_num,
+                inode: get_inode(pty_num),
+            });
+        }
+        after = Some(pty_num);
+    }
+    None
 }
 
 /// Check if devpts is initialized
