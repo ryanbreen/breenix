@@ -14,6 +14,8 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::AtomicUsize;
 use spin::Mutex;
 
 use crate::drivers::pci::{self, Device, INTEL_VENDOR_ID};
@@ -619,28 +621,6 @@ impl E1000 {
         Ok(len)
     }
 
-    /// Handle interrupt
-    #[cfg(target_arch = "x86_64")]
-    pub fn handle_interrupt(&mut self) {
-        let icr = self.read_reg(REG_ICR);
-
-        if icr & ICR_RXT0 != 0 {
-            log::debug!("E1000: RX interrupt");
-        }
-
-        if icr & ICR_TXDW != 0 {
-            log::debug!("E1000: TX interrupt");
-        }
-
-        if icr & ICR_LSC != 0 {
-            if self.link_up() {
-                log::info!("E1000: Link up at {} Mbps", self.link_speed());
-            } else {
-                log::info!("E1000: Link down");
-            }
-        }
-    }
-
     /// Enable interrupts
     pub fn enable_interrupts(&self) {
         // Enable RX timer, TX descriptor written back, and link status change
@@ -661,6 +641,20 @@ impl E1000 {
 /// Global E1000 driver instance
 static E1000_DRIVER: Mutex<Option<E1000>> = Mutex::new(None);
 static E1000_INITIALIZED: AtomicBool = AtomicBool::new(false);
+/// The register window the interrupt handler acknowledges through, published
+/// before `E1000_INITIALIZED`, so the handler never takes `E1000_DRIVER`.
+#[cfg(target_arch = "x86_64")]
+static IRQ_MMIO_BASE: AtomicUsize = AtomicUsize::new(0);
+
+/// Run `f` on the driver with interrupts masked, so no interrupt or preemption
+/// reaches a holder. On x86 the NetRx softirq takes this lock at interrupt
+/// exit on the CPU that took the interrupt. A holder preempted there that can
+/// run only on that CPU (a pinned kernel thread such as ksoftirqd) would leave
+/// the CPU spinning on the lock with interrupts off for good, and every device
+/// interrupt routed to it undelivered (#1442).
+fn with_driver<R>(f: impl FnOnce(&mut E1000) -> R) -> Option<R> {
+    crate::arch_without_interrupts(|| E1000_DRIVER.lock().as_mut().map(f))
+}
 
 /// Initialize the E1000 driver
 pub fn init() -> Result<(), &'static str> {
@@ -813,7 +807,9 @@ pub fn init() -> Result<(), &'static str> {
     driver.enable_interrupts();
 
     // Store driver instance
-    *E1000_DRIVER.lock() = Some(driver);
+    #[cfg(target_arch = "x86_64")]
+    IRQ_MMIO_BASE.store(driver.mmio_base, Ordering::Relaxed);
+    crate::arch_without_interrupts(|| *E1000_DRIVER.lock() = Some(driver));
     E1000_INITIALIZED.store(true, Ordering::Release);
 
     #[cfg(target_arch = "x86_64")]
@@ -832,55 +828,44 @@ pub fn is_initialized() -> bool {
 /// Get the MAC address
 #[allow(dead_code)] // Public API for network stack
 pub fn mac_address() -> Option<[u8; 6]> {
-    E1000_DRIVER.lock().as_ref().map(|d| *d.mac_address())
+    with_driver(|d| *d.mac_address())
 }
 
 /// Check if link is up
 #[allow(dead_code)] // Public API for network stack
 pub fn link_up() -> bool {
-    E1000_DRIVER
-        .lock()
-        .as_ref()
-        .map(|d| d.link_up())
-        .unwrap_or(false)
+    with_driver(|d| d.link_up()).unwrap_or(false)
 }
 
 /// Transmit a packet
 #[allow(dead_code)] // Public API for network stack
 pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
-    E1000_DRIVER
-        .lock()
-        .as_mut()
-        .ok_or("E1000 not initialized")?
-        .transmit(data)
+    with_driver(|d| d.transmit(data)).unwrap_or(Err("E1000 not initialized"))
 }
 
 /// Receive a packet
 #[allow(dead_code)] // Public API for network stack
 pub fn receive(buffer: &mut [u8]) -> Result<usize, &'static str> {
-    E1000_DRIVER
-        .lock()
-        .as_mut()
-        .ok_or("E1000 not initialized")?
-        .receive(buffer)
+    with_driver(|d| d.receive(buffer)).unwrap_or(Err("E1000 not initialized"))
 }
 
 /// Check if a packet is available to receive
 #[allow(dead_code)] // Public API for network stack
 pub fn can_receive() -> bool {
-    E1000_DRIVER
-        .lock()
-        .as_ref()
-        .map(|d| d.can_receive())
-        .unwrap_or(false)
+    with_driver(|d| d.can_receive()).unwrap_or(false)
 }
 
-/// Handle E1000 interrupt (called from IRQ 11 handler)
+/// Handle E1000 interrupt (called from the IRQ 10 and IRQ 11 handlers)
 /// aarch64 uses polling mode instead of interrupts
+///
+/// Reading ICR acknowledges the interrupt. It takes no lock: a thread on
+/// another CPU may hold `E1000_DRIVER` across a transmit's completion poll.
 #[cfg(target_arch = "x86_64")]
 pub fn handle_interrupt() {
-    if let Some(driver) = E1000_DRIVER.lock().as_mut() {
-        driver.handle_interrupt();
+    if E1000_INITIALIZED.load(Ordering::Acquire) {
+        let icr = IRQ_MMIO_BASE.load(Ordering::Relaxed) + REG_ICR as usize;
+        // SAFETY: the device's own interrupt cause register, mapped at init.
+        unsafe { read_volatile(icr as *const u32) };
     }
 
     // Defer RX processing to softirq context
