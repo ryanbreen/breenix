@@ -28,7 +28,7 @@ cargo test
 cargo build --features testing
 
 # ARM64 testing kernel on Apple Silicon QEMU-HVF
-scripts/boot-interactive.sh --accel hvf --mode tests
+scripts/boot-interactive.sh --mode tests
 ```
 
 See [the boot path](docs/boot-path.md) for production probes, suites, and

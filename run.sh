@@ -23,7 +23,7 @@
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
 #   ./run.sh --btrt --x86      # x86_64 BTRT structured boot test
 #   ./run.sh --no-audio        # Disable audio entirely (default: coreaudio output on)
-#   ./run.sh --accel hvf       # Opt into Apple Silicon ARM64 hardware acceleration
+#   ./run.sh --accel tcg       # Select ARM64 software emulation explicitly
 #
 # Display:
 #   ARM64:  Native window (cocoa) - no VNC needed
@@ -191,7 +191,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --vmware                   Build and boot on VMware Fusion VM"
             echo "  --vm NAME                  Parallels VM name (default: breenix-dev)"
             echo "  --headless, --serial       Run without display (serial only)"
-            echo "  --accel hvf|tcg            ARM64 QEMU accelerator (default tcg during HVF validation)"
+            echo "  --accel hvf|tcg            ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)"
             echo "  --graphics, --vnc          Run with VNC display (default)"
             echo "  --btrt                     Run BTRT structured boot test"
             echo "  --ahci                     Use AHCI (SATA) disk instead of virtio-blk (ARM64)"

@@ -8,6 +8,12 @@ import subprocess
 import sys
 
 
+def default_accelerator(system=None, machine=None):
+    system = system or platform.system()
+    machine = machine or platform.machine()
+    return "hvf" if system == "Darwin" and machine == "arm64" else "tcg"
+
+
 def command(binary, arguments, accelerator, system=None, machine=None):
     system = system or platform.system()
     machine = machine or platform.machine()
@@ -52,7 +58,8 @@ def main():
     if not arguments:
         sys.exit("usage: qemu-arm64.py [--launcher PROGRAM] QEMU [QEMU arguments...]")
     try:
-        argv = command(arguments[0], arguments[1:], os.environ.get("BREENIX_ARM64_QEMU_ACCEL", "tcg"))
+        argv = command(arguments[0], arguments[1:],
+                       os.environ.get("BREENIX_ARM64_QEMU_ACCEL", default_accelerator()))
         if launcher is None:
             launcher = os.environ.get("BREENIX_QEMU_UI_LAUNCHER")
         if not launcher:

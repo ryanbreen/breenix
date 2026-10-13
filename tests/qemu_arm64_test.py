@@ -13,9 +13,16 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "scripts/qemu-arm64.py"
 command = runpy.run_path(str(LAUNCHER))["command"]
+default_accelerator = runpy.run_path(str(LAUNCHER))["default_accelerator"]
 
 
 class AcceleratorTests(unittest.TestCase):
+    def test_default_hvf_is_scoped_to_apple_silicon(self):
+        self.assertEqual(default_accelerator("Darwin", "arm64"), "hvf")
+        for system, machine in (("Linux", "aarch64"), ("Linux", "x86_64"), ("Darwin", "x86_64")):
+            with self.subTest(system=system, machine=machine):
+                self.assertEqual(default_accelerator(system, machine), "tcg")
+
     def test_hvf_keeps_machine_properties_and_devices(self):
         result = command("qemu", ["-M", "virt,gic-version=2,highmem=off", "-cpu", "max",
                                   "-smp", "4", "-device", "virtio-blk-device,drive=ext2"],

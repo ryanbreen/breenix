@@ -23,7 +23,7 @@
 #   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop
 #   --no-build           boot the kernel and disk already in target/
-#   --accel hvf|tcg      select ARM64 QEMU acceleration (default tcg during HVF validation)
+#   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
 #
 # Ctrl-A X quits QEMU; Ctrl-A C toggles the QEMU monitor. Ctrl-C goes to the guest.
 # Each step prints a "==> " line so a watcher can tell building from booting.
