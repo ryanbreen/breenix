@@ -673,10 +673,15 @@ if [ "$PARALLELS" = true ]; then
     # VirtIO GPU with 3D acceleration (required for VirGL)
     prlctl set "$PARALLELS_VM" --3d-accelerate highest
     prlctl set "$PARALLELS_VM" --videosize 2048
-    # Select host and guest Retina policy explicitly before starting the VM.
+    # Select host and guest Retina policy explicitly before starting the VM. A new VM
+    # defaults to high-resolution-in-guest=on, which makes Parallels show the guest at
+    # one guest pixel per Retina pixel even with host high resolution off: the 1280x960
+    # guest then opens in a 640x480-point window. The scaled default needs both off.
     if [ "${RETINA:-false}" = true ]; then
+        RETINA_POLICY="high-resolution=on high-resolution-in-guest=on"
         prlctl set "$PARALLELS_VM" --high-resolution on --high-resolution-in-guest on
     else
+        RETINA_POLICY="high-resolution=off high-resolution-in-guest=off"
         prlctl set "$PARALLELS_VM" --high-resolution off --high-resolution-in-guest off
     fi
     prlctl set "$PARALLELS_VM" --vertical-sync on
@@ -726,6 +731,7 @@ if [ "$PARALLELS" = true ]; then
     VM_INFO=$(prlctl list -i "$PARALLELS_VM") || { echo "ERROR: cannot query configured Parallels VM"; exit 1; }
     VM_HOME=$(sed -n 's/^Home: //p' <<< "$VM_INFO")
     [ -d "$VM_HOME" ] || { echo "ERROR: cannot locate configured Parallels VM"; exit 1; }
+    grep -q "$RETINA_POLICY" <<< "$VM_INFO" || { echo "ERROR: Parallels VM does not report $RETINA_POLICY"; exit 1; }
     CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
     prlctl start "$PARALLELS_VM"
     echo ""
