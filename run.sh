@@ -673,11 +673,12 @@ if [ "$PARALLELS" = true ]; then
     # VirtIO GPU with 3D acceleration (required for VirGL)
     prlctl set "$PARALLELS_VM" --3d-accelerate highest 2>/dev/null || true
     prlctl set "$PARALLELS_VM" --videosize 2048 2>/dev/null || true
-    # Scaled by default: each guest pixel is two Retina pixels, so the boot screen is readable.
+    # Set both Retina controls together: host drawing alone leaves guest Retina
+    # mode enabled. The console latches this policy when it is created.
     if [ "${RETINA:-false}" = true ]; then
-        prlctl set "$PARALLELS_VM" --high-resolution on 2>/dev/null || true
+        prlctl set "$PARALLELS_VM" --high-resolution on --high-resolution-in-guest on
     else
-        prlctl set "$PARALLELS_VM" --high-resolution off 2>/dev/null || true
+        prlctl set "$PARALLELS_VM" --high-resolution off --high-resolution-in-guest off
     fi
     prlctl set "$PARALLELS_VM" --vertical-sync on 2>/dev/null || true
 
@@ -719,10 +720,17 @@ if [ "$PARALLELS" = true ]; then
     # Open the VM in its own window, as VMware's `gui` start does, so a boot can be watched;
     # BREENIX_PARALLELS_NOGUI=1 keeps unattended automation off the operator's desktop.
     if [ -n "${BREENIX_PARALLELS_NOGUI:-}" ]; then
-        prlctl set "$PARALLELS_VM" --startup-view headless 2>/dev/null || true
+        prlctl set "$PARALLELS_VM" --startup-view headless
     else
-        prlctl set "$PARALLELS_VM" --startup-view window 2>/dev/null || true
+        prlctl set "$PARALLELS_VM" --startup-view window
     fi
+    # create publishes Parallels' native-resolution defaults to the GUI before
+    # the set commands above run. Reload this stopped VM's fully configured
+    # definition so a new console cannot inherit that earlier Retina policy.
+    VM_HOME=$(prlctl list -i "$PARALLELS_VM" | sed -n 's/^Home: //p')
+    [ -d "$VM_HOME" ] || { echo "ERROR: cannot locate configured Parallels VM"; exit 1; }
+    prlctl unregister "$PARALLELS_VM"
+    prlctl register "$VM_HOME" --preserve-uuid
     CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
     prlctl start "$PARALLELS_VM"
     echo ""
@@ -1063,6 +1071,10 @@ usb_xhci:6.deviceType = "mouse"
 usb_xhci:6.port = "6"
 
 svga.vramSize = "268435456"
+# Match Parallels' 1280x960 framebuffer instead of selecting a larger GOP mode.
+svga.autodetect = "FALSE"
+svga.maxWidth = "1280"
+svga.maxHeight = "960"
 gui.fitGuestUsingNativeDisplayResolution = "${VMWARE_NATIVE_RESOLUTION}"
 mks.enable3d = "TRUE"
 
