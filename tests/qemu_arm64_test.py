@@ -72,6 +72,14 @@ class AcceleratorTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), ["-accel", "tcg", "-cpu", "cortex-a72"])
             self.assertIn("BREENIX_QEMU_CONFIG accel=tcg cpu=cortex-a72", result.stderr)
 
+    def test_recorded_profile_matches_effective_tcg_cpu_without_launching(self):
+        result = subprocess.run([sys.executable, str(LAUNCHER), "--print-profile", "/nonexistent/qemu",
+                                 "-cpu", "cortex-a72"],
+                                env={**os.environ, "BREENIX_ARM64_QEMU_ACCEL": "tcg"},
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "tcg-cortex-a72")
+
     def test_exec_preserves_arguments_and_exit_status(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "fake qemu"

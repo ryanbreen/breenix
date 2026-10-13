@@ -192,7 +192,9 @@ else
     host_slot_quiet
 fi
 # Vigil shows the boot while it runs and scores it when it ends (does nothing without Vigil).
-VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG")
+QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu max)
+QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
+VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
 [ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $QMP_SOCKET out.png)"
 # Wait interruptibly and register the watcher so a signal to this script also
@@ -204,7 +206,7 @@ exec 3<&0
 set +e
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
-    -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
+    -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp 4 \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \

@@ -61,6 +61,9 @@ def command(binary, arguments, accelerator, system=None, machine=None):
 def main():
     arguments = sys.argv[1:]
     launcher = None
+    print_profile = arguments[:1] == ["--print-profile"]
+    if print_profile:
+        arguments = arguments[1:]
     accelerator = os.environ.get("BREENIX_ARM64_QEMU_ACCEL")
     while arguments[:1] in (["--launcher"], ["--accel"]):
         if len(arguments) < 3:
@@ -78,6 +81,9 @@ def main():
             accelerator = "tcg" if any(cpu not in ("max", "host") for cpu in cpus) else default_accelerator()
         argv = command(arguments[0], arguments[1:], accelerator)
         cpu = argv[argv.index("-cpu") + 1] if "-cpu" in argv else "default"
+        if print_profile:
+            print(f"{accelerator}-{cpu}")
+            return
         print(f"BREENIX_QEMU_CONFIG accel={accelerator} cpu={cpu}", file=sys.stderr, flush=True)
         if launcher is None:
             launcher = os.environ.get("BREENIX_QEMU_UI_LAUNCHER")
