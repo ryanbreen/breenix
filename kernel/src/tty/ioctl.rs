@@ -70,6 +70,9 @@ pub const TIOCGPTLCK: u64 = 0x80045439;
 /// Invalid argument
 const EINVAL: i32 = 22;
 
+/// I/O error
+const EIO: i32 = 5;
+
 /// Not a typewriter (not a TTY)
 const ENOTTY: i32 = 25;
 
@@ -223,6 +226,13 @@ pub enum Side {
 
 /// Dispatch an ioctl on terminal `t`, made on `side`.
 pub fn dispatch(t: &TtyRef, side: Side, request: u64, arg: u64) -> Result<i32, i32> {
+    // A slave whose master has closed is hung up: as on Linux, every ioctl
+    // on it fails with EIO, except TIOCSPGRP, which fails with ENOTTY.
+    if let (TtyRef::Pty(pair), Side::Slave) = (t, side) {
+        if pair.master_closed() {
+            return Err(if request == TIOCSPGRP { ENOTTY } else { EIO });
+        }
+    }
     match request {
         TIOCSCTTY | TIOCNOTTY | TIOCGSID => super::ctty::ioctl(t, side, request, arg),
         TIOCGPGRP | TIOCSPGRP => super::jobctl::ioctl(t, side, request, arg),

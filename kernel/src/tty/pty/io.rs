@@ -70,11 +70,12 @@ pub fn write_master(pair: &Arc<PtyPair>, data: &[u8]) -> SyscallResult {
 
 /// write(2) on a slave: output to the master.
 pub fn write_slave(pair: &Arc<PtyPair>, data: &[u8], _nonblocking: bool) -> SyscallResult {
-    if let Err(e) = jobctl::check(&TtyRef::Pty(pair.clone()), JobOp::Write) {
-        return SyscallResult::Err(e as u64);
-    }
+    // A hung-up slave fails writes with EIO before any job-control check.
     if pair.master_closed() {
         return SyscallResult::Err(EIO as u64);
+    }
+    if let Err(e) = jobctl::check(&TtyRef::Pty(pair.clone()), JobOp::Write) {
+        return SyscallResult::Err(e as u64);
     }
     match pair.slave_write(data) {
         Ok(n) => SyscallResult::Ok(n as u64),
