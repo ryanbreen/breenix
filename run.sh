@@ -347,8 +347,32 @@ bounded_vm_command() {
     python3 "$BREENIX_ROOT/scripts/bounded-vm-command.py" 30 "$@"
 }
 
+# Read the VM's written disk only after stop has succeeded. VMware's deployed
+# bundle, rather than the pristine staging VMDK, holds the guest's writes.
+score_vm_suite_disk() {
+    (
+        local manifest="$BREENIX_ROOT/docs/suites/$SUITE.json" checks disk temporary
+        checks=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("diskChecks", [])))' "$manifest") || exit $?
+        [ "$checks" != 0 ] || exit 0
+        if [ "$PARALLELS" = true ]; then
+            disk=$(find "$EXT2_HDD_DIR" -name '*.hds' -type f) || exit $?
+            if [ ! -f "$disk" ]; then
+                echo "FAIL: expected one written Parallels ext2 image"
+                exit 1
+            fi
+        else
+            temporary=$(mktemp -d) || exit $?
+            trap 'rm -rf "$temporary"' EXIT
+            disk="$temporary/ext2.raw"
+            qemu-img convert -f vmdk -O raw "$EXT2_VMDK_ARG" "$disk" || exit $?
+        fi
+        python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
+    )
+}
+
 finish_vm_boot() {
     local status=$?
+    local stopped=true
     trap '' INT HUP TERM
     trap - EXIT
     if [ -n "${LOGMON_PID:-}" ]; then
@@ -357,11 +381,19 @@ finish_vm_boot() {
         LOGMON_PID=""
     fi
     if [ "$PARALLELS" = true ]; then
-        prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1 || true
+        prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1 || stopped=false
     else
-        "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
+        "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || stopped=false
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
+    fi
+    if [ "$status" = 0 ] && [ "${BOOT_MODE:-}" = suite ]; then
+        if [ "$stopped" != true ]; then
+            echo "FAIL: could not stop VM for suite disk checks"
+            status=1
+        else
+            score_vm_suite_disk || status=$?
+        fi
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"

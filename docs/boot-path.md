@@ -335,6 +335,10 @@ resumes monitoring when the next suite prints START.
 
 The suite runner's default case deadline is 10 seconds. The host source check
 looks for builder calls, public-field struct literals and assignments throughout
-`userspace/programs/src`, including helper modules. Silent operations that exceed
+`userspace/programs/src`, including helper modules. The one named allowance,
+`time/clocks/rate-counter`, has 25 seconds for its bounded RTC measurement;
+every other case retains the default. The host check keeps the runner's allowance
+and progress policy in agreement and below the unchanged 120-second stall limit.
+Silent operations that exceed
 the watchdog window require meaningful userspace progress before the deadline;
 periodic kernel output cannot provide that allowance.

@@ -2615,6 +2615,6 @@ static SUITE: Suite = suite(
             case("exec-cpu", "Linux policy: exec keeps ITIMER_VIRTUAL and ITIMER_PROF", it_exec_cpu),
         ]),
     ],
-).case_limit_ms(25000);
+);
 
 fn main() { SUITE.run() }
