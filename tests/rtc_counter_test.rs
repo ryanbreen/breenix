@@ -1,7 +1,7 @@
 #[path = "../userspace/programs/src/rtc_counter.rs"]
 mod rtc_counter;
 
-use rtc_counter::{next_edge, RtcPoll};
+use rtc_counter::{frequency, next_edge, RtcEdge, RtcPoll};
 
 #[test]
 fn delayed_old_second_cannot_masquerade_as_a_narrow_edge() {
@@ -56,4 +56,56 @@ fn rejects_backward_counters_within_and_between_reads() {
     }
     let reversed = RtcPoll { second: 10, before: 1500, after: 1000 };
     assert!(next_edge(reversed, || Ok(old), || false).unwrap_err().contains("backwards"));
+}
+
+#[test]
+fn slow_reads_widen_frequency_bounds_without_rejecting_the_measurement() {
+    let narrow = frequency(
+        RtcEdge { second: 10, at: 1_000_000, width: 500 },
+        RtcEdge { second: 14, at: 5_000_000, width: 500 },
+    ).unwrap();
+    let wide = frequency(
+        RtcEdge { second: 10, at: 1_000_000, width: 7000 },
+        RtcEdge { second: 14, at: 5_000_000, width: 9000 },
+    ).unwrap();
+    assert_eq!(narrow, (1_000_000, 999_875, 1_000_125));
+    assert_eq!(wide, (1_000_000, 998_000, 1_002_000));
+}
+
+#[test]
+fn bounds_enclose_the_rate_when_old_read_returns_after_the_edge() {
+    let first = next_edge(
+        RtcPoll { second: 10, before: 999_500, after: 1_012_000 },
+        || Ok(RtcPoll { second: 11, before: 1_012_000, after: 1_012_500 }),
+        || false,
+    ).unwrap();
+    let last = RtcEdge { second: 15, at: 5_000_000, width: 1000 };
+    let (midpoint, low, high) = frequency(first, last).unwrap();
+    assert!(midpoint < 1_000_000);
+    assert!(low <= 1_000_000 && high >= 1_000_000);
+}
+
+#[test]
+fn odd_widths_and_fractional_hertz_round_bounds_outward() {
+    let result = frequency(
+        RtcEdge { second: 86_398, at: 10, width: 3 },
+        RtcEdge { second: 2, at: 51, width: 5 },
+    ).unwrap();
+    assert_eq!(result, (10, 9, 12));
+}
+
+#[test]
+fn invalid_or_overlapping_edge_brackets_do_not_measure_a_frequency() {
+    let first = RtcEdge { second: 10, at: 1000, width: 100 };
+    for last in [
+        RtcEdge { second: 10, at: 2000, width: 100 },
+        RtcEdge { second: 14, at: 900, width: 100 },
+        RtcEdge { second: 14, at: 1000, width: 100 },
+        RtcEdge { second: 14, at: 1050, width: 100 },
+        RtcEdge { second: 14, at: 1100, width: 100 },
+        RtcEdge { second: 14, at: 2000, width: 6000 },
+        RtcEdge { second: 14, at: u64::MAX, width: 100 },
+    ] {
+        assert!(frequency(first, last).is_err(), "{last:?}");
+    }
 }
