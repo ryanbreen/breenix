@@ -135,8 +135,10 @@ def canonical_ext2(path):
                 disk.write(backup)
 
 
-def checked(command, repo, log):
+def checked(command, repo, log, *, userspace_prebuilt=False):
     environment = dict(os.environ, CARGO_BUILD_JOBS='6')
+    if userspace_prebuilt:
+        environment['BREENIX_USERSPACE_PREBUILT'] = '1'
     if 'BREENIX_GATE_CACHE_DIR' in os.environ:
         environment.update(BREENIX_USERSPACE_REMAP='1', BREENIX_REPRODUCIBLE_EXT2='1')
     with log.open('w') as output:
@@ -170,7 +172,9 @@ export CARGO_HOME=/run/breenix-gate/cargo
         checked(command, repo, logs / f'{label}-userspace.log')
     with tree_cache.timing('disk-repack', f'build={label}'):
         checked(['python3', str(repo / 'scripts/install-busybox.py'), 'x86_64'], repo, logs / f'{label}-busybox.log')
-        checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo, logs / f'{label}-test-disk.log')
+        # The preceding standalone build installed these ELFs; pack them unchanged.
+        checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo,
+                logs / f'{label}-test-disk.log', userspace_prebuilt=True)
         checked([str(repo / 'scripts/create_ext2_disk.sh')], repo, logs / f'{label}-ext2.log')
         if 'BREENIX_GATE_CACHE_DIR' in os.environ:
             canonical_ext2(repo / 'testdata/ext2.img')
