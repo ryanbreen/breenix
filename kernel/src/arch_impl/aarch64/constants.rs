@@ -79,6 +79,9 @@ pub const TIMER_IRQ: u32 = 30;
 /// Software generated interrupt for rescheduling IPIs.
 pub const SGI_RESCHEDULE: u32 = 0;
 
+/// Wake a CPU without asking its current thread to give way.
+pub const SGI_WAKE: u32 = 2;
+
 /// Software generated interrupt for timer re-arm.
 /// Sent to a CPU whose timer has stopped firing (Parallels HVF vtimer death).
 /// The receiving CPU re-arms its virtual timer in the SGI handler.

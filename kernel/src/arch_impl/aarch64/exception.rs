@@ -2441,7 +2441,10 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
 
         // SGIs (0-15) - Inter-processor interrupts
         0..=15 => {
-            if irq_id == constants::SGI_RESCHEDULE {
+            if irq_id == constants::SGI_WAKE {
+                // Taking the interrupt wakes WFI and reaches the ordinary
+                // return-to-user signal check without setting need_resched.
+            } else if irq_id == constants::SGI_RESCHEDULE {
                 // IPI reschedule: another CPU unblocked a thread and wants us to pick it up
                 crate::tracing::record_event(
                     crate::tracing::TraceEventType::SCHED_RESCHED_IPI_RECV,

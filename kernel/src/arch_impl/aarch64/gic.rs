@@ -1634,8 +1634,9 @@ fn init_gicv3_redistributor(cpu_id: usize) {
     // SGI admission enable — load-bearing.
     //
     // Added by F32j (commit 946b2812, PR #328), retained by PR #334.
-    // Without enabling the SGIs Breenix actually uses (SGI_RESCHEDULE and
-    // SGI_TIMER_REARM) in each CPU's GICR_ISENABLER0, the SGIs can latch
+    // Without enabling the SGIs Breenix actually uses (SGI_RESCHEDULE,
+    // SGI_TIMER_REARM and SGI_WAKE) in each CPU's GICR_ISENABLER0, the SGIs
+    // can latch
     // in GICR_ISPENDR0 but never be admitted by the CPU interface —
     // ICC_HPPIR1_EL1 returns spurious (1023) and the reschedule IPI is
     // silently dropped. F32i validated this via linux-probe comparison
@@ -1643,14 +1644,15 @@ fn init_gicv3_redistributor(cpu_id: usize) {
     // Linux parity: /tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c::gic_cpu_config.
     //
     // Keep this ISENABLER write: any future SGI Breenix introduces (beyond
-    // SGI 0 and 1) must also be OR'd into this mask. The `dsb sy; isb` after
+    // SGI 0, 1 and 2) must also be OR'd into this mask. The `dsb sy; isb` after
     // the write ensures the CPU interface sees the enable before any
     // subsequent SGI send.
     //
     // Background: docs/planning/cpu0-user-guard-autopsy/README.md records the
     // CPU0 regression this fix was part of addressing.
-    let sgi_enable_mask =
-        (1u32 << super::constants::SGI_RESCHEDULE) | (1u32 << super::constants::SGI_TIMER_REARM);
+    let sgi_enable_mask = (1u32 << super::constants::SGI_RESCHEDULE)
+        | (1u32 << super::constants::SGI_TIMER_REARM)
+        | (1u32 << super::constants::SGI_WAKE);
     gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ISENABLER0, sgi_enable_mask);
     unsafe {
         core::arch::asm!("dsb sy", options(nomem, nostack));
