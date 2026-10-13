@@ -2514,6 +2514,8 @@ impl Scheduler {
 
     /// Record a dispatch on `cpu` for `timer_wake_promotion_open`.
     fn note_dispatch_for_wake_promotion(&mut self, cpu: usize, thread_id: u64) {
+        #[cfg(target_arch = "x86_64")]
+        if crate::scratch_force::busy() { crate::scratch_force::trace(11, thread_id, self.ready_queue_length() as u64, crate::signal::monotonic_nanos()); }
         let state = &mut self.cpu_state[cpu];
         let promoted = state.promoted_wake == Some(thread_id);
         if promoted {
@@ -4831,6 +4833,8 @@ impl Scheduler {
     /// return to user mode, including a busy remote CPU. Interruptible sleepers
     /// receive the same bounded promotion as an already-expired sleep deadline.
     pub(crate) fn expedite_signal_recipient(&mut self, thread_id: u64) {
+        #[cfg(target_arch = "x86_64")]
+        if crate::scratch_force::busy() { crate::scratch_force::trace(9, thread_id, self.ready_queue_length() as u64, crate::signal::monotonic_nanos()); }
         if let Some(cpu) = self.cpu_state.iter().position(|s| s.current_thread == Some(thread_id)) {
             if cpu == Self::current_cpu_id() {
                 set_need_resched();

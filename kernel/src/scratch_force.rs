@@ -93,6 +93,7 @@ static LONG_SLEEP: [AtomicU64; 4096] = [const { AtomicU64::new(0) }; 4096];
 static SEEN: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static BUSY_UNTIL: AtomicU64 = AtomicU64::new(0);
 pub const OLD_DISCOVERY: bool = false;
+pub fn busy() -> bool { BUSY_UNTIL.load(Ordering::Relaxed) > now_ns() }
 pub fn phase(deadline: u64) {
     if BUSY_UNTIL.load(Ordering::Relaxed) > now_ns() && SEEN[cpu()].swap(deadline, Ordering::Relaxed) != deadline {
         crate::per_cpu::set_quantum(10);
@@ -102,7 +103,7 @@ pub fn phase(deadline: u64) {
 pub fn trace(kind: u64, tid: u64, deadline: u64, at: u64) {
     let slot = &LONG_SLEEP[tid as usize % LONG_SLEEP.len()];
     if kind == 1 {
-        slot.store(if deadline.saturating_sub(at) >= 100_000_000 { deadline } else { 0 }, Ordering::Relaxed);
+        slot.store(if deadline.saturating_sub(at) >= 100_000_000 || busy() { deadline } else { 0 }, Ordering::Relaxed);
     }
     if matches!(kind, 1 | 2 | 5) && slot.load(Ordering::Relaxed) != deadline { return; }
     let i = INDEX.fetch_add(1, Ordering::Relaxed) as usize;
