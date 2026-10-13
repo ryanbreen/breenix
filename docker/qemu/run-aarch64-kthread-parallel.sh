@@ -95,7 +95,7 @@ for i in $(seq 1 $COUNT); do
     # Run QEMU natively (ARM64 runs natively on macOS ARM64)
     # No Docker needed - much faster than x86-64 emulation
     qemu_host_lock_acquire
-    timeout 60 "$QEMU_UI" qemu-system-aarch64 \
+    timeout 60 python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
         -M virt -cpu cortex-a72 -m 512 \
         -kernel "$KERNEL" \
         -display none -no-reboot \

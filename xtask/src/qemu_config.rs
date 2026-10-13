@@ -35,7 +35,8 @@ impl Arch {
 /// vCPU threads run in macOS's user-interactive priority band; the script prints `env`
 /// (QEMU unchanged) off a Mac or with `BREENIX_QEMU_UI=0`.
 fn aarch64_qemu_command() -> Result<Command> {
-    let output = Command::new("./scripts/qemu-ui-launch.sh")
+    let scripts = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts");
+    let output = Command::new(scripts.join("qemu-ui-launch.sh"))
         .stderr(Stdio::inherit())
         .output()
         .context("Failed to run scripts/qemu-ui-launch.sh")?;
@@ -46,8 +47,9 @@ fn aarch64_qemu_command() -> Result<Command> {
         .context("scripts/qemu-ui-launch.sh printed a non-UTF-8 path")?
         .trim()
         .to_string();
-    let mut command = Command::new(launcher);
-    command.arg("qemu-system-aarch64");
+    let mut command = Command::new("python3");
+    command.arg(scripts.join("qemu-arm64.py"))
+        .arg("--launcher").arg(launcher).arg("qemu-system-aarch64");
     Ok(command)
 }
 

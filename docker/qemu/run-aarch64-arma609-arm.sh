@@ -245,7 +245,7 @@ launch_qemu() {
     local drive_opts="$2"
 
     if $STARVED; then
-        nice -n 19 qemu-system-aarch64 \
+        nice -n 19 python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
             -M virt,gic-version=3 -cpu "$PROFILE" -m 512 -smp 4 \
             -kernel "$KERNEL" \
             -display none -no-reboot \
@@ -258,7 +258,7 @@ launch_qemu() {
             -netdev user,id=net0 \
             -serial file:"$serial_file" &
     else
-        "$QEMU_UI" qemu-system-aarch64 \
+        python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
             -M virt,gic-version=3 -cpu "$PROFILE" -m 512 -smp 4 \
             -kernel "$KERNEL" \
             -display none -no-reboot \

@@ -61,7 +61,7 @@ mkfifo "$MONITOR_OUT"
 # Use -monitor pipe for sending commands
 # Use writable disk copy (no readonly=on) to allow filesystem writes
 qemu_host_lock_acquire
-timeout "$TIMEOUT" "$QEMU_UI" qemu-system-aarch64 \
+timeout "$TIMEOUT" python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -m 512 \
     -kernel "$KERNEL" \
     -display none -no-reboot \

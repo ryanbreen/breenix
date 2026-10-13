@@ -161,7 +161,7 @@ PYTHON
     # Run QEMU with timeout (using writable ext2 copy to allow write tests)
     echo "Running test..."
     qemu_host_lock_acquire
-    timeout 30 "$QEMU_UI" qemu-system-aarch64 \
+    timeout 30 python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
         -M virt -cpu cortex-a72 -m 512 \
         -kernel "$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" \
         -display none -no-reboot \

@@ -23,6 +23,7 @@
 #   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop
 #   --no-build           boot the kernel and disk already in target/
+#   --accel hvf|tcg      select ARM64 QEMU acceleration (default tcg during HVF validation)
 #
 # Ctrl-A X quits QEMU; Ctrl-A C toggles the QEMU monitor. Ctrl-C goes to the guest.
 # Each step prints a "==> " line so a watcher can tell building from booting.
@@ -46,11 +47,12 @@ FBCONSOLE=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole)
+        --mode|--program|--suite|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
         --mode) MODE="$2"; shift 2 ;;
+        --accel) export BREENIX_ARM64_QEMU_ACCEL="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; shift 2 ;;
@@ -201,7 +203,7 @@ trap 'exit 130' INT
 exec 3<&0
 set +e
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
-    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- "$QEMU_UI" "$QEMU" \
+    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
     -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \

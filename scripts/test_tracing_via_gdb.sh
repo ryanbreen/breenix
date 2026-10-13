@@ -219,7 +219,7 @@ if [ "$ARCH" = "aarch64" ]; then
     fi
     cp "$EXT2_DISK" "$OUTPUT_DIR/ext2-writable.img"
     qemu_host_lock_acquire "$QEMU_BIN"
-    "$QEMU_UI" "$QEMU_BIN" \
+    python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" "$QEMU_BIN" \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL_BIN" \
         -display none -no-reboot \

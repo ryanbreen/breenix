@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -144,6 +145,13 @@ class LauncherTest(unittest.TestCase):
 
     def test_the_program_keeps_the_launcher_process_id(self):
         pid, values = self.run_probe(self.launcher)
+        self.assertEqual(values["pid"], str(pid))
+
+    def test_accelerator_wrapper_keeps_qos_on_payload_threads(self):
+        pid, values = self.run_probe(sys.executable, str(ROOT / "scripts/qemu-arm64.py"),
+                                     "--launcher", self.launcher)
+        for name in ("main", "child", "grandchild"):
+            self.assertEqual(values[name], "46", name)
         self.assertEqual(values["pid"], str(pid))
 
     def test_the_program_does_not_pass_the_library_on(self):

@@ -118,7 +118,7 @@ docker run --rm \
     $DISK_VOLUME \
     "$IMAGE_NAME" \
     qemu-system-aarch64 \
-        -M virt \
+        -M virt,accel=tcg \
         -cpu cortex-a72 \
         -m 512M \
         -kernel /breenix/kernel \

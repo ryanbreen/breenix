@@ -293,7 +293,8 @@ def main():
 
     # Start QEMU
     qemu_cmd = [
-        qemu_ui_launcher(),
+        sys.executable, os.path.join(BREENIX_ROOT, "scripts/qemu-arm64.py"),
+        "--launcher", qemu_ui_launcher(),
         "qemu-system-aarch64",
         "-M", "virt", "-cpu", "cortex-a72", "-m", "512", "-smp", "4",
         "-kernel", KERNEL,

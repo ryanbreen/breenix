@@ -27,6 +27,24 @@ stage list and shown alongside, but does not block moving on.
 
 ## Boot modes
 
+### ARM64 QEMU acceleration
+
+On an Apple Silicon Mac, `scripts/boot-interactive.sh --accel hvf` and
+`run.sh --accel hvf` select `-accel hvf -cpu host` with `virt,gic-version=3`.
+HVF currently requires opt-in while the boot and suite gates are validated.
+Use `--accel tcg` to select software emulation explicitly. All native ARM64
+launchers, including xtask and the GDB helpers, also accept
+`BREENIX_ARM64_QEMU_ACCEL=hvf|tcg` through `scripts/qemu-arm64.py`; TCG retains
+each launcher's CPU and GIC profile. An explicit HVF request on another host
+fails instead of falling back to TCG. The Linux Docker launchers select TCG:
+Apple's Hypervisor framework is available only to native macOS processes.
+
+QEMU-HVF remains a separate target from Parallels and VMware: its VirtIO
+devices and emulated GICv3 remain QEMU's. QEMU 11.0.3 supports that GIC with
+HVF. Its MMIO emulator requires ESR.ISV=1, so the ARM64 VirtIO transport uses
+plain register-indirect loads and stores; compiler-selected address-writeback
+instructions cannot be emulated by this QEMU version.
+
 `scripts/boot-interactive.sh --mode MODE` boots the same disk six ways (`modes` in
 `boot-path.json`):
 
